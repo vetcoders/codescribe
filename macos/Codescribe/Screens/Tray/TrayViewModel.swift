@@ -18,6 +18,7 @@ final class TrayViewModel: ObservableObject {
     @Published var showDockIcon: Bool = true
     @Published var overlayEnabled: Bool = true
     @Published var notesModeEnabled: Bool = false
+    @Published var startInAssistive: Bool = false
 
     // Disclosure state for the nested groups. Notes is expanded by default to
     // match the static mock; Diagnostics and History are collapsed.
@@ -92,6 +93,7 @@ final class TrayViewModel: ObservableObject {
             showDockIcon = toggles.showDockIcon
             overlayEnabled = toggles.overlayEnabled
             notesModeEnabled = toggles.notesMode
+            startInAssistive = toggles.startInAssistive
         }
         Task { [weak self] in
             guard let self else { return }
@@ -105,6 +107,7 @@ final class TrayViewModel: ObservableObject {
     func toggleDictation() {
         guard let engine else { isRecording.toggle(); return }
         let wasRecording = isRecording
+        let shouldStartAssistive = startInAssistive
         if !wasRecording {
             isStartingDictation = true
             isRecording = true
@@ -114,7 +117,7 @@ final class TrayViewModel: ObservableObject {
             guard let self else { return }
             do {
                 if wasRecording { try await engine.stopRecording() }
-                else { try await engine.startRecording() }
+                else { try await engine.startRecording(assistive: shouldStartAssistive) }
             } catch {
                 // Swallow: the reconcile below reflects the real session state.
             }
@@ -150,6 +153,19 @@ final class TrayViewModel: ObservableObject {
         }
         if engine.setNotesMode(enabled) {
             notesModeEnabled = enabled
+        } else {
+            refreshStatus()
+        }
+    }
+
+    /// UI-initiated recording lane. Keyboard shortcuts keep their own bindings.
+    func setStartInAssistive(_ enabled: Bool) {
+        guard let engine else {
+            startInAssistive = enabled
+            return
+        }
+        if engine.setStartInAssistive(enabled) {
+            startInAssistive = enabled
         } else {
             refreshStatus()
         }

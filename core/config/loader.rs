@@ -212,6 +212,9 @@ impl Config {
             self.transcription_overlay_enabled =
                 matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
+        if let Ok(val) = std::env::var("TRAY_START_ASSISTIVE") {
+            self.tray_start_assistive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
         if let Ok(val) = std::env::var("HOLD_INDICATOR") {
             self.hold_indicator = val.parse().unwrap_or(true);
         }
@@ -439,6 +442,12 @@ impl Config {
             self.transcription_overlay_enabled = v;
             Self::safe_set_env("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" });
         }
+        if std::env::var("TRAY_START_ASSISTIVE").is_err()
+            && let Some(v) = settings.tray_start_assistive
+        {
+            self.tray_start_assistive = v;
+            Self::safe_set_env("TRAY_START_ASSISTIVE", if v { "1" } else { "0" });
+        }
         if std::env::var("SOUND_VOLUME").is_err()
             && let Some(v) = settings.sound_volume
         {
@@ -658,6 +667,7 @@ impl Config {
                 | "BEEP_ON_START"
                 | "SHOW_DOCK_ICON"
                 | "TRANSCRIPTION_OVERLAY_ENABLED"
+                | "TRAY_START_ASSISTIVE"
                 | "HOLD_EXCLUSIVE"
                 | "USE_LOCAL_STT"
                 | "HISTORY_ENABLED"
@@ -808,6 +818,7 @@ impl Config {
                     | "BEEP_ON_START"
                     | "SHOW_DOCK_ICON"
                     | "TRANSCRIPTION_OVERLAY_ENABLED"
+                    | "TRAY_START_ASSISTIVE"
                     | "HOLD_EXCLUSIVE"
                     | "USE_LOCAL_STT"
                     | "HISTORY_ENABLED"
@@ -826,6 +837,7 @@ impl Config {
                             "TRANSCRIPTION_OVERLAY_ENABLED" => {
                                 settings_ref.transcription_overlay_enabled = Some(bv)
                             }
+                            "TRAY_START_ASSISTIVE" => settings_ref.tray_start_assistive = Some(bv),
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
                             "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
                             "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
@@ -1273,6 +1285,29 @@ mod tests {
         assert!(
             !config.transcription_overlay_enabled,
             "settings.json should be able to disable transcription overlay"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_respects_tray_start_assistive_from_settings_json() {
+        let _tmp = setup_isolated_data_dir();
+        let _tray_start_env = TestEnvGuard::unset("TRAY_START_ASSISTIVE");
+
+        let default_config = Config::load();
+        assert!(
+            !default_config.tray_start_assistive,
+            "UI-initiated recording should default to dictation"
+        );
+
+        let mut settings = UserSettings::load();
+        settings.tray_start_assistive = Some(true);
+        settings.save().expect("save settings");
+
+        let config = Config::load();
+        assert!(
+            config.tray_start_assistive,
+            "settings.json should be able to switch UI-initiated recording to assistive"
         );
     }
 

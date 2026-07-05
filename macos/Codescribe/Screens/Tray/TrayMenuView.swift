@@ -113,10 +113,8 @@ struct TrayMenuView: View {
 
             TrayRow(
                 icon: viewModel.isRecording && !viewModel.isStartingDictation ? .stop : .record,
-                iconColor: viewModel.isRecording ? CSColor.terracotta : CSColor.oliveLight,
-                title: viewModel.isStartingDictation
-                    ? "Starting…"
-                    : (viewModel.isRecording ? "Stop Dictation" : "Start Dictation")
+                iconColor: recordingActionColor,
+                title: recordingActionTitle
             ) { viewModel.toggleDictation() }
 
             historyGroup
@@ -181,6 +179,12 @@ struct TrayMenuView: View {
             toggleRow(icon: .notesMode, title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
                 viewModel.setNotesMode($0)
             }
+            toggleRow(
+                icon: .agent,
+                title: "Start in Assistive",
+                isOn: viewModel.startInAssistive,
+                onColor: CSColor.assistive
+            ) { viewModel.setStartInAssistive($0) }
         }
     }
 
@@ -190,14 +194,33 @@ struct TrayMenuView: View {
         icon: CSIcon,
         title: String,
         isOn: Bool,
+        onColor: Color = CSColor.oliveLight,
         set: @escaping (Bool) -> Void
     ) -> some View {
         TrayRow(
             icon: icon,
             title: title,
             shortcut: isOn ? "On" : "Off",
-            shortcutColor: isOn ? CSColor.oliveLight : CSColor.textFaintAlt
+            shortcutColor: isOn ? onColor : CSColor.textFaintAlt
         ) { set(!isOn) }
+    }
+
+    private var recordingActionTitle: String {
+        if viewModel.isStartingDictation { return "Starting…" }
+        if viewModel.isRecording {
+            return trayStatus.status.assistive ? "Stop Assistive" : "Stop Dictation"
+        }
+        return viewModel.startInAssistive ? "Start Assistive" : "Start Dictation"
+    }
+
+    private var recordingActionColor: Color {
+        if viewModel.isStartingDictation {
+            return viewModel.startInAssistive ? CSColor.assistive : CSColor.terracotta
+        }
+        if viewModel.isRecording {
+            return trayStatus.status.assistive ? CSColor.assistive : CSColor.terracotta
+        }
+        return viewModel.startInAssistive ? CSColor.assistive : CSColor.oliveLight
     }
 
     // MARK: - Notes (nested disclosure)

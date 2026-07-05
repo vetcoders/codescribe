@@ -52,6 +52,8 @@ pub struct UserSettings {
     pub show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_overlay_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tray_start_assistive: Option<bool>,
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,6 +289,8 @@ struct UiV2 {
     show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcription_overlay_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tray_start_assistive: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -342,6 +346,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     // App visibility
     "SHOW_DOCK_ICON",
     "TRANSCRIPTION_OVERLAY_ENABLED",
+    "TRAY_START_ASSISTIVE",
     // LLM endpoints
     "LLM_ENDPOINT",
     "LLM_MODEL",
@@ -444,6 +449,7 @@ impl UserSettings {
                 chat_zoom: self.chat_zoom,
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
+                tray_start_assistive: self.tray_start_assistive,
             }),
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
@@ -534,6 +540,7 @@ impl UserSettings {
                 .ui
                 .as_ref()
                 .and_then(|ui| ui.transcription_overlay_enabled),
+            tray_start_assistive: v2.ui.as_ref().and_then(|ui| ui.tray_start_assistive),
             llm_formatting_endpoint: v2
                 .speech
                 .as_ref()
@@ -886,6 +893,7 @@ impl UserSettings {
             "BEEP_ON_START" => self.beep_on_start = Some(value),
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
             "TRANSCRIPTION_OVERLAY_ENABLED" => self.transcription_overlay_enabled = Some(value),
+            "TRAY_START_ASSISTIVE" => self.tray_start_assistive = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
@@ -1166,6 +1174,29 @@ mod tests {
                 .and_then(|v| v.get("transcription_overlay_enabled"))
                 .and_then(|v| v.as_bool()),
             Some(false)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_tray_start_assistive_persists_in_v2_ui_section() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_bool("TRAY_START_ASSISTIVE", true);
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.tray_start_assistive, Some(true));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("ui")
+                .and_then(|v| v.get("tray_start_assistive"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
     }
 

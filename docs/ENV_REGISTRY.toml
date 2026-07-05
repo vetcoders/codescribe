@@ -186,6 +186,13 @@ reload = "hot"
 category = "ui"
 description = "Enable live non-assistive transcription overlay; when disabled the next capture uses a buffered no-overlay profile"
 
+[vars.TRAY_START_ASSISTIVE]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "ui"
+description = "Start UI-initiated recording from the tray in the assistive lane instead of dictation"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
 # ═══════════════════════════════════════════════════════════════════════════════
