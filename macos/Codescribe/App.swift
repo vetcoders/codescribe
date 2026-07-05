@@ -359,7 +359,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = statusItemImage()
         button.imagePosition = .imageOnly
         button.title = ""
-        button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
+        if hasUnreadAgentUpdate {
+            button.contentTintColor = NSColor.systemYellow
+        } else if let tint = trayStatus.menuBarTint {
+            button.contentTintColor = NSColor(tint)
+        } else {
+            button.contentTintColor = nil
+        }
         button.toolTip = hasUnreadAgentUpdate
             ? "\(trayStatus.status.tooltip) - agent reply ready"
             : trayStatus.status.tooltip

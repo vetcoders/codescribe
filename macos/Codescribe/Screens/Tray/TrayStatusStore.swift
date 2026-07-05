@@ -42,6 +42,9 @@ final class TrayStatusStore: ObservableObject {
     }
 
     var color: Color {
+        if status.assistive {
+            return CSColor.assistive
+        }
         switch status.tone {
         case .neutral:
             return CSColor.oliveLight
@@ -53,6 +56,17 @@ final class TrayStatusStore: ObservableObject {
             return CSColor.terracotta
         case .critical:
             return CSColor.terracottaDeep
+        }
+    }
+
+    var menuBarTint: Color? {
+        switch status.kind {
+        case .listening, .processing:
+            return color
+        case .error, .thermal, .hotkeyConflict:
+            return color
+        case .starting, .idle, .success:
+            return nil
         }
     }
 
@@ -109,11 +123,13 @@ final class TrayStatusStore: ObservableObject {
     static func preview(
         kind: CsTrayStatusKind = .idle,
         tone: CsTrayStatusTone = .neutral,
+        assistive: Bool = false,
         label: String = "Status: Idle"
     ) -> TrayStatusStore {
         TrayStatusStore(status: CsTrayStatusPayload(
             kind: kind,
             tone: tone,
+            assistive: assistive,
             tooltip: "Codescribe - \(label.replacingOccurrences(of: "Status: ", with: ""))",
             menuLabel: label,
             generation: 0

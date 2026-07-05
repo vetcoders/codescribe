@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use tracing::trace;
 
-type TrayStatusSink = Arc<dyn Fn(TrayStatus) + Send + Sync + 'static>;
+type TrayStatusSink = Arc<dyn Fn(TrayStatusSnapshot) + Send + Sync + 'static>;
 
 /// Status of the Codescribe system, formerly reflected in the AppKit tray icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +67,51 @@ impl TrayStatus {
     }
 }
 
-fn current_status_store() -> &'static RwLock<TrayStatus> {
-    static CURRENT_STATUS: OnceLock<RwLock<TrayStatus>> = OnceLock::new();
-    CURRENT_STATUS.get_or_init(|| RwLock::new(TrayStatus::Idle))
+/// Tray status plus session lane. `assistive` is retained even while the visible
+/// status is idle/starting so the next Listening/Thinking beat can tint correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrayStatusSnapshot {
+    pub status: TrayStatus,
+    pub assistive: bool,
+}
+
+impl TrayStatusSnapshot {
+    pub fn new(status: TrayStatus, assistive: bool) -> Self {
+        Self { status, assistive }
+    }
+
+    pub fn is_assistive_visible(&self) -> bool {
+        self.assistive && matches!(self.status, TrayStatus::Listening | TrayStatus::Thinking)
+    }
+
+    pub fn tooltip(&self) -> String {
+        if self.is_assistive_visible() {
+            match self.status {
+                TrayStatus::Listening => "Codescribe - Agent listening...".to_string(),
+                TrayStatus::Thinking => "Codescribe - Agent processing...".to_string(),
+                _ => self.status.tooltip(),
+            }
+        } else {
+            self.status.tooltip()
+        }
+    }
+
+    pub fn menu_label(&self) -> &'static str {
+        if self.is_assistive_visible() {
+            match self.status {
+                TrayStatus::Listening => "Status: Agent listening...",
+                TrayStatus::Thinking => "Status: Agent processing...",
+                _ => self.status.menu_label(),
+            }
+        } else {
+            self.status.menu_label()
+        }
+    }
+}
+
+fn current_status_store() -> &'static RwLock<TrayStatusSnapshot> {
+    static CURRENT_STATUS: OnceLock<RwLock<TrayStatusSnapshot>> = OnceLock::new();
+    CURRENT_STATUS.get_or_init(|| RwLock::new(TrayStatusSnapshot::new(TrayStatus::Idle, false)))
 }
 
 fn tray_status_sink_store() -> &'static RwLock<Option<TrayStatusSink>> {
@@ -90,9 +132,34 @@ pub fn set_tray_status_sink(sink: Option<TrayStatusSink>) {
 
 /// Latest core-side tray status, used to seed new Swift listeners.
 pub fn current_tray_status() -> TrayStatus {
+    current_status_store()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .status
+}
+
+/// Latest core-side tray status snapshot, including the active assistive lane.
+pub fn current_tray_status_snapshot() -> TrayStatusSnapshot {
     *current_status_store()
         .read()
         .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Update only the active assistive lane and notify Swift if the payload changed.
+pub fn set_tray_assistive_session(assistive: bool) {
+    let snapshot = {
+        let mut current = current_status_store()
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        let next = TrayStatusSnapshot::new(current.status, assistive);
+        if *current == next {
+            return;
+        }
+        *current = next;
+        next
+    };
+
+    notify_tray_status(snapshot);
 }
 
 /// Update the menu-bar status truth and notify the Swift bridge when registered.
@@ -101,13 +168,19 @@ pub fn current_tray_status() -> TrayStatus {
 /// longer a stub: hotkeys, thermal throttling, and recording lifecycle changes
 /// flow through the registered bridge sink.
 pub fn update_tray_status(status: TrayStatus) {
-    {
+    let snapshot = {
         let mut current = current_status_store()
             .write()
             .unwrap_or_else(|error| error.into_inner());
-        *current = status;
-    }
+        let next = TrayStatusSnapshot::new(status, current.assistive);
+        *current = next;
+        next
+    };
 
+    notify_tray_status(snapshot);
+}
+
+fn notify_tray_status(snapshot: TrayStatusSnapshot) {
     let sink = tray_status_sink_store()
         .read()
         .unwrap_or_else(|error| error.into_inner())
@@ -115,8 +188,12 @@ pub fn update_tray_status(status: TrayStatus) {
         .map(Arc::clone);
 
     if let Some(sink) = sink {
-        sink(status);
+        sink(snapshot);
     } else {
-        trace!(status = ?status, "tray status updated before Swift bridge listener registration");
+        trace!(
+            status = ?snapshot.status,
+            assistive = snapshot.assistive,
+            "tray status updated before Swift bridge listener registration"
+        );
     }
 }
