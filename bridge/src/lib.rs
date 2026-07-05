@@ -27,10 +27,15 @@ mod mcp_admin;
 mod notes;
 mod recording;
 mod threads;
+mod tray_status;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
 pub use agent_delivery::CsAgentDeliveryListener;
 pub use hotkeys::CodescribeHotkeys;
+pub use tray_status::{
+    CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,
+    CsTrayStatusTone,
+};
 
 /// Error surfaced across the FFI boundary. One enum for every slice:
 /// `Agent` (chat/provider), `Config` (settings/keychain/prompt I/O),

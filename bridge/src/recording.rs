@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::{Duration, Instant};
 
+use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe_core::audio::load_audio_file;
 use codescribe_core::audio::streaming_recorder::StreamingRecorder;
 use codescribe_core::pipeline::contracts::{
@@ -332,6 +333,7 @@ impl EventSink for CsEventSink {
                 .on_session_finalised(session_id.clone(), layer_summary.into()),
             // Recoverable engine warning — surface as a non-fatal error string.
             EngineEvent::Warning { code, message } => {
+                tray_status::update_tray_status(TrayStatus::Error);
                 self.listener.on_error(format!("{code}: {message}"))
             }
             // Engine-internal bookkeeping (dropped content, session stats) has no
@@ -468,6 +470,7 @@ impl CodescribeDictation {
             started_at: Instant::now(),
             language_hint: language_code,
         });
+        tray_status::update_tray_status(TrayStatus::Listening);
         listener.on_recording_started();
         Ok(())
     }
@@ -505,11 +508,15 @@ impl CodescribeDictation {
         let deadline = tokio::time::Instant::now() + budget;
         let transcript = Arc::clone(&session.transcript);
         let language_hint = session.language_hint.clone();
+        self.notify_recording_finalising();
 
         // Phase 1: drain the streaming session and recover the saved WAV path.
         let audio_path = match tokio::time::timeout_at(deadline, session.recorder.stop()).await {
             Ok(Ok((_streaming_buf, audio_path))) => audio_path,
-            Ok(Err(e)) => return Err(CsError::Recording { msg: e.to_string() }),
+            Ok(Err(e)) => {
+                tray_status::update_tray_status(TrayStatus::Error);
+                return Err(CsError::Recording { msg: e.to_string() });
+            }
             Err(_elapsed) => {
                 // Drain overran the budget — no WAV to adjudicate; return the
                 // streaming finals accumulated so far.
@@ -554,10 +561,21 @@ impl CodescribeDictation {
 
     /// Fire the foreign `on_recording_stopped` callback if a listener is set.
     fn notify_recording_stopped(&self) {
+        tray_status::update_tray_status(TrayStatus::Idle);
         if let Ok(guard) = self.listener.read()
             && let Some(listener) = guard.as_ref()
         {
             listener.on_recording_stopped();
+        }
+    }
+
+    /// Fire the foreign `on_recording_finalising` callback and publish processing.
+    fn notify_recording_finalising(&self) {
+        tray_status::update_tray_status(TrayStatus::Thinking);
+        if let Ok(guard) = self.listener.read()
+            && let Some(listener) = guard.as_ref()
+        {
+            listener.on_recording_finalising();
         }
     }
 

@@ -11,6 +11,7 @@ use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingCon
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
+use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
@@ -123,6 +124,7 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 // "preparing" overlay, so the post-dispatch compensator must not
                 // also fire a terminal stop for it.
                 PREPARING_PENDING.store(false, Ordering::Release);
+                tray_status::update_tray_status(TrayStatus::Listening);
                 listener.on_recording_started();
             }
             "busy" => {
@@ -133,10 +135,12 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 // live-capture UI. Does not touch PREPARING_PENDING — a real Rec
                 // state (rec_hold/rec_toggle) always precedes Busy and already
                 // cleared it.
+                tray_status::update_tray_status(TrayStatus::Thinking);
                 listener.on_recording_finalising();
             }
             "idle" => {
                 PREPARING_PENDING.store(false, Ordering::Release);
+                tray_status::update_tray_status(TrayStatus::Idle);
                 listener.on_recording_stopped();
             }
             _ => {}
@@ -184,6 +188,7 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 layer_summary,
             } => listener.on_session_finalised(session_id, CsLayerSummary::from(&layer_summary)),
             EngineEventWire::Warning { code, message } => {
+                tray_status::update_tray_status(TrayStatus::Error);
                 listener.on_error(format!("{code}: {message}"));
             }
             EngineEventWire::Drop { .. } | EngineEventWire::Stats { .. } => {}
@@ -236,6 +241,7 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
         // Arm the compensator BEFORE the direct call so the terminal guarantee
         // holds even if the dispatch that follows never transitions state.
         PREPARING_PENDING.store(true, Ordering::Release);
+        tray_status::update_tray_status(TrayStatus::Starting);
         listener.on_recording_preparing();
     }
 }
@@ -255,10 +261,11 @@ async fn compensate_orphaned_preparing(controller: &Arc<RecordingController>) {
         // and, later, →stopped. Nothing to compensate here.
         return;
     }
-    if PREPARING_PENDING.swap(false, Ordering::AcqRel)
-        && let Some(listener) = current_listener()
-    {
-        listener.on_recording_stopped();
+    if PREPARING_PENDING.swap(false, Ordering::AcqRel) {
+        tray_status::update_tray_status(TrayStatus::Idle);
+        if let Some(listener) = current_listener() {
+            listener.on_recording_stopped();
+        }
     }
 }
 
@@ -327,6 +334,7 @@ impl CodescribeHotkeys {
                     let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
                     compensate_orphaned_preparing(&controller).await;
                     if let Err(error) = dispatch {
+                        tray_status::update_tray_status(TrayStatus::Error);
                         eprintln!("Hotkey event error: {error}");
                     }
                 });
@@ -533,9 +541,7 @@ async fn dispatch_hotkey_event(
                 reason.message()
             );
             eprintln!("Hotkey double-tap blocked: {body}");
-            codescribe::os::tray_status::update_tray_status(
-                codescribe::os::tray_status::TrayStatus::HotkeyConflict,
-            );
+            tray_status::update_tray_status(TrayStatus::HotkeyConflict);
             codescribe::os::notifications::notify("Codescribe hotkey conflict", &body);
         }
     }
