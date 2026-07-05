@@ -208,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn listener_receives_changes_and_coalesces_duplicates() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         reset_for_test();
