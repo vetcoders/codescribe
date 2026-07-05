@@ -671,9 +671,9 @@ final class OverlayState: ObservableObject {
     /// Append a committed segment, keyed by `utteranceId`. Re-finals for an id we
     /// already hold replace that slot in place (no duplicate, no drop); new ids
     /// append in arrival order = id order, the bridge's FIFO ordering.
-    /// Kontrakt: tekst przychodzi już przycięty z Rusta (jedyny właściciel ofsetów);
-    /// Swift przechowuje go bajt-w-bajt, bo ofsety ReplaceRange/InsertAnnotation
-    /// liczone są u emitenta nad tym samym stringiem.
+    /// Contract: Rust already sends trimmed text and is the sole owner of offsets;
+    /// Swift stores it byte-for-byte because ReplaceRange/InsertAnnotation offsets
+    /// are computed by the emitter against this same string.
     private func upsertFinalSegment(utteranceId: UInt64, text: String) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         if let index = committedSegments.firstIndex(where: { $0.utteranceId == utteranceId }) {

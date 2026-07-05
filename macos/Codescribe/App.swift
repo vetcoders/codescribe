@@ -18,7 +18,7 @@ private let notesLog = Logger(
 )
 
 @main
-struct CodescribeRedesignApp: App {
+struct CodescribeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
