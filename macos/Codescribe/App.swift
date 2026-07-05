@@ -414,7 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if !window.isVisible {
             hasUnreadAgentUpdate = true
             applyStatusItemStatus()
-            window.orderFront(nil)
+            window.orderFrontRegardless()
         }
     }
 
