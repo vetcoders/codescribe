@@ -11,8 +11,8 @@
 use std::time::Duration;
 
 use codescribe_core::mcp::{
-    McpServerSpec, McpServerSummary, add_server, list_servers, remove_server, test_server_blocking,
-    update_server,
+    McpServerSpec, McpServerSummary, add_server, list_servers, probe_server_blocking,
+    remove_server, update_server,
 };
 
 use crate::CsError;
@@ -65,13 +65,18 @@ impl From<&CsMcpServerInput> for McpServerSpec {
     }
 }
 
-/// Result of testing one server: whether the handshake succeeded, the live tool
-/// count, and (on failure) a concrete reason. Never throws — a failed test is a
-/// normal, displayable outcome, not an FFI error.
+/// Result of testing one server: whether the handshake succeeded, the identity
+/// it advertised in the `initialize` handshake (server name / version / protocol
+/// — empty when the server omits them), the live tool count, and (on failure) a
+/// concrete reason. Never throws — a failed test is a normal, displayable
+/// outcome, not an FFI error.
 #[derive(uniffi::Record)]
 pub struct CsMcpTestResult {
     pub ok: bool,
     pub tool_count: u32,
+    pub server_name: String,
+    pub server_version: String,
+    pub protocol_version: String,
     pub error: String,
 }
 
@@ -109,14 +114,18 @@ impl CodescribeMcpAdmin {
         remove_server(&name).map_err(config_err)
     }
 
-    /// Spawn the named server and report its live tool count. Bounded by a 10s
-    /// timeout. A failed handshake is returned as `ok == false` with a reason,
-    /// never as a thrown error.
+    /// Spawn the named server, run the `initialize` + `tools/list` handshake, and
+    /// report its advertised identity + live tool count. Bounded by a 10s timeout.
+    /// A failed handshake is returned as `ok == false` with a reason, never as a
+    /// thrown error.
     pub fn test_server(&self, name: String) -> CsMcpTestResult {
-        match test_server_blocking(&name, TEST_TIMEOUT) {
-            Ok(count) => CsMcpTestResult {
+        match probe_server_blocking(&name, TEST_TIMEOUT) {
+            Ok(summary) => CsMcpTestResult {
                 ok: true,
-                tool_count: count as u32,
+                tool_count: summary.tool_count as u32,
+                server_name: summary.server_name.unwrap_or_default(),
+                server_version: summary.server_version.unwrap_or_default(),
+                protocol_version: summary.protocol_version.unwrap_or_default(),
                 error: String::new(),
             },
             Err(error) => CsMcpTestResult::failure(error.root_cause().to_string()),
@@ -129,6 +138,9 @@ impl CsMcpTestResult {
         Self {
             ok: false,
             tool_count: 0,
+            server_name: String::new(),
+            server_version: String::new(),
+            protocol_version: String::new(),
             error,
         }
     }

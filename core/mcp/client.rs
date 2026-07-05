@@ -87,6 +87,46 @@ pub struct McpTool {
     pub input_schema: Value,
 }
 
+/// Server identity advertised in the `initialize` handshake result. All fields
+/// are optional: a server may omit `serverInfo` or `protocolVersion`, and the
+/// probe still succeeds on the strength of a valid `tools/list`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct McpHandshake {
+    #[serde(rename = "protocolVersion", default)]
+    pub protocol_version: Option<String>,
+    #[serde(rename = "serverInfo", default)]
+    pub server_info: Option<McpServerInfo>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct McpServerInfo {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+impl McpHandshake {
+    /// Server-advertised name, if any (e.g. `prview.mcp.v1`).
+    pub fn server_name(&self) -> Option<String> {
+        self.server_info.as_ref().and_then(|info| info.name.clone())
+    }
+
+    /// Server-advertised version, if any (e.g. `0.4.0`).
+    pub fn server_version(&self) -> Option<String> {
+        self.server_info
+            .as_ref()
+            .and_then(|info| info.version.clone())
+    }
+}
+
+/// Full result of a health probe: the handshake identity plus the live tools.
+#[derive(Debug, Clone, Default)]
+pub struct McpProbe {
+    pub handshake: McpHandshake,
+    pub tools: Vec<McpTool>,
+}
+
 pub fn default_mcp_config_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable is not set")?;
     Ok(PathBuf::from(home).join(".codescribe").join("mcp.json"))
@@ -110,6 +150,15 @@ impl McpClient {
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
+        Ok(self.probe().await?.tools)
+    }
+
+    /// Spawn + `initialize` + `tools/list` in one exchange, returning BOTH the
+    /// server's advertised identity (name / version / protocol from the
+    /// `initialize` handshake) and its live tool list. `list_tools` is a thin
+    /// wrapper that keeps only the tools; the Settings health probe uses the full
+    /// result to surface real handshake data next to a server.
+    pub async fn probe(&self) -> Result<McpProbe> {
         let mut connection = match StdioConnection::spawn(&self.config, self.timeout).await {
             Ok(connection) => connection,
             Err(error) => {
@@ -121,9 +170,10 @@ impl McpClient {
             }
         };
         let result = async {
-            connection.initialize().await?;
+            let handshake = connection.initialize().await?;
             let response = connection.request("tools/list", json!({})).await?;
-            parse_tools_list(response)
+            let tools = parse_tools_list(response)?;
+            Ok(McpProbe { handshake, tools })
         }
         .await;
         if let Err(error) = &result {
@@ -132,7 +182,7 @@ impl McpClient {
         }
         let shutdown = connection.shutdown().await;
         if let Err(error) = shutdown {
-            debug!("MCP shutdown after tools/list failed: {error}");
+            debug!("MCP shutdown after probe failed: {error}");
         }
         result
     }
@@ -263,21 +313,25 @@ impl StdioConnection {
         truncate_stderr(&String::from_utf8_lossy(&buffer))
     }
 
-    async fn initialize(&mut self) -> Result<()> {
-        self.request(
-            "initialize",
-            json!({
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "codescribe",
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-            }),
-        )
-        .await?;
+    async fn initialize(&mut self) -> Result<McpHandshake> {
+        let result = self
+            .request(
+                "initialize",
+                json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "codescribe",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                }),
+            )
+            .await?;
         self.notification("notifications/initialized", json!({}))
-            .await
+            .await?;
+        // A well-formed server returns `serverInfo` + `protocolVersion`; a slightly
+        // off shape must not fail the whole probe, so parse leniently to defaults.
+        Ok(serde_json::from_value(result).unwrap_or_default())
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -562,6 +616,24 @@ mod tests {
                 },
                 "required": ["message"]
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_probe_captures_handshake_identity() {
+        let client = McpClient::new(mock_server(""));
+
+        let probe = client
+            .probe()
+            .await
+            .expect("mock MCP server should complete the handshake");
+
+        assert_eq!(probe.tools.len(), 1);
+        assert_eq!(probe.handshake.server_name().as_deref(), Some("mock-mcp"));
+        assert_eq!(probe.handshake.server_version().as_deref(), Some("0.1.0"));
+        assert_eq!(
+            probe.handshake.protocol_version.as_deref(),
+            Some("2025-06-18")
         );
     }
 

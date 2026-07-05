@@ -114,6 +114,13 @@ private struct MCPServerRow: View {
             } else if let result {
                 if result.ok {
                     resultLine(text: "ok — \(result.toolCount) tool(s)", color: CSColor.oliveLight)
+                    if let identity = Self.handshakeIdentity(result) {
+                        Text(identity)
+                            .font(CSFont.mono(10, .medium))
+                            .foregroundStyle(CSColor.textFaint)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 } else {
                     resultLine(text: "failed: \(result.error)", color: CSColor.terracottaLight)
                 }
@@ -129,6 +136,16 @@ private struct MCPServerRow: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .strokeBorder(accent.opacity(0.16), lineWidth: 1)
         )
+    }
+
+    /// Compact identity advertised by the server in the `initialize` handshake:
+    /// name · version · protocol. Nil when the server exposed none of them.
+    static func handshakeIdentity(_ result: CsMcpTestResult) -> String? {
+        var parts: [String] = []
+        if !result.serverName.isEmpty { parts.append(result.serverName) }
+        if !result.serverVersion.isEmpty { parts.append("v\(result.serverVersion)") }
+        if !result.protocolVersion.isEmpty { parts.append("proto \(result.protocolVersion)") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func resultLine(text: String, color: Color) -> some View {

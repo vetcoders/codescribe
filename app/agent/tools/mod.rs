@@ -1,4 +1,5 @@
 pub mod clipboard;
+pub mod doctrine;
 pub mod filesystem;
 pub mod github;
 pub mod mcp;

@@ -17,7 +17,7 @@ pub fn register(registry: &mut ToolRegistry) {
 fn fetch_github_file_definition() -> ToolDefinition {
     ToolDefinition {
         name: "fetch_github_file".to_string(),
-        description: "Fetch the raw content of a file from a GitHub repository. Supports public repos and private repos with a configured GITHUB_TOKEN. Input can be a full GitHub URL or owner/repo@ref:path format. Returns the file content as text plus metadata.".to_string(),
+        description: "Fetch the raw content of a file from a GitHub repository. Supports public repos and private repos with a configured GITHUB_TOKEN. Input can be a full GitHub URL or owner/repo@ref:path format. Returns the file content as text plus metadata. If a fetch fails once or twice (e.g. missing token or network), do not retry-loop: fall back to the local checkout via `list_projects` + git as the source of truth, and treat the connector failure as a separate problem from repository state.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
