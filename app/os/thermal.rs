@@ -76,6 +76,7 @@ unsafe fn apply_current_state(source: &str) {
         match level {
             ThermalLevel::Nominal | ThermalLevel::Fair => {
                 tracing::info!(?level, source, "macOS thermal pressure changed");
+                clear_thermal_tray_status_if_current();
             }
             ThermalLevel::Serious => {
                 tracing::warn!(
@@ -83,6 +84,7 @@ unsafe fn apply_current_state(source: &str) {
                     source,
                     "macOS thermal pressure serious; STT refine lane paused"
                 );
+                clear_thermal_tray_status_if_current();
             }
             ThermalLevel::Critical => {
                 tracing::error!(
@@ -95,6 +97,15 @@ unsafe fn apply_current_state(source: &str) {
                 );
             }
         }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn clear_thermal_tray_status_if_current() {
+    use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
+
+    if current_tray_status() == TrayStatus::Thermal {
+        update_tray_status(TrayStatus::Idle);
     }
 }
 
@@ -124,6 +135,7 @@ unsafe fn ns_string(value: &str) -> *mut Object {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
 
     #[test]
     fn install_thermal_probe_publishes_a_level_and_is_idempotent() {
@@ -141,5 +153,19 @@ mod tests {
             first, second,
             "thermal level must be stable across idempotent probe installs"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn thermal_recovery_clears_only_thermal_tray_status() {
+        update_tray_status(TrayStatus::Thermal);
+        clear_thermal_tray_status_if_current();
+        assert_eq!(current_tray_status(), TrayStatus::Idle);
+
+        update_tray_status(TrayStatus::Listening);
+        clear_thermal_tray_status_if_current();
+        assert_eq!(current_tray_status(), TrayStatus::Listening);
+
+        update_tray_status(TrayStatus::Idle);
     }
 }
