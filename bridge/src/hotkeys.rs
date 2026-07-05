@@ -541,12 +541,35 @@ async fn dispatch_hotkey_event(
                 reason.message()
             );
             eprintln!("Hotkey double-tap blocked: {body}");
-            tray_status::update_tray_status(TrayStatus::HotkeyConflict);
-            codescribe::os::notifications::notify("Codescribe hotkey conflict", &body);
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use codescribe::os::hotkeys::{DoubleTapBlockReason, DoubleTapGesture};
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn blocked_double_tap_does_not_publish_tray_conflict() {
+        tray_status::update_tray_status(TrayStatus::Idle);
+
+        let controller = Arc::new(RecordingController::new_without_keychain());
+        dispatch_hotkey_event(
+            HotkeyEvent::DoubleTapBlocked {
+                gesture: DoubleTapGesture::LeftOption,
+                reason: DoubleTapBlockReason::ModifierComboActive,
+            },
+            controller,
+        )
+        .await
+        .expect("blocked double-tap dispatch should not fail");
+
+        assert_eq!(tray_status::current_tray_status(), TrayStatus::Idle);
+    }
 }
 
 // ===========================================================================
