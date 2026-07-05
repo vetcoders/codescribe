@@ -105,6 +105,11 @@ final class TrayViewModel: ObservableObject {
 
     /// Flip the dictation session, then reconcile against the engine's truth.
     func toggleDictation() {
+        // Ignore re-entry while a start is still in flight: a second tap would
+        // read the optimistic `isRecording = true` as `wasRecording` and fire a
+        // stop before the start's Task resolves, ordering stop before start.
+        // `isStartingDictation` is cleared unconditionally once that Task finishes.
+        guard !isStartingDictation else { return }
         guard let engine else { isRecording.toggle(); return }
         let wasRecording = isRecording
         let shouldStartAssistive = startInAssistive
