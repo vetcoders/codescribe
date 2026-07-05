@@ -906,7 +906,7 @@ enum MDBlock: Equatable {
         guard ticks >= 3 else { return nil }
         let info = s.dropFirst(ticks)
         guard !info.contains("`") else { return nil }
-        let language = info.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        let language = info.split(whereSeparator: { $0.isWhitespace })
             .first
             .map(String.init)
         return (ticks, language)
