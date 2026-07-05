@@ -85,9 +85,16 @@ FRAMEWORKS="$APP/Contents/Frameworks"
 MACOS_DIR="$APP/Contents/MacOS"
 mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
 cp "$DYLIB" "$FRAMEWORKS/"
-swiftc -O -o "$STT_BRIDGE_BIN" "$STT_BRIDGE_SRC"
-cp "$STT_BRIDGE_BIN" "$MACOS_DIR/"
-chmod 755 "$MACOS_DIR/codescribe-stt-bridge"
+STT_BRIDGE_BUNDLED=0
+rm -f "$STT_BRIDGE_BIN" "$MACOS_DIR/codescribe-stt-bridge"
+if swiftc -O -o "$STT_BRIDGE_BIN" "$STT_BRIDGE_SRC"; then
+  cp "$STT_BRIDGE_BIN" "$MACOS_DIR/"
+  chmod 755 "$MACOS_DIR/codescribe-stt-bridge"
+  STT_BRIDGE_BUNDLED=1
+else
+  echo "warning: Apple STT bridge helper skipped; this SDK may not include SpeechAnalyzer/SpeechTranscriber." >&2
+  echo "warning: Codescribe.app will build without the bundled helper and use runtime STT fallback resolution." >&2
+fi
 
 # Ad-hoc sign the finished bundle with a STABLE identifier so macOS TCC
 # (Accessibility / Input Monitoring) keeps its grant across rebuilds instead of
@@ -113,5 +120,9 @@ fi
 
 echo "==> App built: $APP"
 echo "    (portability: dylib is @rpath-relative and embedded; project.yml adds"
-echo "     @executable_path/../Frameworks to the app runpath; Apple STT bridge"
-echo "     is bundled beside the app executable in Contents/MacOS.)"
+echo "     @executable_path/../Frameworks to the app runpath.)"
+if [ "$STT_BRIDGE_BUNDLED" = "1" ]; then
+  echo "    Apple STT bridge is bundled beside the app executable in Contents/MacOS."
+else
+  echo "    Apple STT bridge is not bundled; runtime resolution will use env/PATH/fallback."
+fi
