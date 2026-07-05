@@ -290,6 +290,7 @@ private struct TrayNoteStatusRow: View {
 
 // MARK: - Previews (standalone, mock-seeded)
 
+#if DEBUG
 #Preview("Tray · Idle") {
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
     TrayMenuView(viewModel: vm, trayStatus: .preview())
@@ -314,3 +315,4 @@ private struct TrayNoteStatusRow: View {
         ))
         .onAppear { FontLoader.register() }
 }
+#endif
