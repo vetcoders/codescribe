@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use codescribe::os::tray_status::{self, TrayStatus};
+use codescribe::os::tray_status::{self, TrayStatus, TrayStatusSnapshot};
 use tracing::trace;
 
 /// Bridge-safe tray status kind.
@@ -39,6 +39,7 @@ pub enum CsTrayStatusTone {
 pub struct CsTrayStatusPayload {
     pub kind: CsTrayStatusKind,
     pub tone: CsTrayStatusTone,
+    pub assistive: bool,
     pub tooltip: String,
     pub menu_label: String,
     pub generation: u64,
@@ -89,8 +90,8 @@ fn shared_listener() -> &'static SharedListener {
     LISTENER.get_or_init(|| RwLock::new(None))
 }
 
-fn last_forwarded_status() -> &'static Mutex<Option<TrayStatus>> {
-    static LAST_FORWARDED: OnceLock<Mutex<Option<TrayStatus>>> = OnceLock::new();
+fn last_forwarded_status() -> &'static Mutex<Option<TrayStatusSnapshot>> {
+    static LAST_FORWARDED: OnceLock<Mutex<Option<TrayStatusSnapshot>>> = OnceLock::new();
     LAST_FORWARDED.get_or_init(|| Mutex::new(None))
 }
 
@@ -105,12 +106,13 @@ fn install_sink() {
 
 fn current_payload() -> CsTrayStatusPayload {
     payload_from_status(
-        tray_status::current_tray_status(),
+        tray_status::current_tray_status_snapshot(),
         generation_counter().load(Ordering::SeqCst),
     )
 }
 
-fn payload_from_status(status: TrayStatus, generation: u64) -> CsTrayStatusPayload {
+fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayStatusPayload {
+    let status = snapshot.status;
     let (kind, tone) = match status {
         TrayStatus::Starting => (CsTrayStatusKind::Starting, CsTrayStatusTone::Neutral),
         TrayStatus::Idle => (CsTrayStatusKind::Idle, CsTrayStatusTone::Neutral),
@@ -124,31 +126,36 @@ fn payload_from_status(status: TrayStatus, generation: u64) -> CsTrayStatusPaylo
     CsTrayStatusPayload {
         kind,
         tone,
-        tooltip: status.tooltip(),
-        menu_label: status.menu_label().to_string(),
+        assistive: snapshot.is_assistive_visible(),
+        tooltip: snapshot.tooltip(),
+        menu_label: snapshot.menu_label().to_string(),
         generation,
     }
 }
 
-fn publish_tray_status(status: TrayStatus) {
+fn publish_tray_status(snapshot: TrayStatusSnapshot) {
     let changed = {
         let mut last = last_forwarded_status()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if *last == Some(status) {
+        if *last == Some(snapshot) {
             false
         } else {
-            *last = Some(status);
+            *last = Some(snapshot);
             true
         }
     };
     if !changed {
-        trace!(status = ?status, "coalesced duplicate tray status");
+        trace!(
+            status = ?snapshot.status,
+            assistive = snapshot.assistive,
+            "coalesced duplicate tray status"
+        );
         return;
     }
 
     let generation = generation_counter().fetch_add(1, Ordering::SeqCst) + 1;
-    let payload = payload_from_status(status, generation);
+    let payload = payload_from_status(snapshot, generation);
     let listener_store = shared_listener();
     let listener = listener_store
         .read()
@@ -159,7 +166,11 @@ fn publish_tray_status(status: TrayStatus) {
     if let Some(listener) = listener {
         listener.on_tray_status(payload);
     } else {
-        trace!(status = ?status, "tray status changed without Swift listener");
+        trace!(
+            status = ?snapshot.status,
+            assistive = snapshot.assistive,
+            "tray status changed without Swift listener"
+        );
     }
 }
 
@@ -185,6 +196,7 @@ mod tests {
 
     fn reset_for_test() {
         tray_status::set_tray_status_sink(None);
+        tray_status::set_tray_assistive_session(false);
         tray_status::update_tray_status(TrayStatus::Idle);
         let listener_store = shared_listener();
         *listener_store
@@ -198,13 +210,26 @@ mod tests {
 
     #[test]
     fn maps_core_status_to_bridge_payload() {
-        let payload = payload_from_status(TrayStatus::Thinking, 42);
+        let payload = payload_from_status(TrayStatusSnapshot::new(TrayStatus::Thinking, false), 42);
 
         assert_eq!(payload.kind, CsTrayStatusKind::Processing);
         assert_eq!(payload.tone, CsTrayStatusTone::Active);
+        assert!(!payload.assistive);
         assert_eq!(payload.tooltip, "Codescribe - Processing...");
         assert_eq!(payload.menu_label, "Status: Processing...");
         assert_eq!(payload.generation, 42);
+    }
+
+    #[test]
+    fn maps_assistive_status_to_agent_payload_copy() {
+        let payload = payload_from_status(TrayStatusSnapshot::new(TrayStatus::Listening, true), 43);
+
+        assert_eq!(payload.kind, CsTrayStatusKind::Listening);
+        assert_eq!(payload.tone, CsTrayStatusTone::Active);
+        assert!(payload.assistive);
+        assert_eq!(payload.tooltip, "Codescribe - Agent listening...");
+        assert_eq!(payload.menu_label, "Status: Agent listening...");
+        assert_eq!(payload.generation, 43);
     }
 
     #[test]
@@ -233,6 +258,37 @@ mod tests {
         assert_eq!(calls[0].kind, CsTrayStatusKind::Thermal);
         assert_eq!(calls[0].tone, CsTrayStatusTone::Warning);
         assert_eq!(calls[1].kind, CsTrayStatusKind::HotkeyConflict);
+        assert!(calls[1].generation > calls[0].generation);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn listener_refires_when_only_assistive_lane_changes() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        reset_for_test();
+
+        let tray_status_bridge = CodescribeTrayStatus::new();
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let listener = Arc::new(CapturingTrayStatusListener {
+            calls: Arc::clone(&calls),
+        });
+        tray_status_bridge.set_listener(listener);
+        calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+
+        tray_status::update_tray_status(TrayStatus::Listening);
+        tray_status::update_tray_status(TrayStatus::Listening);
+        tray_status::set_tray_assistive_session(true);
+        tray_status::set_tray_assistive_session(true);
+
+        let calls = calls.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].kind, CsTrayStatusKind::Listening);
+        assert!(!calls[0].assistive);
+        assert_eq!(calls[1].kind, CsTrayStatusKind::Listening);
+        assert!(calls[1].assistive);
         assert!(calls[1].generation > calls[0].generation);
     }
 }

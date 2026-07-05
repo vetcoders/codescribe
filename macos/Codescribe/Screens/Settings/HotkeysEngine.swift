@@ -93,21 +93,21 @@ extension CsModeBinding {
         CsModeBinding(
             mode: .dictation,
             modeLabel: "Dictation",
-            modeDescription: "Fast transcript / auto-paste mode.",
+            modeDescription: "Transcribes your voice and pastes the text.",
             binding: .holdFn,
             bindingLabel: "Hold Fn/Globe"
         ),
         CsModeBinding(
             mode: .formatting,
             modeLabel: "Formatting",
-            modeDescription: "AI formatting pass for dictation text.",
+            modeDescription: "Records dictation, then formats it before pasting.",
             binding: .doubleLeftOption,
             bindingLabel: "Double-tap Left Option"
         ),
         CsModeBinding(
             mode: .assistive,
             modeLabel: "Assistive",
-            modeDescription: "AI assistive conversation mode.",
+            modeDescription: "Sends your voice to the agent instead of pasting.",
             binding: .doubleRightOption,
             bindingLabel: "Double-tap Right Option"
         )

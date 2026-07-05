@@ -35,9 +35,9 @@ impl WorkMode {
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Dictation => "Fast transcript / auto-paste mode.",
-            Self::Formatting => "AI formatting pass for dictation text.",
-            Self::Assistive => "AI assistive conversation mode.",
+            Self::Dictation => "Transcribes your voice and pastes the text.",
+            Self::Formatting => "Records dictation, then formats it before pasting.",
+            Self::Assistive => "Sends your voice to the agent instead of pasting.",
         }
     }
 
@@ -336,6 +336,10 @@ pub struct Config {
     #[serde(default = "default_transcription_overlay_enabled")]
     pub transcription_overlay_enabled: bool,
 
+    /// Whether recording started from UI surfaces uses the assistive lane.
+    #[serde(default)]
+    pub tray_start_assistive: bool,
+
     /// Whether to show hold indicator badge
     #[serde(default = "default_hold_indicator")]
     pub hold_indicator: bool,
@@ -467,6 +471,7 @@ impl Default for Config {
             show_tray_glyph: default_show_tray_glyph(),
             show_dock_icon: default_show_dock_icon(),
             transcription_overlay_enabled: default_transcription_overlay_enabled(),
+            tray_start_assistive: false,
             hold_indicator: default_hold_indicator(),
             hold_badge_size: default_hold_badge_size(),
             hold_badge_offset_x: default_hold_badge_offset_x(),

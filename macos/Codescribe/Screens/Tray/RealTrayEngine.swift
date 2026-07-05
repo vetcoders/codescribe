@@ -32,17 +32,31 @@ final class RealTrayEngine: TrayEngine {
 
     func isRecording() async -> Bool { await hotkeys.isRecording() }
 
-    func startRecording() async throws {
-        try await hotkeys.startRecording()
+    func startRecording(assistive: Bool) async throws {
+        if assistive {
+            try await hotkeys.startAssistiveRecording()
+        } else {
+            try await hotkeys.startRecording()
+        }
     }
 
     func stopRecording() async throws {
         try await hotkeys.stopRecording()
     }
 
-    func currentToggles() -> (showDockIcon: Bool, overlayEnabled: Bool, notesMode: Bool)? {
+    func currentToggles() -> (
+        showDockIcon: Bool,
+        overlayEnabled: Bool,
+        notesMode: Bool,
+        startInAssistive: Bool
+    )? {
         let toggles = config.trayToggles()
-        return (toggles.showDockIcon, toggles.transcriptionOverlayEnabled, toggles.notesModeEnabled)
+        return (
+            toggles.showDockIcon,
+            toggles.transcriptionOverlayEnabled,
+            toggles.notesModeEnabled,
+            toggles.startAssistive
+        )
     }
 
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool) {
@@ -54,6 +68,13 @@ final class RealTrayEngine: TrayEngine {
         // config unchanged rather than half-set. Returns false on failure so the
         // UI can avoid faking success.
         (try? config.setNotesMode(enabled: enabled)) != nil
+    }
+
+    func setStartInAssistive(_ enabled: Bool) -> Bool {
+        (try? config.updateConfig(
+            key: "TRAY_START_ASSISTIVE",
+            value: enabled ? "1" : "0"
+        )) != nil
     }
 
     func latestHistoryPath() -> String? {
