@@ -59,17 +59,6 @@ final class TrayStatusStore: ObservableObject {
         }
     }
 
-    var menuBarTint: Color? {
-        switch status.kind {
-        case .listening, .processing:
-            return color
-        case .error, .thermal, .hotkeyConflict:
-            return color
-        case .starting, .idle, .success:
-            return nil
-        }
-    }
-
     var icon: CSIcon {
         switch status.kind {
         case .starting:
@@ -98,24 +87,28 @@ final class TrayStatusStore: ObservableObject {
         }
     }
 
-    var menuBarSymbolNames: [String] {
+    /// Colored status dot drawn beside the (always-static) menu bar icon.
+    /// `nil` = no dot (idle / starting / success). The glyph never changes;
+    /// only this dot's color signals the mode. Recording / processing /
+    /// assistive hues mirror the caret hold-badge (`app/os/hold_badge.rs`:
+    /// red / orange / purple) so the tray and the cursor speak one language.
+    /// Warning states (error / thermal / hotkey conflict) fall back to a
+    /// system red / yellow dot — the tooltip and menu status row carry the
+    /// specifics, the dot only asks for attention.
+    var menuBarDotColor: Color? {
         switch status.kind {
-        case .starting:
-            return ["ellipsis.circle"]
-        case .idle:
-            return []
+        case .starting, .idle, .success:
+            return nil
         case .listening:
-            return ["waveform"]
+            return status.assistive
+                ? Color(red: 0.6, green: 0.2, blue: 0.9)   // assistive — purple
+                : Color(red: 1.0, green: 0.0, blue: 0.0)   // recording — red
         case .processing:
-            return ["waveform.circle", "waveform"]
-        case .success:
-            return ["checkmark.circle"]
+            return Color(red: 1.0, green: 0.5, blue: 0.0)  // processing — orange
         case .error:
-            return ["exclamationmark.triangle.fill", "exclamationmark.triangle"]
-        case .thermal:
-            return ["thermometer.high", "thermometer.medium"]
-        case .hotkeyConflict:
-            return ["keyboard.badge.exclamationmark", "keyboard"]
+            return .red
+        case .thermal, .hotkeyConflict:
+            return .yellow
         }
     }
 

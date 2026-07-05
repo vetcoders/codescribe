@@ -356,15 +356,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyStatusItemStatus() {
         guard let button = statusItem?.button else { return }
+        // The glyph never changes with status — it is always the brand mark.
+        // Mode is conveyed by a colored dot beside it (recording / processing /
+        // assistive / warning); idle shows no dot.
         button.image = statusItemImage()
-        button.imagePosition = .imageOnly
-        button.title = ""
-        if hasUnreadAgentUpdate {
-            button.contentTintColor = NSColor.systemYellow
-        } else if let tint = trayStatus.menuBarTint {
-            button.contentTintColor = NSColor(tint)
+        button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
+        if let dot = trayStatus.menuBarDotColor {
+            button.imagePosition = .imageLeft
+            button.attributedTitle = NSAttributedString(
+                string: " ●",
+                attributes: [
+                    .foregroundColor: NSColor(dot),
+                    .font: NSFont.systemFont(ofSize: 9)
+                ]
+            )
         } else {
-            button.contentTintColor = nil
+            button.imagePosition = .imageOnly
+            button.title = ""
         }
         button.toolTip = hasUnreadAgentUpdate
             ? "\(trayStatus.status.tooltip) - agent reply ready"
@@ -372,19 +380,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func statusItemImage() -> NSImage? {
-        for symbolName in trayStatus.menuBarSymbolNames {
-            if let image = NSImage(
-                systemSymbolName: symbolName,
-                accessibilityDescription: trayStatus.status.tooltip
-            ) {
-                image.isTemplate = true
-                return image
-            }
-        }
-
         // Brand mark from Assets.xcassets (template image → auto-tints for
-        // light/dark menu bars). If it's ever missing that's a build bug to
-        // surface (empty item), not something to paper over with an old glyph.
+        // light/dark menu bars). Status is signaled by a colored dot beside
+        // this icon, never by swapping the glyph. A missing asset is a build
+        // bug to surface (empty item), not something to paper over.
         let image = NSImage(named: "MenuBarIcon")
         image?.isTemplate = true
         return image
