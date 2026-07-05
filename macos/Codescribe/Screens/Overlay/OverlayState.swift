@@ -542,9 +542,10 @@ final class OverlayState: ObservableObject {
 
     /// `on_no_speech` — the engine adjudicated the session with no usable speech.
     /// Fires BEFORE the terminal `on_recording_stopped`, so we only record the
-    /// user-facing reason here; `finalizeTranscript` reads it when it resolves to
-    /// empty and flips into the dedicated `.noSpeech` outcome. If the reason
-    /// arrives AFTER an already-empty finalize (late), upgrade the FINAL in place.
+    /// user-facing reason here; `finalizeTranscript` treats it as the engine's
+    /// no-usable-speech adjudication (unless an authoritative final arrives) and
+    /// flips into the dedicated `.noSpeech` outcome. If the reason arrives AFTER
+    /// an already-empty finalize (late), upgrade the FINAL in place.
     func applyNoSpeech(reason: String) {
         let message: String
         switch reason {
@@ -599,8 +600,14 @@ final class OverlayState: ObservableObject {
         transcribing = false
         vadActive = false
         audioReady = false
-        commitPreviewIfNeeded()
-        let resolved = usableAuthoritativeFinalText ?? liveText
+        let shouldShowNoSpeechOutcome =
+            pendingNoSpeechMessage != nil && usableAuthoritativeFinalText == nil
+        if shouldShowNoSpeechOutcome {
+            preview = ""
+        } else {
+            commitPreviewIfNeeded()
+        }
+        let resolved = shouldShowNoSpeechOutcome ? "" : (usableAuthoritativeFinalText ?? liveText)
         if resolved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Nothing usable was captured — VAD silence, or all speech rejected by
             // the quality gate. Surface a dedicated no-speech outcome instead of a
