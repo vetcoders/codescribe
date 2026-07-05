@@ -95,9 +95,9 @@ struct ChatMessage: Identifiable {
     var text: String
 
     /// Files attached to a sent user turn (empty otherwise). Rendered as chips in
-    /// the You bubble. In-memory for the current session only — the persisted
-    /// thread does not carry attachment metadata (see RealThreadsEngine), so a
-    /// restored turn comes back with this empty.
+    /// the You bubble. Restored attachment names/types are recovered from the
+    /// Swift-side metadata sidecar because the bridge's persisted message JSON
+    /// carries image blocks but not original file names.
     var attachments: [MessageAttachment] = []
 
     // Tool-activity turn
@@ -118,6 +118,7 @@ struct PendingAttachment: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     var name: String { url.lastPathComponent }
+    var type: String { MessageAttachment.inferredType(name: name, url: url) }
 }
 
 /// An attachment carried by a *sent* chat message, surfaced as a chip in the You
@@ -128,6 +129,26 @@ struct MessageAttachment: Identifiable, Hashable {
     let id = UUID()
     let name: String
     let url: URL?
+    let type: String
+
+    init(name: String, url: URL?, type: String? = nil) {
+        self.name = name
+        self.url = url
+        self.type = type ?? Self.inferredType(name: name, url: url)
+    }
+
+    static func inferredType(name: String, url: URL?) -> String {
+        let ext = (url?.pathExtension.isEmpty == false ? url?.pathExtension : nil) ?? (name as NSString).pathExtension
+        switch ext.lowercased() {
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "bmp": return "image/bmp"
+        case "tif", "tiff": return "image/tiff"
+        default: return ext.isEmpty ? "file" : "file/\(ext.lowercased())"
+        }
+    }
 }
 
 struct ChatThread: Identifiable {
@@ -190,6 +211,7 @@ final class AgentChatStore: ObservableObject {
     @Published var threads: [ChatThread]
     @Published var selectedThreadID: UUID?
     @Published var draft: String = ""
+    @Published private(set) var dictationPreview: String = ""
 
     /// Images staged in the composer for the next message. Cleared when the
     /// message is dispatched.
@@ -220,10 +242,22 @@ final class AgentChatStore: ObservableObject {
     /// when no adapter is wired.
     func setDictationPhase(_ phase: ComposerDictationPhase) { dictationPhase = phase }
 
+    /// Latest live voice-note preview. This is a snapshot buffer from the STT
+    /// listener, not a delta stream, and stays separate from `draft` until stop.
+    func updateDictationPreview(_ text: String) {
+        dictationPreview = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func clearDictationPreview() {
+        guard !dictationPreview.isEmpty else { return }
+        dictationPreview = ""
+    }
+
     /// Surface a recoverable dictation failure with a self-clearing inline message
     /// (auto-returns to `.idle` after a few seconds so the composer doesn't keep a
     /// stale error banner).
     func reportDictationFailure(_ message: String) {
+        clearDictationPreview()
         dictationPhase = .failed(message)
         let token = UUID()
         dictationFailureToken = token
@@ -239,6 +273,7 @@ final class AgentChatStore: ObservableObject {
     func appendDictatedTranscript(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        clearDictationPreview()
         if draft.isEmpty {
             draft = trimmed
         } else {
@@ -382,6 +417,7 @@ final class AgentChatStore: ObservableObject {
     func delete(_ thread: ChatThread) {
         if let backendId = thread.backendId {
             guard threadsProvider?.deleteThread(backendId: backendId) == true else { return }
+            removePersistedAttachmentMetadata(for: backendId)
         }
         // Cancel any in-flight reply for this thread so its post-stream refresh
         // can't re-list (and the caret/finalize can't mutate) a deleted thread.
@@ -403,7 +439,10 @@ final class AgentChatStore: ObservableObject {
               let ti = threads.firstIndex(where: { $0.id == id }),
               let backendId = threads[ti].backendId,
               !threads[ti].messagesLoaded else { return }
-        threads[ti].messages = provider.loadMessages(backendId: backendId)
+        threads[ti].messages = applyingPersistedAttachmentMetadata(
+            to: provider.loadMessages(backendId: backendId),
+            backendId: backendId
+        )
         threads[ti].messagesLoaded = true
     }
 
@@ -454,19 +493,19 @@ final class AgentChatStore: ObservableObject {
             "send: building request attachmentPaths.count=\(attachmentPaths.count, privacy: .public) text.isEmpty=\(text.isEmpty, privacy: .public)"
         )
         guard (!text.isEmpty || !attachmentPaths.isEmpty), let threadID = selectedThreadID else { return }
+        let backendId = ensureBackendId(threadID)
+        let userTurnIndex = currentUserTurnCount(in: threadID)
         draft = ""
         pendingAttachments = []
 
         // Carry the staged attachments onto the You bubble so the sender sees a
         // chip (name + optional thumbnail) for what they attached.
-        let sent = staged.map { MessageAttachment(name: $0.name, url: $0.url) }
+        let sent = staged.map { MessageAttachment(name: $0.name, url: $0.url, type: $0.type) }
+        persistAttachmentMetadata(sent, for: backendId, userTurnIndex: userTurnIndex)
         append(ChatMessage(role: .you, timestamp: now(), text: text, attachments: sent), to: threadID)
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
-
-        let backendId = ensureBackendId(threadID)
-
         let sendTask = Task { @MainActor in
             defer { inFlightSends[threadID] = nil }
             guard let engine else {
@@ -721,6 +760,82 @@ final class AgentChatStore: ObservableObject {
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let mi = threads[ti].messages.firstIndex(where: { $0.id == id }) else { return }
         body(&threads[ti].messages[mi])
+    }
+
+    private func currentUserTurnCount(in threadID: UUID) -> Int {
+        threads.first(where: { $0.id == threadID })?.messages.filter { $0.role == .you }.count ?? 0
+    }
+
+    private struct PersistedAttachmentMetadata: Codable, Hashable {
+        let name: String
+        let type: String
+    }
+
+    private struct PersistedAttachmentTurn: Codable, Hashable {
+        let userTurnIndex: Int
+        let attachments: [PersistedAttachmentMetadata]
+    }
+
+    private static let attachmentMetadataDefaultsKey = "AgentChatStore.attachmentMetadata.v1"
+
+    private func persistAttachmentMetadata(
+        _ attachments: [MessageAttachment],
+        for backendId: String,
+        userTurnIndex: Int
+    ) {
+        guard !attachments.isEmpty else { return }
+        var sidecar = readAttachmentMetadataSidecar()
+        var turns = sidecar[backendId, default: []]
+        turns.removeAll { $0.userTurnIndex == userTurnIndex }
+        turns.append(PersistedAttachmentTurn(
+            userTurnIndex: userTurnIndex,
+            attachments: attachments.map { PersistedAttachmentMetadata(name: $0.name, type: $0.type) }
+        ))
+        sidecar[backendId] = turns.sorted { $0.userTurnIndex < $1.userTurnIndex }
+        writeAttachmentMetadataSidecar(sidecar)
+    }
+
+    private func applyingPersistedAttachmentMetadata(
+        to messages: [ChatMessage],
+        backendId: String
+    ) -> [ChatMessage] {
+        let sidecar = readAttachmentMetadataSidecar()
+        let turns = sidecar[backendId] ?? []
+        guard !turns.isEmpty else { return messages }
+        var byUserTurn: [Int: [PersistedAttachmentMetadata]] = [:]
+        for turn in turns {
+            byUserTurn[turn.userTurnIndex] = turn.attachments
+        }
+        var userTurnIndex = 0
+        var restored = messages
+        for index in restored.indices where restored[index].role == .you {
+            if let metadata = byUserTurn[userTurnIndex], !metadata.isEmpty {
+                restored[index].attachments = metadata.map {
+                    MessageAttachment(name: $0.name, url: nil, type: $0.type)
+                }
+            }
+            userTurnIndex += 1
+        }
+        return restored
+    }
+
+    private func removePersistedAttachmentMetadata(for backendId: String) {
+        var sidecar = readAttachmentMetadataSidecar()
+        guard sidecar.removeValue(forKey: backendId) != nil else { return }
+        writeAttachmentMetadataSidecar(sidecar)
+    }
+
+    private func readAttachmentMetadataSidecar() -> [String: [PersistedAttachmentTurn]] {
+        guard let data = UserDefaults.standard.data(forKey: Self.attachmentMetadataDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String: [PersistedAttachmentTurn]].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func writeAttachmentMetadataSidecar(_ sidecar: [String: [PersistedAttachmentTurn]]) {
+        guard let data = try? JSONEncoder().encode(sidecar) else { return }
+        UserDefaults.standard.set(data, forKey: Self.attachmentMetadataDefaultsKey)
     }
 
     /// Surface a completed tool call as a `.tool` activity turn placed immediately
