@@ -13,8 +13,8 @@
 #   3. uniffi-bindgen generate          -> Swift bindings into macos/Codescribe/Bridge
 #   4. xcodegen generate                -> macos/Codescribe.xcodeproj + Info.plist
 #   5. xcodebuild                        -> Codescribe.app
-#   6. embed the dylib in Contents/Frameworks so the bundle is self-contained
-#   7. ad-hoc sign with a stable identifier so macOS TCC grants survive rebuilds
+#   6. embed runtime artifacts so the bundle is self-contained
+#   7. sign with a stable identifier so macOS TCC grants survive rebuilds
 #
 # Usage:
 #   scripts/build-app.sh [debug|release]
@@ -43,12 +43,15 @@ require cargo    "install the Rust toolchain: https://rustup.rs"
 require xcodegen "the app's .xcodeproj is generated, not committed: brew install xcodegen"
 if [ "${SKIP_XCODEBUILD:-0}" != "1" ]; then
   require xcodebuild "install Xcode (App Store), then: sudo xcodebuild -runFirstLaunch"
+  require swiftc "install Xcode command line tools: xcode-select --install"
 fi
 
 SCHEME="Codescribe"
 BRIDGE_DIR="macos/Codescribe/Bridge"
 DYLIB="$TARGET_DIR/libcodescribe_ffi.dylib"
 BINDGEN="$TARGET_DIR/uniffi-bindgen"
+STT_BRIDGE_SRC="core/stt/apple_stt/codescribe-stt-bridge.swift"
+STT_BRIDGE_BIN="$TARGET_DIR/codescribe-stt-bridge"
 
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
 cargo build -p codescribe-ffi "${CARGO_FLAGS[@]}"
@@ -77,10 +80,14 @@ xcodebuild -project macos/Codescribe.xcodeproj \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"
-echo "==> [6/7] Embedding dylib into $SCHEME.app/Contents/Frameworks"
+echo "==> [6/7] Embedding runtime artifacts into $SCHEME.app"
 FRAMEWORKS="$APP/Contents/Frameworks"
-mkdir -p "$FRAMEWORKS"
+MACOS_DIR="$APP/Contents/MacOS"
+mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
 cp "$DYLIB" "$FRAMEWORKS/"
+swiftc -O -o "$STT_BRIDGE_BIN" "$STT_BRIDGE_SRC"
+cp "$STT_BRIDGE_BIN" "$MACOS_DIR/"
+chmod 755 "$MACOS_DIR/codescribe-stt-bridge"
 
 # Ad-hoc sign the finished bundle with a STABLE identifier so macOS TCC
 # (Accessibility / Input Monitoring) keeps its grant across rebuilds instead of
@@ -106,4 +113,5 @@ fi
 
 echo "==> App built: $APP"
 echo "    (portability: dylib is @rpath-relative and embedded; project.yml adds"
-echo "     @executable_path/../Frameworks to the app runpath.)"
+echo "     @executable_path/../Frameworks to the app runpath; Apple STT bridge"
+echo "     is bundled beside the app executable in Contents/MacOS.)"
