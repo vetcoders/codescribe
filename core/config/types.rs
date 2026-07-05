@@ -35,9 +35,9 @@ impl WorkMode {
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Dictation => "Fast transcript / auto-paste mode.",
-            Self::Formatting => "AI formatting pass for dictation text.",
-            Self::Assistive => "AI assistive conversation mode.",
+            Self::Dictation => "Transcribes your voice and pastes the text.",
+            Self::Formatting => "Records dictation, then formats it before pasting.",
+            Self::Assistive => "Sends your voice to the agent instead of pasting.",
         }
     }
 

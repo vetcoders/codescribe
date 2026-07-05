@@ -26,6 +26,7 @@ struct ShortcutsPanel: View {
             }
 
             bindingRows.padding(.top, 20)
+            badgeLegend.padding(.top, 12)
 
             if !model.bindingConflicts.isEmpty {
                 conflictList.padding(.top, 16)
@@ -122,6 +123,40 @@ struct ShortcutsPanel: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    private var badgeLegend: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsSectionLabel("Dot colors")
+            HStack(spacing: 12) {
+                legendItem(color: CSColor.terracotta, text: "Red — dictation or formatting is recording")
+                legendItem(color: CSColor.assistive, text: "Purple — voice goes to the agent")
+                legendItem(color: CSColor.amber, text: "Orange — processing after recording")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.025))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        )
+    }
+
+    private func legendItem(color: Color, text: String) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(text)
+                .font(CSFont.ui(11.5, .medium))
+                .foregroundStyle(CSColor.textMuted)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Conflicts (inline validation)
@@ -252,9 +287,11 @@ struct ShortcutsPanel: View {
     }
 }
 
+#if DEBUG
 #Preview("Shortcuts panel") {
     ScrollView { ShortcutsPanel(model: .preview(.shortcuts)) }
         .frame(width: 720, height: 620)
         .background(SettingsView.windowGradient)
         .preferredColorScheme(.dark)
 }
+#endif
