@@ -361,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // bodies + composer via `\.csTextScale`, independently of the overlay.
             let root = TextScaleRoot(controller: model.chatTextScale) {
                 AgentChatView(store: model.chat)
+                    .preferredColorScheme(.dark)
             }
             let hosting = NSHostingController(rootView: root)
             let window = NSWindow(contentViewController: hosting)
