@@ -8,11 +8,14 @@ final class TrayStatusStore: ObservableObject {
 
     private let bridge: CodescribeTrayStatus?
     private var listener: TrayStatusListener?
+    private var lastAppliedGeneration: UInt64
 
     init() {
         let bridge = CodescribeTrayStatus()
+        let initialStatus = bridge.currentStatus()
         self.bridge = bridge
-        self.status = bridge.currentStatus()
+        self.status = initialStatus
+        self.lastAppliedGeneration = initialStatus.generation
 
         let listener = TrayStatusListener { [weak self] status in
             self?.apply(status)
@@ -24,9 +27,12 @@ final class TrayStatusStore: ObservableObject {
     private init(status: CsTrayStatusPayload) {
         self.bridge = nil
         self.status = status
+        self.lastAppliedGeneration = status.generation
     }
 
     private func apply(_ status: CsTrayStatusPayload) {
+        guard status.generation > lastAppliedGeneration else { return }
+        lastAppliedGeneration = status.generation
         self.status = status
         onChange?(status)
     }
