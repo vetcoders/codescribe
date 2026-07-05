@@ -311,7 +311,7 @@ category = "stt"
 description = "Thermal multiplier for critical system thermal pressure"
 
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
-default = "codescribe-stt-bridge"
+default = ""
 type = "string"
 reload = "restart"
 category = "stt"
