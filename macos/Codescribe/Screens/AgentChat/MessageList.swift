@@ -62,7 +62,7 @@ struct MessageList: View {
 
     /// Changes whenever a new turn lands or the streaming text grows.
     private var lastSignature: String {
-        messages.map { message in
+        messages.suffix(5).map { message in
             let tools = message.toolLines.map { line in
                 "\(line.id)-\(line.state)-\(line.detail)-\(line.reason?.count ?? 0)"
             }.joined(separator: ",")
