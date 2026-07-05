@@ -40,10 +40,13 @@ final class RealThreadsEngine: ChatThreadsProviding {
             }
 
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
             switch message.role {
-            case "user": return ChatMessage(role: .you, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text)
-            case "assistant": return ChatMessage(role: .assistant, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text)
+            case "user":
+                guard !text.isEmpty || content.hasDisplayableNonTextBlock else { return nil }
+                return ChatMessage(role: .you, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text)
+            case "assistant":
+                guard !text.isEmpty else { return nil }
+                return ChatMessage(role: .assistant, timestamp: Self.timeString(timestampMs: message.timestampMs), text: text)
             default: return nil  // skip system/tool turns in the transcript view
             }
         }
@@ -124,6 +127,7 @@ final class RealThreadsEngine: ChatThreadsProviding {
 private struct StoredMessageContent {
     var toolUses: [StoredToolUse] = []
     var toolResults: [StoredToolResult] = []
+    var hasDisplayableNonTextBlock = false
 
     var hasToolUseOnly: Bool {
         !toolUses.isEmpty && toolResults.isEmpty
@@ -133,6 +137,10 @@ private struct StoredMessageContent {
         guard let data = rawJson.data(using: .utf8),
               let blocks = try? JSONDecoder().decode([StoredContentBlock].self, from: data) else {
             return
+        }
+        hasDisplayableNonTextBlock = blocks.contains { block in
+            guard let type = block.type else { return false }
+            return !["text", "tool_use", "tool_result"].contains(type)
         }
         toolUses = blocks.compactMap { block in
             guard block.type == "tool_use",

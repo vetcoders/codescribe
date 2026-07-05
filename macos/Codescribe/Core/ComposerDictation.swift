@@ -12,7 +12,9 @@ private let dictationLog = Logger(
 /// UniFFI bridge (the SAME streaming recorder + Whisper the hotkey/tray dictation
 /// uses, exposed through an independent recorder handle). Click-to-start,
 /// click-to-stop; on stop the accumulated transcript is appended to the composer
-/// draft — never auto-sent.
+/// draft — never auto-sent. Streaming callbacks update a separate live preview
+/// in the composer; `stopRecording()` remains the only source that commits text
+/// into the editable draft.
 ///
 /// Deliberately a SEPARATE recorder from `CodescribeHotkeys`: the composer voice
 /// note is an independent product path and must not share the overlay/hotkey
@@ -58,6 +60,7 @@ final class RealComposerDictation: ComposerDictating {
             return
         }
         transitioning = true
+        store.clearDictationPreview()
         store.setDictationPhase(.preparing)
         Task { @MainActor in
             defer { transitioning = false }
@@ -68,7 +71,7 @@ final class RealComposerDictation: ComposerDictating {
             }
             // Register a fresh listener (held strongly here) before starting; the
             // bridge rejects `startRecording` without one.
-            let listener = ComposerDictationListener()
+            let listener = ComposerDictationListener(store: store)
             self.listener = listener
             dictation.setListener(listener: listener)
             do {
@@ -81,6 +84,7 @@ final class RealComposerDictation: ComposerDictating {
                 dictationLog.info("composer dictation: recording started")
             } catch {
                 dictationLog.error("composer dictation start failed: \(error.localizedDescription, privacy: .public)")
+                store.clearDictationPreview()
                 store.reportDictationFailure("Couldn't start recording: \(error.localizedDescription)")
             }
         }
@@ -97,6 +101,7 @@ final class RealComposerDictation: ComposerDictating {
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty {
                     dictationLog.info("composer dictation: stopped with empty transcript")
+                    store.clearDictationPreview()
                     store.reportDictationFailure("No speech detected.")
                 } else {
                     store.appendDictatedTranscript(trimmed)
@@ -105,6 +110,7 @@ final class RealComposerDictation: ComposerDictating {
                 }
             } catch {
                 dictationLog.error("composer dictation stop failed: \(error.localizedDescription, privacy: .public)")
+                store.clearDictationPreview()
                 store.reportDictationFailure("Couldn't finish recording: \(error.localizedDescription)")
             }
         }
@@ -118,28 +124,79 @@ final class RealComposerDictation: ComposerDictating {
     }
 }
 
-/// Foreign dictation listener for the composer path. The composer reads the final
-/// transcript from `stopRecording()`'s return, so these callbacks only satisfy the
-/// bridge's listener requirement and log recoverable engine signals. Callbacks
-/// arrive on a tokio thread; each one is cheap and thread-safe (logging only), so
-/// no main-actor hop is required here.
+/// Foreign dictation listener for the composer path. Preview callbacks carry the
+/// current uncommitted snapshot, while `onFinal` commits an utterance to the
+/// listener's live display buffer. The composer still reads the authoritative
+/// final transcript from `stopRecording()` before mutating the draft.
 final class ComposerDictationListener: CsTranscriptionListener, @unchecked Sendable {
+    private weak var store: AgentChatStore?
+    private let lock = NSLock()
+    private var committedSegments: [(utteranceId: UInt64, text: String)] = []
+    private var activePreview = ""
+
+    init(store: AgentChatStore) {
+        self.store = store
+    }
+
     func onRecordingPreparing() {}
     func onRecordingStarted() {}
     func onRecordingStopped() {}
     func onRecordingFinalising() {}
-    func onPreview(text: String) {}
+    func onPreview(text: String) {
+        publishPreview {
+            activePreview = text
+        }
+    }
     func onCorrection(text: String, previousText: String) {}
-    func onFinal(utteranceId: UInt64, text: String) {}
+    func onFinal(utteranceId: UInt64, text: String) {
+        publishPreview {
+            activePreview = ""
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            if let index = committedSegments.firstIndex(where: { $0.utteranceId == utteranceId }) {
+                committedSegments[index].text = trimmed
+            } else {
+                committedSegments.append((utteranceId: utteranceId, text: trimmed))
+            }
+        }
+    }
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {}
     func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind) {}
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {}
-    func onFinalTranscriptReady(text: String) {}
+    func onFinalTranscriptReady(text: String) {
+        publishFinalPreview(text)
+    }
     func onVadActive(active: Bool) {}
     func onNoSpeech(reason: String) {
         dictationLog.info("composer dictation: no speech (\(reason, privacy: .public))")
     }
     func onError(message: String) {
         dictationLog.error("composer dictation engine warning: \(message, privacy: .public)")
+    }
+
+    private func publishPreview(_ update: () -> Void) {
+        lock.lock()
+        update()
+        let snapshot = mergedPreviewLocked()
+        lock.unlock()
+        Task { @MainActor [weak store] in
+            store?.updateDictationPreview(snapshot)
+        }
+    }
+
+    private func publishFinalPreview(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { @MainActor [weak store] in
+            store?.updateDictationPreview(trimmed)
+        }
+    }
+
+    private func mergedPreviewLocked() -> String {
+        var parts = committedSegments.map(\.text)
+        let active = activePreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !active.isEmpty {
+            parts.append(active)
+        }
+        return parts.joined(separator: " ")
     }
 }

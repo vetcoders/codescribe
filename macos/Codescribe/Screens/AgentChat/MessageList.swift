@@ -62,8 +62,12 @@ struct MessageList: View {
 
     /// Changes whenever a new turn lands or the streaming text grows.
     private var lastSignature: String {
-        guard let last = messages.last else { return "" }
-        return "\(messages.count)-\(last.text.count)"
+        messages.suffix(5).map { message in
+            let tools = message.toolLines.map { line in
+                "\(line.id)-\(line.state)-\(line.detail)-\(line.reason?.count ?? 0)"
+            }.joined(separator: ",")
+            return "\(message.id)-\(message.text.count)-\(message.reasoning.count)-\(tools)"
+        }.joined(separator: "|")
     }
 
     private func alignment(_ role: ChatRole) -> Alignment {
@@ -247,15 +251,33 @@ private struct ToolLineRow: View {
         return reason
     }
 
+    private var isRunning: Bool { line.state == .running }
+    private var isUnknown: Bool { line.state == .unknown }
+    private var rowColor: Color {
+        switch line.state {
+        case .running:
+            return CSColor.amber
+        case .failed:
+            return CSColor.terracottaLight
+        case .unknown:
+            return CSColor.textFaintAlt
+        case .succeeded:
+            return CSColor.oliveLight
+        }
+    }
+
     var body: some View {
-        let failed = reason != nil
+        let failed = line.state == .failed && reason != nil
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 if failed { showReason.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    (Text(line.verb).foregroundColor(failed ? CSColor.terracottaLight : CSColor.oliveLight)
-                        + Text(" \(line.detail)").foregroundColor(ChatPalette.toolBody))
+                    if isRunning {
+                        PulseDot()
+                    }
+                    (Text(line.verb).foregroundColor(rowColor)
+                        + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundColor(isUnknown ? CSColor.textFaintAlt : ChatPalette.toolBody))
                         .font(CSFont.mono(11.5, .medium))
                         .lineSpacing(4)
                         .textSelection(.enabled)
@@ -324,7 +346,11 @@ private struct ToolTurn: View {
                 .padding(.vertical, 11)
             } label: {
                 HStack(spacing: 8) {
-                    CSIconView(icon: .success, size: 11, color: CSColor.oliveLight)
+                    CSIconView(
+                        icon: message.toolLines.contains(where: { $0.state == .running }) ? .more : .success,
+                        size: 11,
+                        color: message.toolLines.contains(where: { $0.state == .running }) ? CSColor.amber : CSColor.oliveLight
+                    )
                     Text(message.toolTitle)
                         .font(CSFont.mono(11, .semibold))
                         .foregroundStyle(ChatPalette.nameInactive)
@@ -386,6 +412,12 @@ private struct AssistantTurn: View {
             }
 
             VStack(alignment: .leading, spacing: 9) {
+                if !message.reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ReasoningDisclosure(
+                        text: message.reasoning,
+                        isLive: message.isThinking || message.isStreaming
+                    )
+                }
                 if message.isThinking {
                     HStack(spacing: 8) {
                         PulseDot()
@@ -397,7 +429,9 @@ private struct AssistantTurn: View {
                     if let secs = message.reasonedSeconds {
                         ReasonedChip(seconds: secs)
                     }
-                    MarkdownText(raw: message.text, showsCaret: message.isStreaming)
+                    if !message.text.isEmpty || message.isStreaming {
+                        MarkdownText(raw: message.text, showsCaret: message.isStreaming)
+                    }
                 }
             }
             .padding(.horizontal, 15)
@@ -419,6 +453,49 @@ private struct AssistantTurn: View {
             .contextMenu { CopyButton(text: message.text) }
         }
         .frame(maxWidth: 560, alignment: .leading)
+    }
+}
+
+private struct ReasoningDisclosure: View {
+    let text: String
+    let isLive: Bool
+    @State private var expanded = true
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            Text(text)
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(ChatPalette.thinking.opacity(0.86))
+                .textSelection(.enabled)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+        } label: {
+            HStack(spacing: 7) {
+                CSIconView(
+                    icon: expanded ? .chevronDown : .chevronRight,
+                    size: 8,
+                    weight: .semibold,
+                    color: ChatPalette.thinking.opacity(0.75)
+                )
+                Text(isLive ? "thinking..." : "thinking")
+                    .font(CSFont.mono(10.5, .semibold))
+                    .foregroundStyle(ChatPalette.thinking)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .disclosureGroupStyle(FlatDisclosureStyle())
+        .background(CSColor.surfaceRaised(0.018))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.055), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }
 }
 

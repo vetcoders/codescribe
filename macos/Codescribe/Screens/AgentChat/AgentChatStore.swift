@@ -39,7 +39,8 @@ protocol AgentChatEngine: AnyObject {
         attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (_ name: String, _ isError: Bool, _ reason: String) -> Void
+        onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+        onToolResult: @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
     ) async throws -> String
 }
 
@@ -51,14 +52,39 @@ enum ChatRole {
     case assistant
 }
 
+enum ToolLineState: Hashable {
+    case running
+    case succeeded
+    case failed
+    case unknown
+}
+
 struct ToolLine: Identifiable, Hashable {
-    let id = UUID()
-    let verb: String     // "grep", "read" — rendered olive; "failed" — terracotta
+    let id: UUID
+    var callID: String?
+    var verb: String     // "grep", "read" — rendered olive; "failed" — terracotta
     let detail: String   // "events/bus.ts · ui/store.ts"
+    var state: ToolLineState
     /// Failure reason for a `failed` line (from the tool's error output). `nil`
     /// for successful lines and for reloaded/persisted turns, which do not carry
     /// the reason. Drives the expandable disclosure in the tool-activity row.
-    var reason: String? = nil
+    var reason: String?
+
+    init(
+        id: UUID = UUID(),
+        callID: String? = nil,
+        verb: String,
+        detail: String,
+        state: ToolLineState = .succeeded,
+        reason: String? = nil
+    ) {
+        self.id = id
+        self.callID = callID
+        self.verb = verb
+        self.detail = detail
+        self.state = state
+        self.reason = reason
+    }
 }
 
 struct ChatMessage: Identifiable {
@@ -69,9 +95,9 @@ struct ChatMessage: Identifiable {
     var text: String
 
     /// Files attached to a sent user turn (empty otherwise). Rendered as chips in
-    /// the You bubble. In-memory for the current session only — the persisted
-    /// thread does not carry attachment metadata (see RealThreadsEngine), so a
-    /// restored turn comes back with this empty.
+    /// the You bubble. Restored attachment names/types are recovered from the
+    /// Swift-side metadata sidecar because the bridge's persisted message JSON
+    /// carries image blocks but not original file names.
     var attachments: [MessageAttachment] = []
 
     // Tool-activity turn
@@ -82,6 +108,7 @@ struct ChatMessage: Identifiable {
     var reasonedSeconds: Double? = nil
     var isThinking: Bool = false      // pre-reply "thinking…" state
     var isStreaming: Bool = false     // word-reveal in progress (shows caret)
+    var reasoning: String = ""        // streamed model reasoning, rendered separately
 }
 
 /// An image the user staged in the composer but has not sent yet. Referenced by
@@ -91,6 +118,7 @@ struct PendingAttachment: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     var name: String { url.lastPathComponent }
+    var type: String { MessageAttachment.inferredType(name: name, url: url) }
 }
 
 /// An attachment carried by a *sent* chat message, surfaced as a chip in the You
@@ -101,6 +129,26 @@ struct MessageAttachment: Identifiable, Hashable {
     let id = UUID()
     let name: String
     let url: URL?
+    let type: String
+
+    init(name: String, url: URL?, type: String? = nil) {
+        self.name = name
+        self.url = url
+        self.type = type ?? Self.inferredType(name: name, url: url)
+    }
+
+    static func inferredType(name: String, url: URL?) -> String {
+        let ext = (url?.pathExtension.isEmpty == false ? url?.pathExtension : nil) ?? (name as NSString).pathExtension
+        switch ext.lowercased() {
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "bmp": return "image/bmp"
+        case "tif", "tiff": return "image/tiff"
+        default: return ext.isEmpty ? "file" : "file/\(ext.lowercased())"
+        }
+    }
 }
 
 struct ChatThread: Identifiable {
@@ -163,6 +211,7 @@ final class AgentChatStore: ObservableObject {
     @Published var threads: [ChatThread]
     @Published var selectedThreadID: UUID?
     @Published var draft: String = ""
+    @Published private(set) var dictationPreview: String = ""
 
     /// Images staged in the composer for the next message. Cleared when the
     /// message is dispatched.
@@ -193,10 +242,22 @@ final class AgentChatStore: ObservableObject {
     /// when no adapter is wired.
     func setDictationPhase(_ phase: ComposerDictationPhase) { dictationPhase = phase }
 
+    /// Latest live voice-note preview. This is a snapshot buffer from the STT
+    /// listener, not a delta stream, and stays separate from `draft` until stop.
+    func updateDictationPreview(_ text: String) {
+        dictationPreview = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func clearDictationPreview() {
+        guard !dictationPreview.isEmpty else { return }
+        dictationPreview = ""
+    }
+
     /// Surface a recoverable dictation failure with a self-clearing inline message
     /// (auto-returns to `.idle` after a few seconds so the composer doesn't keep a
     /// stale error banner).
     func reportDictationFailure(_ message: String) {
+        clearDictationPreview()
         dictationPhase = .failed(message)
         let token = UUID()
         dictationFailureToken = token
@@ -212,6 +273,7 @@ final class AgentChatStore: ObservableObject {
     func appendDictatedTranscript(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        clearDictationPreview()
         if draft.isEmpty {
             draft = trimmed
         } else {
@@ -236,6 +298,7 @@ final class AgentChatStore: ObservableObject {
     /// a voice turn, which would fire a second, composer-side provider call.
     private var voiceTurnThreadID: UUID?
     private var voiceAssistantID: UUID?
+    private var voiceTurnStartedAt: Date?
 
     /// In-flight `send()` streaming tasks keyed by thread. Tracked so deleting a
     /// thread can cancel its running reply — otherwise the task's post-stream
@@ -354,6 +417,7 @@ final class AgentChatStore: ObservableObject {
     func delete(_ thread: ChatThread) {
         if let backendId = thread.backendId {
             guard threadsProvider?.deleteThread(backendId: backendId) == true else { return }
+            removePersistedAttachmentMetadata(for: backendId)
         }
         // Cancel any in-flight reply for this thread so its post-stream refresh
         // can't re-list (and the caret/finalize can't mutate) a deleted thread.
@@ -375,7 +439,10 @@ final class AgentChatStore: ObservableObject {
               let ti = threads.firstIndex(where: { $0.id == id }),
               let backendId = threads[ti].backendId,
               !threads[ti].messagesLoaded else { return }
-        threads[ti].messages = provider.loadMessages(backendId: backendId)
+        threads[ti].messages = applyingPersistedAttachmentMetadata(
+            to: provider.loadMessages(backendId: backendId),
+            backendId: backendId
+        )
         threads[ti].messagesLoaded = true
     }
 
@@ -426,19 +493,19 @@ final class AgentChatStore: ObservableObject {
             "send: building request attachmentPaths.count=\(attachmentPaths.count, privacy: .public) text.isEmpty=\(text.isEmpty, privacy: .public)"
         )
         guard (!text.isEmpty || !attachmentPaths.isEmpty), let threadID = selectedThreadID else { return }
+        let backendId = ensureBackendId(threadID)
+        let userTurnIndex = currentUserTurnCount(in: threadID)
         draft = ""
         pendingAttachments = []
 
         // Carry the staged attachments onto the You bubble so the sender sees a
         // chip (name + optional thumbnail) for what they attached.
-        let sent = staged.map { MessageAttachment(name: $0.name, url: $0.url) }
+        let sent = staged.map { MessageAttachment(name: $0.name, url: $0.url, type: $0.type) }
+        persistAttachmentMetadata(sent, for: backendId, userTurnIndex: userTurnIndex)
         append(ChatMessage(role: .you, timestamp: now(), text: text, attachments: sent), to: threadID)
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
-
-        let backendId = ensureBackendId(threadID)
-
         let sendTask = Task { @MainActor in
             defer { inFlightSends[threadID] = nil }
             guard let engine else {
@@ -469,15 +536,21 @@ final class AgentChatStore: ObservableObject {
                             $0.text += delta
                         }
                     },
-                    onReasoning: { _ in },
-                    onTool: { [weak self] name, isError, reason in
-                        self?.recordToolActivity(name: name, isError: isError, reason: reason,
-                                                 before: assistantID, in: threadID)
+                    onReasoning: { [weak self] delta in
+                        self?.appendReasoning(delta, to: assistantID, in: threadID)
+                    },
+                    onToolExecuting: { [weak self] name, id in
+                        self?.recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
+                    },
+                    onToolResult: { [weak self] name, id, isError, reason in
+                        self?.recordToolResult(name: name, callID: id, isError: isError, reason: reason,
+                                               before: assistantID, in: threadID)
                     }
                 )
                 // The thread may have been deleted mid-stream; drop the late
                 // finalize + refresh so a cancelled send can't bring it back.
                 if Task.isCancelled { return }
+                finishPendingTools(before: assistantID, in: threadID)
                 update(assistantID, in: threadID) {
                     $0.isThinking = false
                     $0.isStreaming = false
@@ -514,6 +587,7 @@ final class AgentChatStore: ObservableObject {
         // bubble in the UI before we overwrite the turn references below —
         // otherwise it sticks in isThinking/isStreaming forever.
         if let staleThreadID = voiceTurnThreadID, let staleID = voiceAssistantID {
+            finishPendingTools(before: staleID, in: staleThreadID)
             update(staleID, in: staleThreadID) {
                 $0.isThinking = false
                 $0.isStreaming = false
@@ -541,6 +615,7 @@ final class AgentChatStore: ObservableObject {
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         voiceTurnThreadID = threadID
         voiceAssistantID = assistant.id
+        voiceTurnStartedAt = Date()
         append(assistant, to: threadID)
     }
 
@@ -550,8 +625,17 @@ final class AgentChatStore: ObservableObject {
         update(id, in: threadID) {
             $0.isThinking = false
             $0.isStreaming = true
+            if $0.reasonedSeconds == nil, let started = self.voiceTurnStartedAt {
+                $0.reasonedSeconds = Date().timeIntervalSince(started)
+            }
             $0.text += delta
         }
+    }
+
+    /// Append streamed model reasoning to the active voice assistant bubble.
+    func ingestVoiceReasoning(_ delta: String) {
+        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        appendReasoning(delta, to: id, in: threadID)
     }
 
     /// Final assembled text for the turn. Only used as a fallback when the reply
@@ -561,17 +645,25 @@ final class AgentChatStore: ObservableObject {
         update(id, in: threadID) { if $0.text.isEmpty { $0.text = text } }
     }
 
+    /// Surface a pending tool call for the active voice turn. The bridge's `id`
+    /// is kept end-to-end so the matching result can update this row in place.
+    func ingestVoiceToolExecuting(name: String, id callID: String) {
+        guard let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        recordToolStarted(name: name, callID: callID, before: assistantID, in: threadID)
+    }
+
     /// Surface a completed tool call for the active voice turn (same rendering as
     /// the composer path's tool-activity row).
-    func ingestVoiceTool(name: String, isError: Bool, reason: String) {
+    func ingestVoiceToolResult(name: String, id callID: String, isError: Bool, reason: String) {
         guard let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
-        recordToolActivity(name: name, isError: isError, reason: reason, before: assistantID, in: threadID)
+        recordToolResult(name: name, callID: callID, isError: isError, reason: reason, before: assistantID, in: threadID)
     }
 
     /// Finalize the active voice turn and pull disk truth (the core persisted the
     /// thread). No re-persist here — the store only mirrors what the core wrote.
     func ingestVoiceDone() {
         guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        finishPendingTools(before: id, in: threadID)
         update(id, in: threadID) {
             $0.isThinking = false
             $0.isStreaming = false
@@ -580,6 +672,7 @@ final class AgentChatStore: ObservableObject {
         let backendId = threads.first(where: { $0.id == threadID })?.backendId
         voiceTurnThreadID = nil
         voiceAssistantID = nil
+        voiceTurnStartedAt = nil
         if let backendId { refreshThreads(selectingBackendId: backendId) }
     }
 
@@ -588,6 +681,7 @@ final class AgentChatStore: ObservableObject {
     /// late `Done` then no-ops against the cleared state.
     func ingestVoiceError(_ message: String) {
         guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        finishPendingTools(before: id, in: threadID)
         update(id, in: threadID) {
             $0.isThinking = false
             $0.isStreaming = false
@@ -596,6 +690,7 @@ final class AgentChatStore: ObservableObject {
         }
         voiceTurnThreadID = nil
         voiceAssistantID = nil
+        voiceTurnStartedAt = nil
     }
 
     // MARK: Demo stream (reproduces the mock's mid-stream last turn)
@@ -645,6 +740,7 @@ final class AgentChatStore: ObservableObject {
     }
 
     private func finish(_ id: UUID, in threadID: UUID, text: String) {
+        finishPendingTools(before: id, in: threadID)
         update(id, in: threadID) {
             $0.isThinking = false
             $0.isStreaming = false
@@ -666,26 +762,183 @@ final class AgentChatStore: ObservableObject {
         body(&threads[ti].messages[mi])
     }
 
+    private func currentUserTurnCount(in threadID: UUID) -> Int {
+        threads.first(where: { $0.id == threadID })?.messages.filter { $0.role == .you }.count ?? 0
+    }
+
+    private struct PersistedAttachmentMetadata: Codable, Hashable {
+        let name: String
+        let type: String
+    }
+
+    private struct PersistedAttachmentTurn: Codable, Hashable {
+        let userTurnIndex: Int
+        let attachments: [PersistedAttachmentMetadata]
+    }
+
+    private static let attachmentMetadataDefaultsKey = "AgentChatStore.attachmentMetadata.v1"
+
+    private func persistAttachmentMetadata(
+        _ attachments: [MessageAttachment],
+        for backendId: String,
+        userTurnIndex: Int
+    ) {
+        guard !attachments.isEmpty else { return }
+        var sidecar = readAttachmentMetadataSidecar()
+        var turns = sidecar[backendId, default: []]
+        turns.removeAll { $0.userTurnIndex == userTurnIndex }
+        turns.append(PersistedAttachmentTurn(
+            userTurnIndex: userTurnIndex,
+            attachments: attachments.map { PersistedAttachmentMetadata(name: $0.name, type: $0.type) }
+        ))
+        sidecar[backendId] = turns.sorted { $0.userTurnIndex < $1.userTurnIndex }
+        writeAttachmentMetadataSidecar(sidecar)
+    }
+
+    private func applyingPersistedAttachmentMetadata(
+        to messages: [ChatMessage],
+        backendId: String
+    ) -> [ChatMessage] {
+        let sidecar = readAttachmentMetadataSidecar()
+        let turns = sidecar[backendId] ?? []
+        guard !turns.isEmpty else { return messages }
+        var byUserTurn: [Int: [PersistedAttachmentMetadata]] = [:]
+        for turn in turns {
+            byUserTurn[turn.userTurnIndex] = turn.attachments
+        }
+        var userTurnIndex = 0
+        var restored = messages
+        for index in restored.indices where restored[index].role == .you {
+            if let metadata = byUserTurn[userTurnIndex], !metadata.isEmpty {
+                restored[index].attachments = metadata.map {
+                    MessageAttachment(name: $0.name, url: nil, type: $0.type)
+                }
+            }
+            userTurnIndex += 1
+        }
+        return restored
+    }
+
+    private func removePersistedAttachmentMetadata(for backendId: String) {
+        var sidecar = readAttachmentMetadataSidecar()
+        guard sidecar.removeValue(forKey: backendId) != nil else { return }
+        writeAttachmentMetadataSidecar(sidecar)
+    }
+
+    private func readAttachmentMetadataSidecar() -> [String: [PersistedAttachmentTurn]] {
+        guard let data = UserDefaults.standard.data(forKey: Self.attachmentMetadataDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String: [PersistedAttachmentTurn]].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func writeAttachmentMetadataSidecar(_ sidecar: [String: [PersistedAttachmentTurn]]) {
+        guard let data = try? JSONEncoder().encode(sidecar) else { return }
+        UserDefaults.standard.set(data, forKey: Self.attachmentMetadataDefaultsKey)
+    }
+
     /// Surface a completed tool call as a `.tool` activity turn placed immediately
     /// before the streaming assistant bubble (matches the mock's "What I checked").
     private func recordToolActivity(name: String, isError: Bool, reason: String, before assistantID: UUID, in threadID: UUID) {
+        recordToolResult(name: name, callID: nil, isError: isError, reason: reason, before: assistantID, in: threadID)
+    }
+
+    private func recordToolStarted(name: String, callID rawCallID: String, before assistantID: UUID, in threadID: UUID) {
+        let callID = rawCallID.isEmpty ? nil : rawCallID
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
-        let line = ToolLine(
-            verb: isError ? "failed" : "ran",
-            detail: name,
-            reason: (isError && !reason.isEmpty) ? reason : nil
-        )
-        if ai > 0, threads[ti].messages[ai - 1].role == .tool {
-            threads[ti].messages[ai - 1].toolLines.append(line)
-            let n = threads[ti].messages[ai - 1].toolLines.count
-            threads[ti].messages[ai - 1].toolTitle = "What I checked · \(n) tool\(n == 1 ? "" : "s")"
+        let line = ToolLine(callID: callID, verb: "tool", detail: name, state: .running)
+        if let row = toolRowIndex(before: ai, inThreadAt: ti) {
+            if let callID,
+               let existing = threads[ti].messages[row].toolLines.firstIndex(where: { $0.callID == callID }) {
+                threads[ti].messages[row].toolLines[existing] = line
+            } else {
+                threads[ti].messages[row].toolLines.append(line)
+            }
+            updateToolTitle(threadIndex: ti, messageIndex: row)
         } else {
             var tool = ChatMessage(role: .tool, timestamp: now(), text: "")
             tool.toolLines = [line]
-            tool.toolTitle = "What I checked · 1 tool"
+            tool.toolTitle = Self.toolTitle(for: tool.toolLines)
             threads[ti].messages.insert(tool, at: ai)
         }
+    }
+
+    private func recordToolResult(
+        name: String,
+        callID rawCallID: String?,
+        isError: Bool,
+        reason: String,
+        before assistantID: UUID,
+        in threadID: UUID
+    ) {
+        let callID = rawCallID.flatMap { $0.isEmpty ? nil : $0 }
+        guard let ti = threads.firstIndex(where: { $0.id == threadID }),
+              let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        let line = ToolLine(
+            callID: callID,
+            verb: isError ? "failed" : "ran",
+            detail: name,
+            state: isError ? .failed : .succeeded,
+            reason: (isError && !reason.isEmpty) ? reason : nil
+        )
+        if let row = toolRowIndex(before: ai, inThreadAt: ti) {
+            if let callID,
+               let existing = threads[ti].messages[row].toolLines.firstIndex(where: { $0.callID == callID }) {
+                threads[ti].messages[row].toolLines[existing] = line
+            } else {
+                threads[ti].messages[row].toolLines.append(line)
+            }
+            updateToolTitle(threadIndex: ti, messageIndex: row)
+        } else {
+            var tool = ChatMessage(role: .tool, timestamp: now(), text: "")
+            tool.toolLines = [line]
+            tool.toolTitle = Self.toolTitle(for: tool.toolLines)
+            threads[ti].messages.insert(tool, at: ai)
+        }
+    }
+
+    private func finishPendingTools(before assistantID: UUID, in threadID: UUID) {
+        guard let ti = threads.firstIndex(where: { $0.id == threadID }),
+              let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }),
+              let row = toolRowIndex(before: ai, inThreadAt: ti) else { return }
+        var changed = false
+        for index in threads[ti].messages[row].toolLines.indices
+            where threads[ti].messages[row].toolLines[index].state == .running {
+            threads[ti].messages[row].toolLines[index].state = .unknown
+            threads[ti].messages[row].toolLines[index].verb = "ended"
+            changed = true
+        }
+        if changed { updateToolTitle(threadIndex: ti, messageIndex: row) }
+    }
+
+    private func appendReasoning(_ delta: String, to assistantID: UUID, in threadID: UUID) {
+        guard !delta.isEmpty else { return }
+        update(assistantID, in: threadID) {
+            $0.reasoning += delta
+        }
+    }
+
+    private func toolRowIndex(before assistantIndex: Int, inThreadAt threadIndex: Int) -> Int? {
+        guard assistantIndex > 0, threads[threadIndex].messages[assistantIndex - 1].role == .tool else { return nil }
+        return assistantIndex - 1
+    }
+
+    private func updateToolTitle(threadIndex: Int, messageIndex: Int) {
+        threads[threadIndex].messages[messageIndex].toolTitle = Self.toolTitle(
+            for: threads[threadIndex].messages[messageIndex].toolLines
+        )
+    }
+
+    private static func toolTitle(for lines: [ToolLine]) -> String {
+        let count = lines.count
+        let running = lines.filter { $0.state == .running }.count
+        let noun = count == 1 ? "tool" : "tools"
+        if running > 0 {
+            return "What I checked · \(running) running · \(count) \(noun)"
+        }
+        return "What I checked · \(count) \(noun)"
     }
 
     private func now() -> String { Self.timeFmt.string(from: Date()) }
@@ -789,17 +1042,22 @@ final class MockChatEngine: AgentChatEngine {
         attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (_ name: String, _ isError: Bool, _ reason: String) -> Void
+        onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+        onToolResult: @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
     ) async throws -> String {
         let seen = attachmentPaths.isEmpty ? "" : " (saw \(attachmentPaths.count) image\(attachmentPaths.count == 1 ? "" : "s"))"
         let reply = "On it — \(text.lowercased())\(seen). I'd start with a minimal patch and a regression test."
         var assembled = ""
+        await onReasoning("Reading the turn and checking the smallest useful next step.")
+        let mockToolID = "mock-preview-tool"
+        await onToolExecuting("preview-context", mockToolID)
         for word in reply.split(separator: " ", omittingEmptySubsequences: false) {
             try? await Task.sleep(nanoseconds: 60_000_000)
             let chunk = (assembled.isEmpty ? "" : " ") + word
             assembled += chunk
             await onDelta(chunk)
         }
+        await onToolResult("preview-context", mockToolID, false, "mock context ready")
         return assembled
     }
 }

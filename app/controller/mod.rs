@@ -1041,6 +1041,15 @@ impl RecordingController {
         Self::set_state_with_broadcast(&self.state, &self.event_broadcast, new_state).await;
     }
 
+    async fn show_processing_badge_if_enabled(&self) {
+        let hold_indicator = self.config.read().await.hold_indicator;
+        if hold_indicator {
+            crate::os::hold_badge::show_badge_for_mode(
+                crate::os::hold_badge::BadgeMode::Processing,
+            );
+        }
+    }
+
     async fn set_state_with_broadcast(
         state: &Arc<RwLock<State>>,
         event_broadcast: &broadcast::Sender<IpcEvent>,
@@ -2557,6 +2566,7 @@ impl RecordingController {
         }
 
         self.set_state(State::Busy).await;
+        self.show_processing_badge_if_enabled().await;
 
         let result = {
             let phase1 = std::time::Instant::now();
@@ -2692,6 +2702,7 @@ impl RecordingController {
         // Transition to BUSY
         debug!("STATE TRANSITION: {} → BUSY", current_state);
         self.set_state(State::Busy).await;
+        self.show_processing_badge_if_enabled().await;
 
         // Get session ID and mode flags before we reset them
         let session_id = self.session_id.read().await.clone();

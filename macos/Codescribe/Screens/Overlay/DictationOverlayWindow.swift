@@ -54,10 +54,10 @@ private final class OverlayContentContainer: NSView {
 
 enum DictationOverlayWindow {
     /// Hard floor for the panel's content size — below this the glass chrome and
-    /// action row overlap. Enforced for user edge-drag (`minSize`/`contentMinSize`)
+    /// compact action row overlap. Enforced for user edge-drag (`minSize`/`contentMinSize`)
     /// AND for every programmatic `setFrame` via `clamp(_:to:)` (AppKit does not
     /// apply `minSize` to programmatic frames).
-    static let minSize = NSSize(width: 390, height: 250)
+    static let minSize = NSSize(width: 320, height: 250)
     /// First-launch content size (no persisted value yet).
     static let defaultSize = NSSize(width: 470, height: 330)
     /// Bumped v2 → v3 with the slim-down: the old persisted (larger) content sizes
