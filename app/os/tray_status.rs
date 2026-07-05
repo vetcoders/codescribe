@@ -81,7 +81,11 @@ impl TrayStatusSnapshot {
     }
 
     pub fn is_assistive_visible(&self) -> bool {
-        self.assistive && matches!(self.status, TrayStatus::Listening | TrayStatus::Thinking)
+        self.assistive
+            && matches!(
+                self.status,
+                TrayStatus::Starting | TrayStatus::Listening | TrayStatus::Thinking
+            )
     }
 
     pub fn tooltip(&self) -> String {
@@ -195,5 +199,34 @@ fn notify_tray_status(snapshot: TrayStatusSnapshot) {
             assistive = snapshot.assistive,
             "tray status updated before Swift bridge listener registration"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assistive_visible_covers_starting_through_thinking() {
+        // The assistive lane is set before the pipeline emits `Listening`, so the
+        // long "Starting..." warm-up must already read as assistive - otherwise the
+        // menu bar flashes dictation styling until the first `Listening` beat.
+        for status in [
+            TrayStatus::Starting,
+            TrayStatus::Listening,
+            TrayStatus::Thinking,
+        ] {
+            assert!(
+                TrayStatusSnapshot::new(status, true).is_assistive_visible(),
+                "{status:?} with an active assistive lane should read as assistive"
+            );
+        }
+    }
+
+    #[test]
+    fn assistive_visible_ignores_terminal_and_non_assistive_states() {
+        assert!(!TrayStatusSnapshot::new(TrayStatus::Idle, true).is_assistive_visible());
+        assert!(!TrayStatusSnapshot::new(TrayStatus::Success, true).is_assistive_visible());
+        assert!(!TrayStatusSnapshot::new(TrayStatus::Starting, false).is_assistive_visible());
     }
 }
