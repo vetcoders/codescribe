@@ -445,8 +445,12 @@ impl Config {
         if std::env::var("TRAY_START_ASSISTIVE").is_err()
             && let Some(v) = settings.tray_start_assistive
         {
+            // `tray_start_assistive` is a Config struct field; downstream reads it
+            // directly (e.g. `tray_toggles`). Persistence lives in settings.json,
+            // so no runtime env mutation is needed here - and `load_without_keychain`
+            // runs on UI actions (tray/composer mic), where `set_var` would race
+            // background threads.
             self.tray_start_assistive = v;
-            Self::safe_set_env("TRAY_START_ASSISTIVE", if v { "1" } else { "0" });
         }
         if std::env::var("SOUND_VOLUME").is_err()
             && let Some(v) = settings.sound_volume
