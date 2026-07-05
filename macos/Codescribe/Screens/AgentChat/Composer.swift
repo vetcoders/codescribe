@@ -91,6 +91,7 @@ struct Composer: View {
             .overlay(dropCatcher)
             .animation(.easeOut(duration: 0.12), value: isDragging)
 
+            dictationPreview
             dictationFeedback
 
             // Affordance row
@@ -170,6 +171,23 @@ struct Composer: View {
             .foregroundStyle(CSColor.amber)
             .padding(.leading, 2)
             .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var dictationPreview: some View {
+        if !store.dictationPreview.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                CSIconView(icon: .mic, size: 10.5, color: CSColor.terracottaLight)
+                Text(store.dictationPreview)
+                    .font(CSFont.ui(12.5 * textScale))
+                    .foregroundStyle(CSColor.textFaint)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.leading, 2)
+            .transition(.opacity.combined(with: .move(edge: .top)))
         }
     }
 

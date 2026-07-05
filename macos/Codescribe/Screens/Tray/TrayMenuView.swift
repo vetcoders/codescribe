@@ -12,6 +12,7 @@ import SwiftUI
 // the composite TrayEngine.
 struct TrayMenuView: View {
     @ObservedObject var viewModel: TrayViewModel
+    @ObservedObject var trayStatus: TrayStatusStore
     // macOS 14+ action to open the app's Settings scene — replaces the fragile
     // private `showSettingsWindow:` selector that stopped working on newer macOS.
     @Environment(\.openSettings) private var openSettings
@@ -20,6 +21,7 @@ struct TrayMenuView: View {
         GlassPanel(cornerRadius: CSRadius.tray) {
             VStack(spacing: 0) {
                 statusHeader
+                trayStatusRow
                 TrayDivider(top: 3, bottom: 5)
 
                 primaryActions
@@ -59,22 +61,40 @@ struct TrayMenuView: View {
         HStack(spacing: 9) {
             Wordmark(size: 14)
             Spacer(minLength: 8)
-            // Separate view type on live vs idle (same rule as the overlay header):
-            // the animated pill exists only while recording; idle uses the static
-            // type so no @State/onAppear animation can survive into idle.
-            if viewModel.isRecording && !viewModel.isStartingDictation {
+            // Separate view type on active vs idle/error (same rule as the overlay
+            // header): the animated pill exists only for live status phases.
+            if trayStatus.shouldRipple {
                 StatusPill(
-                    text: viewModel.statusText,
-                    color: viewModel.statusColor,
+                    text: trayStatus.compactLabel,
+                    color: trayStatus.color,
                     rippling: true
                 )
             } else {
-                StaticStatusPill(text: viewModel.statusText, color: viewModel.statusColor)
+                StaticStatusPill(text: trayStatus.compactLabel, color: trayStatus.color)
             }
         }
         .padding(.horizontal, 12)
         .padding(.top, 11)
         .padding(.bottom, 10)
+    }
+
+    private var trayStatusRow: some View {
+        HStack(spacing: 7) {
+            CSIconView(icon: trayStatus.icon, size: 11, weight: .bold, color: trayStatus.color)
+            Text(trayStatus.status.menuLabel)
+                .font(CSFont.ui(12, .medium))
+                .foregroundStyle(trayStatus.color)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(trayStatus.color.opacity(0.10))
+        )
+        .padding(.horizontal, 5)
+        .padding(.bottom, 3)
     }
 
     // MARK: - Primary actions
@@ -273,7 +293,7 @@ private struct TrayNoteStatusRow: View {
 #Preview("Tray · Idle") {
     FontLoader.register()
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
-    return TrayMenuView(viewModel: vm)
+    return TrayMenuView(viewModel: vm, trayStatus: .preview())
         .padding(40)
         .background(LinearGradient(
             colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
@@ -284,7 +304,10 @@ private struct TrayNoteStatusRow: View {
 #Preview("Tray · Recording") {
     FontLoader.register()
     let vm = TrayViewModel(engine: MockTrayEngine(recording: true), isRecording: true)
-    return TrayMenuView(viewModel: vm)
+    return TrayMenuView(
+        viewModel: vm,
+        trayStatus: .preview(kind: .listening, tone: .active, label: "Status: Recording...")
+    )
         .padding(40)
         .background(LinearGradient(
             colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],

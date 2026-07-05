@@ -18,7 +18,7 @@ private let notesLog = Logger(
 )
 
 @main
-struct CodescribeRedesignApp: App {
+struct CodescribeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let helpURL = URL(string: "https://vetcoders.github.io/codescribe/")!
 
     private let model = AppModel.shared
+    private let trayStatus = TrayStatusStore()
     private let hotkeys = CodescribeHotkeys()
     // Stateless bridge handles backing the tray's app-level actions (notes,
     // config paths, transcript history). Each call reads/writes live on-disk truth.
@@ -61,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // kill live voice-reply rendering. Held for the app's lifetime.
     private var voiceDeliveryListener: VoiceDeliveryListener?
     private var statusItem: NSStatusItem!
+    private var hasUnreadAgentUpdate = false
     // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
     // surface (overlay panel vs agent window). Held so it can be removed on quit.
     private var textScaleMonitor: Any?
@@ -100,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 300, height: 460)
         popover.contentViewController = NSHostingController(
-            rootView: TrayMenuView(viewModel: model.tray)
+            rootView: TrayMenuView(viewModel: model.tray, trayStatus: trayStatus)
         )
 
         model.tray.onIntent = { intent in
@@ -340,41 +342,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            // Brand mark from Assets.xcassets (template image → auto-tints for
-            // light/dark menu bars). If it's ever missing that's a build bug to
-            // surface (empty item), not something to paper over with an old glyph.
-            let image = NSImage(named: "MenuBarIcon")
-            image?.isTemplate = true
-            button.image = image
             button.imagePosition = .imageOnly
             button.title = ""
-            button.toolTip = "codescribe"
             button.action = #selector(toggleTray)
             button.target = self
         }
         statusItem = item
+        trayStatus.onChange = { [weak self] _ in
+            self?.applyStatusItemStatus()
+        }
+        applyStatusItemStatus()
     }
 
-    private func showAgent() {
-        if agentWindow == nil {
-            // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
-            // bodies + composer via `\.csTextScale`, independently of the overlay.
-            let root = TextScaleRoot(controller: model.chatTextScale) {
-                AgentChatView(store: model.chat)
-                    .preferredColorScheme(.dark)
+    private func applyStatusItemStatus() {
+        guard let button = statusItem?.button else { return }
+        button.image = statusItemImage()
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
+        button.toolTip = hasUnreadAgentUpdate
+            ? "\(trayStatus.status.tooltip) - agent reply ready"
+            : trayStatus.status.tooltip
+    }
+
+    private func statusItemImage() -> NSImage? {
+        for symbolName in trayStatus.menuBarSymbolNames {
+            if let image = NSImage(
+                systemSymbolName: symbolName,
+                accessibilityDescription: trayStatus.status.tooltip
+            ) {
+                image.isTemplate = true
+                return image
             }
-            let hosting = NSHostingController(rootView: root)
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "codescribe — Agent"
-            window.setContentSize(NSSize(width: 1120, height: 720))
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-            window.titlebarAppearsTransparent = true
-            window.isReleasedWhenClosed = false
-            window.center()
-            agentWindow = window
         }
-        NSApp.activate(ignoringOtherApps: true)
-        agentWindow?.makeKeyAndOrderFront(nil)
+
+        // Brand mark from Assets.xcassets (template image → auto-tints for
+        // light/dark menu bars). If it's ever missing that's a build bug to
+        // surface (empty item), not something to paper over with an old glyph.
+        let image = NSImage(named: "MenuBarIcon")
+        image?.isTemplate = true
+        return image
+    }
+
+    private func ensureAgentWindow() -> NSWindow {
+        if let agentWindow { return agentWindow }
+        // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
+        // bodies + composer via `\.csTextScale`, independently of the overlay.
+        let root = TextScaleRoot(controller: model.chatTextScale) {
+            AgentChatView(store: model.chat)
+                .preferredColorScheme(.dark)
+        }
+        let hosting = NSHostingController(rootView: root)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "codescribe — Agent"
+        window.setContentSize(NSSize(width: 1120, height: 720))
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        window.center()
+        agentWindow = window
+        return window
+    }
+
+    private func showAgent(activating: Bool = true) {
+        let window = ensureAgentWindow()
+        if activating {
+            hasUnreadAgentUpdate = false
+            applyStatusItemStatus()
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        } else if !window.isVisible {
+            hasUnreadAgentUpdate = true
+            applyStatusItemStatus()
+            window.orderFrontRegardless()
+        }
+    }
+
+    private func revealAgentForDelivery() {
+        if agentWindow?.isVisible == true { return }
+        showAgent(activating: false)
     }
 
     private func showTray() {
@@ -403,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// of the `hotkeys.start()` Task above.
     private func registerVoiceDelivery() {
         let listener = VoiceDeliveryListener(store: model.chat) { [weak self] in
-            self?.showAgent()
+            self?.revealAgentForDelivery()
         }
         voiceDeliveryListener = listener
         hotkeys.setAgentDeliveryListener(listener: listener)

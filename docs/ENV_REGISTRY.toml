@@ -311,11 +311,11 @@ category = "stt"
 description = "Thermal multiplier for critical system thermal pressure"
 
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
-default = "codescribe-stt-bridge"
+default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Executable path for SpeechAnalyzer bridge binary"
+description = "Optional SpeechAnalyzer bridge override; unset uses bundled Contents/MacOS helper before PATH"
 
 [vars.CODESCRIBE_APPLE_STT_LOCALE]
 default = "pl-PL"
@@ -529,6 +529,13 @@ reload = "hot"
 category = "llm"
 description = "LLM provider for formatting mode: openai-responses or anthropic-messages"
 
+[vars.LLM_FORMATTING_AUTH_MODE]
+default = "api-key"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Auth mode for formatting LLM provider: api-key or provider-account"
+
 [vars.LLM_FORMATTING_MODEL]
 default = ""
 type = "string"
@@ -563,6 +570,13 @@ type = "string"
 reload = "hot"
 category = "llm"
 description = "LLM provider for assistive/agent mode: openai-responses or anthropic-messages"
+
+[vars.LLM_ASSISTIVE_AUTH_MODE]
+default = "api-key"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Auth mode for assistive LLM provider: api-key or provider-account"
 
 [vars.LLM_ANTHROPIC_ENDPOINT]
 default = "https://api.anthropic.com/v1/messages"
@@ -856,6 +870,13 @@ type = "string"
 reload = "restart"
 category = "storage"
 description = "Override data directory (default: ~/.codescribe)"
+
+[vars.CODESCRIBE_DISABLE_KEYCHAIN]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Disable macOS Keychain access and use env-backed secrets for tests/CI"
 
 [vars.CODESCRIBE_ENV_PATH]
 default = ""

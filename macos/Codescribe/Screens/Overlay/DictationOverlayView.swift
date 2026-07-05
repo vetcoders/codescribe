@@ -17,12 +17,17 @@ struct DictationOverlayView: View {
 
     // Mock-derived geometry constants (not design tokens — local to this surface).
     // The window is user-resizable; content flows to fill whatever frame it gets,
-    // never narrower than `windowMinWidth`. `windowMinWidth` MUST stay ≥ the action
-    // row's intrinsic width and `DictationOverlayWindow.minSize.height` MUST stay ≥
-    // the chrome + `bodyMinHeight` sum — otherwise the content column overflows the
-    // window frame and GlassPanel paints its rounded background past the window rect,
-    // squaring the visible corners (see DictationOverlayWindow's corner note).
-    private let windowMinWidth: CGFloat = 390
+    // never narrower than `windowMinWidth`. Below `actionIconOnlyThreshold`, the
+    // action row switches to fixed icon buttons so the old full-label intrinsic width
+    // no longer dictates the window floor. `DictationOverlayWindow.minSize.height`
+    // MUST stay ≥ the chrome + `bodyMinHeight` sum — otherwise the content column
+    // overflows the window frame and GlassPanel paints its rounded background past
+    // the window rect, squaring the visible corners (see DictationOverlayWindow's
+    // corner note).
+    private let windowMinWidth: CGFloat = 320
+    private let actionIconOnlyThreshold: CGFloat = 380
+    private let actionRowContentHeight: CGFloat = 38
+    private let actionIconButtonSize: CGFloat = 36
     private let bodyMinHeight: CGFloat = 48
     private let buttonRadius: CGFloat = 10
 
@@ -238,86 +243,146 @@ struct DictationOverlayView: View {
 
     // MARK: Action row
 
+    private enum ActionButtonTone {
+        case primary
+        case secondary
+        case ghost
+    }
+
     private var actionRow: some View {
+        GeometryReader { proxy in
+            let iconOnly = proxy.size.width < actionIconOnlyThreshold
+            actionRowContent(iconOnly: iconOnly)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .frame(height: actionRowContentHeight)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func actionRowContent(iconOnly: Bool) -> some View {
         HStack(spacing: 8) {
             if state.mode == .listening {
-                Button(action: { state.stop() }) {
-                    Text("Finish")
-                        .font(CSFont.bodyStrong)
-                        .foregroundStyle(CSColor.ink)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
-                        .background(CSColor.terracotta)
-                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
-                }
-                .buttonStyle(.plain)
+                actionButton(
+                    title: "Finish",
+                    icon: "checkmark",
+                    tone: .primary,
+                    iconOnly: iconOnly,
+                    action: { state.stop() }
+                )
             } else if state.mode == .formatted {
                 // `.noSpeech` intentionally shows no Copy/Format/Send — there is
                 // nothing to act on; only the trailing Close remains.
-                Button(action: { state.copyToPasteboard() }) {
-                    Text("Copy")
-                        .font(CSFont.bodyStrong)
-                        .foregroundStyle(CSColor.ink)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(CSColor.terracotta)
-                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
-                }
-                .buttonStyle(.plain)
+                actionButton(
+                    title: "Copy",
+                    icon: "doc.on.doc",
+                    tone: .primary,
+                    iconOnly: iconOnly,
+                    action: { state.copyToPasteboard() }
+                )
 
-                Button(action: { state.formatTranscript() }) {
-                    Text(state.isFormatting ? "Formatting..." : "Format")
-                        .font(CSFont.bodyStrong)
-                        .foregroundStyle(CSColor.textBody)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(CSColor.surfaceRaised(0.04))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
-                                .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(!state.canFormat)
-                .opacity(state.canFormat ? 1 : 0.45)
+                actionButton(
+                    title: state.isFormatting ? "Formatting..." : "Format",
+                    help: "Format",
+                    icon: "wand.and.stars",
+                    tone: .secondary,
+                    iconOnly: iconOnly,
+                    isEnabled: state.canFormat,
+                    action: { state.formatTranscript() }
+                )
 
-                Button(action: { state.sendToAgent() }) {
-                    Text("Send")
-                        .font(CSFont.bodyStrong)
-                        .foregroundStyle(CSColor.textBody)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(CSColor.surfaceRaised(0.04))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
-                                .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .help("Send transcript to the agent")
+                actionButton(
+                    title: "Send",
+                    help: "Send transcript to the agent",
+                    icon: "paperplane.fill",
+                    tone: .secondary,
+                    iconOnly: iconOnly,
+                    action: { state.sendToAgent() }
+                )
             }
 
             Spacer(minLength: 0)
 
-            Button(action: { state.close() }) {
-                Text("Close")
-                    .font(CSFont.bodyStrong)
-                    .foregroundStyle(CSColor.textMuted)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.clear)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
-                            .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: buttonRadius, style: .continuous))
-            }
-            .buttonStyle(.plain)
+            actionButton(
+                title: "Close",
+                icon: "xmark",
+                tone: .ghost,
+                iconOnly: iconOnly,
+                action: { state.close() }
+            )
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+    }
+
+    private func actionButton(
+        title: String,
+        help: String? = nil,
+        icon: String,
+        tone: ActionButtonTone,
+        iconOnly: Bool,
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            actionButtonLabel(title: title, icon: icon, tone: tone, iconOnly: iconOnly)
+        }
+        .buttonStyle(.plain)
+        .help(help ?? title)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+
+    @ViewBuilder
+    private func actionButtonLabel(
+        title: String,
+        icon: String,
+        tone: ActionButtonTone,
+        iconOnly: Bool
+    ) -> some View {
+        let shape = RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
+        Group {
+            if iconOnly {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: actionIconButtonSize, height: actionIconButtonSize)
+            } else {
+                Text(title)
+                    .font(CSFont.bodyStrong)
+                    .padding(.horizontal, tone == .primary ? 18 : 14)
+                    .padding(.vertical, 10)
+            }
+        }
+        .foregroundStyle(actionForeground(tone))
+        .background(actionBackground(tone))
+        .overlay {
+            if let border = actionBorder(tone) {
+                shape.strokeBorder(border, lineWidth: 1)
+            }
+        }
+        .clipShape(shape)
+    }
+
+    private func actionForeground(_ tone: ActionButtonTone) -> Color {
+        switch tone {
+        case .primary: return CSColor.ink
+        case .secondary: return CSColor.textBody
+        case .ghost: return CSColor.textMuted
+        }
+    }
+
+    private func actionBackground(_ tone: ActionButtonTone) -> Color {
+        switch tone {
+        case .primary: return CSColor.terracotta
+        case .secondary: return CSColor.surfaceRaised(0.04)
+        case .ghost: return Color.clear
+        }
+    }
+
+    private func actionBorder(_ tone: ActionButtonTone) -> Color? {
+        switch tone {
+        case .primary: return nil
+        case .secondary, .ghost: return CSColor.hairline(0.12)
+        }
     }
 
     // MARK: Footer
@@ -395,11 +460,11 @@ private struct ToastPill: View {
 }
 
 #Preview("Transcribing") {
-    // Pinned to the window's min content size (390×250) so this preview doubles as
+    // Pinned to the window's min content size (320×250) so this preview doubles as
     // the min-size regression check: "transcribing…" fills the main status slot and
     // the transcript line is not vertically clipped at the floor.
     DictationOverlayView(state: .previewTranscribing())
-        .frame(width: 390, height: 250)
+        .frame(width: 320, height: 250)
         .padding(44)
         .background(
             LinearGradient(
@@ -415,7 +480,7 @@ private struct ToastPill: View {
     // Copy/Format/Send, only Close. Pinned to the min content size so it also
     // guards the floor layout for this outcome.
     DictationOverlayView(state: .previewNoSpeech())
-        .frame(width: 390, height: 250)
+        .frame(width: 320, height: 250)
         .padding(44)
         .background(
             LinearGradient(
@@ -428,6 +493,19 @@ private struct ToastPill: View {
 
 #Preview("Formatted") {
     DictationOverlayView(state: .previewFormatted())
+        .padding(44)
+        .background(
+            LinearGradient(
+                colors: [Color(hex: 0x15110E), CSColor.glassUnder],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        )
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Formatted · icon actions") {
+    DictationOverlayView(state: .previewFormatted())
+        .frame(width: 340, height: 250)
         .padding(44)
         .background(
             LinearGradient(
