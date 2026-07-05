@@ -526,11 +526,19 @@ private struct CodeBlockView: View {
     /// result and never highlights mid-stream.
     private struct HighlightKey: Equatable {
         let content: String
+        let language: String?
         let highlightable: Bool
         let dark: Bool
     }
 
     var body: some View {
+        let highlightKey = HighlightKey(
+            content: content,
+            language: language,
+            highlightable: highlightable,
+            dark: colorScheme == .dark
+        )
+
         codeText
             .font(CSFont.mono(size - 1))
             // Base colour for runs the theme leaves unstyled; the highlighter's
@@ -555,14 +563,26 @@ private struct CodeBlockView: View {
                 }
             }
             .onHover { hovering = $0 }
-            .task(id: HighlightKey(content: content, highlightable: highlightable,
-                                   dark: colorScheme == .dark)) {
-                guard highlightable, !content.isEmpty else {
+            .task(id: highlightKey) {
+                guard highlightKey.highlightable, !highlightKey.content.isEmpty else {
                     highlighted = nil
                     return
                 }
-                highlighted = await CodeHighlighter.attributed(
-                    content, language: language, dark: colorScheme == .dark)
+                highlighted = nil
+                let result = await CodeHighlighter.attributed(
+                    highlightKey.content,
+                    language: highlightKey.language,
+                    dark: highlightKey.dark
+                )
+                guard !Task.isCancelled,
+                      highlightKey == HighlightKey(
+                        content: content,
+                        language: language,
+                        highlightable: highlightable,
+                        dark: colorScheme == .dark
+                      )
+                else { return }
+                highlighted = result
             }
     }
 
