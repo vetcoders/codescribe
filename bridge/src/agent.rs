@@ -233,12 +233,15 @@ fn build_bridge_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
 
 /// Compose the agent system prompt exactly like the controller path
 /// (`app/controller/helpers.rs::compose_agent_system_prompt`): the base assistive
-/// prompt plus the WORKSPACE section (6238ca1) that pins project roots and tells
-/// the model to resolve names via `list_projects` instead of guessing paths.
+/// prompt, the WORKSPACE section (6238ca1) that pins project roots and tells the
+/// model to resolve names via `list_projects` instead of guessing paths, and the
+/// review-tool + connector doctrine for long-running MCP review calls and
+/// GitHub-connector fallback.
 fn compose_agent_system_prompt() -> String {
     let base = codescribe_core::config::prompts::get_assistive_prompt();
     let workspace = codescribe::agent::tools::workspace::workspace_prompt_section();
-    format!("{base}\n\n{workspace}")
+    let doctrine = codescribe::agent::tools::doctrine::review_doctrine_prompt_section();
+    format!("{base}\n\n{workspace}\n\n{doctrine}")
 }
 
 /// Load + validate composer attachments into vision `ImageAttachment`s.

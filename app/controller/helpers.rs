@@ -302,13 +302,16 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
     }
 }
 
-/// Compose the agent system prompt: the base assistive prompt plus a workspace
+/// Compose the agent system prompt: the base assistive prompt, the workspace
 /// section that pins the configured project roots and tells the model to resolve
-/// project names via `list_projects` instead of guessing filesystem paths.
+/// project names via `list_projects` instead of guessing filesystem paths, and
+/// the review-tool + connector doctrine that governs long-running MCP review
+/// calls and GitHub-connector fallback.
 fn compose_agent_system_prompt() -> String {
     let base = crate::config::get_assistive_prompt();
     let workspace = crate::agent::tools::workspace::workspace_prompt_section();
-    format!("{base}\n\n{workspace}")
+    let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
+    format!("{base}\n\n{workspace}\n\n{doctrine}")
 }
 
 /// Title-case a `snake_case` / `kebab-case` identifier into readable words.

@@ -67,7 +67,14 @@ final class MockMCPAdminEngine: MCPAdminEngine {
     func removeServer(name: String) throws { servers.removeAll { $0.name == name } }
 
     func testServer(_ name: String) async -> CsMcpTestResult {
-        CsMcpTestResult(ok: true, toolCount: 7, error: "")
+        CsMcpTestResult(
+            ok: true,
+            toolCount: 7,
+            serverName: "\(name).mcp.v1",
+            serverVersion: "0.4.0",
+            protocolVersion: "2025-06-18",
+            error: ""
+        )
     }
 }
 
