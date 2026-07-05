@@ -290,21 +290,21 @@ private struct TrayNoteStatusRow: View {
 
 // MARK: - Previews (standalone, mock-seeded)
 
+#if DEBUG
 #Preview("Tray · Idle") {
-    FontLoader.register()
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
-    return TrayMenuView(viewModel: vm, trayStatus: .preview())
+    TrayMenuView(viewModel: vm, trayStatus: .preview())
         .padding(40)
         .background(LinearGradient(
             colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
             startPoint: .topLeading, endPoint: .bottomTrailing
         ))
+        .onAppear { FontLoader.register() }
 }
 
 #Preview("Tray · Recording") {
-    FontLoader.register()
     let vm = TrayViewModel(engine: MockTrayEngine(recording: true), isRecording: true)
-    return TrayMenuView(
+    TrayMenuView(
         viewModel: vm,
         trayStatus: .preview(kind: .listening, tone: .active, label: "Status: Recording...")
     )
@@ -313,4 +313,6 @@ private struct TrayNoteStatusRow: View {
             colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
             startPoint: .topLeading, endPoint: .bottomTrailing
         ))
+        .onAppear { FontLoader.register() }
 }
+#endif
