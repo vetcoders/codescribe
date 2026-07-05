@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let helpURL = URL(string: "https://vetcoders.github.io/codescribe/")!
 
     private let model = AppModel.shared
+    private let trayStatus = TrayStatusStore()
     private let hotkeys = CodescribeHotkeys()
     // Stateless bridge handles backing the tray's app-level actions (notes,
     // config paths, transcript history). Each call reads/writes live on-disk truth.
@@ -100,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 300, height: 460)
         popover.contentViewController = NSHostingController(
-            rootView: TrayMenuView(viewModel: model.tray)
+            rootView: TrayMenuView(viewModel: model.tray, trayStatus: trayStatus)
         )
 
         model.tray.onIntent = { intent in
@@ -340,19 +341,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            // Brand mark from Assets.xcassets (template image → auto-tints for
-            // light/dark menu bars). If it's ever missing that's a build bug to
-            // surface (empty item), not something to paper over with an old glyph.
-            let image = NSImage(named: "MenuBarIcon")
-            image?.isTemplate = true
-            button.image = image
             button.imagePosition = .imageOnly
             button.title = ""
-            button.toolTip = "codescribe"
             button.action = #selector(toggleTray)
             button.target = self
         }
         statusItem = item
+        trayStatus.onChange = { [weak self] _ in
+            self?.applyStatusItemStatus()
+        }
+        applyStatusItemStatus()
+    }
+
+    private func applyStatusItemStatus() {
+        guard let button = statusItem?.button else { return }
+        button.image = statusItemImage()
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.toolTip = trayStatus.status.tooltip
+    }
+
+    private func statusItemImage() -> NSImage? {
+        for symbolName in trayStatus.menuBarSymbolNames {
+            if let image = NSImage(
+                systemSymbolName: symbolName,
+                accessibilityDescription: trayStatus.status.tooltip
+            ) {
+                image.isTemplate = true
+                return image
+            }
+        }
+
+        // Brand mark from Assets.xcassets (template image → auto-tints for
+        // light/dark menu bars). If it's ever missing that's a build bug to
+        // surface (empty item), not something to paper over with an old glyph.
+        let image = NSImage(named: "MenuBarIcon")
+        image?.isTemplate = true
+        return image
     }
 
     private func showAgent() {
