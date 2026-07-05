@@ -177,9 +177,7 @@ private struct EngineMenuLabel: View {
                 .font(CSFont.ui(12.5, .semibold))
                 .foregroundStyle(CSColor.textHigh)
                 .lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(CSColor.textFaint)
+            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
         }
     }
 }
@@ -264,9 +262,7 @@ struct WorkspaceRootsSection: View {
             Button {
                 rows.remove(at: index)
             } label: {
-                Image(systemName: "minus.circle")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(CSColor.textFaint)
+                CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.textFaint)
             }
             .buttonStyle(.plain)
         }
@@ -373,9 +369,7 @@ private struct PermissionMatrixCell: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text(granted ? "✓" : "!")
-                .font(CSFont.ui(11, .semibold))
-                .foregroundStyle(accentLight)
+            CSIconView(icon: granted ? .success : .warning, size: 11, weight: .semibold, color: accentLight)
             Text(kind.rawValue)
                 .font(CSFont.ui(12.5, .medium))
                 .foregroundStyle(CSColor.textBodyAlt)

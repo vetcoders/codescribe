@@ -42,7 +42,7 @@ struct AgentStatusSection: View {
                 model.refreshAgentStatus()
             } label: {
                 HStack(spacing: 5) {
-                    Text("↻").font(CSFont.mono(11, .semibold))
+                    CSIconView(icon: .refresh, size: 11, weight: .semibold)
                     Text("Refresh").font(CSFont.mono(11, .semibold))
                 }
                 .foregroundStyle(CSColor.textBodyAlt)

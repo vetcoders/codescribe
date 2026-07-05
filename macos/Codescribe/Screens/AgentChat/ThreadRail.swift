@@ -22,9 +22,7 @@ struct ThreadRail: View {
 
             // Search field
             HStack(spacing: 8) {
-                Text("⌕")
-                    .font(.system(size: 12))
-                    .foregroundStyle(CSColor.textFaintAlt)
+                CSIconView(icon: .search, size: 12, color: CSColor.textFaintAlt)
                 TextField("", text: $search, prompt:
                     Text("search threads")
                         .font(CSFont.mono(12, .medium))
@@ -209,11 +207,14 @@ private struct ThreadRow: View {
                 }
                 Spacer(minLength: 4)
                 Button(action: onToggleFavorite) {
-                    Image(systemName: thread.isFavorite ? "star.fill" : "star")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(thread.isFavorite ? CSColor.oliveLight : CSColor.textFaintAlt)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
+                    CSIconView(
+                        icon: thread.isFavorite ? .starFill : .star,
+                        size: 11,
+                        weight: .semibold,
+                        color: thread.isFavorite ? CSColor.oliveLight : CSColor.textFaintAlt
+                    )
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .opacity(thread.isFavorite || isActive ? 1 : 0.38)

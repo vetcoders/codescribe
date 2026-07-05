@@ -127,6 +127,7 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     func onRecordingPreparing() {}
     func onRecordingStarted() {}
     func onRecordingStopped() {}
+    func onRecordingFinalising() {}
     func onPreview(text: String) {}
     func onCorrection(text: String, previousText: String) {}
     func onFinal(utteranceId: UInt64, text: String) {}

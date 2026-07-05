@@ -112,6 +112,13 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_recording_preparing(&self);
     fn on_recording_started(&self);
     fn on_recording_stopped(&self);
+    /// Capture ended and the controller entered `Busy` (final transcription pass).
+    /// Fired BEFORE `on_recording_stopped` (which lands on the terminal Idle) so a
+    /// hotkey hold-release / toggle stop can show a distinct "transcribing" phase
+    /// instead of leaving the live-capture UI up while the final pass runs. The
+    /// Swift-driven Finish path enters that phase itself; this is the native-path
+    /// counterpart. Surfaces with no post-capture phase may leave it a no-op.
+    fn on_recording_finalising(&self);
     fn on_preview(&self, text: String);
     fn on_correction(&self, text: String, previous_text: String);
     fn on_final(&self, utterance_id: u64, text: String);
@@ -620,6 +627,7 @@ mod tests {
         fn on_recording_preparing(&self) {}
         fn on_recording_started(&self) {}
         fn on_recording_stopped(&self) {}
+        fn on_recording_finalising(&self) {}
         fn on_preview(&self, _text: String) {}
         fn on_correction(&self, _text: String, _previous_text: String) {}
         fn on_final(&self, utterance_id: u64, text: String) {

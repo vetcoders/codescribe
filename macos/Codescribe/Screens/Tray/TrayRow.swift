@@ -19,7 +19,7 @@ enum TrayRowStyle {
 
 /// A standard tray action row: icon · label · optional shortcut / chevron.
 struct TrayRow: View {
-    let icon: String
+    let icon: CSIcon
     var iconColor: Color? = nil
     let title: String
     var titleColor: Color = CSColor.textBodyAlt
@@ -46,10 +46,8 @@ struct TrayRow: View {
 
     var body: some View {
         HStack(spacing: 11) {
-            Text(icon)
-                .font(.system(size: 13))
+            CSIconView(icon: icon, size: 13, color: iconColor ?? titleColor)
                 .frame(width: 18)
-                .foregroundStyle(iconColor ?? titleColor)
             Text(title)
                 .font(CSFont.ui(13, titleWeight))
                 .foregroundStyle(titleColor)
@@ -60,9 +58,7 @@ struct TrayRow: View {
                     .foregroundStyle(shortcutColor)
             }
             if showChevron {
-                Text("›")
-                    .font(CSFont.ui(12, .medium))
-                    .foregroundStyle(CSColor.textFaint)
+                CSIconView(icon: .chevronRight, size: 11, color: CSColor.textFaint)
             }
         }
         .padding(.horizontal, 12)

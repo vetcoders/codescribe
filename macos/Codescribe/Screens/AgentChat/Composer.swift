@@ -17,6 +17,10 @@ private let attachLog = Logger(
 struct Composer: View {
     @ObservedObject var store: AgentChatStore
     @FocusState private var fieldFocused: Bool
+    /// Chat text scale (⌘+/-/0) — applied to the message field + placeholder so the
+    /// composer input tracks the message bodies. Chrome (chips, affordance hints,
+    /// icons) keeps its intrinsic size.
+    @Environment(\.csTextScale) private var textScale
 
     // Drag-over is tracked by two OR'd targets so it stays stable as the pointer
     // crosses from the composer padding onto the text field. The outer target
@@ -37,20 +41,22 @@ struct Composer: View {
             HStack(spacing: 10) {
                 // Attach images (NSOpenPanel → staged chips → vision FFI on send).
                 Button(action: pickAttachments) {
-                    Text("📎")
-                        .font(.system(size: 15))
-                        .foregroundStyle(store.pendingAttachments.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+                    CSIconView(
+                        icon: .attach,
+                        size: 15,
+                        color: store.pendingAttachments.isEmpty ? CSColor.textFaint : CSColor.terracottaLight
+                    )
                 }
                 .buttonStyle(.plain)
                 .help("Attach an image (PNG, JPEG, GIF, WebP)")
 
                 TextField("", text: $store.draft, prompt:
                     Text("Type a message…")
-                        .font(CSFont.ui(13.5))
+                        .font(CSFont.ui(13.5 * textScale))
                         .foregroundColor(CSColor.textFaint)
                 )
                 .textFieldStyle(.plain)
-                .font(CSFont.ui(13.5))
+                .font(CSFont.ui(13.5 * textScale))
                 .foregroundStyle(CSColor.textBody)
                 .focused($fieldFocused)
                 .onSubmit { store.send() }
@@ -58,9 +64,7 @@ struct Composer: View {
                 micButton
 
                 Button(action: { store.send() }) {
-                    Text("↑")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(ChatPalette.sendGlyph)
+                    CSIconView(icon: .send, size: 15, weight: .semibold, color: ChatPalette.sendGlyph)
                         .frame(width: 32, height: 32)
                         .background(CSColor.terracotta)
                         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
@@ -159,8 +163,7 @@ struct Composer: View {
     private var dictationFeedback: some View {
         if case let .failed(message) = store.dictationPhase {
             HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.circle")
-                    .font(.system(size: 10.5))
+                CSIconView(icon: .error, size: 10.5)
                 Text(message)
                     .font(CSFont.mono(10.5, .medium))
             }
@@ -191,9 +194,7 @@ struct Composer: View {
             HStack(spacing: 8) {
                 ForEach(store.pendingAttachments) { attachment in
                     HStack(spacing: 6) {
-                        Image(systemName: "photo")
-                            .font(.system(size: 11))
-                            .foregroundStyle(CSColor.terracottaLight)
+                        CSIconView(icon: .photo, size: 11, color: CSColor.terracottaLight)
                         Text(attachment.name)
                             .font(CSFont.mono(10.5, .medium))
                             .foregroundStyle(CSColor.textBodyAlt)
@@ -201,9 +202,7 @@ struct Composer: View {
                             .truncationMode(.middle)
                             .frame(maxWidth: 160)
                         Button(action: { store.removeAttachment(attachment.id) }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(CSColor.textFaint)
+                            CSIconView(icon: .close, size: 9, weight: .bold, color: CSColor.textFaint)
                         }
                         .buttonStyle(.plain)
                         .help("Remove attachment")

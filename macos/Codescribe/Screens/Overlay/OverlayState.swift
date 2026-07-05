@@ -14,7 +14,8 @@ import AppKit
 //                   preserve visible text and append the corrected fragment.
 //   on_final      → completed VAD-bounded utterance → commit + clear preview.
 //   on_vad_active → speech start/stop → drives the WaveformView pulse.
-//   on_no_speech / on_error → transient toast.
+//   on_no_speech → dedicated `.noSpeech` outcome body (Close only).
+//   on_error     → transient toast.
 //
 // AMPLITUDE GAP unchanged: the FFI exposes no audio-level callback, so the
 // waveform is ambient (synthetic eq) and merely gated on VAD activity.
@@ -75,11 +76,15 @@ protocol DictationEngine: AnyObject {
     func transcribeFile(path: String) async throws -> CsTranscription
 }
 
-/// Two-state machine mirrored from the mock: live dictation vs the finalized
-/// transcript returned by `stopRecording`.
+/// State machine mirrored from the mock: live dictation, the finalized
+/// transcript returned by `stopRecording`, or a session that ended without any
+/// usable text (VAD silence / all speech rejected). `.noSpeech` is a dedicated
+/// terminal outcome so the overlay never lands in `.formatted` with an empty
+/// editable FINAL that reads like a crash.
 enum OverlayMode: Equatable {
     case listening
     case formatted
+    case noSpeech
 }
 
 @MainActor
@@ -93,9 +98,19 @@ final class OverlayState: ObservableObject {
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
     @Published var audioReady: Bool = false    // recorder confirmed; STT/VAD may still be warming
     @Published var warmingUp: Bool = false     // true after user intent, before audio/VAD proves life
-    @Published var toast: String?              // transient no-speech / error notice
+    /// Stop was requested and we are awaiting the final transcript. Distinct from
+    /// recording: the waveform must NOT keep pulsing like capture, and the status
+    /// reads "transcribing" so the user can tell recording ended vs. hung. Set only
+    /// on the Swift-observable stop (`runStop`); cleared by finalize / error / reset
+    /// / close so it can never stick. See `WaveformView(transcribing:)`.
+    @Published var transcribing: Bool = false
+    @Published var toast: String?              // transient error notice
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
+    /// Human-facing notice shown in the `.noSpeech` outcome body. Set when a
+    /// session finalizes without usable text; refined by `on_no_speech`'s reason
+    /// so VAD silence and quality-gate rejection read differently.
+    @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
 
     // MARK: Injected collaborators (all optional so #Preview renders standalone)
     /// The recording core. Injected by the orchestrator. Do NOT instantiate here.
@@ -113,7 +128,12 @@ final class OverlayState: ObservableObject {
     /// our hop-to-main bridge stay alive for the lifetime of the overlay.
     private lazy var listener: CsTranscriptionListener = DictationListener(state: self)
 
+    static let defaultNoSpeechNotice = "No speech detected"
+
     private var recording = false
+    /// Reason from `on_no_speech`, captured before the terminal stop so
+    /// `finalizeTranscript` can pick the right notice when it resolves to empty.
+    private var pendingNoSpeechMessage: String?
     private var committedSegments: [OverlayTranscriptSegment] = []
     /// Authoritative post-stop transcript pushed by the Rust controller
     /// (`on_final_transcript_ready` → LocalFinalPass `final_formatted_text`) — the
@@ -147,17 +167,41 @@ final class OverlayState: ObservableObject {
 
     var statusText: String {
         guard mode == .listening else { return "Idle" }
+        if transcribing { return "transcribing" }
         return warmingUp ? "starting" : "recording"
     }
     var statusColor: Color { mode == .listening ? CSColor.terracotta : CSColor.oliveLight }
-    var statusRippling: Bool { mode == .listening && (audioReady || vadActive) }
+    /// Only the live-capture pill ripples. During `transcribing` we swap to the
+    /// static pill so its repeatForever animation tears down — a second visual
+    /// cue that capture has ended.
+    var statusRippling: Bool { mode == .listening && !transcribing && (audioReady || vadActive) }
 
-    var tagText: String { mode == .listening ? "DICTATION" : "FINAL" }
-    var tagColor: Color { mode == .listening ? CSColor.terracottaLight : CSColor.oliveLight }
+    var tagText: String {
+        switch mode {
+        case .listening: return "DICTATION"
+        case .formatted: return "FINAL"
+        case .noSpeech: return "NO SPEECH"
+        }
+    }
+    var tagColor: Color {
+        switch mode {
+        case .listening: return CSColor.terracottaLight
+        case .formatted: return CSColor.oliveLight
+        case .noSpeech: return CSColor.textMuted
+        }
+    }
 
-    var metaText: String { mode == .listening ? "live preview · raw" : "final · transcript" }
+    var metaText: String {
+        switch mode {
+        case .listening: return transcribing ? "finalizing · transcript" : "live preview · raw"
+        case .formatted: return "final · transcript"
+        case .noSpeech: return "no speech · nothing captured"
+        }
+    }
     var footerRight: String {
         if isFormatting { return "formatting" }
+        if mode == .noSpeech { return "no speech" }
+        if mode == .listening && transcribing { return "transcribing" }
         if mode == .listening && warmingUp { return "warming up" }
         if mode == .listening && audioReady && liveText.isEmpty { return "audio live" }
         return mode == .listening ? "vad-gated preview" : "editable"
@@ -170,8 +214,12 @@ final class OverlayState: ObservableObject {
             .joined(separator: " ")
     }
 
-    /// Text shown in the listening body, with the mock's "listening…" placeholder.
+    /// Text shown in the listening body, in the SAME prominent slot that renders
+    /// "listening…"/"starting…" during capture. The transcribing phase wins over any
+    /// committed text so the post-capture state surfaces "transcribing…" here (not the
+    /// raw streaming assembly) — the main-status counterpart to the header pill.
     var listeningDisplay: String {
+        if transcribing { return "transcribing…" }
         if !liveText.isEmpty { return liveText }
         return warmingUp ? "starting…" : "listening…"
     }
@@ -197,8 +245,10 @@ final class OverlayState: ObservableObject {
     }
 
     /// Stop the mic and flip to the finalized transcript returned by the core.
+    /// Ignored while already transcribing so a second Finish tap during the
+    /// awaited `stopRecording()` cannot re-enter and hit "no active recording".
     func stop() {
-        guard engine != nil, recording else { return }
+        guard engine != nil, recording, !transcribing else { return }
         Task { @MainActor in await self.runStop() }
     }
 
@@ -246,15 +296,21 @@ final class OverlayState: ObservableObject {
 
     private func runStop() async {
         guard let engine else { return }
+        // Enter the explicit "transcribing" phase for the whole awaited stop: the
+        // waveform stops pulsing like capture and the status reads "transcribing"
+        // instead of leaving the recording UI up while the final pass runs.
+        transcribing = true
+        warmingUp = false
         do {
             // The controller bridge returns "" here; the authoritative transcript
             // is the id-ordered assembly of `UtteranceFinal` events (see liveText).
             _ = try await engine.stopRecording()
             recording = false
-            finalizeTranscript()
+            finalizeTranscript() // clears `transcribing` as it flips to `.formatted`
         } catch {
             recording = false
             warmingUp = false
+            transcribing = false
             errorMessage = "Couldn't finalize transcript: \(error)"
             showToast("Couldn't finalize transcript")
         }
@@ -283,6 +339,7 @@ final class OverlayState: ObservableObject {
         vadActive = false
         audioReady = false
         warmingUp = false
+        transcribing = false
         onClose?()
     }
 
@@ -328,6 +385,21 @@ final class OverlayState: ObservableObject {
         cancelWarmupWatchdog()
         recording = false
         finalizeTranscript()
+    }
+
+    /// Native hold-release / toggle stop: the controller entered `Busy` (final
+    /// transcription pass) but no Swift-side `runStop` ran, so nothing had flipped
+    /// us out of the live-capture UI. Enter the same "transcribing" phase the
+    /// Finish button uses (waveform stops pulsing like capture, status reads
+    /// "transcribing"). The terminal `on_recording_stopped` (→ `finalizeTranscript`)
+    /// clears it, as do error / close / reset. Cancels the warmup watchdog because
+    /// reaching finalisation proves the session progressed. Idempotent: a repeated
+    /// `Busy` broadcast (or one arriving after finalize) is a no-op.
+    func handleRecordingFinalising() {
+        guard recording, !finalized, !transcribing else { return }
+        cancelWarmupWatchdog()
+        warmingUp = false
+        transcribing = true
     }
 
     // MARK: Warmup watchdog (orphaned "starting" overlay recovery)
@@ -468,6 +540,30 @@ final class OverlayState: ObservableObject {
         finalizeTranscript()
     }
 
+    /// `on_no_speech` — the engine adjudicated the session with no usable speech.
+    /// Fires BEFORE the terminal `on_recording_stopped`, so we only record the
+    /// user-facing reason here; `finalizeTranscript` treats it as the engine's
+    /// no-usable-speech adjudication (unless an authoritative final arrives) and
+    /// flips into the dedicated `.noSpeech` outcome. If the reason arrives AFTER
+    /// an already-empty finalize (late), upgrade the FINAL in place.
+    func applyNoSpeech(reason: String) {
+        let message: String
+        switch reason {
+        case "all_speech_rejected_by_quality_gate":
+            message = "Speech too quiet or short — adjust the mic and try again"
+        default:
+            message = OverlayState.defaultNoSpeechNotice
+        }
+        pendingNoSpeechMessage = message
+        if finalized, mode == .formatted,
+           formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            noSpeechNotice = message
+            mode = .noSpeech
+        } else if mode == .noSpeech {
+            noSpeechNotice = message
+        }
+    }
+
     /// The Rust controller's authoritative post-stop transcript (LocalFinalPass) —
     /// the SAME text that is delivered/pasted and shown by tray "Copy". Stored so
     /// the single `finalizeTranscript()` uses it instead of the raw streaming
@@ -483,6 +579,11 @@ final class OverlayState: ObservableObject {
         authoritativeFinalText = clean
         if mode == .formatted, formattedText != clean {
             formattedText = clean
+        } else if mode == .noSpeech {
+            // Real text arrived after we finalised to no-speech (empty at the
+            // time): recover it as the normal FINAL rather than losing it.
+            formattedText = clean
+            mode = .formatted
         }
     }
 
@@ -496,12 +597,31 @@ final class OverlayState: ObservableObject {
         let wasFinalized = finalized
         cancelWarmupWatchdog()
         warmingUp = false
+        transcribing = false
         vadActive = false
         audioReady = false
-        commitPreviewIfNeeded()
-        let resolved = usableAuthoritativeFinalText ?? liveText
-        if formattedText != resolved { formattedText = resolved }
-        mode = .formatted
+        let shouldShowNoSpeechOutcome =
+            pendingNoSpeechMessage != nil && usableAuthoritativeFinalText == nil
+        if shouldShowNoSpeechOutcome {
+            preview = ""
+        } else {
+            commitPreviewIfNeeded()
+        }
+        let resolved = shouldShowNoSpeechOutcome ? "" : (usableAuthoritativeFinalText ?? liveText)
+        if resolved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Nothing usable was captured — VAD silence, or all speech rejected by
+            // the quality gate. Surface a dedicated no-speech outcome instead of a
+            // blank editable FINAL (Copy/Format/Send acting on an empty string).
+            // When `on_no_speech` did not fire (empty final without an explicit
+            // event) we treat the empty finalize as no-speech — an honest
+            // approximation, since the user has nothing to act on either way.
+            if formattedText != "" { formattedText = "" }
+            noSpeechNotice = pendingNoSpeechMessage ?? OverlayState.defaultNoSpeechNotice
+            mode = .noSpeech
+        } else {
+            if formattedText != resolved { formattedText = resolved }
+            mode = .formatted
+        }
         // FREEZE: from here, late streaming events are dropped (see the apply guards)
         // so nothing keeps mutating @Published state and re-rendering in Idle.
         finalized = true
@@ -525,7 +645,10 @@ final class OverlayState: ObservableObject {
         committedSegments = []
         committedUtterances = []
         authoritativeFinalText = nil
+        pendingNoSpeechMessage = nil
+        noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false
+        transcribing = false
     }
 
     private func markTranscriptActivity() {
@@ -630,6 +753,25 @@ final class OverlayState: ObservableObject {
         return s
     }
 
+    /// Seeded view model for #Preview in the post-capture transcribing phase.
+    static func previewTranscribing() -> OverlayState {
+        let s = OverlayState()
+        s.mode = .listening
+        s.transcribing = true
+        s.audioReady = true
+        s.committedUtterances = ["add a rate limiter to the login route and write a test for it"]
+        return s
+    }
+
+    /// Seeded view model for #Preview in the no-speech outcome (session ended
+    /// without any usable text).
+    static func previewNoSpeech() -> OverlayState {
+        let s = OverlayState()
+        s.mode = .noSpeech
+        s.noSpeechNotice = OverlayState.defaultNoSpeechNotice
+        return s
+    }
+
     /// Seeded view model for #Preview in the finalized state.
     static func previewFormatted() -> OverlayState {
         let s = OverlayState()
@@ -707,6 +849,9 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func onRecordingStopped() {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.finishControllerRecording() } }
     }
+    func onRecordingFinalising() {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.handleRecordingFinalising() } }
+    }
     func onPreview(text: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyPreview(text) } }
     }
@@ -740,16 +885,11 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyVad(active) } }
     }
     func onNoSpeech(reason: String) {
-        // Distinguish genuine silence from "speech was present but the quality
-        // gates rejected it" — the latter must not lie to the user as "No speech".
-        let message: String
-        switch reason {
-        case "all_speech_rejected_by_quality_gate":
-            message = "Speech too quiet or short — adjust mic"
-        default:
-            message = "No speech"
-        }
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.showToast(message) } }
+        // Route the reason into the dedicated no-speech OUTCOME (a persistent
+        // body + Close), not a transient toast that fades and leaves an empty
+        // editable FINAL behind. `applyNoSpeech` maps the reason to a user-facing
+        // notice (genuine silence vs. quality-gate rejection).
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyNoSpeech(reason: reason) } }
     }
     func onError(message: String) {
         DispatchQueue.main.async {
