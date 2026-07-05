@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // kill live voice-reply rendering. Held for the app's lifetime.
     private var voiceDeliveryListener: VoiceDeliveryListener?
     private var statusItem: NSStatusItem!
+    private var hasUnreadAgentUpdate = false
     // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
     // surface (overlay panel vs agent window). Held so it can be removed on quit.
     private var textScaleMonitor: Any?
@@ -358,7 +359,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = statusItemImage()
         button.imagePosition = .imageOnly
         button.title = ""
-        button.toolTip = trayStatus.status.tooltip
+        button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
+        button.toolTip = hasUnreadAgentUpdate
+            ? "\(trayStatus.status.tooltip) - agent reply ready"
+            : trayStatus.status.tooltip
     }
 
     private func statusItemImage() -> NSImage? {
@@ -380,26 +384,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return image
     }
 
-    private func showAgent() {
-        if agentWindow == nil {
-            // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
-            // bodies + composer via `\.csTextScale`, independently of the overlay.
-            let root = TextScaleRoot(controller: model.chatTextScale) {
-                AgentChatView(store: model.chat)
-                    .preferredColorScheme(.dark)
-            }
-            let hosting = NSHostingController(rootView: root)
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "codescribe — Agent"
-            window.setContentSize(NSSize(width: 1120, height: 720))
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-            window.titlebarAppearsTransparent = true
-            window.isReleasedWhenClosed = false
-            window.center()
-            agentWindow = window
+    private func ensureAgentWindow() -> NSWindow {
+        if let agentWindow { return agentWindow }
+        // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
+        // bodies + composer via `\.csTextScale`, independently of the overlay.
+        let root = TextScaleRoot(controller: model.chatTextScale) {
+            AgentChatView(store: model.chat)
+                .preferredColorScheme(.dark)
         }
-        NSApp.activate(ignoringOtherApps: true)
-        agentWindow?.makeKeyAndOrderFront(nil)
+        let hosting = NSHostingController(rootView: root)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "codescribe — Agent"
+        window.setContentSize(NSSize(width: 1120, height: 720))
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        window.center()
+        agentWindow = window
+        return window
+    }
+
+    private func showAgent(activating: Bool = true) {
+        let window = ensureAgentWindow()
+        if activating {
+            hasUnreadAgentUpdate = false
+            applyStatusItemStatus()
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        } else if !window.isVisible {
+            hasUnreadAgentUpdate = true
+            applyStatusItemStatus()
+            window.orderFront(nil)
+        }
+    }
+
+    private func revealAgentForDelivery() {
+        if agentWindow?.isVisible == true { return }
+        showAgent(activating: false)
     }
 
     private func showTray() {
@@ -428,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// of the `hotkeys.start()` Task above.
     private func registerVoiceDelivery() {
         let listener = VoiceDeliveryListener(store: model.chat) { [weak self] in
-            self?.showAgent()
+            self?.revealAgentForDelivery()
         }
         voiceDeliveryListener = listener
         hotkeys.setAgentDeliveryListener(listener: listener)

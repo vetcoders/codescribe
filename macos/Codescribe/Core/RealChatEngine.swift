@@ -22,9 +22,15 @@ final class RealChatEngine: AgentChatEngine {
         attachmentPaths: [String],
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (_ name: String, _ isError: Bool, _ reason: String) -> Void
+        onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+        onToolResult: @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
     ) async throws -> String {
-        let listener = StreamListener(onDelta: onDelta, onReasoning: onReasoning, onTool: onTool)
+        let listener = StreamListener(
+            onDelta: onDelta,
+            onReasoning: onReasoning,
+            onToolExecuting: onToolExecuting,
+            onToolResult: onToolResult
+        )
         // Text-only path stays byte-identical to before; only route through the
         // vision method when the composer actually staged an image.
         if attachmentPaths.isEmpty {
@@ -49,16 +55,19 @@ final class RealChatEngine: AgentChatEngine {
 final class StreamListener: CsAgentListener, @unchecked Sendable {
     private let onDelta: @MainActor (String) -> Void
     private let onReasoning: @MainActor (String) -> Void
-    private let onTool: @MainActor (String, Bool, String) -> Void
+    private let onToolExecuting: @MainActor (String, String) -> Void
+    private let onToolResult: @MainActor (String, String, Bool, String) -> Void
 
     init(
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
-        onTool: @escaping @MainActor (String, Bool, String) -> Void
+        onToolExecuting: @escaping @MainActor (String, String) -> Void,
+        onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
     ) {
         self.onDelta = onDelta
         self.onReasoning = onReasoning
-        self.onTool = onTool
+        self.onToolExecuting = onToolExecuting
+        self.onToolResult = onToolResult
     }
 
     func onTextDelta(delta: String) {
@@ -69,13 +78,13 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.onReasoning(delta) } }
     }
     func onToolExecuting(name: String, id: String) {
-        // Surfaced via onToolResult (completed) to avoid duplicate activity rows.
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.onToolExecuting(name, id) } }
     }
     func onToolResult(name: String, id: String, summary: String, isError: Bool) {
         // `summary` already carries the tool's error reason on failure (see the
         // Rust AgentUiEvent::ToolResult contract); forward it so the chat row can
         // reveal the cause instead of a bare "failed".
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onTool(name, isError, summary) } }
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.onToolResult(name, id, isError, summary) } }
     }
     func onDone() {}
     func onError(message: String) {
@@ -94,9 +103,8 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
 /// 2. `AppDelegate` must keep a strong reference to it (UniFFI releases the
 ///    foreign callback otherwise); all store mutation hops onto the main actor.
 ///
-/// `onTurnStarted` also reveals the chat window via `revealChat` so the user
-/// actually sees the reply they just spoke for. A more selective reveal policy
-/// (don't steal focus while typing elsewhere) is deferred follow-up work.
+/// `onTurnStarted` also asks AppDelegate for a passive reveal. AppDelegate owns
+/// focus policy: explicit opens activate, voice delivery never steals focus.
 final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable {
     private let store: AgentChatStore
     private let revealChat: @MainActor () -> Void
@@ -121,17 +129,19 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable 
         DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceTextDone(text) } }
     }
     func onReasoningDelta(delta: String) {
-        // Reasoning is not surfaced in the chat bubble (parity with the composer
-        // StreamListener, which also drops it). Deferred to the L variant.
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceReasoning(delta) } }
     }
     func onToolExecuting(name: String, id: String) {
-        // Surfaced via onToolResult (completed) to avoid duplicate activity rows,
-        // matching StreamListener.
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceToolExecuting(name: name, id: id)
+            }
+        }
     }
     func onToolResult(name: String, id: String, summary: String, isError: Bool) {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                self.store.ingestVoiceTool(name: name, isError: isError, reason: summary)
+                self.store.ingestVoiceToolResult(name: name, id: id, isError: isError, reason: summary)
             }
         }
     }
