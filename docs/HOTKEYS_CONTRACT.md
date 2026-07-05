@@ -206,7 +206,7 @@ The remaining runtime env surface only tunes detector behavior:
 
 | Variable                 | Default | Options   | Reload  |
 | ------------------------ | ------- | --------- | ------- |
-| `HOLD_EXCLUSIVE`         | `true`  | `true`, `false` | RESTART |
+| `HOLD_EXCLUSIVE`         | `false` | `true`, `false` | RESTART |
 | `HOLD_START_DELAY_MS`    | `800`   | 0-1000    | RESTART |
 | `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450   | RESTART |
 | `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-10.0  | RESTART |
@@ -350,7 +350,12 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 ### Exclusive Mode
 
-When `HOLD_EXCLUSIVE=true` (default):
+When `HOLD_EXCLUSIVE=false` (default), modifier variants work out of the box:
+
+- Fn+Shift can start voice chat
+- Fn+Command can act on the current selection
+
+Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
 - Option taps are ignored if Option is part of an unrelated hold combo
 - Prevents accidental toggle while trying to hold legacy Ctrl-based combos
