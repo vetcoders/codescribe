@@ -38,7 +38,8 @@ enum CodeHighlighter {
     static func attributed(_ code: String, language: String?, dark: Bool) async -> AttributedString? {
         let colors = HighlightColors.custom(css: dark ? CodeTheme.darkCSS : CodeTheme.lightCSS)
         do {
-            if let hint = language?.trimmingCharacters(in: .whitespaces), !hint.isEmpty {
+            if let rawHint = language?.trimmingCharacters(in: .whitespaces), !rawHint.isEmpty {
+                let hint = rawHint.lowercased()
                 return try await engine.attributedText(code, language: hint, colors: colors)
             }
             return try await engine.attributedText(code, colors: colors)
