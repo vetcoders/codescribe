@@ -159,9 +159,7 @@ private struct AttachmentChip: View {
                     .frame(width: 18, height: 18)
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             } else {
-                Image(systemName: "photo")
-                    .font(.system(size: 11))
-                    .foregroundStyle(CSColor.terracottaLight)
+                CSIconView(icon: .photo, size: 11, color: CSColor.terracottaLight)
             }
             Text(attachment.name)
                 .font(CSFont.mono(10.5, .medium))
@@ -237,8 +235,9 @@ private struct WrapLayout: Layout {
 
 /// One tool-activity line. A successful line is static (`verb detail`). A failed
 /// line that carries a reason becomes a compact disclosure: the row is tappable
-/// and reveals the failure cause (mono, terracotta, up to 3 wrapped lines),
-/// collapsed by default so the list stays scannable.
+/// and reveals the full failure cause (mono, terracotta, wrapping to any length),
+/// collapsed by default so the list stays scannable. Both the verb/detail row and
+/// the revealed reason are text-selectable.
 private struct ToolLineRow: View {
     let line: ToolLine
     @State private var showReason = false
@@ -259,11 +258,15 @@ private struct ToolLineRow: View {
                         + Text(" \(line.detail)").foregroundColor(ChatPalette.toolBody))
                         .font(CSFont.mono(11.5, .medium))
                         .lineSpacing(4)
+                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if failed {
-                        Image(systemName: showReason ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(CSColor.terracottaLight.opacity(0.75))
+                        CSIconView(
+                            icon: showReason ? .chevronDown : .chevronRight,
+                            size: 8,
+                            weight: .semibold,
+                            color: CSColor.terracottaLight.opacity(0.75)
+                        )
                     }
                 }
                 .contentShape(Rectangle())
@@ -275,7 +278,7 @@ private struct ToolLineRow: View {
                 Text(reason)
                     .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(CSColor.terracottaLight)
-                    .lineLimit(3)
+                    .textSelection(.enabled)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -289,11 +292,27 @@ private struct ToolTurn: View {
     let message: ChatMessage
     @State private var expanded = true
 
+    /// Whole-card plain-text export: one line per tool, `verb detail` for a
+    /// successful line and `verb detail — reason` (full, untruncated) for a
+    /// failed one. Mirrors what the rows render, minus the styling.
+    private var copyText: String {
+        message.toolLines.map { line in
+            if let reason = line.reason, !reason.isEmpty {
+                return "\(line.verb) \(line.detail) — \(reason)"
+            }
+            return "\(line.verb) \(line.detail)"
+        }.joined(separator: "\n")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("Tool activity · \(message.timestamp)")
-                .font(CSFont.mono(10, .medium))
-                .foregroundStyle(CSColor.textFaintAlt)
+            HStack(spacing: 8) {
+                Text("Tool activity · \(message.timestamp)")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                CopyMessageButton(text: copyText)
+                Spacer(minLength: 0)
+            }
 
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -305,9 +324,7 @@ private struct ToolTurn: View {
                 .padding(.vertical, 11)
             } label: {
                 HStack(spacing: 8) {
-                    Text("✓")
-                        .font(.system(size: 11))
-                        .foregroundStyle(CSColor.oliveLight)
+                    CSIconView(icon: .success, size: 11, color: CSColor.oliveLight)
                     Text(message.toolTitle)
                         .font(CSFont.mono(11, .semibold))
                         .foregroundStyle(ChatPalette.nameInactive)
@@ -436,8 +453,7 @@ private struct CopyMessageButton: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                    .font(.system(size: 9))
+                CSIconView(icon: copied ? .check : .copy, size: 9)
                 Text(copied ? "copied" : "copy")
                     .font(CSFont.mono(10, .medium))
             }

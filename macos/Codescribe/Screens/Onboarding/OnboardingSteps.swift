@@ -551,9 +551,12 @@ struct DoneStepView: View {
 
     private func summaryRow(_ label: String, granted: Bool) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(granted ? CSColor.oliveLight : CSColor.textFaint)
+            CSIconView(
+                icon: granted ? .checkCircleFill : .circleEmpty,
+                size: 12,
+                weight: .semibold,
+                color: granted ? CSColor.oliveLight : CSColor.textFaint
+            )
             Text(label)
                 .font(CSFont.ui(13))
                 .foregroundStyle(CSColor.textBody)

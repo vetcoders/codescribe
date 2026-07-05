@@ -106,9 +106,7 @@ struct ShortcutsPanel: View {
                 Text(row.bindingLabel)
                     .font(CSFont.mono(12, .semibold))
                     .foregroundStyle(CSColor.terracottaLight)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(CSColor.textMuted)
+                CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textMuted)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)

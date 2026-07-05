@@ -66,7 +66,7 @@ private struct ThreadDetail: View {
             Spacer()
             HStack(spacing: 14) {
                 Button(action: { openSettings() }) {
-                    Text("⚙").font(.system(size: 16))
+                    CSIconView(icon: .settings, size: 16)
                 }
                 .buttonStyle(.plain)
                 .help("Settings")
@@ -99,7 +99,7 @@ private struct ThreadDetail: View {
                 Button("Delete Thread", role: .destructive) { store.delete(thread) }
             }
         } label: {
-            Text("⋯").font(.system(size: 16, weight: .bold)).tracking(1)
+            CSIconView(icon: .more, size: 16, weight: .bold)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
