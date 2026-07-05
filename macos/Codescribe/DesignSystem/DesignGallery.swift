@@ -8,6 +8,8 @@ struct DesignGallery: View {
         ("terracotta", CSColor.terracotta),
         ("terracottaLight", CSColor.terracottaLight),
         ("terracottaDeep", CSColor.terracottaDeep),
+        ("assistive", CSColor.assistive),
+        ("assistiveLight", CSColor.assistiveLight),
         ("olive", CSColor.olive),
         ("oliveLight", CSColor.oliveLight),
         ("amber", CSColor.amber),

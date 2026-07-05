@@ -204,6 +204,8 @@ pub struct CsConfigEntry {
 pub struct CsTrayToggles {
     pub show_dock_icon: bool,
     pub transcription_overlay_enabled: bool,
+    /// UI-initiated recording starts in the assistive lane when enabled.
+    pub start_assistive: bool,
     /// Notes Mode: voice → daily note (no paste). Backed by the core
     /// `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
     pub notes_mode_enabled: bool,
@@ -295,6 +297,7 @@ impl CodescribeConfig {
         CsTrayToggles {
             show_dock_icon: config.show_dock_icon,
             transcription_overlay_enabled: config.transcription_overlay_enabled,
+            start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle
             // ON while dictation still pastes (save_only=false) — an edge desync.

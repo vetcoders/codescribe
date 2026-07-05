@@ -3,7 +3,8 @@ import SwiftUI
 // codescribe design tokens — single source of truth for color.
 // Locked palette from the handoff (README-HANDOFF.md · Design Tokens).
 // Terracotta = the ONE brand accent (active / voice / primary).
-// Olive/green = healthy status. Amber = reasoning/format meta.
+// Assistive violet = voice routed to the agent. Olive/green = healthy status.
+// Amber = reasoning/format meta.
 // NO macOS system-blue anywhere in the redesigned UI.
 
 extension Color {
@@ -28,6 +29,10 @@ enum CSColor {
     static let terracottaLight = Color(hex: 0xE9B79F)     // active labels (text on dark accent)
     static let terracottaDeep = Color(hex: 0xC98A6E)      // secondary voice accent
     static let terracottaTintBars = Color(hex: 0xE6A98F)  // every-5th waveform bar
+
+    // Assistive accent — agent-routed voice
+    static let assistive = Color(hex: 0x9B72F2)
+    static let assistiveLight = Color(hex: 0xC9B7FF)
 
     // Status — olive / green
     static let olive = Color(hex: 0x5F6B3E)               // healthy base

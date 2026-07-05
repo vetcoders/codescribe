@@ -224,6 +224,7 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
         event,
         HotkeyEvent::ToggleNormal
             | HotkeyEvent::ToggleRaw
+            | HotkeyEvent::ToggleAssistive
             | HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 ..
@@ -392,14 +393,12 @@ impl CodescribeHotkeys {
 
     /// Start the same toggle recording flow used by the default hotkey.
     pub async fn start_recording(&self) -> Result<(), CsError> {
-        let event = HotkeyEvent::ToggleNormal;
-        optimistically_show_overlay(&event).await;
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
-        compensate_orphaned_preparing(&controller).await;
-        dispatch.map_err(|error| CsError::Recording {
-            msg: error.to_string(),
-        })
+        start_recording_with_event(HotkeyEvent::ToggleNormal).await
+    }
+
+    /// Start the same toggle flow in the assistive lane for UI-initiated recording.
+    pub async fn start_assistive_recording(&self) -> Result<(), CsError> {
+        start_recording_with_event(HotkeyEvent::ToggleAssistive).await
     }
 
     /// Stop the active legacy-controller recording flow, if one is live.
@@ -464,6 +463,16 @@ impl CodescribeHotkeys {
     pub fn is_active(&self) -> bool {
         hotkeys::is_global_hotkey_manager_active()
     }
+}
+
+async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
+    optimistically_show_overlay(&event).await;
+    let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+    let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
+    compensate_orphaned_preparing(&controller).await;
+    dispatch.map_err(|error| CsError::Recording {
+        msg: error.to_string(),
+    })
 }
 
 async fn dispatch_hotkey_event(

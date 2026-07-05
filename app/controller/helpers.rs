@@ -19,6 +19,8 @@ use codescribe_core::agent::{
 };
 use serde_json::json;
 
+use crate::os::tray_status;
+
 /// Global flag for current session mode.
 /// true = assistive (chat UI), false = non-assistive (simple transcription overlay)
 /// This is set before recording starts and checked by the delta callback.
@@ -31,6 +33,7 @@ static IS_CONVERSATION_SESSION: AtomicBool = AtomicBool::new(false);
 /// Set the current session mode (called before recording starts)
 pub fn set_assistive_session(is_assistive: bool) {
     IS_ASSISTIVE_SESSION.store(is_assistive, Ordering::SeqCst);
+    tray_status::set_tray_assistive_session(is_assistive);
 }
 
 /// Check if current session is assistive mode

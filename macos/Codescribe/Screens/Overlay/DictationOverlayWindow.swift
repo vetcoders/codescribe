@@ -57,7 +57,11 @@ enum DictationOverlayWindow {
     /// compact action row overlap. Enforced for user edge-drag (`minSize`/`contentMinSize`)
     /// AND for every programmatic `setFrame` via `clamp(_:to:)` (AppKit does not
     /// apply `minSize` to programmatic frames).
-    static let minSize = NSSize(width: 320, height: 250)
+    /// Height raised 250 → 300 so the live-transcript body keeps its reserved floor
+    /// (`DictationOverlayView.bodyMinHeight` = waveform block + ~2–3 transcript
+    /// lines) without the content column overflowing the window and squaring the
+    /// glass corners. Width floor (320) is unchanged.
+    static let minSize = NSSize(width: 320, height: 300)
     /// First-launch content size (no persisted value yet).
     static let defaultSize = NSSize(width: 470, height: 330)
     /// Bumped v2 → v3 with the slim-down: the old persisted (larger) content sizes

@@ -42,17 +42,23 @@ protocol TrayEngine: AnyObject {
 
     /// Live dictation state. Async because the core reads it behind its mutex.
     func isRecording() async -> Bool
-    func startRecording() async throws
+    func startRecording(assistive: Bool) async throws
     func stopRecording() async throws
 
     /// Current values for the tray's quick toggles, read from on-disk settings.
     /// `nil` when settings cannot be loaded.
-    func currentToggles() -> (showDockIcon: Bool, overlayEnabled: Bool, notesMode: Bool)?
+    func currentToggles() -> (
+        showDockIcon: Bool,
+        overlayEnabled: Bool,
+        notesMode: Bool,
+        startInAssistive: Bool
+    )?
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool)
     /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
     /// one atomic op. Returns whether the write persisted, so the UI never fakes
     /// success on a failed write.
     func setNotesMode(_ enabled: Bool) -> Bool
+    func setStartInAssistive(_ enabled: Bool) -> Bool
 
     /// Path of the most recent transcript artifact, or `nil` when none exist.
     func latestHistoryPath() -> String?
@@ -73,6 +79,7 @@ final class MockTrayEngine: TrayEngine {
     var showDockIcon: Bool
     var overlayEnabled: Bool
     var notesMode: Bool
+    var startInAssistive: Bool
     var historyPath: String
     var transcriptText: String
 
@@ -81,6 +88,7 @@ final class MockTrayEngine: TrayEngine {
          showDockIcon: Bool = true,
          overlayEnabled: Bool = false,
          notesMode: Bool = false,
+         startInAssistive: Bool = false,
          historyPath: String = "/tmp/codescribe/history/2026-06-28-1422.md",
          transcriptText: String = "Sample transcript.") {
         self.recording = recording
@@ -88,6 +96,7 @@ final class MockTrayEngine: TrayEngine {
         self.showDockIcon = showDockIcon
         self.overlayEnabled = overlayEnabled
         self.notesMode = notesMode
+        self.startInAssistive = startInAssistive
         self.historyPath = historyPath
         self.transcriptText = transcriptText
     }
@@ -95,11 +104,16 @@ final class MockTrayEngine: TrayEngine {
     func isAgentAvailable() -> Bool { agentAvailable }
 
     func isRecording() async -> Bool { recording }
-    func startRecording() async throws { recording = true }
+    func startRecording(assistive: Bool) async throws { recording = true }
     func stopRecording() async throws { recording = false }
 
-    func currentToggles() -> (showDockIcon: Bool, overlayEnabled: Bool, notesMode: Bool)? {
-        (showDockIcon, overlayEnabled, notesMode)
+    func currentToggles() -> (
+        showDockIcon: Bool,
+        overlayEnabled: Bool,
+        notesMode: Bool,
+        startInAssistive: Bool
+    )? {
+        (showDockIcon, overlayEnabled, notesMode, startInAssistive)
     }
 
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool) {
@@ -110,6 +124,7 @@ final class MockTrayEngine: TrayEngine {
     }
 
     func setNotesMode(_ enabled: Bool) -> Bool { notesMode = enabled; return true }
+    func setStartInAssistive(_ enabled: Bool) -> Bool { startInAssistive = enabled; return true }
 
     func latestHistoryPath() -> String? { historyPath }
     func latestTranscriptText() -> String? { transcriptText }
