@@ -2,7 +2,7 @@
 //!
 //! Session state management and utility functions.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
@@ -17,7 +17,7 @@ use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
     Thread, ThreadMessage, ThreadStore, ToolRegistry,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::os::tray_status;
 
@@ -528,6 +528,28 @@ fn normalize_assistive_thread_text(text: &str) -> Option<String> {
     }
 }
 
+fn legacy_assistive_thread_messages(
+    user_text: String,
+    assistant_text: String,
+    now: DateTime<Utc>,
+    metadata: Option<Value>,
+) -> Vec<ThreadMessage> {
+    vec![
+        ThreadMessage {
+            role: "user".to_string(),
+            content: vec![json!({"type":"text","text":user_text})],
+            timestamp: now,
+            metadata: metadata.clone(),
+        },
+        ThreadMessage {
+            role: "assistant".to_string(),
+            content: vec![json!({"type":"text","text":assistant_text})],
+            timestamp: now,
+            metadata,
+        },
+    ]
+}
+
 fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
     let store = ThreadStore::new().context("Failed to initialize ThreadStore")?;
     let now = Utc::now();
@@ -606,20 +628,7 @@ fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Res
             "fallback".to_string(),
         ],
         notes: Vec::new(),
-        messages: vec![
-            ThreadMessage {
-                role: "user".to_string(),
-                content: vec![json!({"type":"input_text","text":user_text})],
-                timestamp: now,
-                metadata: metadata.clone(),
-            },
-            ThreadMessage {
-                role: "assistant".to_string(),
-                content: vec![json!({"type":"output_text","text":assistant_text})],
-                timestamp: now,
-                metadata,
-            },
-        ],
+        messages: legacy_assistive_thread_messages(user_text, assistant_text, now, metadata),
         summary: Some(summary),
         total_tokens: None,
         provider: "legacy-formatter".to_string(),
@@ -1127,6 +1136,27 @@ mod tests {
             friendly_tool_name("mcp__aicx-mcp__aicx_intents"),
             "AICX intents"
         );
+    }
+
+    #[test]
+    fn legacy_assistive_thread_messages_use_canonical_text_blocks() {
+        let now = Utc::now();
+        let metadata = Some(json!({"source":"legacy-fallback"}));
+        let messages = legacy_assistive_thread_messages(
+            "user prompt".to_string(),
+            "assistant reply".to_string(),
+            now,
+            metadata.clone(),
+        );
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content[0]["type"], "text");
+        assert_eq!(messages[0].content[0]["text"], "user prompt");
+        assert_eq!(messages[0].metadata, metadata);
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].content[0]["type"], "text");
+        assert_eq!(messages[1].content[0]["text"], "assistant reply");
     }
 
     struct NoopTestProvider;
