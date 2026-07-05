@@ -61,6 +61,21 @@ pub fn install_global_hotkey_manager(tx: Sender<HotkeyEvent>) -> Result<(), Stri
     replace_global_hotkey_manager(&mut guard)
 }
 
+/// Recreate the process-global hotkey runtime after a permission or settings
+/// change, reusing the sender retained by `install_global_hotkey_manager`.
+///
+/// This is the runtime re-arm path for the "TCC fresh-grant" case: the
+/// CGEventTap reads Accessibility / Input Monitoring only at creation, so a
+/// first-run grant leaves hotkeys dead until the tap is rebuilt (or the app
+/// restarts). Returns `Err` when no sender is installed yet (i.e. `start()` was
+/// never called) or when the tap still cannot be created (permission absent).
+pub fn refresh_global_hotkey_manager() -> Result<(), String> {
+    let mut guard = global_hotkey_service()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    replace_global_hotkey_manager(&mut guard)
+}
+
 pub fn shutdown_global_hotkey_manager() {
     let mut guard = global_hotkey_service()
         .lock()
@@ -130,7 +145,7 @@ mod tests {
         // value depends on whether prior tests have spun up the global hotkey
         // service (process-global Mutex), so we just assert the call returns
         // a bool without crashing. This guards the dedup path in
-        // `app/ui/onboarding/permission_flow.rs::reconcile_permission_runtime_after_grant`
+        // `bridge/src/hotkeys.rs::CodescribeHotkeys::rearm_after_permission_grant`
         // which calls this helper before deciding to refresh the manager.
         let active: bool = is_global_hotkey_manager_active();
         let _ = active;
