@@ -354,6 +354,10 @@ fn thread_message_preview_text(message: &ThreadMessage) -> Option<String> {
     }
 }
 
+/// Collect preview/search prose from stored thread content. Only text-like
+/// blocks (`text`, plus legacy `input_text` / `output_text`) contribute their
+/// `text`; `tool_result` recurses into nested content, and structural fields are
+/// never walked blindly.
 fn collect_message_text(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::String(text) if !text.trim().is_empty() => {
@@ -368,25 +372,22 @@ fn collect_message_text(value: &serde_json::Value, out: &mut Vec<String>) {
                 collect_message_text(item, out);
             }
         }
-        serde_json::Value::Object(map) => {
-            if let Some(text) = map.get("text").and_then(serde_json::Value::as_str)
-                && !text.trim().is_empty()
-            {
-                out.push(text.to_string());
-            }
-            if let Some(content) = map.get("content") {
-                collect_message_text(content, out);
-            }
-            if let Some(input) = map.get("input") {
-                collect_message_text(input, out);
-            }
-            for (key, nested) in map {
-                if matches!(key.as_str(), "text" | "content" | "input" | "data") {
-                    continue;
+        serde_json::Value::Object(map) => match map.get("type").and_then(serde_json::Value::as_str)
+        {
+            Some("text") | Some("input_text") | Some("output_text") | None => {
+                if let Some(text) = map.get("text").and_then(serde_json::Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.to_string());
                 }
-                collect_message_text(nested, out);
             }
-        }
+            Some("tool_result") => {
+                if let Some(content) = map.get("content") {
+                    collect_message_text(content, out);
+                }
+            }
+            Some(_) => {}
+        },
         _ => {}
     }
 }
@@ -609,6 +610,58 @@ mod tests {
         let note_results = index.search("call owner kidney");
         assert_eq!(note_results.len(), 1);
         assert_eq!(note_results[0].id, "t_2026-02-23_note_search");
+
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_openai_text_aliases_feed_preview_and_search_without_type_leak() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let mut index = ThreadIndex::load_or_create(tmp.path())?;
+
+        let mut thread = sample_thread(
+            "t_2026-07-05_legacy_aliases",
+            "Legacy aliases",
+            None,
+            "assistive",
+            1,
+        );
+        thread.messages = vec![
+            ThreadMessage {
+                role: "user".to_string(),
+                content: vec![json!({"type":"input_text","text":"Owner asked about appetite"})],
+                timestamp: Utc::now(),
+                metadata: None,
+            },
+            ThreadMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    json!({"type":"tool_use","id":"toolu_1","name":"search_threads","input":{"query":"output_text"}}),
+                    json!({"type":"output_text","text":"Appetite improved overnight"}),
+                ],
+                timestamp: Utc::now(),
+                metadata: None,
+            },
+        ];
+        index.add(&thread)?;
+
+        let summary = index
+            .list(None)
+            .into_iter()
+            .find(|summary| summary.id == "t_2026-07-05_legacy_aliases")
+            .expect("thread summary should be indexed");
+        assert_eq!(
+            summary.latest_message.as_deref(),
+            Some("appetite improved overnight")
+        );
+        assert!(summary.search_text.contains("owner asked about appetite"));
+        assert!(summary.search_text.contains("appetite improved overnight"));
+        assert!(!summary.search_text.contains("input_text"));
+        assert!(!summary.search_text.contains("output_text"));
+
+        let results = index.search("appetite improved");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "t_2026-07-05_legacy_aliases");
 
         Ok(())
     }

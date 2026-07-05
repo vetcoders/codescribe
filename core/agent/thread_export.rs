@@ -238,15 +238,16 @@ fn join_chunks(chunks: Vec<String>) -> String {
 
 /// Collect human-readable prose from a stored content `Value`, keyed on the
 /// canonical `content_block_to_value` shapes (`thread_store.rs`): `text` blocks
-/// contribute their text; `tool_use` / `image` / `image_asset` blocks carry no
-/// display prose (skipped). `tool_result` blocks are only descended into when
-/// `dive_tool_result` is set (i.e. when rendering a result body via
-/// `flatten_tool_body`); prose flattening leaves them for `collect_tool_results`
-/// so tool output is never attributed to the carrier role. A field-only
-/// extractor (as opposed to a blind key walk) avoids emitting structural values
-/// like the literal `"text"` / `"tool_use"` type tags. Interior whitespace —
-/// newlines, fenced code blocks, list breaks — is preserved; only each block's
-/// outer edges are trimmed.
+/// contribute their text, with legacy `input_text` / `output_text` aliases read
+/// the same way for already-persisted OpenAI-shaped files. `tool_use` / `image`
+/// / `image_asset` blocks carry no display prose (skipped). `tool_result` blocks
+/// are only descended into when `dive_tool_result` is set (i.e. when rendering a
+/// result body via `flatten_tool_body`); prose flattening leaves them for
+/// `collect_tool_results` so tool output is never attributed to the carrier
+/// role. A field-only extractor (as opposed to a blind key walk) avoids emitting
+/// structural values like the literal `"text"` / `"tool_use"` type tags.
+/// Interior whitespace — newlines, fenced code blocks, list breaks — is
+/// preserved; only each block's outer edges are trimmed.
 fn collect_text(value: &Value, out: &mut Vec<String>, dive_tool_result: bool) {
     match value {
         Value::String(text) if !text.trim().is_empty() => {
@@ -258,7 +259,7 @@ fn collect_text(value: &Value, out: &mut Vec<String>, dive_tool_result: bool) {
             }
         }
         Value::Object(map) => match map.get("type").and_then(Value::as_str) {
-            Some("text") | None => {
+            Some("text") | Some("input_text") | Some("output_text") | None => {
                 if let Some(text) = map.get("text").and_then(Value::as_str)
                     && !text.trim().is_empty()
                 {
@@ -328,6 +329,33 @@ mod tests {
         assert!(md.contains("where do we double-dispatch events?"));
         assert!(md.contains("Two spots: bus.ts and store.ts."));
         assert!(md.ends_with('\n'));
+    }
+
+    #[test]
+    fn renders_legacy_openai_text_alias_blocks() {
+        let timestamp = Utc.with_ymd_and_hms(2026, 7, 2, 9, 31, 0).unwrap();
+        let md = thread_to_markdown(
+            &thread(vec![
+                super::super::thread_store::ThreadMessage {
+                    role: "user".to_string(),
+                    content: vec![json!({ "type": "input_text", "text": "legacy prompt" })],
+                    timestamp,
+                    metadata: None,
+                },
+                super::super::thread_store::ThreadMessage {
+                    role: "assistant".to_string(),
+                    content: vec![json!({ "type": "output_text", "text": "legacy reply" })],
+                    timestamp,
+                    metadata: None,
+                },
+            ]),
+            false,
+        );
+
+        assert!(md.contains("legacy prompt"), "\n{md}");
+        assert!(md.contains("legacy reply"), "\n{md}");
+        assert!(!md.contains("input_text"), "\n{md}");
+        assert!(!md.contains("output_text"), "\n{md}");
     }
 
     #[test]
