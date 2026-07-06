@@ -247,14 +247,19 @@ fn openai_endpoint_for_account(config: &Config, account: &str) -> String {
 }
 
 fn openai_model_for_account(account: &str) -> String {
+    let is_openai_model = |m: &String| !m.starts_with("claude");
     match account {
         "LLM_FORMATTING_API_KEY" => env_non_empty("LLM_FORMATTING_MODEL")
-            .or_else(|| env_non_empty("LLM_MODEL"))
+            .filter(is_openai_model)
+            .or_else(|| env_non_empty("LLM_MODEL").filter(is_openai_model))
             .unwrap_or_else(|| DEFAULT_FORMATTING_MODEL.to_string()),
         "LLM_ASSISTIVE_API_KEY" => env_non_empty("LLM_ASSISTIVE_MODEL")
-            .or_else(|| env_non_empty("LLM_MODEL"))
+            .filter(is_openai_model)
+            .or_else(|| env_non_empty("LLM_MODEL").filter(is_openai_model))
             .unwrap_or_else(|| DEFAULT_ASSISTIVE_MODEL.to_string()),
-        _ => env_non_empty("LLM_MODEL").unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
+        _ => env_non_empty("LLM_MODEL")
+            .filter(is_openai_model)
+            .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
     }
 }
 
