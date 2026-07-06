@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // State machine for the first-run wizard: current step index (persisted on every
@@ -115,6 +116,11 @@ final class OnboardingViewModel: ObservableObject {
     @Published private(set) var readiness: CsAgenticReadiness?
     @Published private(set) var mcpStatus: CsMcpStatusReport?
 
+    /// Whether the user dismissed the "set up MCP" prompt shown when no MCP server
+    /// is configured. Session-only: skipping keeps the readiness step moving without
+    /// implying an error, and re-opening the wizard offers the prompt again.
+    @Published private(set) var mcpSetupDismissed = false
+
     // API-key step state.
     @Published private(set) var providers: [CsProviderOption] = []
     @Published var selectedProviderId: String
@@ -209,6 +215,23 @@ final class OnboardingViewModel: ObservableObject {
     func refreshReadiness() {
         readiness = agentStatus.agenticReadiness()
         mcpStatus = agentStatus.mcpStatus()
+    }
+
+    /// Route the user to the live MCP management surface (Settings › Engine) via a
+    /// one-shot deep-link, then open the standard Settings window. The wizard stays
+    /// open behind it, so the user can wire a server and return to continue.
+    func openMcpSettings() {
+        SettingsDeepLink.pendingSection = .engine
+        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            // Older selector name kept as a defensive fallback.
+            _ = NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
+    }
+
+    /// Dismiss the MCP setup prompt for this session so onboarding proceeds without
+    /// implying MCP is required.
+    func dismissMcpSetupPrompt() {
+        mcpSetupDismissed = true
     }
 
     private func loadProvidersIfNeeded() {

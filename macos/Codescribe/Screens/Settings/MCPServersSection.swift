@@ -45,11 +45,16 @@ struct MCPServersSection: View {
     }
 
     private var emptyState: some View {
-        HStack(spacing: 8) {
-            Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.textFaint)
-            Text("no MCP servers configured — add one below")
+        VStack(alignment: .leading, spacing: 6) {
+            Text("No MCP servers yet — this is optional.")
+                .font(CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textBody)
+            Text("MCP servers extend the agent with extra tools like code search, "
+                + "PR review, or web search. Add your first server below, or skip it "
+                + "and wire one any time.")
                 .font(CSFont.mono(11, .medium))
                 .foregroundStyle(CSColor.textFaint)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)

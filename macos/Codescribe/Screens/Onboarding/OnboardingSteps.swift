@@ -265,6 +265,9 @@ struct AgenticReadinessStepView: View {
                     .foregroundStyle(CSColor.textFaint)
                     .padding(.top, 4)
                 statusCard(rows: mcp.rows)
+            } else if !model.mcpSetupDismissed {
+                mcpSetupPrompt
+                    .padding(.top, 4)
             }
 
             OnboardingButton(title: "Refresh", kind: .secondary) {
@@ -275,6 +278,41 @@ struct AgenticReadinessStepView: View {
             OnboardingStepNote(
                 text: "Informational — press Continue whether or not everything is green.")
         }
+    }
+
+    /// Shown on the readiness step when no MCP server is configured yet: a short,
+    /// human explainer plus a route into the real setup surface and a no-guilt skip.
+    /// Replaces the old dead end where a missing `mcp.json` showed nothing at all.
+    private var mcpSetupPrompt: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("MCP servers (optional)")
+                .font(CSFont.mono(10, .semibold))
+                .tracking(0.4)
+                .foregroundStyle(CSColor.textFaint)
+            Text("MCP servers give the agent extra tools — things like code search, "
+                + "PR review, or web search. It's entirely optional: skip it now and "
+                + "wire servers any time from Settings › Engine.")
+                .font(CSFont.ui(13))
+                .lineSpacing(3)
+                .foregroundStyle(CSColor.textMutedAlt)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                OnboardingButton(title: "Set up MCP servers", kind: .primary) {
+                    model.openMcpSettings()
+                }
+                OnboardingButton(title: "Skip for now", kind: .secondary) {
+                    model.dismissMcpSetupPrompt()
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.02)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.07), lineWidth: 1))
     }
 
     private func readinessPill(ready: Bool) -> some View {
