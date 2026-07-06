@@ -11,6 +11,12 @@ Environment:
   BENCH_STT_LIMIT      fixture limit for historical corpus (default: 10)
   BENCH_STT_OUT        output directory under ~/.codescribe (default: timestamped report dir)
   BENCH_STT_LANGUAGE   Whisper language code (default: pl)
+  CODESCRIBE_BENCH_FORCE_PROMPT
+                       generate a deterministic controlled prompt when runtime prompt is disabled
+  CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT
+                       trim active runtime prompt to first N deterministic terms (unset = full prompt)
+  CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP
+                       fail active-prompt probe above this WER regression threshold (default: 5.0)
 EOF
 }
 
@@ -466,6 +472,12 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+fn env_optional_usize(key: &str) -> Option<usize> {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
 fn read_manifest(path: &Path) -> Result<Vec<Fixture>> {
     let text = fs::read_to_string(path)?;
     let mut lines = text.lines();
@@ -568,16 +580,35 @@ fn main() -> Result<()> {
         .filter(|term| fixtures.iter().any(|fixture| contains_term(&fixture.reference_norm, term)))
         .count();
     let force_controlled_prompt = env_truthy("CODESCRIBE_BENCH_FORCE_PROMPT");
+    let runtime_prompt_term_limit = env_optional_usize("CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT");
     let prompt_max_regression_pp = env_f64("CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP", 5.0);
 
     let (source_kind, source_reason, selected_terms, prompt) =
         if runtime_prompt.is_some() && !runtime_terms.is_empty() {
-            (
-                "runtime_lexicon",
-                "runtime protected/custom dictionary prompt is enabled and nonempty",
-                runtime_terms.clone(),
-                runtime_prompt.clone(),
-            )
+            if let Some(limit) = runtime_prompt_term_limit
+                && limit > 0
+                && limit < runtime_terms.len()
+            {
+                let terms: Vec<String> = runtime_terms.iter().take(limit).cloned().collect();
+                let prompt = stream_postprocess::build_whisper_initial_prompt(
+                    &terms,
+                    &[],
+                    stream_postprocess::WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
+                );
+                (
+                    "runtime_lexicon_trimmed",
+                    "runtime protected/custom dictionary prompt trimmed by CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT; order is the runtime prompt order",
+                    terms,
+                    prompt,
+                )
+            } else {
+                (
+                    "runtime_lexicon",
+                    "runtime protected/custom dictionary prompt is enabled and nonempty",
+                    runtime_terms.clone(),
+                    runtime_prompt.clone(),
+                )
+            }
         } else if force_controlled_prompt {
             let terms = controlled_fixture_terms(&fixtures, 32);
             let prompt = stream_postprocess::build_whisper_initial_prompt(
@@ -622,6 +653,13 @@ fn main() -> Result<()> {
         &term_source_out,
         "runtime_reference_overlap",
         &runtime_reference_overlap.to_string(),
+    )?;
+    write_kv(
+        &term_source_out,
+        "runtime_prompt_term_limit",
+        &runtime_prompt_term_limit
+            .map(|limit| limit.to_string())
+            .unwrap_or_else(|| "unset".to_string()),
     )?;
     write_kv(&term_source_out, "selected_source_kind", source_kind)?;
     write_kv(&term_source_out, "selected_terms_count", &selected_terms.len().to_string())?;
