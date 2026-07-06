@@ -736,11 +736,7 @@ mod tests {
     }
 
     fn assert_duration_near(actual: Duration, expected: Duration) {
-        let diff = if actual > expected {
-            actual - expected
-        } else {
-            expected - actual
-        };
+        let diff = actual.abs_diff(expected);
         assert!(
             diff <= Duration::from_millis(1),
             "expected {actual:?} to be within 1ms of {expected:?}"
