@@ -1408,6 +1408,61 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
     assert_eq!(stats_count, 1, "expected exactly one Stats event");
 }
 
+#[test]
+fn transcription_events_keep_monotonic_previews_before_final() {
+    let sink = CollectorEventSink::new();
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "ala".to_string(),
+    });
+    sink.on_event(&EngineEvent::Preview {
+        rev: 2,
+        text: "ala ma".to_string(),
+    });
+    sink.on_event(&EngineEvent::UtteranceFinal {
+        utterance_id: 1,
+        text: "ala ma kota".to_string(),
+        raw_text: "ala ma kota".to_string(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: Vec::new(),
+        vad_speech_pct: Some(100.0),
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: Vec::new(),
+    });
+
+    let events = sink.events();
+    let final_pos = events
+        .iter()
+        .position(|event| matches!(event, EngineEvent::UtteranceFinal { .. }))
+        .expect("synthetic stream should include a final event");
+    let preview_revs: Vec<(usize, u64)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(pos, event)| match event {
+            EngineEvent::Preview { rev, .. } => Some((pos, *rev)),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        !preview_revs.is_empty(),
+        "stream should emit at least one preview before final"
+    );
+    assert!(
+        preview_revs.iter().all(|(pos, _)| *pos < final_pos),
+        "all previews must be emitted before UtteranceFinal"
+    );
+    for pair in preview_revs.windows(2) {
+        assert!(
+            pair[0].1 < pair[1].1,
+            "Preview revisions must increase monotonically"
+        );
+    }
+}
+
 #[tokio::test]
 async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() {
     let (tx, rx) = mpsc::channel::<Vec<f32>>(1);

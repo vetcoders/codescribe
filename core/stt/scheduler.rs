@@ -12,6 +12,13 @@ use tokio::time::{Duration, Instant};
 const REFINE_SUPERSEDED_ERR: &str = "STT refine request superseded by a newer pending refine";
 const LIVE_SUPERSEDED_ERR: &str = "STT live request superseded by a newer pending live preview";
 const SHUTDOWN_ERR: &str = "STT scheduler is shutting down";
+const DEFAULT_LIVE_MIN_INTERVAL_MS: u64 = 90;
+const DEFAULT_COMMIT_MIN_INTERVAL_MS: u64 = 180;
+const DEFAULT_REFINE_MIN_INTERVAL_MS: u64 = 240;
+const DEFAULT_THERMAL_NOMINAL_MULT: f32 = 0.0;
+const DEFAULT_THERMAL_FAIR_MULT: f32 = 1.0;
+const DEFAULT_THERMAL_SERIOUS_MULT: f32 = 2.0;
+const DEFAULT_THERMAL_CRITICAL_MULT: f32 = 4.0;
 
 type InferFn = Arc<dyn Fn(Vec<f32>, u32, Option<String>) -> Result<RawTranscript> + Send + Sync>;
 type CommitPrefilterFn = Arc<dyn Fn(&[f32], u32) -> Vec<f32> + Send + Sync>;
@@ -124,6 +131,7 @@ impl SttScheduler {
             sample_rate,
             language,
             utterance_id: None,
+            queued_at: Instant::now(),
             result_tx,
         };
         self.command_tx
@@ -152,6 +160,7 @@ impl SttScheduler {
             sample_rate,
             language,
             utterance_id: Some(utterance_id),
+            queued_at: Instant::now(),
             result_tx,
         };
         self.command_tx
@@ -274,6 +283,7 @@ struct SttRequest {
     sample_rate: u32,
     language: Option<String>,
     utterance_id: Option<u64>,
+    queued_at: Instant,
     result_tx: oneshot::Sender<Result<RawTranscript>>,
 }
 
@@ -288,6 +298,8 @@ struct SttGovernorConfig {
     enabled: bool,
     live_min_interval: Duration,
     commit_min_interval: Duration,
+    refine_min_interval: Duration,
+    nominal_multiplier: f32,
     fair_multiplier: f32,
     serious_multiplier: f32,
     critical_multiplier: f32,
@@ -299,27 +311,55 @@ impl SttGovernorConfig {
             enabled: env_bool("CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED", true),
             live_min_interval: Duration::from_millis(env_u64(
                 "CODESCRIBE_STT_MIN_INFER_INTERVAL_MS",
-                180,
+                DEFAULT_LIVE_MIN_INTERVAL_MS,
             )),
             commit_min_interval: Duration::from_millis(env_u64(
                 "CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS",
-                350,
+                DEFAULT_COMMIT_MIN_INTERVAL_MS,
             )),
-            fair_multiplier: env_f32("CODESCRIBE_STT_THERMAL_FAIR_MULT", 1.0).max(0.1),
-            serious_multiplier: env_f32("CODESCRIBE_STT_THERMAL_SERIOUS_MULT", 2.0).max(0.1),
-            critical_multiplier: env_f32("CODESCRIBE_STT_THERMAL_CRITICAL_MULT", 4.0).max(0.1),
+            refine_min_interval: Duration::from_millis(env_u64(
+                "CODESCRIBE_STT_REFINE_MIN_INTERVAL_MS",
+                DEFAULT_REFINE_MIN_INTERVAL_MS,
+            )),
+            nominal_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_NOMINAL_MULT",
+                DEFAULT_THERMAL_NOMINAL_MULT,
+            )
+            .max(0.0),
+            fair_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_FAIR_MULT",
+                DEFAULT_THERMAL_FAIR_MULT,
+            )
+            .max(0.1),
+            serious_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_SERIOUS_MULT",
+                DEFAULT_THERMAL_SERIOUS_MULT,
+            )
+            .max(0.1),
+            critical_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_CRITICAL_MULT",
+                DEFAULT_THERMAL_CRITICAL_MULT,
+            )
+            .max(0.1),
         }
     }
 
     #[cfg(test)]
     fn test(live_ms: u64, commit_ms: u64) -> Self {
+        Self::test_with_intervals(live_ms, commit_ms, commit_ms)
+    }
+
+    #[cfg(test)]
+    fn test_with_intervals(live_ms: u64, commit_ms: u64, refine_ms: u64) -> Self {
         Self {
             enabled: true,
             live_min_interval: Duration::from_millis(live_ms),
             commit_min_interval: Duration::from_millis(commit_ms),
-            fair_multiplier: 1.0,
-            serious_multiplier: 2.0,
-            critical_multiplier: 4.0,
+            refine_min_interval: Duration::from_millis(refine_ms),
+            nominal_multiplier: DEFAULT_THERMAL_NOMINAL_MULT,
+            fair_multiplier: DEFAULT_THERMAL_FAIR_MULT,
+            serious_multiplier: DEFAULT_THERMAL_SERIOUS_MULT,
+            critical_multiplier: DEFAULT_THERMAL_CRITICAL_MULT,
         }
     }
 
@@ -329,10 +369,11 @@ impl SttGovernorConfig {
         }
         let base = match lane {
             SttLane::Live => self.live_min_interval,
-            SttLane::Commit | SttLane::Refine => self.commit_min_interval,
+            SttLane::Commit => self.commit_min_interval,
+            SttLane::Refine => self.refine_min_interval,
         };
         base.mul_f32(match level {
-            ThermalLevel::Nominal => 1.0,
+            ThermalLevel::Nominal => self.nominal_multiplier,
             ThermalLevel::Fair => self.fair_multiplier,
             ThermalLevel::Serious => self.serious_multiplier,
             ThermalLevel::Critical => self.critical_multiplier,
@@ -392,10 +433,15 @@ async fn scheduler_worker(
             &mut refine_pending,
             thermal_level,
         ) {
-            sleep_for_duty_cycle(&governor, thermal_level, req.lane, last_infer_completed_at).await;
+            let dequeued_at = Instant::now();
+            let lane = req.lane;
+            let utterance_id = req.utterance_id;
+            let queue_ms = dequeued_at.duration_since(req.queued_at).as_millis();
+            let duty_sleep =
+                sleep_for_duty_cycle(&governor, thermal_level, lane, last_infer_completed_at).await;
             let infer = Arc::clone(&infer_fn);
             let commit_prefilter = Arc::clone(&commit_prefilter_fn);
-            let lane = req.lane;
+            let infer_started_at = Instant::now();
             let result = tokio::task::spawn_blocking(move || {
                 let samples = if lane == SttLane::Commit {
                     // Commit contract (hard): always VAD-prefilter before inference.
@@ -440,7 +486,18 @@ async fn scheduler_worker(
             .await
             .map_err(|e| anyhow!("STT blocking worker task failed: {}", e))
             .and_then(|r| r);
+            let infer_elapsed = infer_started_at.elapsed();
             last_infer_completed_at = Some(Instant::now());
+            tracing::debug!(
+                ?lane,
+                ?thermal_level,
+                ?utterance_id,
+                queue_ms,
+                duty_sleep_ms = duty_sleep.as_millis(),
+                infer_ms = infer_elapsed.as_millis(),
+                ok = result.is_ok(),
+                "STT scheduler lane timing"
+            );
             let _ = req.result_tx.send(result);
             continue;
         }
@@ -597,19 +654,22 @@ async fn sleep_for_duty_cycle(
     thermal_level: ThermalLevel,
     lane: SttLane,
     last_completed_at: Option<Instant>,
-) {
+) -> Duration {
     let Some(last_completed_at) = last_completed_at else {
-        return;
+        return Duration::ZERO;
     };
     let interval = governor.min_interval_for(lane, thermal_level);
     if interval.is_zero() {
-        return;
+        return Duration::ZERO;
     }
     let next_allowed = last_completed_at + interval;
     let now = Instant::now();
     if next_allowed > now {
+        let sleep_for = next_allowed.duration_since(now);
         tokio::time::sleep_until(next_allowed).await;
+        return sleep_for;
     }
+    Duration::ZERO
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -653,6 +713,60 @@ mod tests {
 
     fn passthrough_commit_prefilter(samples: &[f32], _sample_rate: u32) -> Vec<f32> {
         samples.to_vec()
+    }
+
+    fn assert_duration_near(actual: Duration, expected: Duration) {
+        let diff = if actual > expected {
+            actual - expected
+        } else {
+            expected - actual
+        };
+        assert!(
+            diff <= Duration::from_millis(1),
+            "expected {actual:?} to be within 1ms of {expected:?}"
+        );
+    }
+
+    #[test]
+    fn governor_thermal_mapping_keeps_serious_and_critical_throttles() {
+        let governor = SttGovernorConfig::test_with_intervals(90, 180, 240);
+
+        assert_eq!(
+            governor.min_interval_for(SttLane::Commit, ThermalLevel::Nominal),
+            Duration::ZERO,
+            "Nominal thermal should not add scheduler duty-cycle latency"
+        );
+        assert_duration_near(
+            governor.min_interval_for(SttLane::Live, ThermalLevel::Fair),
+            Duration::from_millis(90),
+        );
+        assert_duration_near(
+            governor.min_interval_for(SttLane::Commit, ThermalLevel::Serious),
+            Duration::from_millis(360),
+        );
+        assert_duration_near(
+            governor.min_interval_for(SttLane::Refine, ThermalLevel::Critical),
+            Duration::from_millis(960),
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_nominal_thermal_skips_duty_cycle_sleep() {
+        let governor = SttGovernorConfig::test_with_intervals(200, 200, 200);
+        let started = Instant::now();
+        let slept = sleep_for_duty_cycle(
+            &governor,
+            ThermalLevel::Nominal,
+            SttLane::Commit,
+            Some(Instant::now()),
+        )
+        .await;
+
+        assert_eq!(slept, Duration::ZERO);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "Nominal thermal should return immediately without sleeping"
+        );
     }
 
     #[tokio::test]
@@ -879,6 +993,9 @@ mod tests {
             Arc::new(passthrough_commit_prefilter),
             SttGovernorConfig::test(0, 40),
         );
+        scheduler
+            .set_thermal_level(ThermalLevel::Fair)
+            .expect("set fair thermal");
         let mut live = scheduler
             .submit(SttLane::Live, vec![1.0], 16_000, None)
             .expect("submit live");
