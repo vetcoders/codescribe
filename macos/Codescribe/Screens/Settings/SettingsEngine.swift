@@ -36,6 +36,7 @@ protocol SettingsEngine {
     func keyAccounts() -> [String]
     func setApiKey(account: String, secret: String) throws
     func clearApiKey(account: String) throws
+    func testApiKey(account: String) throws -> CsApiKeyProbeResult
 
     // Assistive/agent-lane providers and live model discovery
     func availableProviders() -> [CsProviderOption]
@@ -79,6 +80,9 @@ final class RealSettingsEngine: SettingsEngine {
         try config.setApiKey(account: account, secret: secret)
     }
     func clearApiKey(account: String) throws { try config.clearApiKey(account: account) }
+    func testApiKey(account: String) throws -> CsApiKeyProbeResult {
+        try config.testApiKey(account: account)
+    }
 
     func availableProviders() -> [CsProviderOption] { config.availableProviders() }
     func discoverModels(providerId: String) -> CsModelDiscovery {
@@ -131,6 +135,9 @@ struct MockSettingsEngine: SettingsEngine {
     }
     func setApiKey(account: String, secret: String) throws {}
     func clearApiKey(account: String) throws {}
+    func testApiKey(account: String) throws -> CsApiKeyProbeResult {
+        CsApiKeyProbeResult.sample(account: account)
+    }
 
     func availableProviders() -> [CsProviderOption] { CsProviderOption.sampleProviders }
     func discoverModels(providerId: String) -> CsModelDiscovery {
@@ -264,6 +271,18 @@ extension CsKeyStatus {
         case "GITHUB_TOKEN": return githubTokenSet
         default: return false
         }
+    }
+}
+
+extension CsApiKeyProbeResult {
+    static func sample(account: String) -> CsApiKeyProbeResult {
+        CsApiKeyProbeResult(
+            account: account,
+            status: account == "STT_API_KEY" ? .unsupported : .ok,
+            message: account == "STT_API_KEY"
+                ? "no cheap liveness probe is available for this STT key"
+                : "key accepted and quota available"
+        )
     }
 }
 

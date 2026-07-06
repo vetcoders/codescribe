@@ -25,6 +25,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 /// View-model owning the Settings screen state. Seeded with mock data so the
 /// #Preview renders standalone; the live app injects `RealSettingsEngine`
 /// (over the `CodescribeConfig` bridge) + the native permission probe.
+private struct BackgroundSettingsEngine: @unchecked Sendable {
+    let engine: SettingsEngine
+}
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var section: SettingsSection = .creator
@@ -41,6 +45,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpServers: [CsMcpServer] = []
     @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
     @Published private(set) var mcpTestPending: Set<String> = []
+    @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
+    @Published private(set) var keyProbePending: Set<String> = []
     @Published var lastError: String?
 
     // MARK: - Hotkeys (mode bindings)
@@ -491,6 +497,7 @@ final class SettingsViewModel: ObservableObject {
         guard !trimmed.isEmpty, let engine else { return }
         do {
             try engine.setApiKey(account: account, secret: trimmed)
+            keyProbeResults[account] = nil
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
             if account == selectedProvider?.apiKeyAccount {
@@ -505,6 +512,7 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.clearApiKey(account: account)
+            keyProbeResults[account] = nil
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
             if account == selectedProvider?.apiKeyAccount {
@@ -512,6 +520,38 @@ final class SettingsViewModel: ObservableObject {
             }
         } catch {
             lastError = String(describing: error)
+        }
+    }
+
+    func testKey(account: String) {
+        guard let engine else { return }
+        guard !keyProbePending.contains(account) else { return }
+        let backgroundEngine = BackgroundSettingsEngine(engine: engine)
+        keyProbePending.insert(account)
+
+        DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, account] in
+            let result: Result<CsApiKeyProbeResult, Error>
+            do {
+                result = .success(try backgroundEngine.engine.testApiKey(account: account))
+            } catch {
+                result = .failure(error)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.keyProbePending.remove(account)
+                switch result {
+                case .success(let probe):
+                    self.keyProbeResults[account] = probe
+                case .failure(let error):
+                    self.keyProbeResults[account] = CsApiKeyProbeResult(
+                        account: account,
+                        status: .network,
+                        message: String(describing: error)
+                    )
+                    self.lastError = String(describing: error)
+                }
+            }
         }
     }
 
