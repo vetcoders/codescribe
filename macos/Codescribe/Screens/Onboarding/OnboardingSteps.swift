@@ -241,6 +241,12 @@ struct HotkeyModeStepView: View {
 
 struct AgenticReadinessStepView: View {
     @ObservedObject var model: OnboardingViewModel
+    // macOS 14+ action to open the app's Settings scene. This accessory /
+    // LSUIElement app has no responder for the private `showSettingsWindow:`
+    // selector, so the SwiftUI environment action is the only reliable open path
+    // (matching TrayMenuView / AgentChatView). The Settings scene activates the
+    // app and orders its window front, above the wizard.
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -298,7 +304,8 @@ struct AgenticReadinessStepView: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 OnboardingButton(title: "Set up MCP servers", kind: .primary) {
-                    model.openMcpSettings()
+                    model.prepareMcpSettingsDeepLink()
+                    openSettings()
                 }
                 OnboardingButton(title: "Skip for now", kind: .secondary) {
                     model.dismissMcpSetupPrompt()
