@@ -51,6 +51,10 @@ protocol SettingsEngine {
     func setFormattingPrompt(content: String) throws
     func setAssistivePrompt(content: String) throws
     func resetPromptsToDefaults() throws
+
+    // Destructive privacy action: wipe all local app data (config / logs /
+    // transcriptions + Application Support store), optionally the Keychain keys.
+    func resetAppData(includeKeys: Bool) throws
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -103,6 +107,10 @@ final class RealSettingsEngine: SettingsEngine {
         try config.setAssistivePrompt(content: content)
     }
     func resetPromptsToDefaults() throws { try config.resetPromptsToDefaults() }
+
+    func resetAppData(includeKeys: Bool) throws {
+        try config.resetAppData(includeKeys: includeKeys)
+    }
 }
 
 // MARK: - Mock engine (previews)
@@ -161,6 +169,7 @@ struct MockSettingsEngine: SettingsEngine {
     func setFormattingPrompt(content: String) throws {}
     func setAssistivePrompt(content: String) throws {}
     func resetPromptsToDefaults() throws {}
+    func resetAppData(includeKeys: Bool) throws {}
 }
 
 // MARK: - Bridge value helpers
