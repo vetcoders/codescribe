@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 // State machine for the first-run wizard: current step index (persisted on every
@@ -217,15 +216,15 @@ final class OnboardingViewModel: ObservableObject {
         mcpStatus = agentStatus.mcpStatus()
     }
 
-    /// Route the user to the live MCP management surface (Settings › Engine) via a
-    /// one-shot deep-link, then open the standard Settings window. The wizard stays
-    /// open behind it, so the user can wire a server and return to continue.
-    func openMcpSettings() {
+    /// Arm the one-shot deep-link so the Settings window lands on the MCP surface
+    /// (Settings › Engine). The view owns the actual open via SwiftUI's
+    /// `@Environment(\.openSettings)` — the only reliable path in this accessory /
+    /// LSUIElement app, where the private `showSettingsWindow:` selector has no
+    /// responder (matching TrayMenuView / AgentChatView). Call this immediately
+    /// before `openSettings()`; the wizard stays open behind Settings so the user
+    /// can wire a server and return to continue.
+    func prepareMcpSettingsDeepLink() {
         SettingsDeepLink.pendingSection = .engine
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            // Older selector name kept as a defensive fallback.
-            _ = NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
     }
 
     /// Dismiss the MCP setup prompt for this session so onboarding proceeds without
