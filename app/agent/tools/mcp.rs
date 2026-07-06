@@ -63,6 +63,13 @@ pub struct McpStatusRow {
 /// Honest snapshot of MCP config + runtime state for the Settings UI.
 pub struct McpStatusReport {
     pub config_path_display: String,
+    /// Whether the user has an `mcp.json` with at least one server defined.
+    /// `false` means "no config yet" (missing file OR present-but-empty) — the
+    /// onboarding readiness step surfaces the setup prompt instead of a status
+    /// card. A present config that fails to load still counts as `true`: the
+    /// file exists, the user configured something, so we show the concrete error
+    /// rather than pretend nothing is there.
+    configured: bool,
     rows: Vec<McpStatusRow>,
 }
 
@@ -71,9 +78,23 @@ impl McpStatusReport {
         &self.rows
     }
 
-    fn single(config_path_display: String, label: &str, value: String, tone: McpRowTone) -> Self {
+    /// `true` when an `mcp.json` exists with at least one server defined (or when
+    /// a present config failed to load — the file is still there). `false` only
+    /// when there is no config yet: missing file or present-but-no-servers.
+    pub fn configured(&self) -> bool {
+        self.configured
+    }
+
+    fn single(
+        config_path_display: String,
+        configured: bool,
+        label: &str,
+        value: String,
+        tone: McpRowTone,
+    ) -> Self {
         Self {
             config_path_display,
+            configured,
             rows: vec![McpStatusRow {
                 label: label.to_string(),
                 value,
@@ -95,6 +116,7 @@ pub fn probe_mcp_status() -> McpStatusReport {
         Err(error) => {
             return McpStatusReport::single(
                 "unavailable".to_string(),
+                true,
                 "Status:",
                 format!("config path unavailable: {error}"),
                 McpRowTone::Bad,
@@ -110,6 +132,7 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
     if !path.exists() {
         return McpStatusReport::single(
             config_path_display,
+            false,
             "Status:",
             "no mcp.json (optional — MCP off)".to_string(),
             McpRowTone::Neutral,
@@ -121,6 +144,7 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
         Err(error) => {
             return McpStatusReport::single(
                 config_path_display,
+                true,
                 "Config error:",
                 anyhow_root_cause(&error),
                 McpRowTone::Bad,
@@ -131,6 +155,7 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
     if config.servers.is_empty() {
         return McpStatusReport::single(
             config_path_display,
+            false,
             "Status:",
             "config present, no servers defined".to_string(),
             McpRowTone::Warn,
@@ -170,6 +195,7 @@ fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
 
     McpStatusReport {
         config_path_display,
+        configured: true,
         rows,
     }
 }
@@ -708,6 +734,8 @@ mod tests {
             "got: {}",
             rows[0].value
         );
+        // No config yet → the onboarding step must offer the setup prompt.
+        assert!(!report.configured());
     }
 
     #[test]
@@ -722,6 +750,9 @@ mod tests {
         assert_eq!(rows[0].tone, McpRowTone::Bad);
         assert_eq!(rows[0].label, "Config error:");
         assert!(!rows[0].value.is_empty());
+        // File exists (user configured something) → show the error, not the
+        // onboarding prompt.
+        assert!(report.configured());
     }
 
     #[test]
@@ -733,6 +764,8 @@ mod tests {
         let rows = report.summary_rows();
         assert_eq!(rows[0].tone, McpRowTone::Warn);
         assert!(rows[0].value.contains("no servers"));
+        // Present but empty config counts as "not configured yet" → prompt.
+        assert!(!report.configured());
     }
 
     #[test]
@@ -762,6 +795,8 @@ mod tests {
             "got: {}",
             row.value
         );
+        // A config with at least one server → configured; no setup prompt.
+        assert!(report.configured());
     }
 
     #[tokio::test]

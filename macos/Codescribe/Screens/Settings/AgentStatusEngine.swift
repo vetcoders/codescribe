@@ -47,6 +47,7 @@ extension CsMcpStatusReport {
     /// Sample MCP status with a mix of live / pending servers (preview seed).
     static let sample = CsMcpStatusReport(
         configPathDisplay: "~/.codescribe/mcp.json",
+        configured: true,
         rows: [
             CsMcpStatusRow(label: "loctree-mcp:", value: "9 tool(s)", tone: .good),
             CsMcpStatusRow(label: "aicx-mcp:", value: "configured (agent not started)", tone: .warn),
