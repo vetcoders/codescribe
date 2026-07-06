@@ -19,7 +19,11 @@ log() {
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null || cd -- "$script_dir/.." && pwd)"
+if repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null | sed -n '1p')" && [[ -n "$repo_root" ]]; then
+  :
+else
+  repo_root="$(cd -- "$script_dir/.." && pwd)"
+fi
 home_dir="${HOME:-}"
 
 fixture_mode="${BENCH_STT_FIXTURES:-auto}"
