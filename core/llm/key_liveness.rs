@@ -157,8 +157,9 @@ fn probe_anthropic_key(client: &Client, account: &str, api_key: &str) -> ApiKeyL
     let endpoint = env_non_empty("LLM_ANTHROPIC_ENDPOINT")
         .unwrap_or_else(|| DEFAULT_ANTHROPIC_ENDPOINT.to_string());
     let endpoint = normalize_anthropic_messages_endpoint(&endpoint);
-    let model =
-        env_non_empty("LLM_ASSISTIVE_MODEL").unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string());
+    let model = env_non_empty("LLM_ASSISTIVE_MODEL")
+        .filter(|m| m.starts_with("claude"))
+        .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string());
     let request = json!({
         "model": model,
         "messages": [{
