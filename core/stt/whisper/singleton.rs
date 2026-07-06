@@ -25,6 +25,7 @@ use tracing::{info, warn};
 use crate::config::models::resolve_runtime_whisper_model_path;
 use crate::config::{Config, UserSettings};
 use crate::pipeline::contracts::{FileTranscriptionOptions, RawTranscript, TranscriptionVerdict};
+use crate::pipeline::stream_postprocess::whisper_initial_prompt;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
@@ -196,6 +197,19 @@ fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Resul
     f(engine)
 }
 
+fn with_engine_initial_prompt<R>(
+    initial_prompt: Option<String>,
+    f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>,
+) -> Result<R> {
+    with_engine(|engine| {
+        let previous = engine.decoding_params.initial_prompt.clone();
+        engine.decoding_params.initial_prompt = initial_prompt;
+        let result = f(engine);
+        engine.decoding_params.initial_prompt = previous;
+        result
+    })
+}
+
 /// Like [`with_engine`] but never blocks: if the engine is busy, return an error
 /// instead of waiting. Used by best-effort correction passes.
 fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Result<R> {
@@ -249,6 +263,18 @@ pub fn transcribe_with_segments(
     })
 }
 
+/// Transcribe audio samples with a per-call Whisper initial prompt.
+pub fn transcribe_with_segments_with_initial_prompt(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    initial_prompt: Option<String>,
+) -> Result<RawTranscript> {
+    with_engine_initial_prompt(initial_prompt, |engine| {
+        engine.transcribe_long_with_language_segments(samples, sample_rate, language)
+    })
+}
+
 /// Transcribe with streaming callback
 pub fn transcribe_streaming<'a>(
     samples: &[f32],
@@ -265,7 +291,9 @@ pub fn transcribe_file_verdict(
     language: Option<&str>,
     options: FileTranscriptionOptions,
 ) -> Result<TranscriptionVerdict> {
-    with_engine(|engine| engine.transcribe_file_with_language(path, language, options))
+    with_engine_initial_prompt(whisper_initial_prompt(), |engine| {
+        engine.transcribe_file_with_language(path, language, options)
+    })
 }
 
 /// Detect language from audio samples

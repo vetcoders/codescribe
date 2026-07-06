@@ -1016,7 +1016,8 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let infer = Arc::new(
         move |samples: Vec<f32>,
               _sample_rate: u32,
-              _language: Option<String>|
+              _language: Option<String>,
+              _initial_prompt: Option<String>|
               -> Result<RawTranscript> {
             let id = samples.first().copied().unwrap_or_default() as u32;
             started_ref
@@ -1195,7 +1196,8 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     let infer = Arc::new(
         move |samples: Vec<f32>,
               _sample_rate: u32,
-              _language: Option<String>|
+              _language: Option<String>,
+              _initial_prompt: Option<String>|
               -> Result<RawTranscript> {
             let id = samples.first().copied().unwrap_or_default() as u32;
             started_ref

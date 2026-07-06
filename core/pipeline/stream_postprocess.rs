@@ -37,6 +37,8 @@ const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
 const MAX_EMBED_CHARS: usize = 512;
 const MAX_DROPS_IN_ROW: u8 = 2;
 const FINAL_PASS_ARTIFACT_TOKENS: &[&str] = &["going", "use"];
+pub const WHISPER_INITIAL_PROMPT_TOKEN_BUDGET: usize = 224;
+const WHISPER_INITIAL_PROMPT_PREFIX: &str = "Vocabulary:";
 
 lazy_static! {
     // Whisper sometimes emits trailing emoticon artifacts like ":D", ":-D", "::D", often repeated.
@@ -106,6 +108,10 @@ struct Lexicon {
     /// vocabulary). Used by `protected_terms_lost` to flag when an LLM or other
     /// downstream pass silently drops or mutates a protected term.
     protected_canonicals: Vec<String>,
+    /// Canonical terms from the operator's custom dictionary. These feed Whisper's
+    /// initial prompt after protected terms, without becoming protected-term loss
+    /// sentinels.
+    custom_canonicals: Vec<String>,
 }
 
 static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
@@ -155,8 +161,16 @@ impl Lexicon {
 
         let t_custom = Instant::now();
         let mut custom_rules = Vec::new();
+        let mut custom_canonicals = Vec::new();
         let custom_count = load_custom_lexicon()
-            .map(|content| load_legacy_jsonl(&content, "custom", &mut custom_rules))
+            .map(|content| {
+                load_legacy_jsonl_with_terms(
+                    &content,
+                    "custom",
+                    &mut custom_rules,
+                    Some(&mut custom_canonicals),
+                )
+            })
             .unwrap_or(0);
         let custom_ms = t_custom.elapsed().as_millis();
 
@@ -192,6 +206,7 @@ impl Lexicon {
             custom_path,
             custom_mtime,
             protected_canonicals,
+            custom_canonicals,
         }
     }
 
@@ -203,10 +218,18 @@ impl Lexicon {
             return;
         }
         self.custom_rules.clear();
+        self.custom_canonicals.clear();
         let custom_count = fs::read_to_string(&self.custom_path)
             .ok()
             .filter(|c| !c.trim().is_empty())
-            .map(|content| load_legacy_jsonl(&content, "custom", &mut self.custom_rules))
+            .map(|content| {
+                load_legacy_jsonl_with_terms(
+                    &content,
+                    "custom",
+                    &mut self.custom_rules,
+                    Some(&mut self.custom_canonicals),
+                )
+            })
             .unwrap_or(0);
         self.custom_mtime = current_mtime;
         info!(
@@ -246,6 +269,14 @@ impl Lexicon {
     fn rule_count(&self) -> usize {
         self.builtin_rules.len() + self.custom_rules.len()
     }
+
+    fn whisper_initial_prompt(&self) -> Option<String> {
+        build_whisper_initial_prompt(
+            &self.protected_canonicals,
+            &self.custom_canonicals,
+            WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
+        )
+    }
 }
 
 fn maybe_reload_global_lexicon() {
@@ -274,6 +305,58 @@ fn apply_global_lexicon(text: &str) -> String {
 pub fn apply_lexicon(text: &str) -> String {
     maybe_reload_global_lexicon();
     apply_global_lexicon(text)
+}
+
+/// Build the domain-vocabulary hint fed into Whisper's `initial_prompt`.
+///
+/// Protected terms are selected before custom dictionary terms, duplicates are
+/// removed case-insensitively, and the final string is trimmed to the Whisper
+/// prompt budget before decoding begins.
+pub fn build_whisper_initial_prompt(
+    protected_terms: &[String],
+    custom_terms: &[String],
+    token_budget: usize,
+) -> Option<String> {
+    if token_budget == 0 {
+        return None;
+    }
+
+    let mut seen = HashSet::new();
+    let mut selected = Vec::new();
+    let mut used_tokens = 1usize; // `Vocabulary:`
+
+    for term in protected_terms.iter().chain(custom_terms.iter()) {
+        let term = term.trim();
+        if term.is_empty() {
+            continue;
+        }
+        if !seen.insert(term.to_lowercase()) {
+            continue;
+        }
+
+        let term_tokens = estimated_prompt_tokens(term) + 1; // term plus separator/punctuation
+        if used_tokens + term_tokens > token_budget {
+            break;
+        }
+
+        used_tokens += term_tokens;
+        selected.push(term.to_string());
+    }
+
+    (!selected.is_empty())
+        .then(|| format!("{WHISPER_INITIAL_PROMPT_PREFIX} {}.", selected.join("; ")))
+}
+
+pub fn whisper_initial_prompt() -> Option<String> {
+    maybe_reload_global_lexicon();
+    let lexicon = GLOBAL_LEXICON
+        .read()
+        .expect("global lexicon read lock poisoned");
+    lexicon.whisper_initial_prompt()
+}
+
+fn estimated_prompt_tokens(term: &str) -> usize {
+    term.split_whitespace().count().max(1)
 }
 
 /// Whole-word, case-insensitive containment check for a (possibly multi-word)
@@ -308,6 +391,15 @@ pub fn protected_terms_lost(before: &str, after: &str) -> Vec<String> {
 }
 
 fn load_legacy_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> usize {
+    load_legacy_jsonl_with_terms(source, label, rules, None)
+}
+
+fn load_legacy_jsonl_with_terms(
+    source: &str,
+    label: &str,
+    rules: &mut Vec<LexiconRule>,
+    mut canonicals: Option<&mut Vec<String>>,
+) -> usize {
     let mut added = 0usize;
     for (idx, line) in source.lines().enumerate() {
         let line = line.trim();
@@ -327,6 +419,12 @@ fn load_legacy_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) ->
                 continue;
             }
         };
+
+        if let Some(canonicals) = &mut canonicals
+            && !canonicals.iter().any(|c| c == &entry.term)
+        {
+            canonicals.push(entry.term.clone());
+        }
 
         // Merge top-level mispronunciations with extras.mispronunciations
         // (veterinary.jsonl stores them in extras, programming.jsonl at top level)
@@ -874,6 +972,51 @@ mod tests {
     }
 
     #[test]
+    fn whisper_initial_prompt_empty_terms_returns_none() {
+        assert_eq!(build_whisper_initial_prompt(&[], &[], 224), None);
+        assert_eq!(
+            build_whisper_initial_prompt(&["Loctree".to_string()], &[], 0),
+            None
+        );
+    }
+
+    #[test]
+    fn whisper_initial_prompt_dedupes_case_and_prioritizes_protected_terms() {
+        let protected = vec![
+            "Loctree".to_string(),
+            "AICX".to_string(),
+            "loctree".to_string(),
+        ];
+        let custom = vec![
+            "Codescribe".to_string(),
+            "aicx".to_string(),
+            "Operator Console".to_string(),
+        ];
+
+        let prompt =
+            build_whisper_initial_prompt(&protected, &custom, 224).expect("expected prompt");
+
+        assert_eq!(
+            prompt,
+            "Vocabulary: Loctree; AICX; Codescribe; Operator Console."
+        );
+    }
+
+    #[test]
+    fn whisper_initial_prompt_truncates_to_token_budget() {
+        let protected = vec![
+            "Loctree".to_string(),
+            "Operator Console".to_string(),
+            "AICX".to_string(),
+        ];
+
+        let prompt = build_whisper_initial_prompt(&protected, &["Codescribe".to_string()], 4)
+            .expect("expected truncated prompt");
+
+        assert_eq!(prompt, "Vocabulary: Loctree.");
+    }
+
+    #[test]
     fn test_cleanup_and_whitespace() {
         let mut processor = StreamPostProcessor::new();
         let input = "To jest to jest to jest   bardzo  wazny \n test systemu.";
@@ -934,6 +1077,7 @@ mod tests {
                 .ok()
                 .and_then(|m| m.modified().ok()),
             protected_canonicals: Vec::new(),
+            custom_canonicals: Vec::new(),
         };
 
         // No rules yet
@@ -958,6 +1102,7 @@ mod tests {
         );
         assert_eq!(lexicon.rule_count(), 1);
         assert_eq!(lexicon.custom_rules.len(), 1);
+        assert_eq!(lexicon.custom_canonicals, vec!["FooBar".to_string()]);
     }
 
     #[test]
@@ -976,6 +1121,7 @@ mod tests {
             custom_path: custom_path.clone(),
             custom_mtime: None, // Force initial load
             protected_canonicals: Vec::new(),
+            custom_canonicals: Vec::new(),
         };
 
         // First reload loads the rule
@@ -1013,6 +1159,7 @@ mod tests {
                 .ok()
                 .and_then(|m| m.modified().ok()),
             protected_canonicals: Vec::new(),
+            custom_canonicals: Vec::new(),
         };
 
         // Write custom rule
@@ -1128,6 +1275,7 @@ mod tests {
             custom_path: PathBuf::from("/nonexistent/lexicon.custom.jsonl"),
             custom_mtime: None,
             protected_canonicals: canonicals,
+            custom_canonicals: Vec::new(),
         }
     }
 

@@ -33,7 +33,8 @@ use crate::pipeline::contracts::{
     VadVerdict,
 };
 use crate::pipeline::stream_postprocess::{
-    StreamPostProcessStats, StreamPostProcessor, final_pass_guardrail_reason,
+    StreamPostProcessStats, StreamPostProcessor, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
+    final_pass_guardrail_reason,
 };
 use crate::safe_path;
 
@@ -69,6 +70,12 @@ fn runaway_token_budget(audio_sec: f32) -> usize {
         * RUNAWAY_BUDGET_MARGIN)
         .ceil();
     (raw as usize).max(RUNAWAY_MIN_BUDGET)
+}
+
+fn append_initial_prompt_tokens(tokens: &mut Vec<u32>, prompt_tokens: &[u32]) -> usize {
+    let keep = prompt_tokens.len().min(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+    tokens.extend_from_slice(&prompt_tokens[..keep]);
+    keep
 }
 
 fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option<FinalPassVerdict> {
@@ -921,12 +928,8 @@ impl LocalWhisperEngine {
         {
             let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
             if !prompt_tokens.is_empty() {
-                tracing::debug!(
-                    "Initial prompt: {} ({} tokens)",
-                    prompt,
-                    prompt_tokens.len()
-                );
-                tokens.extend(prompt_tokens);
+                let used = append_initial_prompt_tokens(&mut tokens, &prompt_tokens);
+                tracing::debug!("Initial prompt: {} ({} tokens)", prompt, used);
             }
         }
 
@@ -1848,6 +1851,38 @@ mod dedup_tests {
         // Zero / negative audio_sec is clamped and floored, never panics.
         assert_eq!(runaway_token_budget(0.0), RUNAWAY_MIN_BUDGET);
         assert_eq!(runaway_token_budget(-5.0), RUNAWAY_MIN_BUDGET);
+    }
+
+    #[test]
+    fn initial_prompt_tokens_change_decoder_context_prefix() {
+        let without_prompt = vec![1_u32, 2, 3];
+        let mut with_prompt = without_prompt.clone();
+
+        let used = append_initial_prompt_tokens(&mut with_prompt, &[10, 11, 12]);
+
+        assert_eq!(used, 3);
+        assert_ne!(with_prompt, without_prompt);
+        assert_eq!(
+            &with_prompt[..without_prompt.len()],
+            without_prompt.as_slice()
+        );
+        assert_eq!(&with_prompt[without_prompt.len()..], &[10, 11, 12]);
+    }
+
+    #[test]
+    fn initial_prompt_tokens_are_capped_before_decode() {
+        let mut tokens = vec![1_u32, 2, 3];
+        let prompt_tokens: Vec<u32> =
+            (0..(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET as u32 + 10)).collect();
+
+        let used = append_initial_prompt_tokens(&mut tokens, &prompt_tokens);
+
+        assert_eq!(used, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+        assert_eq!(tokens.len(), 3 + WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+        assert_eq!(
+            *tokens.last().expect("prompt should append tokens"),
+            WHISPER_INITIAL_PROMPT_TOKEN_BUDGET as u32 - 1
+        );
     }
 
     #[test]

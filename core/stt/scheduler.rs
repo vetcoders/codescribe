@@ -20,7 +20,9 @@ const DEFAULT_THERMAL_FAIR_MULT: f32 = 1.0;
 const DEFAULT_THERMAL_SERIOUS_MULT: f32 = 2.0;
 const DEFAULT_THERMAL_CRITICAL_MULT: f32 = 4.0;
 
-type InferFn = Arc<dyn Fn(Vec<f32>, u32, Option<String>) -> Result<RawTranscript> + Send + Sync>;
+type InferFn = Arc<
+    dyn Fn(Vec<f32>, u32, Option<String>, Option<String>) -> Result<RawTranscript> + Send + Sync,
+>;
 type CommitPrefilterFn = Arc<dyn Fn(&[f32], u32) -> Vec<f32> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +133,7 @@ impl SttScheduler {
             sample_rate,
             language,
             utterance_id: None,
+            initial_prompt: initial_prompt_for_lane(lane),
             queued_at: Instant::now(),
             result_tx,
         };
@@ -160,6 +163,7 @@ impl SttScheduler {
             sample_rate,
             language,
             utterance_id: Some(utterance_id),
+            initial_prompt: initial_prompt_for_lane(lane),
             queued_at: Instant::now(),
             result_tx,
         };
@@ -262,8 +266,23 @@ fn default_infer(
     samples: Vec<f32>,
     sample_rate: u32,
     language: Option<String>,
+    initial_prompt: Option<String>,
 ) -> Result<RawTranscript> {
-    crate::stt::transcribe_long_with_segments(&samples, sample_rate, language.as_deref())
+    crate::stt::transcribe_long_with_segments_with_initial_prompt(
+        &samples,
+        sample_rate,
+        language.as_deref(),
+        initial_prompt,
+    )
+}
+
+fn initial_prompt_for_lane(lane: SttLane) -> Option<String> {
+    match lane {
+        SttLane::Live => None,
+        SttLane::Commit | SttLane::Refine => {
+            crate::pipeline::stream_postprocess::whisper_initial_prompt()
+        }
+    }
 }
 
 fn default_commit_prefilter(samples: &[f32], sample_rate: u32) -> Vec<f32> {
@@ -283,6 +302,7 @@ struct SttRequest {
     sample_rate: u32,
     language: Option<String>,
     utterance_id: Option<u64>,
+    initial_prompt: Option<String>,
     queued_at: Instant,
     result_tx: oneshot::Sender<Result<RawTranscript>>,
 }
@@ -481,7 +501,7 @@ async fn scheduler_worker(
                 } else {
                     req.samples
                 };
-                (infer)(samples, req.sample_rate, req.language)
+                (infer)(samples, req.sample_rate, req.language, req.initial_prompt)
             })
             .await
             .map_err(|e| anyhow!("STT blocking worker task failed: {}", e))
@@ -770,6 +790,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scheduler_seeds_prompt_only_for_commit_and_refine_lanes() {
+        let captured = Arc::new(StdMutex::new(Vec::<(u32, Option<String>)>::new()));
+        let captured_ref = Arc::clone(&captured);
+        let infer = Arc::new(
+            move |samples: Vec<f32>,
+                  _sample_rate: u32,
+                  _language: Option<String>,
+                  initial_prompt: Option<String>|
+                  -> Result<RawTranscript> {
+                let id = samples.first().copied().unwrap_or_default() as u32;
+                captured_ref
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((id, initial_prompt));
+                Ok(transcript_for_id(id))
+            },
+        );
+
+        let scheduler = SttScheduler::with_infer_and_commit_prefilter(
+            infer,
+            Arc::new(passthrough_commit_prefilter),
+        );
+        let mut live = scheduler
+            .submit(SttLane::Live, vec![1.0], 16_000, None)
+            .expect("submit live");
+        let mut commit = scheduler
+            .submit(SttLane::Commit, vec![2.0], 16_000, None)
+            .expect("submit commit");
+        let mut refine = scheduler
+            .submit(SttLane::Refine, vec![3.0], 16_000, None)
+            .expect("submit refine");
+
+        assert_eq!(live.recv().await.expect("live ok").text, "job-1");
+        assert_eq!(commit.recv().await.expect("commit ok").text, "job-2");
+        assert_eq!(refine.recv().await.expect("refine ok").text, "job-3");
+        scheduler.shutdown().await.expect("shutdown");
+
+        let captured = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(captured.len(), 3);
+        let live_prompt = captured
+            .iter()
+            .find(|(id, _)| *id == 1)
+            .and_then(|(_, prompt)| prompt.as_ref());
+        let commit_prompt = captured
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .and_then(|(_, prompt)| prompt.as_ref());
+        let refine_prompt = captured
+            .iter()
+            .find(|(id, _)| *id == 3)
+            .and_then(|(_, prompt)| prompt.as_ref());
+
+        assert!(live_prompt.is_none(), "Live preview must stay unprompted");
+        assert!(
+            commit_prompt.is_some_and(|prompt| prompt.contains("Loctree")),
+            "Commit lane should receive the protected-term prompt"
+        );
+        assert!(
+            refine_prompt.is_some_and(|prompt| prompt.contains("Loctree")),
+            "Refine lane should receive the protected-term prompt"
+        );
+    }
+
+    #[tokio::test]
     async fn scheduler_prioritizes_live_then_commit_then_refine() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
         let gate = Arc::new((StdMutex::new(false), Condvar::new()));
@@ -779,7 +863,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -846,7 +931,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -914,7 +1000,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -976,7 +1063,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 started_ref
                     .lock()
@@ -1022,7 +1110,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -1075,7 +1164,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -1151,7 +1241,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 started_ref
                     .lock()
@@ -1200,7 +1291,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 captured_ref
                     .lock()
@@ -1259,7 +1351,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 captured_ref
                     .lock()
@@ -1312,7 +1405,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
