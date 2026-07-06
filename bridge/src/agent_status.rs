@@ -59,11 +59,16 @@ impl From<&McpStatusRow> for CsMcpStatusRow {
 #[derive(uniffi::Record)]
 pub struct CsMcpStatusReport {
     pub config_path_display: String,
+    /// `false` when there is no MCP config yet (missing `mcp.json` or a present
+    /// config with no servers). The onboarding readiness step uses this to choose
+    /// between the status card and the "set up MCP servers" prompt.
+    pub configured: bool,
     pub rows: Vec<CsMcpStatusRow>,
 }
 
 impl From<McpStatusReport> for CsMcpStatusReport {
     fn from(report: McpStatusReport) -> Self {
+        let configured = report.configured();
         let rows = report
             .summary_rows()
             .iter()
@@ -71,6 +76,7 @@ impl From<McpStatusReport> for CsMcpStatusReport {
             .collect();
         Self {
             config_path_display: report.config_path_display,
+            configured,
             rows,
         }
     }
