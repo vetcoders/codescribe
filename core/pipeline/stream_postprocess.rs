@@ -452,6 +452,14 @@ fn load_legacy_jsonl_with_terms(
                 continue;
             }
 
+            if label == "custom" && is_unsafe_plain_custom_rule(&entry.term, mis) {
+                debug!(
+                    "Skipping unsafe custom lexicon rule {} -> {}",
+                    mis, entry.term
+                );
+                continue;
+            }
+
             if let Some(pattern) = build_word_regex(mis) {
                 rules.push(LexiconRule {
                     pattern,
@@ -463,6 +471,60 @@ fn load_legacy_jsonl_with_terms(
     }
 
     added
+}
+
+fn is_unsafe_plain_custom_rule(term: &str, variant: &str) -> bool {
+    let term = term.trim();
+    let variant = variant.trim();
+
+    if !is_plain_lowercase_language_phrase(term) || !is_plain_lowercase_language_phrase(variant) {
+        return false;
+    }
+
+    if normalized_without_polish_diacritics(term) == normalized_without_polish_diacritics(variant) {
+        return false;
+    }
+
+    // A custom single-token Polish word -> different Polish word rewrite is too
+    // broad for global STT postprocessing. Those entries are often reference
+    // diffs or inflections, not acoustic mis-hears.
+    term.split_whitespace().count() == 1 && variant.split_whitespace().count() <= 2
+}
+
+fn is_plain_lowercase_language_phrase(input: &str) -> bool {
+    let mut saw_letter = false;
+    let mut saw_space = false;
+
+    for ch in input.chars() {
+        if ch.is_whitespace() {
+            saw_space = true;
+            continue;
+        }
+        if !ch.is_alphabetic() || ch.is_uppercase() {
+            return false;
+        }
+        saw_letter = true;
+    }
+
+    saw_letter && (saw_space || input.split_whitespace().count() == 1)
+}
+
+fn normalized_without_polish_diacritics(input: &str) -> String {
+    input
+        .to_lowercase()
+        .chars()
+        .map(|ch| match ch {
+            'ą' => 'a',
+            'ć' => 'c',
+            'ę' => 'e',
+            'ł' => 'l',
+            'ń' => 'n',
+            'ó' => 'o',
+            'ś' => 's',
+            'ź' | 'ż' => 'z',
+            _ => ch,
+        })
+        .collect()
 }
 
 /// Load curated protected-term entries (legacy `term`+`mispronunciations` shape).
@@ -1185,6 +1247,51 @@ mod tests {
         assert_eq!(lexicon.rule_count(), 1);
         assert_eq!(lexicon.custom_rules.len(), 1);
         assert_eq!(lexicon.custom_canonicals, vec!["FooBar".to_string()]);
+    }
+
+    #[test]
+    fn test_custom_lexicon_skips_plain_word_regression_rules() {
+        let json = r#"
+{"term":"zobacz","mispronunciations":["zobaczcie"]}
+{"term":"robimy","mispronunciations":["zrobimy", "robi się"]}
+{"term":"stary","mispronunciations":["stara"]}
+"#;
+        let mut custom_rules = Vec::new();
+
+        let count = load_legacy_jsonl_with_terms(json, "custom", &mut custom_rules, None);
+
+        assert_eq!(count, 0, "plain word-to-word custom rules are unsafe");
+
+        let lexicon = Lexicon {
+            builtin_rules: Vec::new(),
+            custom_rules,
+            custom_path: PathBuf::from("/nonexistent/lexicon.custom.jsonl"),
+            custom_mtime: None,
+            protected_canonicals: Vec::new(),
+            custom_canonicals: Vec::new(),
+        };
+        let input = "Zobaczcie, jeśli nie zrobimy tego teraz, stara.";
+        assert_eq!(lexicon.apply(input), input);
+    }
+
+    #[test]
+    fn test_custom_lexicon_allows_diacritic_only_rules() {
+        let json = r#"{"term":"zażółć","mispronunciations":["zazolc"]}"#;
+        let mut custom_rules = Vec::new();
+
+        let count = load_legacy_jsonl_with_terms(json, "custom", &mut custom_rules, None);
+
+        assert_eq!(count, 1);
+
+        let lexicon = Lexicon {
+            builtin_rules: Vec::new(),
+            custom_rules,
+            custom_path: PathBuf::from("/nonexistent/lexicon.custom.jsonl"),
+            custom_mtime: None,
+            protected_canonicals: Vec::new(),
+            custom_canonicals: Vec::new(),
+        };
+        assert_eq!(lexicon.apply("zazolc gesla jazn"), "zażółć gesla jazn");
     }
 
     #[test]
