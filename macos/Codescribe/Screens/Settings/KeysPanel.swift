@@ -293,7 +293,7 @@ private struct KeyRow: View {
                         }
                     }
                     .frame(width: 48, height: 32)
-                    .foregroundStyle(CSColor.textMutedAlt)
+                    .foregroundStyle(isSet ? CSColor.textMutedAlt : CSColor.textFaint)
                     .background(
                         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                             .fill(CSColor.surfaceRaised(0.03))
@@ -304,8 +304,8 @@ private struct KeyRow: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(probePending)
-                .help("Test this key")
+                .disabled(probePending || !isSet)
+                .help(isSet ? "Test this key" : "Save a key first to test it")
 
                 Button(action: onClear) {
                     CSIconView(
