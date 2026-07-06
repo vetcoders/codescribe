@@ -387,9 +387,10 @@ fn flatten_message_text(content: &[Value]) -> String {
 /// rather than a blind key walk. A blind walk recurses into structural fields, so
 /// a restored `image` block leaks its `media_type` ("image/png") and a `tool_use`
 /// block leaks its `id`/`name` into the displayed transcript. A type-aware
-/// whitelist emits only real prose: `text` blocks plus recursed `tool_result`
-/// content. Interior newlines are preserved (unlike the search-index twin) so
-/// restored markdown keeps its structure.
+/// whitelist emits only real prose: canonical `text` blocks, legacy
+/// `input_text` / `output_text` aliases, plus recursed `tool_result` content.
+/// Interior newlines are preserved (unlike the search-index twin) so restored
+/// markdown keeps its structure.
 fn collect_message_text(value: &Value, out: &mut Vec<String>) {
     match value {
         Value::String(text) if !text.trim().is_empty() => {
@@ -407,7 +408,7 @@ fn collect_message_text(value: &Value, out: &mut Vec<String>) {
         Value::Object(map) => match map.get("type").and_then(Value::as_str) {
             // A text block (or an untyped object treated as one) contributes its
             // `text`; structural fields (media_type, id, name, …) are ignored.
-            Some("text") | None => {
+            Some("text") | Some("input_text") | Some("output_text") | None => {
                 if let Some(text) = map.get("text").and_then(Value::as_str)
                     && !text.trim().is_empty()
                 {
@@ -452,6 +453,18 @@ mod tests {
         assert_eq!(
             flatten_message_text(&content),
             "Pierwszy akapit.\n\nDrugi akapit\nz nową linią."
+        );
+    }
+
+    #[test]
+    fn flatten_surfaces_openai_text_alias_blocks() {
+        let content = vec![
+            json!({ "type": "input_text", "text": "legacy prompt" }),
+            json!({ "type": "output_text", "text": "legacy reply" }),
+        ];
+        assert_eq!(
+            flatten_message_text(&content),
+            "legacy prompt\n\nlegacy reply"
         );
     }
 

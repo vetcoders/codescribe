@@ -140,7 +140,7 @@ private struct StoredMessageContent {
         }
         hasDisplayableNonTextBlock = blocks.contains { block in
             guard let type = block.type else { return false }
-            return !["text", "tool_use", "tool_result"].contains(type)
+            return !["text", "input_text", "output_text", "tool_use", "tool_result"].contains(type)
         }
         toolUses = blocks.compactMap { block in
             guard block.type == "tool_use",

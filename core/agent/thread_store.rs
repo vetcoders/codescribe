@@ -394,7 +394,7 @@ fn value_to_content_block(value: &Value) -> ContentBlock {
     };
 
     match value_type {
-        "text" => ContentBlock::Text(
+        "text" | "input_text" | "output_text" => ContentBlock::Text(
             value
                 .get("text")
                 .and_then(Value::as_str)
@@ -568,6 +568,30 @@ mod tests {
         assert_eq!(index.data().threads[0].id, thread.id);
 
         Ok(())
+    }
+
+    #[test]
+    fn legacy_openai_text_aliases_restore_as_plain_text() {
+        let message = ThreadMessage {
+            role: "assistant".to_string(),
+            content: vec![
+                json!({"type":"input_text","text":"Owner asked about appetite"}),
+                json!({"type":"output_text","text":"Appetite improved overnight"}),
+            ],
+            timestamp: Utc::now(),
+            metadata: None,
+        }
+        .to_message();
+
+        assert_eq!(message.content.len(), 2);
+        match &message.content[0] {
+            ContentBlock::Text(text) => assert_eq!(text, "Owner asked about appetite"),
+            other => panic!("input_text restored as unexpected block: {other:?}"),
+        }
+        match &message.content[1] {
+            ContentBlock::Text(text) => assert_eq!(text, "Appetite improved overnight"),
+            other => panic!("output_text restored as unexpected block: {other:?}"),
+        }
     }
 
     #[test]
