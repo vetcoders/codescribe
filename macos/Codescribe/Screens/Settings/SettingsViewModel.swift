@@ -22,6 +22,44 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
+/// One-shot deep-link target for the Settings window. A surface outside Settings
+/// (e.g. the onboarding wizard routing the user to MCP setup) sets this before
+/// opening the window; `SettingsView` consumes it once on appear and navigates to
+/// the requested section. Nil means "open on the last/default section".
+@MainActor
+enum SettingsDeepLink {
+    static var pendingSection: SettingsSection?
+
+    /// Take the pending target (if any), clearing it so a later open is unaffected.
+    static func consume() -> SettingsSection? {
+        defer { pendingSection = nil }
+        return pendingSection
+    }
+}
+
+/// Clears the app's preferences domain and relaunches a fresh instance. Used by
+/// the destructive "Reset app data" flow so restored window frames / SwiftUI scene
+/// state do not survive the wipe. The relaunch is deferred via a detached `open`
+/// so this instance fully exits first — otherwise AppDelegate's duplicate-instance
+/// guard would terminate the freshly-launched copy.
+@MainActor
+enum AppRelaunch {
+    static func clearDefaultsAndRelaunch() {
+        if let bundleId = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: bundleId)
+            UserDefaults.standard.synchronize()
+        }
+        let bundlePath = Bundle.main.bundlePath
+        let task = Process()
+        task.launchPath = "/bin/sh"
+        // `$0` carries the bundle path as a positional arg so it is safely quoted,
+        // never interpolated into the script string.
+        task.arguments = ["-c", "sleep 1; open \"$0\"", bundlePath]
+        try? task.run()
+        NSApp.terminate(nil)
+    }
+}
+
 /// View-model owning the Settings screen state. Seeded with mock data so the
 /// #Preview renders standalone; the live app injects `RealSettingsEngine`
 /// (over the `CodescribeConfig` bridge) + the native permission probe.
@@ -290,6 +328,23 @@ final class SettingsViewModel: ObservableObject {
         if target == .keys {
             refreshAssistiveModels()
         }
+    }
+
+    // MARK: - Reset app data (destructive privacy action)
+
+    /// Wipe all local app data through the Rust bridge, clear the app's
+    /// UserDefaults domain, then relaunch so codescribe comes up fresh (first-run
+    /// wizard from the top). `includeKeys` also removes the Keychain API keys.
+    /// On failure the error surfaces in `lastError` and nothing is relaunched.
+    func resetAppData(includeKeys: Bool) {
+        guard let engine else { return }
+        do {
+            try engine.resetAppData(includeKeys: includeKeys)
+        } catch {
+            lastError = String(describing: error)
+            return
+        }
+        AppRelaunch.clearDefaultsAndRelaunch()
     }
 
     // MARK: - Engine-panel derived values (runtime truth)

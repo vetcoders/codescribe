@@ -643,6 +643,41 @@ impl CodescribeConfig {
                 msg: error.to_string(),
             })
     }
+
+    /// Wipe all local codescribe data for a privacy "Reset app data" action.
+    ///
+    /// Removes the two app-owned data trees — the config / logs / transcription
+    /// directory (`~/.codescribe`) and the Application Support store
+    /// (`~/Library/Application Support/Codescribe`, i.e. settings.json + thread
+    /// history) — sourced from the same runtime path helpers the app reads, so a
+    /// `CODESCRIBE_DATA_DIR` override is honored and no `~` is ever hardcoded.
+    ///
+    /// When `include_keys` is true, also removes every Keychain-backed API key
+    /// (`KEYCHAIN_ACCOUNTS`) and clears it from the live process env. Deleting the
+    /// data trees clears the `setup_done` sentinel, so the next launch replays the
+    /// first-run wizard. TCC / permission grants are deliberately NOT touched —
+    /// those are the user's to manage in System Settings.
+    ///
+    /// UserDefaults (window frames / SwiftUI scene restoration) is a CFPreferences
+    /// domain with no core helper; the Swift caller clears it before relaunch.
+    pub fn reset_app_data(&self, include_keys: bool) -> Result<(), CsError> {
+        for dir in app_data_dirs() {
+            remove_dir_all_tolerant(&dir).map_err(|error| CsError::Config {
+                msg: format!("failed to remove {}: {error}", dir.display()),
+            })?;
+        }
+        if include_keys {
+            for account in KEYCHAIN_ACCOUNTS {
+                delete_key(account).map_err(|error| CsError::Config {
+                    msg: format!("failed to remove keychain key {account}: {error}"),
+                })?;
+                // SAFETY: same single-writer invariant as `set_api_key` /
+                // `clear_api_key` — settings writes are serialized on one Swift actor.
+                unsafe { std::env::remove_var(account) };
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Re-seed the live hotkey detector atomics after a settings write so mode
@@ -661,6 +696,31 @@ impl CodescribeConfig {
 /// Mirrors `hotkeys::reload_hotkey_runtime_after_write`.
 fn reload_hotkey_runtime() {
     codescribe::os::hotkeys::apply_hotkey_config(&Config::load_without_keychain());
+}
+
+/// App-owned data directories a full "Reset app data" wipes: the config / logs /
+/// transcription tree first, then the Application Support store. Both come from
+/// the runtime path helpers (honoring `CODESCRIBE_DATA_DIR`); when an override
+/// collapses them onto one path the duplicate is dropped so we never remove twice.
+fn app_data_dirs() -> Vec<std::path::PathBuf> {
+    let config_dir = Config::config_dir();
+    let settings_dir = codescribe_core::config::UserSettings::settings_dir();
+    if settings_dir == config_dir {
+        vec![config_dir]
+    } else {
+        vec![config_dir, settings_dir]
+    }
+}
+
+/// `remove_dir_all` that treats an already-absent directory as success: a reset
+/// must not fail just because a tree (e.g. an Application Support store that was
+/// never created) does not exist yet.
+fn remove_dir_all_tolerant(dir: &std::path::Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Built-in default workspace root when `AGENT_WORKSPACE_ROOTS` is unset. Kept in
@@ -777,4 +837,67 @@ fn write_prompt(path: &std::path::Path, content: &str) -> Result<(), CsError> {
     }
     fs::write(path, content)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::{app_data_dirs, remove_dir_all_tolerant};
+    use serial_test::serial;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Unique scratch directory under the OS temp dir (never the real home).
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("cs_reset_{}_{tag}_{nanos}", std::process::id()))
+    }
+
+    /// The reset scope must follow the `CODESCRIBE_DATA_DIR` override and wipe
+    /// exactly that tree — never anything outside it — and a repeat wipe of an
+    /// already-gone tree must succeed (idempotent). `#[serial]`: mutates the global
+    /// `CODESCRIBE_DATA_DIR` env var read by the core path helpers.
+    #[test]
+    #[serial]
+    fn reset_scope_follows_data_dir_and_is_idempotent() {
+        let root = scratch("scope");
+        std::fs::create_dir_all(root.join("transcriptions")).unwrap();
+        std::fs::write(root.join("settings.json"), b"{}").unwrap();
+        std::fs::write(root.join("transcriptions/a.txt"), b"hi").unwrap();
+        let root_canon = root.canonicalize().unwrap();
+
+        let previous = std::env::var("CODESCRIBE_DATA_DIR").ok();
+        // SAFETY: single-threaded test body, serialized via `#[serial]`.
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &root) };
+
+        let dirs = app_data_dirs();
+        assert!(!dirs.is_empty(), "reset must target at least one dir");
+        // Every target resolves to the override root — nothing escapes it.
+        for dir in &dirs {
+            let resolved = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            assert_eq!(
+                resolved, root_canon,
+                "reset target escaped the data dir: {dir:?}"
+            );
+        }
+
+        for dir in &dirs {
+            remove_dir_all_tolerant(dir).unwrap();
+        }
+        assert!(!root_canon.exists(), "data tree survived reset");
+
+        // Idempotent: wiping an absent tree is a no-op, not an error.
+        for dir in &dirs {
+            remove_dir_all_tolerant(dir).unwrap();
+        }
+
+        // SAFETY: restore prior env, same serialized single-thread context.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
+                None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
+            }
+        }
+    }
 }

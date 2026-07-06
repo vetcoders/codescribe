@@ -26,7 +26,14 @@ struct SettingsView: View {
         .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(Self.windowGradient.ignoresSafeArea())
         .preferredColorScheme(.dark)
-        .onAppear { model.refresh() }
+        .onAppear {
+            model.refresh()
+            // Honour a one-shot deep-link (e.g. onboarding routing to MCP setup)
+            // so the window lands on the requested section instead of the default.
+            if let target = SettingsDeepLink.consume() {
+                model.select(target)
+            }
+        }
     }
 
     @ViewBuilder
