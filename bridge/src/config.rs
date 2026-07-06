@@ -17,6 +17,9 @@ use codescribe_core::config::{
     Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
 };
 use codescribe_core::llm::account_auth;
+use codescribe_core::llm::key_liveness::{
+    ApiKeyLivenessResult, ApiKeyLivenessStatus, probe_api_key_liveness,
+};
 use codescribe_core::llm::model_discovery::{
     ModelDiscoveryStatus, discover_models as discover_provider_models,
 };
@@ -131,6 +134,25 @@ pub struct CsKeyStatus {
     /// OpenAI assistive key so both providers can be configured at once.
     pub llm_anthropic_api_key_set: bool,
     pub github_token_set: bool,
+}
+
+/// UI-safe API-key liveness bucket. No variant carries secret material.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsApiKeyProbeStatus {
+    Ok,
+    Invalid,
+    NoQuota,
+    Network,
+    Missing,
+    Unsupported,
+}
+
+/// Result of one Settings "Test" action for a Keychain account.
+#[derive(uniffi::Record)]
+pub struct CsApiKeyProbeResult {
+    pub account: String,
+    pub status: CsApiKeyProbeStatus,
+    pub message: String,
 }
 
 /// One selectable model for a provider (id sent on the wire + display label).
@@ -373,6 +395,14 @@ impl CodescribeConfig {
             llm_anthropic_api_key_set: key_present("LLM_ANTHROPIC_API_KEY"),
             github_token_set: key_present("GITHUB_TOKEN"),
         }
+    }
+
+    /// Probe one Keychain-backed API key account with a single cheap provider
+    /// request. Blocking by design: Swift calls this from a background queue.
+    /// The secret never crosses FFI; this method reads env/Keychain internally.
+    pub fn test_api_key(&self, account: String) -> Result<CsApiKeyProbeResult, CsError> {
+        ensure_known_account(&account)?;
+        Ok(probe_api_key_liveness(&account).into())
     }
 
     /// Assistive/agent-lane provider catalog with per-provider key presence.
@@ -697,6 +727,29 @@ fn active_account_login() -> &'static Mutex<Option<account_auth::LoginServer>> {
 fn account_auth_to_cs(error: account_auth::AccountAuthError) -> CsError {
     CsError::Config {
         msg: error.to_string(),
+    }
+}
+
+impl From<ApiKeyLivenessStatus> for CsApiKeyProbeStatus {
+    fn from(status: ApiKeyLivenessStatus) -> Self {
+        match status {
+            ApiKeyLivenessStatus::Ok => Self::Ok,
+            ApiKeyLivenessStatus::Invalid => Self::Invalid,
+            ApiKeyLivenessStatus::NoQuota => Self::NoQuota,
+            ApiKeyLivenessStatus::Network => Self::Network,
+            ApiKeyLivenessStatus::Missing => Self::Missing,
+            ApiKeyLivenessStatus::Unsupported => Self::Unsupported,
+        }
+    }
+}
+
+impl From<ApiKeyLivenessResult> for CsApiKeyProbeResult {
+    fn from(result: ApiKeyLivenessResult) -> Self {
+        Self {
+            account: result.account,
+            status: result.status.into(),
+            message: result.message,
+        }
     }
 }
 
