@@ -112,7 +112,12 @@ pub fn classify_probe_response(status: StatusCode, body: &str) -> ApiKeyLiveness
     }
 
     let body_lower = body.to_ascii_lowercase();
-    if status == StatusCode::TOO_MANY_REQUESTS || body_lower.contains("insufficient_quota") {
+    if status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::PAYMENT_REQUIRED
+        || body_lower.contains("insufficient_quota")
+        || body_lower.contains("credit balance is too low")
+        || body_lower.contains("billing_error")
+    {
         return ApiKeyLivenessStatus::NoQuota;
     }
 
@@ -335,6 +340,28 @@ mod tests {
     fn classifies_429_without_body_as_no_quota() {
         assert_eq!(
             classify_probe_response(StatusCode::TOO_MANY_REQUESTS, ""),
+            ApiKeyLivenessStatus::NoQuota
+        );
+    }
+
+    #[test]
+    fn classifies_anthropic_low_credit_body_as_no_quota() {
+        assert_eq!(
+            classify_probe_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}"#
+            ),
+            ApiKeyLivenessStatus::NoQuota
+        );
+    }
+
+    #[test]
+    fn classifies_402_billing_error_as_no_quota() {
+        assert_eq!(
+            classify_probe_response(
+                StatusCode::PAYMENT_REQUIRED,
+                r#"{"error":{"type":"billing_error","message":"payment required"}}"#
+            ),
             ApiKeyLivenessStatus::NoQuota
         );
     }
