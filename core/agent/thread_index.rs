@@ -316,6 +316,10 @@ fn rebuild_index_from_threads(
         .collect::<HashMap<_, _>>();
     let mut threads = Vec::new();
 
+    // `threads_dir` is store-owned: the only caller passes `path.parent()` of the
+    // index file, which itself is `threads_dir.join(INDEX_FILE_NAME)`. No
+    // caller-supplied component reaches it, so there is no path-traversal source to taint.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- threads_dir is store-owned (derived from the store-owned index path), not caller-supplied.
     for entry in fs::read_dir(threads_dir).with_context(|| {
         format!(
             "Failed to read threads directory: {}",
