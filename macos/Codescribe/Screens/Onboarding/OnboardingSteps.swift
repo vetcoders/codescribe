@@ -258,7 +258,7 @@ struct AgenticReadinessStepView: View {
                 statusCard(rows: readiness.rows)
             }
 
-            if let mcp = model.mcpStatus, !mcp.rows.isEmpty {
+            if let mcp = model.mcpStatus, mcp.configured {
                 Text("MCP servers")
                     .font(CSFont.mono(10, .semibold))
                     .tracking(0.4)
