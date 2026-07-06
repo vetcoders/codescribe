@@ -296,6 +296,48 @@ reload = "restart"
 category = "stt"
 description = "Minimum interval between committed STT inference jobs in milliseconds"
 
+[vars.BENCH_STT_FIXTURES]
+default = "auto"
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh fixture source selector: auto, historical, or repo"
+
+[vars.BENCH_STT_LIMIT]
+default = "10"
+type = "int"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh fixture limit for historical corpus runs"
+
+[vars.BENCH_STT_OUT]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh output directory under ~/.codescribe"
+
+[vars.BENCH_STT_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh Whisper language hint for bench probes"
+
+[vars.BENCH_STT_LATENCY_MANIFEST]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Internal bench hook: fixture manifest path for the scheduler-lane latency probe"
+
+[vars.BENCH_STT_LATENCY_OUT]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Internal bench hook: TSV output path for the scheduler-lane latency probe"
+
 [vars.CODESCRIBE_STT_THERMAL_FAIR_MULT]
 default = "1.0"
 type = "float"
