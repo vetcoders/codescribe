@@ -36,9 +36,12 @@ struct KeysPanel: View {
                         account: account,
                         label: SettingsViewModel.keyLabel(for: account),
                         isSet: model.keyStatus.isSet(account: account),
+                        probeResult: model.keyProbeResults[account],
+                        probePending: model.keyProbePending.contains(account),
                         accountProvider: model.providerForKeyAccount(account),
                         onSave: { model.saveKey(account: account, secret: $0) },
                         onClear: { model.clearKey(account: account) },
+                        onTest: { model.testKey(account: account) },
                         onStartAccountLogin: { model.startAccountLogin(providerId: $0) }
                     )
                 }
@@ -210,9 +213,12 @@ private struct KeyRow: View {
     let account: String
     let label: String
     let isSet: Bool
+    let probeResult: CsApiKeyProbeResult?
+    let probePending: Bool
     let accountProvider: CsProviderOption?
     let onSave: (String) -> Void
     let onClear: () -> Void
+    let onTest: () -> Void
     let onStartAccountLogin: (String) -> Void
 
     @State private var draft: String = ""
@@ -231,6 +237,9 @@ private struct KeyRow: View {
                     .font(CSFont.mono(10, .medium))
                     .foregroundStyle(CSColor.textFaint)
                 Spacer(minLength: 0)
+                if let probeResult {
+                    KeyProbeChip(result: probeResult)
+                }
                 Text(isSet ? "set" : "not set")
                     .font(CSFont.mono(10, .semibold))
                     .foregroundStyle(accentLight)
@@ -270,6 +279,33 @@ private struct KeyRow: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(draft.isEmpty)
+
+                Button(action: onTest) {
+                    Group {
+                        if probePending {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.62)
+                                .frame(width: 20, height: 14)
+                        } else {
+                            Text("Test")
+                                .font(CSFont.ui(12, .semibold))
+                        }
+                    }
+                    .frame(width: 48, height: 32)
+                    .foregroundStyle(isSet ? CSColor.textMutedAlt : CSColor.textFaint)
+                    .background(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .fill(CSColor.surfaceRaised(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(probePending || !isSet)
+                .help(isSet ? "Test this key" : "Save a key first to test it")
 
                 Button(action: onClear) {
                     CSIconView(
@@ -316,6 +352,48 @@ private struct KeyRow: View {
         guard !draft.isEmpty else { return }
         onSave(draft)
         draft = ""
+    }
+}
+
+private struct KeyProbeChip: View {
+    let result: CsApiKeyProbeResult
+
+    private var label: String {
+        switch result.status {
+        case .ok: return "Key OK"
+        case .invalid: return "Invalid key"
+        case .noQuota: return "No credits (check billing)"
+        case .network: return "Network error"
+        case .missing: return "Not set"
+        case .unsupported: return "Unsupported"
+        }
+    }
+
+    private var tint: Color {
+        switch result.status {
+        case .ok: return CSColor.oliveLight
+        case .invalid, .noQuota: return CSColor.terracottaLight
+        case .network: return CSColor.amber
+        case .missing, .unsupported: return CSColor.textFaint
+        }
+    }
+
+    var body: some View {
+        Text(label)
+            .font(CSFont.mono(10, .semibold))
+            .lineLimit(1)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(tint.opacity(0.11))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(tint.opacity(0.24), lineWidth: 1)
+            )
+            .help(result.message)
     }
 }
 
@@ -372,9 +450,11 @@ private struct AccountLoginRow: View {
     }
 }
 
+#if DEBUG
 #Preview("Keys panel") {
     ScrollView { KeysPanel(model: .preview(.keys)) }
         .frame(width: 720, height: 620)
         .background(SettingsView.windowGradient)
         .preferredColorScheme(.dark)
 }
+#endif
