@@ -832,6 +832,28 @@ async fn run_agent_send_path(
     }
 }
 
+/// Map a legacy formatter result to the assistant text that should be
+/// persisted, if any.
+///
+/// A `Failed` status carries no real assistant content (previously it was
+/// surfaced only as the "AI Failed" sentinel). A failed formatting attempt is
+/// NOT a conversation and must not be persisted (operator decision
+/// 2026-07-06): a dead API key would otherwise land a junk "AI Failed" thread
+/// on disk for every retry, producing 3-4 duplicate garbage threads per
+/// utterance. `Skipped` likewise has nothing to persist. Only genuine output
+/// (`Applied` / `AiNoop`, i.e. partial or full success) is persisted, exactly
+/// as before.
+fn legacy_fallback_assistant_text(
+    status: crate::ai_formatting::AiFormatStatus,
+    text: String,
+) -> Option<String> {
+    use crate::ai_formatting::AiFormatStatus;
+    match status {
+        AiFormatStatus::Applied | AiFormatStatus::AiNoop => Some(text),
+        AiFormatStatus::Failed | AiFormatStatus::Skipped => None,
+    }
+}
+
 async fn run_legacy_send_path(
     text: &str,
     whisper_language: crate::config::Language,
@@ -845,12 +867,14 @@ async fn run_legacy_send_path(
     )
     .await;
 
-    match result.status {
-        crate::ai_formatting::AiFormatStatus::Applied
-        | crate::ai_formatting::AiFormatStatus::AiNoop => Some(result.text),
-        crate::ai_formatting::AiFormatStatus::Failed => Some("AI Failed".to_string()),
-        crate::ai_formatting::AiFormatStatus::Skipped => None,
+    let status = result.status;
+    let assistant_text = legacy_fallback_assistant_text(status, result.text);
+    if assistant_text.is_none() && status == crate::ai_formatting::AiFormatStatus::Failed {
+        warn!(
+            "Legacy formatter failed; skipping thread persist for this attempt (a failed attempt is not a conversation)"
+        );
     }
+    assistant_text
 }
 
 async fn run_agent_send_with_fallback(
@@ -1157,6 +1181,38 @@ mod tests {
         assert_eq!(messages[1].role, "assistant");
         assert_eq!(messages[1].content[0]["type"], "text");
         assert_eq!(messages[1].content[0]["text"], "assistant reply");
+    }
+
+    #[test]
+    fn legacy_fallback_skips_persist_on_failed_status() {
+        use crate::ai_formatting::AiFormatStatus;
+
+        // Failed: the formatter produced no real assistant content (dead API
+        // key -> "AI Failed"). Nothing to persist, so no thread is written and
+        // no messages are built. This is the regression guard for the ~12 junk
+        // "AI Failed" threads (incl. 3-4 duplicates per utterance) the operator
+        // saw after a dead key drove every retry through the legacy fallback.
+        assert_eq!(
+            legacy_fallback_assistant_text(AiFormatStatus::Failed, "AI Failed".to_string()),
+            None
+        );
+
+        // Skipped: also nothing to persist.
+        assert_eq!(
+            legacy_fallback_assistant_text(AiFormatStatus::Skipped, String::new()),
+            None
+        );
+
+        // Applied / AiNoop: genuine output (partial or full success) is still
+        // persisted exactly as before.
+        assert_eq!(
+            legacy_fallback_assistant_text(AiFormatStatus::Applied, "formatted reply".to_string()),
+            Some("formatted reply".to_string())
+        );
+        assert_eq!(
+            legacy_fallback_assistant_text(AiFormatStatus::AiNoop, "verbatim reply".to_string()),
+            Some("verbatim reply".to_string())
+        );
     }
 
     struct NoopTestProvider;
