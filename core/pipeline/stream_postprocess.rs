@@ -39,6 +39,7 @@ const MAX_DROPS_IN_ROW: u8 = 2;
 const FINAL_PASS_ARTIFACT_TOKENS: &[&str] = &["going", "use"];
 pub const WHISPER_INITIAL_PROMPT_TOKEN_BUDGET: usize = 224;
 const WHISPER_INITIAL_PROMPT_PREFIX: &str = "Vocabulary:";
+pub const STT_INITIAL_PROMPT_ENABLED_ENV: &str = "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED";
 
 lazy_static! {
     // Whisper sometimes emits trailing emoticon artifacts like ":D", ":-D", "::D", often repeated.
@@ -347,7 +348,20 @@ pub fn build_whisper_initial_prompt(
         .then(|| format!("{WHISPER_INITIAL_PROMPT_PREFIX} {}.", selected.join("; ")))
 }
 
+pub fn stt_initial_prompt_enabled() -> bool {
+    match std::env::var(STT_INITIAL_PROMPT_ENABLED_ENV) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        ),
+        Err(_) => Config::load_without_keychain().stt_initial_prompt_enabled,
+    }
+}
+
 pub fn whisper_initial_prompt() -> Option<String> {
+    if !stt_initial_prompt_enabled() {
+        return None;
+    }
     maybe_reload_global_lexicon();
     let lexicon = GLOBAL_LEXICON
         .read()
@@ -946,6 +960,31 @@ fn truncate_for_embedding(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::ffi::OsString;
+
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     #[test]
     fn test_lexicon_rewrite() {
@@ -1014,6 +1053,49 @@ mod tests {
             .expect("expected truncated prompt");
 
         assert_eq!(prompt, "Vocabulary: Loctree.");
+    }
+
+    #[test]
+    #[serial]
+    fn whisper_initial_prompt_defaults_off_even_with_builtin_terms() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(STT_INITIAL_PROMPT_ENABLED_ENV);
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::remove_var(STT_INITIAL_PROMPT_ENABLED_ENV);
+        }
+
+        assert!(!stt_initial_prompt_enabled());
+        assert_eq!(
+            whisper_initial_prompt(),
+            None,
+            "fresh/default config must not inject a Whisper initial prompt"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn whisper_initial_prompt_is_opt_in() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(STT_INITIAL_PROMPT_ENABLED_ENV);
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::set_var(STT_INITIAL_PROMPT_ENABLED_ENV, "1");
+        }
+
+        let prompt = whisper_initial_prompt().expect("opt-in prompt should be built");
+        assert!(
+            prompt.contains("Loctree"),
+            "prompt should include protected terms"
+        );
     }
 
     #[test]

@@ -232,6 +232,13 @@ reload = "restart"
 category = "stt"
 description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
 
+[vars.CODESCRIBE_STT_INITIAL_PROMPT_ENABLED]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
+
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "300"
 type = "u64"

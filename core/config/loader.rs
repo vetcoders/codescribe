@@ -301,6 +301,10 @@ impl Config {
         if let Ok(val) = std::env::var("STT_ENDPOINT") {
             self.stt_endpoint = Some(val);
         }
+        if let Ok(val) = std::env::var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED") {
+            self.stt_initial_prompt_enabled =
+                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        }
         // STT_API_KEY for cloud STT
         if let Ok(val) = std::env::var("STT_API_KEY") {
             self.stt_api_key = Some(val);
@@ -617,6 +621,15 @@ impl Config {
         {
             Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
         }
+        if std::env::var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").is_err()
+            && let Some(v) = settings.stt_initial_prompt_enabled
+        {
+            self.stt_initial_prompt_enabled = v;
+            Self::config_init_set_env(
+                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
+                if v { "1" } else { "0" },
+            );
+        }
 
         // ── Agent workspace roots ──
         // Colon-joined (PATH-style); the `list_projects` tool reads and splits it.
@@ -679,7 +692,8 @@ impl Config {
                 | "QUICK_NOTES_SAVE_ONLY"
                 | "START_AT_LOGIN"
                 | "QUBE_DAEMON_AUTOSTART"
-                | "AGENT_ENTER_SENDS" => {
+                | "AGENT_ENTER_SENDS"
+                | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
@@ -830,7 +844,8 @@ impl Config {
                     | "QUICK_NOTES_SAVE_ONLY"
                     | "START_AT_LOGIN"
                     | "QUBE_DAEMON_AUTOSTART"
-                    | "AGENT_ENTER_SENDS" => {
+                    | "AGENT_ENTER_SENDS"
+                    | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                         let bv = matches!(*value, "1" | "true" | "yes" | "on");
                         match *key {
                             "AI_FORMATTING_ENABLED" => {
@@ -854,6 +869,9 @@ impl Config {
                                 settings_ref.qube_daemon_autostart = Some(bv)
                             }
                             "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
+                            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
+                                settings_ref.stt_initial_prompt_enabled = Some(bv)
+                            }
                             _ => {}
                         }
                     }
@@ -1171,7 +1189,9 @@ mod tests {
     fn setup_isolated_data_dir() -> TempDir {
         let tmp = TempDir::new().expect("tempdir");
         set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
+        remove_env_for_test("CODESCRIBE_ENV_PATH");
         remove_env_for_test("USE_LOCAL_STT");
+        remove_env_for_test("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         tmp
     }
 
@@ -1272,6 +1292,52 @@ mod tests {
         assert!(
             !config.use_local_stt,
             "settings.json should be able to disable local STT"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_stt_initial_prompt_defaults_off_and_requires_opt_in() {
+        let _tmp = setup_isolated_data_dir();
+        let _prompt_env = TestEnvGuard::unset("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
+
+        let default_config = Config::load();
+        assert!(
+            !default_config.stt_initial_prompt_enabled,
+            "fresh config must not enable Whisper initial_prompt"
+        );
+
+        let mut settings = UserSettings::load();
+        settings.stt_initial_prompt_enabled = Some(true);
+        settings.save().expect("save settings");
+
+        let config = Config::load();
+        assert!(
+            config.stt_initial_prompt_enabled,
+            "settings.json seed should be able to opt into Whisper initial_prompt"
+        );
+        assert_eq!(
+            std::env::var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").as_deref(),
+            Ok("1"),
+            "settings seed should publish the env-managed STT prompt knob"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_runtime_env_can_force_stt_initial_prompt_off_over_settings() {
+        let _tmp = setup_isolated_data_dir();
+        let _prompt_env = TestEnvGuard::unset("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
+
+        let mut settings = UserSettings::load();
+        settings.stt_initial_prompt_enabled = Some(true);
+        settings.save().expect("save settings");
+
+        set_env_for_test("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "0");
+        let config = Config::load();
+        assert!(
+            !config.stt_initial_prompt_enabled,
+            "explicit env must be able to keep Whisper initial_prompt disabled"
         );
     }
 

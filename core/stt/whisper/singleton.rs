@@ -210,6 +210,10 @@ fn with_engine_initial_prompt<R>(
     })
 }
 
+fn file_transcription_initial_prompt() -> Option<String> {
+    whisper_initial_prompt()
+}
+
 /// Like [`with_engine`] but never blocks: if the engine is busy, return an error
 /// instead of waiting. Used by best-effort correction passes.
 fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Result<R> {
@@ -291,7 +295,7 @@ pub fn transcribe_file_verdict(
     language: Option<&str>,
     options: FileTranscriptionOptions,
 ) -> Result<TranscriptionVerdict> {
-    with_engine_initial_prompt(whisper_initial_prompt(), |engine| {
+    with_engine_initial_prompt(file_transcription_initial_prompt(), |engine| {
         engine.transcribe_file_with_language(path, language, options)
     })
 }
@@ -351,6 +355,50 @@ mod tests {
                 None => unsafe { std::env::remove_var(self.key) },
             }
         }
+    }
+
+    #[test]
+    #[serial]
+    fn file_transcription_initial_prompt_defaults_off() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(
+            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+        );
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::remove_var(
+                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+            );
+        }
+
+        assert_eq!(file_transcription_initial_prompt(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn file_transcription_initial_prompt_is_opt_in() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(
+            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+        );
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::set_var(
+                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+                "1",
+            );
+        }
+
+        let prompt = file_transcription_initial_prompt().expect("opt-in prompt should be built");
+        assert!(prompt.contains("Loctree"));
     }
 
     #[test]

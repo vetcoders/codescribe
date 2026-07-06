@@ -720,8 +720,33 @@ fn env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::ffi::OsString;
     use std::sync::{Condvar, Mutex as StdMutex};
     use tokio::time::{Duration, timeout};
+
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     fn transcript_for_id(id: u32) -> RawTranscript {
         RawTranscript {
@@ -785,8 +810,48 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial]
+    fn scheduler_initial_prompt_defaults_off_for_all_lanes() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(
+            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+        );
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::remove_var(
+                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+            );
+        }
+
+        assert_eq!(initial_prompt_for_lane(SttLane::Live), None);
+        assert_eq!(initial_prompt_for_lane(SttLane::Commit), None);
+        assert_eq!(initial_prompt_for_lane(SttLane::Refine), None);
+    }
+
     #[tokio::test]
+    #[serial]
     async fn scheduler_seeds_prompt_only_for_commit_and_refine_lanes() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(
+            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+        );
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::set_var(
+                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+                "1",
+            );
+        }
+
         let captured = Arc::new(StdMutex::new(Vec::<(u32, Option<String>)>::new()));
         let captured_ref = Arc::clone(&captured);
         let infer = Arc::new(

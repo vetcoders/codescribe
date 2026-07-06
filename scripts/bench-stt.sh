@@ -450,6 +450,22 @@ fn prompt_terms(prompt: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+fn env_truthy(key: &str) -> bool {
+    env::var(key).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        )
+    })
+}
+
+fn env_f64(key: &str, default: f64) -> f64 {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
 fn read_manifest(path: &Path) -> Result<Vec<Fixture>> {
     let text = fs::read_to_string(path)?;
     let mut lines = text.lines();
@@ -551,16 +567,18 @@ fn main() -> Result<()> {
         .iter()
         .filter(|term| fixtures.iter().any(|fixture| contains_term(&fixture.reference_norm, term)))
         .count();
+    let force_controlled_prompt = env_truthy("CODESCRIBE_BENCH_FORCE_PROMPT");
+    let prompt_max_regression_pp = env_f64("CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP", 5.0);
 
     let (source_kind, source_reason, selected_terms, prompt) =
-        if runtime_prompt.is_some() && !runtime_terms.is_empty() && runtime_reference_overlap > 0 {
+        if runtime_prompt.is_some() && !runtime_terms.is_empty() {
             (
                 "runtime_lexicon",
-                "runtime protected/custom dictionary prompt is nonempty and overlaps references",
+                "runtime protected/custom dictionary prompt is enabled and nonempty",
                 runtime_terms.clone(),
                 runtime_prompt.clone(),
             )
-        } else {
+        } else if force_controlled_prompt {
             let terms = controlled_fixture_terms(&fixtures, 32);
             let prompt = stream_postprocess::build_whisper_initial_prompt(
                 &terms,
@@ -578,11 +596,23 @@ fn main() -> Result<()> {
                 terms,
                 prompt,
             )
+        } else {
+            (
+                "prompt_disabled",
+                "runtime prompt is disabled or empty; prompted probe intentionally passes no initial_prompt",
+                Vec::new(),
+                None,
+            )
         };
 
     let term_source_out = File::create(&term_source_tsv)?;
     writeln!(&term_source_out, "key\tvalue")?;
     write_kv(&term_source_out, "runtime_prompt_present", &runtime_prompt.is_some().to_string())?;
+    write_kv(
+        &term_source_out,
+        "bench_force_prompt",
+        &force_controlled_prompt.to_string(),
+    )?;
     write_kv(
         &term_source_out,
         "runtime_terms_count",
@@ -611,6 +641,11 @@ fn main() -> Result<()> {
         "prompt_preview",
         prompt.as_deref().unwrap_or(""),
     )?;
+    write_kv(
+        &term_source_out,
+        "prompt_regression_guard_pp",
+        &format!("{prompt_max_regression_pp:.3}"),
+    )?;
     write_kv(&term_source_out, "source_reason", source_reason)?;
 
     whisper::init()?;
@@ -625,6 +660,8 @@ fn main() -> Result<()> {
         hits_out,
         "id\tterm\tsource_kind\treference_has_term\tunprompted_raw_hit\tprompted_raw_hit\tunprompted_post_hit\tprompted_post_hit"
     )?;
+    let mut worst_raw_delta_pp = f32::NEG_INFINITY;
+    let mut worst_post_delta_pp = f32::NEG_INFINITY;
 
     for fixture in fixtures {
         let (samples, sample_rate) = audio::load_audio_file(&fixture.audio_path)?;
@@ -652,6 +689,10 @@ fn main() -> Result<()> {
         let prompted_raw_cer = char_error_rate(&fixture.reference_norm, &prompted_norm);
         let unprompted_post_cer = char_error_rate(&fixture.reference_norm, &unprompted_post_norm);
         let prompted_post_cer = char_error_rate(&fixture.reference_norm, &prompted_post_norm);
+        let raw_delta_pp = (prompted_raw_wer - unprompted_raw_wer) * 100.0;
+        let post_delta_pp = (prompted_post_wer - unprompted_post_wer) * 100.0;
+        worst_raw_delta_pp = worst_raw_delta_pp.max(raw_delta_pp);
+        worst_post_delta_pp = worst_post_delta_pp.max(post_delta_pp);
 
         writeln!(
             wer_out,
@@ -662,10 +703,10 @@ fn main() -> Result<()> {
             source_kind,
             unprompted_raw_wer,
             prompted_raw_wer,
-            (prompted_raw_wer - unprompted_raw_wer) * 100.0,
+            raw_delta_pp,
             unprompted_post_wer,
             prompted_post_wer,
-            (prompted_post_wer - unprompted_post_wer) * 100.0,
+            post_delta_pp,
             unprompted_raw_cer,
             prompted_raw_cer,
             unprompted_post_cer,
@@ -689,6 +730,15 @@ fn main() -> Result<()> {
                 contains_term(&unprompted_post_norm, term),
                 contains_term(&prompted_post_norm, term)
             )?;
+        }
+    }
+
+    if prompt.is_some() {
+        let worst_delta = worst_raw_delta_pp.max(worst_post_delta_pp);
+        if f64::from(worst_delta) > prompt_max_regression_pp {
+            anyhow::bail!(
+                "prompted WER regression guard tripped: worst delta {worst_delta:.3} pp > allowed {prompt_max_regression_pp:.3} pp (source_kind={source_kind})"
+            );
         }
     }
 
@@ -858,7 +908,7 @@ lines.append(f"- output: `{out_dir}`")
 lines.append(f"- fixtures: `{len(manifest)}`")
 lines.append("- legacy WER control: existing `qube-report` raw path")
 lines.append("- scheduler latency: `transcription_session` -> `SttScheduler` lanes; model load is excluded")
-lines.append("- prompted WER: explicit prompt-aware transcribe call vs unprompted control")
+lines.append("- prompted WER: explicit prompt-aware transcribe call vs unprompted control; with default OFF it passes no initial prompt")
 lines.append("")
 lines.append("## Repro Command")
 lines.append("")
@@ -869,17 +919,19 @@ lines.append("")
 lines.append("## Term Source Proof")
 lines.append("")
 lines.append(f"- runtime prompt present: `{term_source.get('runtime_prompt_present', 'n/a')}`")
+lines.append(f"- bench force prompt: `{term_source.get('bench_force_prompt', 'n/a')}`")
 lines.append(f"- runtime terms: `{term_source.get('runtime_terms_count', 'n/a')}`")
 lines.append(f"- runtime terms overlapping references: `{term_source.get('runtime_reference_overlap', 'n/a')}`")
 lines.append(f"- selected source: `{term_source.get('selected_source_kind', 'n/a')}`")
 lines.append(f"- selected terms: `{term_source.get('selected_terms_count', 'n/a')}`")
 lines.append(f"- prompt chars: `{term_source.get('prompt_chars', 'n/a')}`")
+lines.append(f"- prompt regression guard: `{term_source.get('prompt_regression_guard_pp', 'n/a')}` pp")
 lines.append(f"- source reason: {term_source.get('source_reason', 'n/a')}")
 lines.append("")
 lines.append("## Metric Separation")
 lines.append("")
 lines.append("- Old metric: `qube-report` WER is retained as a legacy unprompted/control number.")
-lines.append("- New WER metric: the probe runs the same fixtures twice, once without `initial_prompt` and once with an active prompt.")
+lines.append("- New WER metric: the probe runs the same fixtures twice, once through the regular unprompted path and once through the prompt-aware API.")
 lines.append("- New latency metric: the probe drives `transcription_session`, so Live preview and Commit final pass travel through `SttScheduler`.")
 lines.append("")
 lines.append("## Summary Metrics")
