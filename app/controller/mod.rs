@@ -56,7 +56,7 @@ use crate::os::selection::{
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
-use codescribe_core::ipc::{IpcEvent, IpcEventPayload};
+use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
 use codescribe_core::pipeline::contracts::{
@@ -1235,6 +1235,19 @@ impl RecordingController {
             }
             Err(e) => {
                 error!("Processing failed: {}", e);
+                // Surface the failure to the user instead of leaving it as a
+                // log-only event. Reuse the existing engine `Warning` channel:
+                // the bridge forwarder (forward_event_to_listener) turns it into
+                // `listener.on_error(...)` + a tray Error state, so the SwiftUI
+                // surface reflects the failed transcription.
+                let _ = self.event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::Engine(EngineEventWire::Warning {
+                        code: "transcription_failed".to_string(),
+                        message: format!("Transcription failed: {e}"),
+                    }),
+                });
             }
         }
     }

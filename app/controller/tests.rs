@@ -1859,3 +1859,35 @@ async fn rwlock_session_id_read_then_write_does_not_self_deadlock() {
         "expected the write to land after the read guard dropped"
     );
 }
+
+/// A failed transcription must reach the user, not just the log. The Err branch
+/// of `handle_processed_recording_result` broadcasts an engine `Warning` over the
+/// existing IPC channel; the bridge forwarder turns that into `listener.on_error`
+/// + a tray Error state on the SwiftUI surface. Without this the failure was a
+/// silent `error!()` and the user saw nothing.
+#[tokio::test]
+async fn test_processing_failure_emits_user_visible_warning() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+
+    controller
+        .handle_processed_recording_result(
+            false,
+            &Err(anyhow::anyhow!("simulated transcription failure")),
+        )
+        .await;
+
+    let event = events
+        .try_recv()
+        .expect("a processing failure must broadcast a user-visible warning event");
+    match event.payload {
+        IpcEventPayload::Engine(EngineEventWire::Warning { code, message }) => {
+            assert_eq!(code, "transcription_failed");
+            assert!(
+                message.contains("simulated transcription failure"),
+                "warning message must carry the underlying failure: {message}"
+            );
+        }
+        other => panic!("expected an engine Warning payload, got {other:?}"),
+    }
+}
