@@ -1,4 +1,4 @@
-CodeScribe Notices
+Codescribe Notices
 ==================
 
 Portions of the account authentication foundation are derived from
@@ -10,5 +10,5 @@ Derived files:
 - core/llm/account_auth/device_code.rs
 - core/llm/account_auth/server.rs
 
-The derived portions retain Apache-2.0 attribution. CodeScribe's repository
+The derived portions retain Apache-2.0 attribution. Codescribe's repository
 license metadata remains authoritative for this project.
