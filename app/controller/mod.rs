@@ -89,10 +89,30 @@ fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
 }
 
 const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
+const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
 
 #[cfg(test)]
 fn toggle_stop_adjudicate_timeout() -> Duration {
-    TOGGLE_STOP_ADJUDICATE_TIMEOUT
+    STOP_TIMEOUT
+}
+
+#[cfg(test)]
+static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+struct ProcessRecordingHangGuard;
+
+#[cfg(test)]
+fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
+    PROCESS_RECORDING_TEST_HANG.store(true, Ordering::SeqCst);
+    ProcessRecordingHangGuard
+}
+
+#[cfg(test)]
+impl Drop for ProcessRecordingHangGuard {
+    fn drop(&mut self) {
+        PROCESS_RECORDING_TEST_HANG.store(false, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2505,7 +2525,6 @@ impl RecordingController {
         // on Metal device, RwLock contention, recorder.stop blocked on cpal callback —
         // force recovery to Idle so subsequent toggle presses register, badge clears,
         // and tray reflects truth instead of showing Idle while recording is hung.
-        const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
         match tokio::time::timeout(STOP_TIMEOUT, self.stop_toggle_and_adjudicate_inner()).await {
             Ok(result) => result,
             Err(_) => {
@@ -2700,9 +2719,26 @@ impl RecordingController {
         let force_raw = *self.force_raw_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
 
-        let result = self
-            .process_recording(session_id, assistive, hold_mode, force_raw, force_ai)
-            .await;
+        let result = match tokio::time::timeout(
+            STOP_TIMEOUT,
+            self.process_recording(session_id, assistive, hold_mode, force_raw, force_ai),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                error!(
+                    "Hold stop processing stalled >{}s — forcing recovery to Idle. \
+                     Recording session abandoned; future hotkeys will start fresh.",
+                    STOP_TIMEOUT.as_secs()
+                );
+                self.recover_from_stuck_stop().await;
+                return Err(anyhow::anyhow!(
+                    "Hold stop timeout after {}s; state forced to Idle",
+                    STOP_TIMEOUT.as_secs()
+                ));
+            }
+        };
 
         self.reset_finished_recording_state().await;
         self.handle_processed_recording_result(assistive, &result)
@@ -3023,6 +3059,12 @@ impl RecordingController {
         force_raw: bool,
         force_ai: bool,
     ) -> Result<ProcessRecordingOutcome> {
+        #[cfg(test)]
+        if PROCESS_RECORDING_TEST_HANG.load(Ordering::SeqCst) {
+            info!("process_recording: hanging in test until stuck-stop watchdog cancels it");
+            std::future::pending::<()>().await;
+        }
+
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",

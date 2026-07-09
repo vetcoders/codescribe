@@ -12,7 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 base64 = "0.22"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 anyhow = "1"
 tracing = "0.1"
 
@@ -45,7 +45,7 @@ path = "app/lib.rs"
 codescribe_core = { package = "codescribe-core", path = "core" }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 
 # System tray
 tray-icon = "0.21"
