@@ -1750,6 +1750,73 @@ async fn test_reset_session_after_start_failure_clears_transient_state() {
     assert!(!is_assistive_session());
 }
 
+#[tokio::test(start_paused = true)]
+#[serial]
+async fn test_hold_stuck_stop_watchdog_recovers_idle_and_clears_session_fields() {
+    let _hang = hang_process_recording_for_test();
+    let controller = RecordingController::new();
+    *controller.state.write().await = State::RecHold;
+    *controller.assistive_mode.write().await = true;
+    *controller.hold_mode.write().await = HoldMode::Chat;
+    *controller.force_raw_mode.write().await = true;
+    *controller.force_ai_mode.write().await = true;
+    *controller.session_id.write().await = Some("stuck-hold-session".to_string());
+    *controller.assistive_context.write().await = Some(AssistiveContext::default());
+    *controller.pre_overlay_frontmost_app.write().await = Some("com.example.Editor".to_string());
+    controller
+        .start_transition_in_flight
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    controller
+        .assistive_loop_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    controller
+        .toggle_user_has_text
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    controller
+        .toggle_assistant_has_text
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    set_assistive_session(true);
+
+    let err = controller
+        .finish_recording()
+        .await
+        .expect_err("pending process_recording must trip the hold stuck-stop watchdog");
+
+    assert!(
+        err.to_string().contains("Hold stop timeout"),
+        "unexpected timeout error: {err}"
+    );
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert!(!*controller.assistive_mode.read().await);
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert!(!*controller.force_raw_mode.read().await);
+    assert!(!*controller.force_ai_mode.read().await);
+    assert!(controller.session_id.read().await.is_none());
+    assert!(controller.assistive_context.read().await.is_none());
+    assert!(controller.pre_overlay_frontmost_app.read().await.is_none());
+    assert!(
+        !controller
+            .start_transition_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        !controller
+            .assistive_loop_active
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        !controller
+            .toggle_user_has_text
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        !controller
+            .toggle_assistant_has_text
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(!is_assistive_session());
+}
+
 /// Regression guard for the toggle-stop self-deadlock (root cause behind
 /// commit 91b2346's watchdog).
 ///
@@ -1790,5 +1857,58 @@ async fn rwlock_session_id_read_then_write_does_not_self_deadlock() {
         *lock.read().await,
         Some("session-xyz:stopping".to_string()),
         "expected the write to land after the read guard dropped"
+    );
+}
+
+/// A failed transcription must reach the user, not just the log. The Err branch
+/// of `handle_processed_recording_result` broadcasts an engine `Warning` over the
+/// existing IPC channel; the bridge forwarder turns that into `listener.on_error`
+/// + a tray Error state on the SwiftUI surface. Without this the failure was a
+/// silent `error!()` and the user saw nothing.
+#[tokio::test]
+async fn test_processing_failure_emits_user_visible_warning() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+
+    controller
+        .handle_processed_recording_result(
+            false,
+            &Err(anyhow::anyhow!("simulated transcription failure")),
+        )
+        .await;
+
+    let event = events
+        .try_recv()
+        .expect("a processing failure must broadcast a user-visible warning event");
+    match event.payload {
+        IpcEventPayload::Engine(EngineEventWire::Warning { code, message }) => {
+            assert_eq!(code, "transcription_failed");
+            assert!(
+                message.contains("simulated transcription failure"),
+                "warning message must carry the underlying failure: {message}"
+            );
+        }
+        other => panic!("expected an engine Warning payload, got {other:?}"),
+    }
+}
+
+/// The formatted transcript must be persisted BEFORE the paste attempt so a paste
+/// error (which `?`-early-returns from `process_stopped_recording`) cannot drop the
+/// AI-formatted layer from history. Paste is skipped under `cfg!(test)`, so the
+/// ordering invariant is asserted structurally against the source: if anyone moves
+/// the `needs_final_save` block back below the paste call, this fails.
+#[test]
+fn test_formatted_transcript_persists_before_paste() {
+    let source = include_str!("mod.rs");
+    let save_idx = source
+        .find("let needs_final_save")
+        .expect("final-transcript save block must be present");
+    let paste_idx = source
+        .find("clipboard::paste_text(")
+        .expect("auto-paste call must be present");
+    assert!(
+        save_idx < paste_idx,
+        "formatted transcript save must precede the paste attempt so a failed paste \
+         cannot drop the AI-formatted layer from history"
     );
 }

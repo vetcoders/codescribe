@@ -20,7 +20,7 @@ offline_eval = []
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 
 # Logging & errors
 tracing = "0.1"

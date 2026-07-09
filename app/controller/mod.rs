@@ -56,7 +56,7 @@ use crate::os::selection::{
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
-use codescribe_core::ipc::{IpcEvent, IpcEventPayload};
+use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
 use codescribe_core::pipeline::contracts::{
@@ -89,10 +89,30 @@ fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
 }
 
 const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
+const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
 
 #[cfg(test)]
 fn toggle_stop_adjudicate_timeout() -> Duration {
-    TOGGLE_STOP_ADJUDICATE_TIMEOUT
+    STOP_TIMEOUT
+}
+
+#[cfg(test)]
+static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+struct ProcessRecordingHangGuard;
+
+#[cfg(test)]
+fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
+    PROCESS_RECORDING_TEST_HANG.store(true, Ordering::SeqCst);
+    ProcessRecordingHangGuard
+}
+
+#[cfg(test)]
+impl Drop for ProcessRecordingHangGuard {
+    fn drop(&mut self) {
+        PROCESS_RECORDING_TEST_HANG.store(false, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1209,6 +1229,19 @@ impl RecordingController {
             }
             Err(e) => {
                 error!("Processing failed: {}", e);
+                // Surface the failure to the user instead of leaving it as a
+                // log-only event. Reuse the existing engine `Warning` channel:
+                // the bridge forwarder (forward_event_to_listener) turns it into
+                // `listener.on_error(...)` + a tray Error state, so the SwiftUI
+                // surface reflects the failed transcription.
+                let _ = self.event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::Engine(EngineEventWire::Warning {
+                        code: "transcription_failed".to_string(),
+                        message: format!("Transcription failed: {e}"),
+                    }),
+                });
             }
         }
     }
@@ -2499,7 +2532,6 @@ impl RecordingController {
         // on Metal device, RwLock contention, recorder.stop blocked on cpal callback —
         // force recovery to Idle so subsequent toggle presses register, badge clears,
         // and tray reflects truth instead of showing Idle while recording is hung.
-        const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
         match tokio::time::timeout(STOP_TIMEOUT, self.stop_toggle_and_adjudicate_inner()).await {
             Ok(result) => result,
             Err(_) => {
@@ -2636,18 +2668,7 @@ impl RecordingController {
     /// is no longer alive.
     async fn recover_from_stuck_stop(&self) {
         warn!("Recovery: forcing controller to Idle after stuck stop");
-        self.set_state(State::Idle).await;
-        *self.assistive_mode.write().await = false;
-        *self.hold_mode.write().await = HoldMode::Raw;
-        *self.force_raw_mode.write().await = false;
-        *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
-        self.assistive_loop_active.store(false, Ordering::SeqCst);
-        self.toggle_user_has_text.store(false, Ordering::SeqCst);
-        self.toggle_assistant_has_text
-            .store(false, Ordering::SeqCst);
-        self.start_transition_in_flight
-            .store(false, Ordering::SeqCst);
+        self.reset_finished_recording_state().await;
     }
 
     pub async fn stop_recording_from_external_surface(&self) -> Result<()> {
@@ -2705,9 +2726,26 @@ impl RecordingController {
         let force_raw = *self.force_raw_mode.read().await;
         let force_ai = *self.force_ai_mode.read().await;
 
-        let result = self
-            .process_recording(session_id, assistive, hold_mode, force_raw, force_ai)
-            .await;
+        let result = match tokio::time::timeout(
+            STOP_TIMEOUT,
+            self.process_recording(session_id, assistive, hold_mode, force_raw, force_ai),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                error!(
+                    "Hold stop processing stalled >{}s — forcing recovery to Idle. \
+                     Recording session abandoned; future hotkeys will start fresh.",
+                    STOP_TIMEOUT.as_secs()
+                );
+                self.recover_from_stuck_stop().await;
+                return Err(anyhow::anyhow!(
+                    "Hold stop timeout after {}s; state forced to Idle",
+                    STOP_TIMEOUT.as_secs()
+                ));
+            }
+        };
 
         self.reset_finished_recording_state().await;
         self.handle_processed_recording_result(assistive, &result)
@@ -3028,6 +3066,12 @@ impl RecordingController {
         force_raw: bool,
         force_ai: bool,
     ) -> Result<ProcessRecordingOutcome> {
+        #[cfg(test)]
+        if PROCESS_RECORDING_TEST_HANG.load(Ordering::SeqCst) {
+            info!("process_recording: hanging in test until stuck-stop watchdog cancels it");
+            std::future::pending::<()>().await;
+        }
+
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
@@ -3524,19 +3568,13 @@ impl RecordingController {
             should_auto_paste = true;
         }
 
-        if cfg!(test) {
-            info!("Skipping paste in tests (mode={})", mode_label);
-        } else if should_auto_paste {
-            let paste_text =
-                maybe_wrap_transcript_for_delivery(&final_formatted_text, &config, &mode_label);
-            // Paste the text into the active application
-            clipboard::paste_text(&paste_text).context("Failed to paste text")?;
-            info!("Text pasted successfully");
-        } else {
-            info!("Auto-paste skipped (mode={})", mode_label);
-        }
-
-        // Save final transcript (skip duplicate when RAW already stored and unchanged)
+        // Save final transcript (skip duplicate when RAW already stored and
+        // unchanged) BEFORE the paste attempt. Paste can fail transiently (e.g.
+        // no focused app / Accessibility hiccup) and its `?` early-returns from
+        // this function; persisting first guarantees the AI-formatted layer is
+        // recoverable from history even when delivery fails. History write is a
+        // disk-only side effect (not user-visible), so ordering it ahead of the
+        // paste leaves the user-visible side-effect order unchanged.
         let needs_final_save = !assistive
             && !live_stream_session
             && (!raw_save_enabled
@@ -3557,6 +3595,18 @@ impl RecordingController {
             );
         } else {
             info!("Final transcript matches RAW; skipping duplicate save");
+        }
+
+        if cfg!(test) {
+            info!("Skipping paste in tests (mode={})", mode_label);
+        } else if should_auto_paste {
+            let paste_text =
+                maybe_wrap_transcript_for_delivery(&final_formatted_text, &config, &mode_label);
+            // Paste the text into the active application
+            clipboard::paste_text(&paste_text).context("Failed to paste text")?;
+            info!("Text pasted successfully");
+        } else {
+            info!("Auto-paste skipped (mode={})", mode_label);
         }
 
         if let Some(cloud_verdict) = cloud_verdict_opt {
