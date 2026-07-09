@@ -1,45 +1,86 @@
 # Codescribe Examples
 
-This directory contains practical examples demonstrating how to use the codescribe audio recording module.
+This directory contains practical examples demonstrating how to use the codescribe audio, config, and transcription modules.
 
 ## Available Examples
 
-### 1. Basic Recording (`record_test.rs`)
+### `config_demo.rs`
 
-Demonstrates basic Recorder usage with auto-silence detection.
-
-```bash
-cargo run --example record_test
-```
-
-**Features shown:**
-
-- Creating a Recorder with default config
-- Starting/stopping recording
-- Auto-silence detection (stops after 0.8s of silence)
-- Saving to WAV file
-- Getting recording duration and diagnostics
-
-### 2. Streaming Mode (`record_streaming.rs`)
-
-Demonstrates advanced usage with live snapshots for streaming STT.
+Demonstrates the `Config` module: loading config from `.env`/defaults, parsing the `Language` enum, and saving a single value back via `save_to_env`.
 
 ```bash
-cargo run --example record_streaming
+cargo run --example config_demo
 ```
 
-**Features shown:**
+### `demo_full_pipeline.rs`
 
-- Custom configuration (disabling auto-silence)
-- Taking periodic snapshots while recording
-- Manual control over recording lifecycle
-- Use case: Real-time transcription with streaming API
+Full pipeline demo covering local Whisper STT transcription, AI formatting (normal mode), and AI assistive mode (kurier/enhancer) on a given audio file.
+
+```bash
+cargo run --release --example demo_full_pipeline -- <audio_file>
+cargo run --release --example demo_full_pipeline -- --assistive <audio_file>
+```
+
+Requires a local Whisper model (default `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8`, override with `--model`) and `LLM_ENDPOINT`/`LLM_MODEL` (or `LLM_FORMATTING_*` overrides) for the formatting step.
+
+### `e2e_stt.rs`
+
+End-to-end STT smoke check against sample audio files, verifying the model/tokenizer are present before transcribing.
+
+```bash
+cargo run --example e2e_stt
+```
+
+Sample audio paths are configurable via `CODESCRIBE_E2E_AUDIO_MEDIUM`, `CODESCRIBE_E2E_AUDIO_SHORT`, and `CODESCRIBE_E2E_LANG`.
+
+### `roundtrip_live.rs`
+
+Interactive round-trip demo: speak into the mic, transcribe with Whisper, synthesize with TTS, play back through the speaker, transcribe again, and compare the two transcripts.
+
+```bash
+cargo run --release --example roundtrip_live
+cargo run --release --example roundtrip_live -- --text "Hello world"
+```
+
+### `test_audio_long.rs`
+
+Batch-transcribes one or more long audio files with the local Whisper engine and reports load/transcription timing.
+
+```bash
+cargo run --release --example test_audio_long -- [--model PATH] <audio1> ...
+```
+
+### `test_audio.rs`
+
+Transcribes one or more audio files with language detection, printing detected language and transcription timing per file.
+
+```bash
+cargo run --release --example test_audio -- <audio1> <audio2> ...
+```
+
+### `test_clipboard_snapshot.rs`
+
+Demonstrates clipboard snapshot/restore and smart-paste behavior (`ClipboardSnapshot`, `paste_text_smart`, `paste_and_restore`).
+
+```bash
+cargo run --example test_clipboard_snapshot
+```
+
+### `transcribe_file.rs`
+
+Quick transcription utility for a single (typically large) audio file, with optional explicit language.
+
+```bash
+cargo run --release --example transcribe_file -- /path/to/audio.wav [language]
+```
 
 ## Environment Variables
 
-Both examples respect these environment variables:
+Several examples respect these environment variables:
 
 - `AUTO_SILENCE` - Enable/disable silence detection (default: true)
+- `CODESCRIBE_E2E_AUDIO_MEDIUM`, `CODESCRIBE_E2E_AUDIO_SHORT`, `CODESCRIBE_E2E_LANG` - sample inputs for `e2e_stt`
+- `LLM_ENDPOINT`, `LLM_MODEL`, `LLM_FORMATTING_*` - formatting provider config for `demo_full_pipeline`
 
 VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
@@ -47,7 +88,7 @@ VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
 - macOS (uses CoreAudio via cpal)
 - Microphone access permissions
-- Rust 1.70+ with tokio runtime
+- Rust 1.85+ (edition 2024) with tokio runtime
 
 ---
 
