@@ -3574,19 +3574,13 @@ impl RecordingController {
             should_auto_paste = true;
         }
 
-        if cfg!(test) {
-            info!("Skipping paste in tests (mode={})", mode_label);
-        } else if should_auto_paste {
-            let paste_text =
-                maybe_wrap_transcript_for_delivery(&final_formatted_text, &config, &mode_label);
-            // Paste the text into the active application
-            clipboard::paste_text(&paste_text).context("Failed to paste text")?;
-            info!("Text pasted successfully");
-        } else {
-            info!("Auto-paste skipped (mode={})", mode_label);
-        }
-
-        // Save final transcript (skip duplicate when RAW already stored and unchanged)
+        // Save final transcript (skip duplicate when RAW already stored and
+        // unchanged) BEFORE the paste attempt. Paste can fail transiently (e.g.
+        // no focused app / Accessibility hiccup) and its `?` early-returns from
+        // this function; persisting first guarantees the AI-formatted layer is
+        // recoverable from history even when delivery fails. History write is a
+        // disk-only side effect (not user-visible), so ordering it ahead of the
+        // paste leaves the user-visible side-effect order unchanged.
         let needs_final_save = !assistive
             && !live_stream_session
             && (!raw_save_enabled
@@ -3607,6 +3601,18 @@ impl RecordingController {
             );
         } else {
             info!("Final transcript matches RAW; skipping duplicate save");
+        }
+
+        if cfg!(test) {
+            info!("Skipping paste in tests (mode={})", mode_label);
+        } else if should_auto_paste {
+            let paste_text =
+                maybe_wrap_transcript_for_delivery(&final_formatted_text, &config, &mode_label);
+            // Paste the text into the active application
+            clipboard::paste_text(&paste_text).context("Failed to paste text")?;
+            info!("Text pasted successfully");
+        } else {
+            info!("Auto-paste skipped (mode={})", mode_label);
         }
 
         if let Some(cloud_verdict) = cloud_verdict_opt {

@@ -1891,3 +1891,24 @@ async fn test_processing_failure_emits_user_visible_warning() {
         other => panic!("expected an engine Warning payload, got {other:?}"),
     }
 }
+
+/// The formatted transcript must be persisted BEFORE the paste attempt so a paste
+/// error (which `?`-early-returns from `process_stopped_recording`) cannot drop the
+/// AI-formatted layer from history. Paste is skipped under `cfg!(test)`, so the
+/// ordering invariant is asserted structurally against the source: if anyone moves
+/// the `needs_final_save` block back below the paste call, this fails.
+#[test]
+fn test_formatted_transcript_persists_before_paste() {
+    let source = include_str!("mod.rs");
+    let save_idx = source
+        .find("let needs_final_save")
+        .expect("final-transcript save block must be present");
+    let paste_idx = source
+        .find("clipboard::paste_text(")
+        .expect("auto-paste call must be present");
+    assert!(
+        save_idx < paste_idx,
+        "formatted transcript save must precede the paste attempt so a failed paste \
+         cannot drop the AI-formatted layer from history"
+    );
+}
