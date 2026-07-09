@@ -2642,18 +2642,7 @@ impl RecordingController {
     /// is no longer alive.
     async fn recover_from_stuck_stop(&self) {
         warn!("Recovery: forcing controller to Idle after stuck stop");
-        self.set_state(State::Idle).await;
-        *self.assistive_mode.write().await = false;
-        *self.hold_mode.write().await = HoldMode::Raw;
-        *self.force_raw_mode.write().await = false;
-        *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
-        self.assistive_loop_active.store(false, Ordering::SeqCst);
-        self.toggle_user_has_text.store(false, Ordering::SeqCst);
-        self.toggle_assistant_has_text
-            .store(false, Ordering::SeqCst);
-        self.start_transition_in_flight
-            .store(false, Ordering::SeqCst);
+        self.reset_finished_recording_state().await;
     }
 
     pub async fn stop_recording_from_external_surface(&self) -> Result<()> {
