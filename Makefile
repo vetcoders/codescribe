@@ -264,17 +264,21 @@ test-quick:
 
 test-e2e:
 	@$(TEST_SETUP); \
+	set -o pipefail; \
 	echo "=== E2E Tests (mock) ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test e2e --release -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test e2e --release -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-e2e-real:
 	@$(TEST_SETUP); \
+	set -o pipefail; \
 	echo "=== E2E Tests (real API) ===" | tee -a "$$LOG"; \
 	echo "Requires: LLM_API_KEY, LLM_ASSISTIVE_API_KEY" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test e2e --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test e2e --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-sse:
@@ -284,11 +288,13 @@ test-sse:
 	TEST_SSE_PROFILE="$(TEST_SSE_PROFILE)" CARGO_BUILD_JOBS="$(TEST_SSE_CARGO_JOBS)" ./scripts/test-sse-preflight.sh 2>&1 | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
 	CARGO_BUILD_JOBS="$(TEST_SSE_CARGO_JOBS)" \
-	cargo test --test e2e_sse_streaming $(TEST_SSE_PROFILE_ARGS) -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --test e2e_sse_streaming $(TEST_SSE_PROFILE_ARGS) -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	if [[ "$${CODESCRIBE_TEST_SSE_RESPONSES:-0}" == "1" ]]; then \
 	  echo "=== Responses Live Chain/Resume Tests ===" | tee -a "$$LOG"; \
 	  $(ENV_LOAD); CODESCRIBE_E2E_RESPONSES=1 CARGO_BUILD_JOBS="$(TEST_SSE_CARGO_JOBS)" \
-	  cargo test --test e2e_retry_responses -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	  cargo test --test e2e_retry_responses -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	  if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	else \
 	  echo "Skipping Responses Live Chain/Resume Tests (set CODESCRIBE_TEST_SSE_RESPONSES=1)." | tee -a "$$LOG"; \
 	fi; \
@@ -305,25 +311,32 @@ test-sse-heavy:
 
 test-formatting:
 	@$(TEST_SETUP); \
+	set -o pipefail; \
 	echo "=== AI Formatting Tests ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test formatting --release -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test formatting --release -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-all:
 	@$(TEST_SETUP); \
+	set -o pipefail; \
 	echo "=== Full Test Suite ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "=== Ignored / Real API ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "=== Full Pipeline (STT) ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); CODESCRIBE_E2E_STT=1 \
-	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "=== SSE Streaming ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test e2e_sse --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test e2e_sse --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 demo:
@@ -342,7 +355,7 @@ check:
 	@echo "=== Format Check (Rust) ==="
 	@cargo fmt --all -- --check
 	@echo "=== Format Check (non-Rust) ==="
-	@npx --yes prettier@2.7.1 --check . --ignore-path .prettierignore --ignore-unknown || true
+	@npx --yes prettier@2.7.1 --check . --ignore-path .prettierignore --ignore-unknown
 	@echo "=== Clippy (workspace, all targets) ==="
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="

@@ -1,10 +1,10 @@
 # Rust Code Quality CI
 # Created by Vetcoders (c)2026
 #
-# NOTE: Full build requires macOS with Swift 6.0 (CoreML, Metal).
-# GitHub runners have Swift 5.10, so we only run format checks here.
-# Full quality gate (clippy, tests) runs locally via: make check
-# Or via pre-commit hooks: make hooks
+# Runs on self-hosted macOS runners (Swift 6.0 / CoreML / Metal available).
+# format: cargo fmt --check
+# quality: cargo clippy -D warnings + cargo test (workspace).
+# Full local gate (incl. real-API / heavy e2e tests) still via: make check
 
 name: Rust Quality
 
@@ -35,13 +35,27 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
-  # NOTE: clippy and check disabled - requires macOS + Swift 6.0
-  # Run locally: make lint
-  #
-  # To enable full CI, use a self-hosted macOS runner:
-  # quality:
-  #   runs-on: [self-hosted, macos, arm64]
-  #   steps:
-  #     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-  #     - run: cargo clippy -- -D warnings
-  #     - run: cargo test --lib
+  quality:
+    name: Clippy + Tests
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: clippy
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Runs the default (non-#[ignore]) workspace test set.
+      # CODESCRIBE_DISABLE_KEYCHAIN=1: keychain-backed tests must bypass the
+      #   macOS Keychain (no interactive unlock / signed host on the runner) —
+      #   see core/config/keychain.rs and the Makefile `test` target.
+      # #[ignore]-gated tests (real LLM APIs, Whisper/STT models, audio devices,
+      #   live SSE) are intentionally NOT run here — they need secrets/hardware
+      #   absent on CI and stay behind `make test` / `make test-e2e-real` locally.
+      - name: cargo test --workspace
+        env:
+          CODESCRIBE_DISABLE_KEYCHAIN: "1"
+        run: cargo test --workspace
