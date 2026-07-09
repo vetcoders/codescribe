@@ -114,10 +114,12 @@ fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
 
 /// Returns true when running inside a test harness or when Keychain is explicitly disabled.
 ///
-/// NOTE: `cfg!(test)` only works for **unit tests** within this crate.
-/// Integration tests (`tests/`, `core/tests/`) compile the library normally,
-/// so `cfg!(test)` returns false. Those tests MUST set `CODESCRIBE_DISABLE_KEYCHAIN=1`
-/// or `CODESCRIBE_DATA_DIR` to skip Keychain. The Makefile `TEST_SETUP` sets the former.
+/// NOTE: `cfg!(test)` only works for **unit tests** within this crate. Integration tests
+/// (`tests/`, `core/tests/`) and tests in other crates (e.g. `app/*`, `bridge/*`) compile
+/// this library normally, so `cfg!(test)` is false there. Such tests are still detected via
+/// the harness signals below (the `target/**/deps/` exe path and `RUST_TEST_THREADS`), and
+/// may additionally set `CODESCRIBE_DISABLE_KEYCHAIN=1` — which the Makefile `TEST_SETUP` does.
+/// `CODESCRIBE_DATA_DIR` does NOT skip Keychain: it is a production-valid data-dir override.
 fn is_test_env() -> bool {
     if cfg!(test) {
         return true;
@@ -138,13 +140,24 @@ fn is_test_env() -> bool {
     if std::env::var_os("RUST_TEST_THREADS").is_some() {
         return true;
     }
-    if std::env::var_os("CODESCRIBE_DISABLE_KEYCHAIN").is_some() {
-        return true;
-    }
-    if std::env::var_os("CI").is_some() {
-        return true;
-    }
-    std::env::var("CODESCRIBE_DATA_DIR").is_ok()
+    keychain_disabled_by_signals(
+        std::env::var_os("CODESCRIBE_DISABLE_KEYCHAIN").is_some(),
+        std::env::var_os("CODESCRIBE_DATA_DIR").is_some(),
+        std::env::var_os("CI").is_some(),
+    )
+}
+
+/// Pure Keychain-skip policy over explicit environment signals.
+///
+/// `CODESCRIBE_DISABLE_KEYCHAIN` is the ONLY user-facing kill switch. `CODESCRIBE_DATA_DIR`
+/// (a documented data-directory override) and `CI` are accepted here purely so the policy is
+/// explicit and regression-tested — they MUST NOT disable Keychain. Silently dropping
+/// persisted API keys / OAuth tokens when a user merely relocates the data dir (or runs under
+/// a CI flag) was the bug this function pins shut. Kept side-effect-free so the policy is
+/// unit-testable without mutating process-global env vars (which race across the suite).
+fn keychain_disabled_by_signals(disable_keychain: bool, data_dir_set: bool, ci_set: bool) -> bool {
+    let _ = (data_dir_set, ci_set);
+    disable_keychain
 }
 
 /// Saves a secret to the macOS Keychain under the Codescribe service.
@@ -239,4 +252,26 @@ pub fn populate_env_from_keychain() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keychain_disabled_by_signals;
+
+    #[test]
+    fn disable_keychain_flag_is_honored() {
+        // Explicit user opt-out disables Keychain regardless of other signals.
+        assert!(keychain_disabled_by_signals(true, false, false));
+        assert!(keychain_disabled_by_signals(true, true, true));
+    }
+
+    #[test]
+    fn data_dir_and_ci_do_not_disable_keychain() {
+        // Regression: setting CODESCRIBE_DATA_DIR (a documented data-dir override) or CI
+        // must NOT silently disable Keychain persistence of API keys / OAuth tokens.
+        assert!(!keychain_disabled_by_signals(false, true, false));
+        assert!(!keychain_disabled_by_signals(false, false, true));
+        assert!(!keychain_disabled_by_signals(false, true, true));
+        assert!(!keychain_disabled_by_signals(false, false, false));
+    }
 }

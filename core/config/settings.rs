@@ -114,6 +114,10 @@ pub struct UserSettings {
     /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layered_transcription: Option<String>,
+    /// Opt-in Whisper `initial_prompt` vocabulary hint.
+    /// Seeds `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`; absent means default OFF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_initial_prompt_enabled: Option<bool>,
 
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
@@ -219,6 +223,8 @@ struct SpeechEngineV2 {
     stt_engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     layered_transcription: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_prompt_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -374,9 +380,9 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_BUFFERED_INTERIM_SEC",
     "WHISPER_MODEL",
     "BACKEND_MAX_UPLOAD_MB",
-    // NOTE (F1): CODESCRIBE_STT_ENGINE / CODESCRIBE_LAYERED_TRANSCRIPTION are
-    // deliberately NOT promoted — they stay env-managed so an existing
-    // ~/.codescribe/.env line (e.g. CODESCRIBE_STT_ENGINE=onnx) keeps winning.
+    // NOTE (F1/W2-G): CODESCRIBE_STT_ENGINE / CODESCRIBE_LAYERED_TRANSCRIPTION /
+    // CODESCRIBE_STT_INITIAL_PROMPT_ENABLED are deliberately NOT promoted — they
+    // stay env-managed so an existing ~/.codescribe/.env line keeps winning.
     // settings.json only seeds them when the env var is absent (loader.rs).
 ];
 
@@ -415,6 +421,7 @@ impl UserSettings {
                     whisper_model: self.whisper_model.clone(),
                     stt_engine: self.stt_engine.clone(),
                     layered_transcription: self.layered_transcription.clone(),
+                    initial_prompt_enabled: self.stt_initial_prompt_enabled,
                 }),
                 formatting: Some(FormattingV2 {
                     enabled: self.ai_formatting_enabled,
@@ -625,6 +632,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.layered_transcription.clone()),
+            stt_initial_prompt_enabled: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.initial_prompt_enabled),
         }
     }
 
@@ -902,6 +914,9 @@ impl UserSettings {
             "START_AT_LOGIN" => self.start_at_login = Some(value),
             "QUBE_DAEMON_AUTOSTART" => self.qube_daemon_autostart = Some(value),
             "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
+            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
+                self.stt_initial_prompt_enabled = Some(value)
+            }
             other => {
                 warn!("Unknown bool setting key: {other}");
                 return;
@@ -1090,6 +1105,7 @@ mod tests {
         let settings = UserSettings {
             stt_engine: Some("apple".to_string()),
             layered_transcription: Some("phase1".to_string()),
+            stt_initial_prompt_enabled: Some(true),
             ..Default::default()
         };
         settings.save().expect("save settings");
@@ -1097,14 +1113,17 @@ mod tests {
         let loaded = UserSettings::load();
         assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
         assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
+        assert_eq!(loaded.stt_initial_prompt_enabled, Some(true));
 
-        // set_string routes both keys (settings.json stays a valid seed source).
+        // Setters route all three keys (settings.json stays a valid seed source).
         let mut mutated = loaded;
         mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
         mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
+        mutated.set_bool("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", false);
         let reloaded = UserSettings::load();
         assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
         assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
+        assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
     }
 
     #[test]

@@ -118,6 +118,16 @@ fn run_apple_or_whisper<T>(
     }
 }
 
+fn warn_initial_prompt_unsupported(engine: &str) {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        warn!(
+            "STT initial_prompt is supported only by Candle Whisper; {} route will ignore it.",
+            engine
+        );
+    });
+}
+
 // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
 // the whole synchronous one-shot transcription contract (transcribe_chunk /
 // try_transcribe_long_with_segments across whisper/apple/onnx providers) is
@@ -140,6 +150,20 @@ fn candle_transcribe_long_with_segments(
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
     whisper::singleton::transcribe_with_segments(audio, sample_rate, language)
+}
+
+fn candle_transcribe_long_with_segments_with_initial_prompt(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    initial_prompt: Option<String>,
+) -> anyhow::Result<RawTranscript> {
+    whisper::singleton::transcribe_with_segments_with_initial_prompt(
+        audio,
+        sample_rate,
+        language,
+        initial_prompt,
+    )
 }
 
 pub(crate) fn whisper_tail_patch_transcribe(
@@ -259,6 +283,50 @@ pub(crate) fn transcribe_long_with_segments(
             || candle_transcribe_long_with_segments(audio, sample_rate, language),
         ),
         SttEngine::Candle => candle_transcribe_long_with_segments(audio, sample_rate, language),
+    }
+}
+
+/// Transcribe long audio while seeding Candle Whisper with a per-call domain
+/// vocabulary prompt. Non-Candle engines keep their existing behavior.
+pub(crate) fn transcribe_long_with_segments_with_initial_prompt(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    initial_prompt: Option<String>,
+) -> anyhow::Result<RawTranscript> {
+    if initial_prompt.is_none() {
+        return transcribe_long_with_segments(audio, sample_rate, language);
+    }
+
+    match selected_engine() {
+        SttEngine::Onnx => {
+            warn_initial_prompt_unsupported("ONNX");
+            onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
+        }
+        SttEngine::Apple => {
+            let prompt_for_candle = initial_prompt.clone();
+            run_apple_or_whisper(
+                "transcribe_long_with_segments_with_initial_prompt",
+                || {
+                    warn_initial_prompt_unsupported("Apple SpeechAnalyzer");
+                    apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
+                },
+                || {
+                    candle_transcribe_long_with_segments_with_initial_prompt(
+                        audio,
+                        sample_rate,
+                        language,
+                        prompt_for_candle,
+                    )
+                },
+            )
+        }
+        SttEngine::Candle => candle_transcribe_long_with_segments_with_initial_prompt(
+            audio,
+            sample_rate,
+            language,
+            initial_prompt,
+        ),
     }
 }
 

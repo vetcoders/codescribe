@@ -125,6 +125,15 @@ pub fn classify_probe_response(status: StatusCode, body: &str) -> ApiKeyLiveness
         return ApiKeyLivenessStatus::Invalid;
     }
 
+    // Any other client error (4xx, e.g. 400 model_not_found, 404) means the
+    // server processed the request and the key passed authentication — the key
+    // is live even if this particular probe request was malformed. Only real
+    // transport failures (handled at the request boundary) and server-side
+    // errors (5xx) remain unverifiable.
+    if status.is_client_error() {
+        return ApiKeyLivenessStatus::Ok;
+    }
+
     ApiKeyLivenessStatus::Network
 }
 
@@ -367,13 +376,38 @@ mod tests {
     }
 
     #[test]
-    fn classifies_other_http_failures_as_network_unknown() {
+    fn classifies_400_model_not_found_as_ok() {
+        // A 400 with a request-level error (not quota/auth) means the server
+        // accepted the key and processed the request: the key is live.
+        assert_eq!(
+            classify_probe_response(
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"model_not_found","message":"The model does not exist"}}"#
+            ),
+            ApiKeyLivenessStatus::Ok
+        );
+    }
+
+    #[test]
+    fn classifies_other_client_errors_as_ok() {
+        assert_eq!(
+            classify_probe_response(StatusCode::BAD_REQUEST, "bad request"),
+            ApiKeyLivenessStatus::Ok
+        );
+        assert_eq!(
+            classify_probe_response(StatusCode::NOT_FOUND, "no such endpoint"),
+            ApiKeyLivenessStatus::Ok
+        );
+    }
+
+    #[test]
+    fn classifies_server_errors_as_network_unknown() {
         assert_eq!(
             classify_probe_response(StatusCode::INTERNAL_SERVER_ERROR, "try later"),
             ApiKeyLivenessStatus::Network
         );
         assert_eq!(
-            classify_probe_response(StatusCode::BAD_REQUEST, "bad request"),
+            classify_probe_response(StatusCode::BAD_GATEWAY, "upstream down"),
             ApiKeyLivenessStatus::Network
         );
     }

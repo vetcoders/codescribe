@@ -172,11 +172,11 @@ description = "Interim emission cadence for buffered mode (sec)"
 range = "1.0-30.0"
 
 [vars.CODESCRIBE_BUFFERED_SILENCE_SEC]
-default = ""
+default = "1.2"
 type = "f32"
 reload = "restart"
 category = "streaming"
-description = "Override silence duration before utterance flush in buffered mode (sec)"
+description = "Silence duration before utterance flush in buffered mode (sec)"
 range = "0.1-10.0"
 
 [vars.TRANSCRIPTION_OVERLAY_ENABLED]
@@ -232,6 +232,13 @@ reload = "restart"
 category = "stt"
 description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
 
+[vars.CODESCRIBE_STT_INITIAL_PROMPT_ENABLED]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
+
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "300"
 type = "u64"
@@ -283,18 +290,32 @@ category = "stt"
 description = "Enable thermal-aware STT scheduling backoff"
 
 [vars.CODESCRIBE_STT_MIN_INFER_INTERVAL_MS]
+default = "90"
+type = "int"
+reload = "restart"
+category = "stt"
+description = "Minimum interval between live preview STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
 default = "180"
 type = "int"
 reload = "restart"
 category = "stt"
-description = "Minimum interval between live STT inference jobs in milliseconds"
+description = "Minimum interval between committed/final STT inference jobs in milliseconds"
 
-[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
-default = "350"
+[vars.CODESCRIBE_STT_REFINE_MIN_INTERVAL_MS]
+default = "240"
 type = "int"
 reload = "restart"
 category = "stt"
-description = "Minimum interval between committed STT inference jobs in milliseconds"
+description = "Minimum interval between refinement STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_THERMAL_NOMINAL_MULT]
+default = "0.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal duty-cycle multiplier for nominal system thermal pressure; 0.0 disables nominal backoff"
 
 [vars.CODESCRIBE_STT_THERMAL_FAIR_MULT]
 default = "1.0"
@@ -316,6 +337,69 @@ type = "float"
 reload = "restart"
 category = "stt"
 description = "Thermal multiplier for critical system thermal pressure"
+
+[vars.BENCH_STT_FIXTURES]
+default = "auto"
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh fixture source selector: auto, historical, or repo"
+
+[vars.BENCH_STT_LIMIT]
+default = "10"
+type = "int"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh fixture limit for historical corpus runs"
+
+[vars.BENCH_STT_OUT]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh output directory under ~/.codescribe"
+
+[vars.BENCH_STT_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh Whisper language hint for bench probes"
+
+[vars.BENCH_STT_LATENCY_MANIFEST]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Internal bench hook: fixture manifest path for the scheduler-lane latency probe"
+
+[vars.BENCH_STT_LATENCY_OUT]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Internal bench hook: TSV output path for the scheduler-lane latency probe"
+
+[vars.CODESCRIBE_BENCH_FORCE_PROMPT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh prompted-WER probe: generate deterministic fixture prompt when runtime prompt is disabled or empty"
+
+[vars.CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT]
+default = ""
+type = "int"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh prompted-WER probe: trim active runtime prompt to the first N deterministic terms; unset uses the full prompt"
+
+[vars.CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP]
+default = "5.0"
+type = "float"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh prompted-WER probe: fail when active prompt increases WER above this percentage-point threshold"
 
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
 default = ""

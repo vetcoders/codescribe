@@ -419,6 +419,14 @@ pub struct Config {
     /// Cloud STT endpoint used when cloud is selected as the committed verdict path.
     pub stt_endpoint: Option<String>,
 
+    /// Opt-in Whisper domain-vocabulary initial prompt.
+    ///
+    /// Default OFF after W2-F measured the active runtime lexicon prompt as a
+    /// 100% WER regression. Runtime env/settings can still enable the feature
+    /// for diagnosis and future retuning.
+    #[serde(default = "default_stt_initial_prompt_enabled")]
+    pub stt_initial_prompt_enabled: bool,
+
     /// Full LLM endpoint URL (default: https://api.openai.com/v1/responses)
     #[serde(default = "default_llm_endpoint_option")]
     pub llm_endpoint: Option<String>,
@@ -489,6 +497,7 @@ impl Default for Config {
             use_local_stt: true,
             local_model: default_local_model(),
             stt_endpoint: None,
+            stt_initial_prompt_enabled: default_stt_initial_prompt_enabled(),
             llm_endpoint: Some(default_llm_endpoint()),
             llm_api_key: None,
             stt_api_key: None,
@@ -554,6 +563,14 @@ mod tests {
         assert_eq!(
             Config::default().llm_endpoint.as_deref(),
             Some(DEFAULT_OPENAI_RESPONSES_ENDPOINT)
+        );
+    }
+
+    #[test]
+    fn default_config_disables_stt_initial_prompt() {
+        assert!(
+            !Config::default().stt_initial_prompt_enabled,
+            "Whisper initial_prompt must stay opt-in after W2-F WER collapse"
         );
     }
 }

@@ -238,22 +238,28 @@ endef
 
 test:
 	@$(TEST_SETUP); \
+	set -o pipefail; \
 	echo "=== Tests (workspace) ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "=== Tests (ignored / real API) ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "=== Full Pipeline (STT) ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); CODESCRIBE_E2E_STT=1 \
-	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-quick:
 	@$(TEST_SETUP); \
+	set -o pipefail; \
 	echo "=== Tests (quick, no real API) ===" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; \
+	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-e2e:

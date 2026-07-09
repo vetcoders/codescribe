@@ -1,4 +1,7 @@
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
 
 use anyhow::Result;
@@ -1016,7 +1019,8 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let infer = Arc::new(
         move |samples: Vec<f32>,
               _sample_rate: u32,
-              _language: Option<String>|
+              _language: Option<String>,
+              _initial_prompt: Option<String>|
               -> Result<RawTranscript> {
             let id = samples.first().copied().unwrap_or_default() as u32;
             started_ref
@@ -1195,7 +1199,8 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     let infer = Arc::new(
         move |samples: Vec<f32>,
               _sample_rate: u32,
-              _language: Option<String>|
+              _language: Option<String>,
+              _initial_prompt: Option<String>|
               -> Result<RawTranscript> {
             let id = samples.first().copied().unwrap_or_default() as u32;
             started_ref
@@ -1406,6 +1411,220 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
         "empty session should report VAD no-speech reason"
     );
     assert_eq!(stats_count, 1, "expected exactly one Stats event");
+}
+
+#[test]
+fn transcription_events_keep_monotonic_previews_before_final() {
+    let sink = CollectorEventSink::new();
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "ala".to_string(),
+    });
+    sink.on_event(&EngineEvent::Preview {
+        rev: 2,
+        text: "ala ma".to_string(),
+    });
+    sink.on_event(&EngineEvent::UtteranceFinal {
+        utterance_id: 1,
+        text: "ala ma kota".to_string(),
+        raw_text: "ala ma kota".to_string(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: Vec::new(),
+        vad_speech_pct: Some(100.0),
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: Vec::new(),
+    });
+
+    let events = sink.events();
+    let final_pos = events
+        .iter()
+        .position(|event| matches!(event, EngineEvent::UtteranceFinal { .. }))
+        .expect("synthetic stream should include a final event");
+    let preview_revs: Vec<(usize, u64)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(pos, event)| match event {
+            EngineEvent::Preview { rev, .. } => Some((pos, *rev)),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        !preview_revs.is_empty(),
+        "stream should emit at least one preview before final"
+    );
+    assert!(
+        preview_revs.iter().all(|(pos, _)| *pos < final_pos),
+        "all previews must be emitted before UtteranceFinal"
+    );
+    for pair in preview_revs.windows(2) {
+        assert!(
+            pair[0].1 < pair[1].1,
+            "Preview revisions must increase monotonically"
+        );
+    }
+}
+
+#[derive(Clone)]
+struct BenchTimedEventSink {
+    started_at: Instant,
+    events: Arc<StdMutex<Vec<(u128, EngineEvent)>>>,
+}
+
+impl BenchTimedEventSink {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            events: Arc::new(StdMutex::new(Vec::new())),
+        }
+    }
+
+    fn events(&self) -> Vec<(u128, EngineEvent)> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+impl EventSink for BenchTimedEventSink {
+    fn on_event(&self, event: &EngineEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((self.started_at.elapsed().as_millis(), event.clone()));
+    }
+}
+
+fn bench_manifest_audio_paths(path: &str) -> Result<Vec<PathBuf>> {
+    // Bench helper reads a local developer-provided manifest TSV path; no untrusted/network input.
+    let file = File::open(path)?; // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+    let mut lines = BufReader::new(file).lines();
+    let header = lines
+        .next()
+        .transpose()?
+        .ok_or_else(|| anyhow::anyhow!("latency manifest is empty"))?;
+    let columns: Vec<&str> = header.split('\t').collect();
+    let staged_audio_idx = columns
+        .iter()
+        .position(|name| *name == "staged_audio")
+        .ok_or_else(|| anyhow::anyhow!("latency manifest lacks staged_audio column"))?;
+
+    let mut audio_paths = Vec::new();
+    for line in lines {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        let Some(audio_path) = fields.get(staged_audio_idx) else {
+            continue;
+        };
+        if !audio_path.is_empty() {
+            audio_paths.push(PathBuf::from(audio_path));
+        }
+    }
+    Ok(audio_paths)
+}
+
+fn bench_entry_id(path: &std::path::Path) -> String {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio");
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("bench");
+    format!("{parent}__{stem}")
+}
+
+#[tokio::test]
+#[ignore = "env-driven STT bench probe invoked by scripts/bench-stt.sh"]
+async fn bench_stt_scheduler_latency_probe_from_env() -> Result<()> {
+    let manifest_path = std::env::var("BENCH_STT_LATENCY_MANIFEST")?;
+    let output_path = std::env::var("BENCH_STT_LATENCY_OUT")?;
+    let language = std::env::var("BENCH_STT_LANGUAGE").ok();
+    let audio_paths = bench_manifest_audio_paths(&manifest_path)?;
+
+    crate::stt::whisper::init()?;
+
+    let mut out = File::create(&output_path)?;
+    writeln!(
+        out,
+        "id\taudio_path\tduration_sec\tfirst_preview_ms\tfinal_ms\tsession_done_ms\tpreviews\tfinals\tfinal_chars"
+    )?;
+
+    for audio_path in audio_paths {
+        let (samples, sample_rate) = crate::audio::load_audio_file(&audio_path)?;
+        let duration_sec = samples.len() as f64 / sample_rate as f64;
+        let chunk_size = ((sample_rate as f32) * 0.1).round().max(1.0) as usize;
+        let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
+        let sink = Arc::new(BenchTimedEventSink::new());
+        let event_sink: Arc<dyn EventSink> = sink.clone();
+        let session_started = Instant::now();
+        let session = tokio::spawn(transcription_session(
+            rx,
+            event_sink,
+            SessionConfig {
+                sample_rate,
+                language: language.clone(),
+                stream_log_path: None,
+                utterance_silence_sec: None,
+            },
+        ));
+
+        for chunk in samples.chunks(chunk_size) {
+            tx.send(chunk.to_vec())
+                .await
+                .map_err(|_| anyhow::anyhow!("transcription session dropped channel"))?;
+        }
+        drop(tx);
+
+        session
+            .await
+            .map_err(|e| anyhow::anyhow!("transcription session join error: {e}"))?;
+
+        let events = sink.events();
+        let first_preview_ms = events.iter().find_map(|(ms, event)| match event {
+            EngineEvent::Preview { text, .. } if !text.trim().is_empty() => Some(*ms),
+            _ => None,
+        });
+        let mut final_ms = None;
+        let mut previews = 0usize;
+        let mut finals = 0usize;
+        let mut final_chars = 0usize;
+        for (ms, event) in &events {
+            match event {
+                EngineEvent::Preview { text, .. } if !text.trim().is_empty() => {
+                    previews += 1;
+                }
+                EngineEvent::UtteranceFinal { text, .. } => {
+                    finals += 1;
+                    final_ms = Some(*ms);
+                    final_chars += text.chars().count();
+                }
+                _ => {}
+            }
+        }
+
+        writeln!(
+            out,
+            "{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}",
+            bench_entry_id(&audio_path),
+            audio_path.display(),
+            duration_sec,
+            first_preview_ms.map_or_else(|| "NA".to_string(), |ms| ms.to_string()),
+            final_ms.map_or_else(|| "NA".to_string(), |ms| ms.to_string()),
+            session_started.elapsed().as_millis(),
+            previews,
+            finals,
+            final_chars
+        )?;
+    }
+
+    Ok(())
 }
 
 #[tokio::test]
