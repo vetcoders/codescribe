@@ -414,9 +414,15 @@ mod tests {
     fn test_set_and_get_clipboard() {
         let _guard = ClipboardTestGuard::capture();
         let test_text = "Test clipboard content";
-        set_clipboard(test_text).expect("Failed to set clipboard");
+        let Some(()) = skip_if_clipboard_unavailable(set_clipboard(test_text), "set clipboard")
+        else {
+            return;
+        };
 
-        let retrieved = get_clipboard().expect("Failed to get clipboard");
+        let Some(retrieved) = skip_if_clipboard_unavailable(get_clipboard(), "get clipboard")
+        else {
+            return;
+        };
         assert_eq!(retrieved, test_text);
     }
 
@@ -434,10 +440,19 @@ mod tests {
     fn test_clipboard_snapshot_capture() {
         let _guard = ClipboardTestGuard::capture();
         // Set some text
-        set_clipboard("Test snapshot content").expect("Failed to set clipboard");
+        let Some(()) = skip_if_clipboard_unavailable(
+            set_clipboard("Test snapshot content"),
+            "set snapshot clipboard",
+        ) else {
+            return;
+        };
 
         // Capture snapshot
-        let snapshot = ClipboardSnapshot::capture().expect("Failed to capture snapshot");
+        let Some(snapshot) =
+            skip_if_clipboard_unavailable(ClipboardSnapshot::capture(), "capture snapshot")
+        else {
+            return;
+        };
 
         // Should have text
         assert!(snapshot.text.is_some());
@@ -451,20 +466,51 @@ mod tests {
         let _guard = ClipboardTestGuard::capture();
         // Set original content
         let original = "Original clipboard text";
-        set_clipboard(original).expect("Failed to set clipboard");
+        let Some(()) =
+            skip_if_clipboard_unavailable(set_clipboard(original), "set original clipboard")
+        else {
+            return;
+        };
 
         // Capture snapshot
-        let snapshot = ClipboardSnapshot::capture().expect("Failed to capture snapshot");
+        let Some(snapshot) =
+            skip_if_clipboard_unavailable(ClipboardSnapshot::capture(), "capture snapshot")
+        else {
+            return;
+        };
 
         // Change clipboard
-        set_clipboard("Different text").expect("Failed to change clipboard");
+        let Some(()) =
+            skip_if_clipboard_unavailable(set_clipboard("Different text"), "change clipboard")
+        else {
+            return;
+        };
 
         // Restore snapshot
-        snapshot.restore().expect("Failed to restore snapshot");
+        let Some(()) = skip_if_clipboard_unavailable(snapshot.restore(), "restore snapshot") else {
+            return;
+        };
 
         // Should match original
-        let restored = get_clipboard().expect("Failed to get clipboard");
+        let Some(restored) = skip_if_clipboard_unavailable(get_clipboard(), "get clipboard") else {
+            return;
+        };
         assert_eq!(restored, original);
+    }
+
+    fn skip_if_clipboard_unavailable<T>(result: Result<T>, action: &str) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) if is_clipboard_unavailable(&error) => {
+                eprintln!("skipping clipboard integration test: {action}: {error:#}");
+                None
+            }
+            Err(error) => panic!("{action}: {error:#}"),
+        }
+    }
+
+    fn is_clipboard_unavailable(error: &anyhow::Error) -> bool {
+        format!("{error:#}").contains("not supported with the current system configuration")
     }
 
     struct ClipboardTestGuard(Option<ClipboardSnapshot>);

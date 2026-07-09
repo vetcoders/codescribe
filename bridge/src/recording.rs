@@ -742,15 +742,23 @@ mod tests {
     /// composer UI can never hang indefinitely on a stalled scheduler.
     #[test]
     fn compose_stop_timeout_scales_and_clamps() {
+        fn assert_duration_close(actual: Duration, expected: Duration) {
+            let drift = actual.abs_diff(expected);
+            assert!(
+                drift <= Duration::from_micros(1),
+                "duration drift {drift:?} exceeded tolerance: actual={actual:?}, expected={expected:?}"
+            );
+        }
+
         // Short note: floored so a cold commit + tail patch still fits.
         assert_eq!(
             compose_stop_timeout(Duration::from_secs(3)),
             Duration::from_secs(8)
         );
         // Mid-length: proportional (20s * 0.6 = 12s) inside the band.
-        assert_eq!(
+        assert_duration_close(
             compose_stop_timeout(Duration::from_secs(20)),
-            Duration::from_secs(12)
+            Duration::from_secs(12),
         );
         // Long note: capped so the UI never waits unboundedly.
         assert_eq!(
