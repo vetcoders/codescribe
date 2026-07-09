@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **API key liveness probe in Settings → Keys** (PR #50) — per-key **Test** button runs a background probe and shows a result chip (`Key OK` / `Invalid key` / `No credits (check billing)` / `Network error` / `Not set` / `Unsupported`). LLM keys are probed with a minimal generation request rather than an auth-only endpoint, so exhausted billing (`insufficient_quota`) is distinguished from an invalid key.
+- **Guided MCP onboarding + reset app data** (PR #52) — fresh installs with no `mcp.json` now get a short explainer with **Set up MCP servers** (deep-links into Settings → Engine) and **Skip for now**, instead of a dead-end wall; Settings → Engine gains a danger-zone **Reset app data…** action with a two-step destructive confirmation and an opt-in checkbox to also remove API keys from the Keychain.
+
 ### Changed
 
 - **Public release hygiene** — release packaging, repository metadata, and public-facing docs are being aligned for a current `v0.12.x` public release.
@@ -15,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Legacy fallback threads persisted on AI failure** (PR #51) — when the AI runtime is unavailable, the legacy assistive fallback no longer persists a conversation thread for `Failed`/`Skipped` attempts (previously created repeated "AI Failed" junk threads cluttering the history rail); `Applied`/`AiNoop` outcomes are still persisted as before.
+- **MCP setup prompt never appeared** (PR #53) — `probe_mcp_status` now reports a `configured` flag so onboarding can tell "no `mcp.json`" apart from "servers configured," fixing the guided MCP setup prompt from PR #52 that was dead code because the row-count check was always true.
+- **MCP setup deep-link did nothing** (PR #54) — the onboarding "Set up MCP servers" action now opens Settings via the SwiftUI `openSettings` environment action instead of a dead AppKit `showSettingsWindow:` selector that has no responder in this accessory (LSUIElement) app.
 - **Silero VAD reload leak** — the Silero ONNX session is now compiled once and shared process-wide instead of being rebuilt per recording (which leaked native ORT memory over long sessions).
 - **Allocator retention** — freed transient buffers are returned to the OS after each recording (`malloc_zone_pressure_relief` on macOS) instead of inflating the resident footprint across a session.
 
