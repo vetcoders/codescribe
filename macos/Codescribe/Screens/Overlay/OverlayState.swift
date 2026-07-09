@@ -80,11 +80,13 @@ protocol DictationEngine: AnyObject {
 /// transcript returned by `stopRecording`, or a session that ended without any
 /// usable text (VAD silence / all speech rejected). `.noSpeech` is a dedicated
 /// terminal outcome so the overlay never lands in `.formatted` with an empty
-/// editable FINAL that reads like a crash.
+/// editable FINAL that reads like a crash. `.error` is the terminal outcome for
+/// engine/controller failures so they are not flattened into "no speech".
 enum OverlayMode: Equatable {
     case listening
     case formatted
     case noSpeech
+    case error
 }
 
 @MainActor
@@ -166,11 +168,19 @@ final class OverlayState: ObservableObject {
     // MARK: Derived display (one source of truth for the view)
 
     var statusText: String {
+        if mode == .error { return "error" }
         guard mode == .listening else { return "Idle" }
         if transcribing { return "transcribing" }
         return warmingUp ? "starting" : "recording"
     }
-    var statusColor: Color { mode == .listening ? CSColor.terracotta : CSColor.oliveLight }
+    var statusColor: Color {
+        switch mode {
+        case .listening: return CSColor.terracotta
+        case .formatted: return CSColor.oliveLight
+        case .noSpeech: return CSColor.textMuted
+        case .error: return CSColor.terracotta
+        }
+    }
     /// Only the live-capture pill ripples. During `transcribing` we swap to the
     /// static pill so its repeatForever animation tears down — a second visual
     /// cue that capture has ended.
@@ -181,6 +191,7 @@ final class OverlayState: ObservableObject {
         case .listening: return "DICTATION"
         case .formatted: return "FINAL"
         case .noSpeech: return "NO SPEECH"
+        case .error: return "ERROR"
         }
     }
     var tagColor: Color {
@@ -188,6 +199,7 @@ final class OverlayState: ObservableObject {
         case .listening: return CSColor.terracottaLight
         case .formatted: return CSColor.oliveLight
         case .noSpeech: return CSColor.textMuted
+        case .error: return CSColor.terracotta
         }
     }
 
@@ -196,11 +208,13 @@ final class OverlayState: ObservableObject {
         case .listening: return transcribing ? "finalizing · transcript" : "live preview · raw"
         case .formatted: return "final · transcript"
         case .noSpeech: return "no speech · nothing captured"
+        case .error: return "error · recording stopped"
         }
     }
     var footerRight: String {
         if isFormatting { return "formatting" }
         if mode == .noSpeech { return "no speech" }
+        if mode == .error { return "error" }
         if mode == .listening && transcribing { return "transcribing" }
         if mode == .listening && warmingUp { return "warming up" }
         if mode == .listening && audioReady && liveText.isEmpty { return "audio live" }
@@ -225,7 +239,13 @@ final class OverlayState: ObservableObject {
     }
 
     /// Whatever the action row should copy/send for the current state.
-    var activeText: String { mode == .listening ? liveText : formattedText }
+    var activeText: String {
+        switch mode {
+        case .listening: return liveText
+        case .formatted: return formattedText
+        case .noSpeech, .error: return ""
+        }
+    }
 
     var canFormat: Bool {
         mode == .formatted
@@ -270,10 +290,10 @@ final class OverlayState: ObservableObject {
             if !engine.isModelLoaded() { try await engine.initModel() }
             try await engine.startRecording(language: language)
         } catch {
-            recording = false
-            warmingUp = false
-            errorMessage = "Couldn't start recording: \(error)"
-            showToast("Couldn't start recording")
+            presentTerminalError(
+                message: "Couldn't start recording: \(error)",
+                toast: "Couldn't start recording"
+            )
         }
     }
 
@@ -308,11 +328,10 @@ final class OverlayState: ObservableObject {
             recording = false
             finalizeTranscript() // clears `transcribing` as it flips to `.formatted`
         } catch {
-            recording = false
-            warmingUp = false
-            transcribing = false
-            errorMessage = "Couldn't finalize transcript: \(error)"
-            showToast("Couldn't finalize transcript")
+            presentTerminalError(
+                message: "Couldn't finalize transcript: \(error)",
+                toast: "Couldn't finalize transcript"
+            )
         }
     }
 
@@ -454,9 +473,23 @@ final class OverlayState: ObservableObject {
     }
 
     func handleError(message: String) {
+        presentTerminalError(message: message, toast: message)
+    }
+
+    private func presentTerminalError(message: String, toast: String) {
         abortRecordingSession()
+        preview = ""
+        committedSegments = []
+        committedUtterances = []
+        authoritativeFinalText = nil
+        pendingNoSpeechMessage = nil
+        noSpeechNotice = OverlayState.defaultNoSpeechNotice
+        formattedText = ""
+        isFormatting = false
         errorMessage = message
-        showToast(message)
+        mode = .error
+        finalized = true
+        showToast(toast)
     }
 
     // MARK: Listener-driven mutations (called on the main actor by DictationListener)
