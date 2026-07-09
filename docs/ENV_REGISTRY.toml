@@ -172,11 +172,11 @@ description = "Interim emission cadence for buffered mode (sec)"
 range = "1.0-30.0"
 
 [vars.CODESCRIBE_BUFFERED_SILENCE_SEC]
-default = ""
+default = "1.2"
 type = "f32"
 reload = "restart"
 category = "streaming"
-description = "Override silence duration before utterance flush in buffered mode (sec)"
+description = "Silence duration before utterance flush in buffered mode (sec)"
 range = "0.1-10.0"
 
 [vars.TRANSCRIPTION_OVERLAY_ENABLED]

@@ -28,6 +28,7 @@ use crate::vad;
 // ═══════════════════════════════════════════════════════════
 
 const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
+pub(crate) const DEFAULT_BUFFERED_SILENCE_SEC: f32 = 1.2;
 
 // ═══════════════════════════════════════════════════════════
 // Public types
@@ -1140,13 +1141,13 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
 }
 
 pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
-    let mut vad_cfg = vad::VadConfig::default();
-
-    // Optional per-utterance override (buffered mode). This is separate from global VAD silence
-    // and exists for buffered mode only.
-    if let Some(sec) = utterance_silence_sec_override() {
-        vad_cfg.max_silence_duration_sec = sec;
-    }
+    // Buffered mode feeds final utterances through the serialized Commit lane.
+    // Keep the base stream VAD at 0.3s, but avoid over-fragmenting buffered speech.
+    let vad_cfg = vad::VadConfig {
+        max_silence_duration_sec: utterance_silence_sec_override()
+            .unwrap_or(DEFAULT_BUFFERED_SILENCE_SEC),
+        ..vad::VadConfig::default()
+    };
 
     let pre_roll = vad_cfg.pre_roll_sec;
     let speech_pad = pre_roll;
@@ -1459,7 +1460,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn utterance_default_silence_is_not_forced_to_stream_default() {
+    fn utterance_default_silence_uses_buffered_cadence_default() {
         let _g = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
 
         let sr = 16000u32;
@@ -1473,9 +1474,8 @@ mod tests {
             .max(1.0) as usize;
         assert_eq!(stream.min_silence_samples(), stream_expected);
 
-        let utter_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
-            .round()
-            .max(1.0) as usize;
+        let utter_expected =
+            (DEFAULT_BUFFERED_SILENCE_SEC * vad::VAD_SAMPLE_RATE as f32).round() as usize;
         assert_eq!(utterance.min_silence_samples(), utter_expected);
     }
 
