@@ -195,13 +195,7 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
 }
 
 fn non_empty_transcript(text: Option<String>) -> Option<String> {
-    text.and_then(|text| {
-        if text.trim().is_empty() {
-            None
-        } else {
-            Some(text)
-        }
-    })
+    text.filter(|text| !text.trim().is_empty())
 }
 
 #[derive(Debug, Clone, Default)]
