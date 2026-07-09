@@ -430,13 +430,33 @@ final class OverlayState: ObservableObject {
     private func fireWarmupWatchdog() {
         warmupWatchdogTask = nil
         guard warmingUp, !finalized else { return }
-        recording = false
-        warmingUp = false
-        audioReady = false
-        vadActive = false
-        resetTranscript()
+        abortRecordingSession(resetTranscript: true)
         mode = .listening
         onClose?()
+    }
+
+    private func abortRecordingSession(resetTranscript shouldResetTranscript: Bool = false) {
+        let shouldNotifyStopped =
+            !finalized && (recording || warmingUp || transcribing || audioReady || vadActive)
+        cancelWarmupWatchdog()
+        recording = false
+        warmingUp = false
+        transcribing = false
+        audioReady = false
+        vadActive = false
+        if shouldResetTranscript {
+            resetTranscript()
+        }
+        if shouldNotifyStopped {
+            finalized = true
+            onRecordingStopped?()
+        }
+    }
+
+    func handleError(message: String) {
+        abortRecordingSession()
+        errorMessage = message
+        showToast(message)
     }
 
     // MARK: Listener-driven mutations (called on the main actor by DictationListener)
@@ -894,8 +914,7 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func onError(message: String) {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                self.state?.errorMessage = message
-                self.state?.showToast(message)
+                self.state?.handleError(message: message)
             }
         }
     }
