@@ -103,12 +103,11 @@ fn parse_github_spec(spec: &str) -> Option<GitHubRef> {
         let git_ref = &after_at[..colon_pos];
         let path = &after_at[colon_pos + 1..];
         (repo, git_ref, path)
-    } else if let Some(colon_pos) = rest.find(':') {
+    } else {
+        let colon_pos = rest.find(':')?;
         let repo = &rest[..colon_pos];
         let path = &rest[colon_pos + 1..];
         (repo, "main", path)
-    } else {
-        return None;
     };
 
     if repo.is_empty() || path.is_empty() {
