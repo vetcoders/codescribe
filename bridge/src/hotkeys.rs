@@ -878,6 +878,7 @@ impl CodescribeHotkeys {
 #[cfg(test)]
 mod mode_binding_tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Mutex;
 
     // Serializes the CODESCRIBE_DATA_DIR-mutating test below within this module.
@@ -974,6 +975,7 @@ mod mode_binding_tests {
     }
 
     #[test]
+    #[serial]
     fn set_mode_binding_persists_and_reads_back_through_the_bridge() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -1034,6 +1036,7 @@ mod mode_binding_tests {
 #[cfg(test)]
 mod preparing_compensation_tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Mutex as AsyncMutex;
 
@@ -1132,6 +1135,7 @@ mod preparing_compensation_tests {
     /// shown, the controller ended the dispatch at Idle with no broadcast → the
     /// compensator must emit exactly one terminal stop.
     #[tokio::test]
+    #[serial]
     async fn orphaned_preparing_at_idle_gets_a_compensating_stop() {
         let _guard = TEST_LOCK.lock().await;
         let (listener, controller) = install();
@@ -1158,6 +1162,7 @@ mod preparing_compensation_tests {
     /// stop dispatch (controller back at Idle, but flag never armed) must not have a
     /// spurious extra stop synthesized on top of the broadcast one.
     #[tokio::test]
+    #[serial]
     async fn no_preparing_shown_means_no_compensating_stop() {
         let _guard = TEST_LOCK.lock().await;
         let (listener, controller) = install();
@@ -1176,6 +1181,7 @@ mod preparing_compensation_tests {
     /// Idempotency: a second compensator pass (e.g. the FFI `start_recording` path
     /// racing the hotkey spawn) must not emit a second stop for the same overlay.
     #[tokio::test]
+    #[serial]
     async fn compensation_is_idempotent_across_repeated_passes() {
         let _guard = TEST_LOCK.lock().await;
         let (listener, controller) = install();
@@ -1196,6 +1202,7 @@ mod preparing_compensation_tests {
     /// already resolved the preparing (forwarder cleared the flag and emitted
     /// started), the compensator must not double-fire a stop on top of it.
     #[tokio::test]
+    #[serial]
     async fn forwarder_resolved_preparing_is_not_double_stopped() {
         let _guard = TEST_LOCK.lock().await;
         let (listener, controller) = install();
@@ -1236,6 +1243,7 @@ mod preparing_compensation_tests {
     /// hold-release / toggle stop produces (rec_hold → busy → idle) yields exactly
     /// one finalising then one stopped.
     #[tokio::test]
+    #[serial]
     async fn busy_state_routes_to_finalising_then_idle_to_stopped() {
         let _guard = TEST_LOCK.lock().await;
         let (listener, _controller) = install();
@@ -1268,6 +1276,7 @@ mod preparing_compensation_tests {
     /// idempotency that matters (a no-op re-entry) lives in the Swift handler, so
     /// the forwarder stays a thin, stateless router here.
     #[tokio::test]
+    #[serial]
     async fn repeated_busy_forwards_each_finalising() {
         let _guard = TEST_LOCK.lock().await;
         let (listener, _controller) = install();

@@ -1500,7 +1500,8 @@ impl EventSink for BenchTimedEventSink {
 }
 
 fn bench_manifest_audio_paths(path: &str) -> Result<Vec<PathBuf>> {
-    let file = File::open(path)?;
+    // Bench helper reads a local developer-provided manifest TSV path; no untrusted/network input.
+    let file = File::open(path)?; // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let mut lines = BufReader::new(file).lines();
     let header = lines
         .next()

@@ -145,6 +145,9 @@ struct DictationOverlayView: View {
             case .noSpeech:
                 noSpeechBody
                     .transition(.opacity.combined(with: .offset(y: 8)))
+            case .error:
+                errorBody
+                    .transition(.opacity.combined(with: .offset(y: 8)))
             }
         }
         .frame(maxWidth: .infinity, minHeight: bodyMinHeight, maxHeight: .infinity, alignment: .topLeading)
@@ -249,6 +252,27 @@ struct DictationOverlayView: View {
         .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
     }
 
+    /// Terminal outcome for a recording/transcription failure. Unlike a toast, this
+    /// persists after the session aborts so the overlay does not falsely report
+    /// "no speech" when the engine actually failed.
+    private var errorBody: some View {
+        HStack(spacing: 12) {
+            CSIconView(icon: .error, size: 18, weight: .regular)
+                .foregroundStyle(CSColor.terracotta)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.errorMessage ?? "Transcription failed")
+                    .csFont(15, .medium)
+                    .foregroundStyle(CSColor.textBody)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Recording stopped before a transcript was available.")
+                    .csMono(11, .medium)
+                    .foregroundStyle(CSColor.textFaint)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
+    }
+
     // MARK: Action row
 
     private enum ActionButtonTone {
@@ -280,8 +304,8 @@ struct DictationOverlayView: View {
                     action: { state.stop() }
                 )
             } else if state.mode == .formatted {
-                // `.noSpeech` intentionally shows no Copy/Format/Send — there is
-                // nothing to act on; only the trailing Close remains.
+                // Terminal empty/error outcomes intentionally show no Copy/Format/Send;
+                // there is nothing to act on, so only the trailing Close remains.
                 actionButton(
                     title: "Copy",
                     icon: "doc.on.doc",
