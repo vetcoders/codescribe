@@ -511,7 +511,7 @@ impl CodescribeConfig {
         let mut opts = account_auth::ServerOptions::new(client_id);
         opts.issuer = account_auth::issuer_from_env();
 
-        let login = account_auth_runtime()
+        let login = account_auth_runtime()?
             .block_on(account_auth::run_login_server(opts))
             .map_err(account_auth_to_cs)?;
         let auth_url = login.auth_url.clone();
@@ -901,15 +901,18 @@ fn key_present(account: &str) -> bool {
     env_string(account).is_some() || load_key(account).and_then(non_empty).is_some()
 }
 
-fn account_auth_runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
+fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    match RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("codescribe-account-auth")
             .build()
-            .expect("account auth runtime should initialize")
-    })
+            .map_err(|error| format!("account auth runtime initialization failed: {error}"))
+    }) {
+        Ok(runtime) => Ok(runtime),
+        Err(msg) => Err(CsError::Config { msg: msg.clone() }),
+    }
 }
 
 fn active_account_login() -> &'static Mutex<Option<account_auth::LoginServer>> {
