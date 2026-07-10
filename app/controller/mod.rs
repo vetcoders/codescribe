@@ -1599,7 +1599,8 @@ impl RecordingController {
             State::Busy => {
                 warn!(
                     "Toggle pressed while previous stop is still processing (state=BUSY). \
-                     If recording badge persists, stop watchdog will force recovery within 45s."
+                     If recording badge persists, stop watchdog will force recovery within {}s.",
+                    STOP_TIMEOUT.as_secs()
                 );
             }
             _ => {
@@ -2551,7 +2552,7 @@ impl RecordingController {
 
     async fn stop_toggle_and_adjudicate_inner(&self) -> Result<()> {
         // Phase-timed instrumentation: the watchdog above wraps this entire fn
-        // in a 45s timeout, but until now we couldn't tell WHICH await hung.
+        // in STOP_TIMEOUT, but until now we couldn't tell WHICH await hung.
         // Operator reported "hands-off, double option, który potrafi wywołać
         // nagrywanie, ale nie potrafi zakończyć nagrywania" — confirmed in
         // ~/.codescribe/logs/codescribe.log @ 2026-05-13 23:03:22 PDT
@@ -2582,7 +2583,7 @@ impl RecordingController {
         // Self-deadlock guard (Rust 2024): the read guard temporary from an
         // if-let chain scrutinee outlives the chain body. Inlining the read
         // would keep the guard alive across `.write().await`, blocking the
-        // write on this same task's read guard → 45s hang reproduced in
+        // write on this same task's read guard → STOP_TIMEOUT hang reproduced in
         // ~/.codescribe/logs/codescribe.log 2026-05-14T00:16:23 (PHASE 1
         // never reached; watchdog forced recovery). Materialize the snapshot
         // first so the read guard drops at the semicolon.
