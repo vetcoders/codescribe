@@ -324,12 +324,12 @@ pub(crate) async fn transcription_session(
     // chunk suffixes that advanced during Phase 1 preview processing.
     let mut utterance_boundary_suffix = String::new();
 
-    // Fix D: Speech-window-scoped text/rev for partial-pass stale guard.
+    // Fix D: Speech-window-scoped text and boundary revision for partial-pass stale guard.
     // Unlike accumulated_text (cleared on UtteranceFinal), these track all text
     // emitted in the current correction window — giving schedule_partial_pass
     // a stable baseline that survives utterance boundaries.
     let mut window_text = String::new();
-    let mut window_rev: u64 = 0;
+    let mut boundary_rev: u64 = 0;
 
     // Decouple audio ingestion from Whisper inference.
     const MAX_PENDING_UTTERANCES: usize = 64;
@@ -366,7 +366,7 @@ pub(crate) async fn transcription_session(
 
     // Phase 2 (buffered correction) — request tracked for stale guards.
     let mut correction_in_flight: Option<SttTaskHandle> = None;
-    let mut correction_expected_preview_rev: Option<u64> = None;
+    let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
 
@@ -494,11 +494,11 @@ pub(crate) async fn transcription_session(
                     pipeline.language.clone(),
                     &mut correction_audio_buf,
                     &mut correction_in_flight,
-                    &mut correction_expected_preview_rev,
+                    &mut correction_expected_boundary_rev,
                     &mut correction_expected_text,
                     &mut correction_suffix_snapshot,
                     &suffix_snapshot,
-                    window_rev,
+                    boundary_rev,
                     &window_text,
                     partial_trigger_state.silero_speech_ms_since_partial,
                     trigger,
@@ -764,11 +764,11 @@ pub(crate) async fn transcription_session(
                         pipeline.language.clone(),
                         &mut correction_audio_buf,
                         &mut correction_in_flight,
-                        &mut correction_expected_preview_rev,
+                        &mut correction_expected_boundary_rev,
                         &mut correction_expected_text,
                         &mut correction_suffix_snapshot,
                         &suffix_snapshot,
-                        window_rev,
+                        boundary_rev,
                         &window_text,
                         partial_trigger_state.silero_speech_ms_since_partial,
                         trigger,
@@ -782,26 +782,26 @@ pub(crate) async fn transcription_session(
             result = async {
                 correction_in_flight.as_mut().unwrap().recv().await
             }, if correction_in_flight.is_some() => {
-                // Fix D: Use window_rev as fallback (schedule_partial_pass now stores window_rev).
-                let expected_preview_rev = correction_expected_preview_rev.take().unwrap_or(window_rev);
+                let expected_boundary_rev =
+                    correction_expected_boundary_rev.take().unwrap_or(boundary_rev);
                 let expected_text = correction_expected_text.take().unwrap_or_default();
                 let suffix_snapshot = correction_suffix_snapshot.take().unwrap_or_default();
                 match result {
                     Ok(raw) => {
                         // Fix D: Compare against window-scoped state (survives utterance boundaries).
                         if correction_is_stale(
-                            expected_preview_rev,
-                            window_rev,
+                            expected_boundary_rev,
+                            boundary_rev,
                             &expected_text,
                             &window_text,
                         ) {
                             partial_telemetry.record_stale();
                             debug!(
-                                expected_preview_rev,
-                                window_rev,
+                                expected_boundary_rev,
+                                boundary_rev,
                                 expected_len = expected_text.chars().count(),
                                 current_len = window_text.chars().count(),
-                                "Suppressing stale correction (window advanced or text changed)"
+                                "Suppressing stale correction (boundary advanced)"
                             );
                         } else {
                             match postprocess_correction_with_snapshot(
@@ -974,7 +974,7 @@ pub(crate) async fn transcription_session(
                                                     cleaned_final,
                                                     CORRECTION_WINDOW_TEXT_MAX_CHARS,
                                                 );
-                                                window_rev += 1;
+                                                boundary_rev += 1;
                                             } else {
                                                 // Keep the latest preview when FINAL postprocess is empty.
                                                 // Otherwise silence boundary may never emit UtteranceFinal,
@@ -992,13 +992,14 @@ pub(crate) async fn transcription_session(
                                         }
                                         accumulated_text.push_str(cleaned.trim());
 
-                                        // Fix D: Mirror into window-scoped state for partial-pass stale guard.
+                                        // Fix D: Mirror into window-scoped state for partial-pass baseline.
+                                        // Do not bump boundary_rev here: interim previews are same-boundary
+                                        // drafts and must not stale a live Refine correction.
                                         append_to_correction_window_text(
                                             &mut window_text,
                                             cleaned.trim(),
                                             CORRECTION_WINDOW_TEXT_MAX_CHARS,
                                         );
-                                        window_rev += 1;
 
                                         debug!(
                                             rev = preview_rev,
@@ -1137,11 +1138,11 @@ pub(crate) async fn transcription_session(
                                 pipeline.language.clone(),
                                 &mut correction_audio_buf,
                                 &mut correction_in_flight,
-                                &mut correction_expected_preview_rev,
+                                &mut correction_expected_boundary_rev,
                                 &mut correction_expected_text,
                                 &mut correction_suffix_snapshot,
                                 &suffix_snapshot,
-                                window_rev,
+                                boundary_rev,
                                 &window_text,
                                 partial_trigger_state.silero_speech_ms_since_partial,
                                 trigger,
