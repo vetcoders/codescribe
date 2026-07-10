@@ -5,7 +5,7 @@ use crate::pipeline::contracts::TranscriptSegment;
 use crate::pipeline::dedup::{strip_segment_overlap, strip_suffix_overlap_live};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 
-use super::quality_gate::{is_hallucination, is_hallucination_with_quality};
+use super::quality_gate::is_hallucination_with_quality;
 
 // ── TranscriptionPipeline ────────────────────────────────────────────────────
 
@@ -82,12 +82,7 @@ impl TranscriptionPipeline {
         segments: &[TranscriptSegment],
         avg_logprob: Option<f32>,
     ) -> Result<String, PostprocessDrop> {
-        let hallucination = if avg_logprob.is_some() {
-            is_hallucination_with_quality(text, self.language.as_deref(), avg_logprob)
-        } else {
-            is_hallucination(text, self.language.as_deref())
-        };
-        if hallucination {
+        if is_hallucination_with_quality(text, self.language.as_deref(), avg_logprob) {
             self.hallucination_drops += 1;
             return Err(PostprocessDrop::Hallucination);
         }

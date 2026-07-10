@@ -61,6 +61,7 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
 use hound::{WavSpec, WavWriter};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -216,7 +217,7 @@ pub struct SnapshotResult {
 
 // --- audio buffer ---
 
-type AudioBuffer = Arc<Mutex<Vec<i16>>>;
+type AudioBuffer = Arc<Mutex<VecDeque<i16>>>;
 
 pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 
@@ -242,7 +243,7 @@ pub struct Recorder {
 }
 
 // Safety: Recorder can be sent between threads because:
-// - AudioBuffer (Arc<Mutex<Vec<i16>>>) is Send
+// - AudioBuffer (Arc<Mutex<VecDeque<i16>>>) is Send
 // - Stream operations are thread-safe (internally uses Arc)
 // - All other fields are Send
 unsafe impl Send for Recorder {}
@@ -269,7 +270,7 @@ impl Recorder {
 
         Ok(Self {
             config: config.clone(),
-            buffer: Arc::new(Mutex::new(Vec::new())),
+            buffer: Arc::new(Mutex::new(VecDeque::new())),
             buffer_start_offset: Arc::new(AtomicUsize::new(0)),
             stream: None,
             device: None,
@@ -289,12 +290,11 @@ impl Recorder {
         self.on_data = Some(callback);
     }
 
-    fn drop_inert_vad_stop_callback(&mut self, context: &str) {
+    fn warn_inert_vad_stop_callback(&self, context: &str) {
         if self.on_vad_stop.is_some() && !self.config.auto_silence {
             warn!(
-                "{context}: ignoring VAD stop callback because auto_silence is disabled; enable auto_silence before registering on_vad_stop"
+                "{context}: VAD stop callback is registered but auto_silence is disabled; callback will remain inert until auto_silence is enabled"
             );
-            self.on_vad_stop = None;
         }
     }
 
@@ -304,7 +304,6 @@ impl Recorder {
         F: Fn() + Send + Sync + 'static,
     {
         self.on_vad_stop = Some(Arc::new(callback));
-        self.drop_inert_vad_stop_callback("set_on_vad_stop");
     }
 
     /// Actual sample rate used by the underlying input stream.
@@ -353,7 +352,7 @@ impl Recorder {
             .clear();
         self.buffer_start_offset.store(0, Ordering::SeqCst);
         self.diagnostics = RecorderDiagnostics::default();
-        self.drop_inert_vad_stop_callback("Recorder start");
+        self.warn_inert_vad_stop_callback("Recorder start");
 
         // Select input device
         let host = cpal::default_host();
@@ -560,10 +559,16 @@ impl Recorder {
                     _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
                         if !is_recording_clone.load(Ordering::SeqCst) {
                             debug!("Recording stopped by silence detection");
-                            // Invoke VAD callback if set
-                            if let Some(ref callback) = on_vad_stop_clone {
-                                info!("VAD triggered - invoking callback");
-                                callback();
+                            let callback_registered = on_vad_stop_clone.is_some();
+                            if should_invoke_vad_stop_callback(auto_silence, callback_registered) {
+                                if let Some(ref callback) = on_vad_stop_clone {
+                                    info!("VAD triggered - invoking callback");
+                                    callback();
+                                }
+                            } else if callback_registered && !auto_silence {
+                                debug!(
+                                    "Recording stopped while auto_silence is disabled; VAD callback remains inert"
+                                );
                             }
                             if let Some(tx) = stop_tx_clone.as_ref() {
                                 let _ = tx.send(()).await;
@@ -619,7 +624,7 @@ impl Recorder {
                 self.buffer_start_offset.store(0, Ordering::SeqCst);
                 return Ok(None);
             }
-            buf.clone()
+            buf.iter().copied().collect::<Vec<_>>()
         };
 
         let num_frames = wav_data.len();
@@ -683,7 +688,7 @@ impl Recorder {
                 );
             }
             let start = start_offset - buffer_start;
-            let slice: Vec<i16> = buf[start..].to_vec();
+            let slice: Vec<i16> = buf.iter().skip(start).copied().collect();
             (slice, total)
         };
 
@@ -748,6 +753,10 @@ fn streaming_buffer_cap_samples(sample_rate: u32) -> usize {
     (sample_rate as usize).saturating_mul(STREAMING_BUFFER_CAP_SECONDS)
 }
 
+fn should_invoke_vad_stop_callback(auto_silence: bool, callback_registered: bool) -> bool {
+    auto_silence && callback_registered
+}
+
 fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
     let channels = channels.max(1);
     if channels == 1 {
@@ -761,7 +770,7 @@ fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
 }
 
 fn append_mono_i16_samples(
-    buffer: &mut Vec<i16>,
+    buffer: &mut VecDeque<i16>,
     buffer_start_offset: &AtomicUsize,
     samples: &[f32],
     cap_samples: Option<usize>,
@@ -775,7 +784,9 @@ fn append_mono_i16_samples(
         && buffer.len() > cap_samples
     {
         let drop_count = buffer.len() - cap_samples;
-        buffer.drain(..drop_count);
+        for _ in 0..drop_count {
+            buffer.pop_front();
+        }
         buffer_start_offset.fetch_add(drop_count, Ordering::SeqCst);
     }
 }
@@ -855,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn vad_stop_callback_is_rejected_when_auto_silence_disabled() {
+    fn vad_stop_callback_is_retained_but_inert_when_auto_silence_disabled() {
         let config = RecorderConfig {
             auto_silence: false,
             ..Default::default()
@@ -865,8 +876,8 @@ mod tests {
         recorder.set_on_vad_stop(|| {});
 
         assert!(
-            recorder.on_vad_stop.is_none(),
-            "disabled auto_silence must not store an inert VAD-stop callback"
+            recorder.on_vad_stop.is_some(),
+            "disabled auto_silence should retain registration while emission remains gated"
         );
     }
 
@@ -887,14 +898,43 @@ mod tests {
     }
 
     #[test]
+    fn vad_stop_callback_emission_is_gated_by_auto_silence() {
+        assert!(
+            !should_invoke_vad_stop_callback(false, true),
+            "registered callbacks must stay inert while auto_silence is disabled"
+        );
+        assert!(
+            !should_invoke_vad_stop_callback(true, false),
+            "auto_silence alone is not enough without a registered callback"
+        );
+        assert!(
+            should_invoke_vad_stop_callback(true, true),
+            "auto_silence can invoke a registered VAD-stop callback"
+        );
+    }
+
+    #[test]
     fn streaming_i16_buffer_is_capped_and_tracks_absolute_offset() {
-        let mut buf = Vec::new();
+        let mut buf = VecDeque::new();
         let start_offset = std::sync::atomic::AtomicUsize::new(0);
 
         append_mono_i16_samples(&mut buf, &start_offset, &[0.10, 0.20, 0.30, 0.40], Some(6));
         append_mono_i16_samples(&mut buf, &start_offset, &[0.50, 0.60, 0.70, 0.80], Some(6));
 
         assert_eq!(buf.len(), 6, "streaming buffer must not grow past cap");
+        let retained: Vec<i16> = buf.iter().copied().collect();
+        assert_eq!(
+            retained,
+            vec![
+                (0.30 * i16::MAX as f32) as i16,
+                (0.40 * i16::MAX as f32) as i16,
+                (0.50 * i16::MAX as f32) as i16,
+                (0.60 * i16::MAX as f32) as i16,
+                (0.70 * i16::MAX as f32) as i16,
+                (0.80 * i16::MAX as f32) as i16,
+            ],
+            "streaming buffer must retain the newest samples after cap eviction"
+        );
         assert_eq!(
             start_offset.load(Ordering::SeqCst),
             2,

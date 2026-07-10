@@ -148,10 +148,6 @@ pub(crate) fn utterance_vad_speech_pct(
     Some(((speech_vad_samples as f32 / audio_16k as f32) * 100.0).min(100.0))
 }
 
-pub(crate) fn is_hallucination(text: &str, language: Option<&str>) -> bool {
-    is_hallucination_with_quality(text, language, None)
-}
-
 pub(crate) fn is_hallucination_with_quality(
     text: &str,
     language: Option<&str>,
@@ -252,21 +248,38 @@ mod tests {
     #[test]
     fn hallucination_existing_matches_preserved() {
         // Exact-match list entries still flagged.
-        assert!(is_hallucination("Thank you", None));
-        assert!(is_hallucination("  Dziękuję za uwagę  ", Some("pl")));
-        assert!(is_hallucination(
+        assert!(is_hallucination_with_quality("Thank you", None, None));
+        assert!(is_hallucination_with_quality(
+            "  Dziękuję za uwagę  ",
+            Some("pl"),
+            None
+        ));
+        assert!(is_hallucination_with_quality(
             "Napisy stworzone przez społeczność",
-            Some("pl")
+            Some("pl"),
+            None
         ));
         // Whitelist + normal speech still pass.
-        assert!(!is_hallucination("Tak", Some("pl")));
-        assert!(!is_hallucination("This is a normal sentence.", Some("en")));
+        assert!(!is_hallucination_with_quality("Tak", Some("pl"), None));
+        assert!(!is_hallucination_with_quality(
+            "This is a normal sentence.",
+            Some("en"),
+            None
+        ));
     }
 
     #[test]
     fn hallucination_polish_exact_terms_require_low_confidence() {
-        assert!(!is_hallucination("tłumaczenie", Some("pl")));
-        assert!(!is_hallucination("transkrypcja", Some("pl")));
+        assert!(!is_hallucination_with_quality(
+            "tłumaczenie",
+            Some("pl"),
+            None
+        ));
+        assert!(!is_hallucination_with_quality(
+            "transkrypcja",
+            Some("pl"),
+            None
+        ));
         assert!(!is_hallucination_with_quality(
             "tłumaczenie",
             Some("pl"),
@@ -287,27 +300,38 @@ mod tests {
     #[test]
     fn hallucination_repetition_detected() {
         // Single word looped many times (long enough to be implausible speech).
-        assert!(is_hallucination(
+        assert!(is_hallucination_with_quality(
             "do do do do do do do do do do",
-            Some("pl")
+            Some("pl"),
+            None
         ));
         // Two-word phrase looped.
-        assert!(is_hallucination(
+        assert!(is_hallucination_with_quality(
             "do widzenia do widzenia do widzenia do widzenia do widzenia do widzenia do widzenia do widzenia",
-            Some("pl")
+            Some("pl"),
+            None
         ));
     }
 
     #[test]
     fn hallucination_legit_repeat() {
         // Short legitimate repeats must NOT be flagged (below min-words gate).
-        assert!(!is_hallucination("tak tak tak", Some("pl")));
-        assert!(!is_hallucination("no no no", Some("pl")));
-        assert!(!is_hallucination("nie nie nie nie", Some("pl")));
+        assert!(!is_hallucination_with_quality(
+            "tak tak tak",
+            Some("pl"),
+            None
+        ));
+        assert!(!is_hallucination_with_quality("no no no", Some("pl"), None));
+        assert!(!is_hallucination_with_quality(
+            "nie nie nie nie",
+            Some("pl"),
+            None
+        ));
         // Longer but varied real speech (no single-word dominance) passes.
-        assert!(!is_hallucination(
+        assert!(!is_hallucination_with_quality(
             "i wtedy poszedłem do sklepu żeby kupić chleb mleko oraz masło",
-            Some("pl")
+            Some("pl"),
+            None
         ));
         // Repetition heuristic helper: empty / short are inert.
         assert!(!is_repetition_hallucination(""));
