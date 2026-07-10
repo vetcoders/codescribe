@@ -275,12 +275,18 @@ private func normalizeSegments(_ segments: [BridgeSegment]) -> [BridgeSegment] {
         guard !text.isEmpty,
               segment.startTs.isFinite,
               segment.endTs.isFinite,
-              segment.endTs >= segment.startTs,
-              segment.startTs >= previousEnd
+              segment.endTs >= segment.startTs
         else {
             continue
         }
-        normalized.append(BridgeSegment(text: text, startTs: segment.startTs, endTs: segment.endTs))
+        if segment.startTs < previousEnd, segment.endTs <= previousEnd {
+            continue
+        }
+        let start = max(segment.startTs, previousEnd)
+        guard segment.endTs >= start else {
+            continue
+        }
+        normalized.append(BridgeSegment(text: text, startTs: start, endTs: segment.endTs))
         previousEnd = segment.endTs
     }
     return normalized
