@@ -788,7 +788,7 @@ mod tests {
     // ── Turn cancellation (2.15) ─────────────────────────────────────────
 
     use std::collections::VecDeque;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Duration;
 
     use codescribe_core::agent::{AgentEvent, AgentProvider, ToolDefinition, ToolResultContent};
@@ -864,6 +864,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingListener {
         tool_started: AtomicBool,
+        error_count: AtomicUsize,
     }
 
     impl CsAgentListener for RecordingListener {
@@ -875,7 +876,9 @@ mod tests {
         }
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
         fn on_done(&self) {}
-        fn on_error(&self, _message: String) {}
+        fn on_error(&self, _message: String) {
+            self.error_count.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     /// Registry with one tool whose observable side effect fires only AFTER
@@ -977,6 +980,43 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         flag.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn provider_error_is_reported_once_via_throw_only() {
+        let listener = Arc::new(RecordingListener::default());
+        let turns = Arc::new(TurnRegistry::default());
+        let turn = scripted_turn(
+            vec![vec![AgentEvent::Error("upstream exploded".to_string())]],
+            ToolRegistry::new(),
+            "fail once",
+        );
+
+        let result = drive_turn(
+            turn,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            Arc::clone(&turns),
+            "thread-provider-error".to_string(),
+        )
+        .await;
+
+        let result_error_count = usize::from(result.is_err());
+        let CsError::Agent { msg } = result.expect_err("provider error must throw") else {
+            panic!("provider error must surface as CsError::Agent");
+        };
+        assert!(
+            msg.contains("Provider stream error: upstream exploded"),
+            "provider failure reason should survive the thrown error: {msg}"
+        );
+        assert_eq!(
+            listener.error_count.load(Ordering::SeqCst) + result_error_count,
+            1,
+            "provider errors must not double-signal through on_error and throw"
+        );
+        assert!(
+            !turns.cancel("thread-provider-error"),
+            "errored turn should deregister itself"
+        );
     }
 
     #[tokio::test]
