@@ -77,14 +77,20 @@ impl DeltaSink for CollectorSink {
 /// of drops, stats, or VAD events).
 pub struct DeltaSinkAdapter {
     inner: Arc<dyn DeltaSink>,
-    last_text: Mutex<String>,
+    state: Mutex<DeltaSinkState>,
+}
+
+#[derive(Debug, Default)]
+struct DeltaSinkState {
+    last_text: String,
+    needs_separator: bool,
 }
 
 impl DeltaSinkAdapter {
     pub fn new(sink: Arc<dyn DeltaSink>) -> Self {
         Self {
             inner: sink,
-            last_text: Mutex::new(String::new()),
+            state: Mutex::new(DeltaSinkState::default()),
         }
     }
 
@@ -102,34 +108,54 @@ impl EventSink for DeltaSinkAdapter {
         // every subsequent lock on this hot path.
         match event {
             EngineEvent::Preview { text, .. } => {
-                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(delta) = TranscriptDelta::from_diff(&last, text) {
-                    self.inner.apply(&delta);
-                    *last = text.clone();
-                }
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                emit_text_delta(&self.inner, &mut state, text);
             }
-            EngineEvent::Correction { text, .. } => {
-                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(delta) = TranscriptDelta::from_diff(&last, text) {
-                    self.inner.apply(&delta);
-                    *last = text.clone();
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => {
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.last_text.is_empty() && state.needs_separator && !previous_text.is_empty()
+                {
+                    if let Some(delta) = TranscriptDelta::from_diff(previous_text, text) {
+                        self.inner.apply(&delta);
+                    }
+                } else {
+                    emit_text_delta(&self.inner, &mut state, text);
                 }
             }
             EngineEvent::UtteranceFinal { text, .. } => {
-                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(delta) = TranscriptDelta::from_diff(&last, text) {
-                    self.inner.apply(&delta);
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                emit_text_delta(&self.inner, &mut state, text);
+                state.last_text.clear();
+                if !text.trim().is_empty() {
+                    state.needs_separator = true;
                 }
-                // Reset for next utterance.
-                *last = String::new();
             }
             EngineEvent::NoSpeech { .. } => {
-                let mut last = self.last_text.lock().unwrap_or_else(|e| e.into_inner());
-                *last = String::new();
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.last_text.clear();
             }
             _ => {}
         }
     }
+}
+
+fn emit_text_delta(sink: &Arc<dyn DeltaSink>, state: &mut DeltaSinkState, text: &str) {
+    if state.last_text.is_empty() && state.needs_separator && !text.is_empty() {
+        let delta = TranscriptDelta::append(format!(" {text}"));
+        sink.apply(&delta);
+        state.last_text = text.to_string();
+        state.needs_separator = false;
+        return;
+    }
+
+    if let Some(delta) = TranscriptDelta::from_diff(&state.last_text, text) {
+        sink.apply(&delta);
+    }
+    state.last_text = text.to_string();
 }
 
 /// Fan-out sink that forwards each event to multiple sinks.
@@ -328,13 +354,61 @@ mod tests {
             confidence_flags: Vec::new(),
         });
 
-        // After final, last_text resets — next preview starts fresh
+        // After final, next utterance must append with a word separator.
         adapter.on_event(&EngineEvent::Preview {
             rev: 2,
             text: "Second".to_string(),
         });
         let deltas = collector.collected();
-        assert_eq!(deltas.last().unwrap(), "Second");
+        assert_eq!(deltas.last().unwrap(), " Second");
+
+        let mut rendered = String::new();
+        for delta in deltas {
+            TranscriptDelta::from_raw(delta).apply(&mut rendered);
+        }
+        assert_eq!(rendered, "First Second");
+    }
+
+    #[test]
+    fn test_delta_sink_adapter_correction_after_utterance_final_does_not_duplicate() {
+        let collector = Arc::new(CollectorSink::new());
+        let adapter = DeltaSinkAdapter::new(collector.clone() as Arc<dyn DeltaSink>);
+
+        adapter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "First".to_string(),
+        });
+        adapter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "First".to_string(),
+            raw_text: "First".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        adapter.on_event(&EngineEvent::Correction {
+            rev: 2,
+            text: "First fixed".to_string(),
+            previous_text: "First".to_string(),
+        });
+        adapter.on_event(&EngineEvent::Preview {
+            rev: 3,
+            text: "Second".to_string(),
+        });
+
+        let deltas = collector.collected();
+        assert_eq!(deltas, vec!["First", " fixed", " Second"]);
+
+        let mut rendered = String::new();
+        for delta in deltas {
+            TranscriptDelta::from_raw(delta).apply(&mut rendered);
+        }
+        assert_eq!(rendered, "First fixed Second");
     }
 
     #[test]

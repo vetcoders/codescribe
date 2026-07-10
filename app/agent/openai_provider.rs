@@ -588,7 +588,7 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 mod tests {
     use super::{
         OpenAiProvider, build_request_input_items, format_tool_output,
-        forward_events_and_track_chain, request_messages,
+        forward_events_and_track_chain, request_messages, to_data_uri,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -718,6 +718,36 @@ mod tests {
         assert!(output.contains("image_reference"));
         assert!(output.contains("data_omitted"));
         assert!(!output.contains("bm90IHJlYWxseSBhIHBuZw"));
+    }
+
+    #[test]
+    fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
+        // Turn 2 on a restored thread: an inline composer image persisted via
+        // the thread store must come back as a disk-backed asset and still
+        // reach the request payload instead of being skipped as byteless.
+        let image_bytes = b"w5a-openai-turn2".to_vec();
+        let original = Message::new(
+            Role::User,
+            vec![ContentBlock::Image {
+                data: image_bytes.clone(),
+                media_type: "image/png".to_string(),
+            }],
+        );
+        let restored = codescribe_core::agent::ThreadMessage::from(&original).to_message();
+
+        let items = build_request_input_items(std::slice::from_ref(&restored), None)
+            .expect("restored image should serialize");
+        assert_eq!(items.len(), 1, "restored image must not be skipped");
+        assert_eq!(items[0]["type"], "message");
+        assert_eq!(items[0]["content"][0]["type"], "input_image");
+        let image_url = items[0]["content"][0]["image_url"]
+            .as_str()
+            .expect("image_url should be a string");
+        assert_eq!(image_url, to_data_uri(&image_bytes, "image/png"));
+
+        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
+            std::fs::remove_file(&asset.path).ok();
+        }
     }
 
     #[test]

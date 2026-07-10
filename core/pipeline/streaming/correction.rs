@@ -114,12 +114,12 @@ pub(crate) fn postprocess_correction_with_snapshot(
 }
 
 pub(crate) fn correction_is_stale(
-    expected_preview_rev: u64,
-    current_preview_rev: u64,
-    expected_text: &str,
-    current_text: &str,
+    expected_boundary_rev: u64,
+    current_boundary_rev: u64,
+    _expected_text: &str,
+    _current_text: &str,
 ) -> bool {
-    expected_preview_rev != current_preview_rev || expected_text != current_text
+    expected_boundary_rev != current_boundary_rev
 }
 
 /// Build correction baseline text for replacement semantics across boundaries.
@@ -217,12 +217,12 @@ pub(crate) fn schedule_partial_pass(
     pipeline_language: Option<String>,
     correction_audio_buf: &mut Vec<f32>,
     correction_in_flight: &mut Option<SttTaskHandle>,
-    correction_expected_preview_rev: &mut Option<u64>,
+    correction_expected_boundary_rev: &mut Option<u64>,
     correction_expected_text: &mut Option<String>,
     correction_suffix_snapshot: &mut Option<String>,
     suffix_snapshot: &str,
-    preview_rev: u64,
-    accumulated_text: &str,
+    boundary_rev: u64,
+    baseline_text: &str,
     speech_ms_since_partial: u64,
     trigger: PartialPassTrigger,
     partial_telemetry: &mut PartialPassTelemetry,
@@ -244,8 +244,8 @@ pub(crate) fn schedule_partial_pass(
     }
 
     debug!(
-        expected_rev = preview_rev,
-        baseline_len = accumulated_text.chars().count(),
+        expected_boundary_rev = boundary_rev,
+        baseline_len = baseline_text.chars().count(),
         audio_sec = audio_duration_s,
         silero_speech_sec = silero_speech_seconds(speech_ms_since_partial),
         trigger = ?trigger,
@@ -261,8 +261,8 @@ pub(crate) fn schedule_partial_pass(
     ) {
         Ok(handle) => {
             partial_telemetry.record_run(trigger);
-            *correction_expected_preview_rev = Some(preview_rev);
-            *correction_expected_text = Some(accumulated_text.to_string());
+            *correction_expected_boundary_rev = Some(boundary_rev);
+            *correction_expected_text = Some(baseline_text.to_string());
             *correction_suffix_snapshot = Some(suffix_snapshot.to_string());
             *correction_in_flight = Some(handle);
             true

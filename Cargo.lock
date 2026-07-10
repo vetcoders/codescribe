@@ -822,6 +822,7 @@ name = "codescribe-ffi"
 version = "0.12.2"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "codescribe",
  "codescribe-core",

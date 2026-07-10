@@ -273,7 +273,11 @@ impl AgentSession {
                             self.provider.name(),
                             message
                         );
-                        send_ui_event(&self.ui_tx, AgentUiEvent::Error(message.clone())).await;
+                        // Fatal agent failures use the Result channel only.
+                        // Swift already turns the thrown bridge error into the
+                        // visible failed assistant bubble; also emitting
+                        // AgentUiEvent::Error would double-signal the same
+                        // failure through listener.on_error + throw.
                         return Err(anyhow::anyhow!("Provider stream error: {message}"));
                     }
                 }
@@ -318,14 +322,6 @@ impl AgentSession {
                 match serde_json::from_str::<serde_json::Value>(buffered) {
                     Ok(arguments) => ready_calls.push((call.id, call.name, arguments)),
                     Err(error) => {
-                        send_ui_event(
-                            &self.ui_tx,
-                            AgentUiEvent::Error(format!(
-                                "Failed to parse tool arguments for '{}': {}",
-                                call.name, error
-                            )),
-                        )
-                        .await;
                         return Err(anyhow::anyhow!(
                             "Failed to parse tool arguments for '{}': {}",
                             call.name,
@@ -444,7 +440,6 @@ impl AgentSession {
             "Agent loop exceeded max iterations ({})",
             self.max_iterations
         );
-        send_ui_event(&self.ui_tx, AgentUiEvent::Error(message.clone())).await;
         Err(anyhow::anyhow!(message))
     }
 }
@@ -1215,11 +1210,10 @@ mod tests {
             ui_events.push(event);
         }
         assert!(
-            ui_events.iter().any(|event| matches!(
-                event,
-                AgentUiEvent::Error(message) if message.contains("server_error")
-            )),
-            "expected provider Error surfaced to UI, got {ui_events:?}"
+            ui_events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::Error(_))),
+            "fatal provider errors are surfaced through the Result channel only: {ui_events:?}"
         );
     }
 
@@ -1233,7 +1227,7 @@ mod tests {
             "Agent response was cancelled before completion".to_string(),
         )]]);
 
-        let (ui_tx, mut _ui_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
         let mut session =
             AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
         session.thread_id = Some("resp_poisoned".to_string());
@@ -1258,6 +1252,16 @@ mod tests {
             session.thread_id(),
             None,
             "a bare Error must still clear the chain (belt-and-suspenders)"
+        );
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::Error(_))),
+            "fatal provider errors are surfaced through the Result channel only: {ui_events:?}"
         );
     }
 

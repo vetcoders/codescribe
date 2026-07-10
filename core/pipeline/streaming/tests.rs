@@ -37,14 +37,33 @@ fn pending_item_with_marker(is_final: bool, marker: f32) -> PendingUtteranceWork
 #[test]
 fn test_postprocess_components() {
     // Hallucination
-    assert!(is_hallucination("Thank you", None));
-    assert!(is_hallucination("  Dziękuję za uwagę  ", Some("pl")));
-    assert!(is_hallucination(
-        "Napisy stworzone przez społeczność",
-        Some("pl")
+    assert!(is_hallucination_with_quality("Thank you", None, None));
+    assert!(is_hallucination_with_quality(
+        "  Dziękuję za uwagę  ",
+        Some("pl"),
+        None
     ));
-    assert!(!is_hallucination("Tak", Some("pl"))); // Whitelisted
-    assert!(!is_hallucination("This is a normal sentence.", Some("en")));
+    assert!(is_hallucination_with_quality(
+        "Napisy stworzone przez społeczność",
+        Some("pl"),
+        None
+    ));
+    assert!(!is_hallucination_with_quality("Tak", Some("pl"), None)); // Whitelisted
+    assert!(!is_hallucination_with_quality(
+        "This is a normal sentence.",
+        Some("en"),
+        None
+    ));
+    assert!(!is_hallucination_with_quality(
+        "tłumaczenie",
+        Some("pl"),
+        Some(-0.2)
+    ));
+    assert!(is_hallucination_with_quality(
+        "tłumaczenie",
+        Some("pl"),
+        Some(-1.2)
+    ));
 
     // Overlap
     let mut pipeline = TranscriptionPipeline::new(None);
@@ -980,14 +999,14 @@ fn test_correction_delta_polish_diacritics() {
 }
 
 #[test]
-fn test_correction_stale_guard_detects_preview_rev_drift() {
+fn test_correction_stale_guard_detects_boundary_rev_drift() {
     assert!(correction_is_stale(7, 8, "draft", "draft"));
     assert!(!correction_is_stale(7, 7, "draft", "draft"));
 }
 
 #[test]
-fn test_correction_stale_guard_detects_text_drift() {
-    assert!(correction_is_stale(9, 9, "ala ma", "ala ma kota"));
+fn test_correction_stale_guard_allows_text_drift_with_same_boundary() {
+    assert!(!correction_is_stale(9, 9, "ala ma", "ala ma kota"));
 }
 
 #[test]
@@ -1050,7 +1069,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let collector = Arc::new(CollectorEventSink::new());
     let event_sink: Arc<dyn EventSink> = collector.clone();
     let mut correction_in_flight: Option<SttTaskHandle> = None;
-    let mut correction_expected_preview_rev: Option<u64> = None;
+    let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
     let mut partial_telemetry = PartialPassTelemetry::default();
@@ -1062,7 +1081,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         Some("en".to_string()),
         &mut first_audio,
         &mut correction_in_flight,
-        &mut correction_expected_preview_rev,
+        &mut correction_expected_boundary_rev,
         &mut correction_expected_text,
         &mut correction_suffix_snapshot,
         "suffix-a",
@@ -1078,9 +1097,9 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         "correction audio buffer should be consumed on schedule"
     );
     assert_eq!(
-        correction_expected_preview_rev,
+        correction_expected_boundary_rev,
         Some(7),
-        "tracked preview revision should match first scheduled correction"
+        "tracked boundary revision should match first scheduled correction"
     );
     assert_eq!(
         correction_expected_text.as_deref(),
@@ -1104,7 +1123,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         Some("en".to_string()),
         &mut second_audio,
         &mut correction_in_flight,
-        &mut correction_expected_preview_rev,
+        &mut correction_expected_boundary_rev,
         &mut correction_expected_text,
         &mut correction_suffix_snapshot,
         "suffix-b",
@@ -1131,9 +1150,9 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     assert_eq!(partial_telemetry.stale_count, 0);
     assert_eq!(partial_telemetry.dropped_count, 0);
     assert_eq!(
-        correction_expected_preview_rev,
+        correction_expected_boundary_rev,
         Some(8),
-        "new schedule should overwrite tracked preview revision"
+        "new schedule should overwrite tracked boundary revision"
     );
     assert_eq!(
         correction_expected_text.as_deref(),
@@ -1230,7 +1249,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     let collector = Arc::new(CollectorEventSink::new());
     let event_sink: Arc<dyn EventSink> = collector.clone();
     let mut correction_in_flight: Option<SttTaskHandle> = None;
-    let mut correction_expected_preview_rev: Option<u64> = None;
+    let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
     let mut partial_telemetry = PartialPassTelemetry::default();
@@ -1257,7 +1276,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
             Some("en".to_string()),
             &mut audio,
             &mut correction_in_flight,
-            &mut correction_expected_preview_rev,
+            &mut correction_expected_boundary_rev,
             &mut correction_expected_text,
             &mut correction_suffix_snapshot,
             &expected_suffix,
@@ -1272,7 +1291,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
             audio.is_empty(),
             "schedule should consume correction audio buffer"
         );
-        assert_eq!(correction_expected_preview_rev, Some(expected_rev));
+        assert_eq!(correction_expected_boundary_rev, Some(expected_rev));
         assert_eq!(
             correction_expected_text.as_deref(),
             Some(expected_text.as_str())
@@ -1827,28 +1846,28 @@ fn test_fix_a_final_uses_boundary_suffix_not_nonfinal_suffix() {
     );
 }
 
-// ── Fix D contract: window-scoped stale guard survives utterance boundaries ──
+// ── Fix D contract: boundary-scoped stale guard survives utterance boundaries ──
 
 #[test]
-fn test_fix_d_stale_guard_with_window_rev_survives_final() {
+fn test_fix_d_stale_guard_with_boundary_rev_survives_final() {
     // Before Fix D: schedule_partial_pass stored preview_rev / accumulated_text.
     // After FINAL: accumulated_text.clear() → correction_is_stale could pass
     // when it shouldn't (empty == empty).
     //
-    // After Fix D: schedule_partial_pass stores window_rev / window_text.
-    // FINAL increments window_rev → correction_is_stale correctly detects staleness.
+    // After Fix D: schedule_partial_pass stores boundary_rev / window_text.
+    // FINAL increments boundary_rev → correction_is_stale correctly detects staleness.
 
-    let window_rev_at_schedule: u64 = 5;
+    let boundary_rev_at_schedule: u64 = 5;
     let window_text_at_schedule = "cześć jak się masz";
 
     // Simulate FINAL boundary advancing window state.
-    let window_rev_after_final: u64 = 6; // FINAL incremented it
+    let boundary_rev_after_final: u64 = 6; // FINAL incremented it
     let window_text_after_final = "cześć jak się masz dobrze";
 
     assert!(
         correction_is_stale(
-            window_rev_at_schedule,
-            window_rev_after_final,
+            boundary_rev_at_schedule,
+            boundary_rev_after_final,
             window_text_at_schedule,
             window_text_after_final,
         ),
@@ -1858,37 +1877,73 @@ fn test_fix_d_stale_guard_with_window_rev_survives_final() {
 
 #[test]
 fn test_fix_d_stale_guard_passes_when_window_unchanged() {
-    // When no FINAL or new text arrives between schedule and correction result,
-    // the window state matches and correction should apply.
-    let window_rev: u64 = 5;
+    // When no boundary arrives between schedule and correction result,
+    // correction should apply.
+    let boundary_rev: u64 = 5;
     let window_text = "cześć jak się masz";
 
     assert!(
-        !correction_is_stale(window_rev, window_rev, window_text, window_text),
+        !correction_is_stale(boundary_rev, boundary_rev, window_text, window_text),
         "correction should not be stale when window state unchanged"
     );
 }
 
 #[test]
-fn test_fix_d_empty_accumulated_text_after_final_detected_by_window_rev() {
+fn test_refine_stale_guard_allows_interim_preview_text_drift() {
+    // Interim previews are same-boundary drafts. They can change text while the
+    // Refine lane is in flight, but they must not make live correction inert.
+    let boundary_rev_at_schedule: u64 = 5;
+    let boundary_rev_after_interim_previews: u64 = 5;
+    let expected_text = "cześć jak";
+    let current_text_after_interim_previews = "cześć jak się masz";
+
+    assert!(
+        !correction_is_stale(
+            boundary_rev_at_schedule,
+            boundary_rev_after_interim_previews,
+            expected_text,
+            current_text_after_interim_previews,
+        ),
+        "same-boundary interim preview text drift must not stale a Refine correction"
+    );
+}
+
+#[test]
+fn test_refine_stale_guard_rejects_after_boundary_change() {
+    let boundary_rev_at_schedule: u64 = 5;
+    let boundary_rev_after_final: u64 = 6;
+
+    assert!(
+        correction_is_stale(
+            boundary_rev_at_schedule,
+            boundary_rev_after_final,
+            "cześć jak",
+            "cześć jak się masz",
+        ),
+        "real boundary changes must still stale older Refine corrections"
+    );
+}
+
+#[test]
+fn test_fix_d_empty_accumulated_text_after_final_detected_by_boundary_rev() {
     // Edge case: FINAL clears accumulated_text. Before Fix D, stale guard
     // compared "" vs "" → not stale → correction applies to empty text.
-    // After Fix D, window_rev incremented by FINAL → stale.
+    // After Fix D, boundary_rev incremented by FINAL → stale.
 
     // Old behavior (broken): accumulated_text scope — expected "hello world"
     // vs current "" (cleared by FINAL). This would pass if revs matched
     // (both based on preview_rev which didn't increment for FINAL).
 
-    // New behavior: window scope
-    let window_rev_at_schedule: u64 = 3;
+    // New behavior: boundary scope
+    let boundary_rev_at_schedule: u64 = 3;
     let window_text_at_schedule = "hello world";
-    let window_rev_after_final: u64 = 4; // FINAL bumped it
+    let boundary_rev_after_final: u64 = 4; // FINAL bumped it
     let window_text_after_final = "hello world and more"; // FINAL appended
 
     assert!(
         correction_is_stale(
-            window_rev_at_schedule,
-            window_rev_after_final,
+            boundary_rev_at_schedule,
+            boundary_rev_after_final,
             window_text_at_schedule,
             window_text_after_final,
         ),
