@@ -47,6 +47,12 @@ use super::tuning::{inference_max_concurrency, interim_vad_accumulate_samples};
 /// exceed the partial-pass cadence so no spoken tail is ever dropped before a
 /// Refine consumes it.
 const CORRECTION_WINDOW_SEC: f32 = 18.0;
+/// Maximum text retained for Refine's window baseline.
+///
+/// Text has no exact timestamps here, so keep a conservative character tail
+/// that comfortably covers 18s of dense speech while bounding clone/compare
+/// work in long sessions.
+const CORRECTION_WINDOW_TEXT_MAX_CHARS: usize = 4096;
 
 /// Trim `buf` in place so it retains at most `window_sec` of trailing audio at
 /// `sample_rate`. Returns the number of leading samples drained.
@@ -58,6 +64,38 @@ fn cap_correction_buffer(buf: &mut Vec<f32>, sample_rate: u32, window_sec: f32) 
     let drain_n = buf.len() - cap;
     buf.drain(..drain_n);
     drain_n
+}
+
+fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
+    let char_count = text.chars().count();
+    if max_chars == 0 || char_count <= max_chars {
+        return 0;
+    }
+
+    let drain_chars = char_count - max_chars;
+    let drain_bytes = text
+        .char_indices()
+        .nth(drain_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    text.drain(..drain_bytes);
+    let trimmed = text.trim_start();
+    if trimmed.len() != text.len() {
+        *text = trimmed.to_string();
+    }
+    drain_chars
+}
+
+fn append_to_correction_window_text(window_text: &mut String, text: &str, max_chars: usize) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    if !window_text.is_empty() {
+        window_text.push(' ');
+    }
+    window_text.push_str(text);
+    cap_correction_window_text(window_text, max_chars);
 }
 
 // ── Unified session config ───────────────────────────────────────────────────
@@ -931,10 +969,11 @@ pub(crate) async fn transcription_session(
                                             if !cleaned_final.is_empty() {
                                                 // Fix D: Append FINAL text to window-scoped state
                                                 // (not replace — window spans multiple utterances).
-                                                if !window_text.is_empty() {
-                                                    window_text.push(' ');
-                                                }
-                                                window_text.push_str(cleaned_final);
+                                                append_to_correction_window_text(
+                                                    &mut window_text,
+                                                    cleaned_final,
+                                                    CORRECTION_WINDOW_TEXT_MAX_CHARS,
+                                                );
                                                 window_rev += 1;
                                             } else {
                                                 // Keep the latest preview when FINAL postprocess is empty.
@@ -954,10 +993,11 @@ pub(crate) async fn transcription_session(
                                         accumulated_text.push_str(cleaned.trim());
 
                                         // Fix D: Mirror into window-scoped state for partial-pass stale guard.
-                                        if !window_text.is_empty() {
-                                            window_text.push(' ');
-                                        }
-                                        window_text.push_str(cleaned.trim());
+                                        append_to_correction_window_text(
+                                            &mut window_text,
+                                            cleaned.trim(),
+                                            CORRECTION_WINDOW_TEXT_MAX_CHARS,
+                                        );
                                         window_rev += 1;
 
                                         debug!(
@@ -1545,5 +1585,34 @@ mod session_tests {
         let mut buf: Vec<f32> = vec![1.0; 100];
         assert_eq!(cap_correction_buffer(&mut buf, sr, 0.0), 0);
         assert_eq!(buf.len(), 100);
+    }
+
+    #[test]
+    fn correction_window_text_cap_keeps_recent_tail() {
+        let max_chars = 64usize;
+        let mut window_text = String::new();
+
+        for idx in 0..40 {
+            append_to_correction_window_text(
+                &mut window_text,
+                &format!("utterance-{idx:02}"),
+                max_chars,
+            );
+            assert!(
+                window_text.chars().count() <= max_chars,
+                "window text {} chars exceeds cap {}",
+                window_text.chars().count(),
+                max_chars
+            );
+        }
+
+        assert!(
+            !window_text.contains("utterance-00"),
+            "old text should be evicted from the correction window"
+        );
+        assert!(
+            window_text.ends_with("utterance-39"),
+            "fresh correction tail must stay available"
+        );
     }
 }
