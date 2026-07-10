@@ -37,14 +37,23 @@ fn pending_item_with_marker(is_final: bool, marker: f32) -> PendingUtteranceWork
 #[test]
 fn test_postprocess_components() {
     // Hallucination
-    assert!(is_hallucination("Thank you", None));
-    assert!(is_hallucination("  Dziękuję za uwagę  ", Some("pl")));
-    assert!(is_hallucination(
-        "Napisy stworzone przez społeczność",
-        Some("pl")
+    assert!(is_hallucination_with_quality("Thank you", None, None));
+    assert!(is_hallucination_with_quality(
+        "  Dziękuję za uwagę  ",
+        Some("pl"),
+        None
     ));
-    assert!(!is_hallucination("Tak", Some("pl"))); // Whitelisted
-    assert!(!is_hallucination("This is a normal sentence.", Some("en")));
+    assert!(is_hallucination_with_quality(
+        "Napisy stworzone przez społeczność",
+        Some("pl"),
+        None
+    ));
+    assert!(!is_hallucination_with_quality("Tak", Some("pl"), None)); // Whitelisted
+    assert!(!is_hallucination_with_quality(
+        "This is a normal sentence.",
+        Some("en"),
+        None
+    ));
     assert!(!is_hallucination_with_quality(
         "tłumaczenie",
         Some("pl"),
