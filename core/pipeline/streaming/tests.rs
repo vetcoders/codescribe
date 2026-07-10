@@ -45,6 +45,16 @@ fn test_postprocess_components() {
     ));
     assert!(!is_hallucination("Tak", Some("pl"))); // Whitelisted
     assert!(!is_hallucination("This is a normal sentence.", Some("en")));
+    assert!(!is_hallucination_with_quality(
+        "tłumaczenie",
+        Some("pl"),
+        Some(-0.2)
+    ));
+    assert!(is_hallucination_with_quality(
+        "tłumaczenie",
+        Some("pl"),
+        Some(-1.2)
+    ));
 
     // Overlap
     let mut pipeline = TranscriptionPipeline::new(None);

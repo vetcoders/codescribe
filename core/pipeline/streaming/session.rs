@@ -171,6 +171,12 @@ fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
 }
 
+fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool) {
+    if quality_gate_dropped {
+        *counter = counter.saturating_add(1);
+    }
+}
+
 async fn compute_tail_patch_job(
     utterance_id: u64,
     committed_text: String,
@@ -289,7 +295,7 @@ pub(crate) async fn transcription_session(
     let mut utterance_id: u64 = 0;
     let mut scheduler_utterance_id: u64 = 1;
     let mut total_utterances: u64 = 0;
-    let semantic_gate_drops: u64 = 0;
+    let mut semantic_gate_drops: u64 = 0;
     let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
     let mut tail_patch_replacements: u64 = 0;
@@ -901,14 +907,21 @@ pub(crate) async fn transcription_session(
 
                 match result {
                     Ok(raw_transcript) => {
+                        let raw_avg_logprob = raw_transcript.avg_logprob;
+                        let raw_compression_ratio = raw_transcript.compression_ratio;
+                        let raw_quality_gate_dropped = raw_transcript.quality_gate_dropped;
+                        record_semantic_gate_drop(
+                            &mut semantic_gate_drops,
+                            raw_quality_gate_dropped,
+                        );
                         if item.is_final {
-                            utterance_avg_logprob = raw_transcript.avg_logprob;
-                            utterance_compression_ratio = raw_transcript.compression_ratio;
-                            utterance_quality_gate_dropped = raw_transcript.quality_gate_dropped;
+                            utterance_avg_logprob = raw_avg_logprob;
+                            utterance_compression_ratio = raw_compression_ratio;
+                            utterance_quality_gate_dropped = raw_quality_gate_dropped;
                         } else if utterance_avg_logprob.is_none() {
-                            utterance_avg_logprob = raw_transcript.avg_logprob;
-                            utterance_compression_ratio = raw_transcript.compression_ratio;
-                            if raw_transcript.quality_gate_dropped {
+                            utterance_avg_logprob = raw_avg_logprob;
+                            utterance_compression_ratio = raw_compression_ratio;
+                            if raw_quality_gate_dropped {
                                 utterance_quality_gate_dropped = true;
                             }
                         }
@@ -958,9 +971,10 @@ pub(crate) async fn transcription_session(
                                 ),
                             });
                         } else {
-                            match pipeline.postprocess_with_reason_and_segments(
+                            match pipeline.postprocess_with_reason_and_segments_with_quality(
                                 &raw_text,
                                 &raw_segments,
+                                raw_avg_logprob,
                             ) {
                                 Ok(cleaned) => {
                                     if item.is_final {
@@ -1240,6 +1254,7 @@ pub(crate) async fn transcription_session(
         }
         let reason = if speech_activity_observed
             || pipeline.hallucination_drops > 0
+            || semantic_gate_drops > 0
             || filtered_empty_drops > 0
             || dropped_utterances > 0
         {
@@ -1473,6 +1488,16 @@ pub async fn collect_buffered_engine_events(
 #[cfg(test)]
 mod session_tests {
     use super::*;
+
+    #[test]
+    fn semantic_gate_drop_counter_tracks_quality_gate_flag() {
+        let mut drops = 0;
+        record_semantic_gate_drop(&mut drops, false);
+        assert_eq!(drops, 0);
+
+        record_semantic_gate_drop(&mut drops, true);
+        assert_eq!(drops, 1);
+    }
 
     #[test]
     fn tail_patch_result_emits_replace_range_events() {
