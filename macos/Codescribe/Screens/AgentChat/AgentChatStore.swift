@@ -42,6 +42,12 @@ protocol AgentChatEngine: AnyObject {
         onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
         onToolResult: @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
     ) async throws -> String
+    /// Abort the engine-side turn running for `threadId` (safe no-op when idle).
+    /// Cancelling the Swift `Task` that awaits `streamReply` is NOT enough: the
+    /// generated UniFFI bindings poll the Rust future to completion, so without
+    /// this call the agent keeps executing tools (typing/clipboard/fs) after a
+    /// "cancelled" turn.
+    func cancelReply(threadId: String)
 }
 
 // MARK: - Models
@@ -421,8 +427,14 @@ final class AgentChatStore: ObservableObject {
         }
         // Cancel any in-flight reply for this thread so its post-stream refresh
         // can't re-list (and the caret/finalize can't mutate) a deleted thread.
+        // Swift-task cancel first (so the awaiting send sees isCancelled and
+        // stays silent), then the engine-side cancel, which actually aborts the
+        // Rust turn — stopping tool side effects, not just the UI updates.
         inFlightSends[thread.id]?.cancel()
         inFlightSends[thread.id] = nil
+        if let backendId = thread.backendId {
+            engine?.cancelReply(threadId: backendId)
+        }
         threads.removeAll { $0.id == thread.id }
         if selectedThreadID == thread.id {
             selectedThreadID = threads.first?.id
@@ -1060,5 +1072,7 @@ final class MockChatEngine: AgentChatEngine {
         await onToolResult("preview-context", mockToolID, false, "mock context ready")
         return assembled
     }
+
+    func cancelReply(threadId: String) {}
 }
 #endif

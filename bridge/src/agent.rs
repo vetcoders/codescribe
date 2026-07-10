@@ -2,7 +2,9 @@
 //! `AgentSession` (token/reasoning/tool-call streaming). Moved out of `lib.rs`
 //! in W3 cut #0 so each bridge slice owns a disjoint file.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
@@ -10,6 +12,7 @@ use codescribe_core::agent::{
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::llm::provider::{LlmMode, provider_supports_vision, resolve_provider};
+use tokio::task::AbortHandle;
 
 use crate::CsError;
 
@@ -45,7 +48,12 @@ pub trait CsAgentListener: Send + Sync {
 
 /// Thin handle to the codescribe agent engine.
 #[derive(uniffi::Object, Default)]
-pub struct CodescribeAgent {}
+pub struct CodescribeAgent {
+    /// In-flight turns keyed by thread id, so `cancel_turn` can abort them.
+    /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
+    /// itself even while the FFI object stays borrowed by other calls.
+    turns: Arc<TurnRegistry>,
+}
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CodescribeAgent {
@@ -109,6 +117,26 @@ impl CodescribeAgent {
         let images = validate_composer_attachments(&attachments)?;
         self.run_stream(text, thread_id, images, listener).await
     }
+
+    /// Abort the in-flight turn(s) for `thread_id`. Returns `true` when an
+    /// active turn was found and aborted, `false` when the thread was idle
+    /// (the call is a safe no-op then).
+    ///
+    /// This explicit call is the ONLY working cancel path from Swift: the
+    /// generated UniFFI Swift bindings poll a Rust future to completion and
+    /// never propagate Swift `Task` cancellation (`uniffiRustCallAsync` has no
+    /// `rust_future_cancel` wiring), so cancelling the Swift task alone leaves
+    /// the turn — and its tool side effects — running.
+    ///
+    /// The abort lands on the turn task's next `.await` point (tokio abort
+    /// semantics): an in-flight tool future is dropped there, so side effects
+    /// scheduled after that point never run; a synchronous section already
+    /// executing finishes its current poll segment first. The aborted turn is
+    /// NOT persisted — the thread on disk keeps its last completed-turn state,
+    /// so the next turn on the same thread restores clean history.
+    pub fn cancel_turn(&self, thread_id: String) -> bool {
+        self.turns.cancel(&thread_id)
+    }
 }
 
 impl CodescribeAgent {
@@ -128,7 +156,7 @@ impl CodescribeAgent {
         let provider = codescribe::agent::create_default_provider()?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
-        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
+        let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
         let mut session = AgentSession::new(provider, Arc::new(registry), ui_tx);
 
         // Restore prior turns for cross-turn memory. ThreadStore does blocking
@@ -164,52 +192,193 @@ impl CodescribeAgent {
         // configured `ai_assistive_max_tokens`.
         let options = build_bridge_stream_options(config.ai_assistive_max_tokens);
 
-        // Drive the agent loop on a task so the channel closes when it finishes,
-        // letting the drain loop below terminate cleanly. The task hands back the
-        // session's final message log so the caller can persist the thread.
-        let send_handle = tokio::spawn(async move {
-            let mut session = session;
-            let attachments = attachments;
-            session.send(text, attachments, &options).await?;
-            Ok::<Vec<Message>, anyhow::Error>(session.messages().to_vec())
-        });
+        let turn = PreparedTurn {
+            session,
+            text,
+            attachments,
+            options,
+            ui_rx,
+        };
+        let (final_text, messages) =
+            drive_turn(turn, listener, Arc::clone(&self.turns), thread_id.clone()).await?;
 
-        let mut final_text = String::new();
-        while let Some(event) = ui_rx.recv().await {
-            match event {
-                AgentUiEvent::TextDelta(delta) => listener.on_text_delta(delta),
-                AgentUiEvent::TextDone(t) => {
-                    final_text = t.clone();
-                    listener.on_text_done(t);
-                }
-                AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
-                AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
-                AgentUiEvent::ToolResult {
-                    name,
-                    id,
-                    summary,
-                    is_error,
-                } => listener.on_tool_result(name, id, summary, is_error),
-                AgentUiEvent::Done => listener.on_done(),
-                AgentUiEvent::Error(message) => listener.on_error(message),
+        // Persist the updated thread (best-effort). The reply already streamed
+        // to the user, so a save failure is logged-and-ignored rather than
+        // surfaced as an error. A cancelled turn never reaches this point on
+        // purpose: its partial messages are discarded, so the thread on disk
+        // keeps the last completed-turn state (today's only cancel trigger is
+        // thread deletion, where persisting would resurrect the thread).
+        persist_thread(thread_id, messages).await;
+        Ok(final_text)
+    }
+}
+
+/// Everything a spawned agent turn needs, bundled so [`drive_turn`] stays a
+/// single testable unit (tests build one from a scripted provider + mock tools).
+struct PreparedTurn {
+    session: AgentSession,
+    text: String,
+    attachments: Vec<ImageAttachment>,
+    options: StreamOptions,
+    ui_rx: tokio::sync::mpsc::Receiver<AgentUiEvent>,
+}
+
+/// Spawn the agent loop for one turn, forward its UI events to `listener`, and
+/// join the task for the final message log.
+///
+/// Cancellation contract (2.15):
+/// - The spawned task is tied to this future through a [`TurnGuard`]: if this
+///   future is dropped mid-turn, the task is aborted at its next `.await` point
+///   instead of running detached to completion (the pre-fix bug: tools kept
+///   typing/pasting after a "cancelled" turn).
+/// - The guard also registers the task in `turns`, so an explicit
+///   [`CodescribeAgent::cancel_turn`] can abort it by thread id.
+/// - An aborted turn surfaces as a readable `Err` and hands back no messages,
+///   so the caller never persists a half-finished turn.
+/// - A turn that already completed cannot be broken retroactively: aborting a
+///   finished tokio task is a documented no-op and the join below still yields
+///   its result.
+async fn drive_turn(
+    turn: PreparedTurn,
+    listener: Arc<dyn CsAgentListener>,
+    turns: Arc<TurnRegistry>,
+    thread_id: String,
+) -> Result<(String, Vec<Message>), CsError> {
+    let PreparedTurn {
+        session,
+        text,
+        attachments,
+        options,
+        mut ui_rx,
+    } = turn;
+
+    // Drive the agent loop on a task so the channel closes when it finishes,
+    // letting the drain loop below terminate cleanly. The task hands back the
+    // session's final message log so the caller can persist the thread.
+    let send_handle = tokio::spawn(async move {
+        let mut session = session;
+        let attachments = attachments;
+        session.send(text, attachments, &options).await?;
+        Ok::<Vec<Message>, anyhow::Error>(session.messages().to_vec())
+    });
+    let _turn_guard = turns.register(&thread_id, send_handle.abort_handle());
+
+    let mut final_text = String::new();
+    while let Some(event) = ui_rx.recv().await {
+        match event {
+            AgentUiEvent::TextDelta(delta) => listener.on_text_delta(delta),
+            AgentUiEvent::TextDone(t) => {
+                final_text = t.clone();
+                listener.on_text_done(t);
+            }
+            AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
+            AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
+            AgentUiEvent::ToolResult {
+                name,
+                id,
+                summary,
+                is_error,
+            } => listener.on_tool_result(name, id, summary, is_error),
+            AgentUiEvent::Done => listener.on_done(),
+            AgentUiEvent::Error(message) => listener.on_error(message),
+        }
+    }
+
+    match send_handle.await {
+        Ok(Ok(messages)) => Ok((final_text, messages)),
+        Ok(Err(error)) => Err(CsError::Agent {
+            msg: error.to_string(),
+        }),
+        Err(join_error) if join_error.is_cancelled() => Err(CsError::Agent {
+            msg: "Turn cancelled".to_string(),
+        }),
+        Err(join_error) => Err(CsError::Agent {
+            msg: format!("agent task join error: {join_error}"),
+        }),
+    }
+}
+
+/// In-flight turn bookkeeping behind [`CodescribeAgent::cancel_turn`].
+///
+/// One thread id can briefly hold several entries (the composer allows firing a
+/// new send while a previous one is draining), so entries carry a unique token:
+/// `cancel` aborts every turn on the thread, while each turn's guard removes
+/// only its own entry on completion.
+#[derive(Default)]
+struct TurnRegistry {
+    turns: Mutex<HashMap<String, Vec<TurnEntry>>>,
+    next_token: AtomicU64,
+}
+
+struct TurnEntry {
+    token: u64,
+    abort: AbortHandle,
+}
+
+impl TurnRegistry {
+    /// Track a spawned turn task and return the RAII guard that owns both the
+    /// abort-on-drop semantics and the registry entry's lifetime.
+    fn register(self: &Arc<Self>, thread_id: &str, abort: AbortHandle) -> TurnGuard {
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        self.turns
+            .lock()
+            .expect("turn registry lock poisoned")
+            .entry(thread_id.to_string())
+            .or_default()
+            .push(TurnEntry {
+                token,
+                abort: abort.clone(),
+            });
+        TurnGuard {
+            registry: Arc::clone(self),
+            thread_id: thread_id.to_string(),
+            token,
+            abort,
+        }
+    }
+
+    fn deregister(&self, thread_id: &str, token: u64) {
+        let mut turns = self.turns.lock().expect("turn registry lock poisoned");
+        if let Some(entries) = turns.get_mut(thread_id) {
+            entries.retain(|entry| entry.token != token);
+            if entries.is_empty() {
+                turns.remove(thread_id);
             }
         }
+    }
 
-        match send_handle.await {
-            Ok(Ok(messages)) => {
-                // Persist the updated thread (best-effort). The reply already
-                // streamed to the user, so a save failure is logged-and-ignored
-                // rather than surfaced as an error.
-                persist_thread(thread_id, messages).await;
-                Ok(final_text)
-            }
-            Ok(Err(error)) => Err(CsError::Agent {
-                msg: error.to_string(),
-            }),
-            Err(join_error) => Err(CsError::Agent {
-                msg: format!("agent task join error: {join_error}"),
-            }),
+    /// Abort every in-flight turn on `thread_id`; `false` when idle. Entries are
+    /// left in place — each aborted turn's guard deregisters it as the turn's
+    /// `drive_turn` future unwinds (aborting an already-finished task is a
+    /// no-op, so a turn that completed just before this call is unaffected).
+    fn cancel(&self, thread_id: &str) -> bool {
+        let turns = self.turns.lock().expect("turn registry lock poisoned");
+        let Some(entries) = turns.get(thread_id) else {
+            return false;
+        };
+        for entry in entries {
+            entry.abort.abort();
         }
+        !entries.is_empty()
+    }
+}
+
+/// RAII guard tying a spawned turn task to the [`drive_turn`] future that owns
+/// it. Dropping the guard — on normal completion, on error, or because the
+/// UniFFI-held future was dropped — aborts the task (no-op once it finished)
+/// and removes its registry entry, so cancelled and completed turns never leak
+/// stale abort handles.
+struct TurnGuard {
+    registry: Arc<TurnRegistry>,
+    thread_id: String,
+    token: u64,
+    abort: AbortHandle,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        self.abort.abort();
+        self.registry.deregister(&self.thread_id, self.token);
     }
 }
 
@@ -614,5 +783,349 @@ mod tests {
         let text = "INSTRUKCJA: zrób coś";
         let title = derive_thread_title(&[user_message(text)]);
         assert_eq!(title, "INSTRUKCJA: zrób coś");
+    }
+
+    // ── Turn cancellation (2.15) ─────────────────────────────────────────
+
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use codescribe_core::agent::{AgentEvent, AgentProvider, ToolDefinition, ToolResultContent};
+
+    /// Provider that replays one scripted event batch per `stream` call —
+    /// the same shape core's session tests use, local to the bridge so these
+    /// tests exercise the real `drive_turn` unit without a live provider.
+    struct ScriptedProvider {
+        scripts: Mutex<VecDeque<Vec<AgentEvent>>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(scripts: Vec<Vec<AgentEvent>>) -> Self {
+            Self {
+                scripts: Mutex::new(scripts.into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentProvider for ScriptedProvider {
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<AgentEvent>> {
+            let events = self
+                .scripts
+                .lock()
+                .expect("script lock should not be poisoned")
+                .pop_front()
+                .unwrap_or_default();
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            for event in events {
+                tx.send(event)
+                    .await
+                    .expect("test stream channel should accept scripted event");
+            }
+            Ok(rx)
+        }
+
+        fn build_tool_result(
+            &self,
+            call_id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call_id.to_string(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.to_string(),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "scripted-provider"
+        }
+    }
+
+    /// Listener that only records that a tool started executing — the signal
+    /// the cancellation tests key their cancel timing on.
+    #[derive(Default)]
+    struct RecordingListener {
+        tool_started: AtomicBool,
+    }
+
+    impl CsAgentListener for RecordingListener {
+        fn on_text_delta(&self, _delta: String) {}
+        fn on_text_done(&self, _text: String) {}
+        fn on_reasoning_delta(&self, _delta: String) {}
+        fn on_tool_executing(&self, _name: String, _id: String) {
+            self.tool_started.store(true, Ordering::SeqCst);
+        }
+        fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
+        fn on_done(&self) {}
+        fn on_error(&self, _message: String) {}
+    }
+
+    /// Registry with one tool whose observable side effect fires only AFTER
+    /// `delay` — the stand-in for typing/clipboard/fs effects that a cancelled
+    /// turn must never execute.
+    fn slow_tool_registry(side_effect: Arc<AtomicBool>, delay: Duration) -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(
+                ToolDefinition {
+                    name: "slow_side_effect".to_string(),
+                    description: "test tool with a delayed side effect".to_string(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                },
+                Box::new(move |_input| {
+                    let side_effect = Arc::clone(&side_effect);
+                    Box::pin(async move {
+                        tokio::time::sleep(delay).await;
+                        side_effect.store(true, Ordering::SeqCst);
+                        vec![ToolResultContent::Text("side effect done".to_string())]
+                    })
+                }),
+            )
+            .expect("registering the test tool must succeed");
+        registry
+    }
+
+    /// Script driving one slow tool call; the second batch is only consumed
+    /// when the turn survives to iteration 2 (i.e. was NOT cancelled).
+    fn tool_turn_script() -> Vec<Vec<AgentEvent>> {
+        vec![
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: "call_1".to_string(),
+                    name: "slow_side_effect".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_1".to_string()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("late full run".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_2".to_string()),
+                    clean: true,
+                },
+            ],
+        ]
+    }
+
+    fn text_turn_script(reply: &str) -> Vec<Vec<AgentEvent>> {
+        vec![vec![
+            AgentEvent::TextDone(reply.to_string()),
+            AgentEvent::ResponseDone {
+                response_id: Some("resp_text".to_string()),
+                clean: true,
+            },
+        ]]
+    }
+
+    fn test_options() -> StreamOptions {
+        StreamOptions {
+            model: String::new(),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            reset_chain: false,
+        }
+    }
+
+    fn scripted_turn(
+        scripts: Vec<Vec<AgentEvent>>,
+        registry: ToolRegistry,
+        text: &str,
+    ) -> PreparedTurn {
+        let (ui_tx, ui_rx) = tokio::sync::mpsc::channel(64);
+        let session = AgentSession::new(
+            Box::new(ScriptedProvider::new(scripts)),
+            Arc::new(registry),
+            ui_tx,
+        );
+        PreparedTurn {
+            session,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            options: test_options(),
+            ui_rx,
+        }
+    }
+
+    async fn wait_until_set(flag: &AtomicBool, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while tokio::time::Instant::now() < deadline {
+            if flag.load(Ordering::SeqCst) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        flag.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn cancel_turn_aborts_in_flight_tool_before_its_side_effect() {
+        let side_effect = Arc::new(AtomicBool::new(false));
+        let listener = Arc::new(RecordingListener::default());
+        let turns = Arc::new(TurnRegistry::default());
+
+        let turn = scripted_turn(
+            tool_turn_script(),
+            slow_tool_registry(Arc::clone(&side_effect), Duration::from_millis(500)),
+            "cancel me",
+        );
+        let driven = tokio::spawn(drive_turn(
+            turn,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            Arc::clone(&turns),
+            "thread-cancel".to_string(),
+        ));
+
+        assert!(
+            wait_until_set(&listener.tool_started, Duration::from_secs(5)).await,
+            "tool should start executing before we cancel"
+        );
+        assert!(
+            turns.cancel("thread-cancel"),
+            "an active turn should be cancellable"
+        );
+
+        let result = driven.await.expect("driving task must not panic");
+        let CsError::Agent { msg } = result.expect_err("a cancelled turn must not report success")
+        else {
+            panic!("cancellation must surface as an agent error");
+        };
+        assert!(
+            msg.contains("cancelled"),
+            "cancel surfaces as a readable cancellation: {msg}"
+        );
+
+        // Wait well past the tool's own delay: the side effect must never fire
+        // because the tool future was dropped at the abort point.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(
+            !side_effect.load(Ordering::SeqCst),
+            "cancelled tool must not run its side effect"
+        );
+        assert!(
+            !turns.cancel("thread-cancel"),
+            "the aborted turn must deregister itself"
+        );
+
+        // The same thread accepts the next turn after an abort: a fresh session
+        // (as run_stream builds per send) completes normally.
+        let next = scripted_turn(text_turn_script("recovered"), ToolRegistry::new(), "again");
+        let (final_text, messages) = drive_turn(
+            next,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            Arc::clone(&turns),
+            "thread-cancel".to_string(),
+        )
+        .await
+        .expect("the thread must keep working after a cancelled turn");
+        assert_eq!(final_text, "recovered");
+        assert!(messages.iter().any(|m| m.role == Role::Assistant));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_turn_future_aborts_the_spawned_task() {
+        let side_effect = Arc::new(AtomicBool::new(false));
+        let listener = Arc::new(RecordingListener::default());
+        let turns = Arc::new(TurnRegistry::default());
+
+        let turn = scripted_turn(
+            tool_turn_script(),
+            slow_tool_registry(Arc::clone(&side_effect), Duration::from_millis(500)),
+            "drop me",
+        );
+        let driven = tokio::spawn(drive_turn(
+            turn,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            Arc::clone(&turns),
+            "thread-drop".to_string(),
+        ));
+
+        assert!(
+            wait_until_set(&listener.tool_started, Duration::from_secs(5)).await,
+            "tool should start executing before the future is dropped"
+        );
+
+        // Dropping the drive_turn future (what a cancelled UniFFI call does)
+        // must abort the inner turn task via the guard, not leave it detached.
+        driven.abort();
+        let join_error = driven
+            .await
+            .expect_err("aborted future should not yield a value");
+        assert!(join_error.is_cancelled());
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(
+            !side_effect.load(Ordering::SeqCst),
+            "a dropped turn future must not leave the tool running detached"
+        );
+        assert!(
+            !turns.cancel("thread-drop"),
+            "the guard must deregister the turn when the future is dropped"
+        );
+    }
+
+    #[test]
+    fn cancel_with_no_active_turn_is_a_noop() {
+        let turns = TurnRegistry::default();
+        assert!(!turns.cancel("idle-thread"));
+
+        // Same through the FFI surface object (no panic, returns false).
+        let agent = CodescribeAgent::default();
+        assert!(!agent.cancel_turn("idle-thread".to_string()));
+    }
+
+    #[tokio::test]
+    async fn completed_turn_is_not_broken_by_a_late_cancel() {
+        let listener = Arc::new(RecordingListener::default());
+        let turns = Arc::new(TurnRegistry::default());
+
+        let turn = scripted_turn(text_turn_script("all done"), ToolRegistry::new(), "first");
+        let (final_text, messages) = drive_turn(
+            turn,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            Arc::clone(&turns),
+            "thread-seq".to_string(),
+        )
+        .await
+        .expect("uncancelled turn completes");
+        assert_eq!(final_text, "all done");
+        assert!(messages.iter().any(|m| m.role == Role::Assistant));
+
+        // A cancel arriving after completion finds nothing to abort — the
+        // finished result above stays intact (no retroactive corruption).
+        assert!(!turns.cancel("thread-seq"));
+
+        // And the thread still accepts the next turn.
+        let next = scripted_turn(text_turn_script("all done"), ToolRegistry::new(), "second");
+        let (final_text, _) = drive_turn(
+            next,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            turns,
+            "thread-seq".to_string(),
+        )
+        .await
+        .expect("next turn on the same thread must work");
+        assert_eq!(final_text, "all done");
     }
 }
