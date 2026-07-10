@@ -29,8 +29,8 @@ cd "$REPO_ROOT"
 
 PROFILE="${1:-debug}"
 case "$PROFILE" in
-  debug)   CONFIG="Debug";   CARGO_FLAGS=();          TARGET_DIR="target/debug" ;;
-  release) CONFIG="Release"; CARGO_FLAGS=(--release); TARGET_DIR="target/release" ;;
+  debug)   CONFIG="Debug";   TARGET_DIR="target/debug" ;;
+  release) CONFIG="Release"; TARGET_DIR="target/release" ;;
   *) echo "usage: $0 [debug|release]" >&2; exit 2 ;;
 esac
 
@@ -54,7 +54,11 @@ STT_BRIDGE_SRC="core/stt/apple_stt/codescribe-stt-bridge.swift"
 STT_BRIDGE_BIN="$TARGET_DIR/codescribe-stt-bridge"
 
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
-cargo build -p codescribe-ffi "${CARGO_FLAGS[@]}"
+if [ "$PROFILE" = "release" ]; then
+  cargo build -p codescribe-ffi --release
+else
+  cargo build -p codescribe-ffi
+fi
 
 echo "==> [2/7] Rewriting dylib install_name to @rpath (relocatable bundle)"
 install_name_tool -id @rpath/libcodescribe_ffi.dylib "$DYLIB"

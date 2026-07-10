@@ -195,7 +195,10 @@ fn apply_silero_filter_outcome(
     dropped_count: u32,
 ) -> RawTranscript {
     let mut filtered = raw.clone();
-    filtered.text = if dropped_count == 0 && is_strict_text_subset(&filtered_text, &raw.text) {
+    let should_preserve_raw_text = dropped_count == 0
+        && (is_text_equivalent(&filtered_text, &raw.text)
+            || is_strict_text_subset(&filtered_text, &raw.text));
+    filtered.text = if should_preserve_raw_text {
         raw.text.clone()
     } else {
         filtered_text
@@ -210,8 +213,29 @@ fn is_strict_text_subset(candidate: &str, full_text: &str) -> bool {
     !candidate.is_empty() && candidate != full_text && full_text.contains(&candidate)
 }
 
+fn is_text_equivalent(candidate: &str, full_text: &str) -> bool {
+    let candidate = normalize_transcript_text(candidate);
+    let full_text = normalize_transcript_text(full_text);
+    !candidate.is_empty() && candidate == full_text
+}
+
 fn normalize_transcript_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    text.split_whitespace()
+        .filter_map(|token| {
+            let mut normalized = String::new();
+            for ch in token.chars() {
+                if ch.is_alphanumeric() {
+                    normalized.extend(ch.to_lowercase());
+                }
+            }
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
@@ -1974,7 +1998,7 @@ mod dedup_tests {
             end_ts: 1.2,
         }];
         let raw = RawTranscript {
-            text: "close chart and add plan".to_string(),
+            text: "Close chart, and add plan.".to_string(),
             segments: segments.clone(),
             ..Default::default()
         };
@@ -1983,6 +2007,62 @@ mod dedup_tests {
 
         assert_eq!(filtered.text, raw.text);
         assert_eq!(filtered.segments, raw.segments);
+    }
+
+    #[test]
+    fn silero_filter_preserves_raw_text_when_no_drop_only_case_or_punctuation_differs() {
+        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
+            text: "close chart and add plan".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.2,
+        }];
+        let raw = RawTranscript {
+            text: "Close chart, and add plan.".to_string(),
+            segments: segments.clone(),
+            ..Default::default()
+        };
+
+        let filtered =
+            apply_silero_filter_outcome(&raw, "close chart and add plan".to_string(), segments, 0);
+
+        assert_eq!(filtered.text, raw.text);
+        assert_eq!(filtered.segments, raw.segments);
+        assert!(!is_strict_text_subset(
+            "close chart and add plan",
+            "Close chart, and add plan."
+        ));
+    }
+
+    #[test]
+    fn silero_filter_uses_filtered_text_when_segments_were_dropped() {
+        let raw_segments = vec![
+            crate::pipeline::contracts::TranscriptSegment {
+                text: "close chart".to_string(),
+                start_ts: 0.0,
+                end_ts: 1.2,
+            },
+            crate::pipeline::contracts::TranscriptSegment {
+                text: "subscribe".to_string(),
+                start_ts: 1.2,
+                end_ts: 2.0,
+            },
+        ];
+        let filtered_segments = vec![raw_segments[0].clone()];
+        let raw = RawTranscript {
+            text: "Close chart, and subscribe.".to_string(),
+            segments: raw_segments,
+            ..Default::default()
+        };
+
+        let filtered = apply_silero_filter_outcome(
+            &raw,
+            "close chart".to_string(),
+            filtered_segments.clone(),
+            1,
+        );
+
+        assert_eq!(filtered.text, "close chart");
+        assert_eq!(filtered.segments, filtered_segments);
     }
 
     #[test]

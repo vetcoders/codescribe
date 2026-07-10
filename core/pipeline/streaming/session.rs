@@ -171,8 +171,8 @@ fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
 }
 
-fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool) {
-    if quality_gate_dropped {
+fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_final: bool) {
+    if is_final && quality_gate_dropped {
         *counter = counter.saturating_add(1);
     }
 }
@@ -913,6 +913,7 @@ pub(crate) async fn transcription_session(
                         record_semantic_gate_drop(
                             &mut semantic_gate_drops,
                             raw_quality_gate_dropped,
+                            item.is_final,
                         );
                         if item.is_final {
                             utterance_avg_logprob = raw_avg_logprob;
@@ -1492,10 +1493,16 @@ mod session_tests {
     #[test]
     fn semantic_gate_drop_counter_tracks_quality_gate_flag() {
         let mut drops = 0;
-        record_semantic_gate_drop(&mut drops, false);
+        record_semantic_gate_drop(&mut drops, false, true);
         assert_eq!(drops, 0);
 
-        record_semantic_gate_drop(&mut drops, true);
+        record_semantic_gate_drop(&mut drops, true, false);
+        assert_eq!(
+            drops, 0,
+            "interim preview drops must not count as utterance drops"
+        );
+
+        record_semantic_gate_drop(&mut drops, true, true);
         assert_eq!(drops, 1);
     }
 
