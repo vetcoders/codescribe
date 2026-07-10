@@ -7,11 +7,12 @@
 //! Secrets NEVER cross the FFI boundary — only `CsKeyStatus` booleans report
 //! whether a key is present.
 
+use std::collections::HashMap;
 use std::fs;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 
-use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
+use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, load_key, save_key};
 use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
 use codescribe_core::config::{
     Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
@@ -29,8 +30,8 @@ use crate::{CsError, CsLanguage};
 
 /// Full settings snapshot pushed to the Swift Settings UI. Combines real
 /// `Config` struct fields (settings.json / .env / defaults already merged by
-/// `Config::load()`) with env-only knobs the core reads via `std::env::var`
-/// after load (LLM model/endpoint overrides, formatting level, voice-lab).
+/// `Config::load()`) with env-only knobs read from persisted settings / .env
+/// without relying on runtime process-env mutation.
 ///
 /// API keys are intentionally absent — they live only in `CsKeyStatus` as
 /// booleans. Write back through `update_config` / `update_config_many` using the
@@ -122,8 +123,7 @@ pub struct CsSettings {
 
 /// Presence-only view of the Keychain-backed API keys. Booleans only — the
 /// secret values themselves never cross FFI. A key counts as "set" when its
-/// account env var is present and non-empty after `Config::load()` (which calls
-/// `populate_env_from_keychain`).
+/// account env var or Keychain account is present and non-empty.
 #[derive(uniffi::Record)]
 pub struct CsKeyStatus {
     pub llm_api_key_set: bool,
@@ -251,6 +251,8 @@ impl CodescribeConfig {
     /// reflects any writes made since construction.
     pub fn load_settings(&self) -> CsSettings {
         let config = Config::load();
+        let settings = UserSettings::load();
+        let env_file = load_config_env_file();
         CsSettings {
             hold_exclusive: config.hold_exclusive,
             hold_start_delay_ms: config.hold_start_delay_ms,
@@ -283,29 +285,91 @@ impl CodescribeConfig {
             use_local_stt: config.use_local_stt,
             local_model: config.local_model.clone(),
             stt_endpoint: config.stt_endpoint.clone(),
-            stt_engine: env_string("CODESCRIBE_STT_ENGINE"),
+            stt_engine: effective_env_string(
+                "CODESCRIBE_STT_ENGINE",
+                settings.stt_engine.clone(),
+                &env_file,
+            ),
             llm_endpoint: config.llm_endpoint.clone(),
             restore_clipboard: config.restore_clipboard,
             restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
             start_at_login: config.start_at_login,
             agent_enter_sends: config.agent_enter_sends,
             dump_audio_logs: config.dump_audio_logs,
-            // Env-only knobs (read after Config::load populated the env).
-            llm_model: env_string("LLM_MODEL"),
-            llm_formatting_endpoint: env_string("LLM_FORMATTING_ENDPOINT"),
-            llm_formatting_model: env_string("LLM_FORMATTING_MODEL"),
-            llm_assistive_endpoint: env_string("LLM_ASSISTIVE_ENDPOINT"),
-            llm_assistive_model: env_string("LLM_ASSISTIVE_MODEL"),
-            llm_assistive_provider: env_string("LLM_ASSISTIVE_PROVIDER"),
-            formatting_level: env_string("FORMATTING_LEVEL"),
-            whisper_model: env_string("WHISPER_MODEL"),
-            layered_transcription: env_string("CODESCRIBE_LAYERED_TRANSCRIPTION"),
-            agent_workspace_roots: env_list("AGENT_WORKSPACE_ROOTS", DEFAULT_AGENT_WORKSPACE_ROOT),
-            buffer_delay_ms: env_parse("CODESCRIBE_BUFFER_DELAY_MS"),
-            typing_cps: env_parse("CODESCRIBE_TYPING_CPS"),
-            emit_words_max: env_parse("CODESCRIBE_EMIT_WORDS_MAX"),
-            buffered_interim_sec: env_parse("CODESCRIBE_BUFFERED_INTERIM_SEC"),
-            backend_max_upload_mb: env_parse("BACKEND_MAX_UPLOAD_MB"),
+            // Env-only knobs: read the persisted stores first so a runtime UI
+            // write is visible without mutating the process environment.
+            llm_model: effective_settings_string(
+                "LLM_MODEL",
+                settings.llm_model.clone(),
+                &env_file,
+            ),
+            llm_formatting_endpoint: effective_settings_string(
+                "LLM_FORMATTING_ENDPOINT",
+                settings.llm_formatting_endpoint.clone(),
+                &env_file,
+            ),
+            llm_formatting_model: effective_settings_string(
+                "LLM_FORMATTING_MODEL",
+                settings.llm_formatting_model.clone(),
+                &env_file,
+            ),
+            llm_assistive_endpoint: effective_settings_string(
+                "LLM_ASSISTIVE_ENDPOINT",
+                settings.llm_assistive_endpoint.clone(),
+                &env_file,
+            ),
+            llm_assistive_model: effective_settings_string(
+                "LLM_ASSISTIVE_MODEL",
+                settings.llm_assistive_model.clone(),
+                &env_file,
+            ),
+            llm_assistive_provider: effective_file_env_string("LLM_ASSISTIVE_PROVIDER", &env_file),
+            formatting_level: effective_settings_string(
+                "FORMATTING_LEVEL",
+                settings.formatting_level.clone(),
+                &env_file,
+            ),
+            whisper_model: effective_settings_string(
+                "WHISPER_MODEL",
+                settings.whisper_model.clone(),
+                &env_file,
+            ),
+            layered_transcription: effective_env_string(
+                "CODESCRIBE_LAYERED_TRANSCRIPTION",
+                settings.layered_transcription.clone(),
+                &env_file,
+            ),
+            agent_workspace_roots: effective_env_list(
+                "AGENT_WORKSPACE_ROOTS",
+                settings.agent_workspace_roots.clone(),
+                &env_file,
+                DEFAULT_AGENT_WORKSPACE_ROOT,
+            ),
+            buffer_delay_ms: effective_settings_parse(
+                "CODESCRIBE_BUFFER_DELAY_MS",
+                settings.buffer_delay_ms,
+                &env_file,
+            ),
+            typing_cps: effective_settings_parse(
+                "CODESCRIBE_TYPING_CPS",
+                settings.typing_cps,
+                &env_file,
+            ),
+            emit_words_max: effective_settings_parse(
+                "CODESCRIBE_EMIT_WORDS_MAX",
+                settings.emit_words_max,
+                &env_file,
+            ),
+            buffered_interim_sec: effective_settings_parse(
+                "CODESCRIBE_BUFFERED_INTERIM_SEC",
+                settings.buffered_interim_sec,
+                &env_file,
+            ),
+            backend_max_upload_mb: effective_settings_parse(
+                "BACKEND_MAX_UPLOAD_MB",
+                settings.backend_max_upload_mb,
+                &env_file,
+            ),
         }
     }
 
@@ -329,7 +393,8 @@ impl CodescribeConfig {
 
     /// Persist one config value, auto-tiered by the core router
     /// (`save_to_env`): API keys → Keychain, promoted keys → settings.json,
-    /// power-user keys → `.env`. Also updates the live process env.
+    /// power-user keys → `.env`. Runtime readers reload persisted snapshots
+    /// instead of mutating the process env.
     pub fn update_config(&self, key: String, value: String) -> Result<(), CsError> {
         Config::load()
             .save_to_env(&key, &value)
@@ -526,31 +591,24 @@ impl CodescribeConfig {
         KEYCHAIN_ACCOUNTS.iter().map(|a| a.to_string()).collect()
     }
 
-    /// Store an API key in the Keychain and sync the live process env, exactly
-    /// like the core's `save_to_env` path. `account` must be a known
+    /// Store an API key in the Keychain. `account` must be a known
     /// `KEYCHAIN_ACCOUNTS` entry. The secret is never echoed back.
     pub fn set_api_key(&self, account: String, secret: String) -> Result<(), CsError> {
         ensure_known_account(&account)?;
         save_key(&account, &secret).map_err(|error| CsError::Config {
             msg: error.to_string(),
         })?;
-        // SAFETY: settings writes are serialized on a single Swift actor (W3
-        // contract) and runtime readers consume refreshed Config snapshots, so
-        // this mirrors the core's `ui_thread_set_env` after `save_key`.
-        unsafe { std::env::set_var(&account, &secret) };
         crate::hotkeys::refresh_live_controller_config();
         Ok(())
     }
 
-    /// Delete an API key from the Keychain and clear it from the live process
-    /// env. `account` must be a known `KEYCHAIN_ACCOUNTS` entry.
+    /// Delete an API key from the Keychain. `account` must be a known
+    /// `KEYCHAIN_ACCOUNTS` entry.
     pub fn clear_api_key(&self, account: String) -> Result<(), CsError> {
         ensure_known_account(&account)?;
         delete_key(&account).map_err(|error| CsError::Config {
             msg: error.to_string(),
         })?;
-        // SAFETY: same single-writer invariant as `set_api_key`.
-        unsafe { std::env::remove_var(&account) };
         Ok(())
     }
 
@@ -653,8 +711,7 @@ impl CodescribeConfig {
     /// `CODESCRIBE_DATA_DIR` override is honored and no `~` is ever hardcoded.
     ///
     /// When `include_keys` is true, also removes every Keychain-backed API key
-    /// (`KEYCHAIN_ACCOUNTS`) and clears it from the live process env. Deleting the
-    /// data trees clears the `setup_done` sentinel, so the next launch replays the
+    /// (`KEYCHAIN_ACCOUNTS`). Deleting the data trees clears the `setup_done` sentinel, so the next launch replays the
     /// first-run wizard. TCC / permission grants are deliberately NOT touched —
     /// those are the user's to manage in System Settings.
     ///
@@ -671,9 +728,6 @@ impl CodescribeConfig {
                 delete_key(account).map_err(|error| CsError::Config {
                     msg: format!("failed to remove keychain key {account}: {error}"),
                 })?;
-                // SAFETY: same single-writer invariant as `set_api_key` /
-                // `clear_api_key` — settings writes are serialized on one Swift actor.
-                unsafe { std::env::remove_var(account) };
             }
         }
         Ok(())
@@ -727,19 +781,98 @@ fn remove_dir_all_tolerant(dir: &std::path::Path) -> std::io::Result<()> {
 /// sync with the `list_projects` tool default (`app/agent/tools/workspace.rs`).
 const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
 
+fn load_config_env_file() -> HashMap<String, String> {
+    let path = Config::env_path();
+    if path.exists() {
+        Config::parse_env_file(&path).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn setting_string(value: Option<String>) -> Option<String> {
+    value.and_then(non_empty)
+}
+
+fn file_env_string(key: &str, env_file: &HashMap<String, String>) -> Option<String> {
+    env_file.get(key).cloned().and_then(non_empty)
+}
+
+/// Promoted settings are settings.json-owned; prefer that store over process
+/// env so stale bootstrap-seeded env does not mask a fresh UI write.
+fn effective_settings_string(
+    key: &str,
+    setting: Option<String>,
+    env_file: &HashMap<String, String>,
+) -> Option<String> {
+    setting_string(setting)
+        .or_else(|| file_env_string(key, env_file))
+        .or_else(|| env_string(key))
+}
+
+/// Env-managed settings are persisted to .env when changed from the UI. Read
+/// that file before process env so runtime writes are visible without set_var.
+fn effective_env_string(
+    key: &str,
+    setting: Option<String>,
+    env_file: &HashMap<String, String>,
+) -> Option<String> {
+    file_env_string(key, env_file)
+        .or_else(|| setting_string(setting))
+        .or_else(|| env_string(key))
+}
+
+fn effective_file_env_string(key: &str, env_file: &HashMap<String, String>) -> Option<String> {
+    file_env_string(key, env_file).or_else(|| env_string(key))
+}
+
+fn effective_settings_parse<T>(
+    key: &str,
+    setting: Option<T>,
+    env_file: &HashMap<String, String>,
+) -> Option<T>
+where
+    T: std::str::FromStr,
+{
+    setting
+        .or_else(|| file_env_string(key, env_file).and_then(|value| value.parse().ok()))
+        .or_else(|| env_parse(key))
+}
+
+fn parse_roots(value: &str) -> Vec<String> {
+    value
+        .split(':')
+        .map(|segment| segment.trim().to_string())
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
 /// Colon-separated env var into a trimmed, non-empty `Vec<String>`. Falls back to
 /// a single-element `[default]` when the var is unset/empty, so the Settings UI
 /// always renders the effective root the agent tool will scan.
-fn env_list(key: &str, default: &str) -> Vec<String> {
-    let roots: Vec<String> = std::env::var(key)
-        .ok()
-        .map(|value| {
-            value
-                .split(':')
-                .map(|segment| segment.trim().to_string())
-                .filter(|segment| !segment.is_empty())
-                .collect()
+fn effective_env_list(
+    key: &str,
+    setting: Option<Vec<String>>,
+    env_file: &HashMap<String, String>,
+    default: &str,
+) -> Vec<String> {
+    let roots = file_env_string(key, env_file)
+        .map(|value| parse_roots(&value))
+        .or_else(|| {
+            setting.map(|roots| {
+                roots
+                    .into_iter()
+                    .map(|segment| segment.trim().to_string())
+                    .filter(|segment| !segment.is_empty())
+                    .collect()
+            })
         })
+        .or_else(|| std::env::var(key).ok().map(|value| parse_roots(&value)))
         .unwrap_or_default();
     if roots.is_empty() {
         vec![default.to_string()]
@@ -763,9 +896,9 @@ fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
         .and_then(|value| value.trim().parse().ok())
 }
 
-/// True when the account env var is present and non-empty.
+/// True when the account env var or Keychain account is present and non-empty.
 fn key_present(account: &str) -> bool {
-    env_string(account).is_some()
+    env_string(account).is_some() || load_key(account).and_then(non_empty).is_some()
 }
 
 fn account_auth_runtime() -> &'static tokio::runtime::Runtime {
@@ -899,5 +1032,61 @@ mod reset_tests {
                 None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod settings_snapshot_tests {
+    use super::CodescribeConfig;
+    use codescribe_core::config::UserSettings;
+    use serial_test::serial;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "cs_settings_snapshot_{}_{tag}_{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    #[serial]
+    fn load_settings_prefers_persisted_model_over_stale_process_env() {
+        let root = scratch("llm_model");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let previous_data_dir = std::env::var("CODESCRIBE_DATA_DIR").ok();
+        let previous_model = std::env::var("LLM_MODEL").ok();
+        // SAFETY: serialized test body; no background workers are started.
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &root);
+            std::env::set_var("LLM_MODEL", "stale-bootstrap-model");
+        }
+
+        let settings = UserSettings {
+            llm_model: Some("fresh-runtime-model".to_string()),
+            ..Default::default()
+        };
+        settings.save().unwrap();
+
+        let snapshot = CodescribeConfig::new().load_settings();
+        assert_eq!(snapshot.llm_model.as_deref(), Some("fresh-runtime-model"));
+
+        // SAFETY: restore prior env, same serialized single-thread context.
+        unsafe {
+            match previous_data_dir {
+                Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
+                None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
+            }
+            match previous_model {
+                Some(value) => std::env::set_var("LLM_MODEL", value),
+                None => std::env::remove_var("LLM_MODEL"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }
