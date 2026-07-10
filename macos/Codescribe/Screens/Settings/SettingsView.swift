@@ -181,6 +181,7 @@ private struct SettingsRail: View {
     }
 }
 
+#if DEBUG
 #Preview("Settings — Creator") {
     SettingsView(model: SettingsViewModel.preview(.creator))
         .frame(width: 960, height: 620)
@@ -200,3 +201,4 @@ private struct SettingsRail: View {
     SettingsView(model: SettingsViewModel.preview(.prompts))
         .frame(width: 960, height: 620)
 }
+#endif

@@ -492,9 +492,11 @@ struct SettingsSectionLabel: View {
     }
 }
 
+#if DEBUG
 #Preview("Engine panel") {
     ScrollView { EnginePanel(model: .preview(.engine)) }
         .frame(width: 720, height: 620)
         .background(SettingsView.windowGradient)
         .preferredColorScheme(.dark)
 }
+#endif

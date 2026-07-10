@@ -256,9 +256,11 @@ private struct LaunchpadChips: View {
     }
 }
 
+#if DEBUG
 #Preview("Creator panel") {
     ScrollView { CreatorPanel(model: .preview) }
         .frame(width: 720, height: 620)
         .background(SettingsView.windowGradient)
         .preferredColorScheme(.dark)
 }
+#endif
