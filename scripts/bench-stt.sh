@@ -4,10 +4,11 @@ set -Eeuo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/bench-stt.sh [--fixtures auto|historical|repo] [--limit N] [--out DIR] [--language LANG]
+  scripts/bench-stt.sh [--fixtures repo|historical] [--limit N] [--out DIR] [--language LANG]
+                       [--list-fixtures]
 
 Environment:
-  BENCH_STT_FIXTURES   auto|historical|repo (default: auto)
+  BENCH_STT_FIXTURES   repo|historical (default: repo)
   BENCH_STT_LIMIT      fixture limit for historical corpus (default: 10)
   BENCH_STT_OUT        output directory under ~/.codescribe (default: timestamped report dir)
   BENCH_STT_LANGUAGE   Whisper language code (default: pl)
@@ -32,9 +33,10 @@ else
 fi
 home_dir="${HOME:-}"
 
-fixture_mode="${BENCH_STT_FIXTURES:-auto}"
+fixture_mode="${BENCH_STT_FIXTURES:-repo}"
 fixture_limit="${BENCH_STT_LIMIT:-10}"
 language="${BENCH_STT_LANGUAGE:-pl}"
+list_fixtures=false
 run_id="$(date '+%Y%m%d-%H%M%S')-$$"
 out_dir="${BENCH_STT_OUT:-$home_dir/.codescribe/reports/bench-stt-baseline-$run_id}"
 
@@ -56,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       language="${2:-}"
       shift 2
       ;;
+    --list-fixtures)
+      list_fixtures=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -69,7 +75,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$fixture_mode" in
-  auto|historical|repo) ;;
+  historical|repo) ;;
   *)
     printf 'Invalid --fixtures value: %s\n' "$fixture_mode" >&2
     exit 2
@@ -179,10 +185,35 @@ discover_model() {
   return 1
 }
 
+fixture_source_label() {
+  local source_file="${1:-$selected_tsv}"
+  local sources
+  if [[ -s "$source_file" ]]; then
+    sources="$(awk -F '\t' '
+      NR == 1 {
+        for (i = 1; i <= NF; i++) {
+          if ($i == "source") {
+            source_col = i
+            next
+          }
+        }
+        source_col = 4
+      }
+      NF >= source_col && $source_col != "" {print $source_col}
+    ' "$source_file" | sort -u | paste -sd, -)"
+    if [[ -n "$sources" ]]; then
+      printf '%s\n' "$sources"
+      return 0
+    fi
+  fi
+  printf '%s\n' "$fixture_mode"
+}
+
 write_honest_report() {
   local reason="$1"
-  local head_short
+  local head_short fixture_source
   head_short="$(git -C "$repo_root" rev-parse --short=8 HEAD 2>/dev/null || printf 'unknown')"
+  fixture_source="$(fixture_source_label)"
   {
     printf '# CodeScribe STT Baseline Bench\n\n'
     printf '[!] %s\n\n' "$reason"
@@ -194,6 +225,7 @@ write_honest_report() {
     printf '%s\n' "- repo: \`$repo_root\`"
     printf '%s\n' "- head: \`$head_short\`"
     printf '%s\n' "- fixture mode: \`$fixture_mode\`"
+    printf '%s\n' "- fixture_source: \`$fixture_source\`"
     printf '%s\n' "- output: \`$out_dir\`"
     printf '\n## Fixture manifest\n\n'
     if [[ -s "$manifest_tsv" ]]; then
@@ -260,35 +292,31 @@ PY
 select_historical_pairs() {
   : > "$selected_tsv"
 
-  if [[ "$fixture_mode" != "repo" ]]; then
-    select_from_benchmark_report
-  fi
+  select_from_benchmark_report
 
   if [[ "$(count_lines "$selected_tsv")" -gt 0 ]]; then
     return 0
   fi
 
-  if [[ "$fixture_mode" == "historical" || "$fixture_mode" == "auto" ]]; then
-    local all_tsv="$out_dir/historical-candidates.tsv"
-    : > "$all_tsv"
-    local dir wav ref id
-    for dir in \
-      "$home_dir/.codescribe/transcriptions/2026-02-11" \
-      "$home_dir/.codescribe/transcriptions/2026-01-17"; do
-      [[ -d "$dir" ]] || continue
-      for wav in "$dir"/*.wav; do
-        [[ -f "$wav" ]] || continue
-        ref="${wav%.wav}.txt"
-        [[ -f "$ref" ]] || continue
-        id="$(basename "$dir")__$(basename "${wav%.wav}")"
-        printf '%s\t%s\t%s\thistorical_scan\n' "$id" "$wav" "$ref" >> "$all_tsv"
-      done
+  local all_tsv="$out_dir/historical-candidates.tsv"
+  : > "$all_tsv"
+  local dir wav ref id
+  for dir in \
+    "$home_dir/.codescribe/transcriptions/2026-02-11" \
+    "$home_dir/.codescribe/transcriptions/2026-01-17"; do
+    [[ -d "$dir" ]] || continue
+    for wav in "$dir"/*.wav; do
+      [[ -f "$wav" ]] || continue
+      ref="${wav%.wav}.txt"
+      [[ -f "$ref" ]] || continue
+      id="$(basename "$dir")__$(basename "${wav%.wav}")"
+      printf '%s\t%s\t%s\thistorical_scan\n' "$id" "$wav" "$ref" >> "$all_tsv"
     done
-    if [[ "$fixture_limit" -eq 0 ]]; then
-      sort "$all_tsv" > "$selected_tsv"
-    else
-      sort "$all_tsv" | head -n "$fixture_limit" > "$selected_tsv"
-    fi
+  done
+  if [[ "$fixture_limit" -eq 0 ]]; then
+    sort "$all_tsv" > "$selected_tsv"
+  else
+    sort "$all_tsv" | head -n "$fixture_limit" > "$selected_tsv"
   fi
 }
 
@@ -337,6 +365,14 @@ stage_fixtures() {
       "$ref" "$(sha256_file "$ref")" \
       "$staged_audio" "$staged_ref" "$source" >> "$manifest_tsv"
   done < "$selected_tsv"
+}
+
+list_selected_fixtures() {
+  local fixture_source
+  fixture_source="$(fixture_source_label)"
+  printf 'fixture_source\t%s\n' "$fixture_source"
+  printf 'id\tsource_audio\tsource_reference\tsource\n'
+  cat "$selected_tsv"
 }
 
 write_wer_probe() {
@@ -833,10 +869,11 @@ run_prompted_wer_probe() {
 }
 
 write_summary_report() {
-  local head_short repro
+  local head_short repro fixture_source
   head_short="$(git -C "$repo_root" rev-parse --short=8 HEAD 2>/dev/null || printf 'unknown')"
   repro="scripts/bench-stt.sh --fixtures $fixture_mode --limit $fixture_limit --language $language"
-  python3 - "$report_path" "$qube_out/report.json" "$manifest_tsv" "$latency_tsv" "$wer_tsv" "$term_hits_tsv" "$term_source_tsv" "$repro" "$repo_root" "$head_short" "$model_path" "$out_dir" <<'PY'
+  fixture_source="$(fixture_source_label "$manifest_tsv")"
+  python3 - "$report_path" "$qube_out/report.json" "$manifest_tsv" "$latency_tsv" "$wer_tsv" "$term_hits_tsv" "$term_source_tsv" "$repro" "$repo_root" "$head_short" "$model_path" "$out_dir" "$fixture_source" <<'PY'
 import csv
 import json
 import math
@@ -855,6 +892,7 @@ repo_root = sys.argv[9]
 head_short = sys.argv[10]
 model_path = sys.argv[11]
 out_dir = sys.argv[12]
+fixture_source = sys.argv[13]
 
 qube = json.loads(qube_json.read_text())
 manifest = list(csv.DictReader(manifest_tsv.open(), delimiter="\t"))
@@ -944,6 +982,7 @@ lines.append(f"- head: `{head_short}`")
 lines.append(f"- model: `{model_path}`")
 lines.append(f"- output: `{out_dir}`")
 lines.append(f"- fixtures: `{len(manifest)}`")
+lines.append(f"- fixture_source: `{fixture_source}`")
 lines.append("- legacy WER control: existing `qube-report` raw path")
 lines.append("- scheduler latency: `transcription_session` -> `SttScheduler` lanes; model load is excluded")
 lines.append("- prompted WER: explicit prompt-aware transcribe call vs unprompted control; with default OFF it passes no initial prompt")
@@ -1059,24 +1098,33 @@ PY
 
 load_env_file
 
+if [[ "$fixture_mode" == "historical" ]] && ! command -v python3 >/dev/null 2>&1; then
+  write_honest_report "python3 is not available; cannot read historical benchmark fixtures."
+fi
+
+case "$fixture_mode" in
+  repo)
+    select_repo_pairs
+    ;;
+  historical)
+    select_historical_pairs
+    ;;
+esac
+
+if [[ "$(count_lines "$selected_tsv")" -eq 0 ]]; then
+  write_honest_report "No WAV/TXT fixture pairs found for mode '$fixture_mode'."
+fi
+
+if [[ "$list_fixtures" == "true" ]]; then
+  list_selected_fixtures
+  exit 0
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
   write_honest_report "cargo is not available; cannot run STT benchmark."
 fi
 if ! command -v python3 >/dev/null 2>&1; then
   write_honest_report "python3 is not available; cannot prepare fixture/report metadata."
-fi
-
-if [[ "$fixture_mode" == "repo" ]]; then
-  select_repo_pairs
-else
-  select_historical_pairs
-  if [[ "$(count_lines "$selected_tsv")" -eq 0 && "$fixture_mode" == "auto" ]]; then
-    select_repo_pairs
-  fi
-fi
-
-if [[ "$(count_lines "$selected_tsv")" -eq 0 ]]; then
-  write_honest_report "No WAV/TXT fixture pairs found for mode '$fixture_mode'."
 fi
 
 stage_fixtures

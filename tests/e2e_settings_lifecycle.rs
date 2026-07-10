@@ -270,10 +270,9 @@ fn test_settings_typing_cps_decimal_persistence() {
         .save_to_env("CODESCRIBE_TYPING_CPS", "36.5")
         .expect("save typing cps");
 
-    assert_eq!(
-        std::env::var("CODESCRIBE_TYPING_CPS").expect("CODESCRIBE_TYPING_CPS env"),
-        "36.5",
-        "runtime env should preserve decimal value"
+    assert!(
+        std::env::var("CODESCRIBE_TYPING_CPS").is_err(),
+        "runtime writes must not mutate process env"
     );
 
     let settings = UserSettings::load();
@@ -350,8 +349,9 @@ fn test_settings_full_round_trip() {
     assert_eq!(r.whisper_language.as_str(), "en");
     assert!(!r.ai_formatting_enabled);
     assert_eq!(
-        std::env::var("CODESCRIBE_TYPING_CPS").expect("CODESCRIBE_TYPING_CPS env"),
-        "90"
+        settings.typing_cps,
+        Some(90.0),
+        "typing cps should round-trip through settings.json, not live env"
     );
 }
 

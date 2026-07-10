@@ -178,9 +178,11 @@ private struct PromptEditor: View {
     }
 }
 
+#if DEBUG
 #Preview("Prompt panel") {
     ScrollView { PromptPanel(model: .preview(.prompts)) }
         .frame(width: 720, height: 620)
         .background(SettingsView.windowGradient)
         .preferredColorScheme(.dark)
 }
+#endif

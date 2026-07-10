@@ -72,6 +72,8 @@ struct DesignGallery: View {
     }
 }
 
+#if DEBUG
 #Preview("Design Gallery") {
     DesignGallery()
 }
+#endif
