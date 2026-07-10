@@ -1102,16 +1102,6 @@ impl RecordingController {
         self.config.read().await.clone()
     }
 
-    /// Check if VAD (silence detection) has triggered auto-stop
-    pub fn is_vad_triggered(&self) -> bool {
-        self.vad_triggered.load(Ordering::SeqCst)
-    }
-
-    /// Clear the VAD triggered flag
-    pub fn clear_vad_triggered(&self) {
-        self.vad_triggered.store(false, Ordering::SeqCst);
-    }
-
     /// Cancel any pending delayed hold-start task
     async fn cancel_pending_hold_start(&self) {
         let generation = self.hold_start_generation.fetch_add(1, Ordering::SeqCst) + 1;
