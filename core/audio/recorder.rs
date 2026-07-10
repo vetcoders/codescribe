@@ -36,7 +36,7 @@
 //       recorder.start().await?;
 //       println!("Recording... speak now!");
 //
-//       // Record for 3 seconds (or until silence detected)
+//       // Record for 3 seconds (or until silence detected when enabled)
 //       tokio::time::sleep(Duration::from_secs(3)).await;
 //
 //       // Stop and save to WAV file
@@ -54,7 +54,7 @@
 // configuration via constants in `core/vad/config.rs`:
 //   - speech probability threshold (Silero default: 0.5)
 //   - silence duration before auto-stop (Silero default profile)
-//   - AUTO_SILENCE: enable/disable silence detection (default: true)
+//   - AUTO_SILENCE: enable/disable silence detection (default: false)
 
 use crate::vad;
 use anyhow::{Context, Result};
@@ -143,7 +143,7 @@ const CHANNELS: u16 = 1;
 /// Below this is considered silence. Default: 0.5
 /// Silence duration threshold (seconds)
 /// Recording stops automatically after this duration of continuous silence.
-/// Synced with VadConfig::max_silence_duration_sec default (1.2s)
+/// Synced with `vad::config::SILERO_DEFAULT_MAX_SILENCE_SEC`.
 /// Size of audio chunks to read from stream (samples)
 const BLOCK_SIZE: usize = 1024;
 
@@ -178,7 +178,7 @@ impl Default for RecorderConfig {
             hang_sec: vad_cfg.max_silence_duration_sec.clamp(0.1, 10.0),
             auto_silence: std::env::var("AUTO_SILENCE")
                 .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-                .unwrap_or(true),
+                .unwrap_or(false),
             block_size: BLOCK_SIZE,
         }
     }
@@ -283,12 +283,22 @@ impl Recorder {
         self.on_data = Some(callback);
     }
 
+    fn drop_inert_vad_stop_callback(&mut self, context: &str) {
+        if self.on_vad_stop.is_some() && !self.config.auto_silence {
+            warn!(
+                "{context}: ignoring VAD stop callback because auto_silence is disabled; enable auto_silence before registering on_vad_stop"
+            );
+            self.on_vad_stop = None;
+        }
+    }
+
     /// Set a callback invoked when VAD (silence detection) stops recording
     pub fn set_on_vad_stop<F>(&mut self, callback: F)
     where
         F: Fn() + Send + Sync + 'static,
     {
         self.on_vad_stop = Some(Arc::new(callback));
+        self.drop_inert_vad_stop_callback("set_on_vad_stop");
     }
 
     /// Actual sample rate used by the underlying input stream.
@@ -336,6 +346,7 @@ impl Recorder {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
         self.diagnostics = RecorderDiagnostics::default();
+        self.drop_inert_vad_stop_callback("Recorder start");
 
         // Select input device
         let host = cpal::default_host();
@@ -739,15 +750,84 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: tests are serialized and intentionally mutate process env.
+            unsafe { std::env::remove_var(key) };
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.prev {
+                // SAFETY: tests are serialized and intentionally mutate process env.
+                unsafe { std::env::set_var(self.key, prev) };
+            } else {
+                // SAFETY: tests are serialized and intentionally mutate process env.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
     #[test]
+    #[serial]
     fn test_recorder_config_default() {
-        // Note: This test checks hardcoded defaults, not env-dependent behavior
-        // to avoid race conditions with parallel tests
+        let _auto_silence = EnvGuard::unset("AUTO_SILENCE");
+        let config = RecorderConfig::default();
+
         assert_eq!(SAMPLE_RATE, 16000);
         assert_eq!(CHANNELS, 1);
+        assert!(
+            !config.auto_silence,
+            "RecorderConfig default should match production paths: manual stop unless explicitly enabled"
+        );
+        assert!(
+            (config.hang_sec - vad::config::SILERO_DEFAULT_MAX_SILENCE_SEC).abs() < f32::EPSILON,
+            "RecorderConfig hang_sec should follow vad::config::SILERO_DEFAULT_MAX_SILENCE_SEC"
+        );
+    }
+
+    #[test]
+    fn vad_stop_callback_is_rejected_when_auto_silence_disabled() {
+        let config = RecorderConfig {
+            auto_silence: false,
+            ..Default::default()
+        };
+        let mut recorder = Recorder::with_config(config).expect("recorder should initialize");
+
+        recorder.set_on_vad_stop(|| {});
+
+        assert!(
+            recorder.on_vad_stop.is_none(),
+            "disabled auto_silence must not store an inert VAD-stop callback"
+        );
+    }
+
+    #[test]
+    fn vad_stop_callback_is_armed_when_auto_silence_enabled() {
+        let config = RecorderConfig {
+            auto_silence: true,
+            ..Default::default()
+        };
+        let mut recorder = Recorder::with_config(config).expect("recorder should initialize");
+
+        recorder.set_on_vad_stop(|| {});
+
+        assert!(
+            recorder.on_vad_stop.is_some(),
+            "enabled auto_silence should arm the VAD-stop callback"
+        );
     }
 
     #[tokio::test]

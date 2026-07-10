@@ -199,10 +199,10 @@ fn test_recorder_vad_config_defaults() {
     let _auto_silence = EnvVarGuard::unset("AUTO_SILENCE");
     let config = RecorderConfig::default();
 
-    // VAD should be enabled by default
+    // Production paths opt into manual stop explicitly; VAD auto-stop is opt-in.
     assert!(
-        config.auto_silence,
-        "auto_silence should be true by default"
+        !config.auto_silence,
+        "auto_silence should be false by default"
     );
 
     // Speech threshold should be probability (0.0-1.0)
@@ -243,9 +243,13 @@ fn test_recorder_vad_config_custom() {
 /// Note: Does not actually record - tests API only
 #[test]
 fn test_recorder_vad_callback_api() {
-    use codescribe::Recorder;
+    use codescribe::{Recorder, RecorderConfig};
 
-    let mut recorder = Recorder::new().expect("Should create recorder");
+    let config = RecorderConfig {
+        auto_silence: true,
+        ..Default::default()
+    };
+    let mut recorder = Recorder::with_config(config).expect("Should create recorder");
     let called = Arc::new(AtomicBool::new(false));
 
     // Set callback
