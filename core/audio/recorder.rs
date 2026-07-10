@@ -61,6 +61,7 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
 use hound::{WavSpec, WavWriter};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -216,7 +217,7 @@ pub struct SnapshotResult {
 
 // --- audio buffer ---
 
-type AudioBuffer = Arc<Mutex<Vec<i16>>>;
+type AudioBuffer = Arc<Mutex<VecDeque<i16>>>;
 
 pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 
@@ -242,7 +243,7 @@ pub struct Recorder {
 }
 
 // Safety: Recorder can be sent between threads because:
-// - AudioBuffer (Arc<Mutex<Vec<i16>>>) is Send
+// - AudioBuffer (Arc<Mutex<VecDeque<i16>>>) is Send
 // - Stream operations are thread-safe (internally uses Arc)
 // - All other fields are Send
 unsafe impl Send for Recorder {}
@@ -269,7 +270,7 @@ impl Recorder {
 
         Ok(Self {
             config: config.clone(),
-            buffer: Arc::new(Mutex::new(Vec::new())),
+            buffer: Arc::new(Mutex::new(VecDeque::new())),
             buffer_start_offset: Arc::new(AtomicUsize::new(0)),
             stream: None,
             device: None,
@@ -619,7 +620,7 @@ impl Recorder {
                 self.buffer_start_offset.store(0, Ordering::SeqCst);
                 return Ok(None);
             }
-            buf.clone()
+            buf.iter().copied().collect::<Vec<_>>()
         };
 
         let num_frames = wav_data.len();
@@ -683,7 +684,7 @@ impl Recorder {
                 );
             }
             let start = start_offset - buffer_start;
-            let slice: Vec<i16> = buf[start..].to_vec();
+            let slice: Vec<i16> = buf.iter().skip(start).copied().collect();
             (slice, total)
         };
 
@@ -761,7 +762,7 @@ fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
 }
 
 fn append_mono_i16_samples(
-    buffer: &mut Vec<i16>,
+    buffer: &mut VecDeque<i16>,
     buffer_start_offset: &AtomicUsize,
     samples: &[f32],
     cap_samples: Option<usize>,
@@ -775,7 +776,9 @@ fn append_mono_i16_samples(
         && buffer.len() > cap_samples
     {
         let drop_count = buffer.len() - cap_samples;
-        buffer.drain(..drop_count);
+        for _ in 0..drop_count {
+            buffer.pop_front();
+        }
         buffer_start_offset.fetch_add(drop_count, Ordering::SeqCst);
     }
 }
@@ -888,13 +891,26 @@ mod tests {
 
     #[test]
     fn streaming_i16_buffer_is_capped_and_tracks_absolute_offset() {
-        let mut buf = Vec::new();
+        let mut buf = VecDeque::new();
         let start_offset = std::sync::atomic::AtomicUsize::new(0);
 
         append_mono_i16_samples(&mut buf, &start_offset, &[0.10, 0.20, 0.30, 0.40], Some(6));
         append_mono_i16_samples(&mut buf, &start_offset, &[0.50, 0.60, 0.70, 0.80], Some(6));
 
         assert_eq!(buf.len(), 6, "streaming buffer must not grow past cap");
+        let retained: Vec<i16> = buf.iter().copied().collect();
+        assert_eq!(
+            retained,
+            vec![
+                (0.30 * i16::MAX as f32) as i16,
+                (0.40 * i16::MAX as f32) as i16,
+                (0.50 * i16::MAX as f32) as i16,
+                (0.60 * i16::MAX as f32) as i16,
+                (0.70 * i16::MAX as f32) as i16,
+                (0.80 * i16::MAX as f32) as i16,
+            ],
+            "streaming buffer must retain the newest samples after cap eviction"
+        );
         assert_eq!(
             start_offset.load(Ordering::SeqCst),
             2,
