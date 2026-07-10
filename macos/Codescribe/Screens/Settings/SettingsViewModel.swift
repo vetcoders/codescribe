@@ -33,6 +33,7 @@ enum SettingsDeepLink {
 
     static var pendingSection: SettingsSection? {
         didSet {
+            guard pendingSection != nil else { return }
             NotificationCenter.default.post(name: pendingSectionDidChange, object: nil)
         }
     }
