@@ -8,7 +8,7 @@ use rand::distributions::Alphanumeric;
 use rand::{Rng, thread_rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::thread_index::ThreadIndex;
 use super::types::{ContentBlock, Message, Role};
@@ -356,12 +356,37 @@ fn content_block_to_value(block: &ContentBlock) -> Value {
             "type": "text",
             "text": text,
         }),
-        ContentBlock::Image { data, media_type } => json!({
-            "type": "image",
-            "media_type": media_type,
-            "size_bytes": data.len(),
-            "data_omitted": true,
-        }),
+        // Inline images (composer attachments) are spilled to the shared
+        // agent asset store so they survive the persist/restore roundtrip —
+        // the JSON thread file itself never carries image bytes. Empty blocks
+        // (restored from pre-asset thread files) and failed spills keep the
+        // explicit `data_omitted` marker instead of minting an empty asset.
+        ContentBlock::Image { data, media_type } => {
+            let data_omitted = || {
+                json!({
+                    "type": "image",
+                    "media_type": media_type,
+                    "size_bytes": data.len(),
+                    "data_omitted": true,
+                })
+            };
+            if data.is_empty() {
+                return data_omitted();
+            }
+            match crate::agent::AgentAssetStore::save_inline_image(data, media_type) {
+                Ok(asset) => json!({
+                    "type": "image_asset",
+                    "asset_id": asset.asset_id,
+                    "path": asset.path,
+                    "media_type": asset.media_type,
+                    "size_bytes": asset.size_bytes,
+                }),
+                Err(error) => {
+                    warn!("Failed to persist inline image as disk-backed asset: {error}");
+                    data_omitted()
+                }
+            }
+        }
         ContentBlock::ImageAsset(asset) => json!({
             "type": "image_asset",
             "asset_id": asset.asset_id,
@@ -736,6 +761,115 @@ mod tests {
             "renaming an absent thread returns false"
         );
         Ok(())
+    }
+
+    #[test]
+    fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let image_bytes = b"w5a-inline-roundtrip-bytes".to_vec();
+
+        let message = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text("look at this".to_string()),
+                ContentBlock::Image {
+                    data: image_bytes.clone(),
+                    media_type: "image/png".to_string(),
+                },
+            ],
+            timestamp: Some(Utc::now()),
+        };
+
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.messages = vec![ThreadMessage::from(&message)];
+        store.save_thread(&thread)?;
+
+        let restored = store.load_thread(&thread.id)?.messages[0].to_message();
+        let ContentBlock::ImageAsset(asset) = &restored.content[1] else {
+            panic!(
+                "inline image should restore as a disk-backed asset, got: {:?}",
+                restored.content[1]
+            );
+        };
+        let data = crate::agent::AgentAssetStore::read_image(&asset.path)?;
+        assert_eq!(
+            data, image_bytes,
+            "restored asset bytes must match the original image"
+        );
+        assert_eq!(asset.size_bytes, image_bytes.len() as u64);
+        assert_eq!(asset.media_type, "image/png");
+
+        // The persisted thread JSON must not carry raw image bytes.
+        let raw = fs::read_to_string(store.thread_file_path(&thread.id)?)?;
+        assert!(raw.contains("image_asset"));
+        assert!(!raw.contains("data_omitted"));
+
+        fs::remove_file(&asset.path).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn inline_image_asset_is_written_once_across_saves() -> Result<()> {
+        let block = ContentBlock::Image {
+            data: b"w5a-dedup-bytes".to_vec(),
+            media_type: "image/png".to_string(),
+        };
+
+        let first = content_block_to_value(&block);
+        let path = PathBuf::from(
+            first
+                .get("path")
+                .and_then(Value::as_str)
+                .expect("persisted inline image should carry an asset path"),
+        );
+        assert!(path.exists(), "first persist must write the asset file");
+
+        // Simulate a pre-existing asset: if the second persist rewrote the
+        // file, the sentinel would be clobbered.
+        fs::write(&path, b"sentinel")?;
+        let second = content_block_to_value(&block);
+        assert_eq!(
+            first, second,
+            "same bytes must map to the same asset across saves"
+        );
+        assert_eq!(
+            fs::read(&path)?,
+            b"sentinel",
+            "existing asset must be referenced, not rewritten"
+        );
+
+        fs::remove_file(&path).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_data_omitted_image_restores_without_bytes_and_repersists_safely() {
+        let legacy = json!({
+            "type": "image",
+            "media_type": "image/png",
+            "size_bytes": 123,
+            "data_omitted": true,
+        });
+
+        let block = value_to_content_block(&legacy);
+        let ContentBlock::Image { data, media_type } = &block else {
+            panic!("legacy image value should restore as an image block: {block:?}");
+        };
+        assert!(data.is_empty(), "legacy blocks carry no bytes by design");
+        assert_eq!(media_type, "image/png");
+
+        // Re-persisting a byteless block keeps the explicit degraded marker
+        // instead of minting an empty asset.
+        let repersisted = content_block_to_value(&block);
+        assert_eq!(
+            repersisted.get("data_omitted").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            repersisted.get("type").and_then(Value::as_str),
+            Some("image")
+        );
     }
 
     #[test]

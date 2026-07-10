@@ -27,4 +27,5 @@ serde_json = { workspace = true }
 crossbeam-channel = "0.5"
 
 [dev-dependencies]
+async-trait = "0.1"
 serial_test = "3"

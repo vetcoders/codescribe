@@ -1101,6 +1101,34 @@ mod tests {
     }
 
     #[test]
+    fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
+        // Turn 2 on a restored thread: an inline composer image persisted via
+        // the thread store must come back as a disk-backed asset and still
+        // reach the request payload instead of being skipped as byteless.
+        let image_bytes = b"w5a-anthropic-turn2".to_vec();
+        let original = Message::new(
+            Role::User,
+            vec![ContentBlock::Image {
+                data: image_bytes.clone(),
+                media_type: "image/png".to_string(),
+            }],
+        );
+        let restored = codescribe_core::agent::ThreadMessage::from(&original).to_message();
+
+        let blocks = message_content_blocks(&restored).expect("restored image should serialize");
+        assert_eq!(blocks.len(), 1, "restored image must not be skipped");
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(
+            blocks[0]["source"]["data"].as_str().unwrap(),
+            BASE64.encode(&image_bytes)
+        );
+
+        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
+            std::fs::remove_file(&asset.path).ok();
+        }
+    }
+
+    #[test]
     fn validate_endpoint_rejects_non_loopback_http() {
         assert!(validate_anthropic_endpoint("https://api.anthropic.com/v1/messages").is_ok());
         assert!(validate_anthropic_endpoint("http://127.0.0.1:8080/v1/messages").is_ok());
