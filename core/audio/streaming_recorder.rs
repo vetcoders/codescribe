@@ -476,6 +476,27 @@ mod tests {
         crate::config::Config::config_dir().join("transcriptions")
     }
 
+    fn is_terminal_no_speech_artifact(file_name: &str) -> bool {
+        file_name.contains("no-speech") || file_name.ends_with("_failed.wav")
+    }
+
+    #[test]
+    fn terminal_no_speech_artifact_filter_is_name_bounded() {
+        assert!(is_terminal_no_speech_artifact(
+            "20260709_120000_no-speech_raw.wav"
+        ));
+        assert!(is_terminal_no_speech_artifact(
+            "20260709_120001_dictation_failed.wav"
+        ));
+        assert!(!is_terminal_no_speech_artifact(
+            "20260709_120002_failed-but-recovered_raw.wav"
+        ));
+        assert!(!is_terminal_no_speech_artifact(
+            "03_algorytm-ma-zlozonosc.wav"
+        ));
+        assert!(!is_terminal_no_speech_artifact("dictation_failed.m4a"));
+    }
+
     fn collect_pairs(
         root: &Path,
         date_filter: Option<&str>,
@@ -785,8 +806,8 @@ mod tests {
                         let p = entry.path();
                         if p.extension().and_then(|s| s.to_str()) == Some("wav") {
                             let fname = p.file_name().unwrap_or_default().to_string_lossy();
-                            // Failed-recording artifacts genuinely have no speech; zero detection on them is correct, not a model issue.
-                            if fname.contains("no-speech") || fname.ends_with("_failed.wav") {
+                            // Terminal failed/no-speech artifacts should not be scored as VAD segmentation misses.
+                            if is_terminal_no_speech_artifact(&fname) {
                                 continue;
                             }
                             wavs.push(p);
