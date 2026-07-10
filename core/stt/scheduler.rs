@@ -64,8 +64,8 @@ impl ThermalLevel {
 }
 
 static PROCESS_THERMAL_LEVEL: AtomicU64 = AtomicU64::new(0);
-static SCHEDULER_REGISTRY: OnceLock<StdMutex<Vec<mpsc::UnboundedSender<SchedulerCommand>>>> =
-    OnceLock::new();
+static NEXT_SCHEDULER_ID: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_REGISTRY: OnceLock<StdMutex<Vec<SchedulerRegistration>>> = OnceLock::new();
 
 pub fn current_process_thermal_level() -> ThermalLevel {
     ThermalLevel::from_u8(PROCESS_THERMAL_LEVEL.load(Ordering::Relaxed) as u8)
@@ -74,9 +74,19 @@ pub fn current_process_thermal_level() -> ThermalLevel {
 pub fn set_process_thermal_level(level: ThermalLevel) {
     PROCESS_THERMAL_LEVEL.store(u64::from(level.as_u8()), Ordering::Relaxed);
     if let Some(registry) = SCHEDULER_REGISTRY.get() {
-        let mut senders = registry.lock().unwrap_or_else(|e| e.into_inner());
-        senders.retain(|tx| tx.send(SchedulerCommand::SetThermalLevel(level)).is_ok());
+        let mut registrations = registry.lock().unwrap_or_else(|e| e.into_inner());
+        registrations.retain(|registration| {
+            registration
+                .tx
+                .send(SchedulerCommand::SetThermalLevel(level))
+                .is_ok()
+        });
     }
+}
+
+struct SchedulerRegistration {
+    id: u64,
+    tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
 
 #[derive(Debug)]
@@ -108,6 +118,7 @@ impl SttTaskHandle {
 }
 
 pub(crate) struct SttScheduler {
+    registry_id: u64,
     command_tx: mpsc::UnboundedSender<SchedulerCommand>,
     worker_handle: Option<JoinHandle<()>>,
     next_request_id: AtomicU64,
@@ -187,7 +198,7 @@ impl SttScheduler {
     pub(crate) async fn shutdown(mut self) -> Result<()> {
         let (ack_tx, ack_rx) = oneshot::channel();
         let _ = self.command_tx.send(SchedulerCommand::Shutdown { ack_tx });
-        drop(self.command_tx);
+        deregister_scheduler_sender(self.registry_id);
 
         let _ = ack_rx.await;
 
@@ -243,11 +254,15 @@ impl SttScheduler {
         governor: SttGovernorConfig,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let registry_id = NEXT_SCHEDULER_ID.fetch_add(1, Ordering::Relaxed) + 1;
         SCHEDULER_REGISTRY
             .get_or_init(|| StdMutex::new(Vec::new()))
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(command_tx.clone());
+            .push(SchedulerRegistration {
+                id: registry_id,
+                tx: command_tx.clone(),
+            });
         let worker_handle = tokio::spawn(scheduler_worker(
             command_rx,
             infer_fn,
@@ -255,10 +270,24 @@ impl SttScheduler {
             governor,
         ));
         Self {
+            registry_id,
             command_tx,
             worker_handle: Some(worker_handle),
             next_request_id: AtomicU64::new(0),
         }
+    }
+}
+
+impl Drop for SttScheduler {
+    fn drop(&mut self) {
+        deregister_scheduler_sender(self.registry_id);
+    }
+}
+
+fn deregister_scheduler_sender(registry_id: u64) {
+    if let Some(registry) = SCHEDULER_REGISTRY.get() {
+        let mut registrations = registry.lock().unwrap_or_else(|e| e.into_inner());
+        registrations.retain(|registration| registration.id != registry_id);
     }
 }
 
@@ -655,12 +684,13 @@ fn pop_next_request(
     refine_pending: &mut Option<SttRequest>,
     thermal_level: ThermalLevel,
 ) -> Option<SttRequest> {
+    if thermal_level == ThermalLevel::Critical {
+        return commit_queue.pop_front();
+    }
     if let Some(req) = live_queue.pop_front() {
         return Some(req);
     }
-    if thermal_level != ThermalLevel::Critical
-        && let Some(req) = commit_queue.pop_front()
-    {
+    if let Some(req) = commit_queue.pop_front() {
         return Some(req);
     }
     if matches!(thermal_level, ThermalLevel::Nominal | ThermalLevel::Fair) {
@@ -758,6 +788,19 @@ mod tests {
 
     fn passthrough_commit_prefilter(samples: &[f32], _sample_rate: u32) -> Vec<f32> {
         samples.to_vec()
+    }
+
+    fn scheduler_registry_contains(registry_id: u64) -> bool {
+        SCHEDULER_REGISTRY
+            .get()
+            .map(|registry| {
+                registry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .any(|registration| registration.id == registry_id)
+            })
+            .unwrap_or(false)
     }
 
     fn assert_duration_near(actual: Duration, expected: Duration) {
@@ -1219,7 +1262,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduler_critical_thermal_runs_only_latest_live() {
+    async fn scheduler_critical_thermal_runs_commit_and_throttles_live() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
         let started_ref = Arc::clone(&started);
         let infer = Arc::new(
@@ -1265,14 +1308,14 @@ mod tests {
             old_err.to_string().contains("superseded"),
             "unexpected old live error: {old_err}"
         );
-        assert_eq!(new_live.recv().await.expect("new live ok").text, "job-11");
+        assert_eq!(commit.recv().await.expect("commit ok").text, "job-2");
 
         let shutdown_task = tokio::spawn(async move { scheduler.shutdown().await });
         assert!(
-            commit
+            new_live
                 .recv()
                 .await
-                .expect_err("commit should remain paused until shutdown")
+                .expect_err("live should remain throttled until shutdown")
                 .to_string()
                 .contains(SHUTDOWN_ERR)
         );
@@ -1291,8 +1334,37 @@ mod tests {
 
         assert_eq!(
             started.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-            vec![11]
+            vec![2]
         );
+    }
+
+    #[tokio::test]
+    async fn scheduler_registry_deregisters_senders_on_drop() {
+        let mut dropped_ids = Vec::new();
+
+        for _ in 0..5 {
+            let scheduler = SttScheduler::with_infer_fn(Arc::new(
+                |_samples, _sample_rate, _language, _initial_prompt| Ok(RawTranscript::default()),
+            ));
+            let registry_id = scheduler.registry_id;
+            assert!(
+                scheduler_registry_contains(registry_id),
+                "scheduler sender should be registered after creation"
+            );
+            drop(scheduler);
+            assert!(
+                !scheduler_registry_contains(registry_id),
+                "scheduler sender should be deregistered on drop"
+            );
+            dropped_ids.push(registry_id);
+        }
+
+        let leaked = dropped_ids
+            .iter()
+            .filter(|id| scheduler_registry_contains(**id))
+            .count();
+        assert_eq!(dropped_ids.len(), 5, "expected create/drop proof count");
+        assert_eq!(leaked, 0, "dropped scheduler senders leaked in registry");
     }
 
     #[tokio::test]

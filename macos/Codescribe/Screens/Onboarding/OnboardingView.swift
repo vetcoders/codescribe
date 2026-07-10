@@ -151,6 +151,7 @@ struct OnboardingButton: View {
     }
 }
 
+#if DEBUG
 #Preview("Onboarding — Welcome") {
     OnboardingView(model: OnboardingViewModel(
         engine: MockOnboardingEngine(progress: 0),
@@ -225,3 +226,4 @@ struct OnboardingButton: View {
         .frame(width: 720, height: 620)
         .preferredColorScheme(.dark)
 }
+#endif

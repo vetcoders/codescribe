@@ -35,10 +35,7 @@ use tracing::warn;
 
 pub use config::VadConfig;
 pub use discriminator::{DISCRIMINATOR_WINDOW_MS, VadTimeline, classify_windows};
-pub use install::{
-    SILERO_VAD_FILE, SILERO_VAD_URL, ensure_downloaded_to_user_dir, user_model_path,
-    user_models_dir,
-};
+pub use install::{SILERO_VAD_FILE, user_model_path, user_models_dir};
 pub use silero_ort::{AccumulatingVad, Resampler, SileroVad, VAD_SAMPLE_RATE, default_model_path};
 
 /// Expected sample rate for VAD (Silero requires 16kHz)

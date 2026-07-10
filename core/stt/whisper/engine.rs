@@ -188,6 +188,60 @@ fn apply_requested_final_pass(
     }
 }
 
+fn apply_silero_filter_outcome(
+    raw: &RawTranscript,
+    filtered_text: String,
+    filtered_segments: Vec<crate::pipeline::contracts::TranscriptSegment>,
+    dropped_count: u32,
+) -> RawTranscript {
+    let mut filtered = raw.clone();
+    let should_preserve_raw_text = dropped_count == 0
+        && (is_text_equivalent(&filtered_text, &raw.text)
+            || is_strict_text_subset(&filtered_text, &raw.text));
+    filtered.text = if should_preserve_raw_text {
+        raw.text.clone()
+    } else {
+        filtered_text
+    };
+    filtered.segments = filtered_segments;
+    filtered
+}
+
+fn is_strict_text_subset(candidate: &str, full_text: &str) -> bool {
+    let candidate = normalize_transcript_text(candidate);
+    let full_text = normalize_transcript_text(full_text);
+    !candidate.is_empty() && candidate != full_text && full_text.contains(&candidate)
+}
+
+fn is_text_equivalent(candidate: &str, full_text: &str) -> bool {
+    let candidate = normalize_transcript_text(candidate);
+    let full_text = normalize_transcript_text(full_text);
+    !candidate.is_empty() && candidate == full_text
+}
+
+fn normalize_transcript_text(text: &str) -> String {
+    text.split_whitespace()
+        .filter_map(|token| {
+            let mut normalized = String::new();
+            for ch in token.chars() {
+                if ch.is_alphanumeric() {
+                    normalized.extend(ch.to_lowercase());
+                }
+            }
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
+    generated_tokens == 0
+}
+
 pub struct LocalWhisperEngine {
     model: Model,
     tokenizer: Tokenizer,
@@ -537,10 +591,10 @@ impl LocalWhisperEngine {
                 );
             }
 
-            let mut filtered = raw.clone();
-            filtered.text = outcome.text;
-            filtered.segments = outcome.segments;
-            (filtered, outcome.dropped_count)
+            let dropped_count = outcome.dropped_count;
+            let filtered =
+                apply_silero_filter_outcome(&raw, outcome.text, outcome.segments, dropped_count);
+            (filtered, dropped_count)
         };
 
         let (text, final_pass) = apply_requested_final_pass(&raw_for_final_pass, options);
@@ -1047,7 +1101,7 @@ impl LocalWhisperEngine {
             }
 
             // Avoid terminating immediately when nothing has been emitted yet
-            let suppress_tokens = all_tokens.len() < 16;
+            let suppress_tokens = should_suppress_decoder_control_tokens(all_tokens.len());
             if suppress_tokens {
                 if (eot_token as usize) < logits_vec.len() {
                     logits_vec[eot_token as usize] = f32::NEG_INFINITY;
@@ -1934,6 +1988,88 @@ mod dedup_tests {
         assert!(!should_drop_for_quality_gate(Some(-0.2), 3.0, &params));
         assert!(!should_drop_for_quality_gate(Some(-3.0), 1.4, &params));
         assert!(should_drop_for_quality_gate(Some(-3.0), 3.0, &params));
+    }
+
+    #[test]
+    fn silero_filter_preserves_raw_text_when_no_segments_were_dropped() {
+        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
+            text: "close chart".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.2,
+        }];
+        let raw = RawTranscript {
+            text: "Close chart, and add plan.".to_string(),
+            segments: segments.clone(),
+            ..Default::default()
+        };
+
+        let filtered = apply_silero_filter_outcome(&raw, "close chart".to_string(), segments, 0);
+
+        assert_eq!(filtered.text, raw.text);
+        assert_eq!(filtered.segments, raw.segments);
+    }
+
+    #[test]
+    fn silero_filter_preserves_raw_text_when_no_drop_only_case_or_punctuation_differs() {
+        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
+            text: "close chart and add plan".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.2,
+        }];
+        let raw = RawTranscript {
+            text: "Close chart, and add plan.".to_string(),
+            segments: segments.clone(),
+            ..Default::default()
+        };
+
+        let filtered =
+            apply_silero_filter_outcome(&raw, "close chart and add plan".to_string(), segments, 0);
+
+        assert_eq!(filtered.text, raw.text);
+        assert_eq!(filtered.segments, raw.segments);
+        assert!(!is_strict_text_subset(
+            "close chart and add plan",
+            "Close chart, and add plan."
+        ));
+    }
+
+    #[test]
+    fn silero_filter_uses_filtered_text_when_segments_were_dropped() {
+        let raw_segments = vec![
+            crate::pipeline::contracts::TranscriptSegment {
+                text: "close chart".to_string(),
+                start_ts: 0.0,
+                end_ts: 1.2,
+            },
+            crate::pipeline::contracts::TranscriptSegment {
+                text: "subscribe".to_string(),
+                start_ts: 1.2,
+                end_ts: 2.0,
+            },
+        ];
+        let filtered_segments = vec![raw_segments[0].clone()];
+        let raw = RawTranscript {
+            text: "Close chart, and subscribe.".to_string(),
+            segments: raw_segments,
+            ..Default::default()
+        };
+
+        let filtered = apply_silero_filter_outcome(
+            &raw,
+            "close chart".to_string(),
+            filtered_segments.clone(),
+            1,
+        );
+
+        assert_eq!(filtered.text, "close chart");
+        assert_eq!(filtered.segments, filtered_segments);
+    }
+
+    #[test]
+    fn decoder_control_tokens_are_only_suppressed_before_first_token() {
+        assert!(should_suppress_decoder_control_tokens(0));
+        assert!(!should_suppress_decoder_control_tokens(1));
+        assert!(!should_suppress_decoder_control_tokens(15));
     }
 
     #[test]

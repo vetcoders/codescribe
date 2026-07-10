@@ -71,7 +71,11 @@ final class RealComposerDictation: ComposerDictating {
             }
             // Register a fresh listener (held strongly here) before starting; the
             // bridge rejects `startRecording` without one.
-            let listener = ComposerDictationListener(store: store)
+            let listener = ComposerDictationListener(store: store) { [weak self] message in
+                Task { @MainActor [weak self] in
+                    self?.handleEngineError(message: message)
+                }
+            }
             self.listener = listener
             dictation.setListener(listener: listener)
             do {
@@ -116,6 +120,17 @@ final class RealComposerDictation: ComposerDictating {
         }
     }
 
+    private func handleEngineError(message: String) {
+        dictationLog.error("composer dictation engine error: \(message, privacy: .public)")
+        guard let store else { return }
+        guard transitioning || store.dictationPhase == .preparing || store.dictationPhase == .recording else { return }
+
+        transitioning = false
+        listener = nil
+        store.dictationBlocked = false
+        store.reportDictationFailure("Dictation stopped: \(message)")
+    }
+
     /// Check (and, if undetermined, request) microphone access. The request wrapper
     /// blocks on the system prompt, so it runs off the main actor.
     private static func ensureMicPermission() async -> Bool {
@@ -130,12 +145,14 @@ final class RealComposerDictation: ComposerDictating {
 /// final transcript from `stopRecording()` before mutating the draft.
 final class ComposerDictationListener: CsTranscriptionListener, @unchecked Sendable {
     private weak var store: AgentChatStore?
+    private let onError: (String) -> Void
     private let lock = NSLock()
     private var committedSegments: [(utteranceId: UInt64, text: String)] = []
     private var activePreview = ""
 
-    init(store: AgentChatStore) {
+    init(store: AgentChatStore, onError: @escaping (String) -> Void) {
         self.store = store
+        self.onError = onError
     }
 
     func onRecordingPreparing() {}
@@ -171,7 +188,7 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
         dictationLog.info("composer dictation: no speech (\(reason, privacy: .public))")
     }
     func onError(message: String) {
-        dictationLog.error("composer dictation engine warning: \(message, privacy: .public)")
+        onError(message)
     }
 
     private func publishPreview(_ update: () -> Void) {

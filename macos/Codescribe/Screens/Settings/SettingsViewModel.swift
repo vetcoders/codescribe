@@ -24,16 +24,25 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
 /// One-shot deep-link target for the Settings window. A surface outside Settings
 /// (e.g. the onboarding wizard routing the user to MCP setup) sets this before
-/// opening the window; `SettingsView` consumes it once on appear and navigates to
-/// the requested section. Nil means "open on the last/default section".
+/// opening or focusing the window; `SettingsView` consumes it once on appear and
+/// whenever an already-open window receives a new target. Nil means "open on the
+/// last/default section".
 @MainActor
 enum SettingsDeepLink {
-    static var pendingSection: SettingsSection?
+    static let pendingSectionDidChange = Notification.Name("codescribe.settingsDeepLink.pendingSectionDidChange")
+
+    static var pendingSection: SettingsSection? {
+        didSet {
+            guard pendingSection != nil else { return }
+            NotificationCenter.default.post(name: pendingSectionDidChange, object: nil)
+        }
+    }
 
     /// Take the pending target (if any), clearing it so a later open is unaffected.
     static func consume() -> SettingsSection? {
-        defer { pendingSection = nil }
-        return pendingSection
+        guard let target = pendingSection else { return nil }
+        pendingSection = nil
+        return target
     }
 }
 

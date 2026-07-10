@@ -84,8 +84,10 @@ struct WaveformView: View {
     }
 }
 
+#if DEBUG
 #Preview("Waveform — active") {
     WaveformView(active: true)
         .padding(40)
         .background(CSColor.glassUnder)
 }
+#endif
