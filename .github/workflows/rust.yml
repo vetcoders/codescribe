@@ -24,7 +24,7 @@ env:
 jobs:
   format:
     name: Format Check
-    runs-on: self-hosted
+    runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -37,7 +37,7 @@ jobs:
 
   quality:
     name: Clippy + Tests
-    runs-on: self-hosted
+    runs-on: [self-hosted, macOS]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
