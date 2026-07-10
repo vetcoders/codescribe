@@ -200,20 +200,35 @@ fn transcribe_via_bridge(
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
         .context("Apple STT bridge transcribe failed")?;
 
+    Ok(raw_transcript_from_bridge_response(response))
+}
+
+fn raw_transcript_from_bridge_response(response: BridgeResponse) -> RawTranscript {
     let segments = response
         .segments
         .into_iter()
-        .map(|seg| TranscriptSegment {
-            text: seg.text,
-            start_ts: seg.start_ts,
-            end_ts: seg.end_ts,
-        })
+        .filter_map(bridge_segment_to_transcript_segment)
         .collect();
-
-    Ok(RawTranscript {
+    RawTranscript {
         text: response.text.trim().to_string(),
         segments,
         ..Default::default()
+    }
+}
+
+fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<TranscriptSegment> {
+    let text = seg.text.trim().to_string();
+    if text.is_empty()
+        || !seg.start_ts.is_finite()
+        || !seg.end_ts.is_finite()
+        || seg.end_ts < seg.start_ts
+    {
+        return None;
+    }
+    Some(TranscriptSegment {
+        text,
+        start_ts: seg.start_ts,
+        end_ts: seg.end_ts,
     })
 }
 
@@ -746,5 +761,54 @@ mod tests {
         assert_eq!(parse_bool_flag("no"), Some(false));
         assert_eq!(parse_bool_flag("0"), Some(false));
         assert_eq!(parse_bool_flag("maybe"), None);
+    }
+
+    #[test]
+    fn bridge_response_segments_flow_to_raw_transcript_and_silero_tail_drop() {
+        let response: BridgeResponse = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "status": "ok",
+                "text": "To jest początek Dziękuję za uwagę",
+                "segments": [
+                    {"text": "To jest początek", "start_ts": 0.0, "end_ts": 0.4},
+                    {"text": "Dziękuję za uwagę", "start_ts": 2.0, "end_ts": 2.4}
+                ]
+            }"#,
+        )
+        .expect("fixture bridge response must parse");
+
+        let raw = raw_transcript_from_bridge_response(response);
+
+        assert_eq!(raw.segments.len(), 2);
+        assert!(
+            raw.segments
+                .windows(2)
+                .all(|pair| pair[0].end_ts <= pair[1].start_ts),
+            "Apple bridge segments must preserve a monotonic timeline"
+        );
+
+        let timeline = crate::vad::discriminator::VadTimeline {
+            classes: vec![
+                crate::pipeline::contracts::VadClass::Speech,
+                crate::pipeline::contracts::VadClass::Speech,
+                crate::pipeline::contracts::VadClass::TrailingSilence,
+                crate::pipeline::contracts::VadClass::TrailingSilence,
+                crate::pipeline::contracts::VadClass::TrailingSilence,
+            ],
+            window_sec: 0.5,
+        };
+        let vad_config = crate::vad::VadConfig {
+            tail_drop_enabled: true,
+            ..Default::default()
+        };
+        let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
+            &raw.segments,
+            &timeline,
+            &vad_config,
+        );
+
+        assert_eq!(outcome.dropped_count, 1);
+        assert_eq!(outcome.text, "To jest początek");
     }
 }
