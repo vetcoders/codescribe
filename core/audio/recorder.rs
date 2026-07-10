@@ -181,9 +181,9 @@ impl Default for RecorderConfig {
             channels: CHANNELS,
             speech_threshold: vad_cfg.threshold.clamp(0.1, 0.9),
             hang_sec: vad_cfg.max_silence_duration_sec.clamp(0.1, 10.0),
-            auto_silence: std::env::var("AUTO_SILENCE")
-                .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-                .unwrap_or(false),
+            auto_silence: auto_silence_from_env_value(
+                std::env::var("AUTO_SILENCE").ok().as_deref(),
+            ),
             block_size: BLOCK_SIZE,
         }
     }
@@ -753,6 +753,12 @@ fn streaming_buffer_cap_samples(sample_rate: u32) -> usize {
     (sample_rate as usize).saturating_mul(STREAMING_BUFFER_CAP_SECONDS)
 }
 
+fn auto_silence_from_env_value(value: Option<&str>) -> bool {
+    value
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(false)
+}
+
 fn should_invoke_vad_stop_callback(auto_silence: bool, callback_registered: bool) -> bool {
     auto_silence && callback_registered
 }
@@ -817,52 +823,39 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 
-    struct EnvGuard {
-        key: &'static str,
-        prev: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn unset(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: tests are serialized and intentionally mutate process env.
-            unsafe { std::env::remove_var(key) };
-            Self { key, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(prev) = &self.prev {
-                // SAFETY: tests are serialized and intentionally mutate process env.
-                unsafe { std::env::set_var(self.key, prev) };
-            } else {
-                // SAFETY: tests are serialized and intentionally mutate process env.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
-
     #[test]
-    #[serial]
     fn test_recorder_config_default() {
-        let _auto_silence = EnvGuard::unset("AUTO_SILENCE");
         let config = RecorderConfig::default();
 
         assert_eq!(SAMPLE_RATE, 16000);
         assert_eq!(CHANNELS, 1);
         assert!(
-            !config.auto_silence,
-            "RecorderConfig default should match production paths: manual stop unless explicitly enabled"
-        );
-        assert!(
             (config.hang_sec - vad::config::SILERO_DEFAULT_MAX_SILENCE_SEC).abs() < f32::EPSILON,
             "RecorderConfig hang_sec should follow vad::config::SILERO_DEFAULT_MAX_SILENCE_SEC"
         );
+    }
+
+    #[test]
+    fn auto_silence_env_parser_defaults_off_and_honors_opt_in() {
+        assert!(
+            !auto_silence_from_env_value(None),
+            "AUTO_SILENCE absent means manual stop unless explicitly enabled"
+        );
+        for disabled in ["0", "false", "no", "off", "OFF"] {
+            assert!(
+                !auto_silence_from_env_value(Some(disabled)),
+                "{disabled} should disable auto-silence"
+            );
+        }
+        for enabled in ["1", "true", "yes", "on", "anything-else"] {
+            assert!(
+                auto_silence_from_env_value(Some(enabled)),
+                "{enabled} should enable auto-silence"
+            );
+        }
     }
 
     #[test]
