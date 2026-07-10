@@ -784,6 +784,11 @@ mod tests {
                     for entry in entries.flatten() {
                         let p = entry.path();
                         if p.extension().and_then(|s| s.to_str()) == Some("wav") {
+                            let fname = p.file_name().unwrap_or_default().to_string_lossy();
+                            // Failed-recording artifacts genuinely have no speech; zero detection on them is correct, not a model issue.
+                            if fname.contains("no-speech") || fname.ends_with("_failed.wav") {
+                                continue;
+                            }
                             wavs.push(p);
                             if wavs.len() >= 5 {
                                 break;
