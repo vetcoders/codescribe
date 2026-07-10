@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 // Settings window: NavigationSplitView with the 212px section rail (Creator · Keys
@@ -28,12 +29,16 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             model.refresh()
-            // Honour a one-shot deep-link (e.g. onboarding routing to MCP setup)
-            // so the window lands on the requested section instead of the default.
-            if let target = SettingsDeepLink.consume() {
-                model.select(target)
-            }
+            consumePendingDeepLink()
         }
+        .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange)) { _ in
+            consumePendingDeepLink()
+        }
+    }
+
+    private func consumePendingDeepLink() {
+        guard let target = SettingsDeepLink.consume() else { return }
+        model.select(target)
     }
 
     @ViewBuilder
