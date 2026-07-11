@@ -290,7 +290,8 @@ extension CsApiKeyProbeResult {
             status: account == "STT_API_KEY" ? .unsupported : .ok,
             message: account == "STT_API_KEY"
                 ? "no cheap liveness probe is available for this STT key"
-                : "key accepted and quota available"
+                : "key accepted and quota available",
+            probedEndpoint: nil
         )
     }
 }

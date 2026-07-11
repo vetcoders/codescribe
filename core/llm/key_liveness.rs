@@ -35,6 +35,7 @@ pub struct ApiKeyLivenessResult {
     pub account: String,
     pub status: ApiKeyLivenessStatus,
     pub message: String,
+    pub probed_endpoint: Option<String>,
 }
 
 impl ApiKeyLivenessResult {
@@ -43,7 +44,13 @@ impl ApiKeyLivenessResult {
             account: account.to_string(),
             status,
             message: message.into(),
+            probed_endpoint: None,
         }
+    }
+
+    fn with_probed_endpoint(mut self, endpoint: String) -> Self {
+        self.probed_endpoint = Some(endpoint);
+        self
     }
 }
 
@@ -154,14 +161,14 @@ fn probe_openai_key(
     });
 
     let response = client
-        .post(endpoint)
+        .post(&endpoint)
         .bearer_auth(api_key)
         .header("x-api-key", api_key)
         .header("Content-Type", "application/json")
         .json(&request)
         .send();
 
-    response_result(account, response)
+    response_result(account, endpoint, response)
 }
 
 fn probe_anthropic_key(client: &Client, account: &str, api_key: &str) -> ApiKeyLivenessResult {
@@ -181,33 +188,34 @@ fn probe_anthropic_key(client: &Client, account: &str, api_key: &str) -> ApiKeyL
     });
 
     let response = client
-        .post(endpoint)
+        .post(&endpoint)
         .header("x-api-key", api_key)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("Content-Type", "application/json")
         .json(&request)
         .send();
 
-    response_result(account, response)
+    response_result(account, endpoint, response)
 }
 
 fn probe_github_token(client: &Client, account: &str, api_key: &str) -> ApiKeyLivenessResult {
     let endpoint = env_non_empty("CODESCRIBE_GITHUB_PROBE_ENDPOINT")
         .unwrap_or_else(|| "https://api.github.com/user".to_string());
     let response = client
-        .get(endpoint)
+        .get(&endpoint)
         .bearer_auth(api_key)
         .header("User-Agent", "Codescribe API key liveness probe")
         .send();
 
-    response_result(account, response)
+    response_result(account, endpoint, response)
 }
 
 fn response_result(
     account: &str,
+    probed_endpoint: String,
     response: Result<Response, reqwest::Error>,
 ) -> ApiKeyLivenessResult {
-    match response {
+    let result = match response {
         Ok(response) => {
             let status = response.status();
             let body = response.text().unwrap_or_default();
@@ -219,7 +227,8 @@ fn response_result(
             ApiKeyLivenessStatus::Network,
             format!("network error: {error}"),
         ),
-    }
+    };
+    result.with_probed_endpoint(probed_endpoint)
 }
 
 fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
@@ -273,6 +282,67 @@ fn env_non_empty(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn openai_probe_reports_the_normalized_endpoint_it_called() {
+        let data_dir = TempDir::new().expect("isolated data dir");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe server");
+        let address = listener.local_addr().expect("probe server address");
+        let base_endpoint = format!("http://{address}");
+        let expected_endpoint = format!("{base_endpoint}/v1/responses");
+
+        let _data_dir = EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_string_lossy().as_ref(),
+        );
+        let _shared_endpoint = EnvGuard::remove("LLM_ENDPOINT");
+        let _assistive_endpoint = EnvGuard::set("LLM_ASSISTIVE_ENDPOINT", &base_endpoint);
+        let _assistive_model = EnvGuard::set("LLM_ASSISTIVE_MODEL", "gpt-probe");
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept probe request");
+            let mut buffer = [0_u8; 4096];
+            let bytes_read = stream.read(&mut buffer).expect("read probe request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .expect("write probe response");
+            String::from_utf8_lossy(&buffer[..bytes_read])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        });
+
+        let client = Client::builder()
+            .timeout(PROBE_TIMEOUT)
+            .connect_timeout(PROBE_TIMEOUT)
+            .build()
+            .expect("build probe client");
+        let result = probe_openai_key(
+            &client,
+            &Config::default(),
+            "LLM_ASSISTIVE_API_KEY",
+            "test-key",
+        );
+
+        assert_eq!(result.status, ApiKeyLivenessStatus::Invalid);
+        assert_eq!(
+            result.probed_endpoint.as_deref(),
+            Some(expected_endpoint.as_str())
+        );
+        assert_eq!(
+            server.join().expect("probe server thread"),
+            "POST /v1/responses HTTP/1.1"
+        );
+    }
 
     #[test]
     fn classifies_success_as_ok() {
@@ -370,5 +440,38 @@ mod tests {
             classify_probe_response(StatusCode::BAD_GATEWAY, "upstream down"),
             ApiKeyLivenessStatus::Network
         );
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: process-env tests in this module are serialized.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: process-env tests in this module are serialized.
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: process-env tests in this module are serialized.
+            unsafe {
+                match self.previous.as_deref() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 }

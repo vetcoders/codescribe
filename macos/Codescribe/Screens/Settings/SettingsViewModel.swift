@@ -464,6 +464,7 @@ final class SettingsViewModel: ObservableObject {
             settings.llmEndpoint = trimmed.isEmpty ? nil : trimmed
         }
         persist(lane.endpointKey, trimmed)
+        refreshAgentStatus()
         if lane == .assistive {
             refreshModelDiscoveries(providerIds: [assistiveProviderId, "openai-responses"])
         }
@@ -660,6 +661,7 @@ final class SettingsViewModel: ObservableObject {
         // Anthropic). Re-anchor to the new provider's first discovered model, or
         // clear it so the provider default applies.
         setAssistiveModel(discoveredModels.first?.id ?? "")
+        refreshAgentStatus()
     }
 
     func setAssistiveModel(_ id: String) {
@@ -678,6 +680,7 @@ final class SettingsViewModel: ObservableObject {
             if account == selectedProvider?.apiKeyAccount {
                 refreshAssistiveModels()
             }
+            refreshAgentStatus()
         } catch {
             lastError = String(describing: error)
         }
@@ -693,6 +696,7 @@ final class SettingsViewModel: ObservableObject {
             if account == selectedProvider?.apiKeyAccount {
                 refreshAssistiveModels()
             }
+            refreshAgentStatus()
         } catch {
             lastError = String(describing: error)
         }
@@ -722,7 +726,8 @@ final class SettingsViewModel: ObservableObject {
                     self.keyProbeResults[account] = CsApiKeyProbeResult(
                         account: account,
                         status: .network,
-                        message: String(describing: error)
+                        message: String(describing: error),
+                        probedEndpoint: nil
                     )
                     self.lastError = String(describing: error)
                 }

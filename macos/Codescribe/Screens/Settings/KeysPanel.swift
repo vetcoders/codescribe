@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 // Keys panel: write-only API-key management. Secrets are entered through a
@@ -359,14 +360,20 @@ private struct KeyProbeChip: View {
     let result: CsApiKeyProbeResult
 
     private var label: String {
+        let verdict: String
         switch result.status {
-        case .ok: return "Key OK"
-        case .invalid: return "Invalid key"
-        case .noQuota: return "No credits (check billing)"
-        case .network: return "Network error"
-        case .missing: return "Not set"
-        case .unsupported: return "Unsupported"
+        case .ok: verdict = "Key OK"
+        case .invalid: verdict = "Invalid key"
+        case .noQuota: verdict = "No credits (check billing)"
+        case .network: verdict = "Network error"
+        case .missing: verdict = "Not set"
+        case .unsupported: verdict = "Unsupported"
         }
+        guard let endpoint = result.probedEndpoint,
+              let host = URL(string: endpoint)?.host,
+              !host.isEmpty
+        else { return verdict }
+        return "\(verdict) @ \(host)"
     }
 
     private var tint: Color {
@@ -393,7 +400,11 @@ private struct KeyProbeChip: View {
                 Capsule()
                     .strokeBorder(tint.opacity(0.24), lineWidth: 1)
             )
-            .help(result.message)
+            .help(
+                result.probedEndpoint.map {
+                    "\(result.message)\nEndpoint: \($0)"
+                } ?? result.message
+            )
     }
 }
 

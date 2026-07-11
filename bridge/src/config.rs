@@ -153,6 +153,7 @@ pub struct CsApiKeyProbeResult {
     pub account: String,
     pub status: CsApiKeyProbeStatus,
     pub message: String,
+    pub probed_endpoint: Option<String>,
 }
 
 /// One selectable model for a provider (id sent on the wire + display label).
@@ -323,7 +324,11 @@ impl CodescribeConfig {
                 settings.llm_assistive_model.clone(),
                 &env_file,
             ),
-            llm_assistive_provider: effective_file_env_string("LLM_ASSISTIVE_PROVIDER", &env_file),
+            llm_assistive_provider: effective_settings_string(
+                "LLM_ASSISTIVE_PROVIDER",
+                settings.llm_assistive_provider.clone(),
+                &env_file,
+            ),
             formatting_level: effective_settings_string(
                 "FORMATTING_LEVEL",
                 settings.formatting_level.clone(),
@@ -827,10 +832,6 @@ fn effective_env_string(
         .or_else(|| env_string(key))
 }
 
-fn effective_file_env_string(key: &str, env_file: &HashMap<String, String>) -> Option<String> {
-    file_env_string(key, env_file).or_else(|| env_string(key))
-}
-
 fn effective_settings_parse<T>(
     key: &str,
     setting: Option<T>,
@@ -945,7 +946,28 @@ impl From<ApiKeyLivenessResult> for CsApiKeyProbeResult {
             account: result.account,
             status: result.status.into(),
             message: result.message,
+            probed_endpoint: result.probed_endpoint,
         }
+    }
+}
+
+#[cfg(test)]
+mod api_key_probe_tests {
+    use super::{ApiKeyLivenessResult, ApiKeyLivenessStatus, CsApiKeyProbeResult};
+
+    #[test]
+    fn bridge_probe_result_preserves_the_endpoint_used_by_core() {
+        let result = CsApiKeyProbeResult::from(ApiKeyLivenessResult {
+            account: "LLM_ASSISTIVE_API_KEY".to_string(),
+            status: ApiKeyLivenessStatus::Invalid,
+            message: "provider rejected this key".to_string(),
+            probed_endpoint: Some("https://api.libraxis.cloud/v1/responses".to_string()),
+        });
+
+        assert_eq!(
+            result.probed_endpoint.as_deref(),
+            Some("https://api.libraxis.cloud/v1/responses")
+        );
     }
 }
 
@@ -1041,8 +1063,9 @@ mod reset_tests {
 #[cfg(test)]
 mod settings_snapshot_tests {
     use super::CodescribeConfig;
-    use codescribe_core::config::UserSettings;
+    use codescribe_core::config::{Config, UserSettings};
     use serial_test::serial;
+    use std::ffi::{OsStr, OsString};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -1054,6 +1077,54 @@ mod settings_snapshot_tests {
             "cs_settings_snapshot_{}_{tag}_{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    #[serial]
+    fn assistive_provider_ui_write_is_promoted_to_settings_json() {
+        let root = scratch("assistive_provider");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _provider = EnvGuard::remove("LLM_ASSISTIVE_PROVIDER");
+
+        let config = CodescribeConfig::new();
+        config
+            .update_config(
+                "LLM_ASSISTIVE_PROVIDER".to_string(),
+                "anthropic-messages".to_string(),
+            )
+            .expect("persist provider through the UI bridge");
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(UserSettings::settings_path())
+                .expect("read promoted settings.json"),
+        )
+        .expect("parse promoted settings.json");
+        assert_eq!(
+            persisted
+                .get("speech")
+                .and_then(|value| value.get("assistive"))
+                .and_then(|value| value.get("provider"))
+                .and_then(serde_json::Value::as_str),
+            Some("anthropic-messages")
+        );
+
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let env = Config::parse_env_file(&env_path).expect("parse optional .env");
+            assert!(
+                !env.contains_key("LLM_ASSISTIVE_PROVIDER"),
+                "promoted provider must not be written to .env"
+            );
+        }
+        assert_eq!(
+            config.load_settings().llm_assistive_provider.as_deref(),
+            Some("anthropic-messages")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1091,5 +1162,38 @@ mod settings_snapshot_tests {
             }
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: this module serializes every process-env test.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: this module serializes every process-env test.
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: this module serializes every process-env test.
+            unsafe {
+                match self.previous.as_ref() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 }
