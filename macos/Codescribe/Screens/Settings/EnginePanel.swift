@@ -104,12 +104,14 @@ struct EnginePanel: View {
             RuntimeRow(key: "AI formatting", value: model.formattingDescription,
                        tint: false, trailing: .none)
             divider
-            RuntimeRow(key: "LLM model", value: model.llmModelDescription,
-                       tint: true, mono: true, trailing: .none)
-            divider
-            RuntimeRow(key: "LLM endpoint", value: model.llmEndpointDescription,
-                       tint: false, mono: true, trailing: .none)
-            divider
+            ForEach(LLMLane.allCases) { lane in
+                RuntimeRow(key: "\(lane.title) endpoint", value: model.resolvedLLMEndpoint(for: lane),
+                           tint: false, mono: true, trailing: .none)
+                divider
+                RuntimeRow(key: "\(lane.title) model", value: model.resolvedLLMModel(for: lane),
+                           tint: true, mono: true, trailing: .none)
+                divider
+            }
             RuntimeRow(key: "API keys", value: model.apiKeysDescription,
                        tint: true,
                        trailing: model.apiKeysStored ? .text("secure", CSColor.oliveLight) : .text("missing", CSColor.amber))
@@ -215,42 +217,26 @@ private struct LLMLaneEditor: View {
     }
 
     private var endpointPlaceholder: String {
-        let endpoint = model.llmEndpoint(for: lane)
-        return endpoint.isEmpty ? "Use resolved default" : endpoint
+        model.resolvedLLMEndpoint(for: lane)
     }
 
     private var modelPlaceholder: String {
-        let id = model.llmModel(for: lane)
-        return id.isEmpty ? "Use provider default" : id
+        model.resolvedLLMModel(for: lane)
     }
 
     private var currentModelLabel: String {
-        let id = model.llmModel(for: lane)
-        guard !id.isEmpty else { return "Choose a model" }
+        let id = model.resolvedLLMModel(for: lane)
         return modelOptions.first { $0.id == id }?.displayName ?? id
     }
 
-    /// Resolve the endpoint the same way the current lane contract does: a blank
-    /// lane override inherits the shared Main endpoint, then the OpenAI default.
-    private func normalizedEndpoint(for targetLane: LLMLane) -> String {
-        let explicit = model.llmEndpoint(for: targetLane)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let shared = model.llmEndpoint(for: .main)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolved = explicit.isEmpty
-            ? (shared.isEmpty ? "https://api.openai.com/v1/responses" : shared)
-            : explicit
-        return resolved.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    }
-
-    private var resolvedLaneEndpoint: String { normalizedEndpoint(for: lane) }
+    private var resolvedLaneEndpoint: String { model.resolvedLLMEndpoint(for: lane) }
 
     /// The bridge currently discovers OpenAI models through the Assistive lane's
     /// endpoint. Formatting/Main may consume that catalog only when their own
     /// resolved endpoint is identical; otherwise the catalog belongs elsewhere.
     private var discoveryMatchesLaneEndpoint: Bool {
         lane == .assistive
-            || resolvedLaneEndpoint == normalizedEndpoint(for: .assistive)
+            || resolvedLaneEndpoint == model.resolvedLLMEndpoint(for: .assistive)
     }
 
     /// Formatting/main share the current OpenAI Responses discovery contract.
@@ -388,7 +374,7 @@ private struct LLMLaneEditor: View {
                                 Button {
                                     model.setLLMModel(option.id, for: lane)
                                 } label: {
-                                    if option.id == model.llmModel(for: lane) {
+                                    if option.id == model.resolvedLLMModel(for: lane) {
                                         Label(option.displayName, systemImage: "checkmark")
                                     } else {
                                         Text(option.displayName)

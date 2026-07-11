@@ -419,15 +419,63 @@ final class SettingsViewModel: ObservableObject {
                              : (settings.sttEndpoint ?? "cloud default")
     }
 
-    var llmModelDescription: String { settings.llmModel ?? "default" }
-    var llmEndpointDescription: String { settings.llmEndpoint ?? "default" }
-
     func llmEndpoint(for lane: LLMLane) -> String {
         switch lane {
         case .assistive: return settings.llmAssistiveEndpoint ?? ""
         case .formatting: return settings.llmFormattingEndpoint ?? ""
         case .main: return settings.llmEndpoint ?? ""
         }
+    }
+
+    /// Effective endpoint used by each lane after applying provider and shared
+    /// fallbacks. OpenAI-compatible endpoints are normalized to Responses API
+    /// shape, matching `core/llm/lane_truth.rs`.
+    func resolvedLLMEndpoint(for lane: LLMLane) -> String {
+        if lane == .assistive, assistiveProviderId == "anthropic-messages" {
+            return "https://api.anthropic.com/v1/messages"
+        }
+
+        let laneValue = llmEndpoint(for: lane)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sharedValue = llmEndpoint(for: .main)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = !laneValue.isEmpty
+            ? laneValue
+            : (!sharedValue.isEmpty
+                ? sharedValue
+                : "https://api.openai.com/v1/responses")
+
+        var base = resolved.trimmingCharacters(
+            in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "/"))
+        )
+        for suffix in ["/v1/responses", "/v1/chat/completions", "/v1/completions"]
+        where base.hasSuffix(suffix) {
+            base.removeLast(suffix.count)
+            return base + "/v1/responses"
+        }
+        if base.hasSuffix("/v1") {
+            base.removeLast("/v1".count)
+        }
+        return base + "/v1/responses"
+    }
+
+    /// Effective wire model for each lane. Claude ids never leak onto an
+    /// OpenAI Responses lane, while the Anthropic assistive lane keeps its own
+    /// provider default, matching the canonical lane resolver.
+    func resolvedLLMModel(for lane: LLMLane) -> String {
+        let laneValue = llmModel(for: lane)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if lane == .assistive, assistiveProviderId == "anthropic-messages" {
+            return laneValue.hasPrefix("claude") ? laneValue : "claude-opus-4-8"
+        }
+
+        let sharedValue = llmModel(for: .main)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for candidate in [laneValue, sharedValue]
+        where !candidate.isEmpty && !candidate.hasPrefix("claude") {
+            return candidate
+        }
+        return lane == .assistive ? "gpt-5.5" : "gpt-4.1"
     }
 
     func llmModel(for lane: LLMLane) -> String {
@@ -451,8 +499,8 @@ final class SettingsViewModel: ObservableObject {
     }
 
     /// Persist an endpoint override for one LLM lane. Whitespace-only input is
-    /// written as an empty promoted setting; the bridge filters that value on
-    /// reload, revealing the next resolved fallback in the runtime snapshot.
+    /// the reset signal: the core removes the optional JSON path so the next
+    /// resolved fallback becomes effective immediately.
     func setLLMEndpoint(_ value: String, for lane: LLMLane) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         switch lane {

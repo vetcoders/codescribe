@@ -727,6 +727,39 @@ impl Config {
 
         if is_regular {
             let mut settings = super::settings::UserSettings::load();
+            if value.trim().is_empty() {
+                let unset_llm_override = match key {
+                    "LLM_ENDPOINT" => {
+                        settings.llm_endpoint = None;
+                        true
+                    }
+                    "LLM_MODEL" => {
+                        settings.llm_model = None;
+                        true
+                    }
+                    "LLM_ASSISTIVE_ENDPOINT" => {
+                        settings.llm_assistive_endpoint = None;
+                        true
+                    }
+                    "LLM_ASSISTIVE_MODEL" => {
+                        settings.llm_assistive_model = None;
+                        true
+                    }
+                    "LLM_FORMATTING_ENDPOINT" => {
+                        settings.llm_formatting_endpoint = None;
+                        true
+                    }
+                    "LLM_FORMATTING_MODEL" => {
+                        settings.llm_formatting_model = None;
+                        true
+                    }
+                    _ => false,
+                };
+                if unset_llm_override {
+                    settings.save()?;
+                    return Ok(());
+                }
+            }
             // Route to appropriate setter based on value type
             match key {
                 "HOLD_START_DELAY_MS"
@@ -1273,6 +1306,56 @@ mod tests {
         assert_eq!(
             UserSettings::load().llm_model.as_deref(),
             Some("runtime-model")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn empty_llm_override_unsets_json_path_and_restores_resolved_fallback() {
+        let _tmp = setup_isolated_data_dir();
+        let _lane_endpoint = TestEnvGuard::unset("LLM_ASSISTIVE_ENDPOINT");
+        let _shared_endpoint = TestEnvGuard::unset("LLM_ENDPOINT");
+        let config = Config::default();
+
+        config
+            .save_to_env(
+                "LLM_ASSISTIVE_ENDPOINT",
+                "https://api.libraxis.cloud/v1/responses",
+            )
+            .expect("set assistive endpoint override");
+
+        let set_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after set"),
+        )
+        .expect("parse settings after set");
+        assert_eq!(
+            set_json
+                .pointer("/speech/assistive/llm_endpoint")
+                .and_then(serde_json::Value::as_str),
+            Some("https://api.libraxis.cloud/v1/responses")
+        );
+
+        config
+            .save_to_env("LLM_ASSISTIVE_ENDPOINT", "")
+            .expect("reset assistive endpoint override");
+
+        let reset_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after reset"),
+        )
+        .expect("parse settings after reset");
+        assert!(
+            reset_json
+                .pointer("/speech/assistive/llm_endpoint")
+                .is_none(),
+            "reset must remove the override path, got {reset_json}"
+        );
+        assert_eq!(UserSettings::load().llm_assistive_endpoint, None);
+        assert_eq!(
+            crate::llm::lane_truth::endpoint(
+                crate::llm::provider::LlmMode::Assistive,
+                &Config::default(),
+            ),
+            crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT
         );
     }
 
