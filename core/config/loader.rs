@@ -546,6 +546,11 @@ impl Config {
         {
             Self::safe_set_env("LLM_ASSISTIVE_MODEL", v);
         }
+        if Self::config_runtime_env_var("LLM_ASSISTIVE_PROVIDER").is_err()
+            && let Some(ref v) = settings.llm_assistive_provider
+        {
+            Self::safe_set_env("LLM_ASSISTIVE_PROVIDER", v);
+        }
         // ── Promoted fields (previously .env only) ──
 
         // LLM formatting (not in Config struct, read from env at runtime)
@@ -818,6 +823,9 @@ impl Config {
                     }
                     "LLM_ASSISTIVE_MODEL" => {
                         settings_ref.llm_assistive_model = Some((*value).to_string())
+                    }
+                    "LLM_ASSISTIVE_PROVIDER" => {
+                        settings_ref.llm_assistive_provider = Some((*value).to_string())
                     }
                     "FORMATTING_LEVEL" => {
                         settings_ref.formatting_level = Some((*value).to_string())

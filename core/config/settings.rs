@@ -47,6 +47,8 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_assistive_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_dock_icon: Option<bool>,
@@ -251,6 +253,8 @@ struct AssistiveV2 {
     llm_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -358,6 +362,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LLM_MODEL",
     "LLM_ASSISTIVE_ENDPOINT",
     "LLM_ASSISTIVE_MODEL",
+    "LLM_ASSISTIVE_PROVIDER",
     "LLM_FORMATTING_ENDPOINT",
     "LLM_FORMATTING_MODEL",
     // Promoted from .env
@@ -434,6 +439,7 @@ impl UserSettings {
                 assistive: Some(AssistiveV2 {
                     llm_endpoint: self.llm_assistive_endpoint.clone(),
                     llm_model: self.llm_assistive_model.clone(),
+                    provider: self.llm_assistive_provider.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -541,6 +547,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.assistive.as_ref())
                 .and_then(|a| a.llm_model.clone()),
+            llm_assistive_provider: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.assistive.as_ref())
+                .and_then(|a| a.provider.clone()),
             chat_zoom: v2.ui.as_ref().and_then(|ui| ui.chat_zoom),
             show_dock_icon: v2.ui.as_ref().and_then(|ui| ui.show_dock_icon),
             transcription_overlay_enabled: v2
@@ -862,6 +873,7 @@ impl UserSettings {
             "LLM_MODEL" => self.llm_model = Some(value.to_owned()),
             "LLM_ASSISTIVE_ENDPOINT" => self.llm_assistive_endpoint = Some(value.to_owned()),
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
+            "LLM_ASSISTIVE_PROVIDER" => self.llm_assistive_provider = Some(value.to_owned()),
             "FORMATTING_LEVEL" => self.formatting_level = Some(value.to_owned()),
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
             "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
