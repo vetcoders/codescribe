@@ -5,7 +5,8 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
-use codescribe_core::llm::provider::{LlmMode, resolve_provider};
+use codescribe_core::llm::lane_truth;
+use codescribe_core::llm::provider::LlmMode;
 use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
 use tracing::{info, warn};
 
@@ -224,23 +225,26 @@ pub struct CoreReadiness {
     pub provider_label: String,
     /// Keychain/env account holding that provider's assistive key.
     pub key_env_key: String,
-    /// Whether that key is present (non-empty) in the process env.
+    /// Whether that key is present (non-empty) in env or Keychain.
     pub key_set: bool,
     /// Number of native (compiled-in) tools available to the agent.
     pub native_tool_count: usize,
 }
 
 /// Probe the core capability gate from live process state: the configured
-/// assistive provider ([`resolve_provider`]), whether its key is set, and the
-/// count of native tools. Cheap — an env read plus building an in-memory registry
-/// (no server spawning, no network). Callers that need Keychain-backed keys in
-/// env must load `Config` first (the bridge does this before probing).
+/// assistive provider ([`lane_truth::provider`]), whether its key is set, and
+/// the count of native tools. Cheap — local config/secret reads plus building an
+/// in-memory registry (no server spawning, no network).
 pub fn probe_core_readiness() -> CoreReadiness {
-    let provider = resolve_provider(LlmMode::Assistive);
+    probe_core_readiness_with_secret(lane_truth::secret)
+}
+
+fn probe_core_readiness_with_secret(
+    resolve_secret: impl FnOnce(&str) -> Option<String>,
+) -> CoreReadiness {
+    let provider = lane_truth::provider(LlmMode::Assistive);
     let key_env_key = provider.api_key_env_key().to_string();
-    let key_set = std::env::var(&key_env_key)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
+    let key_set = resolve_secret(&key_env_key).is_some();
 
     let mut registry = ToolRegistry::new();
     super::register_native_tools(&mut registry);
@@ -714,10 +718,11 @@ mod tests {
 
     use codescribe_core::agent::{ToolRegistry, ToolResultContent};
     use serde_json::json;
+    use serial_test::serial;
 
     use super::{
-        McpRowTone, probe_agentic_readiness_at, probe_mcp_status_at, public_tool_name,
-        register_mcp_tools_from_config_path,
+        McpRowTone, probe_agentic_readiness_at, probe_core_readiness_with_secret,
+        probe_mcp_status_at, public_tool_name, register_mcp_tools_from_config_path,
     };
 
     #[test]
@@ -906,6 +911,23 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn lane_truth_keychain_only_secret_sets_probe_core_readiness() {
+        let _provider = EnvGuard::remove("LLM_ASSISTIVE_PROVIDER");
+        let _key = EnvGuard::remove("LLM_ASSISTIVE_API_KEY");
+
+        let core = probe_core_readiness_with_secret(|account| {
+            (account == "LLM_ASSISTIVE_API_KEY").then(|| "keychain-only".to_string())
+        });
+
+        assert_eq!(core.key_env_key, "LLM_ASSISTIVE_API_KEY");
+        assert!(
+            core.key_set,
+            "a Keychain-only secret must satisfy readiness"
+        );
+    }
+
+    #[test]
     fn readiness_is_driven_by_core_gate_not_operator_tooling() {
         // Empty MCP config (no operator tooling at all) but a passing core gate:
         // the agent is READY. Operator tooling is optional context.
@@ -1068,5 +1090,34 @@ mod tests {
         let basic = probe_mcp_status_at(&path);
         assert_eq!(basic.summary_rows().len(), 1);
         assert_eq!(basic.summary_rows()[0].tone, McpRowTone::Neutral);
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: this process-env test is serialized with `serial`.
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(value) => {
+                    // SAFETY: this process-env test is serialized with `serial`.
+                    unsafe { std::env::set_var(self.key, value) };
+                }
+                None => {
+                    // SAFETY: this process-env test is serialized with `serial`.
+                    unsafe { std::env::remove_var(self.key) };
+                }
+            }
+        }
     }
 }

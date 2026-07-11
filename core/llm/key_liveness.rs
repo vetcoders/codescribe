@@ -11,11 +11,9 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
 use serde_json::json;
 
-use crate::config::keychain::{self, KEYCHAIN_ACCOUNTS};
-use crate::config::{
-    Config, DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
-    DEFAULT_OPENAI_RESPONSES_ENDPOINT,
-};
+use crate::config::Config;
+use crate::config::keychain::KEYCHAIN_ACCOUNTS;
+use crate::llm::lane_truth;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
@@ -144,8 +142,7 @@ fn probe_openai_key(
     api_key: &str,
 ) -> ApiKeyLivenessResult {
     let endpoint = openai_endpoint_for_account(config, account);
-    let endpoint = normalize_openai_responses_endpoint(&endpoint);
-    let model = openai_model_for_account(account);
+    let model = openai_model_for_account(config, account);
     let request = json!({
         "model": model,
         "input": [{
@@ -237,52 +234,15 @@ fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
 }
 
 fn account_secret(account: &str) -> Option<String> {
-    env_non_empty(account).or_else(|| {
-        keychain::load_key(account)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
+    lane_truth::secret(account)
 }
 
 fn openai_endpoint_for_account(config: &Config, account: &str) -> String {
-    let fallback = || {
-        env_non_empty("LLM_ENDPOINT")
-            .or_else(|| config.llm_endpoint.clone())
-            .unwrap_or_else(|| DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string())
-    };
-
-    match account {
-        "LLM_FORMATTING_API_KEY" => {
-            env_non_empty("LLM_FORMATTING_ENDPOINT").unwrap_or_else(fallback)
-        }
-        "LLM_ASSISTIVE_API_KEY" => env_non_empty("LLM_ASSISTIVE_ENDPOINT").unwrap_or_else(fallback),
-        _ => fallback(),
-    }
+    lane_truth::endpoint_for_account(config, account)
 }
 
-fn openai_model_for_account(account: &str) -> String {
-    let is_openai_model = |m: &String| !m.starts_with("claude");
-    match account {
-        "LLM_FORMATTING_API_KEY" => env_non_empty("LLM_FORMATTING_MODEL")
-            .filter(is_openai_model)
-            .or_else(|| env_non_empty("LLM_MODEL").filter(is_openai_model))
-            .unwrap_or_else(|| DEFAULT_FORMATTING_MODEL.to_string()),
-        "LLM_ASSISTIVE_API_KEY" => env_non_empty("LLM_ASSISTIVE_MODEL")
-            .filter(is_openai_model)
-            .or_else(|| env_non_empty("LLM_MODEL").filter(is_openai_model))
-            .unwrap_or_else(|| DEFAULT_ASSISTIVE_MODEL.to_string()),
-        _ => env_non_empty("LLM_MODEL")
-            .filter(is_openai_model)
-            .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
-    }
-}
-
-fn normalize_openai_responses_endpoint(endpoint: &str) -> String {
-    normalize_endpoint(
-        endpoint,
-        "/v1/responses",
-        &["/v1/responses", "/v1/chat/completions", "/v1/completions"],
-    )
+fn openai_model_for_account(config: &Config, account: &str) -> String {
+    lane_truth::model_for_account(config, account)
 }
 
 fn normalize_anthropic_messages_endpoint(endpoint: &str) -> String {

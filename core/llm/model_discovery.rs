@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::Config;
-use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
-use crate::llm::provider::ProviderKind;
+use crate::llm::lane_truth;
+use crate::llm::provider::{LlmMode, ProviderKind};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_FILE_NAME: &str = "model_discovery_cache.json";
@@ -165,8 +165,8 @@ struct AnthropicModel {
 
 /// Discover models for a provider using the already-supported config/key path.
 ///
-/// `Config::load()` is intentionally the first operation: it applies settings,
-/// optional `.env`, and Keychain population exactly like the provider runtime.
+/// `Config::load()` is intentionally the first operation: it provides the live
+/// settings snapshot consumed by `lane_truth` exactly like the provider runtime.
 /// Missing keys are hard `no_key` failures and do not fall back to stale cache;
 /// network/http/parse failures return last-good cache when available.
 pub fn discover_models(
@@ -174,7 +174,7 @@ pub fn discover_models(
 ) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
     let config = Config::load();
     let key_name = provider.api_key_env_key();
-    let api_key = env_non_empty(key_name).ok_or(ModelDiscoveryError::NoKey {
+    let api_key = lane_truth::secret(key_name).ok_or(ModelDiscoveryError::NoKey {
         provider,
         env_key: key_name,
     })?;
@@ -223,10 +223,7 @@ fn fetch_openai_models(
     api_key: &str,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
     let provider = ProviderKind::OpenAiResponses;
-    let endpoint = env_non_empty("LLM_ASSISTIVE_ENDPOINT")
-        .or_else(|| env_non_empty("LLM_ENDPOINT"))
-        .or_else(|| config.llm_endpoint.clone())
-        .unwrap_or_else(|| DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string());
+    let endpoint = lane_truth::endpoint(LlmMode::Assistive, config);
     let endpoint = openai_models_endpoint(&endpoint)?;
 
     let response = client
@@ -486,6 +483,7 @@ fn write_cache(
     })
 }
 
+#[cfg(test)]
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
