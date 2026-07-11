@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the CodeScribe SwiftUI app from the Rust `codescribe-ffi` bridge.
+# Build the Codescribe SwiftUI app from the Rust `codescribe-ffi` bridge.
 #
 # This is the single source of truth for the SwiftUI build pipeline. Before it
 # existed the steps below lived only in tribal memory / a reviewer's shell

@@ -20,8 +20,8 @@ use base64::Engine;
 const DEFAULT_PORT: u16 = 1455;
 const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>CodeScribe signed in</title></head>
-<body><h1>CodeScribe signed in</h1><p>You can close this window.</p></body>
+<head><meta charset="utf-8"><title>Codescribe signed in</title></head>
+<body><h1>Codescribe signed in</h1><p>You can close this window.</p></body>
 </html>"#;
 
 #[derive(Debug, Clone)]

@@ -43,7 +43,7 @@ targets:
         # Stable dev identity → own TCC/keychain slot across rebuilds.
         PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "CodeScribe Dev"
+        CODE_SIGN_IDENTITY: "Codescribe Dev"
         ENABLE_HARDENED_RUNTIME: NO
         SWIFT_VERSION: 5.0
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h

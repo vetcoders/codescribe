@@ -79,7 +79,7 @@ release-codescribe-embedded: release-codescribe
 # Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
 # `app-bindings` stops after xcodegen (no Xcode needed) for fast Rust-side iteration.
 app:
-	@echo "Building CodeScribe.app (SwiftUI, PROFILE=$(PROFILE))..."
+	@echo "Building Codescribe.app (SwiftUI, PROFILE=$(PROFILE))..."
 	@./scripts/build-app.sh $(PROFILE)
 
 app-bindings:

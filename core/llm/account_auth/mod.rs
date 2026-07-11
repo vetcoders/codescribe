@@ -1,6 +1,6 @@
 //! Provider-account authentication foundation for future "Sign in with ChatGPT".
 //!
-//! Tokens are stored as serialized JSON in the existing CodeScribe Keychain
+//! Tokens are stored as serialized JSON in the existing Codescribe Keychain
 //! bundle under a provider-specific account. No `auth.json` file is written.
 
 use std::fmt;
