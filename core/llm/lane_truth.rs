@@ -1,5 +1,7 @@
 //! Canonical truth resolution for LLM lane secrets, endpoints, and models.
 
+use std::str::FromStr;
+
 use crate::config::keychain;
 use crate::config::{
     Config, DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
@@ -80,10 +82,138 @@ fn model_with_settings(lane: LlmMode, _config: &Config, settings: &UserSettings)
         .unwrap_or_else(|| lane_default.to_string())
 }
 
-/// Keep provider identity owned by the existing provider resolver while giving
-/// readiness and discovery one shared import surface.
+/// Resolve the provider identity for a lane from the same persisted-settings
+/// truth as [`endpoint`] and [`model`]: a fresh settings value beats a stale
+/// bootstrap env, env stays the fallback, and the canonical resolver keeps
+/// ownership of parsing plus the protected OpenAI default.
 pub fn provider(lane: LlmMode) -> ProviderKind {
-    resolve_provider(lane)
+    provider_with_settings(lane, &UserSettings::load())
+}
+
+fn provider_with_settings(lane: LlmMode, settings: &UserSettings) -> ProviderKind {
+    let lane_setting = match lane {
+        // No persisted formatting-provider setting exists yet; env remains the
+        // only formatting-lane source.
+        LlmMode::Formatting => None,
+        LlmMode::Assistive => settings.llm_assistive_provider.clone(),
+    };
+    non_empty_option(lane_setting)
+        .and_then(|raw| ProviderKind::from_str(&raw).ok())
+        .unwrap_or_else(|| resolve_provider(lane))
+}
+
+/// Suggested key-optional OpenAI-compatible endpoint (the LibraxisAI public
+/// cloud) offered in guidance text when the assistive lane is unconfigured or
+/// pointed at a key-requiring cloud without a key. Guidance only — code never
+/// silently reroutes traffic here.
+pub const SUGGESTED_KEY_OPTIONAL_ENDPOINT: &str = "https://api.libraxis.cloud/v1";
+
+const DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
+
+/// Everything the agent send path needs to reach the assistive provider,
+/// resolved from the same fresh settings → env → Keychain hierarchy as the
+/// individual lane resolvers. `api_key: None` means "send without auth
+/// headers" — valid for key-optional (self-hosted / LAN) endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistiveLaneSnapshot {
+    pub provider: ProviderKind,
+    pub endpoint: String,
+    pub model: String,
+    pub api_key: Option<String>,
+}
+
+pub fn assistive_snapshot(config: &Config) -> AssistiveLaneSnapshot {
+    assistive_snapshot_with(config, &UserSettings::load(), keychain::load_key)
+}
+
+fn assistive_snapshot_with(
+    config: &Config,
+    settings: &UserSettings,
+    load_key: impl FnOnce(&str) -> Option<String>,
+) -> AssistiveLaneSnapshot {
+    let (provider, model) = assistive_identity_with(config, settings);
+    let key_account = provider.api_key_env_key();
+    AssistiveLaneSnapshot {
+        provider,
+        endpoint: match provider {
+            ProviderKind::OpenAiResponses => {
+                endpoint_with_settings(LlmMode::Assistive, config, settings)
+            }
+            ProviderKind::AnthropicMessages => env_non_empty("LLM_ANTHROPIC_ENDPOINT")
+                .unwrap_or_else(|| DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT.to_string()),
+        },
+        model,
+        api_key: secret_with_keychain(key_account, load_key),
+    }
+}
+
+/// Provider identity + wire model for the assistive lane WITHOUT touching the
+/// Keychain — safe for hot paths that only label metadata (thread persistence,
+/// the vision gate).
+pub fn assistive_identity(config: &Config) -> (ProviderKind, String) {
+    assistive_identity_with(config, &UserSettings::load())
+}
+
+fn assistive_identity_with(config: &Config, settings: &UserSettings) -> (ProviderKind, String) {
+    let provider = provider_with_settings(LlmMode::Assistive, settings);
+    let model = match provider {
+        ProviderKind::OpenAiResponses => model_with_settings(LlmMode::Assistive, config, settings),
+        ProviderKind::AnthropicMessages => {
+            let claude_model =
+                |candidate: String| candidate.starts_with("claude").then_some(candidate);
+            non_empty_option(settings.llm_assistive_model.clone())
+                .and_then(claude_model)
+                .or_else(|| env_non_empty("LLM_ASSISTIVE_MODEL").and_then(claude_model))
+                .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string())
+        }
+    };
+    (provider, model)
+}
+
+/// Ready snapshot of the assistive lane, or the user-facing reason it cannot
+/// reach a model. The `Err` string is actionable: it names the lane, the
+/// resolved endpoint, and the exact missing piece — never a generic
+/// "add an API key".
+pub fn assistive_availability(config: &Config) -> Result<AssistiveLaneSnapshot, String> {
+    availability_of(assistive_snapshot(config))
+}
+
+fn availability_of(snapshot: AssistiveLaneSnapshot) -> Result<AssistiveLaneSnapshot, String> {
+    if snapshot.api_key.is_some() {
+        return Ok(snapshot);
+    }
+    match snapshot.provider {
+        ProviderKind::OpenAiResponses if !endpoint_requires_api_key(&snapshot.endpoint) => {
+            Ok(snapshot)
+        }
+        ProviderKind::OpenAiResponses => Err(format!(
+            "The assistive lane points at {}, which requires an API key, and none is stored \
+             (Keychain account LLM_ASSISTIVE_API_KEY). Add a key in Settings, or switch the \
+             assistive endpoint in Settings → Engine to a key-optional server such as {}.",
+            snapshot.endpoint, SUGGESTED_KEY_OPTIONAL_ENDPOINT
+        )),
+        ProviderKind::AnthropicMessages => Err(format!(
+            "The assistive provider is Anthropic ({}), but no key is stored \
+             (Keychain account LLM_ANTHROPIC_API_KEY). Add an Anthropic key in Settings, or \
+             switch the assistive provider to an OpenAI-compatible endpoint such as {}.",
+            snapshot.endpoint, SUGGESTED_KEY_OPTIONAL_ENDPOINT
+        )),
+    }
+}
+
+/// Official cloud APIs reject unauthenticated requests outright; every other
+/// endpoint (self-hosted, LAN, Libraxis) may be key-optional and gets a clean
+/// unauthenticated request instead of a hard refusal at the availability gate.
+fn endpoint_requires_api_key(endpoint: &str) -> bool {
+    let host = endpoint
+        .split("://")
+        .nth(1)
+        .unwrap_or(endpoint)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or_default();
+    matches!(host, "api.openai.com" | "api.anthropic.com")
 }
 
 pub(crate) fn endpoint_for_account(config: &Config, account: &str) -> String {
@@ -158,6 +288,7 @@ mod tests {
     use crate::config::{Config, DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, UserSettings};
     use crate::llm::provider::{LlmMode, ProviderKind};
     use serial_test::serial;
+    use tempfile::TempDir;
 
     #[test]
     #[serial]
@@ -300,6 +431,167 @@ mod tests {
     #[serial]
     fn provider_delegates_to_the_canonical_provider_resolver() {
         let _provider = EnvGuard::set("LLM_ASSISTIVE_PROVIDER", "anthropic-messages");
+
+        assert_eq!(
+            provider_with_settings(LlmMode::Assistive, &UserSettings::default()),
+            ProviderKind::AnthropicMessages
+        );
+    }
+
+    /// Clear every env var the assistive-lane resolution consults, so the
+    /// availability tests below are hermetic on any host.
+    fn lane_env_guards() -> Vec<EnvGuard> {
+        vec![
+            EnvGuard::remove("LLM_ASSISTIVE_PROVIDER"),
+            EnvGuard::remove("LLM_ASSISTIVE_ENDPOINT"),
+            EnvGuard::remove("LLM_ASSISTIVE_MODEL"),
+            EnvGuard::remove("LLM_ENDPOINT"),
+            EnvGuard::remove("LLM_MODEL"),
+            EnvGuard::remove("LLM_ASSISTIVE_API_KEY"),
+            EnvGuard::remove("LLM_ANTHROPIC_API_KEY"),
+            EnvGuard::remove("LLM_ANTHROPIC_ENDPOINT"),
+        ]
+    }
+
+    #[test]
+    #[serial]
+    fn unconfigured_lane_is_unavailable_with_an_actionable_reason() {
+        let _env = lane_env_guards();
+
+        let snapshot =
+            assistive_snapshot_with(&Config::default(), &UserSettings::default(), |_| None);
+        let reason = availability_of(snapshot).expect_err("default lane needs a key");
+
+        assert!(
+            reason.contains(DEFAULT_OPENAI_RESPONSES_ENDPOINT),
+            "{reason}"
+        );
+        assert!(reason.contains("LLM_ASSISTIVE_API_KEY"), "{reason}");
+        assert!(reason.contains(SUGGESTED_KEY_OPTIONAL_ENDPOINT), "{reason}");
+    }
+
+    #[test]
+    #[serial]
+    fn key_optional_endpoint_is_available_without_any_api_key() {
+        let _env = lane_env_guards();
+        let settings = UserSettings {
+            llm_assistive_endpoint: Some("https://api.libraxis.cloud/v1".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |_| None);
+        let ready = availability_of(snapshot).expect("local-first lane must work keyless");
+
+        assert_eq!(ready.endpoint, "https://api.libraxis.cloud/v1/responses");
+        assert_eq!(ready.api_key, None);
+    }
+
+    #[test]
+    #[serial]
+    fn keychain_only_key_makes_the_official_endpoint_available() {
+        let _env = lane_env_guards();
+
+        let snapshot =
+            assistive_snapshot_with(&Config::default(), &UserSettings::default(), |account| {
+                (account == "LLM_ASSISTIVE_API_KEY").then(|| "kc-secret".to_string())
+            });
+        let ready = availability_of(snapshot).expect("keychain key alone must be enough");
+
+        assert_eq!(ready.api_key.as_deref(), Some("kc-secret"));
+        assert_eq!(ready.endpoint, DEFAULT_OPENAI_RESPONSES_ENDPOINT);
+    }
+
+    #[test]
+    #[serial]
+    fn anthropic_lane_without_its_key_names_the_anthropic_account() {
+        let _env = lane_env_guards();
+        let settings = UserSettings {
+            llm_assistive_provider: Some("anthropic-messages".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |_| None);
+        let reason = availability_of(snapshot).expect_err("anthropic lane requires its key");
+
+        assert!(reason.contains("LLM_ANTHROPIC_API_KEY"), "{reason}");
+        assert!(reason.contains("Anthropic"), "{reason}");
+    }
+
+    #[test]
+    #[serial]
+    fn fresh_settings_endpoint_flips_availability_without_a_restart() {
+        let _env = lane_env_guards();
+        // Stale bootstrap env points at the official cloud; no key anywhere.
+        let _stale = EnvGuard::set("LLM_ASSISTIVE_ENDPOINT", "https://api.openai.com/v1");
+
+        let before =
+            assistive_snapshot_with(&Config::default(), &UserSettings::default(), |_| None);
+        assert!(
+            availability_of(before).is_err(),
+            "official cloud without a key"
+        );
+
+        // The user saves a key-optional endpoint in Settings — the very next
+        // resolution must see it, no restart, env untouched.
+        let fresh = UserSettings {
+            llm_assistive_endpoint: Some("https://api.libraxis.cloud/v1".to_string()),
+            ..UserSettings::default()
+        };
+        let after = availability_of(assistive_snapshot_with(&Config::default(), &fresh, |_| {
+            None
+        }))
+        .expect("fresh settings must flip availability immediately");
+        assert_eq!(after.endpoint, "https://api.libraxis.cloud/v1/responses");
+    }
+
+    #[test]
+    #[serial]
+    fn anthropic_identity_uses_a_claude_model_and_openai_identity_never_does() {
+        let _env = lane_env_guards();
+
+        let anthropic = UserSettings {
+            llm_assistive_provider: Some("anthropic-messages".to_string()),
+            llm_assistive_model: Some("claude-opus-4-8".to_string()),
+            ..UserSettings::default()
+        };
+        assert_eq!(
+            assistive_identity_with(&Config::default(), &anthropic),
+            (
+                ProviderKind::AnthropicMessages,
+                "claude-opus-4-8".to_string()
+            )
+        );
+
+        // A leftover claude model id never leaks onto the Responses wire path.
+        let openai = UserSettings {
+            llm_assistive_model: Some("claude-opus-4-8".to_string()),
+            ..UserSettings::default()
+        };
+        assert_eq!(
+            assistive_identity_with(&Config::default(), &openai),
+            (
+                ProviderKind::OpenAiResponses,
+                DEFAULT_ASSISTIVE_MODEL.to_string()
+            )
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn persisted_assistive_provider_beats_a_stale_bootstrap_env_after_reload() {
+        let data_dir = TempDir::new().expect("isolated data dir");
+        let _data_dir = EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_string_lossy().as_ref(),
+        );
+        let _provider = EnvGuard::set("LLM_ASSISTIVE_PROVIDER", "openai-responses");
+
+        UserSettings {
+            llm_assistive_provider: Some("anthropic-messages".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist assistive provider");
 
         assert_eq!(
             provider(LlmMode::Assistive),

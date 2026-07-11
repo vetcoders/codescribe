@@ -764,6 +764,12 @@ async fn run_agent_stream(
 }
 
 fn apply_auth_headers(builder: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+    // Key-optional endpoints (self-hosted / LAN lanes) get a clean
+    // unauthenticated request instead of a bogus `Bearer ` header; a server
+    // that does require auth then answers with a readable 401.
+    if api_key.trim().is_empty() {
+        return builder;
+    }
     builder
         .header("Authorization", format!("Bearer {}", api_key))
         .header("x-api-key", api_key)
@@ -2068,6 +2074,20 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("secret")
         );
+    }
+
+    #[test]
+    fn apply_auth_headers_skips_auth_entirely_for_an_empty_key() {
+        let client = Client::new();
+        let request = apply_auth_headers(client.post("https://example.com/v1/responses"), "  ")
+            .build()
+            .expect("request should build");
+
+        assert!(
+            request.headers().get("authorization").is_none(),
+            "key-optional request must not carry a bogus Bearer header"
+        );
+        assert!(request.headers().get("x-api-key").is_none());
     }
 
     #[test]
