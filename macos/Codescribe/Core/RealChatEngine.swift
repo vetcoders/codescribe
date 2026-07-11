@@ -16,6 +16,16 @@ final class RealChatEngine: AgentChatEngine {
 
     func isAvailable() -> Bool { agent.isAvailable() }
 
+    func availabilityDetail() -> String? {
+        let availability = agent.availability()
+        if availability.available { return nil }
+        // The bridge always fills `detail`; the fallback keeps the chat honest
+        // if an older dylib ever returns an empty reason.
+        return availability.detail.isEmpty
+            ? "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane."
+            : availability.detail
+    }
+
     func streamReply(
         _ text: String,
         threadId: String,
