@@ -15,6 +15,7 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::llm::lane_truth::AssistiveLaneSnapshot;
 use codescribe_core::llm::responses_streaming_manager::{
     ResponsesStreamingManager, StreamCallbacks,
 };
@@ -55,10 +56,19 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    pub fn from_env() -> Result<Self> {
-        let endpoint = get_env_non_empty("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")?;
-        let default_model = get_env_non_empty("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")?;
-        let api_key = get_env_non_empty("LLM_ASSISTIVE_API_KEY", "OpenAI API key (assistive)")?;
+    /// Build from the resolved assistive lane (fresh settings → env →
+    /// Keychain) instead of the frozen bootstrap process env. `api_key: None`
+    /// becomes an empty key, which the streaming manager translates into a
+    /// clean unauthenticated request — key-optional local endpoints are a
+    /// first-class configuration, not an error.
+    pub fn from_lane(lane: AssistiveLaneSnapshot) -> Result<Self> {
+        let AssistiveLaneSnapshot {
+            endpoint,
+            model: default_model,
+            api_key,
+            ..
+        } = lane;
+        let api_key = api_key.unwrap_or_default();
 
         let use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
@@ -555,15 +565,6 @@ fn to_data_uri(data: &[u8], media_type: &str) -> String {
         }
     };
     format!("data:{media_type};base64,{}", BASE64.encode(data))
-}
-
-fn get_env_non_empty(key: &str, label: &str) -> Result<String> {
-    let value = env::var(key).with_context(|| format!("{label} is required. Set {key}."))?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("{label} is required. Set {key}.");
-    }
-    Ok(trimmed.to_string())
 }
 
 fn parse_env_u64(key: &str, default: u64) -> u64 {
