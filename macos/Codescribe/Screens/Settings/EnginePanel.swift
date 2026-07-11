@@ -2,9 +2,9 @@ import SwiftUI
 
 // Engine panel: runtime truth + engine controls. The key/value runtime rows are
 // READ-ONLY (sourced from the live CsSettings snapshot, not hardcoded) and the
-// permission matrix reflects live status. The "Engine controls" section below the
-// runtime rows is editable (F1 layered transcription): STT engine selector +
-// layered-transcription toggle, persisted through the promoted-key config router.
+// permission matrix reflects live status. "Engine controls" and "LLM lanes" are
+// editable: STT/layered controls plus per-lane provider, endpoint, and model
+// overrides, all persisted through the promoted-key config router.
 
 struct EnginePanel: View {
     @ObservedObject var model: SettingsViewModel
@@ -50,6 +50,11 @@ struct EnginePanel: View {
             engineControls
                 .padding(.top, 11)
 
+            SettingsSectionLabel("LLM lanes")
+                .padding(.top, 22)
+            LLMLanesSection(model: model)
+                .padding(.top, 11)
+
             SettingsSectionLabel("Permission matrix")
                 .padding(.top, 22)
             LazyVGrid(columns: columns, spacing: 8) {
@@ -61,7 +66,7 @@ struct EnginePanel: View {
 
             HStack(spacing: 8) {
                 Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
-                Text("runtime rows reflect the live engine — engine controls apply from the next recording session")
+                Text("runtime rows reflect the live engine — changes apply on the next recording session or LLM request")
                     .font(CSFont.mono(11, .medium))
                     .foregroundStyle(CSColor.textFaint)
             }
@@ -166,6 +171,298 @@ struct EnginePanel: View {
                     .tint(CSColor.terracotta)
             }
         }
+    }
+}
+
+// MARK: - Editable LLM lanes
+
+/// Three request lanes sharing one visual grammar while preserving their distinct
+/// promoted config keys. Runtime rows above remain the effective read-only truth.
+private struct LLMLanesSection: View {
+    @ObservedObject var model: SettingsViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Set provider, endpoint, and model per request path. Leave an override empty to use the resolved fallback.")
+                .font(CSFont.ui(11.5))
+                .lineSpacing(2)
+                .foregroundStyle(CSColor.textMutedAlt)
+
+            ForEach(LLMLane.allCases) { lane in
+                LLMLaneEditor(model: model, lane: lane)
+                if lane != LLMLane.allCases.last {
+                    Rectangle()
+                        .fill(CSColor.hairline(0.05))
+                        .frame(height: 1)
+                }
+            }
+        }
+    }
+}
+
+private struct LLMLaneEditor: View {
+    @ObservedObject var model: SettingsViewModel
+    let lane: LLMLane
+
+    @State private var endpointDraft = ""
+    @State private var modelDraft = ""
+
+    private var modelOptions: [CsModelOption] { model.modelOptions(for: lane) }
+
+    private var providerLabel: String {
+        model.availableProviders.first { $0.id == model.assistiveProviderId }?.displayName
+            ?? model.assistiveProviderId
+    }
+
+    private var endpointPlaceholder: String {
+        let endpoint = model.llmEndpoint(for: lane)
+        return endpoint.isEmpty ? "Use resolved default" : endpoint
+    }
+
+    private var modelPlaceholder: String {
+        let id = model.llmModel(for: lane)
+        return id.isEmpty ? "Use provider default" : id
+    }
+
+    private var currentModelLabel: String {
+        let id = model.llmModel(for: lane)
+        guard !id.isEmpty else { return "Choose a model" }
+        return modelOptions.first { $0.id == id }?.displayName ?? id
+    }
+
+    /// Resolve the endpoint the same way the current lane contract does: a blank
+    /// lane override inherits the shared Main endpoint, then the OpenAI default.
+    private func normalizedEndpoint(for targetLane: LLMLane) -> String {
+        let explicit = model.llmEndpoint(for: targetLane)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let shared = model.llmEndpoint(for: .main)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = explicit.isEmpty
+            ? (shared.isEmpty ? "https://api.openai.com/v1/responses" : shared)
+            : explicit
+        return resolved.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private var resolvedLaneEndpoint: String { normalizedEndpoint(for: lane) }
+
+    /// The bridge currently discovers OpenAI models through the Assistive lane's
+    /// endpoint. Formatting/Main may consume that catalog only when their own
+    /// resolved endpoint is identical; otherwise the catalog belongs elsewhere.
+    private var discoveryMatchesLaneEndpoint: Bool {
+        lane == .assistive
+            || resolvedLaneEndpoint == normalizedEndpoint(for: .assistive)
+    }
+
+    /// Formatting/main share the current OpenAI Responses discovery contract.
+    /// A non-OpenAI host must stay free-form because discovery is not lane-aware.
+    private var hasCustomOpenAIEndpoint: Bool {
+        let providerId = lane == .assistive ? model.assistiveProviderId : "openai-responses"
+        guard providerId == "openai-responses" else { return false }
+        guard let host = URL(string: resolvedLaneEndpoint)?.host?.lowercased() else { return true }
+        return host != "api.openai.com"
+    }
+
+    private var requiresManualModelEntry: Bool {
+        hasCustomOpenAIEndpoint || !discoveryMatchesLaneEndpoint
+    }
+
+    private var usesDiscoveredPicker: Bool {
+        let status = model.modelDiscoveryStatus(for: lane)
+        return !requiresManualModelEntry
+            && !modelOptions.isEmpty
+            && status == "fresh"
+    }
+
+    private var discoveryDotColor: Color {
+        if requiresManualModelEntry { return CSColor.textFaint }
+        switch model.modelDiscoveryStatus(for: lane) {
+        case "fresh": return CSColor.olive
+        case "cached": return CSColor.amber
+        case "no_key", "loading": return CSColor.textFaint
+        default: return CSColor.terracotta
+        }
+    }
+
+    private var discoveryDescription: String {
+        if hasCustomOpenAIEndpoint {
+            return "Custom endpoint — enter its model ID manually"
+        }
+        if !discoveryMatchesLaneEndpoint {
+            return "Endpoint differs from Assistive discovery — enter its model ID manually"
+        }
+        return model.modelDiscoveryDescription(for: lane)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(lane.title)
+                    .font(CSFont.ui(14.5, .bold))
+                    .foregroundStyle(CSColor.textHigh)
+                Text(lane.subtitle)
+                    .font(CSFont.ui(11.5))
+                    .foregroundStyle(CSColor.textMutedAlt)
+            }
+
+            if lane == .assistive {
+                SettingsControlRow(title: "Provider", subtitle: "Assistive requests only") {
+                    Menu {
+                        ForEach(model.availableProviders, id: \.id) { provider in
+                            Button {
+                                model.setAssistiveProvider(provider.id)
+                            } label: {
+                                if provider.id == model.assistiveProviderId {
+                                    Label(provider.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(provider.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        EngineMenuLabel(text: providerLabel)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .accessibilityLabel("Assistive provider")
+                    .accessibilityValue(providerLabel)
+                }
+            }
+
+            SettingsControlRow(title: "Endpoint", subtitle: lane.endpointKey) {
+                HStack(spacing: 8) {
+                    TextField(endpointPlaceholder, text: $endpointDraft)
+                        .textFieldStyle(.plain)
+                        .font(CSFont.mono(11.5, .regular))
+                        .foregroundStyle(CSColor.textBody)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                .fill(CSColor.surfaceRaised(0.03))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                        )
+                        .onSubmit(saveEndpoint)
+                        .accessibilityLabel("\(lane.title) LLM endpoint")
+
+                    Button("Save", action: saveEndpoint)
+                        .font(CSFont.ui(11.5, .semibold))
+                        .foregroundStyle(endpointDraft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+                        .buttonStyle(.plain)
+                        .disabled(endpointDraft.isEmpty)
+                        .accessibilityLabel("Save \(lane.title) endpoint")
+
+                    Button("Reset") {
+                        endpointDraft = ""
+                        model.setLLMEndpoint("", for: lane)
+                    }
+                    .font(CSFont.ui(11.5, .semibold))
+                    .foregroundStyle(CSColor.textMutedAlt)
+                    .buttonStyle(.plain)
+                    .help("Clear this endpoint override")
+                    .accessibilityLabel("Reset \(lane.title) endpoint")
+                }
+                .frame(width: 380)
+            }
+
+            SettingsControlRow(title: "Model", subtitle: lane.modelKey) {
+                HStack(spacing: 8) {
+                    if model.modelDiscoveryStatus(for: lane) == "loading"
+                        && !requiresManualModelEntry
+                    {
+                        HStack(spacing: 7) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Discovering models…")
+                                .font(CSFont.mono(10.5, .medium))
+                                .foregroundStyle(CSColor.textFaint)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .accessibilityLabel("Discovering \(lane.title) models")
+                    } else if usesDiscoveredPicker {
+                        Menu {
+                            ForEach(modelOptions, id: \.id) { option in
+                                Button {
+                                    model.setLLMModel(option.id, for: lane)
+                                } label: {
+                                    if option.id == model.llmModel(for: lane) {
+                                        Label(option.displayName, systemImage: "checkmark")
+                                    } else {
+                                        Text(option.displayName)
+                                    }
+                                }
+                            }
+                        } label: {
+                            EngineMenuLabel(text: currentModelLabel)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .accessibilityLabel("\(lane.title) model")
+                        .accessibilityValue(currentModelLabel)
+                    } else {
+                        TextField(modelPlaceholder, text: $modelDraft)
+                            .textFieldStyle(.plain)
+                            .font(CSFont.mono(11.5, .regular))
+                            .foregroundStyle(CSColor.textBody)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(
+                                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                    .fill(CSColor.surfaceRaised(0.03))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                    .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                            )
+                            .onSubmit(saveModel)
+                            .accessibilityLabel("\(lane.title) model ID")
+
+                        Button("Save", action: saveModel)
+                            .font(CSFont.ui(11.5, .semibold))
+                            .foregroundStyle(modelDraft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+                            .buttonStyle(.plain)
+                            .disabled(modelDraft.isEmpty)
+                            .accessibilityLabel("Save \(lane.title) model")
+                    }
+
+                    Button("Reset") {
+                        modelDraft = ""
+                        model.setLLMModel("", for: lane)
+                    }
+                    .font(CSFont.ui(11.5, .semibold))
+                    .foregroundStyle(CSColor.textMutedAlt)
+                    .buttonStyle(.plain)
+                    .help("Clear this model override")
+                    .accessibilityLabel("Reset \(lane.title) model")
+                }
+                .frame(width: 380)
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(discoveryDotColor.opacity(0.85))
+                    .frame(width: 7, height: 7)
+                Text(discoveryDescription)
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+                    .lineLimit(2)
+            }
+            .padding(.leading, 2)
+        }
+    }
+
+    private func saveEndpoint() {
+        model.setLLMEndpoint(endpointDraft, for: lane)
+        endpointDraft = ""
+    }
+
+    private func saveModel() {
+        model.setLLMModel(modelDraft, for: lane)
+        modelDraft = ""
     }
 }
 
