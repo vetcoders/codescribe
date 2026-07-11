@@ -146,6 +146,9 @@ impl Config {
     }
 
     fn config_runtime_env_var(key: &str) -> Result<String, VarError> {
+        if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
+            return super::keychain::cached_runtime_key(key).ok_or(VarError::NotPresent);
+        }
         if !Self::can_seed_process_env() && Self::was_seeded_env_key(key) {
             return Err(VarError::NotPresent);
         }
