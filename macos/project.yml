@@ -32,6 +32,13 @@ targets:
       properties:
         CFBundleDisplayName: Codescribe
         CFBundleName: Codescribe
+        # Build provenance — expanded from build settings at xcodebuild time;
+        # scripts/build-app.sh passes the real values (Cargo version, git commit,
+        # commit count, UTC timestamp). settings.base holds bare-Xcode defaults.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CSBuildCommit: $(CS_BUILD_COMMIT)
+        CSBuiltAt: $(CS_BUILT_AT)
         LSUIElement: true
         NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
         NSAppleEventsUsageDescription: "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
@@ -40,6 +47,12 @@ targets:
       base:
         # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Build-provenance defaults for bare `xcodebuild` / Xcode runs; the
+        # verified pipeline (scripts/build-app.sh) overrides all four.
+        MARKETING_VERSION: 0.0.0-dev
+        CURRENT_PROJECT_VERSION: "0"
+        CS_BUILD_COMMIT: dev
+        CS_BUILT_AT: unknown
         # Stable dev identity → own TCC/keychain slot across rebuilds.
         PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual

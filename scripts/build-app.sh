@@ -75,12 +75,28 @@ if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
   exit 0
 fi
 
+# Build provenance (Pensieve-style stamp): version from the workspace Cargo.toml,
+# commit + monotonic build number from git, built-at in UTC. All four land in
+# Info.plist via the $(VAR) placeholders project.yml declares, so the About
+# panel shows exactly what was built, from what, and when. A dirty worktree is
+# marked honestly — a stamped build must never masquerade as a clean commit.
+STAMP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
+STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD 2>/dev/null || echo nogit)"
+git -C "$REPO_ROOT" diff --quiet HEAD -- 2>/dev/null || STAMP_COMMIT="${STAMP_COMMIT}-dirty"
+STAMP_BUILD_NUM="$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo 0)"
+STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
+echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 DERIVED="$REPO_ROOT/macos/build"
 xcodebuild -project macos/Codescribe.xcodeproj \
   -scheme "$SCHEME" -configuration "$CONFIG" \
   -derivedDataPath "$DERIVED" \
   CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
+  MARKETING_VERSION="$STAMP_VERSION" \
+  CURRENT_PROJECT_VERSION="$STAMP_BUILD_NUM" \
+  CS_BUILD_COMMIT="$STAMP_COMMIT" \
+  CS_BUILT_AT="$STAMP_BUILT_AT" \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"
