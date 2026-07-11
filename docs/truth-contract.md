@@ -3,33 +3,41 @@
 Data: 2026-04-21
 
 Cel:
+
 - Codescribe ma zachowywać intencję użytkownika bez cichego mieszania podglądu, werdyktu i interpretacji.
 
 ## Słownik produktu
 
 - `Live preview`
+
   - Lokalny, prowizoryczny podgląd pojawiający się w trakcie nagrania.
   - Nie jest automatycznie równy finalnej prawdzie.
 
 - `Committed verdict`
+
   - Ostateczny transcript wybrany po zakończeniu nagrania.
   - To ten artefakt decyduje o zapisie, auto-paste i sidecarze prawdy.
 
 - `Transcript`
+
   - Najwierniejszy możliwy zapis tego, co zostało wypowiedziane.
 
 - `Formatted transcript`
+
   - Transcript po bezpiecznej obróbce formatowania.
   - Jeżeli korekta pogarsza tekst albo nic realnie nie wnosi, raw transcript wygrywa.
 
 - `Assistant interpretation`
+
   - Odpowiedź asystenta oparta o transcript lub selekcję.
   - To nie jest transcript i nie może być etykietowana jak transcript.
 
 - `No speech`
+
   - System nie ma wystarczających podstaw, by twierdzić, że w nagraniu była mowa.
 
 - `Low confidence`
+
   - Transcript istnieje, ale system ma twarde sygnały, że jakość jest słaba.
 
 - `Fallback`

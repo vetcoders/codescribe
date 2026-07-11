@@ -60,13 +60,13 @@ flowchart TB
 **Behavior:** Recording starts on key down, stops on key up
 **VAD:** DISABLED - user has 100% control via key release
 
-| Mode binding          | Keys         | Use Case                         |
-| --------------------- | ------------ | -------------------------------- |
-| `Dictation=HoldFn`    | Fn           | **Default** (best for terminals) |
-| `Dictation=HoldCtrl`  | Ctrl         | Terminal-heavy users             |
-| `Dictation=HoldCtrlAlt` | Ctrl+Option | Power-combo preset               |
-| `Dictation=HoldCtrlShift` | Ctrl+Shift | Alternate hold dictation         |
-| `Dictation=HoldCtrlCmd` | Ctrl+Command | macOS power users               |
+| Mode binding              | Keys         | Use Case                         |
+| ------------------------- | ------------ | -------------------------------- |
+| `Dictation=HoldFn`        | Fn           | **Default** (best for terminals) |
+| `Dictation=HoldCtrl`      | Ctrl         | Terminal-heavy users             |
+| `Dictation=HoldCtrlAlt`   | Ctrl+Option  | Power-combo preset               |
+| `Dictation=HoldCtrlShift` | Ctrl+Shift   | Alternate hold dictation         |
+| `Dictation=HoldCtrlCmd`   | Ctrl+Command | macOS power users                |
 
 If `Assistive` itself is configured to a hold binding, that binding becomes the assistive hold trigger.
 
@@ -90,12 +90,12 @@ HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 **VAD:** ENABLED – finalized utterances append to the active draft; `TOGGLE_SILENCE_SEC` of silence
 (default 5s) sends the accumulated draft without stopping recording
 
-| Mode binding                  | Keys                            | Mode             |
-| ---------------------------- | ------------------------------- | ---------------- |
-| `Formatting=DoubleLeftOption` | Left Option double-tap          | Formatting        |
-| `Assistive=DoubleRightOption` | Right Option double-tap         | Assistive         |
-| `Dictation=DoubleCtrl`        | Ctrl double-tap                 | Raw dictation     |
-| `Disabled`                    | no toggle for that work mode    | Hold-only profile |
+| Mode binding                  | Keys                         | Mode              |
+| ----------------------------- | ---------------------------- | ----------------- |
+| `Formatting=DoubleLeftOption` | Left Option double-tap       | Formatting        |
+| `Assistive=DoubleRightOption` | Right Option double-tap      | Assistive         |
+| `Dictation=DoubleCtrl`        | Ctrl double-tap              | Raw dictation     |
+| `Disabled`                    | no toggle for that work mode | Hold-only profile |
 
 **Events:**
 
@@ -204,12 +204,12 @@ flowchart LR
 Bindings themselves are persisted in `settings.json`.
 The remaining runtime env surface only tunes detector behavior:
 
-| Variable                 | Default | Options   | Reload  |
-| ------------------------ | ------- | --------- | ------- |
+| Variable                 | Default | Options         | Reload  |
+| ------------------------ | ------- | --------------- | ------- |
 | `HOLD_EXCLUSIVE`         | `false` | `true`, `false` | RESTART |
-| `HOLD_START_DELAY_MS`    | `800`   | 0-1000    | RESTART |
-| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450   | RESTART |
-| `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-10.0  | RESTART |
+| `HOLD_START_DELAY_MS`    | `800`   | 0-1000          | RESTART |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | RESTART |
+| `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-10.0        | RESTART |
 
 ### VAD Configuration
 

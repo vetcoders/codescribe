@@ -133,13 +133,13 @@ Codescribe.app/
 
 ### Info.plist Keys
 
-| Key                          | Value                 | Purpose                      |
-| ---------------------------- | --------------------- | ---------------------------- |
-| CFBundleIdentifier           | com.vetcoders.codescribe | Unique app identifier     |
-| CFBundleIconFile             | AppIcon               | Points to AppIcon.icns       |
-| CFBundleExecutable           | Codescribe            | Main binary name             |
-| LSMinimumSystemVersion       | 14.0                  | Requires macOS Sonoma+       |
-| NSMicrophoneUsageDescription | ...                   | Microphone permission prompt |
+| Key                          | Value                    | Purpose                      |
+| ---------------------------- | ------------------------ | ---------------------------- |
+| CFBundleIdentifier           | com.vetcoders.codescribe | Unique app identifier        |
+| CFBundleIconFile             | AppIcon                  | Points to AppIcon.icns       |
+| CFBundleExecutable           | Codescribe               | Main binary name             |
+| LSMinimumSystemVersion       | 14.0                     | Requires macOS Sonoma+       |
+| NSMicrophoneUsageDescription | ...                      | Microphone permission prompt |
 
 ## Icons
 

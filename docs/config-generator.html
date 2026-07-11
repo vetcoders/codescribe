@@ -317,7 +317,9 @@
               id="toggle-local-stt"
               onclick="toggleSwitch(this)"
             ></div>
-            <span class="toggle-label">Use Local STT (embedded-first Whisper)</span>
+            <span class="toggle-label"
+              >Use Local STT (embedded-first Whisper)</span
+            >
           </div>
           <div class="split">
             <div class="field">
@@ -406,8 +408,9 @@
           <h2>⌨️ Hotkeys</h2>
           <p class="muted">
             Mode bindings for Dictation, Formatting, and Assistive now live in
-            <code>settings.json</code> via <strong>Settings → Modes &amp; Shortcuts</strong>.
-            This generator only emits the remaining env-backed timing toggles.
+            <code>settings.json</code> via
+            <strong>Settings → Modes &amp; Shortcuts</strong>. This generator
+            only emits the remaining env-backed timing toggles.
           </p>
           <div class="split">
             <div class="field">
@@ -657,7 +660,9 @@
           }`
         );
         lines.push(
-          `TOGGLE_SILENCE_SEC=${document.getElementById("toggle-silence").value}`
+          `TOGGLE_SILENCE_SEC=${
+            document.getElementById("toggle-silence").value
+          }`
         );
         lines.push(``);
 
