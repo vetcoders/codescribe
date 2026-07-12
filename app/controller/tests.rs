@@ -1,6 +1,7 @@
 //! Controller unit tests
 
 use super::*;
+use codescribe_core::pipeline::contracts::EngineEvent;
 use serial_test::serial;
 use std::time::Duration;
 
@@ -1890,6 +1891,112 @@ async fn test_processing_failure_emits_user_visible_warning() {
         }
         other => panic!("expected an engine Warning payload, got {other:?}"),
     }
+}
+
+fn test_final_event(utterance_id: u64, text: &str) -> EngineEvent {
+    EngineEvent::UtteranceFinal {
+        utterance_id,
+        text: text.to_string(),
+        raw_text: text.to_string(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: Vec::new(),
+        vad_speech_pct: Some(100.0),
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn hold_event_sink_forwards_live_preview_then_final_in_order() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+    let sink = RecordingController::build_recording_event_sink(
+        Arc::new(tokio::sync::Mutex::new(String::new())),
+        true,
+        controller.event_broadcast.clone(),
+        Arc::clone(&controller.session_telemetry),
+    );
+
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "live words".to_string(),
+    });
+    sink.on_event(&test_final_event(41, "live words"));
+
+    let preview = events.try_recv().expect("hold preview must reach IPC");
+    let final_event = events.try_recv().expect("hold final must reach IPC");
+    assert!(matches!(
+        preview.payload,
+        IpcEventPayload::Engine(EngineEventWire::Preview { rev: 1, ref text })
+            if text == "live words"
+    ));
+    assert!(matches!(
+        final_event.payload,
+        IpcEventPayload::Engine(EngineEventWire::UtteranceFinal {
+            utterance_id: 41,
+            ref text,
+            ..
+        }) if text == "live words"
+    ));
+    assert!(
+        events.try_recv().is_err(),
+        "one engine event must yield one IPC event"
+    );
+}
+
+#[tokio::test]
+async fn late_correction_after_final_is_a_single_patch_event_not_a_second_final() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+    let sink = RecordingController::build_recording_event_sink(
+        Arc::new(tokio::sync::Mutex::new(String::new())),
+        true,
+        controller.event_broadcast.clone(),
+        Arc::clone(&controller.session_telemetry),
+    );
+
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "raw text".to_string(),
+    });
+    sink.on_event(&test_final_event(7, "raw text"));
+    sink.on_event(&EngineEvent::Correction {
+        rev: 2,
+        text: "corrected text".to_string(),
+        previous_text: "raw text".to_string(),
+    });
+
+    let payloads = [
+        events.try_recv().expect("preview event").payload,
+        events.try_recv().expect("final event").payload,
+        events.try_recv().expect("correction event").payload,
+    ];
+    assert_eq!(
+        payloads
+            .iter()
+            .filter(|payload| matches!(
+                payload,
+                IpcEventPayload::Engine(EngineEventWire::UtteranceFinal { .. })
+            ))
+            .count(),
+        1,
+        "postprocess correction must not masquerade as a second delivery final"
+    );
+    assert!(matches!(
+        &payloads[2],
+        IpcEventPayload::Engine(EngineEventWire::Correction {
+            text,
+            previous_text,
+            ..
+        }) if text == "corrected text" && previous_text == "raw text"
+    ));
+    assert!(
+        events.try_recv().is_err(),
+        "late correction must be emitted exactly once"
+    );
 }
 
 /// The formatted transcript must be persisted BEFORE the paste attempt so a paste
