@@ -12,7 +12,7 @@ use std::fs;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 
-use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, load_key, save_key};
+use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
 use codescribe_core::config::{
     Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
@@ -21,6 +21,7 @@ use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
     ApiKeyLivenessResult, ApiKeyLivenessStatus, probe_api_key_liveness,
 };
+use codescribe_core::llm::lane_truth;
 use codescribe_core::llm::model_discovery::{
     ModelDiscoveryStatus, discover_models as discover_provider_models,
 };
@@ -188,13 +189,18 @@ pub struct CsProviderOption {
     pub api_key_set: bool,
     /// True when provider-account tokens are stored for this provider.
     pub account_signed_in: bool,
-    /// True when the account-login flow can start. For OpenAI this requires
-    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`; until then Settings renders the
-    /// disabled "Sign in with ChatGPT" affordance.
+    /// True when the account-login flow can start. For OpenAI this requires a
+    /// configured OAuth client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, or
+    /// dev env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); until then Settings
+    /// renders the disabled "Sign in with ChatGPT" affordance.
     pub account_login_enabled: bool,
-    /// Human-readable account status ("signed in", "not signed in", or
-    /// "awaiting app registration"). Never contains secrets.
+    /// Human-readable account status ("signed in as <email>", "not signed in",
+    /// or "awaiting app registration"). Never contains secrets.
     pub account_status_message: String,
+    /// Operator-configured OAuth client id (settings → env resolution). A
+    /// non-secret app identity — shown and editable in the Keys panel. `None`
+    /// means the account login is still gated on app registration.
+    pub oauth_client_id: Option<String>,
     /// Always empty for live Settings; retained for bridge compatibility with
     /// older Swift bindings and preview seed objects.
     pub models: Vec<CsModelOption>,
@@ -494,6 +500,9 @@ impl CodescribeConfig {
                     account_signed_in: account_status.signed_in,
                     account_login_enabled: account_status.client_id_configured,
                     account_status_message: account_status.message,
+                    oauth_client_id: matches!(kind, ProviderKind::OpenAiResponses)
+                        .then(account_auth::configured_client_id)
+                        .flatten(),
                     models: Vec::new(),
                 }
             })
@@ -536,6 +545,77 @@ impl CodescribeConfig {
             signed_in: false,
             client_id_configured: true,
         })
+    }
+
+    /// Block until the in-flight provider-account login completes, fails, or
+    /// times out. Swift calls this from a background queue right after
+    /// `start_account_login` opened the browser. On timeout (user closed the
+    /// browser, walked away) the local callback server is shut down — honest
+    /// status, no zombie port. A second `start_account_login` while pending
+    /// cancels the first, so this returns "failed" for the superseded attempt.
+    pub fn await_account_login(
+        &self,
+        provider_id: String,
+        timeout_seconds: u64,
+    ) -> Result<CsAccountLoginResult, CsError> {
+        let provider = ProviderKind::from_str(&provider_id).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        let login = {
+            let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                msg: "account login state lock poisoned".to_string(),
+            })?;
+            guard.take()
+        };
+        let Some(login) = login else {
+            return Ok(account_login_result(
+                provider,
+                "idle",
+                "no sign-in in progress",
+            ));
+        };
+
+        let cancel = login.cancel_handle();
+        let outcome = account_auth_runtime()?.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_seconds.max(1)),
+                login.block_until_done(),
+            )
+            .await
+        });
+
+        match outcome {
+            Ok(Ok(())) => {
+                let message = account_auth::account_status(provider).message;
+                Ok(account_login_result(provider, "signed_in", &message))
+            }
+            Ok(Err(error)) => Ok(account_login_result(provider, "failed", &error.to_string())),
+            Err(_elapsed) => {
+                cancel.shutdown();
+                let message = format!(
+                    "sign-in was not completed within {timeout_seconds}s; the local login server was shut down"
+                );
+                Ok(account_login_result(provider, "timeout", &message))
+            }
+        }
+    }
+
+    /// Cancel any in-flight provider-account login and free the callback port.
+    pub fn cancel_account_login(&self) {
+        if let Ok(mut guard) = active_account_login().lock()
+            && let Some(login) = guard.take()
+        {
+            login.cancel();
+        }
+    }
+
+    /// Sign out of the provider account: remove the stored tokens (Keychain +
+    /// env mirror). The API-key path is untouched.
+    pub fn sign_out_account(&self, provider_id: String) -> Result<(), CsError> {
+        let provider = ProviderKind::from_str(&provider_id).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        account_auth::clear_account_tokens(provider).map_err(account_auth_to_cs)
     }
 
     /// Discover model options from the selected provider using the live provider
@@ -899,7 +979,7 @@ fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
 
 /// True when the account env var or Keychain account is present and non-empty.
 fn key_present(account: &str) -> bool {
-    env_string(account).is_some() || load_key(account).and_then(non_empty).is_some()
+    lane_truth::secret(account).is_some()
 }
 
 fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
@@ -924,6 +1004,26 @@ fn active_account_login() -> &'static Mutex<Option<account_auth::LoginServer>> {
 fn account_auth_to_cs(error: account_auth::AccountAuthError) -> CsError {
     CsError::Config {
         msg: error.to_string(),
+    }
+}
+
+/// Terminal (non-"started") login result from the live account status —
+/// `signed_in` / `client_id_configured` always re-read, never assumed. Lives
+/// outside the exported impl: it takes a core `ProviderKind`, which must not
+/// cross the FFI boundary.
+fn account_login_result(
+    provider: ProviderKind,
+    status: &str,
+    message: &str,
+) -> CsAccountLoginResult {
+    let account_status = account_auth::account_status(provider);
+    CsAccountLoginResult {
+        provider_id: provider.as_str().to_string(),
+        status: status.to_string(),
+        message: message.to_string(),
+        auth_url: None,
+        signed_in: account_status.signed_in,
+        client_id_configured: account_status.client_id_configured,
     }
 }
 

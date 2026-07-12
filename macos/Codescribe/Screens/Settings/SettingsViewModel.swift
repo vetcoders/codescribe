@@ -135,6 +135,12 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpTestPending: Set<String> = []
     @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
     @Published private(set) var keyProbePending: Set<String> = []
+    /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
+    /// local callback server listening). Guards double-clicks.
+    @Published private(set) var accountLoginPending: Set<String> = []
+    /// Last terminal outcome of an account login per provider ("timeout",
+    /// "failed" …) — honest status for the row without raising a modal error.
+    @Published private(set) var accountLoginNotices: [String: String] = [:]
     @Published var lastError: String?
 
     // MARK: - Hotkeys (mode bindings)
@@ -435,6 +441,13 @@ final class SettingsViewModel: ObservableObject {
             return "https://api.anthropic.com/v1/messages"
         }
 
+        return resolvedOpenAIEndpoint(for: lane)
+    }
+
+    /// Effective OpenAI Responses endpoint independent of the selected
+    /// Assistive provider. Model discovery always uses the Assistive lane's
+    /// OpenAI endpoint, including while Anthropic is selected for live sends.
+    func resolvedOpenAIEndpoint(for lane: LLMLane) -> String {
         let laneValue = llmEndpoint(for: lane)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let sharedValue = llmEndpoint(for: .main)
@@ -787,17 +800,87 @@ final class SettingsViewModel: ObservableObject {
         availableProviders.first { $0.apiKeyAccount == account && $0.id == "openai-responses" }
     }
 
+    /// Full "Sign in with ChatGPT" click-through: start the local callback
+    /// server, open the authorize URL in the default browser, then await the
+    /// roundtrip on a background queue. The await result (signed in / failed /
+    /// timeout) refreshes the provider row — no restart, no zombie port.
     func startAccountLogin(providerId: String) {
         guard let engine else { return }
+        guard !accountLoginPending.contains(providerId) else { return }
+
+        let result: CsAccountLoginResult
         do {
-            let result = try engine.startAccountLogin(providerId: providerId)
-            if let authUrl = result.authUrl, let url = URL(string: authUrl) {
-                NSWorkspace.shared.open(url)
+            result = try engine.startAccountLogin(providerId: providerId)
+        } catch {
+            lastError = String(describing: error)
+            return
+        }
+        guard let authUrl = result.authUrl, let url = URL(string: authUrl) else {
+            accountLoginNotices[providerId] = result.message
+            return
+        }
+
+        accountLoginPending.insert(providerId)
+        accountLoginNotices[providerId] = nil
+        NSWorkspace.shared.open(url)
+
+        let backgroundEngine = BackgroundSettingsEngine(engine: engine)
+        DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, providerId] in
+            let outcome: Result<CsAccountLoginResult, Error>
+            do {
+                outcome = .success(
+                    try backgroundEngine.engine.awaitAccountLogin(
+                        providerId: providerId,
+                        timeoutSeconds: 300
+                    )
+                )
+            } catch {
+                outcome = .failure(error)
             }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.accountLoginPending.remove(providerId)
+                switch outcome {
+                case .success(let login):
+                    // "signed_in" needs no banner — the row status flips on the
+                    // provider refresh below. Everything else is surfaced as-is.
+                    self.accountLoginNotices[providerId] =
+                        login.status == "signed_in" ? nil : login.message
+                case .failure(let error):
+                    self.accountLoginNotices[providerId] = String(describing: error)
+                }
+                if let engine = self.engine {
+                    self.providers = engine.availableProviders()
+                }
+                self.refreshAgentStatus()
+            }
+        }
+    }
+
+    /// Sign out of the provider account (clears the stored tokens). API keys
+    /// are untouched.
+    func signOutAccount(providerId: String) {
+        guard let engine else { return }
+        do {
+            try engine.signOutAccount(providerId: providerId)
+            accountLoginNotices[providerId] = nil
             providers = engine.availableProviders()
+            refreshAgentStatus()
         } catch {
             lastError = String(describing: error)
         }
+    }
+
+    /// Persist the OAuth client id (non-secret; settings.json). Takes effect on
+    /// the next click — the core re-reads settings per resolution.
+    func saveOauthClientId(providerId: String, value: String) {
+        persist("LLM_OPENAI_OAUTH_CLIENT_ID", value.trimmingCharacters(in: .whitespacesAndNewlines))
+        accountLoginNotices[providerId] = nil
+        if let engine {
+            providers = engine.availableProviders()
+        }
+        refreshAgentStatus()
     }
 
     func refreshAssistiveModels() {

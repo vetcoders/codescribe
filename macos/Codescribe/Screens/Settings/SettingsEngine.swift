@@ -42,6 +42,11 @@ protocol SettingsEngine {
     func availableProviders() -> [CsProviderOption]
     func discoverModels(providerId: String) -> CsModelDiscovery
     func startAccountLogin(providerId: String) throws -> CsAccountLoginResult
+    // Blocks until the in-flight login completes/fails/times out — call from a
+    // background queue only. Timeout shuts the local callback server down.
+    func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult
+    func cancelAccountLogin()
+    func signOutAccount(providerId: String) throws
 
     // Editable BASE prompts
     func getFormattingPrompt() -> String
@@ -94,6 +99,13 @@ final class RealSettingsEngine: SettingsEngine {
     }
     func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
         try config.startAccountLogin(providerId: providerId)
+    }
+    func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult {
+        try config.awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
+    }
+    func cancelAccountLogin() { config.cancelAccountLogin() }
+    func signOutAccount(providerId: String) throws {
+        try config.signOutAccount(providerId: providerId)
     }
 
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
@@ -161,6 +173,18 @@ struct MockSettingsEngine: SettingsEngine {
             clientIdConfigured: false
         )
     }
+    func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult {
+        CsAccountLoginResult(
+            providerId: providerId,
+            status: "idle",
+            message: "no sign-in in progress",
+            authUrl: nil,
+            signedIn: false,
+            clientIdConfigured: false
+        )
+    }
+    func cancelAccountLogin() {}
+    func signOutAccount(providerId: String) throws {}
 
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
     func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
@@ -307,6 +331,7 @@ extension CsProviderOption {
             accountSignedIn: false,
             accountLoginEnabled: false,
             accountStatusMessage: "awaiting app registration",
+            oauthClientId: nil,
             models: []
         ),
         CsProviderOption(
@@ -317,6 +342,7 @@ extension CsProviderOption {
             accountSignedIn: false,
             accountLoginEnabled: false,
             accountStatusMessage: "provider account login unavailable",
+            oauthClientId: nil,
             models: []
         ),
     ]
