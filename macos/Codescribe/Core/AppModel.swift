@@ -40,6 +40,14 @@ final class OverlayController: ObservableObject {
     // Read fresh at show-time so the tray's "Transcription Overlay" toggle takes
     // effect on the very next dictation (stateless bridge handle — cheap).
     private let config = CodescribeConfig()
+    // Stateless read of the Rust-side tray status (same source TrayStatusStore
+    // listens to) — used to latch whether the CURRENT session is assistive.
+    private let trayStatusBridge = CodescribeTrayStatus()
+    /// Latched across the session (preparing → started → stopped) because the
+    /// Rust controller clears its assistive flag right after the stop pipeline —
+    /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
+    /// flip the tray status while recording, so every lifecycle hook re-polls.
+    private var sessionWasAssistive = false
 
     init(store: AgentChatStore) {
         state.engine = ControllerDictationEngine()
@@ -48,22 +56,36 @@ final class OverlayController: ObservableObject {
         // appear (and the popover is built once), so it stayed "Recording" after
         // Finish. These hooks fire for every start/stop path (hotkey, tray, auto).
         state.onRecordingPreparing = { [weak self] in
-            self?.showForRecording()
+            guard let self else { return }
+            self.sessionWasAssistive = false
+            self.refreshAssistiveLatch()
+            self.showForRecording()
             AppModel.shared.tray.isStartingDictation = true
             // Block the composer mic while the shared recorder owns the microphone.
             AppModel.shared.chat.dictationBlocked = true
         }
         state.onRecordingStarted = { [weak self] in
-            self?.showForRecording()
+            guard let self else { return }
+            self.refreshAssistiveLatch()
+            self.showForRecording()
             AppModel.shared.tray.isRecording = true
             AppModel.shared.tray.isStartingDictation = false
             AppModel.shared.chat.dictationBlocked = true
         }
         state.onRecordingStopped = { [weak self] in
-            self?.markStopped()
+            guard let self else { return }
+            self.refreshAssistiveLatch()
+            self.markStopped()
             AppModel.shared.tray.isRecording = false
             AppModel.shared.tray.isStartingDictation = false
             AppModel.shared.chat.dictationBlocked = false
+            // Assistive sessions hand the transcript to the agent — the overlay's
+            // job ends at finalize. Fade here instead of waiting for
+            // on_turn_started, which lags by MCP registration + augmentation
+            // (5–6 s of a stale FINAL hanging over the chat).
+            if self.sessionWasAssistive, self.state.mode == .formatted {
+                self.hideForAgentHandoff()
+            }
         }
         state.onClose = { [weak self] in self?.hide() }
         state.onSendToAgent = { [weak self, weak store] text in
@@ -130,6 +152,12 @@ final class OverlayController: ObservableObject {
 
     func markStopped() {
         state.finishControllerRecording()
+    }
+
+    private func refreshAssistiveLatch() {
+        if trayStatusBridge.currentStatus().assistive {
+            sessionWasAssistive = true
+        }
     }
 
     func hide() {
