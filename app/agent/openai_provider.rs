@@ -15,7 +15,9 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::llm::account_auth;
 use codescribe_core::llm::lane_truth::AssistiveLaneSnapshot;
+use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
     ResponsesStreamingManager, StreamCallbacks,
 };
@@ -53,6 +55,10 @@ pub struct OpenAiProvider {
     previous_response_id: Arc<Mutex<Option<String>>>,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
+    /// Lane resolved to "Sign in with ChatGPT" account auth (no API key, official
+    /// endpoint, stored tokens). Each request fetches a FRESH access token via
+    /// `account_auth` so the auto-refresh path keeps long sessions alive.
+    use_account_auth: bool,
 }
 
 impl OpenAiProvider {
@@ -66,6 +72,7 @@ impl OpenAiProvider {
             endpoint,
             model: default_model,
             api_key,
+            account_auth: use_account_auth,
             ..
         } = lane;
         let api_key = api_key.unwrap_or_default();
@@ -103,6 +110,7 @@ impl OpenAiProvider {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout,
             inter_chunk_timeout,
+            use_account_auth,
         })
     }
 }
@@ -162,10 +170,26 @@ impl AgentProvider for OpenAiProvider {
             stream: true,
         };
 
+        // Account-auth lanes fetch a fresh access token per request (60s-skew
+        // auto-refresh) — never a token frozen at provider construction. The
+        // manager formats the `Bearer` header itself, so this is the raw token.
+        let account_token = if self.use_account_auth {
+            Some(
+                account_auth::access_token(ProviderKind::OpenAiResponses)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("ChatGPT account authentication failed: {error}")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let auth_secret = account_token.as_deref().unwrap_or(&self.api_key);
+
         let manager = ResponsesStreamingManager::new(
             &self.client,
             &self.endpoint,
-            &self.api_key,
+            auth_secret,
             StreamCallbacks {
                 assistant: None,
                 reasoning: None,
@@ -849,6 +873,7 @@ mod tests {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
         let messages = vec![Message::new(
             Role::User,
@@ -891,6 +916,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
 
         // Pre-condition: stored chain holds prior failed attempt's response id.
@@ -924,6 +950,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
 
         let options = StreamOptions::default();
@@ -1002,6 +1029,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
         let reset_options = StreamOptions {
             reset_chain: true,
@@ -1178,6 +1206,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            use_account_auth: false,
         };
         let messages = vec![Message::new(
             Role::User,
