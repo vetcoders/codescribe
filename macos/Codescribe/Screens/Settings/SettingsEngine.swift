@@ -27,6 +27,9 @@ protocol SettingsEngine {
     func onboardingMode() -> String?
     func setOnboardingMode(mode: String) throws
 
+    /// Delegates to core lane_truth normalization (eliminates suffix-list dupe in Swift).
+    func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String
+
     // Config writes (auto-tiered by the core router)
     func updateConfig(key: String, value: String) throws
     func updateConfigMany(entries: [CsConfigEntry]) throws
@@ -75,6 +78,10 @@ final class RealSettingsEngine: SettingsEngine {
     func shouldShowOnboarding() -> Bool { config.shouldShowOnboarding() }
     func onboardingMode() -> String? { config.onboardingMode() }
     func setOnboardingMode(mode: String) throws { try config.setOnboardingMode(mode: mode) }
+
+    func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String {
+        config.normalizeOpenaiResponsesEndpoint(endpoint: endpoint)
+    }
 
     func updateConfig(key: String, value: String) throws {
         try config.updateConfig(key: key, value: value)
@@ -172,6 +179,17 @@ struct MockSettingsEngine: SettingsEngine {
             signedIn: false,
             clientIdConfigured: false
         )
+    }
+
+    func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String {
+        // Mock: pass-through or minimal normalize for preview stability.
+        var base = endpoint.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
+        for s in ["/v1/responses", "/v1/chat/completions", "/v1/completions"] where base.hasSuffix(s) {
+            base.removeLast(s.count)
+            return base + "/v1/responses"
+        }
+        if base.hasSuffix("/v1") { base.removeLast(3) }
+        return base + "/v1/responses"
     }
     func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult {
         CsAccountLoginResult(

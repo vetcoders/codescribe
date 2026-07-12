@@ -458,6 +458,14 @@ impl CodescribeConfig {
         Config::config_dir().to_string_lossy().to_string()
     }
 
+    /// Canonical normalization for OpenAI Responses endpoints.
+    /// Strips known suffixes (/v1/responses, /chat/completions, /completions, /v1)
+    /// and forces the /v1/responses tail. Single source of truth in lane_truth;
+    /// Swift SettingsViewModel delegates here to eliminate duplication (P2-05).
+    pub fn normalize_openai_responses_endpoint(&self, endpoint: String) -> String {
+        lane_truth::normalize_openai_responses_endpoint(&endpoint)
+    }
+
     /// Presence booleans for every Keychain-backed API key.
     pub fn key_status(&self) -> CsKeyStatus {
         // This endpoint is explicitly about keys, so it may prompt. Construction
@@ -553,6 +561,10 @@ impl CodescribeConfig {
     /// browser, walked away) the local callback server is shut down — honest
     /// status, no zombie port. A second `start_account_login` while pending
     /// cancels the first, so this returns "failed" for the superseded attempt.
+    ///
+    /// P2-09: 300s default (from caller) is intentional; OAuth human steps can
+    /// exceed short timeouts. No configurability knob added. P2-08: discovery
+    /// flows share this; cancel is best-effort via supersede + teardown.
     pub fn await_account_login(
         &self,
         provider_id: String,

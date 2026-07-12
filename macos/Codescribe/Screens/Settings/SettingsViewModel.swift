@@ -527,28 +527,30 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func resolvedOpenAIEndpoint(for lane: LLMLane) -> String {
+        // P2-05: lane/shared/default resolution stays here (UI settings surface);
+        // suffix normalization is now delegated to core via FFI (single truth in
+        // lane_truth::normalize_openai_responses_endpoint, exposed in bridge/config).
         let laneValue = settings[keyPath: lane.endpointPath]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let sharedValue = settings[keyPath: LLMLane.main.endpointPath]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let resolved = !laneValue.isEmpty
+        let base = !laneValue.isEmpty
             ? laneValue
             : (!sharedValue.isEmpty
                 ? sharedValue
                 : "https://api.openai.com/v1/responses")
 
-        var base = resolved.trimmingCharacters(
-            in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "/"))
-        )
-        for suffix in ["/v1/responses", "/v1/chat/completions", "/v1/completions"]
-        where base.hasSuffix(suffix) {
-            base.removeLast(suffix.count)
-            return base + "/v1/responses"
+        if let engine {
+            return engine.normalizeOpenaiResponsesEndpoint(base)
         }
-        if base.hasSuffix("/v1") {
-            base.removeLast("/v1".count)
+        // Fallback for previews / no-engine (kept tiny; real path always has engine).
+        var b = base.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
+        for s in ["/v1/responses", "/v1/chat/completions", "/v1/completions"] where b.hasSuffix(s) {
+            b.removeLast(s.count)
+            return b + "/v1/responses"
         }
-        return base + "/v1/responses"
+        if b.hasSuffix("/v1") { b.removeLast(3) }
+        return b + "/v1/responses"
     }
 
     /// Persist an endpoint override for one LLM lane. Whitespace-only input is
@@ -805,6 +807,12 @@ final class SettingsViewModel: ObservableObject {
                 outcome = .success(
                     try backgroundEngine.engine.awaitAccountLogin(
                         providerId: providerId,
+                        // P2-09: 300s chosen as pragmatic cap for OAuth browser roundtrip
+                        // (user may need to 2FA, switch windows, consent). No new Settings
+                        // knob (per charter). Cancel path: second start or sign-out flow
+                        // or app close (server is torn down on timeout/failure).
+                        // Discovery (P2-08) uses the same await; partial cancel support
+                        // exists via pending set + supersede in core.
                         timeoutSeconds: 300
                     )
                 )

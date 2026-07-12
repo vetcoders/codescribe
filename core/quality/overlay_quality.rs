@@ -200,6 +200,31 @@ pub fn commit_overlay_correction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::ffi::OsString;
+
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     #[test]
     fn test_extract_candidates_basic() {
@@ -222,9 +247,17 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_commit_writes_record_and_does_not_panic_on_lexicon() {
-        // Use a temp-ish path by overriding? For test we just exercise the fn with real config dir
-        // (tests run with CODESCRIBE_DISABLE_KEYCHAIN=1 but fs is fine).
+        // P1-02: MUST honor CODESCRIBE_DATA_DIR (the single existing override path,
+        // verified via loct find --literal) for hermetic test isolation. No twin
+        // path logic. Prove by writing under temp and asserting the returned path.
+        let temp_dir = tempfile::tempdir().expect("temp data dir for isolation");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+        }
+
         let p = commit_overlay_correction(
             "raw raw",
             "uni agentka here",
@@ -234,6 +267,12 @@ mod tests {
         )
         .expect("commit should succeed");
         assert!(p.ends_with("corrections.jsonl"));
-        // The file now has at least the line; we don't assert content here to keep pure.
+        // Proof of isolation: the quality file landed under the overridden DATA_DIR
+        // (config_dir + quality_dir respect it; real ~/.codescribe untouched).
+        assert!(
+            p.starts_with(temp_dir.path()),
+            "quality record path must be under the CODESCRIBE_DATA_DIR temp for isolation (got: {})",
+            p.display()
+        );
     }
 }

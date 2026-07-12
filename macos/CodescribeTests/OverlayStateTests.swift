@@ -71,6 +71,25 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(sentText, "ready transcript")
     }
 
+    func testCaptureQualityIfEditedHitsAsyncPathOnUserEditWithoutBlocking() {
+        // D-02: exercise quality capture decision (delivered != edited on .formatted)
+        // and the fire-and-forget Task.detached (Copy/Send/Close must not block on I/O).
+        // Uses applyFinalTranscript which seeds deliveredText (the pre-edit value).
+        let state = OverlayState()
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        // Seed delivered (raw from final transcript) then user edits formatted.
+        state.applyFinalTranscript("original delivered transcript here")
+        state.formattedText = "original delivered transcript here with user fix"
+        state.mode = .formatted
+
+        // Copy triggers captureQualityIfEdited because texts differ; must return immediately.
+        state.copyToPasteboard()
+        XCTAssertEqual(closeCount, 1)
+        // The async commit to quality + lexicon happens off-main; test reaches here without wait.
+    }
+
     func testOverlayPanelUsesNonActivatingStyle() {
         let state = OverlayState()
         let panel = DictationOverlayWindow.make(

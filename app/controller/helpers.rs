@@ -1727,7 +1727,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cs_helpers_vision_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let img = dir.join("shot.png");
-        std::fs::write(&img, b"\x89PNG\r\n\x1a\nfake").unwrap();
+        std::fs::write(&img, b"\x89PNG\r\n\x1a\nfake").expect("test: write fake image");
         let missing = dir.join("gone.png");
 
         let text = format!(
@@ -1759,7 +1759,8 @@ mod tests {
         let mut lines = String::from("multi\n\nATTACHMENTS (image paths)\n");
         for i in 0..(MAX_AGENT_VISION_IMAGES + 2) {
             let p = dir.join(format!("img{i}.png"));
-            std::fs::write(&p, b"\x89PNG\r\n\x1a\nfake").unwrap();
+            std::fs::write(&p, b"\x89PNG\r\n\x1a\nfake")
+                .expect("test: write fake image for overflow");
             lines.push_str(&format!("- {}\n", p.display()));
         }
         let (_cleaned, images, dropped) = build_image_attachments_from_text(&lines);

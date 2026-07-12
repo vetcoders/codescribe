@@ -436,8 +436,11 @@ final class OverlayState: ObservableObject {
         // candidates to lexicon.custom.jsonl. That is blocking disk I/O, so it runs
         // off the main actor — Copy/Send/Close must never wait on the disk.
         // Raw is best-effort for MVP.
+        // D-05: wire real (best-effort) raw_text from the delivered final for lexicon v2
+        // consumers. Full separation of pre-postprocess raw would require listener
+        // surface extension (on_final carrying raw_text) — deferred as low-ROI for MVP.
         Task.detached(priority: .utility) {
-            try? commitOverlayQualityRecord(rawText: "", deliveredText: delivered, editedText: edited)
+            try? commitOverlayQualityRecord(rawText: delivered, deliveredText: delivered, editedText: edited)
         }
     }
 
