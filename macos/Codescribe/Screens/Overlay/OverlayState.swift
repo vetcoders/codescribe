@@ -146,6 +146,9 @@ final class OverlayState: ObservableObject {
     /// SAME text the delivery/paste and tray "Copy" use. When present it is the
     /// FINAL the overlay shows, instead of the raw per-utterance streaming assembly.
     private var authoritativeFinalText: String?
+    /// The delivered (pre-user-edit) text at the moment we entered .formatted.
+    /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
+    private var deliveredText: String = ""
     /// Once a session is finalized (mode `.formatted` / Idle), the transcript is
     /// FROZEN. Late streaming events (Preview/Correction/UtteranceFinal/VAD) that the
     /// engine may still emit during/after teardown are DROPPED instead of mutating
@@ -363,6 +366,8 @@ final class OverlayState: ObservableObject {
     // MARK: Action row
 
     func copyToPasteboard() {
+        // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
+        captureQualityIfEdited(action: "copy")
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(activeText, forType: .string)
@@ -372,6 +377,8 @@ final class OverlayState: ObservableObject {
     }
 
     func sendToAgent() {
+        // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
+        captureQualityIfEdited(action: "send")
         cancelAutoHide()
         onSendToAgent?(activeText)
         // The onSendToAgent closure (wired in OverlayController) also hides;
@@ -379,6 +386,8 @@ final class OverlayState: ObservableObject {
     }
 
     func close() {
+        // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
+        captureQualityIfEdited(action: "close")
         cancelWarmupWatchdog()
         cancelAutoHide()
         mockRevealTask?.cancel()
@@ -393,6 +402,18 @@ final class OverlayState: ObservableObject {
         transcribing = false
         isFinalPass = false
         onClose?()
+    }
+
+    // MARK: P0-D quality loop (user edits on FINAL → record + lexicon candidate)
+
+    private func captureQualityIfEdited(action: String) {
+        guard mode == .formatted else { return }
+        let delivered = deliveredText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let edited = formattedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !edited.isEmpty, delivered != edited else { return }
+        // Call the bridge FFI (generated symbol from uniffi). Raw is best-effort for MVP.
+        // This writes the quality JSONL and feeds safe candidates to lexicon.custom.jsonl.
+        commitOverlayQualityRecord(rawText: "", deliveredText: delivered, editedText: edited)
     }
 
     func prepareForExternalStart() {
@@ -704,6 +725,9 @@ final class OverlayState: ObservableObject {
             formattedText = clean
             mode = .formatted
         }
+        if deliveredText.isEmpty, !clean.isEmpty {
+            deliveredText = clean
+        }
     }
 
     /// Single authoritative finalize. `runStop`, `finishControllerRecording`, and
@@ -739,6 +763,7 @@ final class OverlayState: ObservableObject {
             mode = .noSpeech
         } else {
             if formattedText != resolved { formattedText = resolved }
+            if deliveredText.isEmpty { deliveredText = resolved }
             mode = .formatted
         }
         // FREEZE: from here, late streaming events are dropped (see the apply guards)
@@ -772,6 +797,7 @@ final class OverlayState: ObservableObject {
         committedSegments = []
         committedUtterances = []
         authoritativeFinalText = nil
+        deliveredText = ""
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false
