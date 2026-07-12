@@ -767,6 +767,49 @@ mod tests {
     }
 
     #[test]
+    fn detector_fn_hold_emits_down_and_up_for_one_physical_hold() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, true),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+                force_ai: false,
+            })
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_secs(1),
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+                force_ai: false,
+            })
+        );
+        assert!(!detector.is_combo_active());
+    }
+
+    #[test]
     fn test_modifier_flags_ctrl_only() {
         let flags = ModifierFlags::ctrl_only();
         assert!(flags.ctrl);

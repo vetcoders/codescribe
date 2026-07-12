@@ -26,6 +26,10 @@ private let attachLog = Logger(
 protocol AgentChatEngine: AnyObject {
     /// True when the assistive provider can be built (keys present).
     func isAvailable() -> Bool
+    /// Actionable reason the assistive lane cannot reach a model right now,
+    /// `nil` when a send can proceed. Names the missing lane/endpoint/key so
+    /// the chat renders honest guidance instead of a generic "add an API key".
+    func availabilityDetail() -> String?
     /// Streams a real assistant reply. Callbacks fire on the main actor as tokens
     /// arrive; returns the final assembled text.
     ///
@@ -525,10 +529,10 @@ final class AgentChatStore: ObservableObject {
                        text: "Engine not wired yet.")
                 return
             }
-            // Graceful no-key path.
-            if !engine.isAvailable() {
-                finish(assistantID, in: threadID,
-                       text: "I can't reach the model yet — add an API key in Settings to enable assistive replies.")
+            // Graceful unavailable path — the engine reports WHAT is missing
+            // (lane, endpoint or key) so the reply is actionable, not generic.
+            if let unavailableDetail = engine.availabilityDetail() {
+                finish(assistantID, in: threadID, text: unavailableDetail)
                 return
             }
             let start = Date()
@@ -1048,6 +1052,7 @@ final class AgentChatStore: ObservableObject {
 #if DEBUG
 final class MockChatEngine: AgentChatEngine {
     func isAvailable() -> Bool { true }
+    func availabilityDetail() -> String? { nil }
     func streamReply(
         _ text: String,
         threadId: String,

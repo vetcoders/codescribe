@@ -41,6 +41,7 @@ impl Default for KeychainBundle {
 }
 
 static BUNDLE_CACHE: OnceLock<RwLock<Option<KeychainBundle>>> = OnceLock::new();
+static PROCESS_ENV_SEEDS: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock::new();
 static POPULATE_ONCE: Once = Once::new();
 
 fn bundle_cache() -> &'static RwLock<Option<KeychainBundle>> {
@@ -62,6 +63,30 @@ fn write_bundle_cache(bundle: Option<KeychainBundle>) {
         Err(poisoned) => {
             *poisoned.into_inner() = bundle;
         }
+    }
+}
+
+fn process_env_seeds() -> &'static RwLock<BTreeMap<String, String>> {
+    PROCESS_ENV_SEEDS.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+fn remember_process_env_seed(account: &str, secret: &str) {
+    match process_env_seeds().write() {
+        Ok(mut guard) => {
+            guard.insert(account.to_string(), secret.to_string());
+        }
+        Err(poisoned) => {
+            poisoned
+                .into_inner()
+                .insert(account.to_string(), secret.to_string());
+        }
+    }
+}
+
+fn process_env_seed(account: &str) -> Option<String> {
+    match process_env_seeds().read() {
+        Ok(guard) => guard.get(account).cloned(),
+        Err(poisoned) => poisoned.into_inner().get(account).cloned(),
     }
 }
 
@@ -189,6 +214,59 @@ pub fn load_key(account: &str) -> Option<String> {
     None
 }
 
+/// Resolve the current runtime secret without touching Keychain.
+///
+/// Explicit process environment values retain highest priority. Values copied
+/// from Keychain during bootstrap are origin-tracked, so a later Settings save
+/// or delete cannot be shadowed by that stale process snapshot.
+pub fn cached_runtime_key(account: &str) -> Option<String> {
+    let env_value = non_empty_env(account);
+    let seeded_env_value = process_env_seed(account);
+    if let Some(value) = explicit_env_value(env_value, seeded_env_value.as_deref()) {
+        return Some(value);
+    }
+    non_empty_secret(read_bundle_cache().and_then(|bundle| bundle.keys.get(account).cloned()))
+}
+
+/// Resolve the current runtime secret, reading Keychain when the in-memory
+/// cache has not been populated yet. Use this only on explicit secret-use
+/// paths, where a macOS Keychain prompt is appropriate.
+pub fn runtime_key(account: &str) -> Option<String> {
+    let env_value = non_empty_env(account);
+    let seeded_env_value = process_env_seed(account);
+    if let Some(value) = explicit_env_value(env_value, seeded_env_value.as_deref()) {
+        return Some(value);
+    }
+    non_empty_secret(load_key(account))
+}
+
+fn non_empty_env(account: &str) -> Option<String> {
+    std::env::var(account)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+fn resolve_runtime_key(
+    env_value: Option<String>,
+    seeded_env_value: Option<String>,
+    stored_value: Option<String>,
+) -> Option<String> {
+    explicit_env_value(env_value, seeded_env_value.as_deref())
+        .or_else(|| non_empty_secret(stored_value))
+}
+
+fn explicit_env_value(env_value: Option<String>, seeded_env_value: Option<&str>) -> Option<String> {
+    env_value.filter(|value| seeded_env_value != Some(value))
+}
+
+fn non_empty_secret(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Deletes a secret from the macOS Keychain. Ignores "not found" errors.
 pub fn delete_key(account: &str) -> Result<()> {
     if is_test_env() {
@@ -207,6 +285,7 @@ pub fn delete_key(account: &str) -> Result<()> {
                 Err(e) => {
                     let desc = format!("{e}");
                     if desc.contains("not found") || desc.contains("-25300") {
+                        write_bundle_cache(None);
                         debug!("Keychain bundle not found, nothing to delete");
                         Ok(())
                     } else {
@@ -248,6 +327,7 @@ pub fn populate_env_from_keychain() {
                 unsafe {
                     std::env::set_var(account, value);
                 }
+                remember_process_env_seed(account, value);
                 debug!("Set {account} from Keychain bundle");
             }
         }
@@ -256,7 +336,7 @@ pub fn populate_env_from_keychain() {
 
 #[cfg(test)]
 mod tests {
-    use super::keychain_disabled_by_signals;
+    use super::{keychain_disabled_by_signals, resolve_runtime_key};
 
     #[test]
     fn disable_keychain_flag_is_honored() {
@@ -273,5 +353,39 @@ mod tests {
         assert!(!keychain_disabled_by_signals(false, false, true));
         assert!(!keychain_disabled_by_signals(false, true, true));
         assert!(!keychain_disabled_by_signals(false, false, false));
+    }
+
+    #[test]
+    fn explicit_process_env_keeps_priority_over_keychain() {
+        assert_eq!(
+            resolve_runtime_key(
+                Some("explicit".to_string()),
+                None,
+                Some("stored".to_string())
+            )
+            .as_deref(),
+            Some("explicit")
+        );
+    }
+
+    #[test]
+    fn updated_keychain_replaces_bootstrap_seed() {
+        assert_eq!(
+            resolve_runtime_key(
+                Some("old".to_string()),
+                Some("old".to_string()),
+                Some("new".to_string())
+            )
+            .as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn deleted_keychain_entry_invalidates_bootstrap_seed() {
+        assert_eq!(
+            resolve_runtime_key(Some("old".to_string()), Some("old".to_string()), None),
+            None
+        );
     }
 }

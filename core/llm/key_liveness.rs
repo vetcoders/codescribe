@@ -11,15 +11,12 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
 use serde_json::json;
 
-use crate::config::keychain::{self, KEYCHAIN_ACCOUNTS};
-use crate::config::{
-    Config, DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
-    DEFAULT_OPENAI_RESPONSES_ENDPOINT,
-};
+use crate::config::Config;
+use crate::config::keychain::KEYCHAIN_ACCOUNTS;
+use crate::llm::lane_truth;
+use crate::llm::provider::{LlmMode, ProviderKind};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +34,7 @@ pub struct ApiKeyLivenessResult {
     pub account: String,
     pub status: ApiKeyLivenessStatus,
     pub message: String,
+    pub probed_endpoint: Option<String>,
 }
 
 impl ApiKeyLivenessResult {
@@ -45,7 +43,13 @@ impl ApiKeyLivenessResult {
             account: account.to_string(),
             status,
             message: message.into(),
+            probed_endpoint: None,
         }
+    }
+
+    fn with_probed_endpoint(mut self, endpoint: String) -> Self {
+        self.probed_endpoint = Some(endpoint);
+        self
     }
 }
 
@@ -59,7 +63,7 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
     }
 
     let config = Config::load();
-    let Some(api_key) = account_secret(account) else {
+    let Some(api_key) = lane_truth::secret(account) else {
         return ApiKeyLivenessResult::new(
             account,
             ApiKeyLivenessStatus::Missing,
@@ -94,7 +98,7 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         "LLM_API_KEY" | "LLM_FORMATTING_API_KEY" | "LLM_ASSISTIVE_API_KEY" => {
             probe_openai_key(&client, &config, account, &api_key)
         }
-        "LLM_ANTHROPIC_API_KEY" => probe_anthropic_key(&client, account, &api_key),
+        "LLM_ANTHROPIC_API_KEY" => probe_anthropic_key(&client, &config, account, &api_key),
         "GITHUB_TOKEN" => probe_github_token(&client, account, &api_key),
         _ => ApiKeyLivenessResult::new(
             account,
@@ -143,9 +147,8 @@ fn probe_openai_key(
     account: &str,
     api_key: &str,
 ) -> ApiKeyLivenessResult {
-    let endpoint = openai_endpoint_for_account(config, account);
-    let endpoint = normalize_openai_responses_endpoint(&endpoint);
-    let model = openai_model_for_account(account);
+    let endpoint = lane_truth::endpoint_for_account(config, account);
+    let model = lane_truth::model_for_account(config, account);
     let request = json!({
         "model": model,
         "input": [{
@@ -157,23 +160,25 @@ fn probe_openai_key(
     });
 
     let response = client
-        .post(endpoint)
+        .post(&endpoint)
         .bearer_auth(api_key)
         .header("x-api-key", api_key)
         .header("Content-Type", "application/json")
         .json(&request)
         .send();
 
-    response_result(account, response)
+    response_result(account, endpoint, response)
 }
 
-fn probe_anthropic_key(client: &Client, account: &str, api_key: &str) -> ApiKeyLivenessResult {
-    let endpoint = env_non_empty("LLM_ANTHROPIC_ENDPOINT")
-        .unwrap_or_else(|| DEFAULT_ANTHROPIC_ENDPOINT.to_string());
-    let endpoint = normalize_anthropic_messages_endpoint(&endpoint);
-    let model = env_non_empty("LLM_ASSISTIVE_MODEL")
-        .filter(|m| m.starts_with("claude"))
-        .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string());
+fn probe_anthropic_key(
+    client: &Client,
+    config: &Config,
+    account: &str,
+    api_key: &str,
+) -> ApiKeyLivenessResult {
+    let endpoint = lane_truth::anthropic_messages_endpoint();
+    let model =
+        lane_truth::model_for_provider(LlmMode::Assistive, ProviderKind::AnthropicMessages, config);
     let request = json!({
         "model": model,
         "messages": [{
@@ -184,33 +189,34 @@ fn probe_anthropic_key(client: &Client, account: &str, api_key: &str) -> ApiKeyL
     });
 
     let response = client
-        .post(endpoint)
+        .post(&endpoint)
         .header("x-api-key", api_key)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("Content-Type", "application/json")
         .json(&request)
         .send();
 
-    response_result(account, response)
+    response_result(account, endpoint, response)
 }
 
 fn probe_github_token(client: &Client, account: &str, api_key: &str) -> ApiKeyLivenessResult {
     let endpoint = env_non_empty("CODESCRIBE_GITHUB_PROBE_ENDPOINT")
         .unwrap_or_else(|| "https://api.github.com/user".to_string());
     let response = client
-        .get(endpoint)
+        .get(&endpoint)
         .bearer_auth(api_key)
         .header("User-Agent", "Codescribe API key liveness probe")
         .send();
 
-    response_result(account, response)
+    response_result(account, endpoint, response)
 }
 
 fn response_result(
     account: &str,
+    probed_endpoint: String,
     response: Result<Response, reqwest::Error>,
 ) -> ApiKeyLivenessResult {
-    match response {
+    let result = match response {
         Ok(response) => {
             let status = response.status();
             let body = response.text().unwrap_or_default();
@@ -222,7 +228,8 @@ fn response_result(
             ApiKeyLivenessStatus::Network,
             format!("network error: {error}"),
         ),
-    }
+    };
+    result.with_probed_endpoint(probed_endpoint)
 }
 
 fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
@@ -236,73 +243,6 @@ fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
     }
 }
 
-fn account_secret(account: &str) -> Option<String> {
-    env_non_empty(account).or_else(|| {
-        keychain::load_key(account)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
-}
-
-fn openai_endpoint_for_account(config: &Config, account: &str) -> String {
-    let fallback = || {
-        env_non_empty("LLM_ENDPOINT")
-            .or_else(|| config.llm_endpoint.clone())
-            .unwrap_or_else(|| DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string())
-    };
-
-    match account {
-        "LLM_FORMATTING_API_KEY" => {
-            env_non_empty("LLM_FORMATTING_ENDPOINT").unwrap_or_else(fallback)
-        }
-        "LLM_ASSISTIVE_API_KEY" => env_non_empty("LLM_ASSISTIVE_ENDPOINT").unwrap_or_else(fallback),
-        _ => fallback(),
-    }
-}
-
-fn openai_model_for_account(account: &str) -> String {
-    let is_openai_model = |m: &String| !m.starts_with("claude");
-    match account {
-        "LLM_FORMATTING_API_KEY" => env_non_empty("LLM_FORMATTING_MODEL")
-            .filter(is_openai_model)
-            .or_else(|| env_non_empty("LLM_MODEL").filter(is_openai_model))
-            .unwrap_or_else(|| DEFAULT_FORMATTING_MODEL.to_string()),
-        "LLM_ASSISTIVE_API_KEY" => env_non_empty("LLM_ASSISTIVE_MODEL")
-            .filter(is_openai_model)
-            .or_else(|| env_non_empty("LLM_MODEL").filter(is_openai_model))
-            .unwrap_or_else(|| DEFAULT_ASSISTIVE_MODEL.to_string()),
-        _ => env_non_empty("LLM_MODEL")
-            .filter(is_openai_model)
-            .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string()),
-    }
-}
-
-fn normalize_openai_responses_endpoint(endpoint: &str) -> String {
-    normalize_endpoint(
-        endpoint,
-        "/v1/responses",
-        &["/v1/responses", "/v1/chat/completions", "/v1/completions"],
-    )
-}
-
-fn normalize_anthropic_messages_endpoint(endpoint: &str) -> String {
-    normalize_endpoint(endpoint, "/v1/messages", &["/v1/messages", "/v1/responses"])
-}
-
-fn normalize_endpoint(endpoint: &str, canonical_suffix: &str, known_suffixes: &[&str]) -> String {
-    let mut base = endpoint.trim().trim_end_matches('/').to_string();
-    for suffix in known_suffixes {
-        if base.ends_with(suffix) {
-            base.truncate(base.len() - suffix.len());
-            return format!("{base}{canonical_suffix}");
-        }
-    }
-    if base.ends_with("/v1") {
-        base.truncate(base.len() - "/v1".len());
-    }
-    format!("{base}{canonical_suffix}")
-}
-
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -313,6 +253,67 @@ fn env_non_empty(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+    use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn openai_probe_reports_the_normalized_endpoint_it_called() {
+        let data_dir = TempDir::new().expect("isolated data dir");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe server");
+        let address = listener.local_addr().expect("probe server address");
+        let base_endpoint = format!("http://{address}");
+        let expected_endpoint = format!("{base_endpoint}/v1/responses");
+
+        let _data_dir = EnvGuard::set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_string_lossy().as_ref(),
+        );
+        let _shared_endpoint = EnvGuard::remove("LLM_ENDPOINT");
+        let _assistive_endpoint = EnvGuard::set("LLM_ASSISTIVE_ENDPOINT", &base_endpoint);
+        let _assistive_model = EnvGuard::set("LLM_ASSISTIVE_MODEL", "gpt-probe");
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept probe request");
+            let mut buffer = [0_u8; 4096];
+            let bytes_read = stream.read(&mut buffer).expect("read probe request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .expect("write probe response");
+            String::from_utf8_lossy(&buffer[..bytes_read])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        });
+
+        let client = Client::builder()
+            .timeout(PROBE_TIMEOUT)
+            .connect_timeout(PROBE_TIMEOUT)
+            .build()
+            .expect("build probe client");
+        let result = probe_openai_key(
+            &client,
+            &Config::default(),
+            "LLM_ASSISTIVE_API_KEY",
+            "test-key",
+        );
+
+        assert_eq!(result.status, ApiKeyLivenessStatus::Invalid);
+        assert_eq!(
+            result.probed_endpoint.as_deref(),
+            Some(expected_endpoint.as_str())
+        );
+        assert_eq!(
+            server.join().expect("probe server thread"),
+            "POST /v1/responses HTTP/1.1"
+        );
+    }
 
     #[test]
     fn classifies_success_as_ok() {
@@ -410,5 +411,38 @@ mod tests {
             classify_probe_response(StatusCode::BAD_GATEWAY, "upstream down"),
             ApiKeyLivenessStatus::Network
         );
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: process-env tests in this module are serialized.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: process-env tests in this module are serialized.
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: process-env tests in this module are serialized.
+            unsafe {
+                match self.previous.as_deref() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 }

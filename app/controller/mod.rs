@@ -1291,29 +1291,39 @@ impl RecordingController {
         info!("RECOVERY decision: stale active stream cleared, controller remains IDLE");
     }
 
+    fn build_recording_event_sink(
+        transcript_buffer: Arc<tokio::sync::Mutex<String>>,
+        preview_deltas_enabled: bool,
+        event_broadcast: broadcast::Sender<IpcEvent>,
+        session_telemetry: SharedSessionTelemetry,
+    ) -> Arc<dyn codescribe_core::pipeline::contracts::EventSink> {
+        let delta_sink = preview_deltas_enabled.then(|| {
+            Arc::new(helpers::RoutingDeltaSink)
+                as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
+        });
+        let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> = Arc::new(
+            PresentationEmitter::new(transcript_buffer, delta_sink, None),
+        );
+        let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+            Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
+        let telemetry_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+            Arc::new(helpers::SessionTelemetrySink::new(session_telemetry));
+        Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
+            vec![pe, ipc_sink, telemetry_sink],
+        ))
+    }
+
     fn configure_hold_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
     ) {
-        let tb = recorder.transcript_buffer_handle();
-        let delta_sink = preview_deltas_enabled.then(|| {
-            Arc::new(helpers::RoutingDeltaSink)
-                as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
-        });
-        let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(PresentationEmitter::new(tb, delta_sink, None));
-        let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
-        let telemetry_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(helpers::SessionTelemetrySink::new(session_telemetry));
-        recorder.set_event_sink(Some(Arc::new(
-            codescribe_core::pipeline::sinks::FanoutEventSink::new(vec![
-                pe,
-                ipc_sink,
-                telemetry_sink,
-            ]),
+        recorder.set_event_sink(Some(Self::build_recording_event_sink(
+            recorder.transcript_buffer_handle(),
+            preview_deltas_enabled,
+            event_broadcast,
+            session_telemetry,
         )));
     }
 
@@ -1331,24 +1341,11 @@ impl RecordingController {
         // appends into the current chat user bubble, and VAD end commits that bubble to the
         // agent without stopping the recorder. Do not route assistive live preview deltas
         // into the same bubble, or previews and finals will duplicate.
-        let tb = recorder.transcript_buffer_handle();
-        let delta_sink = preview_deltas_enabled.then(|| {
-            Arc::new(helpers::RoutingDeltaSink)
-                as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
-        });
-        let pe = PresentationEmitter::new(tb, delta_sink, None);
-
-        let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> = Arc::new(pe);
-        let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
-        let telemetry_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(helpers::SessionTelemetrySink::new(session_telemetry));
-        recorder.set_event_sink(Some(Arc::new(
-            codescribe_core::pipeline::sinks::FanoutEventSink::new(vec![
-                pe,
-                ipc_sink,
-                telemetry_sink,
-            ]),
+        recorder.set_event_sink(Some(Self::build_recording_event_sink(
+            recorder.transcript_buffer_handle(),
+            preview_deltas_enabled,
+            event_broadcast,
+            session_telemetry,
         )));
     }
 
@@ -3126,19 +3123,9 @@ impl RecordingController {
         } = p;
         let language_opt = language_opt.as_deref();
 
-        // Hands-off (non-assistive) is a single RAW capture; formatting is the explicit
-        // post-recording [Format] action, never an auto-format on stop. Force the raw
-        // branch for the adjudicated hands-off stop so the session lands fast + raw in
-        // the decision overlay — no AI round-trip on the stop path (this branch is the
-        // toggle-stuck-watchdog hot path; an extra format call here re-introduces stop
-        // latency). (ADR 2026-05-28 Faza 1: differentiation by action, not by mode.)
-        let toggle_handsoff = !assistive
-            && matches!(
-                transcript_source,
-                Some(RecordingTranscriptSource::ToggleSessionAdjudicated)
-            );
-        let force_raw = force_raw || toggle_handsoff;
-        let force_ai = force_ai && !toggle_handsoff;
+        // Preserve the mode resolved at recording start. Toggle-adjudicated hands-off
+        // sessions still land in the decision overlay below, but they must not erase
+        // the Settings formatting default by force-routing the transcript to RAW.
 
         // ALWAYS-ON: Final post-processing pass (lexicon + cleanup + semantic gate)
         // This ensures ALL output paths receive clean text regardless of mode.

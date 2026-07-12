@@ -235,9 +235,9 @@ pub async fn fetch_github_blob(gh: &GitHubRef, token: Option<&str>) -> Result<(V
     Ok((buf, filename))
 }
 
-/// Load GitHub token from Keychain (if available).
+/// Load the current GitHub token from an explicit env override or Keychain.
 pub fn load_github_token() -> Option<String> {
-    crate::config::keychain::load_key("GITHUB_TOKEN")
+    crate::config::keychain::runtime_key("GITHUB_TOKEN")
 }
 
 // ═══════════════════════════════════════════════════════════

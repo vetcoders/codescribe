@@ -89,13 +89,13 @@ Practical win:
 
 ## Layer mapping for this file
 
-| Section below | Layer it lights up |
-| --- | --- |
-| Embedded Whisper (build + runtime lookup) | Layer 1 (Tail Patch) backend resolution |
-| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail |
-| Stream postprocess, semantic gate | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision |
-| Cloud STT alternatives | Pluggable Layer 1 backend |
-| (NEW, Phase 2) Lexicon + small LLM passes | Layer 2 (Polish) — see ADR §Layer specifications |
+| Section below                                   | Layer it lights up                                         |
+| ----------------------------------------------- | ---------------------------------------------------------- |
+| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                    |
+| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                  |
+| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision |
+| Cloud STT alternatives                          | Pluggable Layer 1 backend                                  |
+| (NEW, Phase 2) Lexicon + small LLM passes       | Layer 2 (Polish) — see ADR §Layer specifications           |
 
 Everything below this point is the same Whisper-Live tech that existed before the ADR — it is
 **not removed**, just relocated in the architecture: Whisper became the silent partner that makes

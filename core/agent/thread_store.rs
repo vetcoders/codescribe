@@ -767,7 +767,7 @@ mod tests {
     fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
         let tmp = TempDir::new()?;
         let store = ThreadStore::new_in(tmp.path().join("threads"))?;
-        let image_bytes = b"w5a-inline-roundtrip-bytes".to_vec();
+        let image_bytes = format!("w5a-inline-roundtrip-bytes-{}", std::process::id()).into_bytes();
 
         let message = Message {
             role: Role::User,

@@ -1075,6 +1075,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let mut partial_telemetry = PartialPassTelemetry::default();
 
     let mut first_audio = vec![21.0];
+    let mut first_window = String::from("draft-a");
     assert!(schedule_partial_pass(
         &scheduler,
         16_000,
@@ -1086,7 +1087,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         &mut correction_suffix_snapshot,
         "suffix-a",
         7,
-        "draft-a",
+        &mut first_window,
         PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
         PartialPassTrigger::Timer,
         &mut partial_telemetry,
@@ -1095,6 +1096,10 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     assert!(
         first_audio.is_empty(),
         "correction audio buffer should be consumed on schedule"
+    );
+    assert!(
+        first_window.is_empty(),
+        "window text mirror should be taken in lockstep with the audio buffer"
     );
     assert_eq!(
         correction_expected_boundary_rev,
@@ -1117,6 +1122,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         .id();
 
     let mut second_audio = vec![22.0];
+    let mut second_window = String::from("draft-b");
     assert!(schedule_partial_pass(
         &scheduler,
         16_000,
@@ -1128,7 +1134,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         &mut correction_suffix_snapshot,
         "suffix-b",
         8,
-        "draft-b",
+        &mut second_window,
         PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
         PartialPassTrigger::Speech,
         &mut partial_telemetry,
@@ -1269,6 +1275,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
         let expected_text = format!("draft-{index}");
         let expected_suffix = format!("suffix-{index}");
         let mut audio = vec![marker];
+        let mut window = expected_text.clone();
 
         assert!(schedule_partial_pass(
             &scheduler,
@@ -1281,7 +1288,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
             &mut correction_suffix_snapshot,
             &expected_suffix,
             expected_rev,
-            &expected_text,
+            &mut window,
             PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS + index as u64,
             trigger,
             &mut partial_telemetry,

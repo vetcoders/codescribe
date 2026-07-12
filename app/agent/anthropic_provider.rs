@@ -42,14 +42,10 @@ use codescribe_core::agent::{
 };
 use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
-const DEFAULT_ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Anthropic requires `max_tokens` on every request; used only when the caller
 /// (assistive lane) leaves `options.max_tokens` unset.
 const DEFAULT_MAX_TOKENS: u32 = 8192;
-/// Safe Claude default so the agent path never falls into an empty model when
-/// the assistive-lane model env is unset (Settings normally supplies one).
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
@@ -69,20 +65,20 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn from_env() -> Result<Self> {
-        let api_key = get_env_non_empty("LLM_ANTHROPIC_API_KEY", "Anthropic API key (assistive)")?;
-        let endpoint = std::env::var("LLM_ANTHROPIC_ENDPOINT")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_ANTHROPIC_ENDPOINT.to_string());
+    /// Build from the resolved assistive lane (fresh settings → env →
+    /// Keychain). Anthropic always authenticates, so a missing key is a
+    /// readable error naming the exact account — the availability gate
+    /// reports the same reason before a send is ever attempted.
+    pub fn from_lane(
+        lane: codescribe_core::llm::lane_truth::AssistiveLaneSnapshot,
+    ) -> Result<Self> {
+        let api_key = lane
+            .api_key
+            .context("Anthropic API key (assistive) is required. Set LLM_ANTHROPIC_API_KEY.")?;
+        let endpoint = lane.endpoint;
         // Model comes from the shared assistive-lane setting; Settings supplies a
         // Claude model when the assistive provider is Anthropic.
-        let default_model = std::env::var("LLM_ASSISTIVE_MODEL")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string());
+        let default_model = lane.model;
 
         let initial_response_timeout = Duration::from_millis(parse_env_u64(
             "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
@@ -803,15 +799,6 @@ fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
         other => anyhow::bail!("Unsupported endpoint URL scheme: {}", other),
     }
     Ok(url)
-}
-
-fn get_env_non_empty(key: &str, label: &str) -> Result<String> {
-    let value = std::env::var(key).with_context(|| format!("{label} is required. Set {key}."))?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("{label} is required. Set {key}.");
-    }
-    Ok(trimmed.to_string())
 }
 
 fn parse_env_u64(key: &str, default: u64) -> u64 {

@@ -143,5 +143,5 @@ pub use config::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to
 pub use llm::{ai_formatting, client};
 pub use pipeline::contracts;
 pub use pipeline::stream_postprocess;
-pub use quality::{qube_daemon, qube_report};
+pub use quality::{overlay_quality, qube_daemon, qube_report};
 pub use util::{safe_path, status};

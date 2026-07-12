@@ -1,6 +1,8 @@
 use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
-use codescribe_core::llm::provider::{LlmMode, ProviderKind, resolve_provider};
+use codescribe_core::config::Config;
+use codescribe_core::llm::lane_truth;
+use codescribe_core::llm::provider::ProviderKind;
 
 pub mod anthropic_provider;
 pub mod openai_provider;
@@ -10,18 +12,24 @@ pub mod tools;
 pub use anthropic_provider::AnthropicProvider;
 pub use openai_provider::OpenAiProvider;
 
-pub fn create_openai_provider_from_env() -> Result<OpenAiProvider> {
-    OpenAiProvider::from_env()
+/// Build the agent (assistive-lane) provider from the lane-truth snapshot
+/// (fresh settings → env → Keychain), so a Settings save is honored on the
+/// very next send — no restart, no stale bootstrap env. A lane that cannot be
+/// reached fails with the same actionable reason
+/// [`assistive_unavailable_reason`] reports, never a generic key demand, and
+/// never a silent fallback to an unintended vendor.
+pub fn create_default_provider() -> Result<Box<dyn AgentProvider>> {
+    let config = Config::load();
+    let lane = lane_truth::assistive_availability(&config).map_err(anyhow::Error::msg)?;
+    match lane.provider {
+        ProviderKind::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_lane(lane)?)),
+        ProviderKind::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(lane)?)),
+    }
 }
 
-/// Build the agent (assistive-lane) provider from the configured provider
-/// identity (`LLM_ASSISTIVE_PROVIDER`, resolved by
-/// [`resolve_provider`]). A missing key for the SELECTED provider surfaces its
-/// own clear error (`from_env`) rather than silently falling back to the other
-/// provider — misconfiguration must never route to an unintended vendor.
-pub fn create_default_provider() -> Result<Box<dyn AgentProvider>> {
-    match resolve_provider(LlmMode::Assistive) {
-        ProviderKind::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_env()?)),
-        ProviderKind::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_env()?)),
-    }
+/// User-facing reason the assistive lane cannot reach a model right now
+/// (`None` when a send can proceed). Kept beside [`create_default_provider`]
+/// so the availability gate and provider construction can never drift.
+pub fn assistive_unavailable_reason() -> Option<String> {
+    lane_truth::assistive_availability(&Config::load()).err()
 }

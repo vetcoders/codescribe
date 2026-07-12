@@ -11,7 +11,8 @@ use codescribe_core::agent::{
     Thread, ThreadMessage, ThreadStore, ToolRegistry,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
-use codescribe_core::llm::provider::{LlmMode, provider_supports_vision, resolve_provider};
+use codescribe_core::llm::lane_truth::assistive_identity;
+use codescribe_core::llm::provider::provider_supports_vision;
 use tokio::task::AbortHandle;
 
 use crate::CsError;
@@ -31,6 +32,15 @@ const MAX_COMPOSER_VISION_IMAGES: usize = 16;
 pub struct CsAttachment {
     /// Absolute filesystem path to the attached image.
     pub path: String,
+}
+
+/// Assistive-lane availability for the Swift chat surface: `available` gates
+/// the send, `detail` is the honest reason shown in the thread when the lane
+/// cannot reach a model (empty when ready).
+#[derive(uniffi::Record)]
+pub struct CsAgentAvailability {
+    pub available: bool,
+    pub detail: String,
 }
 
 /// Foreign callback trait — agent streaming events forwarded to Swift.
@@ -63,14 +73,33 @@ impl CodescribeAgent {
         Self::default()
     }
 
-    /// True when the assistive LLM provider can be built from the environment
-    /// (LLM_ASSISTIVE_ENDPOINT / _MODEL / _API_KEY present). Same gate the live
-    /// app uses before agent replies are possible.
+    /// True when the assistive lane can currently reach a provider. Resolved
+    /// fresh on every call (settings → env → Keychain via lane_truth), so a
+    /// Settings save flips this on the very next send — no restart, no stale
+    /// bootstrap env. A key-optional local endpoint counts as available.
     pub fn is_available(&self) -> bool {
         // Warm settings + Keychain only when the agent surface is actually used.
         // Constructing the Swift app model must not trigger a keychain prompt.
         let _ = codescribe_core::config::Config::load();
-        codescribe::agent::create_default_provider().is_ok()
+        codescribe::agent::assistive_unavailable_reason().is_none()
+    }
+
+    /// Availability of the assistive lane as one record: `available` mirrors
+    /// [`Self::is_available`]; `detail` carries the actionable, user-facing
+    /// reason when the lane cannot reach a model (which lane, endpoint or key
+    /// is missing — never a generic "add an API key"). Empty when ready.
+    pub fn availability(&self) -> CsAgentAvailability {
+        let _ = codescribe_core::config::Config::load();
+        match codescribe::agent::assistive_unavailable_reason() {
+            None => CsAgentAvailability {
+                available: true,
+                detail: String::new(),
+            },
+            Some(detail) => CsAgentAvailability {
+                available: false,
+                detail,
+            },
+        }
     }
 
     /// Stream one agent reply for `text` on the conversation identified by
@@ -437,9 +466,10 @@ fn validate_composer_attachments(
     }
 
     // Vision gate: refuse (readable error) rather than silently drop the images
-    // when the configured assistive model cannot read them.
-    let provider = resolve_provider(LlmMode::Assistive);
-    let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
+    // when the configured assistive model cannot read them. Lane identity comes
+    // from lane_truth (fresh settings), not the frozen bootstrap env.
+    let config = codescribe_core::config::Config::load();
+    let (provider, model) = assistive_identity(&config);
     if !provider_supports_vision(provider, &model) {
         return Err(CsError::Agent {
             msg: "The selected model can't read images. Switch to a vision-capable \
@@ -496,10 +526,11 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
             return Ok(());
         };
 
-        let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default();
-        // Reflect the resolved assistive provider so persisted thread metadata is
-        // accurate when Anthropic is active (was hardcoded "openai-responses").
-        let provider = resolve_provider(LlmMode::Assistive).as_str().to_string();
+        // Reflect the resolved assistive lane (fresh settings, Keychain-free)
+        // so persisted thread metadata matches what the send actually used.
+        let config = codescribe_core::config::Config::load();
+        let (provider, model) = assistive_identity(&config);
+        let provider = provider.as_str().to_string();
 
         let mut thread = store.load_thread(&thread_id).unwrap_or_else(|_| Thread {
             id: thread_id.clone(),

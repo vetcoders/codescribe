@@ -16,9 +16,14 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::Config;
-use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
-use crate::llm::provider::ProviderKind;
+use crate::llm::lane_truth;
+use crate::llm::provider::{LlmMode, ProviderKind};
 
+/// 5s client timeout for live /models discovery.
+/// P2-08/P2-09: short to keep Settings responsive; no explicit per-call cancel surface
+/// (fire-and-forget from UI, last-good cache covers failure). If provider is slow,
+/// we degrade to cache rather than hang the picker. Justified as UX bound, not
+/// a knob (per charter: no new Settings controls).
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_FILE_NAME: &str = "model_discovery_cache.json";
 const ANTHROPIC_MODELS_ENDPOINT: &str = "https://api.anthropic.com/v1/models";
@@ -165,8 +170,8 @@ struct AnthropicModel {
 
 /// Discover models for a provider using the already-supported config/key path.
 ///
-/// `Config::load()` is intentionally the first operation: it applies settings,
-/// optional `.env`, and Keychain population exactly like the provider runtime.
+/// `Config::load()` is intentionally the first operation: it provides the live
+/// settings snapshot consumed by `lane_truth` exactly like the provider runtime.
 /// Missing keys are hard `no_key` failures and do not fall back to stale cache;
 /// network/http/parse failures return last-good cache when available.
 pub fn discover_models(
@@ -174,7 +179,7 @@ pub fn discover_models(
 ) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
     let config = Config::load();
     let key_name = provider.api_key_env_key();
-    let api_key = env_non_empty(key_name).ok_or(ModelDiscoveryError::NoKey {
+    let api_key = lane_truth::secret(key_name).ok_or(ModelDiscoveryError::NoKey {
         provider,
         env_key: key_name,
     })?;
@@ -223,10 +228,7 @@ fn fetch_openai_models(
     api_key: &str,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
     let provider = ProviderKind::OpenAiResponses;
-    let endpoint = env_non_empty("LLM_ASSISTIVE_ENDPOINT")
-        .or_else(|| env_non_empty("LLM_ENDPOINT"))
-        .or_else(|| config.llm_endpoint.clone())
-        .unwrap_or_else(|| DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string());
+    let endpoint = lane_truth::endpoint(LlmMode::Assistive, config);
     let endpoint = openai_models_endpoint(&endpoint)?;
 
     let response = client
@@ -486,6 +488,7 @@ fn write_cache(
     })
 }
 
+#[cfg(test)]
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -527,7 +530,8 @@ mod tests {
             .with_body(r#"{"object":"list","data":[{"id":"gpt-live"},{"id":"gpt-other"}]}"#)
             .create();
 
-        let result = discover_models(ProviderKind::OpenAiResponses).unwrap();
+        let result = discover_models(ProviderKind::OpenAiResponses)
+            .expect("discover_models should succeed in OpenAI test path");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
         assert_eq!(
@@ -544,7 +548,8 @@ mod tests {
             ]
         );
 
-        let cached = read_cached_models(ProviderKind::OpenAiResponses).unwrap();
+        let cached = read_cached_models(ProviderKind::OpenAiResponses)
+            .expect("read_cached_models should succeed after fresh discovery write");
         assert_eq!(cached, result.models);
         env.keepalive();
     }
@@ -580,7 +585,8 @@ mod tests {
             )
             .create();
 
-        let result = discover_models(ProviderKind::AnthropicMessages).unwrap();
+        let result = discover_models(ProviderKind::AnthropicMessages)
+            .expect("discover_models should succeed in Anthropic test path");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
         assert_eq!(
@@ -615,7 +621,8 @@ mod tests {
         );
         let _mock = server.mock("GET", "/v1/models").expect(0).create();
 
-        let err = discover_models(ProviderKind::AnthropicMessages).unwrap_err();
+        let err = discover_models(ProviderKind::AnthropicMessages)
+            .expect_err("discover_models should fail without key in this Anthropic error test");
 
         assert_eq!(err.code(), "no_key");
         assert_eq!(err.provider(), ProviderKind::AnthropicMessages);
@@ -638,7 +645,8 @@ mod tests {
             .with_status(200)
             .with_body(r#"{"data":[{"id":"gpt-cached"}]}"#)
             .create();
-        let fresh = discover_models(ProviderKind::OpenAiResponses).unwrap();
+        let fresh = discover_models(ProviderKind::OpenAiResponses)
+            .expect("discover_models should succeed for cache freshness test");
         assert_eq!(fresh.status, ModelDiscoveryStatus::Fresh);
 
         let _fail = server
@@ -646,7 +654,8 @@ mod tests {
             .with_status(503)
             .with_body("temporarily unavailable")
             .create();
-        let cached = discover_models(ProviderKind::OpenAiResponses).unwrap();
+        let cached = discover_models(ProviderKind::OpenAiResponses)
+            .expect("discover_models should return cached result without network");
 
         assert_eq!(
             cached.status,

@@ -109,10 +109,35 @@ final class OverlayState: ObservableObject {
     @Published var toast: String?              // transient error notice
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
+    /// Final pass phase (AI formatting / authoritative assembly after stop).
+    /// Set on `applySessionFinalised`, cleared on controller finish or reset.
+    /// Drives "final pass" status while the user still sees the live assembly.
+    @Published var isFinalPass: Bool = false
     /// Human-facing notice shown in the `.noSpeech` outcome body. Set when a
     /// session finalizes without usable text; refined by `on_no_speech`'s reason
     /// so VAD silence and quality-gate rejection read differently.
     @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
+
+    // MARK: Panel placement (persisted; the window orchestrator repositions live)
+    /// Anchored placement: one of six screen anchors, applied on every show().
+    /// Picking an anchor exits free motion — the pick's intent is "go there".
+    @Published var placementAnchor: OverlayAnchor = OverlayPlacement.anchor {
+        didSet {
+            guard placementAnchor != oldValue else { return }
+            OverlayPlacement.anchor = placementAnchor
+            if freeMotion { freeMotion = false } else { onPlacementChanged?() }
+        }
+    }
+    /// Free motion: the panel keeps (and restores) wherever the user dragged it.
+    @Published var freeMotion: Bool = OverlayPlacement.freeMotion {
+        didSet {
+            guard freeMotion != oldValue else { return }
+            OverlayPlacement.freeMotion = freeMotion
+            onPlacementChanged?()
+        }
+    }
+    /// Wired by the orchestrator: re-derive the visible panel's origin now.
+    var onPlacementChanged: (() -> Void)?
 
     // MARK: Injected collaborators (all optional so #Preview renders standalone)
     /// The recording core. Injected by the orchestrator. Do NOT instantiate here.
@@ -142,6 +167,14 @@ final class OverlayState: ObservableObject {
     /// SAME text the delivery/paste and tray "Copy" use. When present it is the
     /// FINAL the overlay shows, instead of the raw per-utterance streaming assembly.
     private var authoritativeFinalText: String?
+    /// The delivered (pre-user-edit) text at the moment we entered .formatted.
+    /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
+    private var deliveredText: String = ""
+    /// Best-effort raw STT transcript text (pre-AI formatting / postprocess) for
+    /// quality records. D-05: wired from authoritative final / STT assembly so
+    /// lexicon v2 and quality analytics get the real misheard text, not only
+    /// the (possibly formatted) delivered. Cleared on reset like deliveredText.
+    private var sttRawText: String = ""
     /// Once a session is finalized (mode `.formatted` / Idle), the transcript is
     /// FROZEN. Late streaming events (Preview/Correction/UtteranceFinal/VAD) that the
     /// engine may still emit during/after teardown are DROPPED instead of mutating
@@ -159,6 +192,14 @@ final class OverlayState: ObservableObject {
     private var warmupWatchdogTask: Task<Void, Never>?
     private static let warmupWatchdogNanos: UInt64 = 4_000_000_000
 
+    // MARK: Auto-hide after passive final (no Copy/Send action)
+    private var autoHideTask: Task<Void, Never>?
+    /// 12 seconds. Rationale: typical short dictation result is 1–3 sentences.
+    /// At normal reading speed + reaction to act (Copy/Send/Close) this gives
+    /// comfortable view time without the overlay remaining "król puszczy" after
+    /// the user has moved attention elsewhere. No user-facing knob (per spec).
+    private static let autoHideDelayNanos: UInt64 = 12_000_000_000
+
     init() {}
 
     func attach() {
@@ -168,8 +209,11 @@ final class OverlayState: ObservableObject {
     // MARK: Derived display (one source of truth for the view)
 
     var statusText: String {
-        if mode == .error { return "error" }
+        if mode == .error { return "failed" }
+        if mode == .formatted { return "done" }
+        if mode == .noSpeech { return "no speech" }
         guard mode == .listening else { return "Idle" }
+        if isFinalPass { return "final pass" }
         if transcribing { return "transcribing" }
         return warmingUp ? "starting" : "recording"
     }
@@ -181,10 +225,10 @@ final class OverlayState: ObservableObject {
         case .error: return CSColor.terracotta
         }
     }
-    /// Only the live-capture pill ripples. During `transcribing` we swap to the
-    /// static pill so its repeatForever animation tears down — a second visual
-    /// cue that capture has ended.
-    var statusRippling: Bool { mode == .listening && !transcribing && (audioReady || vadActive) }
+    /// Only the live-capture pill ripples. During `transcribing` / `final pass` we swap
+    /// to the static pill so its repeatForever animation tears down — a second visual
+    /// cue that capture has ended and post-processing is in flight.
+    var statusRippling: Bool { mode == .listening && !transcribing && !isFinalPass && (audioReady || vadActive) }
 
     var tagText: String {
         switch mode {
@@ -204,6 +248,7 @@ final class OverlayState: ObservableObject {
     }
 
     var metaText: String {
+        if isFinalPass { return "final pass · formatting" }
         switch mode {
         case .listening: return transcribing ? "finalizing · transcript" : "live preview · raw"
         case .formatted: return "final · transcript"
@@ -213,6 +258,7 @@ final class OverlayState: ObservableObject {
     }
     var footerRight: String {
         if isFormatting { return "formatting" }
+        if isFinalPass { return "final pass" }
         if mode == .noSpeech { return "no speech" }
         if mode == .error { return "error" }
         if mode == .listening && transcribing { return "transcribing" }
@@ -232,7 +278,13 @@ final class OverlayState: ObservableObject {
     /// "listening…"/"starting…" during capture. The transcribing phase wins over any
     /// committed text so the post-capture state surfaces "transcribing…" here (not the
     /// raw streaming assembly) — the main-status counterpart to the header pill.
+    /// During final pass we keep the assembled transcript visible (user sees result
+    /// while AI formatting runs) — status/footer communicate the phase.
     var listeningDisplay: String {
+        if isFinalPass {
+            // Keep the captured assembly visible during final pass / AI formatting.
+            return !liveText.isEmpty ? liveText : "final pass…"
+        }
         if transcribing { return "transcribing…" }
         if !liveText.isEmpty { return liveText }
         return warmingUp ? "starting…" : "listening…"
@@ -307,6 +359,7 @@ final class OverlayState: ObservableObject {
                 let formatted = try await engine.formatText(text: source, language: nil)
                 self.formattedText = formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source : formatted
                 self.mode = .formatted
+                self.cancelAutoHide()  // User acted (Format); do not auto-hide the result.
             } catch {
                 self.errorMessage = "Couldn't format transcript: \(error)"
                 self.showToast("Couldn't format transcript")
@@ -326,6 +379,7 @@ final class OverlayState: ObservableObject {
             // is the id-ordered assembly of `UtteranceFinal` events (see liveText).
             _ = try await engine.stopRecording()
             recording = false
+            isFinalPass = false
             finalizeTranscript() // clears `transcribing` as it flips to `.formatted`
         } catch {
             presentTerminalError(
@@ -338,17 +392,30 @@ final class OverlayState: ObservableObject {
     // MARK: Action row
 
     func copyToPasteboard() {
+        // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
+        captureQualityIfEdited(action: "copy")
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(activeText, forType: .string)
+        cancelAutoHide()
+        // Per contract: after Copy the overlay hides (user acted; no linger).
+        onClose?()
     }
 
     func sendToAgent() {
+        // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
+        captureQualityIfEdited(action: "send")
+        cancelAutoHide()
         onSendToAgent?(activeText)
+        // The onSendToAgent closure (wired in OverlayController) also hides;
+        // the cancel ensures timer is dead even if closure path changes.
     }
 
     func close() {
+        // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
+        captureQualityIfEdited(action: "close")
         cancelWarmupWatchdog()
+        cancelAutoHide()
         mockRevealTask?.cancel()
         toastTask?.cancel()
         if recording, let engine {
@@ -359,7 +426,32 @@ final class OverlayState: ObservableObject {
         audioReady = false
         warmingUp = false
         transcribing = false
+        isFinalPass = false
         onClose?()
+    }
+
+    // MARK: P0-D quality loop (user edits on FINAL → record + lexicon candidate)
+
+    private func captureQualityIfEdited(action: String) {
+        guard mode == .formatted else { return }
+        let delivered = deliveredText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let edited = formattedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !edited.isEmpty, delivered != edited else { return }
+        // Bridge FFI (generated by uniffi) appends the quality JSONL and feeds safe
+        // candidates to lexicon.custom.jsonl. That is blocking disk I/O, so it runs
+        // off the main actor — Copy/Send/Close must never wait on the disk.
+        // Raw is best-effort for MVP.
+        // D-05 over-correct: use sttRawText (wired from applyFinalTranscript / STT finals)
+        // as raw_text when available so quality records carry the real pre-formatting
+        // STT text for lexicon v2 consumers. Falls back to delivered (still better than "").
+        let rawForRecord = !sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? sttRawText
+            : delivered
+        Task.detached(priority: .utility) {
+            // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
+            // quality write is best-effort; never block UI action.
+            try? commitOverlayQualityRecord(rawText: rawForRecord, deliveredText: delivered, editedText: edited, action: action)
+        }
     }
 
     func prepareForExternalStart() {
@@ -368,6 +460,7 @@ final class OverlayState: ObservableObject {
 
     func handleRecordingPreparing() {
         finalized = false
+        isFinalPass = false
         mode = .listening
         warmingUp = true
         audioReady = false
@@ -385,6 +478,7 @@ final class OverlayState: ObservableObject {
     func handleRecordingStarted() {
         cancelWarmupWatchdog()
         finalized = false
+        isFinalPass = false
         mode = .listening
         warmingUp = false
         audioReady = true
@@ -403,6 +497,7 @@ final class OverlayState: ObservableObject {
     func finishControllerRecording() {
         cancelWarmupWatchdog()
         recording = false
+        isFinalPass = false
         finalizeTranscript()
     }
 
@@ -454,15 +549,35 @@ final class OverlayState: ObservableObject {
         onClose?()
     }
 
+    private func armAutoHideIfNeeded() {
+        guard mode == .formatted, !finalized /* still visible */ else { return }
+        cancelAutoHide()
+        autoHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: OverlayState.autoHideDelayNanos)
+            guard !Task.isCancelled else { return }
+            // Only auto-dismiss if still in passive formatted state (no action taken).
+            if let self = self, self.mode == .formatted {
+                self.onClose?()
+            }
+        }
+    }
+
+    private func cancelAutoHide() {
+        autoHideTask?.cancel()
+        autoHideTask = nil
+    }
+
     private func abortRecordingSession(resetTranscript shouldResetTranscript: Bool = false) {
         let shouldNotifyStopped =
             !finalized && (recording || warmingUp || transcribing || audioReady || vadActive)
         cancelWarmupWatchdog()
+        cancelAutoHide()
         recording = false
         warmingUp = false
         transcribing = false
         audioReady = false
         vadActive = false
+        isFinalPass = false
         if shouldResetTranscript {
             resetTranscript()
         }
@@ -486,6 +601,7 @@ final class OverlayState: ObservableObject {
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         formattedText = ""
         isFormatting = false
+        isFinalPass = false
         errorMessage = message
         mode = .error
         finalized = true
@@ -590,7 +706,16 @@ final class OverlayState: ObservableObject {
     }
 
     func applySessionFinalised() {
-        finalizeTranscript()
+        guard !finalized else { return }
+        markTranscriptActivity()
+        // Enter final pass phase (the post-stop AI formatting / authoritative
+        // assembly). Status shows "final pass", transcript assembly remains
+        // visible; the controller finish will surface the resolved .formatted.
+        isFinalPass = true
+        transcribing = false
+        // Do not call finalizeTranscript here — that is driven by
+        // finishControllerRecording (or equivalent terminal) so the phase
+        // is observable to the user.
     }
 
     /// `on_no_speech` — the engine adjudicated the session with no usable speech.
@@ -638,6 +763,12 @@ final class OverlayState: ObservableObject {
             formattedText = clean
             mode = .formatted
         }
+        if deliveredText.isEmpty, !clean.isEmpty {
+            deliveredText = clean
+        }
+        if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !clean.isEmpty {
+            sttRawText = clean
+        }
     }
 
     /// Single authoritative finalize. `runStop`, `finishControllerRecording`, and
@@ -673,11 +804,18 @@ final class OverlayState: ObservableObject {
             mode = .noSpeech
         } else {
             if formattedText != resolved { formattedText = resolved }
+            if deliveredText.isEmpty { deliveredText = resolved }
+            if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Best effort: if no STT raw from per-utterance finals yet, fall back to the
+                // resolved assembly (still the raw-streaming path, not AI formatted).
+                sttRawText = resolved
+            }
             mode = .formatted
         }
         // FREEZE: from here, late streaming events are dropped (see the apply guards)
         // so nothing keeps mutating @Published state and re-rendering in Idle.
         finalized = true
+        isFinalPass = false
         // Notify the recording-lifecycle sink that the session ended. This is the
         // stop-side counterpart to `handleRecordingStarted` firing `onRecordingStarted?()`:
         // the tray otherwise only clears its "Recording" pill via the popover's one-shot
@@ -685,6 +823,13 @@ final class OverlayState: ObservableObject {
         // so redundant re-finalizes (finishControllerRecording + applySessionFinalised)
         // don't re-fire and churn @Published tray state.
         if !wasFinalized { onRecordingStopped?() }
+
+        // Arm passive auto-hide for the result view when user takes no action.
+        // 12s chosen: enough to read 2–4 sentence transcript + decide (Copy/Send/Close),
+        // short enough not to linger as "król puszczy". Constant (no Settings knob).
+        if mode == .formatted {
+            armAutoHideIfNeeded()
+        }
     }
 
     private var usableAuthoritativeFinalText: String? {
@@ -698,10 +843,14 @@ final class OverlayState: ObservableObject {
         committedSegments = []
         committedUtterances = []
         authoritativeFinalText = nil
+        deliveredText = ""
+        sttRawText = ""
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false
         transcribing = false
+        isFinalPass = false
+        cancelAutoHide()
     }
 
     private func markTranscriptActivity() {

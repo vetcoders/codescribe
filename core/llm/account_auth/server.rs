@@ -20,8 +20,8 @@ use base64::Engine;
 const DEFAULT_PORT: u16 = 1455;
 const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>CodeScribe signed in</title></head>
-<body><h1>CodeScribe signed in</h1><p>You can close this window.</p></body>
+<head><meta charset="utf-8"><title>Codescribe signed in</title></head>
+<body><h1>Codescribe signed in</h1><p>You can close this window.</p></body>
 </html>"#;
 
 #[derive(Debug, Clone)]
@@ -73,7 +73,11 @@ pub struct ShutdownHandle {
 
 impl ShutdownHandle {
     pub fn shutdown(&self) {
-        self.shutdown_notify.notify_waiters();
+        // `notify_one` (not `notify_waiters`): it stores a permit when the
+        // server task is momentarily outside its `select!` — e.g. mid-response
+        // to a browser request — so a cancel landing in that window still stops
+        // the server on its next loop instead of being silently lost.
+        self.shutdown_notify.notify_one();
     }
 }
 
@@ -405,6 +409,114 @@ fn send_response_with_disconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::account_auth::{OPENAI_ACCOUNT_TOKENS_ACCOUNT, load_account_tokens};
+    use serial_test::serial;
+
+    /// Full "Sign in with ChatGPT" roundtrip against a mock issuer: the login
+    /// server hands out the authorize URL, the browser redirect lands on
+    /// `/auth/callback`, the code is exchanged at the issuer, tokens persist
+    /// through the (test-env) Keychain path, and `block_until_done` resolves.
+    /// `#[serial]`: the test-env token store is the process env var.
+    #[tokio::test]
+    #[serial]
+    async fn login_roundtrip_callback_exchanges_code_and_stores_tokens() {
+        let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+
+        let mut issuer = mockito::Server::new_async().await;
+        let _mock = issuer
+            .mock("POST", "/oauth/token")
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "grant_type".to_string(),
+                    "authorization_code".to_string(),
+                ),
+                mockito::Matcher::UrlEncoded("code".to_string(), "auth-code".to_string()),
+                mockito::Matcher::UrlEncoded("client_id".to_string(), "client".to_string()),
+            ]))
+            .with_status(200)
+            .with_body(
+                r#"{"access_token":"account-access","refresh_token":"account-refresh","expires_in":3600}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut opts = ServerOptions::new("client".to_string());
+        opts.issuer = issuer.url();
+        opts.port = 0;
+        opts.force_state = Some("roundtrip-state".to_string());
+        let login = run_login_server(opts).await.expect("bind login server");
+        assert!(login.auth_url.contains("state=roundtrip-state"));
+        assert!(login.auth_url.starts_with(&issuer.url()));
+
+        let callback = format!(
+            "http://127.0.0.1:{}/auth/callback?code=auth-code&state=roundtrip-state",
+            login.actual_port
+        );
+        // reqwest follows the 302 to /success, which completes the server loop.
+        let response = reqwest::get(&callback).await.expect("callback request");
+        assert!(response.status().is_success());
+        login.block_until_done().await.expect("login completes");
+
+        let stored =
+            load_account_tokens(ProviderKind::OpenAiResponses).expect("tokens were stored");
+        assert_eq!(stored.access_token, "account-access");
+        assert_eq!(stored.refresh_token.as_deref(), Some("account-refresh"));
+    }
+
+    /// A forged `state` must be rejected before any token exchange, and the
+    /// pending login stays cancellable (cancel ⇒ honest "not completed" error).
+    #[tokio::test]
+    async fn callback_with_wrong_state_is_rejected_without_token_exchange() {
+        let mut opts = ServerOptions::new("client".to_string());
+        opts.port = 0;
+        opts.force_state = Some("expected-state".to_string());
+        let login = run_login_server(opts).await.expect("bind login server");
+
+        let callback = format!(
+            "http://127.0.0.1:{}/auth/callback?code=auth-code&state=forged",
+            login.actual_port
+        );
+        let response = reqwest::get(&callback).await.expect("callback request");
+        assert_eq!(response.status().as_u16(), 400);
+
+        login.cancel();
+        assert!(login.block_until_done().await.is_err());
+    }
+
+    #[derive(Debug)]
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: env-touching tests here are serialized with `serial`.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: env-touching tests here are serialized with `serial`.
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                // SAFETY: env-touching tests here are serialized with `serial`.
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                // SAFETY: env-touching tests here are serialized with `serial`.
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     #[tokio::test]
     async fn exchange_code_posts_authorization_grant_and_maps_tokens() {

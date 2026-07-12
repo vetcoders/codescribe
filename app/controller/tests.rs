@@ -1,6 +1,8 @@
 //! Controller unit tests
 
 use super::*;
+use crate::controller::types::{TranscriptPipelineParams, read_truth_sidecar};
+use codescribe_core::pipeline::contracts::EngineEvent;
 use serial_test::serial;
 use std::time::Duration;
 
@@ -83,7 +85,10 @@ async fn test_hold_down_schedules_delayed_start() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("down hotkey must schedule without error in test");
 
     // Should still be IDLE (delay not elapsed)
     assert_eq!(controller.current_state().await, State::Idle);
@@ -110,7 +115,10 @@ async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("assistive ctrl hold hotkey must process in test");
 
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(controller.current_state().await, State::Idle);
@@ -135,7 +143,10 @@ async fn test_hold_up_before_delay_cancels() {
         force_raw: true,
         force_ai: false,
     };
-    controller.handle_hotkey_event(down_event).await.unwrap();
+    controller
+        .handle_hotkey_event(down_event)
+        .await
+        .expect("down must process for cancel test");
 
     // Release before delay elapses
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -147,7 +158,10 @@ async fn test_hold_up_before_delay_cancels() {
         force_raw: true,
         force_ai: false,
     };
-    controller.handle_hotkey_event(up_event).await.unwrap();
+    controller
+        .handle_hotkey_event(up_event)
+        .await
+        .expect("up must cancel the pending hold");
 
     // Wait past the original delay
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -170,8 +184,10 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(down_event).await.unwrap();
-
+    controller
+        .handle_hotkey_event(down_event)
+        .await
+        .expect("hotkey down must succeed in test harness (P2-07 over-correct)");
     tokio::time::sleep(Duration::from_millis(100)).await;
     let up_event = HotkeyInput {
         key_type: HotkeyType::Hold,
@@ -181,7 +197,10 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(up_event).await.unwrap();
+    controller
+        .handle_hotkey_event(up_event)
+        .await
+        .expect("hotkey up must succeed in test harness (P2-07 over-correct)");
 
     tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(controller.current_state().await, State::Idle);
@@ -201,7 +220,10 @@ async fn test_toggle_starts_immediately() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle press must start recording immediately in test");
 
     // Should immediately transition to REC_TOGGLE
     assert_eq!(controller.current_state().await, State::RecToggle);
@@ -224,7 +246,10 @@ async fn test_busy_state_ignores_hotkeys() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("ignored hotkey in busy must not error the handler");
 
     // Should remain BUSY
     assert_eq!(controller.current_state().await, State::Busy);
@@ -408,6 +433,228 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
     assert_eq!(
         maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
         "<codescribe mode=\"dictation\" lang=\"auto\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+fn test_transcript_pipeline_params(
+    raw_text: &str,
+    config: Config,
+    force_raw: bool,
+    force_ai: bool,
+    transcript_source: Option<RecordingTranscriptSource>,
+) -> TranscriptPipelineParams {
+    TranscriptPipelineParams {
+        raw_text: raw_text.to_string(),
+        recording_timestamp: chrono::Local::now(),
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw,
+        force_ai,
+        config,
+        language_opt: None,
+        raw_save_enabled: false,
+        audio_path: None,
+        cloud_verdict_opt: None,
+        cloud_handle: None,
+        transcript_source,
+        truth_fallback_class: None,
+        truth_no_speech_reason: None,
+        truth_speech_pct: None,
+        truth_avg_logprob: None,
+        truth_confidence_flags: Vec::new(),
+        truth_sparkline: None,
+        truth_final_pass_disposition: None,
+        truth_commit_trigger: None,
+        truth_display_status: "Ready".to_string(),
+        append_mode: false,
+        live_stream_session: false,
+        user_needs_separator: false,
+        assistant_needs_separator: false,
+        skip_user_bubble: false,
+    }
+}
+
+async fn final_transcript_text(events: &mut tokio::sync::broadcast::Receiver<IpcEvent>) -> String {
+    loop {
+        match events.recv().await.expect("final transcript event") {
+            IpcEvent {
+                payload: IpcEventPayload::FinalTranscript { text },
+                ..
+            } => return text,
+            _ => continue,
+        }
+    }
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: tests using this guard are serialized with `#[serial]`, so no
+        // other thread touches the process environment concurrently.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: restore runs under the same `#[serial]` serialization as `set`.
+        unsafe {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
+
+fn latest_truth_metadata(root: &std::path::Path) -> RecordingTruthMetadata {
+    let transcriptions = root.join("transcriptions");
+    let mut truth_files = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".txt.truth.json"))
+            {
+                truth_files.push(path);
+            }
+        }
+    }
+    truth_files.sort();
+    let truth_path = truth_files.pop().expect("truth sidecar");
+    let transcript_path = truth_path.with_file_name(
+        truth_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("truth file name")
+            .trim_end_matches(".truth.json"),
+    );
+    read_truth_sidecar(&transcript_path).expect("read truth sidecar")
+}
+
+#[tokio::test]
+#[serial]
+async fn test_raw_pipeline_applies_lexicon_without_ai_formatting() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "Uzywam doker do kontenerow.",
+            config,
+            true,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("raw pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert!(
+        final_text.contains("Docker"),
+        "RAW delivery must still apply deterministic lexicon corrections: {final_text}"
+    );
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("raw"),
+        "force_raw must remain RAW and must not run AI formatting"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_toggle_adjudicated_respects_settings_default_without_hotkey_override() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "literal transcript",
+            config,
+            false,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("settings-default pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert_eq!(final_text, "literal transcript");
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("toggle"),
+        "no hotkey override must preserve the Settings-default toggle route, not force RAW"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_toggle_adjudicated_explicit_raw_override_still_wins() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "literal transcript",
+            config,
+            true,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("explicit raw override pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert_eq!(final_text, "literal transcript");
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("raw"),
+        "explicit RAW hotkey override must still win over the Settings default"
     );
 }
 
@@ -1096,7 +1343,10 @@ async fn test_toggle_press_does_not_set_force_raw_mode() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle press hotkey must succeed in test (P2-07)");
 
     // force_raw should be false
     assert!(
@@ -1122,7 +1372,10 @@ async fn test_toggle_press_sets_force_ai_mode() {
         force_raw: false,
         force_ai: true,
     };
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle force_ai hotkey must succeed (P2-07 over-correct)");
 
     assert!(
         *controller.force_ai_mode.read().await,
@@ -1890,6 +2143,112 @@ async fn test_processing_failure_emits_user_visible_warning() {
         }
         other => panic!("expected an engine Warning payload, got {other:?}"),
     }
+}
+
+fn test_final_event(utterance_id: u64, text: &str) -> EngineEvent {
+    EngineEvent::UtteranceFinal {
+        utterance_id,
+        text: text.to_string(),
+        raw_text: text.to_string(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: Vec::new(),
+        vad_speech_pct: Some(100.0),
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn hold_event_sink_forwards_live_preview_then_final_in_order() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+    let sink = RecordingController::build_recording_event_sink(
+        Arc::new(tokio::sync::Mutex::new(String::new())),
+        true,
+        controller.event_broadcast.clone(),
+        Arc::clone(&controller.session_telemetry),
+    );
+
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "live words".to_string(),
+    });
+    sink.on_event(&test_final_event(41, "live words"));
+
+    let preview = events.try_recv().expect("hold preview must reach IPC");
+    let final_event = events.try_recv().expect("hold final must reach IPC");
+    assert!(matches!(
+        preview.payload,
+        IpcEventPayload::Engine(EngineEventWire::Preview { rev: 1, ref text })
+            if text == "live words"
+    ));
+    assert!(matches!(
+        final_event.payload,
+        IpcEventPayload::Engine(EngineEventWire::UtteranceFinal {
+            utterance_id: 41,
+            ref text,
+            ..
+        }) if text == "live words"
+    ));
+    assert!(
+        events.try_recv().is_err(),
+        "one engine event must yield one IPC event"
+    );
+}
+
+#[tokio::test]
+async fn late_correction_after_final_is_a_single_patch_event_not_a_second_final() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+    let sink = RecordingController::build_recording_event_sink(
+        Arc::new(tokio::sync::Mutex::new(String::new())),
+        true,
+        controller.event_broadcast.clone(),
+        Arc::clone(&controller.session_telemetry),
+    );
+
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "raw text".to_string(),
+    });
+    sink.on_event(&test_final_event(7, "raw text"));
+    sink.on_event(&EngineEvent::Correction {
+        rev: 2,
+        text: "corrected text".to_string(),
+        previous_text: "raw text".to_string(),
+    });
+
+    let payloads = [
+        events.try_recv().expect("preview event").payload,
+        events.try_recv().expect("final event").payload,
+        events.try_recv().expect("correction event").payload,
+    ];
+    assert_eq!(
+        payloads
+            .iter()
+            .filter(|payload| matches!(
+                payload,
+                IpcEventPayload::Engine(EngineEventWire::UtteranceFinal { .. })
+            ))
+            .count(),
+        1,
+        "postprocess correction must not masquerade as a second delivery final"
+    );
+    assert!(matches!(
+        &payloads[2],
+        IpcEventPayload::Engine(EngineEventWire::Correction {
+            text,
+            previous_text,
+            ..
+        }) if text == "corrected text" && previous_text == "raw text"
+    ));
+    assert!(
+        events.try_recv().is_err(),
+        "late correction must be emitted exactly once"
+    );
 }
 
 /// The formatted transcript must be persisted BEFORE the paste attempt so a paste

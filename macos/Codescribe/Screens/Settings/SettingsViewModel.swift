@@ -46,6 +46,115 @@ enum SettingsDeepLink {
     }
 }
 
+enum LLMLane: String, CaseIterable, Identifiable {
+    case assistive
+    case formatting
+    case main
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .assistive: return "Assistive"
+        case .formatting: return "Formatting"
+        case .main: return "Main"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .assistive: return "Agent and voice-assistant requests"
+        case .formatting: return "Transcript cleanup and formatting"
+        case .main: return "Default LLM fallback lane"
+        }
+    }
+
+    var endpointKey: String {
+        switch self {
+        case .assistive: return "LLM_ASSISTIVE_ENDPOINT"
+        case .formatting: return "LLM_FORMATTING_ENDPOINT"
+        case .main: return "LLM_ENDPOINT"
+        }
+    }
+
+    var modelKey: String {
+        switch self {
+        case .assistive: return "LLM_ASSISTIVE_MODEL"
+        case .formatting: return "LLM_FORMATTING_MODEL"
+        case .main: return "LLM_MODEL"
+        }
+    }
+
+    var endpointPath: WritableKeyPath<CsSettings, String?> {
+        switch self {
+        case .assistive: return \CsSettings.llmAssistiveEndpoint
+        case .formatting: return \CsSettings.llmFormattingEndpoint
+        case .main: return \CsSettings.llmEndpoint
+        }
+    }
+
+    var modelPath: WritableKeyPath<CsSettings, String?> {
+        switch self {
+        case .assistive: return \CsSettings.llmAssistiveModel
+        case .formatting: return \CsSettings.llmFormattingModel
+        case .main: return \CsSettings.llmModel
+        }
+    }
+}
+
+/// One read model for a request lane. Both Settings panels consume this snapshot,
+/// so provider resolution, model discovery, and manual-entry rules cannot drift.
+struct LLMLaneModel {
+    let lane: LLMLane
+    let providerId: String
+    let provider: CsProviderOption?
+    let resolvedEndpoint: String
+    let configuredModel: String
+    let resolvedModel: String
+    let discoveryEndpoint: String
+    let discovery: CsModelDiscovery
+
+    var modelOptions: [CsModelOption] { discovery.models }
+
+    var manualModelReason: String? {
+        guard providerId == "openai-responses" else { return nil }
+        guard URL(string: resolvedEndpoint)?.host?.lowercased() == "api.openai.com" else {
+            return "Custom endpoint — enter its model ID manually"
+        }
+        guard lane == .assistive || resolvedEndpoint == discoveryEndpoint else {
+            return "Endpoint differs from OpenAI discovery — enter its model ID manually"
+        }
+        return nil
+    }
+
+    var usesDiscoveredPicker: Bool {
+        manualModelReason == nil && !modelOptions.isEmpty && discovery.status == "fresh"
+    }
+
+    var discoveryDescription: String {
+        if let manualModelReason { return manualModelReason }
+        switch discovery.status {
+        case "fresh":
+            let count = modelOptions.count
+            return count == 0
+                ? "no models returned by provider"
+                : "\(count) \(count == 1 ? "model" : "models") discovered from provider"
+        case "cached":
+            if let message = discovery.message, !message.isEmpty {
+                return "using cached models — \(message)"
+            }
+            return "using cached models"
+        case "no_key": return "Add API key to discover models"
+        case "loading": return "discovering models…"
+        default:
+            if let message = discovery.message, !message.isEmpty {
+                return "model discovery failed — \(message)"
+            }
+            return "model discovery failed"
+        }
+    }
+}
+
 /// Clears the app's preferences domain and relaunches a fresh instance. Used by
 /// the destructive "Reset app data" flow so restored window frames / SwiftUI scene
 /// state do not survive the wipe. The relaunch is deferred via a detached `open`
@@ -69,9 +178,6 @@ enum AppRelaunch {
     }
 }
 
-/// View-model owning the Settings screen state. Seeded with mock data so the
-/// #Preview renders standalone; the live app injects `RealSettingsEngine`
-/// (over the `CodescribeConfig` bridge) + the native permission probe.
 private struct BackgroundSettingsEngine: @unchecked Sendable {
     let engine: SettingsEngine
 }
@@ -84,7 +190,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var settings: CsSettings
     @Published private(set) var keyStatus: CsKeyStatus
     @Published private(set) var providers: [CsProviderOption]
-    @Published private(set) var modelDiscovery: CsModelDiscovery
+    @Published private var modelDiscoveries: [String: CsModelDiscovery] = [:]
     @Published private(set) var configDir: String
     @Published private(set) var needsOnboarding: Bool
     @Published private(set) var agentReadiness: CsAgenticReadiness
@@ -94,6 +200,12 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpTestPending: Set<String> = []
     @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
     @Published private(set) var keyProbePending: Set<String> = []
+    /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
+    /// local callback server listening). Guards double-clicks.
+    @Published private(set) var accountLoginPending: Set<String> = []
+    /// Last terminal outcome of an account login per provider ("timeout",
+    /// "failed" …) — honest status for the row without raising a modal error.
+    @Published private(set) var accountLoginNotices: [String: String] = [:]
     @Published var lastError: String?
 
     // MARK: - Hotkeys (mode bindings)
@@ -116,6 +228,12 @@ final class SettingsViewModel: ObservableObject {
     private let agentStatus: AgentStatusEngine?
     private let mcpAdmin: MCPAdminEngine?
     private let hotkeys: HotkeysEngine?
+    private var modelDiscoveryGenerations: [String: Int] = [:]
+    private var assistiveModelEditGeneration = 0
+    private var pendingAssistiveModelSelection: (
+        providerId: String,
+        modelEditGeneration: Int
+    )?
 
     init(
         engine: SettingsEngine? = nil,
@@ -137,7 +255,6 @@ final class SettingsViewModel: ObservableObject {
         self.settings = .sample
         self.keyStatus = .sampleAllSet
         self.providers = CsProviderOption.sampleProviders
-        self.modelDiscovery = CsModelDiscovery.sample(for: CsSettings.sample.llmAssistiveProvider ?? "openai-responses")
         self.configDir = ""
         self.needsOnboarding = false
         self.agentReadiness = .sample
@@ -157,7 +274,7 @@ final class SettingsViewModel: ObservableObject {
             providers = engine.availableProviders()
             configDir = engine.configDir()
             needsOnboarding = engine.shouldShowOnboarding()
-            refreshAssistiveModels()
+            refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId, "openai-responses"])
         }
         refreshAgentStatus()
         reloadMcpServers()
@@ -195,13 +312,6 @@ final class SettingsViewModel: ObservableObject {
 
     /// Save is allowed only for a changed, conflict-clean draft.
     var canSaveBindings: Bool { hasPendingBindingChanges && !hasBlockingBindingConflicts }
-
-    /// Current draft binding for a mode (falls back to the persisted value).
-    func draftBinding(for mode: CsWorkMode) -> CsShortcutBinding {
-        draftBindings.first { $0.mode == mode }?.binding
-            ?? modeBindings.first { $0.mode == mode }?.binding
-            ?? .disabled
-    }
 
     /// Stage a binding change for one mode WITHOUT persisting, then re-validate so
     /// conflicts surface inline before the user commits.
@@ -335,7 +445,7 @@ final class SettingsViewModel: ObservableObject {
         guard target.isInteractive else { return }
         section = target
         if target == .keys {
-            refreshAssistiveModels()
+            refreshAssistiveModelDiscovery()
         }
     }
 
@@ -377,8 +487,94 @@ final class SettingsViewModel: ObservableObject {
                              : (settings.sttEndpoint ?? "cloud default")
     }
 
-    var llmModelDescription: String { settings.llmModel ?? "default" }
-    var llmEndpointDescription: String { settings.llmEndpoint ?? "default" }
+    /// Effective lane state after provider/shared fallbacks.
+    func llmLane(_ lane: LLMLane) -> LLMLaneModel {
+        let providerId = lane == .assistive
+            ? (settings.llmAssistiveProvider ?? "openai-responses")
+            : "openai-responses"
+        let configuredModel = settings[keyPath: lane.modelPath]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sharedModel = settings[keyPath: LLMLane.main.modelPath]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedEndpoint = lane == .assistive && providerId == "anthropic-messages"
+            ? "https://api.anthropic.com/v1/messages"
+            : resolvedOpenAIEndpoint(for: lane)
+        let resolvedModel = lane == .assistive && providerId == "anthropic-messages"
+            ? (configuredModel.hasPrefix("claude") ? configuredModel : "claude-opus-4-8")
+            : ([configuredModel, sharedModel].first {
+                !$0.isEmpty && !$0.hasPrefix("claude")
+            } ?? (lane == .assistive ? "gpt-5.5" : "gpt-4.1"))
+        let discoveryProviderId = lane == .assistive ? providerId : "openai-responses"
+
+        return LLMLaneModel(
+            lane: lane,
+            providerId: providerId,
+            provider: providers.first { $0.id == providerId } ?? providers.first,
+            resolvedEndpoint: resolvedEndpoint,
+            configuredModel: configuredModel,
+            resolvedModel: resolvedModel,
+            discoveryEndpoint: lane == .assistive
+                ? resolvedEndpoint
+                : resolvedOpenAIEndpoint(for: .assistive),
+            discovery: modelDiscoveries[discoveryProviderId]
+                ?? CsModelDiscovery.sample(for: discoveryProviderId)
+        )
+    }
+
+    private func refreshAssistiveModelDiscovery(includeOpenAI: Bool = false) {
+        let providerId = llmLane(.assistive).providerId
+        refreshModelDiscoveries(providerIds: includeOpenAI ? [providerId, "openai-responses"] : [providerId])
+    }
+
+    private func resolvedOpenAIEndpoint(for lane: LLMLane) -> String {
+        // P2-05: lane/shared/default resolution stays here (UI settings surface);
+        // suffix normalization is now delegated to core via FFI (single truth in
+        // lane_truth::normalize_openai_responses_endpoint, exposed in bridge/config).
+        let laneValue = settings[keyPath: lane.endpointPath]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sharedValue = settings[keyPath: LLMLane.main.endpointPath]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let base = !laneValue.isEmpty
+            ? laneValue
+            : (!sharedValue.isEmpty
+                ? sharedValue
+                : "https://api.openai.com/v1/responses")
+
+        if let engine {
+            return engine.normalizeOpenaiResponsesEndpoint(base)
+        }
+        // Fallback for previews / no-engine (kept tiny; real path always has engine).
+        // NOTE: suffix list duplication removed (L2 over-correct); core lane_truth::normalize
+        // (via bridge) is the single source of truth for responses endpoint. Fallback does
+        // minimal /v1 strip only to avoid duplicating known-suffixes array.
+        var b = base.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
+        if b.hasSuffix("/v1") { b.removeLast(3) }
+        return b + "/v1/responses"
+    }
+
+    /// Persist an endpoint override for one LLM lane. Whitespace-only input is
+    /// the reset signal: the core removes the optional JSON path so the next
+    /// resolved fallback becomes effective immediately.
+    func setLLMEndpoint(_ value: String, for lane: LLMLane) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings[keyPath: lane.endpointPath] = trimmed.isEmpty ? nil : trimmed
+        persist(lane.endpointKey, trimmed)
+        refreshAgentStatus()
+        if lane == .assistive {
+            refreshAssistiveModelDiscovery(includeOpenAI: true)
+        }
+    }
+
+    /// Persist a model override for one LLM lane. Empty clears the JSON override.
+    func setLLMModel(_ value: String, for lane: LLMLane) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if lane == .assistive {
+            assistiveModelEditGeneration += 1
+            pendingAssistiveModelSelection = nil
+        }
+        settings[keyPath: lane.modelPath] = trimmed.isEmpty ? nil : trimmed
+        persist(lane.modelKey, trimmed)
+    }
 
     var formattingDescription: String {
         guard settings.aiFormattingEnabled else { return "off" }
@@ -410,11 +606,6 @@ final class SettingsViewModel: ObservableObject {
     func setFormattingLevel(_ level: String) {
         settings.formattingLevel = level
         persist("FORMATTING_LEVEL", level)
-    }
-
-    func setUseLocalStt(_ on: Bool) {
-        settings.useLocalStt = on
-        persist("USE_LOCAL_STT", on ? "1" : "0")
     }
 
     // MARK: - STT engine / layered transcription (Engine panel controls)
@@ -495,65 +686,23 @@ final class SettingsViewModel: ObservableObject {
 
     var keyAccounts: [String] { engine?.keyAccounts() ?? [] }
 
-    // MARK: - Agent provider / model selection (assistive lane)
-
-    /// Provider catalog with per-provider key presence.
-    var availableProviders: [CsProviderOption] { providers }
-
-    /// Currently selected assistive-lane provider id (falls back to OpenAI).
-    var assistiveProviderId: String { settings.llmAssistiveProvider ?? "openai-responses" }
-
-    /// Currently configured assistive-lane model id (may be empty until set).
-    var assistiveModel: String { settings.llmAssistiveModel ?? "" }
-
-    /// The selected provider's catalog entry, if present.
-    var selectedProvider: CsProviderOption? {
-        let id = assistiveProviderId
-        return availableProviders.first { $0.id == id } ?? availableProviders.first
-    }
-
-    /// Models discovered from the selected provider's live `/models` API.
-    var discoveredModels: [CsModelOption] {
-        modelDiscovery.providerId == assistiveProviderId ? modelDiscovery.models : []
-    }
-
-    var modelDiscoveryStatus: String { modelDiscovery.status }
-
-    var modelDiscoveryDescription: String {
-        switch modelDiscovery.status {
-        case "fresh":
-            let count = modelDiscovery.models.count
-            let noun = count == 1 ? "model" : "models"
-            return count == 0 ? "no models returned by provider" : "\(count) \(noun) discovered from provider"
-        case "cached":
-            if let message = modelDiscovery.message, !message.isEmpty {
-                return "using cached models — \(message)"
-            }
-            return "using cached models"
-        case "no_key":
-            return "Add API key to discover models"
-        default:
-            if let message = modelDiscovery.message, !message.isEmpty {
-                return "model discovery failed — \(message)"
-            }
-            return "model discovery failed"
-        }
-    }
+    // MARK: - Agent provider selection (assistive lane)
 
     func setAssistiveProvider(_ id: String) {
         settings.llmAssistiveProvider = id
         persist("LLM_ASSISTIVE_PROVIDER", id)
-        refreshAssistiveModels()
         // The stored model belonged to the previous provider; keeping it would make
         // the first send hit a model the new provider doesn't serve (e.g. gpt-5.5 on
-        // Anthropic). Re-anchor to the new provider's first discovered model, or
-        // clear it so the provider default applies.
-        setAssistiveModel(discoveredModels.first?.id ?? "")
-    }
-
-    func setAssistiveModel(_ id: String) {
-        settings.llmAssistiveModel = id
-        persist("LLM_ASSISTIVE_MODEL", id)
+        // Anthropic). Clear it so the provider default applies immediately, then
+        // allow only a fresh discovery to re-anchor it. Any manual model edit
+        // cancels this pending auto-selection.
+        setLLMModel("", for: .assistive)
+        pendingAssistiveModelSelection = (
+            providerId: id,
+            modelEditGeneration: assistiveModelEditGeneration
+        )
+        refreshModelDiscoveries(providerIds: [id, "openai-responses"])
+        refreshAgentStatus()
     }
 
     func saveKey(account: String, secret: String) {
@@ -564,9 +713,10 @@ final class SettingsViewModel: ObservableObject {
             keyProbeResults[account] = nil
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
-            if account == selectedProvider?.apiKeyAccount {
-                refreshAssistiveModels()
+            if account == llmLane(.assistive).provider?.apiKeyAccount {
+                refreshAssistiveModelDiscovery()
             }
+            refreshAgentStatus()
         } catch {
             lastError = String(describing: error)
         }
@@ -579,9 +729,10 @@ final class SettingsViewModel: ObservableObject {
             keyProbeResults[account] = nil
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
-            if account == selectedProvider?.apiKeyAccount {
-                refreshAssistiveModels()
+            if account == llmLane(.assistive).provider?.apiKeyAccount {
+                refreshAssistiveModelDiscovery()
             }
+            refreshAgentStatus()
         } catch {
             lastError = String(describing: error)
         }
@@ -611,7 +762,8 @@ final class SettingsViewModel: ObservableObject {
                     self.keyProbeResults[account] = CsApiKeyProbeResult(
                         account: account,
                         status: .network,
-                        message: String(describing: error)
+                        message: String(describing: error),
+                        probedEndpoint: nil
                     )
                     self.lastError = String(describing: error)
                 }
@@ -620,28 +772,174 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func providerForKeyAccount(_ account: String) -> CsProviderOption? {
-        availableProviders.first { $0.apiKeyAccount == account && $0.id == "openai-responses" }
+        providers.first { $0.apiKeyAccount == account && $0.id == "openai-responses" }
     }
 
+    /// Full "Sign in with ChatGPT" click-through: start the local callback
+    /// server, open the authorize URL in the default browser, then await the
+    /// roundtrip on a background queue. The await result (signed in / failed /
+    /// timeout) refreshes the provider row — no restart, no zombie port.
     func startAccountLogin(providerId: String) {
         guard let engine else { return }
+        guard !accountLoginPending.contains(providerId) else { return }
+
+        let result: CsAccountLoginResult
         do {
-            let result = try engine.startAccountLogin(providerId: providerId)
-            if let authUrl = result.authUrl, let url = URL(string: authUrl) {
-                NSWorkspace.shared.open(url)
+            result = try engine.startAccountLogin(providerId: providerId)
+        } catch {
+            lastError = String(describing: error)
+            return
+        }
+        guard let authUrl = result.authUrl, let url = URL(string: authUrl) else {
+            accountLoginNotices[providerId] = result.message
+            return
+        }
+
+        accountLoginPending.insert(providerId)
+        accountLoginNotices[providerId] = nil
+        NSWorkspace.shared.open(url)
+
+        let backgroundEngine = BackgroundSettingsEngine(engine: engine)
+        DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, providerId] in
+            let outcome: Result<CsAccountLoginResult, Error>
+            do {
+                outcome = .success(
+                    try backgroundEngine.engine.awaitAccountLogin(
+                        providerId: providerId,
+                        // P2-09: 300s chosen as pragmatic cap for OAuth browser roundtrip
+                        // (user may need to 2FA, switch windows, consent). No new Settings
+                        // knob (per charter). Cancel path: second start or sign-out flow
+                        // or app close (server is torn down on timeout/failure).
+                        // Discovery (P2-08) uses the same await; partial cancel support
+                        // exists via pending set + supersede in core.
+                        timeoutSeconds: 300
+                    )
+                )
+            } catch {
+                outcome = .failure(error)
             }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.accountLoginPending.remove(providerId)
+                switch outcome {
+                case .success(let login):
+                    // "signed_in" needs no banner — the row status flips on the
+                    // provider refresh below. Everything else is surfaced as-is.
+                    self.accountLoginNotices[providerId] =
+                        login.status == "signed_in" ? nil : login.message
+                case .failure(let error):
+                    self.accountLoginNotices[providerId] = String(describing: error)
+                }
+                if let engine = self.engine {
+                    self.providers = engine.availableProviders()
+                }
+                self.refreshAgentStatus()
+            }
+        }
+    }
+
+    /// Sign out of the provider account (clears the stored tokens). API keys
+    /// are untouched.
+    func signOutAccount(providerId: String) {
+        guard let engine else { return }
+        do {
+            try engine.signOutAccount(providerId: providerId)
+            accountLoginNotices[providerId] = nil
             providers = engine.availableProviders()
+            refreshAgentStatus()
         } catch {
             lastError = String(describing: error)
         }
     }
 
-    func refreshAssistiveModels() {
+    /// Persist the OAuth client id (non-secret; settings.json). Takes effect on
+    /// the next click — the core re-reads settings per resolution.
+    func saveOauthClientId(providerId: String, value: String) {
+        persist("LLM_OPENAI_OAUTH_CLIENT_ID", value.trimmingCharacters(in: .whitespacesAndNewlines))
+        accountLoginNotices[providerId] = nil
+        if let engine {
+            providers = engine.availableProviders()
+        }
+        refreshAgentStatus()
+    }
+
+    /// The single discovery path for every lane/provider. Generation checks drop
+    /// stale network results. Provider-switch auto-selection is held separately
+    /// so a newer endpoint refresh inherits it while a manual model edit cancels it.
+    private func refreshModelDiscoveries(providerIds: [String]) {
+        let providerIds = Array(Set(providerIds))
+        var generations: [String: Int] = [:]
+        for providerId in providerIds {
+            modelDiscoveryGenerations[providerId, default: 0] += 1
+            generations[providerId] = modelDiscoveryGenerations[providerId]
+        }
         guard let engine else {
-            modelDiscovery = CsModelDiscovery.sample(for: assistiveProviderId)
+            for providerId in providerIds {
+                let discovery = CsModelDiscovery.sample(for: providerId)
+                modelDiscoveries[providerId] = discovery
+                applyPendingAssistiveModelSelection(
+                    providerId: providerId,
+                    discovery: discovery
+                )
+            }
             return
         }
-        modelDiscovery = engine.discoverModels(providerId: assistiveProviderId)
+
+        for providerId in providerIds {
+            let loading = CsModelDiscovery(
+                providerId: providerId,
+                status: "loading",
+                message: nil,
+                models: []
+            )
+            modelDiscoveries[providerId] = loading
+        }
+
+        let backgroundEngine = BackgroundSettingsEngine(engine: engine)
+        DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, providerIds, generations] in
+            let discoveries = providerIds.map { providerId in
+                (providerId, backgroundEngine.engine.discoverModels(providerId: providerId))
+            }
+
+            DispatchQueue.main.async { [weak self, discoveries, generations] in
+                guard let self else { return }
+                for (providerId, discovery) in discoveries {
+                    guard self.modelDiscoveryGenerations[providerId] == generations[providerId] else {
+                        continue
+                    }
+                    self.modelDiscoveries[providerId] = discovery
+                    self.applyPendingAssistiveModelSelection(
+                        providerId: providerId,
+                        discovery: discovery
+                    )
+                }
+            }
+        }
+    }
+
+    private func applyPendingAssistiveModelSelection(
+        providerId: String,
+        discovery: CsModelDiscovery
+    ) {
+        guard let pending = pendingAssistiveModelSelection,
+              pending.providerId == providerId
+        else { return }
+
+        let activeProviderId = settings.llmAssistiveProvider ?? "openai-responses"
+        guard pending.modelEditGeneration == assistiveModelEditGeneration,
+              activeProviderId == providerId
+        else {
+            pendingAssistiveModelSelection = nil
+            return
+        }
+
+        guard discovery.status == "fresh",
+              let firstModel = discovery.models.first?.id,
+              !firstModel.isEmpty
+        else { return }
+
+        setLLMModel(firstModel, for: .assistive)
     }
 
     // MARK: - Prompts (editable BASE prompts)

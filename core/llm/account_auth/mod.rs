@@ -1,6 +1,6 @@
 //! Provider-account authentication foundation for future "Sign in with ChatGPT".
 //!
-//! Tokens are stored as serialized JSON in the existing CodeScribe Keychain
+//! Tokens are stored as serialized JSON in the existing Codescribe Keychain
 //! bundle under a provider-specific account. No `auth.json` file is written.
 
 use std::fmt;
@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::UserSettings;
 use crate::config::keychain::{delete_key, load_key, save_key};
 use crate::llm::provider::ProviderKind;
 
@@ -22,6 +23,8 @@ pub use pkce::{PkceCodes, challenge_for_verifier, generate_pkce};
 pub use server::{LoginServer, ServerOptions, exchange_code_for_tokens, run_login_server};
 
 pub const OPENAI_ACCOUNT_TOKENS_ACCOUNT: &str = "LLM_OPENAI_ACCOUNT_TOKENS";
+/// Router key of the operator-configurable client id (settings.json, non-secret).
+pub const OPENAI_CLIENT_ID_SETTING: &str = "LLM_OPENAI_OAUTH_CLIENT_ID";
 pub const OPENAI_CLIENT_ID_ENV: &str = "CODESCRIBE_OPENAI_OAUTH_CLIENT_ID";
 pub const OPENAI_ISSUER_ENV: &str = "CODESCRIBE_OPENAI_OAUTH_ISSUER";
 pub const DEFAULT_ISSUER: &str = "https://auth.openai.com";
@@ -45,7 +48,8 @@ impl fmt::Display for AccountAuthError {
         match self {
             AccountAuthError::NoClientId => write!(
                 f,
-                "{NO_CLIENT_ID_MESSAGE}; set {OPENAI_CLIENT_ID_ENV} after app registration"
+                "{NO_CLIENT_ID_MESSAGE}; paste the registered client id in Settings → Keys \
+                 ({OPENAI_CLIENT_ID_SETTING}) or set {OPENAI_CLIENT_ID_ENV}"
             ),
             AccountAuthError::UnsupportedProvider(provider) => {
                 write!(f, "provider account auth is not available for {provider}")
@@ -120,11 +124,15 @@ pub struct AccountAuthStatus {
 
 pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
     let client_id_configured = client_id_for_provider(provider).is_ok();
-    let signed_in = load_account_tokens(provider).is_ok();
+    let tokens = load_account_tokens(provider).ok();
+    let signed_in = tokens.is_some();
     let message = if !client_id_configured {
         NO_CLIENT_ID_MESSAGE.to_string()
-    } else if signed_in {
-        "signed in".to_string()
+    } else if let Some(tokens) = tokens {
+        match id_token_identity(&tokens) {
+            Some(identity) => format!("signed in as {identity}"),
+            None => "signed in".to_string(),
+        }
     } else {
         "not signed in".to_string()
     };
@@ -138,11 +146,45 @@ pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
 
 pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountAuthError> {
     ensure_provider_supported(provider)?;
-    std::env::var(OPENAI_CLIENT_ID_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or(AccountAuthError::NoClientId)
+    configured_client_id().ok_or(AccountAuthError::NoClientId)
+}
+
+/// Operator-configured OAuth client id, or `None` (⇒ "awaiting app
+/// registration"). Reads the persisted settings snapshot on every call — a Keys
+/// panel save takes effect on the very next click, no restart — with the dev
+/// env var as the fallback, never the other way around (no frozen env).
+pub fn configured_client_id() -> Option<String> {
+    UserSettings::load()
+        .openai_oauth_client_id
+        .and_then(non_empty_trimmed)
+        .or_else(|| {
+            std::env::var(OPENAI_CLIENT_ID_ENV)
+                .ok()
+                .and_then(non_empty_trimmed)
+        })
+}
+
+fn non_empty_trimmed(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// Best-effort display identity from the id_token JWT payload (email, else
+/// sub). Display-only — the claims are NOT verified here; authorization always
+/// rides the access token, never this label.
+fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
+    use base64::Engine;
+    let payload = tokens.id_token.as_deref()?.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.as_bytes())
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    ["email", "sub"].iter().find_map(|key| {
+        claims
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| non_empty_trimmed(value.to_string()))
+    })
 }
 
 pub fn issuer_from_env() -> String {
@@ -179,16 +221,27 @@ pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthErr
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
     delete_key(account).map_err(|error| AccountAuthError::Storage(error.to_string()))?;
+    // SAFETY: clears the process-env mirror of the tokens (the test/dev
+    // injection channel read by `load_account_tokens`) so sign-out is not
+    // undone by a stale override. Sign-out is a single user-driven action,
+    // not a hot concurrent path.
     unsafe { std::env::remove_var(account) };
     Ok(())
 }
 
 pub async fn authorization_header(provider: ProviderKind) -> Result<String, AccountAuthError> {
+    Ok(format!("Bearer {}", access_token(provider).await?))
+}
+
+/// Fresh access token for the stored provider account, auto-refreshing within
+/// the expiry skew. Raw token (no `Bearer ` prefix) — for request builders
+/// that format the Authorization header themselves.
+pub async fn access_token(provider: ProviderKind) -> Result<String, AccountAuthError> {
     let mut tokens = load_account_tokens(provider)?;
     if tokens.expires_within(REFRESH_SKEW) {
         tokens = refresh_tokens(provider, tokens).await?;
     }
-    Ok(format!("Bearer {}", tokens.access_token))
+    Ok(tokens.access_token)
 }
 
 pub async fn refresh_tokens(
@@ -278,13 +331,134 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Point the settings store at an isolated scratch dir so these tests never
+    /// read (or depend on) the operator's real settings.json.
+    fn isolated_settings_dir(tag: &str) -> (EnvGuard, tempfile::TempDir) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("cs_account_auth_{tag}_"))
+            .tempdir()
+            .expect("create scratch settings dir");
+        (EnvGuard::set_path("CODESCRIBE_DATA_DIR", dir.path()), dir)
+    }
+
     #[test]
     #[serial]
     fn no_client_id_reports_registration_gate() {
+        let (_data_dir, _dir) = isolated_settings_dir("gate");
         let _guard = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
         let err = client_id_for_provider(ProviderKind::OpenAiResponses).unwrap_err();
         assert!(matches!(err, AccountAuthError::NoClientId));
         assert!(err.to_string().contains(NO_CLIENT_ID_MESSAGE));
+    }
+
+    #[test]
+    #[serial]
+    fn settings_client_id_beats_env_and_applies_without_restart() {
+        let (_data_dir, _dir) = isolated_settings_dir("resolution");
+        let _env = EnvGuard::set(OPENAI_CLIENT_ID_ENV, "env-client");
+
+        // Env alone (dev fallback) resolves.
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            "env-client"
+        );
+
+        // A Keys-panel save lands in settings.json mid-process — the very next
+        // resolution must see it (fresh read per call, no frozen env).
+        UserSettings {
+            openai_oauth_client_id: Some("settings-client".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist client id");
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            "settings-client"
+        );
+
+        // Clearing the setting falls back to env, again without restart.
+        UserSettings {
+            openai_oauth_client_id: None,
+            ..Default::default()
+        }
+        .save()
+        .expect("clear client id");
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            "env-client"
+        );
+    }
+
+    /// The three UI states the Keys panel renders, in the order an operator
+    /// walks them: registration gate → not signed in → signed in as <email>.
+    #[test]
+    #[serial]
+    fn account_status_maps_gate_then_not_signed_in_then_signed_in() {
+        use base64::Engine;
+        let (_data_dir, _dir) = isolated_settings_dir("status");
+        let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+
+        // 1. No client id anywhere ⇒ registration gate, button disabled.
+        let status = account_status(ProviderKind::OpenAiResponses);
+        assert!(!status.client_id_configured);
+        assert!(!status.signed_in);
+        assert_eq!(status.message, NO_CLIENT_ID_MESSAGE);
+
+        // 2. Operator pastes a client id in Settings ⇒ gate lifts mid-process.
+        UserSettings {
+            openai_oauth_client_id: Some("app_registered".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist client id");
+        let status = account_status(ProviderKind::OpenAiResponses);
+        assert!(status.client_id_configured);
+        assert!(!status.signed_in);
+        assert_eq!(status.message, "not signed in");
+
+        // 3. Stored tokens with an id_token email ⇒ signed in as <email>.
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"email":"maciej@example.com"}"#);
+        let tokens = AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "access".to_string(),
+            Some("refresh".to_string()),
+            Some(format!("header.{claims}.signature")),
+            None,
+            Some(3600),
+        );
+        store_account_tokens(ProviderKind::OpenAiResponses, &tokens).expect("store tokens");
+        let status = account_status(ProviderKind::OpenAiResponses);
+        assert!(status.client_id_configured);
+        assert!(status.signed_in);
+        assert_eq!(status.message, "signed in as maciej@example.com");
+    }
+
+    #[test]
+    fn signed_in_status_carries_the_id_token_email_when_present() {
+        use base64::Engine;
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"email":"maciej@example.com","sub":"user-123"}"#);
+        let tokens = AccountTokens {
+            provider: ProviderKind::OpenAiResponses.as_str().to_string(),
+            access_token: "access".to_string(),
+            refresh_token: None,
+            id_token: Some(format!("header.{claims}.signature")),
+            token_type: "Bearer".to_string(),
+            expires_at_unix: None,
+        };
+        assert_eq!(
+            id_token_identity(&tokens).as_deref(),
+            Some("maciej@example.com")
+        );
+
+        let no_id_token = AccountTokens {
+            id_token: None,
+            ..tokens
+        };
+        assert_eq!(id_token_identity(&no_id_token), None);
     }
 
     #[test]
@@ -317,12 +491,21 @@ mod tests {
     impl EnvGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
+            // SAFETY: these process-env tests are serialized with `serial`.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: these process-env tests are serialized with `serial`.
             unsafe { std::env::set_var(key, value) };
             Self { key, previous }
         }
 
         fn unset(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
+            // SAFETY: these process-env tests are serialized with `serial`.
             unsafe { std::env::remove_var(key) };
             Self { key, previous }
         }
@@ -331,7 +514,9 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.previous {
+                // SAFETY: these process-env tests are serialized with `serial`.
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
+                // SAFETY: these process-env tests are serialized with `serial`.
                 None => unsafe { std::env::remove_var(self.key) },
             }
         }
