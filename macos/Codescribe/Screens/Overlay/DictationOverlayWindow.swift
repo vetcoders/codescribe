@@ -62,11 +62,14 @@ enum DictationOverlayWindow {
     /// lines) without the content column overflowing the window and squaring the
     /// glass corners. Width floor (320) is unchanged.
     static let minSize = NSSize(width: 320, height: 300)
-    /// First-launch content size (no persisted value yet).
+    /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
+    /// operator spec: the resting state is a horizontal bar (waveform + a few
+    /// transcript lines), never a portrait column. Resizing persists, so users
+    /// who prefer a tall panel drag it once and keep it.
     static let defaultSize = NSSize(width: 470, height: 330)
-    /// Bumped v2 → v3 with the slim-down: the old persisted (larger) content sizes
-    /// must not resurrect the pre-slim frame, so the new default takes effect once.
-    private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v3"
+    /// Bumped v4 → v5: v4 shipped a portrait default by mistake; the restored
+    /// landscape default must take effect once over that persisted shape.
+    private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v5"
 
     /// Build the floating overlay panel around an injected `OverlayState`.
     /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the

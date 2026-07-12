@@ -27,7 +27,10 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
-use super::provider::{LlmMode, ProviderKind, capability_policy, resolve_provider};
+use crate::config::Config;
+
+use super::lane_truth;
+use super::provider::{LlmMode, ProviderKind, capability_policy};
 use super::responses_streaming_manager::{ResponsesStreamingManager, StreamCallbacks};
 
 /// HTTP client for AI providers
@@ -104,7 +107,6 @@ const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_TCP_KEEPALIVE_MS: u64 = 30_000;
-const ANTHROPIC_API_KEY_ENV: &str = "LLM_ANTHROPIC_API_KEY";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u32 = 8192;
 
@@ -203,31 +205,6 @@ fn get_client() -> &'static Client {
     })
 }
 
-/// Read env var by priority list, ensure non-empty, return detailed error
-fn get_env_non_empty(candidates: &[&str], what: &str) -> Result<String> {
-    for key in candidates {
-        if let Ok(value) = env::var(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
-        }
-    }
-
-    match candidates {
-        [single] => anyhow::bail!("{} is required. Set {}.", what, single),
-        [first, second, ..] => {
-            anyhow::bail!(
-                "{} is required. Set {} (or fallback {}).",
-                what,
-                first,
-                second
-            )
-        }
-        [] => anyhow::bail!("{} is required.", what),
-    }
-}
-
 // ============================================================================
 // LLM Configuration - Separate providers for Formatting vs Assistive
 // ============================================================================
@@ -239,64 +216,35 @@ fn get_env_non_empty(candidates: &[&str], what: &str) -> Result<String> {
 //
 // NO legacy variables. Clean contract only.
 
-/// Helper: require mode-specific key (no fallback to shared keys)
-fn get_mode_config(specific_key: &str, what: &str) -> Result<String> {
-    if let Ok(val) = env::var(specific_key) {
-        let val = val.trim();
-        if !val.is_empty() {
-            return Ok(val.to_string());
-        }
-    }
-    get_env_non_empty(&[specific_key], what)
-}
-
 // ---- FORMATTING mode config ----
 
 fn get_formatting_endpoint() -> Result<String> {
-    get_mode_config("LLM_FORMATTING_ENDPOINT", "LLM endpoint (formatting)")
+    Ok(lane_truth::endpoint(LlmMode::Formatting, &Config::load()))
 }
 
 fn get_formatting_model() -> Result<String> {
-    get_mode_config("LLM_FORMATTING_MODEL", "LLM model (formatting)")
+    Ok(lane_truth::formatting_identity(&Config::load()).1)
 }
 
 fn get_formatting_api_key() -> Result<String> {
-    get_mode_config("LLM_FORMATTING_API_KEY", "LLM API key (formatting)")
+    lane_truth::secret("LLM_FORMATTING_API_KEY")
+        .context("LLM API key (formatting) is required. Set LLM_FORMATTING_API_KEY.")
 }
 
 // ---- ASSISTIVE mode config ----
 
 fn get_assistive_endpoint() -> Result<String> {
-    get_mode_config("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")
+    Ok(lane_truth::assistive_snapshot(&Config::load()).endpoint)
 }
 
 fn get_assistive_model() -> Result<String> {
-    get_mode_config("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")
-}
-
-fn get_assistive_api_key() -> Result<String> {
-    get_mode_config("LLM_ASSISTIVE_API_KEY", "LLM API key (assistive)")
+    Ok(lane_truth::assistive_snapshot(&Config::load()).model)
 }
 
 fn get_anthropic_api_key() -> Result<String> {
-    if let Ok(value) = env::var(ANTHROPIC_API_KEY_ENV) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-
-    if let Some(value) = crate::config::keychain::load_key(ANTHROPIC_API_KEY_ENV) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-
-    anyhow::bail!(
-        "Anthropic API key is required. Set {}.",
-        ANTHROPIC_API_KEY_ENV
-    )
+    let account = ProviderKind::AnthropicMessages.api_key_env_key();
+    lane_truth::secret(account)
+        .with_context(|| format!("Anthropic API key is required. Set {account}."))
 }
 
 /// Get temperature from env var. Returns None if empty/unset (skip parameter).
@@ -1032,7 +980,7 @@ pub async fn format_text_with_status_channels(
         } else {
             get_formatting_endpoint().unwrap_or_default()
         };
-        let provider = resolve_provider(if assistive {
+        let provider = lane_truth::provider(if assistive {
             LlmMode::Assistive
         } else {
             LlmMode::Formatting
@@ -1257,28 +1205,46 @@ async fn call_provider_once(
     }
 }
 
-fn normalize_anthropic_messages_endpoint(endpoint: &str) -> String {
-    let trimmed = endpoint.trim().trim_end_matches('/');
-    let base = trimmed
-        .trim_end_matches("/v1/messages")
-        .trim_end_matches("/v1/responses")
-        .trim_end_matches("/v1");
-    format!("{base}/v1/messages")
-}
-
 async fn call_anthropic_messages(
     user_message: &str,
     system_prompt: &str,
     assistive: bool,
 ) -> Result<ProviderOutput> {
-    let (configured_endpoint, model) = if assistive {
-        (get_assistive_endpoint()?, get_assistive_model()?)
+    let mode = if assistive {
+        LlmMode::Assistive
     } else {
-        (get_formatting_endpoint()?, get_formatting_model()?)
+        LlmMode::Formatting
     };
-    let endpoint = normalize_anthropic_messages_endpoint(&configured_endpoint);
+    let configured_endpoint = if assistive {
+        get_assistive_endpoint()?
+    } else {
+        get_formatting_endpoint()?
+    };
+    let model =
+        lane_truth::model_for_provider(mode, ProviderKind::AnthropicMessages, &Config::load());
     let api_key = get_anthropic_api_key()?;
-    let policy = capability_policy(ProviderKind::AnthropicMessages, &model);
+
+    call_anthropic_messages_resolved(
+        user_message,
+        system_prompt,
+        assistive,
+        &configured_endpoint,
+        &model,
+        &api_key,
+    )
+    .await
+}
+
+async fn call_anthropic_messages_resolved(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+    configured_endpoint: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<ProviderOutput> {
+    let endpoint = lane_truth::normalize_anthropic_messages_endpoint(configured_endpoint);
+    let policy = capability_policy(ProviderKind::AnthropicMessages, model);
     let temperature = policy.sanitize_temperature(get_temperature(assistive));
     let max_tokens = env_u32(
         "CODESCRIBE_ANTHROPIC_MAX_TOKENS",
@@ -1295,7 +1261,7 @@ async fn call_anthropic_messages(
     );
 
     let request = AnthropicMessagesRequest {
-        model,
+        model: model.to_string(),
         system: Some(system_prompt.to_string()).filter(|value| !value.trim().is_empty()),
         messages: vec![AnthropicMessage {
             role: "user",
@@ -1307,7 +1273,7 @@ async fn call_anthropic_messages(
 
     let response = get_client()
         .post(&endpoint)
-        .header("x-api-key", &api_key)
+        .header("x-api-key", api_key)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("Content-Type", "application/json")
         .json(&request)
@@ -1372,11 +1338,12 @@ async fn call_llm_endpoint(
 ) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
     let (endpoint, model, api_key) = if assistive {
-        (
-            get_assistive_endpoint()?,
-            get_assistive_model()?,
-            get_assistive_api_key()?,
-        )
+        let lane = lane_truth::assistive_snapshot(&Config::load());
+        let account = lane.provider.api_key_env_key();
+        let api_key = lane
+            .api_key
+            .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
+        (lane.endpoint, lane.model, api_key)
     } else {
         (
             get_formatting_endpoint()?,
@@ -1476,11 +1443,12 @@ async fn call_llm_endpoint_streaming(
 ) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
     let (endpoint, model, api_key) = if assistive {
-        (
-            get_assistive_endpoint()?,
-            get_assistive_model()?,
-            get_assistive_api_key()?,
-        )
+        let lane = lane_truth::assistive_snapshot(&Config::load());
+        let account = lane.provider.api_key_env_key();
+        let api_key = lane
+            .api_key
+            .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
+        (lane.endpoint, lane.model, api_key)
     } else {
         (
             get_formatting_endpoint()?,
@@ -1674,7 +1642,7 @@ pub fn has_api_key() -> bool {
         return false;
     }
 
-    let provider = resolve_provider(LlmMode::Formatting);
+    let provider = lane_truth::provider(LlmMode::Formatting);
     let endpoint_format = detect_format(&endpoint, provider);
 
     // OllamaChat doesn't need API key
@@ -1703,15 +1671,11 @@ mod tests {
     use serial_test::serial;
 
     const ANTHROPIC_TEST_ENV_KEYS: &[&str] = &[
-        "LLM_FORMATTING_PROVIDER",
-        "LLM_FORMATTING_ENDPOINT",
-        "LLM_FORMATTING_MODEL",
-        "LLM_FORMATTING_API_KEY",
         "LLM_FORMATTING_TEMPERATURE",
         "LLM_TEMPERATURE",
-        "LLM_ANTHROPIC_API_KEY",
         "CODESCRIBE_ANTHROPIC_MAX_TOKENS",
     ];
+    const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
 
     struct EnvGuard {
         key: &'static str,
@@ -1849,15 +1813,76 @@ mod tests {
         assert_eq!(DEFAULT_AI_RETRY_DELAY_MS, 500);
     }
 
+    #[test]
+    fn lane_configs_read_fresh_truth_after_settings_save() {
+        if std::env::var_os(LANE_TRUTH_TEST_CHILD).is_none() {
+            let data_dir = tempfile::TempDir::new().expect("isolated data dir");
+            let executable = std::env::current_exe().expect("current core test executable");
+            let status = std::process::Command::new(executable)
+                .arg("--exact")
+                .arg("llm::ai_formatting::tests::lane_configs_read_fresh_truth_after_settings_save")
+                .arg("--nocapture")
+                .env(LANE_TRUTH_TEST_CHILD, "1")
+                .env("CODESCRIBE_DATA_DIR", data_dir.path())
+                .env("CODESCRIBE_DISABLE_KEYCHAIN", "1")
+                .envs([
+                    ("LLM_FORMATTING_PROVIDER", "openai-responses"),
+                    (
+                        "LLM_FORMATTING_ENDPOINT",
+                        "https://stale-formatting.example/v1",
+                    ),
+                    ("LLM_FORMATTING_MODEL", "stale-formatting-model"),
+                    ("LLM_ASSISTIVE_PROVIDER", "openai-responses"),
+                    (
+                        "LLM_ASSISTIVE_ENDPOINT",
+                        "https://stale-assistive.example/v1",
+                    ),
+                    ("LLM_ASSISTIVE_MODEL", "stale-assistive-model"),
+                ])
+                .status()
+                .expect("run isolated lane-truth test");
+            assert!(
+                status.success(),
+                "isolated lane-truth test failed: {status}"
+            );
+            return;
+        }
+
+        crate::config::UserSettings {
+            llm_formatting_endpoint: Some("https://fresh-formatting.example/v1".to_string()),
+            llm_formatting_model: Some("fresh-formatting-model".to_string()),
+            llm_assistive_provider: Some("openai-responses".to_string()),
+            llm_assistive_endpoint: Some("https://fresh-assistive.example/v1".to_string()),
+            llm_assistive_model: Some("fresh-assistive-model".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist lane settings");
+
+        assert_eq!(
+            get_formatting_endpoint().expect("formatting endpoint"),
+            "https://fresh-formatting.example/v1/responses"
+        );
+        assert_eq!(
+            get_formatting_model().expect("formatting model"),
+            "fresh-formatting-model"
+        );
+        assert_eq!(
+            get_assistive_endpoint().expect("assistive endpoint"),
+            "https://fresh-assistive.example/v1/responses"
+        );
+        assert_eq!(
+            get_assistive_model().expect("assistive model"),
+            "fresh-assistive-model"
+        );
+    }
+
     #[tokio::test]
     #[serial]
     async fn anthropic_sonnet_request_keeps_temperature() {
         let mut env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
-        env.set("LLM_FORMATTING_ENDPOINT", &server.url());
-        env.set("LLM_FORMATTING_MODEL", "claude-sonnet-4-6");
         env.set("LLM_FORMATTING_TEMPERATURE", "0.5");
-        env.set("LLM_ANTHROPIC_API_KEY", "anthropic-test-key");
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -1888,9 +1913,16 @@ mod tests {
             .create_async()
             .await;
 
-        let output = call_anthropic_messages("hello world", "format carefully", false)
-            .await
-            .expect("sonnet formatting request should succeed");
+        let output = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-sonnet-4-6",
+            "anthropic-test-key",
+        )
+        .await
+        .expect("sonnet formatting request should succeed");
 
         assert_eq!(output.assistant_text, "Hello world.");
         mock.assert_async().await;
@@ -1901,10 +1933,7 @@ mod tests {
     async fn anthropic_opus_request_strips_temperature() {
         let mut env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
-        env.set("LLM_FORMATTING_ENDPOINT", &server.url());
-        env.set("LLM_FORMATTING_MODEL", "claude-opus-4-8");
         env.set("LLM_FORMATTING_TEMPERATURE", "0.5");
-        env.set("LLM_ANTHROPIC_API_KEY", "anthropic-test-key");
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -1932,9 +1961,16 @@ mod tests {
             .create_async()
             .await;
 
-        let output = call_anthropic_messages("hello world", "format carefully", false)
-            .await
-            .expect("opus formatting request should succeed without temperature");
+        let output = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-opus-4-8",
+            "anthropic-test-key",
+        )
+        .await
+        .expect("opus formatting request should succeed without temperature");
 
         assert_eq!(output.assistant_text, "Hello world.");
         mock.assert_async().await;
@@ -1943,11 +1979,8 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn anthropic_refusal_stop_reason_is_readable_error() {
-        let mut env = TestEnv::clean();
+        let _env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
-        env.set("LLM_FORMATTING_ENDPOINT", &server.url());
-        env.set("LLM_FORMATTING_MODEL", "claude-sonnet-4-6");
-        env.set("LLM_ANTHROPIC_API_KEY", "anthropic-test-key");
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -1968,9 +2001,16 @@ mod tests {
             .create_async()
             .await;
 
-        let err = call_anthropic_messages("hello world", "format carefully", false)
-            .await
-            .expect_err("refusal stop_reason should not parse as empty success");
+        let err = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-sonnet-4-6",
+            "anthropic-test-key",
+        )
+        .await
+        .expect_err("refusal stop_reason should not parse as empty success");
 
         let message = err.to_string();
         assert!(message.contains("Anthropic refusal stop"));
@@ -1981,11 +2021,8 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn anthropic_happy_path_joins_text_content_blocks() {
-        let mut env = TestEnv::clean();
+        let _env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
-        env.set("LLM_FORMATTING_ENDPOINT", &server.url());
-        env.set("LLM_FORMATTING_MODEL", "claude-sonnet-4-6");
-        env.set("LLM_ANTHROPIC_API_KEY", "anthropic-test-key");
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -2008,9 +2045,16 @@ mod tests {
             .create_async()
             .await;
 
-        let output = call_anthropic_messages("hello world", "format carefully", false)
-            .await
-            .expect("text content blocks should parse");
+        let output = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-sonnet-4-6",
+            "anthropic-test-key",
+        )
+        .await
+        .expect("text content blocks should parse");
 
         assert_eq!(output.assistant_text, "Hello world.");
         mock.assert_async().await;

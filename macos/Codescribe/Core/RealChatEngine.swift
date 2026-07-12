@@ -16,6 +16,16 @@ final class RealChatEngine: AgentChatEngine {
 
     func isAvailable() -> Bool { agent.isAvailable() }
 
+    func availabilityDetail() -> String? {
+        let availability = agent.availability()
+        if availability.available { return nil }
+        // The bridge always fills `detail`; the fallback keeps the chat honest
+        // if an older dylib ever returns an empty reason.
+        return availability.detail.isEmpty
+            ? "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane."
+            : availability.detail
+    }
+
     func streamReply(
         _ text: String,
         threadId: String,
@@ -124,6 +134,9 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable 
     func onTurnStarted(threadId: String, userText: String) {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
+                // The transcript is now the chat's You-bubble — the overlay's job
+                // is done, so it fades out instead of lingering over the reply.
+                AppModel.shared.overlay.hideForAgentHandoff()
                 self.revealChat()
                 self.store.ingestVoiceTurn(threadId: threadId, userText: userText)
             }

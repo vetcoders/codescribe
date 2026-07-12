@@ -12,7 +12,7 @@ use std::fs;
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 
-use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, load_key, save_key};
+use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
 use codescribe_core::config::{
     Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
@@ -21,6 +21,7 @@ use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
     ApiKeyLivenessResult, ApiKeyLivenessStatus, probe_api_key_liveness,
 };
+use codescribe_core::llm::lane_truth;
 use codescribe_core::llm::model_discovery::{
     ModelDiscoveryStatus, discover_models as discover_provider_models,
 };
@@ -153,6 +154,7 @@ pub struct CsApiKeyProbeResult {
     pub account: String,
     pub status: CsApiKeyProbeStatus,
     pub message: String,
+    pub probed_endpoint: Option<String>,
 }
 
 /// One selectable model for a provider (id sent on the wire + display label).
@@ -187,13 +189,18 @@ pub struct CsProviderOption {
     pub api_key_set: bool,
     /// True when provider-account tokens are stored for this provider.
     pub account_signed_in: bool,
-    /// True when the account-login flow can start. For OpenAI this requires
-    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`; until then Settings renders the
-    /// disabled "Sign in with ChatGPT" affordance.
+    /// True when the account-login flow can start. For OpenAI this requires a
+    /// configured OAuth client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, or
+    /// dev env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); until then Settings
+    /// renders the disabled "Sign in with ChatGPT" affordance.
     pub account_login_enabled: bool,
-    /// Human-readable account status ("signed in", "not signed in", or
-    /// "awaiting app registration"). Never contains secrets.
+    /// Human-readable account status ("signed in as <email>", "not signed in",
+    /// or "awaiting app registration"). Never contains secrets.
     pub account_status_message: String,
+    /// Operator-configured OAuth client id (settings → env resolution). A
+    /// non-secret app identity — shown and editable in the Keys panel. `None`
+    /// means the account login is still gated on app registration.
+    pub oauth_client_id: Option<String>,
     /// Always empty for live Settings; retained for bridge compatibility with
     /// older Swift bindings and preview seed objects.
     pub models: Vec<CsModelOption>,
@@ -323,7 +330,11 @@ impl CodescribeConfig {
                 settings.llm_assistive_model.clone(),
                 &env_file,
             ),
-            llm_assistive_provider: effective_file_env_string("LLM_ASSISTIVE_PROVIDER", &env_file),
+            llm_assistive_provider: effective_settings_string(
+                "LLM_ASSISTIVE_PROVIDER",
+                settings.llm_assistive_provider.clone(),
+                &env_file,
+            ),
             formatting_level: effective_settings_string(
                 "FORMATTING_LEVEL",
                 settings.formatting_level.clone(),
@@ -447,6 +458,14 @@ impl CodescribeConfig {
         Config::config_dir().to_string_lossy().to_string()
     }
 
+    /// Canonical normalization for OpenAI Responses endpoints.
+    /// Strips known suffixes (/v1/responses, /chat/completions, /completions, /v1)
+    /// and forces the /v1/responses tail. Single source of truth in lane_truth;
+    /// Swift SettingsViewModel delegates here to eliminate duplication (P2-05).
+    pub fn normalize_openai_responses_endpoint(&self, endpoint: String) -> String {
+        lane_truth::normalize_openai_responses_endpoint(&endpoint)
+    }
+
     /// Presence booleans for every Keychain-backed API key.
     pub fn key_status(&self) -> CsKeyStatus {
         // This endpoint is explicitly about keys, so it may prompt. Construction
@@ -489,6 +508,9 @@ impl CodescribeConfig {
                     account_signed_in: account_status.signed_in,
                     account_login_enabled: account_status.client_id_configured,
                     account_status_message: account_status.message,
+                    oauth_client_id: matches!(kind, ProviderKind::OpenAiResponses)
+                        .then(account_auth::configured_client_id)
+                        .flatten(),
                     models: Vec::new(),
                 }
             })
@@ -496,8 +518,9 @@ impl CodescribeConfig {
     }
 
     /// Start provider-account login for the selected provider. Today this is
-    /// only supported for OpenAI Responses and is gated by
-    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`; absent client id returns a config
+    /// only supported for OpenAI Responses and is gated by the configured OAuth
+    /// client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, dev-env fallback
+    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); absent client id returns a config
     /// error whose message contains "awaiting app registration".
     pub fn start_account_login(
         &self,
@@ -531,6 +554,81 @@ impl CodescribeConfig {
             signed_in: false,
             client_id_configured: true,
         })
+    }
+
+    /// Block until the in-flight provider-account login completes, fails, or
+    /// times out. Swift calls this from a background queue right after
+    /// `start_account_login` opened the browser. On timeout (user closed the
+    /// browser, walked away) the local callback server is shut down — honest
+    /// status, no zombie port. A second `start_account_login` while pending
+    /// cancels the first, so this returns "failed" for the superseded attempt.
+    ///
+    /// P2-09: 300s default (from caller) is intentional; OAuth human steps can
+    /// exceed short timeouts. No configurability knob added. P2-08: discovery
+    /// flows share this; cancel is best-effort via supersede + teardown.
+    pub fn await_account_login(
+        &self,
+        provider_id: String,
+        timeout_seconds: u64,
+    ) -> Result<CsAccountLoginResult, CsError> {
+        let provider = ProviderKind::from_str(&provider_id).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        let login = {
+            let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                msg: "account login state lock poisoned".to_string(),
+            })?;
+            guard.take()
+        };
+        let Some(login) = login else {
+            return Ok(account_login_result(
+                provider,
+                "idle",
+                "no sign-in in progress",
+            ));
+        };
+
+        let cancel = login.cancel_handle();
+        let outcome = account_auth_runtime()?.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_seconds.max(1)),
+                login.block_until_done(),
+            )
+            .await
+        });
+
+        match outcome {
+            Ok(Ok(())) => {
+                let message = account_auth::account_status(provider).message;
+                Ok(account_login_result(provider, "signed_in", &message))
+            }
+            Ok(Err(error)) => Ok(account_login_result(provider, "failed", &error.to_string())),
+            Err(_elapsed) => {
+                cancel.shutdown();
+                let message = format!(
+                    "sign-in was not completed within {timeout_seconds}s; the local login server was shut down"
+                );
+                Ok(account_login_result(provider, "timeout", &message))
+            }
+        }
+    }
+
+    /// Cancel any in-flight provider-account login and free the callback port.
+    pub fn cancel_account_login(&self) {
+        if let Ok(mut guard) = active_account_login().lock()
+            && let Some(login) = guard.take()
+        {
+            login.cancel();
+        }
+    }
+
+    /// Sign out of the provider account: remove the stored tokens (Keychain +
+    /// env mirror). The API-key path is untouched.
+    pub fn sign_out_account(&self, provider_id: String) -> Result<(), CsError> {
+        let provider = ProviderKind::from_str(&provider_id).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        account_auth::clear_account_tokens(provider).map_err(account_auth_to_cs)
     }
 
     /// Discover model options from the selected provider using the live provider
@@ -827,10 +925,6 @@ fn effective_env_string(
         .or_else(|| env_string(key))
 }
 
-fn effective_file_env_string(key: &str, env_file: &HashMap<String, String>) -> Option<String> {
-    file_env_string(key, env_file).or_else(|| env_string(key))
-}
-
 fn effective_settings_parse<T>(
     key: &str,
     setting: Option<T>,
@@ -898,7 +992,7 @@ fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
 
 /// True when the account env var or Keychain account is present and non-empty.
 fn key_present(account: &str) -> bool {
-    env_string(account).is_some() || load_key(account).and_then(non_empty).is_some()
+    lane_truth::secret(account).is_some()
 }
 
 fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
@@ -926,6 +1020,26 @@ fn account_auth_to_cs(error: account_auth::AccountAuthError) -> CsError {
     }
 }
 
+/// Terminal (non-"started") login result from the live account status —
+/// `signed_in` / `client_id_configured` always re-read, never assumed. Lives
+/// outside the exported impl: it takes a core `ProviderKind`, which must not
+/// cross the FFI boundary.
+fn account_login_result(
+    provider: ProviderKind,
+    status: &str,
+    message: &str,
+) -> CsAccountLoginResult {
+    let account_status = account_auth::account_status(provider);
+    CsAccountLoginResult {
+        provider_id: provider.as_str().to_string(),
+        status: status.to_string(),
+        message: message.to_string(),
+        auth_url: None,
+        signed_in: account_status.signed_in,
+        client_id_configured: account_status.client_id_configured,
+    }
+}
+
 impl From<ApiKeyLivenessStatus> for CsApiKeyProbeStatus {
     fn from(status: ApiKeyLivenessStatus) -> Self {
         match status {
@@ -945,7 +1059,28 @@ impl From<ApiKeyLivenessResult> for CsApiKeyProbeResult {
             account: result.account,
             status: result.status.into(),
             message: result.message,
+            probed_endpoint: result.probed_endpoint,
         }
+    }
+}
+
+#[cfg(test)]
+mod api_key_probe_tests {
+    use super::{ApiKeyLivenessResult, ApiKeyLivenessStatus, CsApiKeyProbeResult};
+
+    #[test]
+    fn bridge_probe_result_preserves_the_endpoint_used_by_core() {
+        let result = CsApiKeyProbeResult::from(ApiKeyLivenessResult {
+            account: "LLM_ASSISTIVE_API_KEY".to_string(),
+            status: ApiKeyLivenessStatus::Invalid,
+            message: "provider rejected this key".to_string(),
+            probed_endpoint: Some("https://api.libraxis.cloud/v1/responses".to_string()),
+        });
+
+        assert_eq!(
+            result.probed_endpoint.as_deref(),
+            Some("https://api.libraxis.cloud/v1/responses")
+        );
     }
 }
 
@@ -1041,8 +1176,9 @@ mod reset_tests {
 #[cfg(test)]
 mod settings_snapshot_tests {
     use super::CodescribeConfig;
-    use codescribe_core::config::UserSettings;
+    use codescribe_core::config::{Config, UserSettings};
     use serial_test::serial;
+    use std::ffi::{OsStr, OsString};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -1054,6 +1190,54 @@ mod settings_snapshot_tests {
             "cs_settings_snapshot_{}_{tag}_{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    #[serial]
+    fn assistive_provider_ui_write_is_promoted_to_settings_json() {
+        let root = scratch("assistive_provider");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _provider = EnvGuard::remove("LLM_ASSISTIVE_PROVIDER");
+
+        let config = CodescribeConfig::new();
+        config
+            .update_config(
+                "LLM_ASSISTIVE_PROVIDER".to_string(),
+                "anthropic-messages".to_string(),
+            )
+            .expect("persist provider through the UI bridge");
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(UserSettings::settings_path())
+                .expect("read promoted settings.json"),
+        )
+        .expect("parse promoted settings.json");
+        assert_eq!(
+            persisted
+                .get("speech")
+                .and_then(|value| value.get("assistive"))
+                .and_then(|value| value.get("provider"))
+                .and_then(serde_json::Value::as_str),
+            Some("anthropic-messages")
+        );
+
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let env = Config::parse_env_file(&env_path).expect("parse optional .env");
+            assert!(
+                !env.contains_key("LLM_ASSISTIVE_PROVIDER"),
+                "promoted provider must not be written to .env"
+            );
+        }
+        assert_eq!(
+            config.load_settings().llm_assistive_provider.as_deref(),
+            Some("anthropic-messages")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1091,5 +1275,38 @@ mod settings_snapshot_tests {
             }
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: this module serializes every process-env test.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: this module serializes every process-env test.
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: this module serializes every process-env test.
+            unsafe {
+                match self.previous.as_ref() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 }

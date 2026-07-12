@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the CodeScribe SwiftUI app from the Rust `codescribe-ffi` bridge.
+# Build the Codescribe SwiftUI app from the Rust `codescribe-ffi` bridge.
 #
 # This is the single source of truth for the SwiftUI build pipeline. Before it
 # existed the steps below lived only in tribal memory / a reviewer's shell
@@ -75,12 +75,38 @@ if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
   exit 0
 fi
 
+# Build provenance (Pensieve-style stamp): version from the workspace Cargo.toml,
+# commit + monotonic build number from git, built-at in UTC. All four land in
+# Info.plist via the $(VAR) placeholders project.yml declares, so the About
+# panel shows exactly what was built, from what, and when. A dirty worktree is
+# marked honestly — a stamped build must never masquerade as a clean commit.
+STAMP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD)"
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal --ignore-submodules=none)" ]; then
+    STAMP_COMMIT="${STAMP_COMMIT}-dirty"
+  fi
+  STAMP_BUILD_NUM="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
+else
+  STAMP_COMMIT="nogit"
+  STAMP_BUILD_NUM="0"
+fi
+STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
+echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 DERIVED="$REPO_ROOT/macos/build"
+# ONLY_ACTIVE_ARCH: cargo emits a single-arch libcodescribe_ffi.dylib, so a
+# universal (x86_64+arm64) Release link dies on missing Rust symbols.
 xcodebuild -project macos/Codescribe.xcodeproj \
   -scheme "$SCHEME" -configuration "$CONFIG" \
   -derivedDataPath "$DERIVED" \
+  ONLY_ACTIVE_ARCH=YES \
   CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
+  MARKETING_VERSION="$STAMP_VERSION" \
+  CURRENT_PROJECT_VERSION="$STAMP_BUILD_NUM" \
+  CS_BUILD_COMMIT="$STAMP_COMMIT" \
+  CS_BUILT_AT="$STAMP_BUILT_AT" \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"

@@ -47,6 +47,14 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_assistive_provider: Option<String>,
+    /// OAuth client id for "Sign in with ChatGPT" (non-secret app identity, not
+    /// a credential). `None` means "awaiting app registration" — the account
+    /// login stays gated. Env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID` remains the
+    /// dev-only fallback when this is unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_oauth_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_dock_icon: Option<bool>,
@@ -251,6 +259,8 @@ struct AssistiveV2 {
     llm_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -324,6 +334,9 @@ struct SystemV2 {
     // purpose — mirrors mode_bindings' Vec round-trip through the V2 schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_workspace_roots: Option<Vec<String>>,
+    // "Sign in with ChatGPT" OAuth client id (non-secret app identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    openai_oauth_client_id: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -358,8 +371,12 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LLM_MODEL",
     "LLM_ASSISTIVE_ENDPOINT",
     "LLM_ASSISTIVE_MODEL",
+    "LLM_ASSISTIVE_PROVIDER",
     "LLM_FORMATTING_ENDPOINT",
     "LLM_FORMATTING_MODEL",
+    // "Sign in with ChatGPT" OAuth client id — non-secret app identity, so it
+    // lives in settings.json (NOT the Keychain); env stays the dev fallback.
+    "LLM_OPENAI_OAUTH_CLIENT_ID",
     // Promoted from .env
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
@@ -434,6 +451,7 @@ impl UserSettings {
                 assistive: Some(AssistiveV2 {
                     llm_endpoint: self.llm_assistive_endpoint.clone(),
                     llm_model: self.llm_assistive_model.clone(),
+                    provider: self.llm_assistive_provider.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -468,6 +486,7 @@ impl UserSettings {
                 qube_daemon_autostart: self.qube_daemon_autostart,
                 onboarding_mode: self.onboarding_mode.clone(),
                 agent_workspace_roots: self.agent_workspace_roots.clone(),
+                openai_oauth_client_id: self.openai_oauth_client_id.clone(),
             }),
         }
     }
@@ -541,6 +560,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.assistive.as_ref())
                 .and_then(|a| a.llm_model.clone()),
+            llm_assistive_provider: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.assistive.as_ref())
+                .and_then(|a| a.provider.clone()),
             chat_zoom: v2.ui.as_ref().and_then(|ui| ui.chat_zoom),
             show_dock_icon: v2.ui.as_ref().and_then(|ui| ui.show_dock_icon),
             transcription_overlay_enabled: v2
@@ -591,6 +615,10 @@ impl UserSettings {
                 .system
                 .as_ref()
                 .and_then(|s| s.agent_workspace_roots.clone()),
+            openai_oauth_client_id: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.openai_oauth_client_id.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
@@ -862,6 +890,12 @@ impl UserSettings {
             "LLM_MODEL" => self.llm_model = Some(value.to_owned()),
             "LLM_ASSISTIVE_ENDPOINT" => self.llm_assistive_endpoint = Some(value.to_owned()),
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
+            "LLM_ASSISTIVE_PROVIDER" => self.llm_assistive_provider = Some(value.to_owned()),
+            "LLM_OPENAI_OAUTH_CLIENT_ID" => {
+                // Empty clears back to "awaiting app registration".
+                let trimmed = value.trim();
+                self.openai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
             "FORMATTING_LEVEL" => self.formatting_level = Some(value.to_owned()),
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
             "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
@@ -1265,6 +1299,34 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("agentic")
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_oauth_client_id_persists_in_v2_system_section_and_empty_clears() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("LLM_OPENAI_OAUTH_CLIENT_ID", "app_abc123");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.openai_oauth_client_id.as_deref(), Some("app_abc123"));
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read persisted settings"),
+        )
+        .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("system")
+                .and_then(|v| v.get("openai_oauth_client_id"))
+                .and_then(|v| v.as_str()),
+            Some("app_abc123")
+        );
+
+        // Empty (or whitespace) clears back to the registration gate.
+        let mut cleared = loaded;
+        cleared.set_string("LLM_OPENAI_OAUTH_CLIENT_ID", "   ");
+        assert_eq!(UserSettings::load().openai_oauth_client_id, None);
     }
 
     #[test]

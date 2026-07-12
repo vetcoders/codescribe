@@ -7,9 +7,11 @@
 ## Kontekst — Dwa odrębne bóle
 
 ### Ból nr 1 (pierwotny, najgłębszy)
+
 W trybie **hands-off / toggle** (przeznaczonym od początku do długich, złożonych, wielominutowych wypowiedzi) system **nie buduje jednej ciągłej całości transkryptu**.
 
 Zamiast tego:
+
 - Traktuje wypowiedź jako serię niezależnych utterance'ów
 - Podmienia / nadpisuje fragmenty transkryptu zamiast appendować
 - W niektórych ścieżkach discarduje pełne audio
@@ -17,6 +19,7 @@ Zamiast tego:
 Efekt: użytkownik, który chce dyktować swobodnie przez 8–15 minut, dostaje pofragmentowany, niestabilny wynik. To jest dokładnie odwrotność pierwotnej intencji tego trybu.
 
 ### Ból nr 2
+
 Nawet gdy pierwszy pass jest "w miarę dobry", późniejsze korekty (Whisper, leksykon, LLM) często przepisują duże fragmenty tekstu, który użytkownik już zobaczył. To łamie zaufanie i poczucie ciągłości ("petarda" znika).
 
 Oba problemy istnieją równolegle. Nie da się dobrze rozwiązać drugiego, dopóki pierwszy nie jest pod kontrolą.
@@ -61,6 +64,7 @@ To jest ucywilizowanie kontraktu, który obrosł historycznym gównem.
 **Cel:** W trybie hands-off (non-assistive, RAW lub z opcjonalnym formattingiem) system musi budować **jeden ciągły transkrypt** przez całą sesję, zamiast podmieniać fragmenty co utterance.
 
 **Co musi się stać (minimum):**
+
 - W non-assistive ścieżce toggle/hands-off: `append_mode` musi być włączone dla całego nagrania.
 - `handle_toggle_utterance` (lub równoważny mechanizm) nie może już uruchamiać pełnego pipeline'u z efektem podmiany na overlay i w transkrypcie.
 - `stop_toggle_recording` musi przestać discardować WAV w ścieżce non-assistive long-form.
@@ -70,6 +74,7 @@ To jest ucywilizowanie kontraktu, który obrosł historycznym gównem.
 **Akceptacja wymagana przed jakąkolwiek dalszą pracą:**
 
 Operator musi explicite potwierdzić (słownie lub na piśmie), że:
+
 - W hands-off (non-assistive) po tej zmianie faktycznie dostaje jeden ciągły, appendowany transkrypt.
 - Różnica między "jak wygląda tekst podczas mówienia" a "jak wygląda tuż przed wklejeniem" jest akceptowalna.
 - Mechanizm nie łamie istniejących flow (jeśli ktoś jeszcze polega na starym per-utterance zachowaniu).

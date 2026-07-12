@@ -25,6 +25,7 @@ mod config;
 mod hotkeys;
 mod mcp_admin;
 mod notes;
+mod quality;
 mod recording;
 mod threads;
 mod tray_status;
@@ -32,6 +33,7 @@ mod tray_status;
 pub use agent::{CodescribeAgent, CsAgentListener};
 pub use agent_delivery::CsAgentDeliveryListener;
 pub use hotkeys::CodescribeHotkeys;
+pub use quality::commit_overlay_quality_record;
 pub use tray_status::{
     CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,
     CsTrayStatusTone,
@@ -45,12 +47,16 @@ pub enum CsError {
     Agent { msg: String },
     Config { msg: String },
     Recording { msg: String },
+    Quality { msg: String },
 }
 
 impl std::fmt::Display for CsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CsError::Agent { msg } | CsError::Config { msg } | CsError::Recording { msg } => {
+            CsError::Agent { msg }
+            | CsError::Config { msg }
+            | CsError::Recording { msg }
+            | CsError::Quality { msg } => {
                 write!(f, "{msg}")
             }
         }

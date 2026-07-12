@@ -105,6 +105,7 @@ flowchart TB
 ### Layer specifications
 
 **Layer 0 — Apple Live (primary live engine).**
+
 - Activated by default through `CODESCRIBE_STT_ENGINE=auto` on supported macOS, or explicitly via
   `CODESCRIBE_STT_ENGINE=apple`.
 - Streams partial recognition tokens to the overlay as fast as `SFSpeechRecognitionTask` emits them.
@@ -116,6 +117,7 @@ flowchart TB
   by Layer 1, never by Layer 0 retrying.
 
 **Layer 1 — Whisper Tail Patch (background supplement).**
+
 - Triggered by `chunker` utterance boundary (Silero-driven) — same boundary Apple's
   `utterance.committed` event would land on.
 - New module `core/stt/tail_patcher/` runs Whisper (Candle / mlx-audio / OpenAI cloud — configurable)
@@ -131,6 +133,7 @@ flowchart TB
   `EngineEvent::Annotation { kind: TailPatchSkipped, reason }` and leave Layer 0 output unchanged.
 
 **Layer 2 — Lexicon + Small LLM Polish.**
+
 - Runs after Layer 1 settles for a given utterance (small debounce, e.g. 300 ms).
 - Two sub-passes:
   - **Lexicon** — applies the project lexicon (compatible with `stt-engine`'s 12597-rule
@@ -145,6 +148,7 @@ flowchart TB
 - Both passes emit `EngineEvent::ReplaceRange` events with the same invariant as Layer 1.
 
 **Layer 3 — Silero Paralingual Monitor.**
+
 - Always-on alongside Layers 0–2; uses the same Silero stream the chunker already drives.
 - Two responsibilities:
   - **Pause annotation.** When `discriminator` sees a within-utterance pause longer than
@@ -158,6 +162,7 @@ flowchart TB
     labels come from a follow-up dataset (operator's screencast corpus is a starting point).
 
 **Layer 4 — Final BAM (session-end contextual pass).**
+
 - Triggered on `stop()` / hold-release / toggle-stop.
 - Runs against the **full session WAV** (recorder always tees one to disk) and the **already-shown
   text buffer** (the union of all Layer 0–3 events).
@@ -175,12 +180,13 @@ These are non-negotiable. Any layer that violates them is broken and ships back 
 landing on `main`.
 
 1. **NEVER REWRITE FROM ZERO.**
+
    - No layer is allowed to `set_text(new_full_buffer)` after the user has seen anything.
    - The only legal mutations are `Append`, `ReplaceRange { start, end, text }`,
      `InsertAnnotation { position, text }`, and `Backspace { count }` (legacy `TranscriptDelta`).
    - Rationale: the user invested attention in what they read. Wiping and retyping breaks
      trust, breaks copy-paste mid-flow, and breaks the "petarda" promise that made them adopt
-     Codescribe instead of Apple Dictation alone. Operator's words: *"tracimy twarz"*.
+     Codescribe instead of Apple Dictation alone. Operator's words: _"tracimy twarz"_.
 
 2. **Layer 0 owns the first commit.** No later layer is allowed to render text before Layer 0 has
    committed an utterance. If Layer 0 is unavailable (no Apple Speech permission, no macOS Speech
@@ -241,17 +247,17 @@ they simply show Layer 0 output.
 
 ## What is shipped today, what is missing
 
-| Capability | Today | Needed for layered model |
-| --- | --- | --- |
-| Apple Speech adapter | ✅ 522 LOC, `CODESCRIBE_STT_ENGINE=auto` default / `apple` override | Settings toggle |
-| Whisper adapter | ✅ embedded turbo / runtime fallback | Background tail-patcher entry point |
-| Full WAV tee | ✅ always written | Lifecycle hook for Layer 4 |
-| Silero VAD + discriminator | ✅ live | Paralingual classifier head (Layer 3) |
-| `EngineEvent` vocabulary | ✅ Preview/Correction/UtteranceFinal | + `ReplaceRange`, `InsertAnnotation`, `SessionFinalised` |
-| Lexicon | ⚠ libraxis-side (`stt-engine`) | Local lexicon module callable from controller |
-| Small LLM call surface | ✅ libraxis / mlx-batch reachable | Inline polish wrapper with utterance-bounded prompts |
-| Overlay incremental render | ✅ append/backspace via `TranscriptDelta` | Add `ReplaceRange` + `InsertAnnotation` paths |
-| Orchestrator | ❌ | New `app/controller/layered_orchestrator.rs` |
+| Capability                 | Today                                                               | Needed for layered model                                 |
+| -------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------- |
+| Apple Speech adapter       | ✅ 522 LOC, `CODESCRIBE_STT_ENGINE=auto` default / `apple` override | Settings toggle                                          |
+| Whisper adapter            | ✅ embedded turbo / runtime fallback                                | Background tail-patcher entry point                      |
+| Full WAV tee               | ✅ always written                                                   | Lifecycle hook for Layer 4                               |
+| Silero VAD + discriminator | ✅ live                                                             | Paralingual classifier head (Layer 3)                    |
+| `EngineEvent` vocabulary   | ✅ Preview/Correction/UtteranceFinal                                | + `ReplaceRange`, `InsertAnnotation`, `SessionFinalised` |
+| Lexicon                    | ⚠ libraxis-side (`stt-engine`)                                      | Local lexicon module callable from controller            |
+| Small LLM call surface     | ✅ libraxis / mlx-batch reachable                                   | Inline polish wrapper with utterance-bounded prompts     |
+| Overlay incremental render | ✅ append/backspace via `TranscriptDelta`                           | Add `ReplaceRange` + `InsertAnnotation` paths            |
+| Orchestrator               | ❌                                                                  | New `app/controller/layered_orchestrator.rs`             |
 
 **Scope estimate:** ~500–800 LOC net across `app/controller/`, `core/stt/`, `core/pipeline/contracts.rs`,
 `core/vad/`. The shape is already in the codebase — this is glue and one new contract event family.
@@ -262,6 +268,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}`), defaulting to OFF until phase 4 lands.
 
 **Phase 1 — Layer 0 + Layer 1 (Apple primary + Whisper tail patch).**
+
 - Wire Apple as default engine when available; Whisper-as-primary remains the fallback.
 - New `core/stt/tail_patcher/` module + `EngineEvent::ReplaceRange { source: TailPatch }`.
 - Overlay gains `ReplaceRange` render path (visible "cursor walks back, patch lands").
@@ -269,6 +276,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
   "Bytów to New York" + "framework Vibecrafted" + "Hugging Face" within ~1 s of utterance end.
 
 **Phase 2 — Layer 2 (Lexicon + Small LLM polish).**
+
 - Local lexicon module (subset of libraxis 12597 rules, configurable).
 - Inline LLM call (`Bielik-11B` default; configurable endpoint).
 - `EngineEvent::ReplaceRange { source: Lexicon | InlineLlm }`.
@@ -276,12 +284,14 @@ Four phases. Each ships as an independent machete cut behind a feature flag
   enumeration gets a list or paragraph break inserted within the same utterance window.
 
 **Phase 3 — Layer 3 (Silero paralingual monitor).**
+
 - Pause-to-`…` first (cheap, deterministic).
 - Non-speech classifier follows; ships with binary speech-vs-noise, label set grows as the
   classifier improves. MVP labels gated behind confidence floor.
 - `EngineEvent::InsertAnnotation`.
 
 **Phase 4 — Layer 4 (Final BAM).**
+
 - New `core/pipeline/final_bam.rs` runs on `stop()` against full WAV + shown buffer.
 - Emits the final batch of `ReplaceRange` events, then `SessionFinalised`.
 - Operator's stop trigger (`make install-app` / hotkey release) remains the human control surface.
@@ -289,8 +299,8 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 ## Non-goals
 
 - **Not building a live cursor-paste into arbitrary text fields.** Operator explicit:
-  *"ja nie muszę mieć wklejane w karetkę, bo pewnie nikt nie zrobi mi backspace + podmianka live
-  niezależnie gdzie ta karetka stoi"*. The whole theatre runs **inside the overlay**. Final paste
+  _"ja nie muszę mieć wklejane w karetkę, bo pewnie nikt nie zrobi mi backspace + podmianka live
+  niezależnie gdzie ta karetka stoi"_. The whole theatre runs **inside the overlay**. Final paste
   to the active field happens once, at session end, after Layer 4 has committed.
 - **Not rewriting Whisper from scratch.** This ADR keeps Candle/mlx-audio/OpenAI as
   interchangeable Layer 1 backends; the choice is configuration, not code.
@@ -302,6 +312,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 ## Consequences
 
 **Positive.**
+
 - User keeps Apple Dictation's perceived speed and gains Whisper's recall depth in the same flow.
 - Failures degrade gracefully: Layer 0 down → Whisper-primary; Layer 1 timeout → Layer 0 output
   stands; Layer 2 unreachable → text stays raw; Layer 3 disabled → no annotations; Layer 4
@@ -313,6 +324,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 - Existing code paths keep working — feature flag means today's users see no change until phase 4.
 
 **Negative / costs.**
+
 - Orchestrator adds non-trivial state in `app/controller/` (per-utterance layer status machine).
 - `ReplaceRange` events change the sink contract; legacy sinks that didn't expect them must be
   audited (the codebase has 3 main sinks: overlay, IPC broadcast, telemetry — all Option-guarded).
@@ -325,6 +337,7 @@ Four phases. Each ships as an independent machete cut behind a feature flag
   threshold (don't patch if uncertain) is the default safe behaviour.
 
 **Operational.**
+
 - Telemetry gains per-layer counters (utterances patched, lexicon hits, LLM calls, annotations
   inserted, BAM edits). Visible in `/healthz` and Quality dashboard.
 - Settings gains four toggles (Layer 1, 2, 3, 4) and one engine selector (Apple / Whisper).

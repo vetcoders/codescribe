@@ -13,13 +13,13 @@
 The overlay no longer renders a single linear stream of one engine's output. It now renders
 **five concurrent layers**, each emitting events into the same already-shown text buffer:
 
-| Layer | Engine | Event types | When |
-| --- | --- | --- | --- |
-| **0 — Live** | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal` | While the user speaks — owns first commit |
-| **1 — Tail Patch** | Whisper (Candle / mlx-audio / OpenAI / libraxis) | `ReplaceRange { source: TailPatch }` | ~1 s after each utterance boundary |
-| **2 — Polish** | Local lexicon + small LLM (Bielik-11B default) | `ReplaceRange { source: Lexicon \| InlineLlm }` | Debounced after Layer 1 settles |
-| **3 — Paralingual** | Silero classifier head | `InsertAnnotation { HesitationPause \| Paralingual }` | Continuously alongside Layers 0–2 |
-| **4 — Final BAM** | Session-end contextual pass | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release |
+| Layer               | Engine                                                  | Event types                                                          | When                                      |
+| ------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- |
+| **0 — Live**        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal`                            | While the user speaks — owns first commit |
+| **1 — Tail Patch**  | Whisper (Candle / mlx-audio / OpenAI / libraxis)        | `ReplaceRange { source: TailPatch }`                                 | ~1 s after each utterance boundary        |
+| **2 — Polish**      | Local lexicon + small LLM (Bielik-11B default)          | `ReplaceRange { source: Lexicon \| InlineLlm }`                      | Debounced after Layer 1 settles           |
+| **3 — Paralingual** | Silero classifier head                                  | `InsertAnnotation { HesitationPause \| Paralingual }`                | Continuously alongside Layers 0–2         |
+| **4 — Final BAM**   | Session-end contextual pass                             | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release                |
 
 **Hard invariant:** every layer mutates the buffer only through bounded events
 (`Append`, `ReplaceRange`, `InsertAnnotation`, `Backspace`). No layer is allowed to wipe the

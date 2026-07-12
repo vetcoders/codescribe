@@ -215,7 +215,7 @@ write_honest_report() {
   head_short="$(git -C "$repo_root" rev-parse --short=8 HEAD 2>/dev/null || printf 'unknown')"
   fixture_source="$(fixture_source_label)"
   {
-    printf '# CodeScribe STT Baseline Bench\n\n'
+    printf '# Codescribe STT Baseline Bench\n\n'
     printf '[!] %s\n\n' "$reason"
     printf '## Repro command\n\n'
     printf '```bash\n'
@@ -973,7 +973,7 @@ raw_delta_pp = None if unprompted_raw is None or prompted_raw is None else (prom
 post_delta_pp = None if unprompted_post is None or prompted_post is None else (prompted_post - unprompted_post) * 100.0
 
 lines = []
-lines.append("# CodeScribe STT Real-Path Bench")
+lines.append("# Codescribe STT Real-Path Bench")
 lines.append("")
 lines.append("## Run Context")
 lines.append("")

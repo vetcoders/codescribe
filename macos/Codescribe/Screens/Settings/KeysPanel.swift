@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 // Keys panel: write-only API-key management. Secrets are entered through a
@@ -32,17 +33,24 @@ struct KeysPanel: View {
                 .padding(.top, 22)
             VStack(spacing: 8) {
                 ForEach(model.keyAccounts, id: \.self) { account in
+                    let provider = model.providerForKeyAccount(account)
                     KeyRow(
                         account: account,
                         label: SettingsViewModel.keyLabel(for: account),
                         isSet: model.keyStatus.isSet(account: account),
                         probeResult: model.keyProbeResults[account],
                         probePending: model.keyProbePending.contains(account),
-                        accountProvider: model.providerForKeyAccount(account),
+                        accountProvider: provider,
+                        accountLoginPending: provider.map {
+                            model.accountLoginPending.contains($0.id)
+                        } ?? false,
+                        accountLoginNotice: provider.flatMap { model.accountLoginNotices[$0.id] },
                         onSave: { model.saveKey(account: account, secret: $0) },
                         onClear: { model.clearKey(account: account) },
                         onTest: { model.testKey(account: account) },
-                        onStartAccountLogin: { model.startAccountLogin(providerId: $0) }
+                        onStartAccountLogin: { model.startAccountLogin(providerId: $0) },
+                        onSignOutAccount: { model.signOutAccount(providerId: $0) },
+                        onSaveOauthClientId: { model.saveOauthClientId(providerId: $0, value: $1) }
                     )
                 }
             }
@@ -68,11 +76,10 @@ struct KeysPanel: View {
 private struct AgentProviderSelector: View {
     @ObservedObject var model: SettingsViewModel
 
-    private var selected: CsProviderOption? { model.selectedProvider }
-    private var discoveredModels: [CsModelOption] { model.discoveredModels }
+    private var laneModel: LLMLaneModel { model.llmLane(.assistive) }
 
     private var discoveryDotColor: Color {
-        switch model.modelDiscoveryStatus {
+        switch laneModel.discovery.status {
         case "fresh": return CSColor.olive
         case "cached": return CSColor.amber
         case "no_key": return CSColor.textFaint
@@ -81,22 +88,22 @@ private struct AgentProviderSelector: View {
     }
 
     private var currentModelLabel: String {
-        let id = model.assistiveModel
+        let id = laneModel.configuredModel
         if id.isEmpty {
-            return discoveredModels.isEmpty ? "No discovered models" : "Choose a model"
+            return laneModel.modelOptions.isEmpty ? "No discovered models" : "Choose a model"
         }
-        return discoveredModels.first { $0.id == id }?.displayName ?? id
+        return laneModel.modelOptions.first { $0.id == id }?.displayName ?? id
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             SelectorRow(label: "Provider") {
                 Menu {
-                    ForEach(model.availableProviders, id: \.id) { provider in
+                    ForEach(model.providers, id: \.id) { provider in
                         Button {
                             model.setAssistiveProvider(provider.id)
                         } label: {
-                            if provider.id == model.assistiveProviderId {
+                            if provider.id == laneModel.providerId {
                                 Label(provider.displayName, systemImage: "checkmark")
                             } else {
                                 Text(provider.displayName)
@@ -104,7 +111,7 @@ private struct AgentProviderSelector: View {
                         }
                     }
                 } label: {
-                    MenuLabel(text: selected?.displayName ?? model.assistiveProviderId)
+                    SettingsMenuLabel(text: laneModel.provider?.displayName ?? laneModel.providerId, chrome: true)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -112,11 +119,11 @@ private struct AgentProviderSelector: View {
 
             SelectorRow(label: "Model") {
                 Menu {
-                    ForEach(discoveredModels, id: \.id) { option in
+                    ForEach(laneModel.modelOptions, id: \.id) { option in
                         Button {
-                            model.setAssistiveModel(option.id)
+                            model.setLLMModel(option.id, for: .assistive)
                         } label: {
-                            if option.id == model.assistiveModel {
+                            if option.id == laneModel.configuredModel {
                                 Label(option.displayName, systemImage: "checkmark")
                             } else {
                                 Text(option.displayName)
@@ -124,14 +131,14 @@ private struct AgentProviderSelector: View {
                         }
                     }
                 } label: {
-                    MenuLabel(text: currentModelLabel, mono: true)
+                    SettingsMenuLabel(text: currentModelLabel, mono: true, chrome: true)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .disabled(discoveredModels.isEmpty)
+                .disabled(laneModel.modelOptions.isEmpty)
             }
 
-            if let selected {
+            if let selected = laneModel.provider {
                 HStack(spacing: 8) {
                     Circle()
                         .fill((selected.apiKeySet ? CSColor.olive : CSColor.terracotta).opacity(0.85))
@@ -146,7 +153,7 @@ private struct AgentProviderSelector: View {
                 Circle()
                     .fill(discoveryDotColor.opacity(0.85))
                     .frame(width: 7, height: 7)
-                Text(model.modelDiscoveryDescription)
+                Text(laneModel.discoveryDescription)
                     .font(CSFont.mono(11, .medium))
                     .foregroundStyle(CSColor.textFaint)
                     .lineLimit(2)
@@ -181,32 +188,6 @@ private struct SelectorRow<Content: View>: View {
     }
 }
 
-private struct MenuLabel: View {
-    let text: String
-    var mono: Bool = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(text)
-                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-                .foregroundStyle(CSColor.textHigh)
-                .lineLimit(1)
-            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(CSColor.surfaceRaised(0.03))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-    }
-}
-
 // MARK: - Key row
 
 private struct KeyRow: View {
@@ -216,10 +197,14 @@ private struct KeyRow: View {
     let probeResult: CsApiKeyProbeResult?
     let probePending: Bool
     let accountProvider: CsProviderOption?
+    let accountLoginPending: Bool
+    let accountLoginNotice: String?
     let onSave: (String) -> Void
     let onClear: () -> Void
     let onTest: () -> Void
     let onStartAccountLogin: (String) -> Void
+    let onSignOutAccount: (String) -> Void
+    let onSaveOauthClientId: (String, String) -> Void
 
     @State private var draft: String = ""
 
@@ -332,7 +317,11 @@ private struct KeyRow: View {
             if let accountProvider {
                 AccountLoginRow(
                     provider: accountProvider,
-                    onStart: { onStartAccountLogin(accountProvider.id) }
+                    loginPending: accountLoginPending,
+                    loginNotice: accountLoginNotice,
+                    onStart: { onStartAccountLogin(accountProvider.id) },
+                    onSignOut: { onSignOutAccount(accountProvider.id) },
+                    onSaveClientId: { onSaveOauthClientId(accountProvider.id, $0) }
                 )
             }
         }
@@ -359,14 +348,20 @@ private struct KeyProbeChip: View {
     let result: CsApiKeyProbeResult
 
     private var label: String {
+        let verdict: String
         switch result.status {
-        case .ok: return "Key OK"
-        case .invalid: return "Invalid key"
-        case .noQuota: return "No credits (check billing)"
-        case .network: return "Network error"
-        case .missing: return "Not set"
-        case .unsupported: return "Unsupported"
+        case .ok: verdict = "Key OK"
+        case .invalid: verdict = "Invalid key"
+        case .noQuota: verdict = "No credits (check billing)"
+        case .network: verdict = "Network error"
+        case .missing: verdict = "Not set"
+        case .unsupported: verdict = "Unsupported"
         }
+        guard let endpoint = result.probedEndpoint,
+              let host = URL(string: endpoint)?.host,
+              !host.isEmpty
+        else { return verdict }
+        return "\(verdict) @ \(host)"
     }
 
     private var tint: Color {
@@ -393,47 +388,108 @@ private struct KeyProbeChip: View {
                 Capsule()
                     .strokeBorder(tint.opacity(0.24), lineWidth: 1)
             )
-            .help(result.message)
+            .help(
+                result.probedEndpoint.map {
+                    "\(result.message)\nEndpoint: \($0)"
+                } ?? result.message
+            )
     }
 }
 
 private struct AccountLoginRow: View {
     let provider: CsProviderOption
+    let loginPending: Bool
+    let loginNotice: String?
     let onStart: () -> Void
+    let onSignOut: () -> Void
+    let onSaveClientId: (String) -> Void
+
+    @State private var clientIdDraft: String = ""
 
     private var signedIn: Bool { provider.accountSignedIn }
     private var accent: Color { signedIn ? CSColor.olive : CSColor.textFaint }
-    private var statusText: String {
-        signedIn ? "signed in" : "not signed in"
-    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(accent.opacity(0.85))
-                .frame(width: 7, height: 7)
-            Text("ChatGPT account")
-                .font(CSFont.ui(12.5, .semibold))
-                .foregroundStyle(CSColor.textBody)
-            Text(statusText)
-                .font(CSFont.mono(10, .semibold))
-                .foregroundStyle(accent)
-            if !provider.accountStatusMessage.isEmpty, provider.accountStatusMessage != statusText {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(accent.opacity(0.85))
+                    .frame(width: 7, height: 7)
+                Text("ChatGPT account")
+                    .font(CSFont.ui(12.5, .semibold))
+                    .foregroundStyle(CSColor.textBody)
+                // Carries "signed in as <email>" / "not signed in" /
+                // "awaiting app registration" straight from the core.
                 Text(provider.accountStatusMessage)
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(accent)
+                    .lineLimit(1)
+                if let loginNotice, !loginNotice.isEmpty {
+                    Text(loginNotice)
+                        .font(CSFont.mono(10, .medium))
+                        .foregroundStyle(CSColor.terracottaLight)
+                        .lineLimit(1)
+                        .help(loginNotice)
+                }
+                Spacer(minLength: 0)
+                if signedIn {
+                    AccountActionButton(
+                        title: "Sign out",
+                        tint: CSColor.terracottaLight,
+                        enabled: !loginPending,
+                        action: onSignOut
+                    )
+                    .help("Remove the stored ChatGPT account tokens")
+                }
+                Button(action: onStart) {
+                    HStack(spacing: 6) {
+                        if loginPending {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.62)
+                                .frame(width: 14, height: 12)
+                        } else {
+                            CSIconView(icon: .accountVerified, size: 12, weight: .semibold)
+                        }
+                        Text(loginPending ? "Waiting for browser…" : "Sign in with ChatGPT")
+                            .font(CSFont.ui(12, .semibold))
+                    }
+                    .foregroundStyle(
+                        provider.accountLoginEnabled && !loginPending
+                            ? CSColor.oliveLight : CSColor.textFaint
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .fill(CSColor.surfaceRaised(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!provider.accountLoginEnabled || loginPending)
+                .help(provider.accountStatusMessage)
+            }
+
+            // OAuth client id — non-secret app identity (NOT a credential), so a
+            // plain TextField with the value visible is correct here. Saving an
+            // empty field clears back to "awaiting app registration".
+            HStack(spacing: 8) {
+                Text("client id")
                     .font(CSFont.mono(10, .medium))
                     .foregroundStyle(CSColor.textFaint)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            Button(action: onStart) {
-                HStack(spacing: 6) {
-                    CSIconView(icon: .accountVerified, size: 12, weight: .semibold)
-                    Text("Sign in with ChatGPT")
-                        .font(CSFont.ui(12, .semibold))
-                }
-                .foregroundStyle(provider.accountLoginEnabled ? CSColor.oliveLight : CSColor.textFaint)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+                TextField(
+                    provider.oauthClientId == nil ? "Paste OAuth client id…" : "",
+                    text: $clientIdDraft
+                )
+                .textFieldStyle(.plain)
+                .font(CSFont.mono(11, .regular))
+                .foregroundStyle(CSColor.textBody)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
                 .background(
                     RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                         .fill(CSColor.surfaceRaised(0.03))
@@ -442,11 +498,47 @@ private struct AccountLoginRow: View {
                     RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                         .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                 )
+                .onSubmit { onSaveClientId(clientIdDraft) }
+                AccountActionButton(
+                    title: "Save",
+                    tint: CSColor.oliveLight,
+                    enabled: clientIdDraft != (provider.oauthClientId ?? ""),
+                    action: { onSaveClientId(clientIdDraft) }
+                )
+                .help("Store the client id (settings.json) — applies without restart")
             }
-            .buttonStyle(.plain)
-            .disabled(!provider.accountLoginEnabled)
-            .help(provider.accountStatusMessage)
         }
+        .onAppear { clientIdDraft = provider.oauthClientId ?? "" }
+        .onChange(of: provider.oauthClientId) { _, updated in
+            clientIdDraft = updated ?? ""
+        }
+    }
+}
+
+private struct AccountActionButton: View {
+    let title: String
+    let tint: Color
+    let enabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(CSFont.ui(11.5, .semibold))
+                .foregroundStyle(enabled ? tint : CSColor.textFaint)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .fill(CSColor.surfaceRaised(0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
     }
 }
 

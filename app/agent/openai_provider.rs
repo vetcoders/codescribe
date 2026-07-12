@@ -15,8 +15,11 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::llm::account_auth;
+use codescribe_core::llm::lane_truth::AssistiveLaneSnapshot;
+use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
-    ResponsesStreamingManager, StreamCallbacks,
+    AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
 
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
@@ -52,13 +55,27 @@ pub struct OpenAiProvider {
     previous_response_id: Arc<Mutex<Option<String>>>,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
+    /// Lane resolved to "Sign in with ChatGPT" account auth (no API key, official
+    /// endpoint, stored tokens). Each request fetches a FRESH access token via
+    /// `account_auth` so the auto-refresh path keeps long sessions alive.
+    use_account_auth: bool,
 }
 
 impl OpenAiProvider {
-    pub fn from_env() -> Result<Self> {
-        let endpoint = get_env_non_empty("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")?;
-        let default_model = get_env_non_empty("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")?;
-        let api_key = get_env_non_empty("LLM_ASSISTIVE_API_KEY", "OpenAI API key (assistive)")?;
+    /// Build from the resolved assistive lane (fresh settings → env →
+    /// Keychain) instead of the frozen bootstrap process env. `api_key: None`
+    /// becomes an empty key, which the streaming manager translates into a
+    /// clean unauthenticated request — key-optional local endpoints are a
+    /// first-class configuration, not an error.
+    pub fn from_lane(lane: AssistiveLaneSnapshot) -> Result<Self> {
+        let AssistiveLaneSnapshot {
+            endpoint,
+            model: default_model,
+            api_key,
+            account_auth: use_account_auth,
+            provider: _,
+        } = lane;
+        let api_key = api_key.unwrap_or_default();
 
         let use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
@@ -93,6 +110,7 @@ impl OpenAiProvider {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout,
             inter_chunk_timeout,
+            use_account_auth,
         })
     }
 }
@@ -152,17 +170,39 @@ impl AgentProvider for OpenAiProvider {
             stream: true,
         };
 
+        // Account-auth lanes fetch a fresh access token per request (60s-skew
+        // auto-refresh) — never a token frozen at provider construction. The
+        // manager formats the `Bearer` header itself, so this is the raw token.
+        let account_token = if self.use_account_auth {
+            Some(
+                account_auth::access_token(ProviderKind::OpenAiResponses)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("ChatGPT account authentication failed: {error}")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let auth_secret = account_token.as_deref().unwrap_or(&self.api_key);
+
+        let auth_header_mode = if self.use_account_auth {
+            AuthHeaderMode::BearerOnly
+        } else {
+            AuthHeaderMode::BearerAndApiKey
+        };
         let manager = ResponsesStreamingManager::new(
             &self.client,
             &self.endpoint,
-            &self.api_key,
+            auth_secret,
             StreamCallbacks {
                 assistant: None,
                 reasoning: None,
             },
             self.initial_response_timeout,
             self.inter_chunk_timeout,
-        );
+        )
+        .with_auth_header_mode(auth_header_mode);
 
         let provider_rx = manager.stream_agent(&request).await?;
 
@@ -557,15 +597,6 @@ fn to_data_uri(data: &[u8], media_type: &str) -> String {
     format!("data:{media_type};base64,{}", BASE64.encode(data))
 }
 
-fn get_env_non_empty(key: &str, label: &str) -> Result<String> {
-    let value = env::var(key).with_context(|| format!("{label} is required. Set {key}."))?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("{label} is required. Set {key}.");
-    }
-    Ok(trimmed.to_string())
-}
-
 fn parse_env_u64(key: &str, default: u64) -> u64 {
     env::var(key)
         .ok()
@@ -848,6 +879,7 @@ mod tests {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
         let messages = vec![Message::new(
             Role::User,
@@ -890,6 +922,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
 
         // Pre-condition: stored chain holds prior failed attempt's response id.
@@ -923,6 +956,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
 
         let options = StreamOptions::default();
@@ -1001,6 +1035,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
         let reset_options = StreamOptions {
             reset_chain: true,
@@ -1177,6 +1212,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            use_account_auth: false,
         };
         let messages = vec![Message::new(
             Role::User,

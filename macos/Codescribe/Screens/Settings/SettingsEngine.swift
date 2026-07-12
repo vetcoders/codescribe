@@ -27,6 +27,9 @@ protocol SettingsEngine {
     func onboardingMode() -> String?
     func setOnboardingMode(mode: String) throws
 
+    /// Delegates to core lane_truth normalization (eliminates suffix-list dupe in Swift).
+    func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String
+
     // Config writes (auto-tiered by the core router)
     func updateConfig(key: String, value: String) throws
     func updateConfigMany(entries: [CsConfigEntry]) throws
@@ -42,6 +45,11 @@ protocol SettingsEngine {
     func availableProviders() -> [CsProviderOption]
     func discoverModels(providerId: String) -> CsModelDiscovery
     func startAccountLogin(providerId: String) throws -> CsAccountLoginResult
+    // Blocks until the in-flight login completes/fails/times out — call from a
+    // background queue only. Timeout shuts the local callback server down.
+    func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult
+    func cancelAccountLogin()
+    func signOutAccount(providerId: String) throws
 
     // Editable BASE prompts
     func getFormattingPrompt() -> String
@@ -71,6 +79,10 @@ final class RealSettingsEngine: SettingsEngine {
     func onboardingMode() -> String? { config.onboardingMode() }
     func setOnboardingMode(mode: String) throws { try config.setOnboardingMode(mode: mode) }
 
+    func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String {
+        config.normalizeOpenaiResponsesEndpoint(endpoint: endpoint)
+    }
+
     func updateConfig(key: String, value: String) throws {
         try config.updateConfig(key: key, value: value)
     }
@@ -94,6 +106,13 @@ final class RealSettingsEngine: SettingsEngine {
     }
     func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
         try config.startAccountLogin(providerId: providerId)
+    }
+    func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult {
+        try config.awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
+    }
+    func cancelAccountLogin() { config.cancelAccountLogin() }
+    func signOutAccount(providerId: String) throws {
+        try config.signOutAccount(providerId: providerId)
     }
 
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
@@ -161,6 +180,29 @@ struct MockSettingsEngine: SettingsEngine {
             clientIdConfigured: false
         )
     }
+
+    func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String {
+        // Mock: pass-through or minimal normalize for preview stability.
+        var base = endpoint.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
+        for s in ["/v1/responses", "/v1/chat/completions", "/v1/completions"] where base.hasSuffix(s) {
+            base.removeLast(s.count)
+            return base + "/v1/responses"
+        }
+        if base.hasSuffix("/v1") { base.removeLast(3) }
+        return base + "/v1/responses"
+    }
+    func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult {
+        CsAccountLoginResult(
+            providerId: providerId,
+            status: "idle",
+            message: "no sign-in in progress",
+            authUrl: nil,
+            signedIn: false,
+            clientIdConfigured: false
+        )
+    }
+    func cancelAccountLogin() {}
+    func signOutAccount(providerId: String) throws {}
 
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
     func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
@@ -290,7 +332,8 @@ extension CsApiKeyProbeResult {
             status: account == "STT_API_KEY" ? .unsupported : .ok,
             message: account == "STT_API_KEY"
                 ? "no cheap liveness probe is available for this STT key"
-                : "key accepted and quota available"
+                : "key accepted and quota available",
+            probedEndpoint: nil
         )
     }
 }
@@ -306,6 +349,7 @@ extension CsProviderOption {
             accountSignedIn: false,
             accountLoginEnabled: false,
             accountStatusMessage: "awaiting app registration",
+            oauthClientId: nil,
             models: []
         ),
         CsProviderOption(
@@ -316,6 +360,7 @@ extension CsProviderOption {
             accountSignedIn: false,
             accountLoginEnabled: false,
             accountStatusMessage: "provider account login unavailable",
+            oauthClientId: nil,
             models: []
         ),
     ]

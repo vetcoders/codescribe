@@ -133,7 +133,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func wireTrayActions() {
         model.tray.onAbout = {
             NSApp.activate(ignoringOtherApps: true)
-            NSApp.orderFrontStandardAboutPanel(nil)
+            // Build provenance in the standard About panel (Pensieve-style):
+            // version/build come from Info.plist keys stamped by scripts/build-app.sh;
+            // commit + built-at land in the credits block below them.
+            let info = Bundle.main.infoDictionary ?? [:]
+            let commit = info["CSBuildCommit"] as? String ?? "dev"
+            let builtAt = info["CSBuiltAt"] as? String ?? "unknown"
+            let credits = NSAttributedString(
+                string: "Commit: \(commit)\nBuilt: \(builtAt)",
+                attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+            )
+            NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
         }
         model.tray.onHelp = {
             NSWorkspace.shared.open(Self.helpURL)
