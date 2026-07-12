@@ -1,7 +1,7 @@
 //! Pipeline contracts — shared data types for the transcription pipeline.
 //!
 //! These types define the boundaries between pipeline stages:
-//!   AudioChunk → SpeechUtterance → RawTranscript → PostprocessResult → TranscriptDelta → DeltaSink
+//!   AudioChunk → SpeechUtterance → RawTranscript → TranscriptDelta → DeltaSink
 //!
 //! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
@@ -398,19 +398,6 @@ pub(crate) fn collect_confidence_flags(
 }
 
 // ═══════════════════════════════════════════════════════════
-// Postprocess stage
-// ═══════════════════════════════════════════════════════════
-
-/// Result of postprocessing a raw transcript (lexicon + semantic gate + cleanup).
-#[derive(Debug, Clone)]
-pub struct PostprocessResult {
-    /// Cleaned text ready for user-facing output.
-    pub text: String,
-    /// Whether the semantic gate dropped this chunk (text will be empty).
-    pub dropped: bool,
-}
-
-// ═══════════════════════════════════════════════════════════
 // Delta / presentation stage
 // ═══════════════════════════════════════════════════════════
 
@@ -524,13 +511,6 @@ pub trait TranscriptionAdapter: Send + Sync {
         utterance: &SpeechUtterance,
         language: Option<&str>,
     ) -> anyhow::Result<RawTranscript>;
-}
-
-/// Post-processor for raw transcripts.
-///
-/// Implementations: `StreamPostProcessor` (semantic gate), `LexiconPostProcessor`.
-pub trait PostProcessor: Send {
-    fn process(&mut self, raw: &RawTranscript) -> Option<PostprocessResult>;
 }
 
 /// Sink for transcript deltas (UI, IPC, clipboard, etc).
@@ -979,18 +959,6 @@ mod tests {
         let rt = RawTranscript::default();
         assert!(rt.text.is_empty());
         assert!(rt.segments.is_empty());
-    }
-
-    // ── PostprocessResult ──
-
-    #[test]
-    fn postprocess_result_dropped() {
-        let r = PostprocessResult {
-            text: String::new(),
-            dropped: true,
-        };
-        assert!(r.dropped);
-        assert!(r.text.is_empty());
     }
 
     // ── EngineEvent ──

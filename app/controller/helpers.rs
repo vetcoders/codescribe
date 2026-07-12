@@ -11,12 +11,13 @@ use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::agent_delivery::AgentDeliveryEvent;
-use crate::config::default_assistive_model;
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
     Thread, ThreadMessage, ThreadStore, ToolRegistry,
 };
+use codescribe_core::config::Config;
+use codescribe_core::llm::lane_truth;
 use serde_json::{Value, json};
 
 use crate::os::tray_status;
@@ -286,13 +287,7 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
         .ok()
         .filter(|tokens| *tokens > 0);
 
-    // Model name comes from settings.json -> loader.rs -> env var. Keep a
-    // release-safe OpenAI default so the agent path never falls into an empty
-    // or provider-specific placeholder model.
-    let model = std::env::var("LLM_ASSISTIVE_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(default_assistive_model);
+    let (_, model) = lane_truth::assistive_identity(&Config::load());
 
     StreamOptions {
         model,
@@ -553,7 +548,7 @@ fn legacy_assistive_thread_messages(
 fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
     let store = ThreadStore::new().context("Failed to initialize ThreadStore")?;
     let now = Utc::now();
-    let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_else(|_| "unknown".to_string());
+    let (provider, model) = lane_truth::assistive_identity(&Config::load());
 
     let mut thread = store
         .load_thread(&runtime.thread_store_id)
@@ -569,7 +564,7 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
             messages: Vec::new(),
             summary: None,
             total_tokens: None,
-            provider: "openai-responses".to_string(),
+            provider: provider.as_str().to_string(),
             model: model.clone(),
         });
 
@@ -584,7 +579,7 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
         .iter()
         .map(ThreadMessage::from)
         .collect();
-    thread.provider = "openai-responses".to_string();
+    thread.provider = provider.as_str().to_string();
     thread.model = model;
 
     store
@@ -603,7 +598,7 @@ fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Res
 
     let store = ThreadStore::new().context("Failed to initialize ThreadStore")?;
     let now = Utc::now();
-    let model = std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_else(|_| "unknown".to_string());
+    let (_, model) = lane_truth::assistive_identity(&Config::load());
 
     let mut title = user_text.chars().take(72).collect::<String>();
     if title.is_empty() {

@@ -16,6 +16,8 @@ use crate::ai_formatting;
 use crate::audio::load_audio_file;
 use crate::client;
 use crate::config::Config;
+use crate::llm::lane_truth;
+use crate::llm::provider::{LlmMode, ProviderKind};
 use crate::pipeline::contracts::RawTranscript;
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
@@ -1430,6 +1432,14 @@ fn snapshot_environment(
     local_transcription: LocalTranscriptionMode,
 ) -> ReportEnvironment {
     let config = Config::load();
+    let (formatting_provider, formatting_model) = lane_truth::formatting_identity(&config);
+    let formatting_endpoint = lane_truth::endpoint(LlmMode::Formatting, &config);
+    let formatting_endpoint = match formatting_provider {
+        ProviderKind::OpenAiResponses => formatting_endpoint,
+        ProviderKind::AnthropicMessages => {
+            lane_truth::normalize_anthropic_messages_endpoint(&formatting_endpoint)
+        }
+    };
     ReportEnvironment {
         stt_endpoint: config.stt_endpoint.clone(),
         stt_api_key_present: config
@@ -1437,11 +1447,9 @@ fn snapshot_environment(
             .as_ref()
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false),
-        llm_formatting_endpoint: std::env::var("LLM_FORMATTING_ENDPOINT").ok(),
-        llm_formatting_model: std::env::var("LLM_FORMATTING_MODEL").ok(),
-        llm_formatting_key_present: std::env::var("LLM_FORMATTING_API_KEY")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false),
+        llm_formatting_endpoint: Some(formatting_endpoint),
+        llm_formatting_model: Some(formatting_model),
+        llm_formatting_key_present: lane_truth::secret("LLM_FORMATTING_API_KEY").is_some(),
         local_model: Some(config.local_model),
         whisper_language: Some(config.whisper_language.as_str().to_string()),
         metrics_reference: metrics_reference.as_str().to_string(),

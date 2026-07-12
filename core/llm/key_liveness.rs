@@ -14,10 +14,9 @@ use serde_json::json;
 use crate::config::Config;
 use crate::config::keychain::KEYCHAIN_ACCOUNTS;
 use crate::llm::lane_truth;
+use crate::llm::provider::{LlmMode, ProviderKind};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_ANTHROPIC_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +63,7 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
     }
 
     let config = Config::load();
-    let Some(api_key) = account_secret(account) else {
+    let Some(api_key) = lane_truth::secret(account) else {
         return ApiKeyLivenessResult::new(
             account,
             ApiKeyLivenessStatus::Missing,
@@ -99,7 +98,7 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         "LLM_API_KEY" | "LLM_FORMATTING_API_KEY" | "LLM_ASSISTIVE_API_KEY" => {
             probe_openai_key(&client, &config, account, &api_key)
         }
-        "LLM_ANTHROPIC_API_KEY" => probe_anthropic_key(&client, account, &api_key),
+        "LLM_ANTHROPIC_API_KEY" => probe_anthropic_key(&client, &config, account, &api_key),
         "GITHUB_TOKEN" => probe_github_token(&client, account, &api_key),
         _ => ApiKeyLivenessResult::new(
             account,
@@ -148,8 +147,8 @@ fn probe_openai_key(
     account: &str,
     api_key: &str,
 ) -> ApiKeyLivenessResult {
-    let endpoint = openai_endpoint_for_account(config, account);
-    let model = openai_model_for_account(config, account);
+    let endpoint = lane_truth::endpoint_for_account(config, account);
+    let model = lane_truth::model_for_account(config, account);
     let request = json!({
         "model": model,
         "input": [{
@@ -171,13 +170,15 @@ fn probe_openai_key(
     response_result(account, endpoint, response)
 }
 
-fn probe_anthropic_key(client: &Client, account: &str, api_key: &str) -> ApiKeyLivenessResult {
-    let endpoint = env_non_empty("LLM_ANTHROPIC_ENDPOINT")
-        .unwrap_or_else(|| DEFAULT_ANTHROPIC_ENDPOINT.to_string());
-    let endpoint = normalize_anthropic_messages_endpoint(&endpoint);
-    let model = env_non_empty("LLM_ASSISTIVE_MODEL")
-        .filter(|m| m.starts_with("claude"))
-        .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_string());
+fn probe_anthropic_key(
+    client: &Client,
+    config: &Config,
+    account: &str,
+    api_key: &str,
+) -> ApiKeyLivenessResult {
+    let endpoint = lane_truth::anthropic_messages_endpoint();
+    let model =
+        lane_truth::model_for_provider(LlmMode::Assistive, ProviderKind::AnthropicMessages, config);
     let request = json!({
         "model": model,
         "messages": [{
@@ -240,36 +241,6 @@ fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
         ApiKeyLivenessStatus::Missing => "key is not configured",
         ApiKeyLivenessStatus::Unsupported => "probe is not supported for this key",
     }
-}
-
-fn account_secret(account: &str) -> Option<String> {
-    lane_truth::secret(account)
-}
-
-fn openai_endpoint_for_account(config: &Config, account: &str) -> String {
-    lane_truth::endpoint_for_account(config, account)
-}
-
-fn openai_model_for_account(config: &Config, account: &str) -> String {
-    lane_truth::model_for_account(config, account)
-}
-
-fn normalize_anthropic_messages_endpoint(endpoint: &str) -> String {
-    normalize_endpoint(endpoint, "/v1/messages", &["/v1/messages", "/v1/responses"])
-}
-
-fn normalize_endpoint(endpoint: &str, canonical_suffix: &str, known_suffixes: &[&str]) -> String {
-    let mut base = endpoint.trim().trim_end_matches('/').to_string();
-    for suffix in known_suffixes {
-        if base.ends_with(suffix) {
-            base.truncate(base.len() - suffix.len());
-            return format!("{base}{canonical_suffix}");
-        }
-    }
-    if base.ends_with("/v1") {
-        base.truncate(base.len() - "/v1".len());
-    }
-    format!("{base}{canonical_suffix}")
 }
 
 fn env_non_empty(key: &str) -> Option<String> {
