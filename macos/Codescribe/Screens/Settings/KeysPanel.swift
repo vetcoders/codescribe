@@ -77,11 +77,10 @@ struct KeysPanel: View {
 private struct AgentProviderSelector: View {
     @ObservedObject var model: SettingsViewModel
 
-    private var selected: CsProviderOption? { model.selectedProvider }
-    private var discoveredModels: [CsModelOption] { model.discoveredModels }
+    private var laneModel: LLMLaneModel { model.llmLane(.assistive) }
 
     private var discoveryDotColor: Color {
-        switch model.modelDiscoveryStatus {
+        switch laneModel.discovery.status {
         case "fresh": return CSColor.olive
         case "cached": return CSColor.amber
         case "no_key": return CSColor.textFaint
@@ -90,22 +89,22 @@ private struct AgentProviderSelector: View {
     }
 
     private var currentModelLabel: String {
-        let id = model.assistiveModel
+        let id = laneModel.configuredModel
         if id.isEmpty {
-            return discoveredModels.isEmpty ? "No discovered models" : "Choose a model"
+            return laneModel.modelOptions.isEmpty ? "No discovered models" : "Choose a model"
         }
-        return discoveredModels.first { $0.id == id }?.displayName ?? id
+        return laneModel.modelOptions.first { $0.id == id }?.displayName ?? id
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             SelectorRow(label: "Provider") {
                 Menu {
-                    ForEach(model.availableProviders, id: \.id) { provider in
+                    ForEach(model.providers, id: \.id) { provider in
                         Button {
                             model.setAssistiveProvider(provider.id)
                         } label: {
-                            if provider.id == model.assistiveProviderId {
+                            if provider.id == laneModel.providerId {
                                 Label(provider.displayName, systemImage: "checkmark")
                             } else {
                                 Text(provider.displayName)
@@ -113,7 +112,7 @@ private struct AgentProviderSelector: View {
                         }
                     }
                 } label: {
-                    MenuLabel(text: selected?.displayName ?? model.assistiveProviderId)
+                    MenuLabel(text: laneModel.provider?.displayName ?? laneModel.providerId)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -121,11 +120,11 @@ private struct AgentProviderSelector: View {
 
             SelectorRow(label: "Model") {
                 Menu {
-                    ForEach(discoveredModels, id: \.id) { option in
+                    ForEach(laneModel.modelOptions, id: \.id) { option in
                         Button {
-                            model.setAssistiveModel(option.id)
+                            model.setLLMModel(option.id, for: .assistive)
                         } label: {
-                            if option.id == model.assistiveModel {
+                            if option.id == laneModel.configuredModel {
                                 Label(option.displayName, systemImage: "checkmark")
                             } else {
                                 Text(option.displayName)
@@ -137,10 +136,10 @@ private struct AgentProviderSelector: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .disabled(discoveredModels.isEmpty)
+                .disabled(laneModel.modelOptions.isEmpty)
             }
 
-            if let selected {
+            if let selected = laneModel.provider {
                 HStack(spacing: 8) {
                     Circle()
                         .fill((selected.apiKeySet ? CSColor.olive : CSColor.terracotta).opacity(0.85))
@@ -155,7 +154,7 @@ private struct AgentProviderSelector: View {
                 Circle()
                     .fill(discoveryDotColor.opacity(0.85))
                     .frame(width: 7, height: 7)
-                Text(model.modelDiscoveryDescription)
+                Text(laneModel.discoveryDescription)
                     .font(CSFont.mono(11, .medium))
                     .foregroundStyle(CSColor.textFaint)
                     .lineLimit(2)
