@@ -440,7 +440,9 @@ final class OverlayState: ObservableObject {
         // consumers. Full separation of pre-postprocess raw would require listener
         // surface extension (on_final carrying raw_text) — deferred as low-ROI for MVP.
         Task.detached(priority: .utility) {
-            try? commitOverlayQualityRecord(rawText: delivered, deliveredText: delivered, editedText: edited)
+            // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
+            // quality write is best-effort; never block UI action.
+            try? commitOverlayQualityRecord(rawText: delivered, deliveredText: delivered, editedText: edited, action: action)
         }
     }
 

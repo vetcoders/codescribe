@@ -15,14 +15,17 @@ pub fn commit_overlay_quality_record(
     raw_text: String,
     delivered_text: String,
     edited_text: String,
+    action: String,
 ) -> Result<(), CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
+    // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
     codescribe_core::quality::overlay_quality::commit_overlay_correction(
         &raw_text,
         &delivered_text,
         &edited_text,
         "overlay",
         None,
+        Some(&action),
     )
     .map(|_path| ())
     .map_err(|e| CsError::Quality {

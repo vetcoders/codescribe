@@ -48,11 +48,16 @@ impl QualityRecord {
         edited_text: String,
         mode: &str,
         model: Option<String>,
+        action: Option<&str>,
     ) -> Self {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+        let meta = match action {
+            Some(a) => serde_json::json!({ "source": "overlay-final", "action": a }),
+            None => serde_json::json!({ "source": "overlay-final" }),
+        };
         QualityRecord {
             timestamp_ms,
             session_id: None,
@@ -61,7 +66,7 @@ impl QualityRecord {
             raw_text,
             delivered_text,
             edited_text,
-            meta: serde_json::json!({ "source": "overlay-final" }),
+            meta,
         }
     }
 }
@@ -158,12 +163,14 @@ pub fn append_correction_to_custom_lexicon(variant: &str, canonical: &str) -> Re
 
 /// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
 /// Called from bridge (and tests). Returns the quality file path on success.
+/// `action` (e.g. "copy", "send", "close") is carried into meta for future analytics (P2-03 triage over-correct).
 pub fn commit_overlay_correction(
     raw_text: &str,
     delivered_text: &str,
     edited_text: &str,
     mode: &str,
     model: Option<String>,
+    action: Option<&str>,
 ) -> Result<PathBuf> {
     let record = QualityRecord::new(
         raw_text.to_string(),
@@ -171,6 +178,7 @@ pub fn commit_overlay_correction(
         edited_text.to_string(),
         mode,
         model,
+        action,
     );
     let qpath = save_quality_record(&record)?;
 
@@ -254,8 +262,20 @@ mod tests {
         // path logic. Prove by writing under temp and asserting the returned path.
         let temp_dir = tempfile::tempdir().expect("temp data dir for isolation");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+
+        // Canonicalize for macOS reality: config_dir() does .canonicalize() on
+        // CODESCRIBE_DATA_DIR (see loader.rs), turning /var/folders into
+        // /private/var/folders. Use the same form for the starts_with proof.
+        let temp_root = temp_dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp_dir.path().to_path_buf());
+
+        // SAFETY: test-only, #[serial] guarantees exclusive access; mirrors EnvGuard/EnvRestore
+        // pattern used elsewhere (e.g. lane_truth, stream_postprocess). Process-env mutation
+        // is the documented way to drive CODESCRIBE_DATA_DIR for hermetic isolation tests.
         unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
         }
 
         let p = commit_overlay_correction(
@@ -264,15 +284,29 @@ mod tests {
             "Junie here",
             "overlay",
             Some("whisper".into()),
+            Some("test"),
         )
         .expect("commit should succeed");
         assert!(p.ends_with("corrections.jsonl"));
         // Proof of isolation: the quality file landed under the overridden DATA_DIR
         // (config_dir + quality_dir respect it; real ~/.codescribe untouched).
         assert!(
-            p.starts_with(temp_dir.path()),
+            p.starts_with(&temp_root),
             "quality record path must be under the CODESCRIBE_DATA_DIR temp for isolation (got: {})",
             p.display()
         );
+
+        // D-02 depth + action wiring (P3 over-correct): verify the written record contains
+        // the action in meta and the delivered/edited (lexicon candidate exercised too).
+        let written = std::fs::read_to_string(&p).unwrap_or_default();
+        assert!(
+            written.contains("test"),
+            "quality record must carry action via meta"
+        );
+        assert!(
+            written.contains("uni agentka here"),
+            "delivered must be recorded"
+        );
+        assert!(written.contains("Junie here"), "edited must be recorded");
     }
 }

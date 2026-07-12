@@ -544,11 +544,10 @@ final class SettingsViewModel: ObservableObject {
             return engine.normalizeOpenaiResponsesEndpoint(base)
         }
         // Fallback for previews / no-engine (kept tiny; real path always has engine).
+        // NOTE: suffix list duplication removed (L2 over-correct); core lane_truth::normalize
+        // (via bridge) is the single source of truth for responses endpoint. Fallback does
+        // minimal /v1 strip only to avoid duplicating known-suffixes array.
         var b = base.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
-        for s in ["/v1/responses", "/v1/chat/completions", "/v1/completions"] where b.hasSuffix(s) {
-            b.removeLast(s.count)
-            return b + "/v1/responses"
-        }
         if b.hasSuffix("/v1") { b.removeLast(3) }
         return b + "/v1/responses"
     }
