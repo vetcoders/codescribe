@@ -86,3 +86,14 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+# Without an explicit scheme the test bundle is unreachable: xcodegen emits no
+# scheme for bundle.unit-test targets, and old-style `-target` builds cannot
+# resolve SPM dependencies. `xcodebuild test -scheme Codescribe` is the entry.
+schemes:
+  Codescribe:
+    build:
+      targets:
+        Codescribe: all
+    test:
+      targets:
+        - CodescribeTests
