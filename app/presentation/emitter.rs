@@ -69,8 +69,22 @@ impl SessionTranscriptState {
         }
     }
 
-    fn apply_correction(&mut self, text: &str) {
-        self.apply_preview(text);
+    fn apply_correction(&mut self, previous_text: &str, text: &str) {
+        let previous = normalize_transcript_fragment(previous_text);
+        let corrected = normalize_transcript_fragment(text);
+
+        // A correction may complete after `finalize` cleared the active tail.
+        // Treating it as a new preview would append a second copy of the same
+        // utterance to the delivery buffer, so patch the matching last commit.
+        if self.active_preview.is_empty()
+            && let Some(last) = self.committed.last_mut()
+            && normalize_transcript_fragment(&last.text) == previous
+        {
+            last.text = corrected;
+            return;
+        }
+
+        self.apply_preview(&corrected);
     }
 
     #[cfg(test)]
@@ -365,10 +379,14 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
-            EngineEvent::Correction { text, .. } => {
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.apply_correction(text);
+                    state.apply_correction(previous_text, text);
                     match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
@@ -611,7 +629,7 @@ mod tests {
             Vec::new(),
         );
         state.apply_preview("drugi parcjal");
-        state.apply_correction("drugi partial");
+        state.apply_correction("drugi parcjal", "drugi partial");
 
         assert_eq!(state.rendered_text(), "Pierwszy fragment drugi partial");
     }
@@ -672,6 +690,55 @@ mod tests {
         let mut state = SessionTranscriptState::default();
         state.apply_preview("   ");
         assert!(state.rendered_text().is_empty());
+    }
+
+    #[test]
+    fn correction_after_final_patches_committed_utterance_without_appending() {
+        let mut state = SessionTranscriptState::default();
+        state.apply_preview("raw words");
+        assert_eq!(
+            state.finalize(1, "raw words", "raw words", 0.0, 1.0, Vec::new()),
+            Some("raw words".to_string())
+        );
+
+        state.apply_correction("raw words", "corrected words");
+
+        assert_eq!(state.rendered_text(), "corrected words");
+        assert_eq!(state.committed().len(), 1);
+        assert_eq!(state.committed()[0].text, "corrected words");
+        assert!(state.active_preview.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivery_buffer_receives_one_utterance_when_correction_finishes_after_final() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "raw words".to_string(),
+        });
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "raw words".to_string(),
+            raw_text: "raw words".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::Correction {
+            rev: 2,
+            text: "corrected words".to_string(),
+            previous_text: "raw words".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        assert_eq!(transcript.lock().await.as_str(), "corrected words");
     }
 
     #[tokio::test]

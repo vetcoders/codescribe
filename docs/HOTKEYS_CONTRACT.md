@@ -81,6 +81,13 @@ HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 
 **Mode modifiers (default Fn):** Shift → Chat, Cmd → Selection (while holding Fn).
 
+**Engine and delivery parity:** Hold and toggle both start
+`StreamingRecorder::start_event_session` and fan the same `EngineEvent` stream
+through `PresentationEmitter`, IPC, and telemetry sinks. Their intentional
+difference is boundary policy (key-up for hold, VAD for toggle), not the STT
+engine. A late `Correction` patches the active preview or the matching most
+recent committed utterance; it must never create a second delivered utterance.
+
 ---
 
 ### 2. Toggle Mode (Hands-Free)
