@@ -184,8 +184,10 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(down_event).await.unwrap();
-
+    controller
+        .handle_hotkey_event(down_event)
+        .await
+        .expect("hotkey down must succeed in test harness (P2-07 over-correct)");
     tokio::time::sleep(Duration::from_millis(100)).await;
     let up_event = HotkeyInput {
         key_type: HotkeyType::Hold,
@@ -195,7 +197,10 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(up_event).await.unwrap();
+    controller
+        .handle_hotkey_event(up_event)
+        .await
+        .expect("hotkey up must succeed in test harness (P2-07 over-correct)");
 
     tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(controller.current_state().await, State::Idle);
@@ -1338,7 +1343,10 @@ async fn test_toggle_press_does_not_set_force_raw_mode() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle press hotkey must succeed in test (P2-07)");
 
     // force_raw should be false
     assert!(
@@ -1364,7 +1372,10 @@ async fn test_toggle_press_sets_force_ai_mode() {
         force_raw: false,
         force_ai: true,
     };
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle force_ai hotkey must succeed (P2-07 over-correct)");
 
     assert!(
         *controller.force_ai_mode.read().await,

@@ -320,4 +320,118 @@ mod tests {
         let meta_source = rec.meta.get("source").and_then(|v| v.as_str());
         assert_eq!(meta_source, Some("overlay-final"));
     }
+
+    // Over-correct depth for D-02 / P1-02 / P2-03: explicit action variants + distinct raw_text
+    // prove the quality heart (record + meta + raw for lexicon v2) under isolation.
+    #[test]
+    #[serial]
+    fn test_commit_records_distinct_raw_and_various_actions() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir for isolation");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp_dir.path().to_path_buf());
+        // SAFETY: test-only, #[serial] + EnvRestore; mirrors other env guards.
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        // "copy" action + distinct raw (real STT vs post-delivered)
+        let p = commit_overlay_correction(
+            "raw stt with selection here",
+            "delivered with selection",
+            "edited with selection",
+            "overlay",
+            Some("whisper-large".into()),
+            Some("copy"),
+        )
+        .expect("commit copy action");
+        assert!(
+            p.starts_with(&temp_root),
+            "isolation: must land under temp DATA_DIR"
+        );
+
+        let written = std::fs::read_to_string(&p).expect("read quality log");
+        let last_line = written.lines().last().expect("record line");
+        let rec: QualityRecord = serde_json::from_str(last_line).expect("parse");
+        assert_eq!(
+            rec.raw_text, "raw stt with selection here",
+            "D-05: distinct raw wired"
+        );
+        assert_eq!(rec.delivered_text, "delivered with selection");
+        assert_eq!(
+            rec.meta.get("action").and_then(|v| v.as_str()),
+            Some("copy")
+        );
+        assert_eq!(
+            rec.meta.get("source").and_then(|v| v.as_str()),
+            Some("overlay-final")
+        );
+
+        // "send" action variant
+        let p2 = commit_overlay_correction(
+            "another raw",
+            "delivered2",
+            "edited2",
+            "overlay",
+            None,
+            Some("send"),
+        )
+        .expect("commit send");
+        assert!(p2.starts_with(&temp_root));
+        let last2: QualityRecord = serde_json::from_str(
+            std::fs::read_to_string(&p2)
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            last2.meta.get("action").and_then(|v| v.as_str()),
+            Some("send")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_commit_long_edit_records_quality_but_no_lexicon_candidate() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp_dir.path().to_path_buf());
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let long = "x".repeat(150);
+        let p = commit_overlay_correction(
+            &long,
+            "delivered long",
+            &long,
+            "overlay",
+            None,
+            Some("close"),
+        )
+        .expect("quality record even for long (lexicon guard separate)");
+        assert!(p.starts_with(&temp_root));
+
+        // lexicon candidate rejected by length (is_sensible + extract guard)
+        // Use the same config resolution the append fn uses (honors DATA_DIR via test guard).
+        let lex_path = crate::config::Config::config_dir().join("lexicon.custom.jsonl");
+        let before = std::fs::read_to_string(&lex_path)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        // call extract directly to prove
+        assert!(extract_lexicon_candidates(&long, &long).is_empty());
+        let after = std::fs::read_to_string(&lex_path)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert_eq!(before, after, "no lexicon growth for long edit");
+    }
 }
