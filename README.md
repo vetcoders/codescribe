@@ -14,8 +14,8 @@ transcription while you speak, and pastes or routes the final result into the fo
 in this repo is a tray app whose SwiftUI front-end has two explicit surfaces: settings and overlays.
 
 Local Whisper is the low-latency path. Cloud STT is optional and currently used as a post-capture transcript backend,
-not as live cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default,
-configured in Settings or `~/.codescribe/.env`.
+not as live cloud preview. LLM work is split into explicit formatting, assistive, and Anthropic-compatible lanes,
+resolved by the runtime lane truth and configured in Settings or `~/.codescribe/.env`.
 
 ```mermaid
 flowchart TB
@@ -65,13 +65,19 @@ flowchart TB
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-## OpenAI Provider
+## LLM Providers and Lanes
 
-Codescribe uses **OpenAI Responses API** (`/v1/responses`) by default for AI formatting and assistive mode.
+Codescribe resolves LLM configuration through a single runtime lane truth. The app has separate lanes for:
+
+- **Formatting** — cleanup pass after dictation, defaulting to OpenAI Responses API (`/v1/responses`) and `gpt-4.1`.
+- **Assistive** — agent/chat responses, defaulting to OpenAI Responses API and `gpt-5.5`.
+- **Anthropic-compatible assistive** — optional Messages-style provider path for users who configure an Anthropic lane.
+
+Each lane can override endpoint, model, and key in **Settings → Engine**. Shared defaults still work, but per-lane settings are the source of truth when present.
 
 ### Default Setup
 
-Put your OpenAI API key in Settings. Codescribe stores it in macOS Keychain and applies it to both AI modes:
+Put your provider keys in Settings. Codescribe stores secrets in macOS Keychain and uses Settings values before falling back to power-user environment overrides:
 
 ```env
 # ~/.codescribe/.env
@@ -90,9 +96,22 @@ LLM_FORMATTING_API_KEY=sk-proj-xxx
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-5.5
 LLM_ASSISTIVE_API_KEY=sk-proj-xxx
+
+# Optional Anthropic-compatible assistive lane
+ANTHROPIC_ENDPOINT=https://api.anthropic.com/v1/messages
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+ANTHROPIC_API_KEY=sk-ant-xxx
 ```
 
 > **Note:** All requests use `previous_response_id` for conversation chaining. Context persists across transcriptions.
+
+### Sign in with ChatGPT
+
+The app contains a gated **Sign in with ChatGPT** affordance for OpenAI account OAuth. It is intentionally disabled unless an OAuth client id is configured (`LLM_OPENAI_OAUTH_CLIENT_ID`). Until that operator-owned client registration exists, API keys remain the supported OpenAI path.
+
+### Key liveness checks
+
+Settings shows a **Test** action next to each configured key. The result chip reports the latest verdict at the probed host, for example `Key OK @ api.openai.com`, `Invalid key @ api.openai.com`, `No credits @ api.openai.com`, `Network error @ api.openai.com`, or `Not set`.
 
 ### MCP Extension Path
 
@@ -101,7 +120,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 ## Features
 
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
-- **Two DMG variants** — The standard DMG embeds Silero VAD + MiniLM support assets and resolves Whisper from cache/download. The `_full` DMG embeds Silero + MiniLM + Whisper for users who prefer one larger download.
+- **One release DMG** — `make release-dmgs` currently builds one notarizable DMG with the app and embedded support assets; it does not build separate standard/full variants.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -111,7 +130,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 - **Metal GPU Acceleration** — Hardware-accelerated inference on Apple Silicon
 - **System Tray App** — Minimal menu-bar presence with animated status glyphs
 - **Global Hotkeys** — Hold Fn (default) or double‑tap Option to record
-- **OpenAI Responses by default** — Formatting uses `gpt-4.1`; Assistive uses `gpt-5.5`
+- **Lane-based LLM settings** — Formatting, assistive, and Anthropic-compatible lanes can each override endpoint/model/key in Settings → Engine
 - **Custom MCP Servers** — Add your own MCP tools through `~/.codescribe/mcp.json`
 - **AI Formatting** — Optional post-processing via Responses API
 - **Slug Filenames** — Transcripts named with first 3 words for easy identification
@@ -164,7 +183,7 @@ make version
 Tagged builds publish DMGs through GitHub Releases:
 
 1. Open [Releases](https://github.com/vetcoders/codescribe/releases)
-2. Download `Codescribe_<version>.dmg` for the standard build, or `Codescribe_<version>_full.dmg` for the larger build with embedded Whisper.
+2. Download the single published `Codescribe_<version>.dmg` artifact.
 3. Drag `Codescribe.app` into `Applications`
 
 > **Current truth:** source install is the guaranteed path inside this repo until a current `v0.12.x` GitHub Release exists. Public release DMGs must be Developer ID signed and notarized; the release workflow is wired to fail if the required Apple signing/notary secrets are missing.
@@ -207,8 +226,9 @@ Hotkeys are configured in **Settings → Modes & Shortcuts**. Double‑tap modes
 ## Settings & Secrets
 
 - GUI settings: `~/Library/Application Support/Codescribe/settings.json`
-- API keys: macOS Keychain (`com.vetcoders.codescribe`)
+- API keys: macOS Keychain (`com.vetcoders.codescribe`) with per-key liveness **Test** chips in Settings
 - Power‑user overrides: `~/.codescribe/.env`
+- LLM lanes: Settings → Engine is the user-facing source for formatting, assistive, and Anthropic-compatible endpoint/model/key overrides
 
 ## How It Works
 
@@ -289,6 +309,8 @@ LLM_API_KEY=sk-proj-xxx
 # Mode-specific overrides (optional)
 # LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=
 # LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=
+# ANTHROPIC_{ENDPOINT,MODEL,API_KEY}=
+# LLM_OPENAI_OAUTH_CLIENT_ID=          # Enables gated Sign in with ChatGPT
 
 # History
 HISTORY_ENABLED=1                    # Save transcripts
