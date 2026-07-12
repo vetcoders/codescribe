@@ -99,12 +99,35 @@ struct DictationOverlayView: View {
             HStack(spacing: 14) {
                 CSIconView(icon: .mic, size: 15, weight: .medium)
                 CSIconView(icon: .settings, size: 15, weight: .medium)
-                CSIconView(icon: .more, size: 15, weight: .medium)
+                placementMenu
             }
             .foregroundStyle(CSColor.textFaint)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
+    }
+
+    /// Placement config under the `…` icon: six screen anchors or free motion.
+    /// Selecting an anchor exits free motion (the pick's intent is "go there");
+    /// the reposition itself is orchestrated via `OverlayState.onPlacementChanged`.
+    private var placementMenu: some View {
+        Menu {
+            Picker("Position", selection: $state.placementAnchor) {
+                ForEach(OverlayAnchor.allCases) { anchor in
+                    Text(anchor.label).tag(anchor)
+                }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Toggle("Free motion", isOn: $state.freeMotion)
+        } label: {
+            CSIconView(icon: .more, size: 15, weight: .medium)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityIdentifier("overlay-placement-menu")
     }
 
     // MARK: Mode + meta row

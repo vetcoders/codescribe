@@ -134,6 +134,9 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable 
     func onTurnStarted(threadId: String, userText: String) {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
+                // The transcript is now the chat's You-bubble — the overlay's job
+                // is done, so it fades out instead of lingering over the reply.
+                AppModel.shared.overlay.hideForAgentHandoff()
                 self.revealChat()
                 self.store.ingestVoiceTurn(threadId: threadId, userText: userText)
             }

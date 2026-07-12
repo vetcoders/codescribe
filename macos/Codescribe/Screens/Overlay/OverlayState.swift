@@ -118,6 +118,27 @@ final class OverlayState: ObservableObject {
     /// so VAD silence and quality-gate rejection read differently.
     @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
 
+    // MARK: Panel placement (persisted; the window orchestrator repositions live)
+    /// Anchored placement: one of six screen anchors, applied on every show().
+    /// Picking an anchor exits free motion — the pick's intent is "go there".
+    @Published var placementAnchor: OverlayAnchor = OverlayPlacement.anchor {
+        didSet {
+            guard placementAnchor != oldValue else { return }
+            OverlayPlacement.anchor = placementAnchor
+            if freeMotion { freeMotion = false } else { onPlacementChanged?() }
+        }
+    }
+    /// Free motion: the panel keeps (and restores) wherever the user dragged it.
+    @Published var freeMotion: Bool = OverlayPlacement.freeMotion {
+        didSet {
+            guard freeMotion != oldValue else { return }
+            OverlayPlacement.freeMotion = freeMotion
+            onPlacementChanged?()
+        }
+    }
+    /// Wired by the orchestrator: re-derive the visible panel's origin now.
+    var onPlacementChanged: (() -> Void)?
+
     // MARK: Injected collaborators (all optional so #Preview renders standalone)
     /// The recording core. Injected by the orchestrator. Do NOT instantiate here.
     var engine: DictationEngine?
