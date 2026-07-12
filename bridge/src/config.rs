@@ -518,8 +518,9 @@ impl CodescribeConfig {
     }
 
     /// Start provider-account login for the selected provider. Today this is
-    /// only supported for OpenAI Responses and is gated by
-    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`; absent client id returns a config
+    /// only supported for OpenAI Responses and is gated by the configured OAuth
+    /// client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, dev-env fallback
+    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); absent client id returns a config
     /// error whose message contains "awaiting app registration".
     pub fn start_account_login(
         &self,

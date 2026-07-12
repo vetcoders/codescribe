@@ -389,6 +389,53 @@ mod tests {
         );
     }
 
+    /// The three UI states the Keys panel renders, in the order an operator
+    /// walks them: registration gate → not signed in → signed in as <email>.
+    #[test]
+    #[serial]
+    fn account_status_maps_gate_then_not_signed_in_then_signed_in() {
+        use base64::Engine;
+        let (_data_dir, _dir) = isolated_settings_dir("status");
+        let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+
+        // 1. No client id anywhere ⇒ registration gate, button disabled.
+        let status = account_status(ProviderKind::OpenAiResponses);
+        assert!(!status.client_id_configured);
+        assert!(!status.signed_in);
+        assert_eq!(status.message, NO_CLIENT_ID_MESSAGE);
+
+        // 2. Operator pastes a client id in Settings ⇒ gate lifts mid-process.
+        UserSettings {
+            openai_oauth_client_id: Some("app_registered".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist client id");
+        let status = account_status(ProviderKind::OpenAiResponses);
+        assert!(status.client_id_configured);
+        assert!(!status.signed_in);
+        assert_eq!(status.message, "not signed in");
+
+        // 3. Stored tokens with an id_token email ⇒ signed in as <email>.
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"email":"maciej@example.com"}"#);
+        let tokens = AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "access".to_string(),
+            Some("refresh".to_string()),
+            Some(format!("header.{claims}.signature")),
+            None,
+            Some(3600),
+        );
+        store_account_tokens(ProviderKind::OpenAiResponses, &tokens).expect("store tokens");
+        let status = account_status(ProviderKind::OpenAiResponses);
+        assert!(status.client_id_configured);
+        assert!(status.signed_in);
+        assert_eq!(status.message, "signed in as maciej@example.com");
+    }
+
     #[test]
     fn signed_in_status_carries_the_id_token_email_when_present() {
         use base64::Engine;
