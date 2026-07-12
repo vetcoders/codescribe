@@ -19,7 +19,7 @@ use codescribe_core::llm::account_auth;
 use codescribe_core::llm::lane_truth::AssistiveLaneSnapshot;
 use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
-    ResponsesStreamingManager, StreamCallbacks,
+    AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
 
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
@@ -73,7 +73,7 @@ impl OpenAiProvider {
             model: default_model,
             api_key,
             account_auth: use_account_auth,
-            ..
+            provider: _,
         } = lane;
         let api_key = api_key.unwrap_or_default();
 
@@ -186,6 +186,11 @@ impl AgentProvider for OpenAiProvider {
         };
         let auth_secret = account_token.as_deref().unwrap_or(&self.api_key);
 
+        let auth_header_mode = if self.use_account_auth {
+            AuthHeaderMode::BearerOnly
+        } else {
+            AuthHeaderMode::BearerAndApiKey
+        };
         let manager = ResponsesStreamingManager::new(
             &self.client,
             &self.endpoint,
@@ -196,7 +201,8 @@ impl AgentProvider for OpenAiProvider {
             },
             self.initial_response_timeout,
             self.inter_chunk_timeout,
-        );
+        )
+        .with_auth_header_mode(auth_header_mode);
 
         let provider_rx = manager.stream_agent(&request).await?;
 

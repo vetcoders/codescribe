@@ -29,10 +29,17 @@ pub struct StreamCallbacks {
     pub reasoning: Option<AiReasoningCallback>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthHeaderMode {
+    BearerAndApiKey,
+    BearerOnly,
+}
+
 pub struct ResponsesStreamingManager<'a> {
     client: &'a Client,
     endpoint: &'a str,
     api_key: &'a str,
+    auth_header_mode: AuthHeaderMode,
     callbacks: StreamCallbacks,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
@@ -51,10 +58,16 @@ impl<'a> ResponsesStreamingManager<'a> {
             client,
             endpoint,
             api_key,
+            auth_header_mode: AuthHeaderMode::BearerAndApiKey,
             callbacks,
             initial_response_timeout,
             inter_chunk_timeout,
         }
+    }
+
+    pub fn with_auth_header_mode(mut self, auth_header_mode: AuthHeaderMode) -> Self {
+        self.auth_header_mode = auth_header_mode;
+        self
     }
 
     pub async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
@@ -64,6 +77,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
             self.client.post(endpoint_url.clone()),
             self.api_key,
+            self.auth_header_mode,
         )
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
@@ -380,6 +394,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         let client = self.client.clone();
         let endpoint = self.endpoint.to_string();
         let api_key = self.api_key.to_string();
+        let auth_header_mode = self.auth_header_mode;
         let callbacks = self.callbacks.clone();
         let initial_response_timeout = self.initial_response_timeout;
         let inter_chunk_timeout = self.inter_chunk_timeout;
@@ -389,6 +404,7 @@ impl<'a> ResponsesStreamingManager<'a> {
                 client,
                 endpoint,
                 api_key,
+                auth_header_mode,
                 callbacks,
                 initial_response_timeout,
                 inter_chunk_timeout,
@@ -419,7 +435,7 @@ impl<'a> ResponsesStreamingManager<'a> {
         );
 
         let response = self.client.get(&resume_url);
-        let response = apply_auth_headers(response, self.api_key)
+        let response = apply_auth_headers(response, self.api_key, self.auth_header_mode)
             .header("Accept", "text/event-stream")
             .timeout(STREAM_REQUEST_TIMEOUT)
             .send()
@@ -562,6 +578,7 @@ async fn run_agent_stream(
     client: Client,
     endpoint: String,
     api_key: String,
+    auth_header_mode: AuthHeaderMode,
     callbacks: StreamCallbacks,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
@@ -574,6 +591,7 @@ async fn run_agent_stream(
         // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
         client.post(endpoint_url),
         &api_key,
+        auth_header_mode,
     )
     .header("Content-Type", "application/json")
     .header("Accept", "text/event-stream")
@@ -763,16 +781,22 @@ async fn run_agent_stream(
     Ok(())
 }
 
-fn apply_auth_headers(builder: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+fn apply_auth_headers(
+    builder: reqwest::RequestBuilder,
+    api_key: &str,
+    auth_header_mode: AuthHeaderMode,
+) -> reqwest::RequestBuilder {
     // Key-optional endpoints (self-hosted / LAN lanes) get a clean
     // unauthenticated request instead of a bogus `Bearer ` header; a server
     // that does require auth then answers with a readable 401.
     if api_key.trim().is_empty() {
         return builder;
     }
-    builder
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("x-api-key", api_key)
+    let builder = builder.header("Authorization", format!("Bearer {}", api_key));
+    match auth_header_mode {
+        AuthHeaderMode::BearerAndApiKey => builder.header("x-api-key", api_key),
+        AuthHeaderMode::BearerOnly => builder,
+    }
 }
 
 fn validated_endpoint_url(endpoint: &str) -> Result<reqwest::Url> {
@@ -1461,9 +1485,10 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentEvent, ResponsesStreamingManager, StreamCallbacks, StreamChunk, StreamOutputItem,
-        ToolCallTracker, apply_auth_headers, dirty_terminal_response_id, extract_output_channels,
-        fallback_reasoning, parse_agent_event, reasoning_content_available, validated_endpoint_url,
+        AgentEvent, AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks, StreamChunk,
+        StreamOutputItem, ToolCallTracker, apply_auth_headers, dirty_terminal_response_id,
+        extract_output_channels, fallback_reasoning, parse_agent_event,
+        reasoning_content_available, validated_endpoint_url,
     };
     use reqwest::Client;
     use serde_json::json;
@@ -2056,9 +2081,13 @@ mod tests {
     #[test]
     fn apply_auth_headers_sets_both_bearer_and_x_api_key() {
         let client = Client::new();
-        let request = apply_auth_headers(client.post("https://example.com/v1/responses"), "secret")
-            .build()
-            .expect("request should build");
+        let request = apply_auth_headers(
+            client.post("https://example.com/v1/responses"),
+            "secret",
+            AuthHeaderMode::BearerAndApiKey,
+        )
+        .build()
+        .expect("request should build");
 
         assert_eq!(
             request
@@ -2077,11 +2106,36 @@ mod tests {
     }
 
     #[test]
+    fn apply_auth_headers_keeps_oauth_tokens_bearer_only() {
+        let client = Client::new();
+        let request = apply_auth_headers(
+            client.post("https://api.openai.com/v1/responses"),
+            "oauth-access-token",
+            AuthHeaderMode::BearerOnly,
+        )
+        .build()
+        .expect("request should build");
+
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer oauth-access-token")
+        );
+        assert!(request.headers().get("x-api-key").is_none());
+    }
+
+    #[test]
     fn apply_auth_headers_skips_auth_entirely_for_an_empty_key() {
         let client = Client::new();
-        let request = apply_auth_headers(client.post("https://example.com/v1/responses"), "  ")
-            .build()
-            .expect("request should build");
+        let request = apply_auth_headers(
+            client.post("https://example.com/v1/responses"),
+            "  ",
+            AuthHeaderMode::BearerAndApiKey,
+        )
+        .build()
+        .expect("request should build");
 
         assert!(
             request.headers().get("authorization").is_none(),

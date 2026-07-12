@@ -257,6 +257,9 @@ fn availability_of(snapshot: AssistiveLaneSnapshot) -> Result<AssistiveLaneSnaps
              Settings → Engine to a key-optional server such as {}.",
             snapshot.endpoint, SUGGESTED_KEY_OPTIONAL_ENDPOINT
         )),
+        ProviderKind::AnthropicMessages if !endpoint_requires_api_key(&snapshot.endpoint) => {
+            Ok(snapshot)
+        }
         ProviderKind::AnthropicMessages => Err(format!(
             "The assistive provider is Anthropic ({}), but no key is stored \
              (Keychain account LLM_ANTHROPIC_API_KEY). Add an Anthropic key in Settings, or \
@@ -277,7 +280,7 @@ fn endpoint_requires_api_key(endpoint: &str) -> bool {
         .split(['/', ':'])
         .next()
         .unwrap_or_default();
-    matches!(host, "api.openai.com" | "api.anthropic.com")
+    host.eq_ignore_ascii_case("api.openai.com") || host.eq_ignore_ascii_case("api.anthropic.com")
 }
 
 pub(crate) fn endpoint_for_account(config: &Config, account: &str) -> String {
@@ -672,6 +675,34 @@ mod tests {
 
         assert!(reason.contains("LLM_ANTHROPIC_API_KEY"), "{reason}");
         assert!(reason.contains("Anthropic"), "{reason}");
+    }
+
+    #[test]
+    #[serial]
+    fn self_hosted_anthropic_lane_is_available_without_an_api_key() {
+        let _env = lane_env_guards();
+        let _endpoint = EnvGuard::set("LLM_ANTHROPIC_ENDPOINT", "http://127.0.0.1:8080/v1");
+        let settings = UserSettings {
+            llm_assistive_provider: Some("anthropic-messages".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |_| None);
+        let ready = availability_of(snapshot).expect("self-hosted Anthropic may be key-optional");
+
+        assert_eq!(ready.endpoint, "http://127.0.0.1:8080/v1/messages");
+        assert_eq!(ready.api_key, None);
+    }
+
+    #[test]
+    fn official_api_hosts_require_keys_case_insensitively() {
+        assert!(endpoint_requires_api_key("https://API.OPENAI.COM/v1"));
+        assert!(endpoint_requires_api_key(
+            "https://Api.Anthropic.Com/v1/messages"
+        ));
+        assert!(!endpoint_requires_api_key(
+            "https://openai-compatible.example/v1"
+        ));
     }
 
     #[test]

@@ -685,9 +685,7 @@ mod tests {
         // Isolate the settings store: client_id resolution reads settings.json
         // first, and this test must not see an operator-configured client id.
         let prev_data_dir = std::env::var("CODESCRIBE_DATA_DIR").ok();
-        let scratch_data_dir =
-            std::env::temp_dir().join(format!("cs_provider_account_auth_{}", std::process::id()));
-        std::fs::create_dir_all(&scratch_data_dir).expect("scratch settings dir");
+        let scratch_data_dir = tempfile::TempDir::new().expect("scratch settings dir");
         let mut server = mockito::Server::new_async().await;
         let _refresh = server
             .mock("POST", "/oauth/token")
@@ -712,7 +710,7 @@ mod tests {
             std::env::set_var("LLM_ASSISTIVE_AUTH_MODE", "provider-account");
             std::env::set_var(OPENAI_CLIENT_ID_ENV, "client");
             std::env::set_var(OPENAI_ISSUER_ENV, server.url());
-            std::env::set_var("CODESCRIBE_DATA_DIR", &scratch_data_dir);
+            std::env::set_var("CODESCRIBE_DATA_DIR", scratch_data_dir.path());
         }
         let expired = AccountTokens {
             provider: ProviderKind::OpenAiResponses.as_str().to_string(),
@@ -742,7 +740,6 @@ mod tests {
         restore("CODESCRIBE_DISABLE_KEYCHAIN", prev_disable);
         restore(OPENAI_ACCOUNT_TOKENS_ACCOUNT, prev_tokens);
         restore("CODESCRIBE_DATA_DIR", prev_data_dir);
-        let _ = std::fs::remove_dir_all(scratch_data_dir);
     }
 
     fn restore(key: &str, prev: Option<String>) {

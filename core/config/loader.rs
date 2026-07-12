@@ -748,6 +748,10 @@ impl Config {
                         settings.llm_assistive_model = None;
                         true
                     }
+                    "LLM_ASSISTIVE_PROVIDER" => {
+                        settings.llm_assistive_provider = None;
+                        true
+                    }
                     "LLM_FORMATTING_ENDPOINT" => {
                         settings.llm_formatting_endpoint = None;
                         true
@@ -1359,6 +1363,42 @@ mod tests {
                 &Config::default(),
             ),
             crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn empty_assistive_provider_unsets_json_path_and_restores_default() {
+        let _tmp = setup_isolated_data_dir();
+        let _provider = TestEnvGuard::unset("LLM_ASSISTIVE_PROVIDER");
+        let config = Config::default();
+
+        config
+            .save_to_env("LLM_ASSISTIVE_PROVIDER", "anthropic-messages")
+            .expect("set assistive provider override");
+        assert_eq!(
+            UserSettings::load().llm_assistive_provider.as_deref(),
+            Some("anthropic-messages")
+        );
+
+        config
+            .save_to_env("LLM_ASSISTIVE_PROVIDER", "")
+            .expect("reset assistive provider override");
+
+        let reset_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after reset"),
+        )
+        .expect("parse settings after reset");
+        assert!(
+            reset_json
+                .pointer("/speech/assistive/llm_provider")
+                .is_none(),
+            "reset must remove the provider override path, got {reset_json}"
+        );
+        assert_eq!(UserSettings::load().llm_assistive_provider, None);
+        assert_eq!(
+            crate::llm::lane_truth::provider(crate::llm::provider::LlmMode::Assistive),
+            crate::llm::provider::ProviderKind::OpenAiResponses
         );
     }
 

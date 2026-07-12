@@ -174,7 +174,7 @@ fn non_empty_trimmed(value: String) -> Option<String> {
 /// rides the access token, never this label.
 fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
     use base64::Engine;
-    let payload = tokens.id_token.as_deref()?.split('.').nth(1)?.to_string();
+    let payload = tokens.id_token.as_deref()?.split('.').nth(1)?;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload.as_bytes())
         .ok()?;
@@ -333,34 +333,28 @@ mod tests {
 
     /// Point the settings store at an isolated scratch dir so these tests never
     /// read (or depend on) the operator's real settings.json.
-    fn isolated_settings_dir(tag: &str) -> (EnvGuard, std::path::PathBuf) {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "cs_account_auth_{}_{tag}_{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("create scratch settings dir");
-        (EnvGuard::set_path("CODESCRIBE_DATA_DIR", &dir), dir)
+    fn isolated_settings_dir(tag: &str) -> (EnvGuard, tempfile::TempDir) {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("cs_account_auth_{tag}_"))
+            .tempdir()
+            .expect("create scratch settings dir");
+        (EnvGuard::set_path("CODESCRIBE_DATA_DIR", dir.path()), dir)
     }
 
     #[test]
     #[serial]
     fn no_client_id_reports_registration_gate() {
-        let (_data_dir, dir) = isolated_settings_dir("gate");
+        let (_data_dir, _dir) = isolated_settings_dir("gate");
         let _guard = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
         let err = client_id_for_provider(ProviderKind::OpenAiResponses).unwrap_err();
         assert!(matches!(err, AccountAuthError::NoClientId));
         assert!(err.to_string().contains(NO_CLIENT_ID_MESSAGE));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     #[serial]
     fn settings_client_id_beats_env_and_applies_without_restart() {
-        let (_data_dir, dir) = isolated_settings_dir("resolution");
+        let (_data_dir, _dir) = isolated_settings_dir("resolution");
         let _env = EnvGuard::set(OPENAI_CLIENT_ID_ENV, "env-client");
 
         // Env alone (dev fallback) resolves.
@@ -393,7 +387,6 @@ mod tests {
             client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
             "env-client"
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

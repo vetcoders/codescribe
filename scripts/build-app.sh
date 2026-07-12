@@ -81,9 +81,16 @@ fi
 # panel shows exactly what was built, from what, and when. A dirty worktree is
 # marked honestly — a stamped build must never masquerade as a clean commit.
 STAMP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
-STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD 2>/dev/null || echo nogit)"
-git -C "$REPO_ROOT" diff --quiet HEAD -- 2>/dev/null || STAMP_COMMIT="${STAMP_COMMIT}-dirty"
-STAMP_BUILD_NUM="$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || echo 0)"
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD)"
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal --ignore-submodules=none)" ]; then
+    STAMP_COMMIT="${STAMP_COMMIT}-dirty"
+  fi
+  STAMP_BUILD_NUM="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
+else
+  STAMP_COMMIT="nogit"
+  STAMP_BUILD_NUM="0"
+fi
 STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
