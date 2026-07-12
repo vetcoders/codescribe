@@ -23,8 +23,10 @@ Current source version: `0.12.2`
 - [ ] `CHANGELOG.md` has a current `0.12.x` release section.
 - [ ] The hardened release workflow in this branch has landed on `main`; do not tag from the old `main` workflow that still builds an ad-hoc `make dmg` artifact.
 - [ ] Tag `v0.12.2` is created only after the release notes and signing secrets are ready.
-- [ ] The `Release DMG` workflow produces the single current release artifact: `Codescribe_0.12.2.dmg`.
-- [ ] The DMG is Developer ID signed, notarized, stapled, and passes Gatekeeper on a machine outside the developer environment.
+- [ ] The `Release DMG` workflow produces both release variants:
+  - `Codescribe_0.12.2.dmg` with embedded Silero + embedder and runtime Whisper cache/download.
+  - `Codescribe_0.12.2_full.dmg` with embedded Silero + embedder + Whisper.
+- [ ] Both DMGs are Developer ID signed, notarized, stapled, and pass Gatekeeper on a machine outside the developer environment.
 - [ ] Landing page primary CTA does not promise a DMG until a current notarized DMG exists.
 - [ ] README install section names source install as the guaranteed path until the current DMG is verified.
 
@@ -34,7 +36,7 @@ Current source version: `0.12.2`
 2. Confirm `gh release list` does not already contain `v0.12.2`.
 3. Create and push tag `v0.12.2`.
 4. Watch `.github/workflows/release.yml` until the release is published.
-5. Download the DMG from GitHub Releases, mount it, drag the app into `/Applications`, launch it, and verify:
+5. Download both DMGs from GitHub Releases, mount each one, drag the app into `/Applications`, launch it, and verify:
    - Gatekeeper accepts it without a workaround.
    - onboarding opens cleanly,
    - microphone/accessibility/input-monitoring prompts are understandable,
@@ -43,8 +45,8 @@ Current source version: `0.12.2`
 
 ## Current Known External Gaps
 
-- The latest live GitHub release observed on 2026-07-12 was still `v0.8.0`, while the source version is `0.12.2`.
+- The latest live GitHub release observed on 2026-06-23 was `v0.8.0`, while the source version is `0.12.2`.
 - GitHub license detection still needs final review because the active repository license is `FSL-1.1-ALv2` while GitHub may display Apache-2.0.
 - GitHub Actions signing/notary secrets were not listed by `gh secret list` on 2026-06-23; configure them before tagging.
-- GitHub Pages now belongs to the Astro `site/` workflow on `main`; do not resurrect the deleted `docs/landing` tree during merge.
+- The live GitHub Pages deployment still served the 2026-05-07 landing as of 2026-06-23; merge/deploy the branch before public announcement.
 - A current signed and notarized `v0.12.2` DMG still needs to be produced by GitHub Actions and smoke-tested.
