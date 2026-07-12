@@ -26,7 +26,8 @@ use crate::vad;
 use super::correction::{
     PARTIAL_PASS_TRIGGER_TIMER_MS, PartialPassTelemetry, PartialPassTriggerState,
     apply_final_boundary_text, classify_partial_trigger, correction_baseline_text,
-    correction_is_stale, postprocess_correction_with_snapshot, schedule_partial_pass,
+    correction_is_stale, merge_corrected_window, postprocess_correction_with_snapshot,
+    schedule_partial_pass,
 };
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
 use super::quality_gate::{
@@ -331,9 +332,11 @@ pub(crate) async fn transcription_session(
     let mut utterance_boundary_suffix = String::new();
 
     // Fix D: Speech-window-scoped text and boundary revision for partial-pass stale guard.
-    // Unlike accumulated_text (cleared on UtteranceFinal), these track all text
-    // emitted in the current correction window — giving schedule_partial_pass
-    // a stable baseline that survives utterance boundaries.
+    // window_text mirrors correction_audio_buf in lockstep: previews append to
+    // both, and schedule_partial_pass takes (and clears) both together — so
+    // correction_expected_text always describes exactly the audio slice that a
+    // Refine pass re-decodes, which is what lets merge_corrected_window splice
+    // the correction into accumulated_text instead of replacing it wholesale.
     let mut window_text = String::new();
     let mut boundary_rev: u64 = 0;
 
@@ -505,7 +508,7 @@ pub(crate) async fn transcription_session(
                     &mut correction_suffix_snapshot,
                     &suffix_snapshot,
                     boundary_rev,
-                    &window_text,
+                    &mut window_text,
                     partial_trigger_state.silero_speech_ms_since_partial,
                     trigger,
                     &mut partial_telemetry,
@@ -775,7 +778,7 @@ pub(crate) async fn transcription_session(
                         &mut correction_suffix_snapshot,
                         &suffix_snapshot,
                         boundary_rev,
-                        &window_text,
+                        &mut window_text,
                         partial_trigger_state.silero_speech_ms_since_partial,
                         trigger,
                         &mut partial_telemetry,
@@ -822,30 +825,55 @@ pub(crate) async fn transcription_session(
                                             &expected_text,
                                             &window_text,
                                         );
-                                    if cleaned != previous_text {
-                                        preview_rev += 1;
-                                        corrections_applied += 1;
-                                        debug!(
-                                            rev = preview_rev,
-                                            previous_len = previous_text.chars().count(),
-                                            corrected_len = cleaned.chars().count(),
-                                            "BOUNDARY correction"
-                                        );
-                                        event_sink.on_event(&EngineEvent::Correction {
-                                            rev: preview_rev,
-                                            text: cleaned.clone(),
-                                            previous_text,
-                                        });
-                                        if correction_after_boundary {
-                                            debug!(
-                                                "Applied correction after boundary without reopening utterance-local preview state"
-                                            );
-                                        } else {
-                                            // Update accumulated text so next Preview builds from corrected state.
-                                            accumulated_text = cleaned;
-                                        }
+                                    // `cleaned` re-decodes only the audio slice taken by
+                                    // schedule_partial_pass — splice it into the full
+                                    // baseline instead of replacing the whole preview
+                                    // (long hold sessions lost everything before the
+                                    // correction window otherwise).
+                                    let merged = if correction_after_boundary {
+                                        Some(cleaned)
                                     } else {
-                                        debug!("Skipping correction emit: no text delta after postprocess");
+                                        merge_corrected_window(
+                                            &previous_text,
+                                            &expected_text,
+                                            &cleaned,
+                                        )
+                                    };
+                                    match merged {
+                                        Some(merged) if merged != previous_text => {
+                                            preview_rev += 1;
+                                            corrections_applied += 1;
+                                            debug!(
+                                                rev = preview_rev,
+                                                previous_len = previous_text.chars().count(),
+                                                corrected_len = merged.chars().count(),
+                                                "BOUNDARY correction"
+                                            );
+                                            event_sink.on_event(&EngineEvent::Correction {
+                                                rev: preview_rev,
+                                                text: merged.clone(),
+                                                previous_text,
+                                            });
+                                            if correction_after_boundary {
+                                                debug!(
+                                                    "Applied correction after boundary without reopening utterance-local preview state"
+                                                );
+                                            } else {
+                                                // Update accumulated text so next Preview builds from corrected state.
+                                                accumulated_text = merged;
+                                            }
+                                        }
+                                        Some(_) => {
+                                            debug!("Skipping correction emit: no text delta after postprocess");
+                                        }
+                                        None => {
+                                            partial_telemetry.record_stale();
+                                            debug!(
+                                                expected_len = expected_text.chars().count(),
+                                                baseline_len = previous_text.chars().count(),
+                                                "Suppressing correction: window snapshot no longer anchored in preview baseline"
+                                            );
+                                        }
                                     }
                                 }
                                 Err(PostprocessDrop::Hallucination) => {
@@ -1158,7 +1186,7 @@ pub(crate) async fn transcription_session(
                                 &mut correction_suffix_snapshot,
                                 &suffix_snapshot,
                                 boundary_rev,
-                                &window_text,
+                                &mut window_text,
                                 partial_trigger_state.silero_speech_ms_since_partial,
                                 trigger,
                                 &mut partial_telemetry,
