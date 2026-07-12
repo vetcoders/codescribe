@@ -89,9 +89,11 @@ struct DictationOverlayView: View {
                     rippling: true
                 )
                 .padding(.leading, 6)
+                .accessibilityIdentifier("overlay-phase-status")
             } else {
                 StaticStatusPill(text: state.statusText, color: state.statusColor)
                     .padding(.leading, 6)
+                    .accessibilityIdentifier("overlay-phase-status")
             }
             Spacer(minLength: 0)
             HStack(spacing: 14) {
@@ -160,8 +162,8 @@ struct DictationOverlayView: View {
     private var listeningBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             WaveformView(
-                active: !state.transcribing && (state.audioReady || state.vadActive),
-                transcribing: state.transcribing
+                active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
+                transcribing: state.transcribing || state.isFinalPass
             )
             .padding(.top, 4)
             .padding(.bottom, 8)
@@ -190,6 +192,7 @@ struct DictationOverlayView: View {
                             .lineSpacing(5)
                             .foregroundStyle(CSColor.textBody)
                             .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("overlay-transcript-live")
                         BlinkingCaret()
                     }
                     Color.clear
@@ -199,6 +202,7 @@ struct DictationOverlayView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minHeight: transcriptMinHeight)
+            .accessibilityIdentifier("overlay-transcript-area")
             .onChange(of: state.listeningDisplay) { _, _ in
                 scrollToTail(proxy)
             }
@@ -228,6 +232,7 @@ struct DictationOverlayView: View {
             .scrollContentBackground(.hidden)
             .background(Color.clear)
             .frame(minHeight: bodyMinHeight)
+            .accessibilityIdentifier("overlay-transcript-formatted")
     }
 
     /// Terminal outcome for a session that captured no usable speech. Replaces
@@ -428,6 +433,7 @@ struct DictationOverlayView: View {
             Spacer(minLength: 0)
             Text(state.footerRight)
                 .foregroundStyle(CSColor.textFaintAlt)
+                .accessibilityIdentifier("overlay-phase-footer")
         }
         .csMono(10, .medium)
         .padding(.horizontal, 20)
