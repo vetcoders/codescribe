@@ -170,6 +170,11 @@ final class OverlayState: ObservableObject {
     /// The delivered (pre-user-edit) text at the moment we entered .formatted.
     /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
     private var deliveredText: String = ""
+    /// Best-effort raw STT transcript text (pre-AI formatting / postprocess) for
+    /// quality records. D-05: wired from authoritative final / STT assembly so
+    /// lexicon v2 and quality analytics get the real misheard text, not only
+    /// the (possibly formatted) delivered. Cleared on reset like deliveredText.
+    private var sttRawText: String = ""
     /// Once a session is finalized (mode `.formatted` / Idle), the transcript is
     /// FROZEN. Late streaming events (Preview/Correction/UtteranceFinal/VAD) that the
     /// engine may still emit during/after teardown are DROPPED instead of mutating
@@ -436,13 +441,16 @@ final class OverlayState: ObservableObject {
         // candidates to lexicon.custom.jsonl. That is blocking disk I/O, so it runs
         // off the main actor — Copy/Send/Close must never wait on the disk.
         // Raw is best-effort for MVP.
-        // D-05: wire real (best-effort) raw_text from the delivered final for lexicon v2
-        // consumers. Full separation of pre-postprocess raw would require listener
-        // surface extension (on_final carrying raw_text) — deferred as low-ROI for MVP.
+        // D-05 over-correct: use sttRawText (wired from applyFinalTranscript / STT finals)
+        // as raw_text when available so quality records carry the real pre-formatting
+        // STT text for lexicon v2 consumers. Falls back to delivered (still better than "").
+        let rawForRecord = !sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? sttRawText
+            : delivered
         Task.detached(priority: .utility) {
             // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
             // quality write is best-effort; never block UI action.
-            try? commitOverlayQualityRecord(rawText: delivered, deliveredText: delivered, editedText: edited, action: action)
+            try? commitOverlayQualityRecord(rawText: rawForRecord, deliveredText: delivered, editedText: edited, action: action)
         }
     }
 
@@ -758,6 +766,9 @@ final class OverlayState: ObservableObject {
         if deliveredText.isEmpty, !clean.isEmpty {
             deliveredText = clean
         }
+        if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !clean.isEmpty {
+            sttRawText = clean
+        }
     }
 
     /// Single authoritative finalize. `runStop`, `finishControllerRecording`, and
@@ -794,6 +805,11 @@ final class OverlayState: ObservableObject {
         } else {
             if formattedText != resolved { formattedText = resolved }
             if deliveredText.isEmpty { deliveredText = resolved }
+            if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Best effort: if no STT raw from per-utterance finals yet, fall back to the
+                // resolved assembly (still the raw-streaming path, not AI formatted).
+                sttRawText = resolved
+            }
             mode = .formatted
         }
         // FREEZE: from here, late streaming events are dropped (see the apply guards)
@@ -828,6 +844,7 @@ final class OverlayState: ObservableObject {
         committedUtterances = []
         authoritativeFinalText = nil
         deliveredText = ""
+        sttRawText = ""
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false

@@ -19,6 +19,11 @@ use crate::config::Config;
 use crate::llm::lane_truth;
 use crate::llm::provider::{LlmMode, ProviderKind};
 
+/// 5s client timeout for live /models discovery.
+/// P2-08/P2-09: short to keep Settings responsive; no explicit per-call cancel surface
+/// (fire-and-forget from UI, last-good cache covers failure). If provider is slow,
+/// we degrade to cache rather than hang the picker. Justified as UX bound, not
+/// a knob (per charter: no new Settings controls).
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_FILE_NAME: &str = "model_discovery_cache.json";
 const ANTHROPIC_MODELS_ENDPOINT: &str = "https://api.anthropic.com/v1/models";
@@ -525,7 +530,8 @@ mod tests {
             .with_body(r#"{"object":"list","data":[{"id":"gpt-live"},{"id":"gpt-other"}]}"#)
             .create();
 
-        let result = discover_models(ProviderKind::OpenAiResponses).unwrap();
+        let result = discover_models(ProviderKind::OpenAiResponses)
+            .expect("discover_models should succeed in OpenAI test path");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
         assert_eq!(
@@ -542,7 +548,8 @@ mod tests {
             ]
         );
 
-        let cached = read_cached_models(ProviderKind::OpenAiResponses).unwrap();
+        let cached = read_cached_models(ProviderKind::OpenAiResponses)
+            .expect("read_cached_models should succeed after fresh discovery write");
         assert_eq!(cached, result.models);
         env.keepalive();
     }
@@ -578,7 +585,8 @@ mod tests {
             )
             .create();
 
-        let result = discover_models(ProviderKind::AnthropicMessages).unwrap();
+        let result = discover_models(ProviderKind::AnthropicMessages)
+            .expect("discover_models should succeed in Anthropic test path");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
         assert_eq!(
@@ -613,7 +621,8 @@ mod tests {
         );
         let _mock = server.mock("GET", "/v1/models").expect(0).create();
 
-        let err = discover_models(ProviderKind::AnthropicMessages).unwrap_err();
+        let err = discover_models(ProviderKind::AnthropicMessages)
+            .expect_err("discover_models should fail without key in this Anthropic error test");
 
         assert_eq!(err.code(), "no_key");
         assert_eq!(err.provider(), ProviderKind::AnthropicMessages);
@@ -636,7 +645,8 @@ mod tests {
             .with_status(200)
             .with_body(r#"{"data":[{"id":"gpt-cached"}]}"#)
             .create();
-        let fresh = discover_models(ProviderKind::OpenAiResponses).unwrap();
+        let fresh = discover_models(ProviderKind::OpenAiResponses)
+            .expect("discover_models should succeed for cache freshness test");
         assert_eq!(fresh.status, ModelDiscoveryStatus::Fresh);
 
         let _fail = server
@@ -644,7 +654,8 @@ mod tests {
             .with_status(503)
             .with_body("temporarily unavailable")
             .create();
-        let cached = discover_models(ProviderKind::OpenAiResponses).unwrap();
+        let cached = discover_models(ProviderKind::OpenAiResponses)
+            .expect("discover_models should return cached result without network");
 
         assert_eq!(
             cached.status,
