@@ -221,6 +221,10 @@ pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthErr
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
     delete_key(account).map_err(|error| AccountAuthError::Storage(error.to_string()))?;
+    // SAFETY: clears the process-env mirror of the tokens (the test/dev
+    // injection channel read by `load_account_tokens`) so sign-out is not
+    // undone by a stale override. Sign-out is a single user-driven action,
+    // not a hot concurrent path.
     unsafe { std::env::remove_var(account) };
     Ok(())
 }
@@ -447,18 +451,21 @@ mod tests {
     impl EnvGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
+            // SAFETY: these process-env tests are serialized with `serial`.
             unsafe { std::env::set_var(key, value) };
             Self { key, previous }
         }
 
         fn set_path(key: &'static str, value: &std::path::Path) -> Self {
             let previous = std::env::var(key).ok();
+            // SAFETY: these process-env tests are serialized with `serial`.
             unsafe { std::env::set_var(key, value) };
             Self { key, previous }
         }
 
         fn unset(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
+            // SAFETY: these process-env tests are serialized with `serial`.
             unsafe { std::env::remove_var(key) };
             Self { key, previous }
         }
@@ -467,7 +474,9 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.previous {
+                // SAFETY: these process-env tests are serialized with `serial`.
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
+                // SAFETY: these process-env tests are serialized with `serial`.
                 None => unsafe { std::env::remove_var(self.key) },
             }
         }
