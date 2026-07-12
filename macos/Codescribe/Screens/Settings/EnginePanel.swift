@@ -105,10 +105,11 @@ struct EnginePanel: View {
                        tint: false, trailing: .none)
             divider
             ForEach(LLMLane.allCases) { lane in
-                RuntimeRow(key: "\(lane.title) endpoint", value: model.llmLane(lane).resolvedEndpoint,
+                let laneModel = model.llmLane(lane)
+                RuntimeRow(key: "\(lane.title) endpoint", value: laneModel.resolvedEndpoint,
                            tint: false, mono: true, trailing: .none)
                 divider
-                RuntimeRow(key: "\(lane.title) model", value: model.llmLane(lane).resolvedModel,
+                RuntimeRow(key: "\(lane.title) model", value: laneModel.resolvedModel,
                            tint: true, mono: true, trailing: .none)
                 divider
             }
@@ -159,7 +160,7 @@ struct EnginePanel: View {
                         }
                     }
                 } label: {
-                    EngineMenuLabel(text: model.sttEngineLabel)
+                    SettingsMenuLabel(text: model.sttEngineLabel)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -256,7 +257,7 @@ private struct LLMLaneEditor: View {
                             }
                         }
                     } label: {
-                        EngineMenuLabel(text: providerLabel)
+                        SettingsMenuLabel(text: providerLabel)
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
@@ -319,9 +320,7 @@ private struct LLMLaneEditor: View {
                                     }
                                 }
                             }
-                        } label: {
-                            EngineMenuLabel(text: currentModelLabel)
-                        }
+                        } label: { SettingsMenuLabel(text: currentModelLabel) }
                         .menuStyle(.borderlessButton)
                         .menuIndicator(.hidden)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -424,22 +423,6 @@ private struct LLMLaneEditor: View {
             .buttonStyle(.plain)
             .help(help)
             .accessibilityLabel(accessibilityLabel)
-    }
-}
-
-// MARK: - Engine dropdown label (mirrors the KeysPanel MenuLabel shape)
-
-private struct EngineMenuLabel: View {
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(text)
-                .font(CSFont.ui(12.5, .semibold))
-                .foregroundStyle(CSColor.textHigh)
-                .lineLimit(1)
-            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
-        }
     }
 }
 
@@ -747,6 +730,41 @@ struct SettingsSectionLabel: View {
             .font(CSFont.mono(12, .semibold))
             .tracking(0.5)
             .foregroundStyle(CSColor.textMuted)
+    }
+}
+
+struct SettingsMenuLabel: View {
+    let text: String
+    var mono: Bool = false
+    var chrome: Bool = false
+
+    var body: some View {
+        if chrome {
+            content
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .fill(CSColor.surfaceRaised(0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textHigh)
+                .lineLimit(1)
+            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
+        }
     }
 }
 

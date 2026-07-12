@@ -33,19 +33,18 @@ struct KeysPanel: View {
                 .padding(.top, 22)
             VStack(spacing: 8) {
                 ForEach(model.keyAccounts, id: \.self) { account in
+                    let provider = model.providerForKeyAccount(account)
                     KeyRow(
                         account: account,
                         label: SettingsViewModel.keyLabel(for: account),
                         isSet: model.keyStatus.isSet(account: account),
                         probeResult: model.keyProbeResults[account],
                         probePending: model.keyProbePending.contains(account),
-                        accountProvider: model.providerForKeyAccount(account),
-                        accountLoginPending: model.providerForKeyAccount(account).map {
+                        accountProvider: provider,
+                        accountLoginPending: provider.map {
                             model.accountLoginPending.contains($0.id)
                         } ?? false,
-                        accountLoginNotice: model.providerForKeyAccount(account).flatMap {
-                            model.accountLoginNotices[$0.id]
-                        },
+                        accountLoginNotice: provider.flatMap { model.accountLoginNotices[$0.id] },
                         onSave: { model.saveKey(account: account, secret: $0) },
                         onClear: { model.clearKey(account: account) },
                         onTest: { model.testKey(account: account) },
@@ -112,7 +111,7 @@ private struct AgentProviderSelector: View {
                         }
                     }
                 } label: {
-                    MenuLabel(text: laneModel.provider?.displayName ?? laneModel.providerId)
+                    SettingsMenuLabel(text: laneModel.provider?.displayName ?? laneModel.providerId, chrome: true)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -132,7 +131,7 @@ private struct AgentProviderSelector: View {
                         }
                     }
                 } label: {
-                    MenuLabel(text: currentModelLabel, mono: true)
+                    SettingsMenuLabel(text: currentModelLabel, mono: true, chrome: true)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -186,32 +185,6 @@ private struct SelectorRow<Content: View>: View {
             content()
             Spacer(minLength: 0)
         }
-    }
-}
-
-private struct MenuLabel: View {
-    let text: String
-    var mono: Bool = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(text)
-                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-                .foregroundStyle(CSColor.textHigh)
-                .lineLimit(1)
-            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(CSColor.surfaceRaised(0.03))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-        )
-        .contentShape(Rectangle())
     }
 }
 

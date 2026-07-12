@@ -178,9 +178,6 @@ enum AppRelaunch {
     }
 }
 
-/// View-model owning the Settings screen state. Seeded with mock data so the
-/// #Preview renders standalone; the live app injects `RealSettingsEngine`
-/// (over the `CodescribeConfig` bridge) + the native permission probe.
 private struct BackgroundSettingsEngine: @unchecked Sendable {
     let engine: SettingsEngine
 }
@@ -448,7 +445,7 @@ final class SettingsViewModel: ObservableObject {
         guard target.isInteractive else { return }
         section = target
         if target == .keys {
-            refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId])
+            refreshAssistiveModelDiscovery()
         }
     }
 
@@ -490,8 +487,7 @@ final class SettingsViewModel: ObservableObject {
                              : (settings.sttEndpoint ?? "cloud default")
     }
 
-    /// Effective lane state after provider/shared fallbacks. This is the only
-    /// read contract consumed by Settings UI; mutations remain key-driven below.
+    /// Effective lane state after provider/shared fallbacks.
     func llmLane(_ lane: LLMLane) -> LLMLaneModel {
         let providerId = lane == .assistive
             ? (settings.llmAssistiveProvider ?? "openai-responses")
@@ -523,6 +519,11 @@ final class SettingsViewModel: ObservableObject {
             discovery: modelDiscoveries[discoveryProviderId]
                 ?? CsModelDiscovery.sample(for: discoveryProviderId)
         )
+    }
+
+    private func refreshAssistiveModelDiscovery(includeOpenAI: Bool = false) {
+        let providerId = llmLane(.assistive).providerId
+        refreshModelDiscoveries(providerIds: includeOpenAI ? [providerId, "openai-responses"] : [providerId])
     }
 
     private func resolvedOpenAIEndpoint(for lane: LLMLane) -> String {
@@ -559,7 +560,7 @@ final class SettingsViewModel: ObservableObject {
         persist(lane.endpointKey, trimmed)
         refreshAgentStatus()
         if lane == .assistive {
-            refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId, "openai-responses"])
+            refreshAssistiveModelDiscovery(includeOpenAI: true)
         }
     }
 
@@ -712,7 +713,7 @@ final class SettingsViewModel: ObservableObject {
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
             if account == llmLane(.assistive).provider?.apiKeyAccount {
-                refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId])
+                refreshAssistiveModelDiscovery()
             }
             refreshAgentStatus()
         } catch {
@@ -728,7 +729,7 @@ final class SettingsViewModel: ObservableObject {
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
             if account == llmLane(.assistive).provider?.apiKeyAccount {
-                refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId])
+                refreshAssistiveModelDiscovery()
             }
             refreshAgentStatus()
         } catch {
