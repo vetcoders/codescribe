@@ -73,15 +73,18 @@ impl SessionTranscriptState {
         let previous = normalize_transcript_fragment(previous_text);
         let corrected = normalize_transcript_fragment(text);
 
-        // A correction may complete after `finalize` cleared the active tail.
-        // Treating it as a new preview would append a second copy of the same
-        // utterance to the delivery buffer, so patch the matching last commit.
-        if self.active_preview.is_empty()
-            && let Some(last) = self.committed.last_mut()
-            && normalize_transcript_fragment(&last.text) == previous
-        {
-            last.text = corrected;
-            return;
+        // Over-correct for P3-03 (late correction to penultimate/older utterance):
+        // search committed from the tail for a match and patch it. This prevents
+        // append-dupe when a correction for non-tail arrives after its finalize.
+        // Only falls back to preview-append if no match found (new content).
+        if self.active_preview.is_empty() {
+            // Fast path + P3-03: search from tail (last first). Collapsed if for clippy.
+            for rec in self.committed.iter_mut().rev() {
+                if normalize_transcript_fragment(&rec.text) == previous {
+                    rec.text = corrected;
+                    return;
+                }
+            }
         }
 
         self.apply_preview(&corrected);
@@ -968,5 +971,63 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(220)).await;
         let snapshot = transcript.lock().await.clone();
         assert_eq!(snapshot, "Ala ma kota");
+    }
+
+    #[tokio::test]
+    async fn correction_targets_penultimate_utterance_patches_instead_of_appending() {
+        // P3-03 over-correct + marbles fortify: late correction whose previous_text
+        // matches a non-tail (penultimate) committed utterance must patch it, not
+        // append via preview fallback. This closes the "korekta do przedostatniej
+        // wypowiedzi appenduje" gap.
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        // Commit two utterances.
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "Ala ma kota.".to_string(),
+            raw_text: "Ala ma kota.".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 2,
+            text: "A kot ma Ale.".to_string(),
+            raw_text: "A kot ma Ale.".to_string(),
+            start_ts: 0.0,
+            end_ts: 2.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+
+        // Late correction targets the *first* (penultimate at arrival) utterance.
+        emitter.on_event(&EngineEvent::Correction {
+            rev: 99,
+            text: "Ala ma psa.".to_string(),
+            previous_text: "Ala ma kota.".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        let snapshot = transcript.lock().await.clone();
+        assert!(
+            snapshot.contains("Ala ma psa."),
+            "penultimate correction must patch in place, got: {snapshot:?}"
+        );
+        assert!(
+            snapshot.contains("A kot ma Ale."),
+            "later utterance must remain untouched, got: {snapshot:?}"
+        );
+        // No duplication of the corrected text.
+        assert_eq!(snapshot.matches("Ala ma").count(), 1);
     }
 }

@@ -296,17 +296,28 @@ mod tests {
             p.display()
         );
 
-        // D-02 depth + action wiring (P3 over-correct): verify the written record contains
-        // the action in meta and the delivered/edited (lexicon candidate exercised too).
-        let written = std::fs::read_to_string(&p).unwrap_or_default();
-        assert!(
-            written.contains("test"),
-            "quality record must carry action via meta"
+        // D-02 depth + action/raw wiring (over-correct): deserialize last record and
+        // assert full fields (raw_text, delivered, edited, meta.action, source).
+        // Proves the heart of quality loop (capture + meta + lexicon feed) without
+        // relying on string contains.
+        let written = std::fs::read_to_string(&p).expect("read written quality log");
+        let last_line = written.lines().last().expect("at least one jsonl line");
+        let rec: QualityRecord =
+            serde_json::from_str(last_line).expect("parse quality record jsonl");
+        assert_eq!(
+            rec.raw_text, "raw raw",
+            "D-05/D-02: raw_text must be wired and recorded"
         );
-        assert!(
-            written.contains("uni agentka here"),
-            "delivered must be recorded"
+        assert_eq!(rec.delivered_text, "uni agentka here");
+        assert_eq!(rec.edited_text, "Junie here");
+        assert_eq!(rec.mode, "overlay");
+        let meta_action = rec.meta.get("action").and_then(|v| v.as_str());
+        assert_eq!(
+            meta_action,
+            Some("test"),
+            "P2-03/P2-07: action must flow to meta"
         );
-        assert!(written.contains("Junie here"), "edited must be recorded");
+        let meta_source = rec.meta.get("source").and_then(|v| v.as_str());
+        assert_eq!(meta_source, Some("overlay-final"));
     }
 }

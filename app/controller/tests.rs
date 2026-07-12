@@ -85,7 +85,10 @@ async fn test_hold_down_schedules_delayed_start() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("down hotkey must schedule without error in test");
 
     // Should still be IDLE (delay not elapsed)
     assert_eq!(controller.current_state().await, State::Idle);
@@ -112,7 +115,10 @@ async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("assistive ctrl hold hotkey must process in test");
 
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(controller.current_state().await, State::Idle);
@@ -137,7 +143,10 @@ async fn test_hold_up_before_delay_cancels() {
         force_raw: true,
         force_ai: false,
     };
-    controller.handle_hotkey_event(down_event).await.unwrap();
+    controller
+        .handle_hotkey_event(down_event)
+        .await
+        .expect("down must process for cancel test");
 
     // Release before delay elapses
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -149,7 +158,10 @@ async fn test_hold_up_before_delay_cancels() {
         force_raw: true,
         force_ai: false,
     };
-    controller.handle_hotkey_event(up_event).await.unwrap();
+    controller
+        .handle_hotkey_event(up_event)
+        .await
+        .expect("up must cancel the pending hold");
 
     // Wait past the original delay
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -203,7 +215,10 @@ async fn test_toggle_starts_immediately() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle press must start recording immediately in test");
 
     // Should immediately transition to REC_TOGGLE
     assert_eq!(controller.current_state().await, State::RecToggle);
@@ -226,7 +241,10 @@ async fn test_busy_state_ignores_hotkeys() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("ignored hotkey in busy must not error the handler");
 
     // Should remain BUSY
     assert_eq!(controller.current_state().await, State::Busy);
