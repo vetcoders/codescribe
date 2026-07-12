@@ -110,6 +110,16 @@ enabled means the default route is formatting; disabled means raw. Explicit
 hotkey bindings still win over that default (`Dictation` forces raw,
 `Formatting` forces formatting).
 
+**Stop latency trade-off (supersedes ADR 2026-05-28 Faza 1 force-RAW):** with
+formatting enabled in Settings, a hands-off toggle stop performs one AI
+formatting call on the stop path before delivery. This latency is the user's
+explicit choice, not a surprise: the overlay reports the phase as `final pass`
+while the call runs, a formatting failure falls back to the post-processed raw
+text, and users who want a zero-latency stop either disable the formatting
+default or use a `Dictation` binding (force raw). The earlier unconditional
+force-RAW on this path was removed because it silently erased the Settings
+formatting default.
+
 **Events:**
 
 ```rust

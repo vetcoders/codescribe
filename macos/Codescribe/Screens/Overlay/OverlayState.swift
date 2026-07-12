@@ -413,7 +413,7 @@ final class OverlayState: ObservableObject {
         guard !edited.isEmpty, delivered != edited else { return }
         // Call the bridge FFI (generated symbol from uniffi). Raw is best-effort for MVP.
         // This writes the quality JSONL and feeds safe candidates to lexicon.custom.jsonl.
-        commitOverlayQualityRecord(rawText: "", deliveredText: delivered, editedText: edited)
+        try? commitOverlayQualityRecord(rawText: "", deliveredText: delivered, editedText: edited)
     }
 
     func prepareForExternalStart() {

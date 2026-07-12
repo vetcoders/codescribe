@@ -471,6 +471,8 @@ struct EnvVarGuard {
 impl EnvVarGuard {
     fn set(key: &'static str, value: &std::path::Path) -> Self {
         let previous = std::env::var(key).ok();
+        // SAFETY: tests using this guard are serialized with `#[serial]`, so no
+        // other thread touches the process environment concurrently.
         unsafe {
             std::env::set_var(key, value);
         }
@@ -480,6 +482,7 @@ impl EnvVarGuard {
 
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
+        // SAFETY: restore runs under the same `#[serial]` serialization as `set`.
         unsafe {
             if let Some(previous) = &self.previous {
                 std::env::set_var(self.key, previous);

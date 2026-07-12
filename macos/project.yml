@@ -77,3 +77,12 @@ targets:
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
         Release:
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"
+  CodescribeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [CodescribeTests]
+    dependencies:
+      - target: Codescribe
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
