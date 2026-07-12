@@ -3123,19 +3123,9 @@ impl RecordingController {
         } = p;
         let language_opt = language_opt.as_deref();
 
-        // Hands-off (non-assistive) is a single RAW capture; formatting is the explicit
-        // post-recording [Format] action, never an auto-format on stop. Force the raw
-        // branch for the adjudicated hands-off stop so the session lands fast + raw in
-        // the decision overlay — no AI round-trip on the stop path (this branch is the
-        // toggle-stuck-watchdog hot path; an extra format call here re-introduces stop
-        // latency). (ADR 2026-05-28 Faza 1: differentiation by action, not by mode.)
-        let toggle_handsoff = !assistive
-            && matches!(
-                transcript_source,
-                Some(RecordingTranscriptSource::ToggleSessionAdjudicated)
-            );
-        let force_raw = force_raw || toggle_handsoff;
-        let force_ai = force_ai && !toggle_handsoff;
+        // Preserve the mode resolved at recording start. Toggle-adjudicated hands-off
+        // sessions still land in the decision overlay below, but they must not erase
+        // the Settings formatting default by force-routing the transcript to RAW.
 
         // ALWAYS-ON: Final post-processing pass (lexicon + cleanup + semantic gate)
         // This ensures ALL output paths receive clean text regardless of mode.

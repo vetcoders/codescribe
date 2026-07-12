@@ -1,6 +1,7 @@
 //! Controller unit tests
 
 use super::*;
+use crate::controller::types::{TranscriptPipelineParams, read_truth_sidecar};
 use codescribe_core::pipeline::contracts::EngineEvent;
 use serial_test::serial;
 use std::time::Duration;
@@ -409,6 +410,225 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
     assert_eq!(
         maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
         "<codescribe mode=\"dictation\" lang=\"auto\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+fn test_transcript_pipeline_params(
+    raw_text: &str,
+    config: Config,
+    force_raw: bool,
+    force_ai: bool,
+    transcript_source: Option<RecordingTranscriptSource>,
+) -> TranscriptPipelineParams {
+    TranscriptPipelineParams {
+        raw_text: raw_text.to_string(),
+        recording_timestamp: chrono::Local::now(),
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw,
+        force_ai,
+        config,
+        language_opt: None,
+        raw_save_enabled: false,
+        audio_path: None,
+        cloud_verdict_opt: None,
+        cloud_handle: None,
+        transcript_source,
+        truth_fallback_class: None,
+        truth_no_speech_reason: None,
+        truth_speech_pct: None,
+        truth_avg_logprob: None,
+        truth_confidence_flags: Vec::new(),
+        truth_sparkline: None,
+        truth_final_pass_disposition: None,
+        truth_commit_trigger: None,
+        truth_display_status: "Ready".to_string(),
+        append_mode: false,
+        live_stream_session: false,
+        user_needs_separator: false,
+        assistant_needs_separator: false,
+        skip_user_bubble: false,
+    }
+}
+
+async fn final_transcript_text(events: &mut tokio::sync::broadcast::Receiver<IpcEvent>) -> String {
+    loop {
+        match events.recv().await.expect("final transcript event") {
+            IpcEvent {
+                payload: IpcEventPayload::FinalTranscript { text },
+                ..
+            } => return text,
+            _ => continue,
+        }
+    }
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var(key).ok();
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
+
+fn latest_truth_metadata(root: &std::path::Path) -> RecordingTruthMetadata {
+    let transcriptions = root.join("transcriptions");
+    let mut truth_files = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".txt.truth.json"))
+            {
+                truth_files.push(path);
+            }
+        }
+    }
+    truth_files.sort();
+    let truth_path = truth_files.pop().expect("truth sidecar");
+    let transcript_path = truth_path.with_file_name(
+        truth_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("truth file name")
+            .trim_end_matches(".truth.json"),
+    );
+    read_truth_sidecar(&transcript_path).expect("read truth sidecar")
+}
+
+#[tokio::test]
+#[serial]
+async fn test_raw_pipeline_applies_lexicon_without_ai_formatting() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "Uzywam doker do kontenerow.",
+            config,
+            true,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("raw pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert!(
+        final_text.contains("Docker"),
+        "RAW delivery must still apply deterministic lexicon corrections: {final_text}"
+    );
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("raw"),
+        "force_raw must remain RAW and must not run AI formatting"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_toggle_adjudicated_respects_settings_default_without_hotkey_override() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "literal transcript",
+            config,
+            false,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("settings-default pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert_eq!(final_text, "literal transcript");
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("toggle"),
+        "no hotkey override must preserve the Settings-default toggle route, not force RAW"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_toggle_adjudicated_explicit_raw_override_still_wins() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "literal transcript",
+            config,
+            true,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("explicit raw override pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert_eq!(final_text, "literal transcript");
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("raw"),
+        "explicit RAW hotkey override must still win over the Settings default"
     );
 }
 

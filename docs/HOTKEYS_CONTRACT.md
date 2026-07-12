@@ -104,6 +104,12 @@ recent committed utterance; it must never create a second delivered utterance.
 | `Dictation=DoubleCtrl`        | Ctrl double-tap              | Raw dictation     |
 | `Disabled`                    | no toggle for that work mode | Hold-only profile |
 
+If a recording path does **not** carry an explicit hotkey override (`force_raw`
+or `force_ai`), the controller resolves delivery from Settings: formatting mode
+enabled means the default route is formatting; disabled means raw. Explicit
+hotkey bindings still win over that default (`Dictation` forces raw,
+`Formatting` forces formatting).
+
 **Events:**
 
 ```rust
