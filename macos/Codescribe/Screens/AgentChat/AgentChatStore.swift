@@ -63,6 +63,19 @@ enum ChatRole {
     case assistant
 }
 
+/// How an assistant bubble renders its body. `raw` (mono plain — exactly what
+/// streamed) is the DEFAULT per the operator's C2b decision: stream and settled
+/// turn look identical, rich markdown/highlight is per-bubble opt-in.
+enum MessageRenderMode: Equatable {
+    case raw
+    case rich
+
+    /// Pure toggle used by the meta-row raw↔rich button (XCTest-covered).
+    static func nextRenderMode(after mode: MessageRenderMode) -> MessageRenderMode {
+        mode == .raw ? .rich : .raw
+    }
+}
+
 enum ToolLineState: Hashable {
     case running
     case succeeded
@@ -120,6 +133,7 @@ struct ChatMessage: Identifiable {
     var isThinking: Bool = false      // pre-reply "thinking…" state
     var isStreaming: Bool = false     // word-reveal in progress (shows caret)
     var reasoning: String = ""        // streamed model reasoning, rendered separately
+    var renderMode: MessageRenderMode = .raw  // raw default (C2b); rich = opt-in
 }
 
 /// An image the user staged in the composer but has not sent yet. Referenced by
@@ -415,6 +429,15 @@ final class AgentChatStore: ObservableObject {
             guard threadsProvider?.renameThread(backendId: backendId, title: trimmed) == true else { return }
         }
         threads[ti].title = trimmed
+    }
+
+    /// Flip one bubble between raw mono and rich markdown (meta-row toggle).
+    /// Per-message, in-memory only; deliberately does NOT touch the fields the
+    /// scroll signature reads, so a toggle never auto-scrolls the list.
+    func toggleRenderMode(messageID: UUID, in threadID: UUID) {
+        update(messageID, in: threadID) {
+            $0.renderMode = MessageRenderMode.nextRenderMode(after: $0.renderMode)
+        }
     }
 
     /// Export a thread to a Markdown transcript on disk, returning the file path

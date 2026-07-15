@@ -42,7 +42,9 @@ private struct ThreadDetail: View {
             header
             titleBar
             if let thread = store.currentThread {
-                MessageList(messages: thread.messages)
+                MessageList(messages: thread.messages) { messageID in
+                    store.toggleRenderMode(messageID: messageID, in: thread.id)
+                }
             } else {
                 Spacer()
             }

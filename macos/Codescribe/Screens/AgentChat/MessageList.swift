@@ -6,6 +6,9 @@ import AppKit
 /// last turn streams with a blink caret). Auto-scrolls to the newest turn.
 struct MessageList: View {
     let messages: [ChatMessage]
+    /// Flips a bubble between raw mono and rich markdown. State lives in the
+    /// store (per-message `renderMode`), never in this view.
+    var onToggleRenderMode: (UUID) -> Void = { _ in }
 
     /// Follow-tail with pause-on-scroll (the overlay transcript pattern): auto-scroll
     /// to the newest turn only while the user is already at the bottom. Scrolling up
@@ -46,28 +49,69 @@ struct MessageList: View {
                 // context menu below.
                 .textSelection(.enabled)
                 .onPreferenceChange(ChatBottomKey.self) { contentBottom in
-                    // At bottom when the content's bottom edge sits within a small
-                    // slack of the viewport's bottom; drives follow on/off.
-                    followTail = contentBottom <= viewport.size.height + 40
+                    followTail = Self.followTailAfterScroll(
+                        contentBottom: contentBottom,
+                        viewportHeight: viewport.size.height
+                    )
                 }
-                .onChange(of: lastSignature) { _, _ in
+                .onChange(of: Self.tailSignature(messages)) { _, _ in
                     guard followTail else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
                         proxy.scrollTo(bottomAnchor, anchor: .bottom)
                     }
                 }
+                .overlay(alignment: .bottom) {
+                    let pillVisible = Self.showLatestPill(
+                        followTail: followTail,
+                        isStreaming: messages.last?.isStreaming == true
+                    )
+                    ZStack {
+                        if pillVisible {
+                            LatestPill {
+                                withAnimation(.easeOut(duration: 0.25)) {
+                                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                                }
+                            }
+                            .padding(.bottom, 10)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+                    }
+                    .animation(.easeOut(duration: 0.18), value: pillVisible)
+                }
             }
         }
     }
 
-    /// Changes whenever a new turn lands or the streaming text grows.
-    private var lastSignature: String {
-        messages.suffix(5).map { message in
-            let tools = message.toolLines.map { line in
-                "\(line.id)-\(line.state)-\(line.detail)-\(line.reason?.count ?? 0)"
-            }.joined(separator: ",")
-            return "\(message.id)-\(message.text.count)-\(message.reasoning.count)-\(tools)"
-        }.joined(separator: "|")
+    // MARK: Pure scroll/pill logic (XCTest-covered, see MessageListFollowTailTests)
+
+    /// At-bottom decision: the content's bottom edge sits within `slack` of the
+    /// viewport's bottom. Drives follow on/off from the scroll preference.
+    static func followTailAfterScroll(contentBottom: CGFloat, viewportHeight: CGFloat,
+                                      slack: CGFloat = 40) -> Bool {
+        contentBottom <= viewportHeight + slack
+    }
+
+    /// The "↓ Latest" pill shows only while the user is detached from the bottom
+    /// AND the newest turn is still streaming — never over a settled thread.
+    static func showLatestPill(followTail: Bool, isStreaming: Bool) -> Bool {
+        !followTail && isStreaming
+    }
+
+    /// Changes whenever a new turn lands or the streaming tail grows — the
+    /// auto-scroll trigger. Deliberately cheap for the per-delta hot path:
+    /// `utf8.count` is O(1) on native strings (grapheme `count` walks the whole
+    /// text — 100k steps per tick on a large pasted turn), only the last two
+    /// turns matter (the tool row + the streaming bubble; `messages.count`
+    /// catches insertions), and no tool detail strings are concatenated.
+    /// `renderMode` is excluded on purpose: a raw↔rich flip must not scroll.
+    static func tailSignature(_ messages: [ChatMessage]) -> String {
+        var signature = "\(messages.count)"
+        for message in messages.suffix(2) {
+            let running = message.toolLines.lazy.filter { $0.state == .running }.count
+            signature += "|\(message.id)-\(message.text.utf8.count)"
+                + "-\(message.reasoning.utf8.count)-\(message.toolLines.count)-\(running)"
+        }
+        return signature
     }
 
     private func alignment(_ role: ChatRole) -> Alignment {
@@ -79,8 +123,40 @@ struct MessageList: View {
         switch message.role {
         case .you: YouTurn(message: message)
         case .tool: ToolTurn(message: message)
-        case .assistant: AssistantTurn(message: message)
+        case .assistant: AssistantTurn(message: message, onToggleRenderMode: onToggleRenderMode)
         }
+    }
+}
+
+/// Floating "↓ Latest" pill over the bottom edge: appears when the user scrolls
+/// away mid-stream; click jumps to the tail (follow-tail re-engages naturally via
+/// the bottom-edge preference). Styled after the composer chip pill pattern.
+private struct LatestPill: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                CSIconView(icon: .chevronDown, size: 9, weight: .semibold,
+                           color: CSColor.terracottaLight)
+                Text("Latest")
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(hovering ? CSColor.textHigh : CSColor.textBody)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(CSColor.glassUnder.opacity(0.92))
+            .background(CSColor.surfaceRaised(0.05))
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Jump to the latest reply")
     }
 }
 
@@ -398,6 +474,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
 
 private struct AssistantTurn: View {
     let message: ChatMessage
+    let onToggleRenderMode: (UUID) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -407,6 +484,11 @@ private struct AssistantTurn: View {
                     .foregroundStyle(CSColor.textFaintAlt)
                 if !message.isThinking {
                     CopyMessageButton(text: message.text)
+                    if !message.text.isEmpty {
+                        RenderModeButton(mode: message.renderMode) {
+                            onToggleRenderMode(message.id)
+                        }
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -429,8 +511,17 @@ private struct AssistantTurn: View {
                     if let secs = message.reasonedSeconds {
                         ReasonedChip(seconds: secs)
                     }
+                    // Raw mono is the default (operator decision C2b): the stream
+                    // and the settled turn render IDENTICALLY — no markdown re-parse
+                    // per delta, no visual "bam" on finalize. Rich is per-bubble
+                    // opt-in via the meta-row toggle.
                     if !message.text.isEmpty || message.isStreaming {
-                        MarkdownText(raw: message.text, showsCaret: message.isStreaming)
+                        switch message.renderMode {
+                        case .raw:
+                            RawText(raw: message.text, showsCaret: message.isStreaming)
+                        case .rich:
+                            MarkdownText(raw: message.text, showsCaret: message.isStreaming)
+                        }
                     }
                 }
             }
@@ -496,6 +587,55 @@ private struct ReasoningDisclosure: View {
                 .strokeBorder(CSColor.hairline(0.055), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    }
+}
+
+/// Plain mono body — the raw render mode. Exactly what streamed in, no markdown
+/// pass at all, so a growing turn costs a plain `Text` re-eval per delta and the
+/// settled turn is byte-for-byte the same view (no finalize re-render).
+private struct RawText: View {
+    let raw: String
+    var showsCaret: Bool = false
+    @Environment(\.csTextScale) private var textScale
+
+    var body: some View {
+        let content = Text(raw)
+            .font(CSFont.mono(13 * textScale))
+            .foregroundStyle(CSColor.textBodyAlt)
+            .lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true)
+        if showsCaret {
+            HStack(alignment: .bottom, spacing: 2) {
+                content
+                BlinkCaret()
+            }
+        } else {
+            content.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// Inline raw↔rich toggle in the assistant meta row, next to "copy". The label
+/// names the mode a click switches TO (mirrors the copy button's action-verb
+/// style). Mutation goes through the store via `onToggleRenderMode` — the view
+/// holds no render-mode state.
+private struct RenderModeButton: View {
+    let mode: MessageRenderMode
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                CSIconView(icon: .setupWizard, size: 9)
+                Text(mode == .raw ? "rich" : "raw")
+                    .font(CSFont.mono(10, .medium))
+            }
+            .foregroundStyle(hovering ? CSColor.textMuted : CSColor.textFaintAlt)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(mode == .raw ? "Render as markdown" : "Show raw text")
     }
 }
 
