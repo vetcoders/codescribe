@@ -620,6 +620,22 @@ mod tests {
 
     #[test]
     #[serial]
+    fn formatting_identity_honors_persisted_formatting_model_default() {
+        let _lane = EnvGuard::set("LLM_FORMATTING_MODEL", "stale-bootstrap-formatting-model");
+        let _shared = EnvGuard::remove("LLM_MODEL");
+        let settings = UserSettings {
+            llm_formatting_model: Some("fresh-formatting-default".to_string()),
+            ..UserSettings::default()
+        };
+
+        let (provider, model) = formatting_identity_with(&Config::default(), &settings);
+
+        assert_eq!(provider, ProviderKind::OpenAiResponses);
+        assert_eq!(model, "fresh-formatting-default");
+    }
+
+    #[test]
+    #[serial]
     fn provider_delegates_to_the_canonical_provider_resolver() {
         let _provider = EnvGuard::set("LLM_ASSISTIVE_PROVIDER", "anthropic-messages");
 

@@ -93,7 +93,13 @@ pub fn save_quality_record(record: &QualityRecord) -> Result<PathBuf> {
 }
 
 /// Extract candidate lexicon pairs (variant -> canonical) from a user correction.
-/// MVP: whole-string when they differ and are short/sensible.
+/// MVP policy: return exactly one whole-string phrase pair after trimming when
+/// both sides are non-empty, differ case-insensitively, stay within the phrase
+/// length ceiling, and both contain at least one alphabetic character.
+/// There is no frequency/confirmation threshold yet; a single sensible overlay
+/// correction is enough for the append step. Punctuation-only edits are therefore
+/// currently accepted if the surrounding text differs and still contains letters,
+/// while case-only edits are rejected by the case-insensitive equality guard.
 /// Future: token/phrase alignment + confidence threshold.
 /// The returned pairs are (misheard_variant, correct_canonical) so that
 /// custom lexicon term=canonical, mispronunciations includes variant.
@@ -121,7 +127,11 @@ pub fn extract_lexicon_candidates(delivered: &str, edited: &str) -> Vec<(String,
 }
 
 /// Sensible threshold for accepting a candidate into custom lexicon.
-/// MVP: length + not identical after norm; caller can tighten.
+/// MVP policy: non-empty, not identical case-insensitively, each side at least
+/// two bytes, and each side no longer than 80 bytes. No frequency or repeated
+/// confirmation gate is applied here; upstream extraction decides whether the
+/// edit shape is a candidate and the custom lexicon loader later skips unsafe
+/// broad plain-word regressions.
 pub fn is_sensible_lexicon_candidate(variant: &str, canonical: &str) -> bool {
     let v = variant.trim();
     let c = canonical.trim();
@@ -246,6 +256,37 @@ mod tests {
         assert!(extract_lexicon_candidates("foo", "foo").is_empty());
         assert!(extract_lexicon_candidates("", "bar").is_empty());
         assert!(extract_lexicon_candidates("bar", "").is_empty());
+    }
+
+    #[test]
+    fn test_candidate_policy_rejects_case_only_edits() {
+        assert!(extract_lexicon_candidates("junie", "Junie").is_empty());
+        assert!(!is_sensible_lexicon_candidate("junie", "Junie"));
+    }
+
+    #[test]
+    fn test_candidate_policy_accepts_current_punctuation_only_edit_shape() {
+        let cands = extract_lexicon_candidates("Hello Junie", "Hello, Junie");
+
+        assert_eq!(cands, vec![("Hello Junie".into(), "Hello, Junie".into())]);
+        assert!(is_sensible_lexicon_candidate(&cands[0].0, &cands[0].1));
+    }
+
+    #[test]
+    fn test_candidate_policy_rejects_long_sentence_rewrites() {
+        let delivered = "uni agentka ".repeat(12);
+        let edited = "Junie ".repeat(24);
+
+        assert!(extract_lexicon_candidates(&delivered, &edited).is_empty());
+        assert!(!is_sensible_lexicon_candidate(&delivered, "Junie"));
+    }
+
+    #[test]
+    fn test_candidate_policy_accepts_multi_word_phrase_pairs() {
+        let cands = extract_lexicon_candidates("luks tri mapa", "Loctree map");
+
+        assert_eq!(cands, vec![("luks tri mapa".into(), "Loctree map".into())]);
+        assert!(is_sensible_lexicon_candidate(&cands[0].0, &cands[0].1));
     }
 
     #[test]
