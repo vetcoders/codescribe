@@ -13,9 +13,10 @@ private let attachLog = Logger(
 // This screen is backed by the real codescribe UniFFI bridge when constructed
 // from AppModel: `RealChatEngine` streams assistant deltas / tool events and
 // `RealThreadsEngine` reads persisted ThreadStore entries. The #Preview still
-// uses local mock data. Known remaining gaps: attachments are not wired, restored
-// structured tool/reasoning payloads are flattened by the thread adapter, and
-// composer shortcuts are still simplified.
+// uses local mock data. Attachments stage through the composer (picker, drag &
+// drop, ⌘V paste) into `pendingAttachments` and ride `send()` to the bridge.
+// Known remaining gap: restored structured tool/reasoning payloads are
+// flattened by the thread adapter.
 
 // MARK: - Engine seam (W2-01 injects the real adapter)
 

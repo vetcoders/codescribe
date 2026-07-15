@@ -13,7 +13,8 @@ private let attachLog = Logger(
 /// Bottom composer: the 📎 attach button (image picker), staged-attachment chips,
 /// the message field, the ripple mic (shares the dictation core later), and the
 /// terracotta send ↑ button. Below: the affordance row mirroring the mock's
-/// capability hints.
+/// capability hints. Images stage through three converging paths — picker,
+/// drag & drop, and ⌘V paste — all landing in `store.addAttachments`.
 struct Composer: View {
     @ObservedObject var store: AgentChatStore
     @FocusState private var fieldFocused: Bool
@@ -21,6 +22,17 @@ struct Composer: View {
     /// composer input tracks the message bodies. Chrome (chips, affordance hints,
     /// icons) keeps its intrinsic size.
     @Environment(\.csTextScale) private var textScale
+
+    // ⌘V interception. The NSTextField field editor consumes `paste:` before any
+    // SwiftUI `.onPasteCommand` gets a look-in, so pasting an image needs a local
+    // key monitor (same pattern as the ⌘+/-/0 monitor in App.swift). Scoped hard:
+    // only fires when the composer field itself is focused in this view's own
+    // window, so ⌘V in the thread-rail search, Settings, or any other field is
+    // untouched.
+    @State private var pasteMonitor: Any?
+    /// Window hosting this composer — resolved via `hostWindowReader` so the
+    /// monitor can ignore key events belonging to other windows.
+    @State private var hostWindow: NSWindow?
 
     // Drag-over is tracked by two OR'd targets so it stays stable as the pointer
     // crosses from the composer padding onto the text field. The outer target
@@ -115,6 +127,9 @@ struct Composer: View {
         .onDrop(of: [.fileURL], isTargeted: $overOuter) { providers in
             handleDrop(providers)
         }
+        .background(hostWindowReader)
+        .onAppear(perform: installPasteMonitor)
+        .onDisappear(perform: removePasteMonitor)
     }
 
     // MARK: Voice-note mic
@@ -291,31 +306,181 @@ struct Composer: View {
                     )
                     return
                 }
-                Task { @MainActor in ingestDroppedURL(url) }
+                Task { @MainActor in ingestFileURL(url, source: "onDrop") }
             }
         }
         return true
     }
 
-    /// Stage a single dropped file if it is an accepted image type, otherwise log
-    /// the rejection. Called on the main actor per resolved URL.
+    /// Stage a single dropped/pasted file if it is an accepted image type,
+    /// otherwise log the rejection. Called on the main actor per resolved URL —
+    /// the shared convergence point for the drag & drop and ⌘V staging paths.
     @MainActor
-    private func ingestDroppedURL(_ url: URL) {
+    private func ingestFileURL(_ url: URL, source: String) {
         let type = UTType(filenameExtension: url.pathExtension)
         let isImage = type.map { candidate in
             Self.acceptedImageTypes.contains { candidate.conforms(to: $0) }
         } ?? false
         guard isImage else {
             attachLog.info(
-                "onDrop: rejected non-image name=\(url.lastPathComponent, privacy: .public) ext=\(url.pathExtension, privacy: .public)"
+                "\(source, privacy: .public): rejected non-image name=\(url.lastPathComponent, privacy: .public) ext=\(url.pathExtension, privacy: .public)"
             )
             return
         }
         store.addAttachments([url])
     }
 
+    // MARK: ⌘V paste
+
+    /// Where a ⌘V in the composer should route, decided from what the pasteboard
+    /// holds. Pure so the 8-combination matrix is unit-testable.
+    enum PasteDisposition: Equatable {
+        /// File URLs on the pasteboard (Finder copy) → stage the image ones.
+        case stageFiles
+        /// A bare image with no text (screenshot ⌘⇧⌃4) → save to a temp file, stage.
+        case stageImage
+        /// Text present (or nothing usable) → let the field editor paste normally.
+        case passthroughText
+    }
+
+    /// Decision table for a composer paste. File URLs win outright; a pasteboard
+    /// image only stages when there is no text alongside it (copying from a
+    /// browser puts image + text on the pasteboard, and the user expects TEXT).
+    static func pasteDisposition(hasFileURLs: Bool, hasImage: Bool, hasText: Bool) -> PasteDisposition {
+        if hasFileURLs { return .stageFiles }
+        if hasImage, !hasText { return .stageImage }
+        return .passthroughText
+    }
+
+    /// One local key monitor for ⌘V. Installed while the composer is on screen;
+    /// events for other windows or without composer-field focus pass through
+    /// untouched, so search fields and Settings keep native paste behaviour.
+    private func installPasteMonitor() {
+        guard pasteMonitor == nil else { return }
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Local key monitors always deliver on the main thread; assume the
+            // main actor statically so the store calls stay isolation-checked.
+            MainActor.assumeIsolated {
+                guard isComposerPasteEvent(event) else { return event }
+                return handlePaste(NSPasteboard.general) ? nil : event
+            }
+        }
+    }
+
+    private func removePasteMonitor() {
+        if let pasteMonitor { NSEvent.removeMonitor(pasteMonitor) }
+        pasteMonitor = nil
+    }
+
+    /// True only for a plain ⌘V aimed at this composer: field focused, event in
+    /// our own window, no other modifiers (⌘⇧V paste-and-match-style passes on).
+    @MainActor
+    private func isComposerPasteEvent(_ event: NSEvent) -> Bool {
+        guard fieldFocused, let hostWindow, event.window === hostWindow else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // ⌘ alone — shift/option/control bail (⌘⇧V stays native), but stray
+        // state flags like capsLock must not defeat the match.
+        guard flags.contains(.command),
+              flags.isDisjoint(with: [.shift, .option, .control]) else { return false }
+        return event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
+    /// Route a composer ⌘V. Returns true when the event was consumed by staging
+    /// (the field editor must not also paste), false to pass it through as text.
+    @MainActor
+    private func handlePaste(_ pasteboard: NSPasteboard) -> Bool {
+        let fileURLs = (pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]) ?? []
+        let hasImage = pasteboard.availableType(from: [.png, .tiff]) != nil
+        let hasText = pasteboard.availableType(from: [.string]) != nil
+        let disposition = Self.pasteDisposition(
+            hasFileURLs: !fileURLs.isEmpty, hasImage: hasImage, hasText: hasText
+        )
+        attachLog.info(
+            "paste: fileURLs=\(fileURLs.count, privacy: .public) hasImage=\(hasImage, privacy: .public) hasText=\(hasText, privacy: .public) disposition=\(String(describing: disposition), privacy: .public)"
+        )
+        switch disposition {
+        case .stageFiles:
+            for url in fileURLs { ingestFileURL(url, source: "paste") }
+            return true
+        case .stageImage:
+            stagePastedImage(pasteboard)
+            return true
+        case .passthroughText:
+            return false
+        }
+    }
+
+    /// Persist a bare pasteboard image (screenshot-style TIFF/PNG) to a readable
+    /// temp file and stage it through the shared attachments path.
+    @MainActor
+    private func stagePastedImage(_ pasteboard: NSPasteboard) {
+        let pngData: Data?
+        if let png = pasteboard.data(forType: .png) {
+            pngData = png
+        } else if let tiff = pasteboard.data(forType: .tiff),
+                  let bitmap = NSBitmapImageRep(data: tiff) {
+            pngData = bitmap.representation(using: .png, properties: [:])
+        } else {
+            pngData = nil
+        }
+        guard let pngData else {
+            attachLog.error("paste: pasteboard image had no decodable PNG/TIFF payload")
+            return
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pasted-\(Self.pastedNameFormatter.string(from: Date())).png")
+        do {
+            try pngData.write(to: url)
+            attachLog.info(
+                "paste: staged clipboard image bytes=\(pngData.count, privacy: .public) file=\(url.lastPathComponent, privacy: .public)"
+            )
+            store.addAttachments([url])
+        } catch {
+            attachLog.error(
+                "paste: failed to write clipboard image: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    /// Readable, collision-safe temp-file stamp (`pasted-20260715-140233-421.png`).
+    private static let pastedNameFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        return formatter
+    }()
+
+    /// Invisible probe resolving the NSWindow this composer lives in, so the
+    /// paste monitor can discriminate our window from Settings / the overlay.
+    /// Identity-guarded so re-reporting the same window can't loop view updates.
+    private var hostWindowReader: some View {
+        WindowReader { window in
+            if hostWindow !== window { hostWindow = window }
+        }
+    }
+
     private let affordances = [
         "· streaming",
         "· attach file / image",
     ]
+}
+
+/// Minimal probe reporting the `NSWindow` that hosts a SwiftUI hierarchy. The
+/// composer's ⌘V monitor uses it to scope key events to its own window; the
+/// resolve callback fires async because `window` is nil until the view lands
+/// in a window, and mutating view state mid-update is illegal.
+private struct WindowReader: NSViewRepresentable {
+    var onResolve: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { [weak view] in onResolve(view?.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in onResolve(nsView?.window) }
+    }
 }
