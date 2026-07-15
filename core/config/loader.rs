@@ -730,42 +730,9 @@ impl Config {
 
         if is_regular {
             let mut settings = super::settings::UserSettings::load();
-            if value.trim().is_empty() {
-                let unset_llm_override = match key {
-                    "LLM_ENDPOINT" => {
-                        settings.llm_endpoint = None;
-                        true
-                    }
-                    "LLM_MODEL" => {
-                        settings.llm_model = None;
-                        true
-                    }
-                    "LLM_ASSISTIVE_ENDPOINT" => {
-                        settings.llm_assistive_endpoint = None;
-                        true
-                    }
-                    "LLM_ASSISTIVE_MODEL" => {
-                        settings.llm_assistive_model = None;
-                        true
-                    }
-                    "LLM_ASSISTIVE_PROVIDER" => {
-                        settings.llm_assistive_provider = None;
-                        true
-                    }
-                    "LLM_FORMATTING_ENDPOINT" => {
-                        settings.llm_formatting_endpoint = None;
-                        true
-                    }
-                    "LLM_FORMATTING_MODEL" => {
-                        settings.llm_formatting_model = None;
-                        true
-                    }
-                    _ => false,
-                };
-                if unset_llm_override {
-                    settings.save()?;
-                    return Ok(());
-                }
+            if Self::apply_optional_override(&mut settings, key, value) {
+                settings.save()?;
+                return Ok(());
             }
             // Route to appropriate setter based on value type
             match key {
@@ -851,30 +818,16 @@ impl Config {
 
             if is_regular {
                 let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);
+                if Self::apply_optional_override(settings_ref, key, value) {
+                    continue;
+                }
                 match *key {
                     // ── Strings ──
                     "WHISPER_LANGUAGE" => {
                         settings_ref.whisper_language = Some((*value).to_string())
                     }
-                    "LLM_ENDPOINT" => settings_ref.llm_endpoint = Some((*value).to_string()),
-                    "LLM_MODEL" => settings_ref.llm_model = Some((*value).to_string()),
-                    "LLM_ASSISTIVE_ENDPOINT" => {
-                        settings_ref.llm_assistive_endpoint = Some((*value).to_string())
-                    }
-                    "LLM_ASSISTIVE_MODEL" => {
-                        settings_ref.llm_assistive_model = Some((*value).to_string())
-                    }
-                    "LLM_ASSISTIVE_PROVIDER" => {
-                        settings_ref.llm_assistive_provider = Some((*value).to_string())
-                    }
                     "FORMATTING_LEVEL" => {
                         settings_ref.formatting_level = Some((*value).to_string())
-                    }
-                    "LLM_FORMATTING_ENDPOINT" => {
-                        settings_ref.llm_formatting_endpoint = Some((*value).to_string())
-                    }
-                    "LLM_FORMATTING_MODEL" => {
-                        settings_ref.llm_formatting_model = Some((*value).to_string())
                     }
                     "LOCAL_MODEL" => settings_ref.local_model = Some((*value).to_string()),
                     "STT_ENDPOINT" => settings_ref.stt_endpoint = Some((*value).to_string()),
@@ -1011,6 +964,25 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    fn apply_optional_override(
+        settings: &mut super::settings::UserSettings,
+        key: &str,
+        value: &str,
+    ) -> bool {
+        let normalized = (!value.trim().is_empty()).then(|| value.to_string());
+        match key {
+            "LLM_ENDPOINT" => settings.llm_endpoint = normalized,
+            "LLM_MODEL" => settings.llm_model = normalized,
+            "LLM_ASSISTIVE_ENDPOINT" => settings.llm_assistive_endpoint = normalized,
+            "LLM_ASSISTIVE_MODEL" => settings.llm_assistive_model = normalized,
+            "LLM_ASSISTIVE_PROVIDER" => settings.llm_assistive_provider = normalized,
+            "LLM_FORMATTING_ENDPOINT" => settings.llm_formatting_endpoint = normalized,
+            "LLM_FORMATTING_MODEL" => settings.llm_formatting_model = normalized,
+            _ => return false,
+        }
+        true
     }
 
     /// Parse .env file into HashMap.
@@ -1299,6 +1271,71 @@ mod tests {
         tmp
     }
 
+    fn llm_write_key_cases() -> &'static [(&'static str, &'static str, Option<&'static str>)] {
+        &[
+            (
+                "LLM_ENDPOINT",
+                "https://main.example/v1",
+                Some("/speech/llm_endpoint"),
+            ),
+            ("LLM_MODEL", "gpt-main-test", Some("/speech/llm_model")),
+            ("LLM_PROVIDER", "openai-responses", None),
+            (
+                "LLM_ASSISTIVE_ENDPOINT",
+                "https://assistive.example/v1",
+                Some("/speech/assistive/llm_endpoint"),
+            ),
+            (
+                "LLM_ASSISTIVE_MODEL",
+                "gpt-assistive-test",
+                Some("/speech/assistive/llm_model"),
+            ),
+            (
+                "LLM_ASSISTIVE_PROVIDER",
+                "anthropic-messages",
+                Some("/speech/assistive/llm_provider"),
+            ),
+            (
+                "LLM_FORMATTING_ENDPOINT",
+                "https://formatting.example/v1",
+                Some("/speech/formatting/llm_endpoint"),
+            ),
+            (
+                "LLM_FORMATTING_MODEL",
+                "gpt-formatting-test",
+                Some("/speech/formatting/llm_model"),
+            ),
+            ("LLM_FORMATTING_PROVIDER", "openai-responses", None),
+        ]
+    }
+
+    fn save_snapshot(key: &str, value: &str, batch: bool) -> UserSettings {
+        let _tmp = setup_isolated_data_dir();
+        let config = Config::default();
+        if batch {
+            config
+                .save_to_env_many(&[(key, value)])
+                .expect("save batch");
+        } else {
+            config.save_to_env(key, value).expect("save single");
+        }
+        UserSettings::load()
+    }
+
+    fn assert_optional_override_absent(settings: &UserSettings, key: &str) {
+        let actual = match key {
+            "LLM_ENDPOINT" => settings.llm_endpoint.as_deref(),
+            "LLM_MODEL" => settings.llm_model.as_deref(),
+            "LLM_ASSISTIVE_ENDPOINT" => settings.llm_assistive_endpoint.as_deref(),
+            "LLM_ASSISTIVE_MODEL" => settings.llm_assistive_model.as_deref(),
+            "LLM_ASSISTIVE_PROVIDER" => settings.llm_assistive_provider.as_deref(),
+            "LLM_FORMATTING_ENDPOINT" => settings.llm_formatting_endpoint.as_deref(),
+            "LLM_FORMATTING_MODEL" => settings.llm_formatting_model.as_deref(),
+            _ => return,
+        };
+        assert_eq!(actual, None, "{key} must be unset, got {actual:?}");
+    }
+
     #[test]
     #[serial]
     fn save_to_env_persists_promoted_setting_without_process_env_mutation() {
@@ -1399,6 +1436,71 @@ mod tests {
         assert_eq!(
             crate::llm::lane_truth::provider(crate::llm::provider::LlmMode::Assistive),
             crate::llm::provider::ProviderKind::OpenAiResponses
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn llm_key_single_and_batch_writes_produce_identical_settings_snapshots() {
+        for (key, value, _) in llm_write_key_cases() {
+            for input in [*value, "", "   \t  "] {
+                let single = save_snapshot(key, input, false);
+                let batch = save_snapshot(key, input, true);
+                assert_eq!(single, batch, "snapshot mismatch for {key}={input:?}");
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn save_to_env_many_blank_llm_overrides_remove_json_paths_and_restore_fallbacks() {
+        let _tmp = setup_isolated_data_dir();
+        let _endpoint = TestEnvGuard::unset("LLM_ENDPOINT");
+        let _model = TestEnvGuard::unset("LLM_MODEL");
+        let _formatting_endpoint = TestEnvGuard::unset("LLM_FORMATTING_ENDPOINT");
+        let _formatting_model = TestEnvGuard::unset("LLM_FORMATTING_MODEL");
+        let _assistive_endpoint = TestEnvGuard::unset("LLM_ASSISTIVE_ENDPOINT");
+        let _assistive_model = TestEnvGuard::unset("LLM_ASSISTIVE_MODEL");
+        let _assistive_provider = TestEnvGuard::unset("LLM_ASSISTIVE_PROVIDER");
+        let config = Config::default();
+
+        let set_entries: Vec<(&str, &str)> = llm_write_key_cases()
+            .iter()
+            .filter_map(|(key, value, pointer)| pointer.map(|_| (*key, *value)))
+            .collect();
+        config
+            .save_to_env_many(&set_entries)
+            .expect("set optional LLM overrides");
+
+        let reset_entries: Vec<(&str, &str)> = set_entries
+            .iter()
+            .enumerate()
+            .map(|(index, (key, _))| (*key, if index % 2 == 0 { "" } else { "  \n\t " }))
+            .collect();
+        config
+            .save_to_env_many(&reset_entries)
+            .expect("reset optional LLM overrides");
+
+        let reset_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after reset"),
+        )
+        .expect("parse settings after reset");
+        let settings = UserSettings::load();
+        for (key, _, pointer) in llm_write_key_cases() {
+            if let Some(pointer) = pointer {
+                assert!(
+                    reset_json.pointer(pointer).is_none(),
+                    "batch reset must remove {key} at {pointer}, got {reset_json}"
+                );
+                assert_optional_override_absent(&settings, key);
+            }
+        }
+        assert_eq!(
+            crate::llm::lane_truth::endpoint(
+                crate::llm::provider::LlmMode::Assistive,
+                &Config::default(),
+            ),
+            crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT
         );
     }
 
