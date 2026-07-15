@@ -8,6 +8,10 @@
   <div class="container">
     <p class="eyebrow eyebrow--plain">macOS · APPLE SILICON · v0.12.2</p>
     <h2 id="install-title">Local-first. Cloud opt-in.</h2>
+    <p class="dl-row">
+      <a class="btn btn--primary" href="https://github.com/vetcoders/codescribe/releases/latest/download/Codescribe.dmg">Download Codescribe.dmg</a>
+      <span class="dl-note">signed &amp; notarized · or build from source:</span>
+    </p>
     <div class="terminal">
       <code><span class="prompt">$</span> git clone https://github.com/vetcoders/codescribe.git<br /><span class="prompt">$</span> make install<br /><span class="prompt">$</span> codescribe <span class="flag">--version</span></code>
     </div>
@@ -22,6 +26,18 @@
 
 <style>
   .install { padding: 110px 24px; }
+  .dl-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin: 0 0 22px;
+  }
+  .dl-note {
+    font: 500 12px / 1 var(--font-mono);
+    color: var(--ink-dim, #9a958a);
+  }
   /* Literal casing for this eyebrow (spec §4.12): keep "macOS" and "v0.12.2"
      as written instead of the global .eyebrow uppercase transform. */
   .eyebrow--plain { text-transform: none; }
