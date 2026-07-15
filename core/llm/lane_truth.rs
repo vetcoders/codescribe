@@ -133,6 +133,117 @@ const DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/
 const DEFAULT_ANTHROPIC_FORMATTING_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 
+/// Stable lane identity exposed by [`lane_truth_snapshot`]. `Main` is the
+/// shared fallback configured by `LLM_ENDPOINT` / `LLM_MODEL`; the other two
+/// variants are the concrete runtime lanes represented by [`LlmMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneTruthLane {
+    Main,
+    Formatting,
+    Assistive,
+}
+
+impl LaneTruthLane {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Formatting => "formatting",
+            Self::Assistive => "assistive",
+        }
+    }
+}
+
+/// Secret-free, FFI-safe projection of the canonical truth for one LLM lane.
+/// Resolution remains owned by the existing lane resolvers; this record only
+/// gathers their outputs and reduces credentials to presence booleans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneTruthSnapshot {
+    pub lane: LaneTruthLane,
+    pub provider_id: String,
+    pub endpoint: String,
+    pub model: String,
+    pub key_account: String,
+    pub key_present: bool,
+    pub account_auth: bool,
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+/// Resolve one complete, secret-free lane snapshot from fresh persisted
+/// settings, process env, and Keychain truth.
+pub fn lane_truth_snapshot(lane: LaneTruthLane, config: &Config) -> LaneTruthSnapshot {
+    lane_truth_snapshot_with(lane, config, &UserSettings::load(), keychain::load_key)
+}
+
+fn lane_truth_snapshot_with(
+    lane: LaneTruthLane,
+    config: &Config,
+    settings: &UserSettings,
+    load_key: impl Fn(&str) -> Option<String>,
+) -> LaneTruthSnapshot {
+    match lane {
+        LaneTruthLane::Main => {
+            let provider = ProviderKind::OpenAiResponses;
+            let key_account = "LLM_API_KEY";
+            let key_present = secret_with_keychain(key_account, &load_key).is_some();
+            LaneTruthSnapshot {
+                lane,
+                provider_id: provider.as_str().to_string(),
+                endpoint: shared_endpoint_with_settings(config, settings),
+                model: shared_model_with_settings(settings),
+                key_account: key_account.to_string(),
+                key_present,
+                account_auth: false,
+                available: key_present,
+                unavailable_reason: (!key_present)
+                    .then(|| format!("The main lane has no stored credential ({key_account}).")),
+            }
+        }
+        LaneTruthLane::Formatting => {
+            let (provider, model) = formatting_identity_with(config, settings);
+            let endpoint = match provider {
+                ProviderKind::OpenAiResponses => {
+                    endpoint_with_settings(LlmMode::Formatting, config, settings)
+                }
+                ProviderKind::AnthropicMessages => anthropic_messages_endpoint(),
+            };
+            // The formatting runtime intentionally owns a separate credential,
+            // regardless of wire provider (see ai_formatting::get_llm_api_key).
+            let key_account = "LLM_FORMATTING_API_KEY";
+            let key_present = secret_with_keychain(key_account, &load_key).is_some();
+            LaneTruthSnapshot {
+                lane,
+                provider_id: provider.as_str().to_string(),
+                endpoint,
+                model,
+                key_account: key_account.to_string(),
+                key_present,
+                account_auth: false,
+                available: key_present,
+                unavailable_reason: (!key_present).then(|| {
+                    format!("The formatting lane has no stored credential ({key_account}).")
+                }),
+            }
+        }
+        LaneTruthLane::Assistive => {
+            let runtime = assistive_snapshot_with(config, settings, &load_key);
+            let availability = availability_of(runtime.clone());
+            let key_account = runtime.provider.api_key_env_key().to_string();
+            LaneTruthSnapshot {
+                lane,
+                provider_id: runtime.provider.as_str().to_string(),
+                endpoint: runtime.endpoint,
+                model: runtime.model,
+                key_account,
+                key_present: runtime.api_key.is_some(),
+                account_auth: runtime.account_auth,
+                available: availability.is_ok(),
+                unavailable_reason: availability.err(),
+            }
+        }
+    }
+}
+
 /// Everything the agent send path needs to reach the assistive provider,
 /// resolved from the same fresh settings → env → Keychain hierarchy as the
 /// individual lane resolvers. `api_key: None` means "send without auth
@@ -288,14 +399,16 @@ pub(crate) fn endpoint_for_account(config: &Config, account: &str) -> String {
     match account {
         "LLM_FORMATTING_API_KEY" => endpoint_with_settings(LlmMode::Formatting, config, &settings),
         "LLM_ASSISTIVE_API_KEY" => endpoint_with_settings(LlmMode::Assistive, config, &settings),
-        _ => {
-            let resolved = non_empty_option(settings.llm_endpoint)
-                .or_else(|| env_non_empty("LLM_ENDPOINT"))
-                .or_else(|| non_empty_option(config.llm_endpoint.clone()))
-                .unwrap_or_else(|| DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string());
-            normalize_openai_responses_endpoint(&resolved)
-        }
+        _ => shared_endpoint_with_settings(config, &settings),
     }
+}
+
+fn shared_endpoint_with_settings(config: &Config, settings: &UserSettings) -> String {
+    let resolved = non_empty_option(settings.llm_endpoint.clone())
+        .or_else(|| env_non_empty("LLM_ENDPOINT"))
+        .or_else(|| non_empty_option(config.llm_endpoint.clone()))
+        .unwrap_or_else(|| DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string());
+    normalize_openai_responses_endpoint(&resolved)
 }
 
 pub(crate) fn model_for_account(config: &Config, account: &str) -> String {
@@ -303,15 +416,16 @@ pub(crate) fn model_for_account(config: &Config, account: &str) -> String {
     match account {
         "LLM_FORMATTING_API_KEY" => model_with_settings(LlmMode::Formatting, config, &settings),
         "LLM_ASSISTIVE_API_KEY" => model_with_settings(LlmMode::Assistive, config, &settings),
-        _ => {
-            let openai_model =
-                |candidate: String| (!candidate.starts_with("claude")).then_some(candidate);
-            non_empty_option(settings.llm_model)
-                .and_then(openai_model)
-                .or_else(|| env_non_empty("LLM_MODEL").and_then(openai_model))
-                .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string())
-        }
+        _ => shared_model_with_settings(&settings),
     }
+}
+
+fn shared_model_with_settings(settings: &UserSettings) -> String {
+    let openai_model = |candidate: String| (!candidate.starts_with("claude")).then_some(candidate);
+    non_empty_option(settings.llm_model.clone())
+        .and_then(openai_model)
+        .or_else(|| env_non_empty("LLM_MODEL").and_then(openai_model))
+        .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string())
 }
 
 pub fn normalize_openai_responses_endpoint(endpoint: &str) -> String {
@@ -785,6 +899,251 @@ mod tests {
             provider(LlmMode::Assistive),
             ProviderKind::AnthropicMessages
         );
+    }
+
+    #[test]
+    #[serial]
+    fn lane_truth_snapshot_matches_individual_resolvers_across_truth_table() {
+        struct SnapshotCase {
+            name: &'static str,
+            lane: LaneTruthLane,
+            settings: UserSettings,
+            env: Vec<(&'static str, &'static str)>,
+            keys: Vec<(&'static str, &'static str)>,
+        }
+
+        let cases = vec![
+            SnapshotCase {
+                name: "main env overrides",
+                lane: LaneTruthLane::Main,
+                settings: UserSettings::default(),
+                env: vec![
+                    ("LLM_ENDPOINT", "https://main-env.example/v1"),
+                    ("LLM_MODEL", "main-env-model"),
+                    ("LLM_API_KEY", "main-env-key"),
+                ],
+                keys: vec![],
+            },
+            SnapshotCase {
+                name: "main fresh settings and keychain",
+                lane: LaneTruthLane::Main,
+                settings: UserSettings {
+                    llm_endpoint: Some("https://main-settings.example/v1".to_string()),
+                    llm_model: Some("main-settings-model".to_string()),
+                    ..UserSettings::default()
+                },
+                env: vec![],
+                keys: vec![("LLM_API_KEY", "main-keychain-key")],
+            },
+            SnapshotCase {
+                name: "formatting defaults and env key",
+                lane: LaneTruthLane::Formatting,
+                settings: UserSettings::default(),
+                env: vec![("LLM_FORMATTING_API_KEY", "formatting-env-key")],
+                keys: vec![],
+            },
+            SnapshotCase {
+                name: "formatting fresh settings and keychain",
+                lane: LaneTruthLane::Formatting,
+                settings: UserSettings {
+                    llm_formatting_endpoint: Some(
+                        "https://formatting-settings.example/v1".to_string(),
+                    ),
+                    llm_formatting_model: Some("formatting-settings-model".to_string()),
+                    ..UserSettings::default()
+                },
+                env: vec![],
+                keys: vec![("LLM_FORMATTING_API_KEY", "formatting-keychain-key")],
+            },
+            SnapshotCase {
+                name: "formatting anthropic env identity",
+                lane: LaneTruthLane::Formatting,
+                settings: UserSettings::default(),
+                env: vec![
+                    ("LLM_FORMATTING_PROVIDER", "anthropic-messages"),
+                    ("LLM_FORMATTING_MODEL", "claude-sonnet-test"),
+                    ("LLM_ANTHROPIC_ENDPOINT", "http://127.0.0.1:18080/v1"),
+                ],
+                keys: vec![("LLM_FORMATTING_API_KEY", "formatting-anthropic-key")],
+            },
+            SnapshotCase {
+                name: "assistive official endpoint unavailable",
+                lane: LaneTruthLane::Assistive,
+                settings: UserSettings::default(),
+                env: vec![],
+                keys: vec![],
+            },
+            SnapshotCase {
+                name: "assistive fresh settings and keychain",
+                lane: LaneTruthLane::Assistive,
+                settings: UserSettings {
+                    llm_assistive_endpoint: Some(
+                        "https://assistive-settings.example/v1".to_string(),
+                    ),
+                    llm_assistive_model: Some("assistive-settings-model".to_string()),
+                    ..UserSettings::default()
+                },
+                env: vec![],
+                keys: vec![("LLM_ASSISTIVE_API_KEY", "assistive-keychain-key")],
+            },
+            SnapshotCase {
+                name: "assistive anthropic env and env key",
+                lane: LaneTruthLane::Assistive,
+                settings: UserSettings {
+                    llm_assistive_provider: Some("anthropic-messages".to_string()),
+                    llm_assistive_model: Some("claude-opus-test".to_string()),
+                    ..UserSettings::default()
+                },
+                env: vec![
+                    (
+                        "LLM_ANTHROPIC_ENDPOINT",
+                        "https://anthropic-proxy.example/v1",
+                    ),
+                    ("LLM_ANTHROPIC_API_KEY", "anthropic-env-key"),
+                ],
+                keys: vec![],
+            },
+            SnapshotCase {
+                name: "assistive key-optional endpoint",
+                lane: LaneTruthLane::Assistive,
+                settings: UserSettings {
+                    llm_assistive_endpoint: Some("https://api.libraxis.cloud/v1".to_string()),
+                    ..UserSettings::default()
+                },
+                env: vec![],
+                keys: vec![],
+            },
+            SnapshotCase {
+                name: "assistive account auth",
+                lane: LaneTruthLane::Assistive,
+                settings: UserSettings::default(),
+                env: vec![],
+                keys: vec![(
+                    account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+                    r#"{"provider":"openai-responses"}"#,
+                )],
+            },
+        ];
+        assert!(
+            cases.len() >= 8,
+            "parity table must retain at least 8 cases"
+        );
+
+        for case in cases {
+            let _clean_env = snapshot_env_guards();
+            let _case_env: Vec<_> = case
+                .env
+                .iter()
+                .map(|(key, value)| EnvGuard::set(key, value))
+                .collect();
+            let load_key = |account: &str| {
+                case.keys
+                    .iter()
+                    .find(|(candidate, _)| *candidate == account)
+                    .map(|(_, value)| (*value).to_string())
+            };
+            let config = Config::default();
+            let snapshot = lane_truth_snapshot_with(case.lane, &config, &case.settings, &load_key);
+
+            assert_eq!(snapshot.lane, case.lane, "{}: lane", case.name);
+            match case.lane {
+                LaneTruthLane::Main => {
+                    assert_eq!(
+                        snapshot.provider_id,
+                        ProviderKind::OpenAiResponses.as_str(),
+                        "{}: provider",
+                        case.name
+                    );
+                    assert_eq!(
+                        snapshot.endpoint,
+                        shared_endpoint_with_settings(&config, &case.settings),
+                        "{}: endpoint",
+                        case.name
+                    );
+                    assert_eq!(
+                        snapshot.model,
+                        shared_model_with_settings(&case.settings),
+                        "{}: model",
+                        case.name
+                    );
+                    let key_present = secret_with_keychain("LLM_API_KEY", &load_key).is_some();
+                    assert_eq!(snapshot.key_present, key_present, "{}: key", case.name);
+                    assert_eq!(snapshot.available, key_present, "{}: available", case.name);
+                }
+                LaneTruthLane::Formatting => {
+                    let (provider, model) = formatting_identity_with(&config, &case.settings);
+                    let endpoint = match provider {
+                        ProviderKind::OpenAiResponses => {
+                            endpoint_with_settings(LlmMode::Formatting, &config, &case.settings)
+                        }
+                        ProviderKind::AnthropicMessages => anthropic_messages_endpoint(),
+                    };
+                    assert_eq!(
+                        snapshot.provider_id,
+                        provider.as_str(),
+                        "{}: provider",
+                        case.name
+                    );
+                    assert_eq!(snapshot.endpoint, endpoint, "{}: endpoint", case.name);
+                    assert_eq!(snapshot.model, model, "{}: model", case.name);
+                    let key_present =
+                        secret_with_keychain("LLM_FORMATTING_API_KEY", &load_key).is_some();
+                    assert_eq!(snapshot.key_present, key_present, "{}: key", case.name);
+                    assert_eq!(snapshot.available, key_present, "{}: available", case.name);
+                }
+                LaneTruthLane::Assistive => {
+                    let runtime = assistive_snapshot_with(&config, &case.settings, &load_key);
+                    let availability = availability_of(runtime.clone());
+                    assert_eq!(
+                        snapshot.provider_id,
+                        runtime.provider.as_str(),
+                        "{}: provider",
+                        case.name
+                    );
+                    assert_eq!(
+                        snapshot.endpoint, runtime.endpoint,
+                        "{}: endpoint",
+                        case.name
+                    );
+                    assert_eq!(snapshot.model, runtime.model, "{}: model", case.name);
+                    assert_eq!(
+                        snapshot.key_present,
+                        runtime.api_key.is_some(),
+                        "{}: key",
+                        case.name
+                    );
+                    assert_eq!(
+                        snapshot.account_auth, runtime.account_auth,
+                        "{}: account auth",
+                        case.name
+                    );
+                    assert_eq!(
+                        snapshot.available,
+                        availability.is_ok(),
+                        "{}: available",
+                        case.name
+                    );
+                    assert_eq!(
+                        snapshot.unavailable_reason,
+                        availability.err(),
+                        "{}: reason",
+                        case.name
+                    );
+                }
+            }
+        }
+    }
+
+    fn snapshot_env_guards() -> Vec<EnvGuard> {
+        let mut guards = lane_env_guards();
+        guards.extend([
+            EnvGuard::remove("LLM_API_KEY"),
+            EnvGuard::remove("LLM_FORMATTING_API_KEY"),
+            EnvGuard::remove("LLM_FORMATTING_PROVIDER"),
+            EnvGuard::remove("LLM_FORMATTING_ENDPOINT"),
+            EnvGuard::remove("LLM_FORMATTING_MODEL"),
+        ]);
+        guards
     }
 
     struct EnvGuard {

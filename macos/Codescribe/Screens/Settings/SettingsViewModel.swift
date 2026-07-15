@@ -53,6 +53,14 @@ enum LLMLane: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var bridgeLane: CsLlmLane {
+        switch self {
+        case .assistive: return .assistive
+        case .formatting: return .formatting
+        case .main: return .main
+        }
+    }
+
     var title: String {
         switch self {
         case .assistive: return "Assistive"
@@ -489,32 +497,21 @@ final class SettingsViewModel: ObservableObject {
 
     /// Effective lane state after provider/shared fallbacks.
     func llmLane(_ lane: LLMLane) -> LLMLaneModel {
-        let providerId = lane == .assistive
-            ? (settings.llmAssistiveProvider ?? "openai-responses")
-            : "openai-responses"
+        let truth = laneTruthSnapshot(lane: lane.bridgeLane)
+        let providerId = truth.providerId
         let configuredModel = settings[keyPath: lane.modelPath]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let sharedModel = settings[keyPath: LLMLane.main.modelPath]?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let resolvedEndpoint = lane == .assistive && providerId == "anthropic-messages"
-            ? "https://api.anthropic.com/v1/messages"
-            : resolvedOpenAIEndpoint(for: lane)
-        let resolvedModel = lane == .assistive && providerId == "anthropic-messages"
-            ? (configuredModel.hasPrefix("claude") ? configuredModel : "claude-opus-4-8")
-            : ([configuredModel, sharedModel].first {
-                !$0.isEmpty && !$0.hasPrefix("claude")
-            } ?? (lane == .assistive ? "gpt-5.5" : "gpt-4.1"))
         let discoveryProviderId = lane == .assistive ? providerId : "openai-responses"
 
         return LLMLaneModel(
             lane: lane,
             providerId: providerId,
             provider: providers.first { $0.id == providerId } ?? providers.first,
-            resolvedEndpoint: resolvedEndpoint,
+            resolvedEndpoint: truth.endpoint,
             configuredModel: configuredModel,
-            resolvedModel: resolvedModel,
+            resolvedModel: truth.model,
             discoveryEndpoint: lane == .assistive
-                ? resolvedEndpoint
+                ? truth.endpoint
                 : resolvedOpenAIEndpoint(for: .assistive),
             discovery: modelDiscoveries[discoveryProviderId]
                 ?? CsModelDiscovery.sample(for: discoveryProviderId)
@@ -692,8 +689,8 @@ final class SettingsViewModel: ObservableObject {
         settings.llmAssistiveProvider = id
         persist("LLM_ASSISTIVE_PROVIDER", id)
         // The stored model belonged to the previous provider; keeping it would make
-        // the first send hit a model the new provider doesn't serve (e.g. gpt-5.5 on
-        // Anthropic). Clear it so the provider default applies immediately, then
+        // the first send hit a model the new provider doesn't serve. Clear it so
+        // the provider default applies immediately, then
         // allow only a fresh discovery to re-anchor it. Any manual model edit
         // cancels this pending auto-selection.
         setLLMModel("", for: .assistive)

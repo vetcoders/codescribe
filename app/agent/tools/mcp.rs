@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
 use codescribe_core::llm::lane_truth;
+#[cfg(test)]
 use codescribe_core::llm::provider::LlmMode;
+use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
 use tracing::{info, warn};
 
@@ -236,9 +239,16 @@ pub struct CoreReadiness {
 /// the count of native tools. Cheap — local config/secret reads plus building an
 /// in-memory registry (no server spawning, no network).
 pub fn probe_core_readiness() -> CoreReadiness {
-    probe_core_readiness_with_secret(lane_truth::secret)
+    let snapshot = lane_truth::lane_truth_snapshot(
+        lane_truth::LaneTruthLane::Assistive,
+        &codescribe_core::config::Config::load(),
+    );
+    let provider = ProviderKind::from_str(&snapshot.provider_id)
+        .expect("lane truth must emit a canonical provider id");
+    assemble_core_readiness(provider, snapshot.key_account, snapshot.key_present)
 }
 
+#[cfg(test)]
 fn probe_core_readiness_with_secret(
     resolve_secret: impl FnOnce(&str) -> Option<String>,
 ) -> CoreReadiness {
@@ -246,6 +256,14 @@ fn probe_core_readiness_with_secret(
     let key_env_key = provider.api_key_env_key().to_string();
     let key_set = resolve_secret(&key_env_key).is_some();
 
+    assemble_core_readiness(provider, key_env_key, key_set)
+}
+
+fn assemble_core_readiness(
+    provider: ProviderKind,
+    key_env_key: String,
+    key_set: bool,
+) -> CoreReadiness {
     let mut registry = ToolRegistry::new();
     super::register_native_tools(&mut registry);
     let native_tool_count = registry.definitions().len();

@@ -377,14 +377,14 @@ extension CsModelDiscovery {
                 models: []
             )
         default:
+            let models = [CsSettings.sample.llmAssistiveModel, CsSettings.sample.llmFormattingModel]
+                .compactMap { $0 }
+                .map { CsModelOption(id: $0, displayName: $0) }
             return CsModelDiscovery(
                 providerId: "openai-responses",
                 status: "fresh",
                 message: nil,
-                models: [
-                    CsModelOption(id: "gpt-5.5", displayName: "gpt-5.5"),
-                    CsModelOption(id: "gpt-4.1", displayName: "gpt-4.1"),
-                ]
+                models: models
             )
         }
     }

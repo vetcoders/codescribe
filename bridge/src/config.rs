@@ -206,6 +206,65 @@ pub struct CsProviderOption {
     pub models: Vec<CsModelOption>,
 }
 
+/// Stable lane identity used by the secret-free lane truth FFI snapshot.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsLlmLane {
+    Main,
+    Formatting,
+    Assistive,
+}
+
+impl From<CsLlmLane> for lane_truth::LaneTruthLane {
+    fn from(value: CsLlmLane) -> Self {
+        match value {
+            CsLlmLane::Main => Self::Main,
+            CsLlmLane::Formatting => Self::Formatting,
+            CsLlmLane::Assistive => Self::Assistive,
+        }
+    }
+}
+
+/// Complete canonical truth for one LLM lane. Credentials never cross the
+/// bridge: only the owning account name and presence/auth booleans are exposed.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsLaneTruthSnapshot {
+    pub lane: CsLlmLane,
+    pub provider_id: String,
+    pub endpoint: String,
+    pub model: String,
+    pub key_account: String,
+    pub key_present: bool,
+    pub account_auth: bool,
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+impl From<lane_truth::LaneTruthSnapshot> for CsLaneTruthSnapshot {
+    fn from(value: lane_truth::LaneTruthSnapshot) -> Self {
+        Self {
+            lane: match value.lane {
+                lane_truth::LaneTruthLane::Main => CsLlmLane::Main,
+                lane_truth::LaneTruthLane::Formatting => CsLlmLane::Formatting,
+                lane_truth::LaneTruthLane::Assistive => CsLlmLane::Assistive,
+            },
+            provider_id: value.provider_id,
+            endpoint: value.endpoint,
+            model: value.model,
+            key_account: value.key_account,
+            key_present: value.key_present,
+            account_auth: value.account_auth,
+            available: value.available,
+            unavailable_reason: value.unavailable_reason,
+        }
+    }
+}
+
+/// Project the live Rust lane truth through UniFFI without exposing secrets.
+#[uniffi::export]
+pub fn lane_truth_snapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot {
+    lane_truth::lane_truth_snapshot(lane.into(), &Config::load()).into()
+}
+
 /// Result of starting the provider-account login flow. `auth_url` is present
 /// when the local callback server is listening and the UI should open a browser.
 #[derive(uniffi::Record)]
