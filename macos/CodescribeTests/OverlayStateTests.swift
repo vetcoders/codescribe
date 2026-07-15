@@ -67,8 +67,10 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "ready transcript")
 
         state.sendToAgent()
-        XCTAssertEqual(closeCount, 2)
         XCTAssertEqual(sentText, "ready transcript")
+        // Since 845cec0 sendToAgent delegates dismissal to the onSendToAgent
+        // closure (OverlayController wires the hide there) — no direct onClose.
+        XCTAssertEqual(closeCount, 1)
     }
 
     func testCaptureQualityIfEditedHitsAsyncPathOnUserEditWithoutBlocking() {

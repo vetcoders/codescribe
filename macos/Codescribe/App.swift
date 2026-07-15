@@ -72,8 +72,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // (`shouldShowOnboarding`) reports setup is due.
     private let onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
 
+    /// True when the process is the XCTest host, not a user launch. The unit-test
+    /// runner reuses this app as its host: without this gate the duplicate-instance
+    /// check would `terminate` the runner whenever the real app is running, and
+    /// the host would start hotkeys + engine prewarm alongside the live instance
+    /// (fighting it for the CGEventTap and the microphone).
+    private static let isRunningTests = NSClassFromString("XCTestCase") != nil
+
     func applicationWillFinishLaunching(_ notification: Notification) {
-        guard Self.isDuplicateInstance else { return }
+        guard !Self.isRunningTests, Self.isDuplicateInstance else { return }
         shouldExitForDuplicate = true
         DistributedNotificationCenter.default().postNotificationName(
             Self.showAgentNotification,
@@ -85,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard !shouldExitForDuplicate else { return }
+        guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
         // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
         // makes us an accessory by default; promote to .regular when enabled so
         // the launch state matches the tray toggle.
