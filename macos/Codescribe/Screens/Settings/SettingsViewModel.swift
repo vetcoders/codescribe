@@ -1,8 +1,14 @@
 import AppKit
 import SwiftUI
 
-// Rail sections. Creator · Keys · Prompts · Engine are interactive; Audio · Voice
-// Lab · User render but are inert (present-but-disabled), matching the mock.
+enum SettingsSectionAvailability: Equatable {
+    case available
+    case comingSoon
+    case hidden
+}
+
+// Every rail section declares its product truth explicitly. Wave 3 can promote
+// Audio / Voice Lab by changing only this mapping, without reworking the rail.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case creator = "Creator"
     case shortcuts = "Shortcuts"
@@ -14,11 +20,92 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case user = "User"
 
     var id: String { rawValue }
-    var isInteractive: Bool {
+    var availability: SettingsSectionAvailability {
         switch self {
-        case .creator, .shortcuts, .keys, .prompts, .engine: return true
-        case .audio, .voiceLab, .user: return false
+        case .creator, .shortcuts, .keys, .prompts, .engine, .user: return .available
+        case .audio, .voiceLab: return .comingSoon
         }
+    }
+
+    var isInteractive: Bool { availability == .available }
+}
+
+enum SettingsKeyState: Equatable {
+    case available
+    case missing
+    case unknown
+}
+
+enum SettingsHealthLevel: Equatable {
+    case healthy
+    case degraded
+    case offline
+    case unknown
+}
+
+struct SettingsHealthState: Equatable {
+    let level: SettingsHealthLevel
+    let message: String
+    let targetSection: SettingsSection?
+}
+
+/// Pure aggregate used by the rail footer and its XCTest matrix. Known failures
+/// beat unknown inputs so the footer never hides a concrete problem behind a
+/// muted "unknown" state.
+func healthState(
+    stt: Bool?,
+    keys: SettingsKeyState,
+    agent: Bool?
+) -> SettingsHealthState {
+    if stt == false {
+        return SettingsHealthState(
+            level: .offline,
+            message: "speech engine: unavailable",
+            targetSection: .engine
+        )
+    }
+    if keys == .missing {
+        return SettingsHealthState(
+            level: .degraded,
+            message: "assistive lane: no key",
+            targetSection: .keys
+        )
+    }
+    if agent == false {
+        return SettingsHealthState(
+            level: .offline,
+            message: "assistive lane: not ready",
+            targetSection: .engine
+        )
+    }
+    if stt == nil || keys == .unknown || agent == nil {
+        return SettingsHealthState(
+            level: .unknown,
+            message: "system health: unknown",
+            targetSection: .engine
+        )
+    }
+    return SettingsHealthState(
+        level: .healthy,
+        message: "systems ready",
+        targetSection: nil
+    )
+}
+
+struct AppBuildInfo: Equatable {
+    let version: String
+    let build: String
+    let commit: String
+    let builtAt: String
+
+    static func current(bundle: Bundle = .main) -> AppBuildInfo {
+        let info = bundle.infoDictionary ?? [:]
+        return AppBuildInfo(
+            version: info["CFBundleShortVersionString"] as? String ?? "unknown",
+            build: info["CFBundleVersion"] as? String ?? "unknown",
+            commit: info["CSBuildCommit"] as? String ?? "unknown",
+            builtAt: info["CSBuiltAt"] as? String ?? "unknown"
+        )
     }
 }
 
@@ -227,9 +314,10 @@ final class SettingsViewModel: ObservableObject {
     /// Conflicts for the CURRENT draft (recomputed on every edit).
     @Published private(set) var bindingConflicts: [CsHotkeyConflict] = []
 
-    /// Version label. No FFI surface exposes the running version, so this stays a
-    /// build-time constant (tracked gap).
-    let appVersion: String = "0.8.0"
+    /// Build provenance comes from the running app bundle. The build pipeline
+    /// writes all four fields in project.yml / scripts/build-app.sh.
+    let buildInfo: AppBuildInfo
+    var appVersion: String { buildInfo.version }
 
     private let engine: SettingsEngine?
     private let permissionProbe: PermissionProbing
@@ -248,13 +336,15 @@ final class SettingsViewModel: ObservableObject {
         permissionProbe: PermissionProbing = NativePermissionProbe(),
         agentStatus: AgentStatusEngine? = nil,
         mcpAdmin: MCPAdminEngine? = nil,
-        hotkeys: HotkeysEngine? = nil
+        hotkeys: HotkeysEngine? = nil,
+        buildInfo: AppBuildInfo = .current()
     ) {
         self.engine = engine
         self.permissionProbe = permissionProbe
         self.agentStatus = agentStatus
         self.mcpAdmin = mcpAdmin
         self.hotkeys = hotkeys
+        self.buildInfo = buildInfo
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -450,7 +540,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func select(_ target: SettingsSection) {
-        guard target.isInteractive else { return }
+        guard target.availability == .available else { return }
         section = target
         if target == .keys {
             refreshAssistiveModelDiscovery()
@@ -493,6 +583,22 @@ final class SettingsViewModel: ObservableObject {
     var sttModelDescription: String {
         settings.useLocalStt ? settings.localModel
                              : (settings.sttEndpoint ?? "cloud default")
+    }
+
+    private var assistiveKeyState: SettingsKeyState {
+        guard let provider = llmLane(.assistive).provider else { return .unknown }
+        let keyAvailable = provider.accountSignedIn
+            || provider.apiKeySet
+            || keyStatus.isSet(account: provider.apiKeyAccount)
+        return keyAvailable ? .available : .missing
+    }
+
+    var settingsHealth: SettingsHealthState {
+        healthState(
+            stt: sttHealthy,
+            keys: assistiveKeyState,
+            agent: agentReadiness.ready
+        )
     }
 
     /// Effective lane state after provider/shared fallbacks.
@@ -603,6 +709,25 @@ final class SettingsViewModel: ObservableObject {
     func setFormattingLevel(_ level: String) {
         settings.formattingLevel = level
         persist("FORMATTING_LEVEL", level)
+    }
+
+    // MARK: - User panel (local-first product truth)
+
+    var transcriptsPath: String {
+        guard !configDir.isEmpty else { return "" }
+        return URL(fileURLWithPath: configDir).appendingPathComponent("transcriptions").path
+    }
+
+    var transcriptTagPreview: String {
+        settings.transcriptTagTemplate
+            .replacingOccurrences(of: "{mode}", with: "dictation")
+            .replacingOccurrences(of: "{lang}", with: "pl")
+            .replacingOccurrences(of: "{text}", with: "…")
+    }
+
+    func setTranscriptTaggingEnabled(_ enabled: Bool) {
+        settings.transcriptTaggingEnabled = enabled
+        persist("TRANSCRIPT_TAGGING_ENABLED", enabled ? "1" : "0")
     }
 
     // MARK: - STT engine / layered transcription (Engine panel controls)

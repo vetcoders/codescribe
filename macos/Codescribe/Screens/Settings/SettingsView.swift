@@ -1,10 +1,9 @@
 import Combine
 import SwiftUI
 
-// Settings window: NavigationSplitView with the 212px section rail (Creator · Keys
-// · Prompts · Engine · Audio · Voice Lab · User) and a scrolling detail panel.
-// Creator · Keys · Prompts · Engine are interactive. Pixel-faithful to
-// "codescribe App - Settings.dc.html".
+// Settings window: NavigationSplitView with a truthful section rail. Available
+// sections navigate, coming-soon sections are announced as such, and hidden
+// sections do not render.
 
 struct SettingsView: View {
     @StateObject private var model: SettingsViewModel
@@ -54,9 +53,13 @@ struct SettingsView: View {
                     KeysPanel(model: model)
                 case .prompts:
                     PromptPanel(model: model)
-                default:
-                    // Creator is the default interactive section; inert rail
-                    // items never switch the detail away from these panels.
+                case .user:
+                    UserPanel(model: model)
+                case .creator:
+                    CreatorPanel(model: model)
+                case .audio, .voiceLab:
+                    // `select` cannot enter coming-soon sections. Keep this
+                    // exhaustive fallback for state restoration across versions.
                     CreatorPanel(model: model)
                 }
             }
@@ -123,7 +126,7 @@ private struct SettingsRail: View {
 
     private var nav: some View {
         VStack(spacing: 3) {
-            ForEach(SettingsSection.allCases) { item in
+            ForEach(SettingsSection.allCases.filter { $0.availability != .hidden }) { item in
                 railItem(item)
             }
         }
@@ -134,6 +137,31 @@ private struct SettingsRail: View {
     @ViewBuilder
     private func railItem(_ item: SettingsSection) -> some View {
         let isActive = model.section == item
+        switch item.availability {
+        case .available:
+            Button {
+                model.select(item)
+            } label: {
+                railItemContent(item, isActive: isActive)
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(isActive ? .isSelected : [])
+        case .comingSoon:
+            railItemContent(item, isActive: false, showsSoonChip: true)
+                .opacity(0.85)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(item.rawValue), coming soon")
+                .help("Coming soon")
+        case .hidden:
+            EmptyView()
+        }
+    }
+
+    private func railItemContent(
+        _ item: SettingsSection,
+        isActive: Bool,
+        showsSoonChip: Bool = false
+    ) -> some View {
         HStack(spacing: 10) {
             Circle()
                 .fill(isActive ? CSColor.terracotta : Self.inactiveDot)
@@ -142,6 +170,15 @@ private struct SettingsRail: View {
                 .font(CSFont.ui(13, isActive ? .semibold : .medium))
                 .foregroundStyle(labelColor(item, isActive: isActive))
             Spacer(minLength: 0)
+            if showsSoonChip {
+                Text("soon")
+                    .font(CSFont.mono(8, .semibold))
+                    .tracking(0.3)
+                    .foregroundStyle(CSColor.textFaint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(CSColor.surfaceRaised(0.04), in: Capsule())
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -154,9 +191,6 @@ private struct SettingsRail: View {
                 .strokeBorder(isActive ? CSColor.terracotta.opacity(0.28) : .clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture { model.select(item) }
-        .opacity(item.isInteractive || isActive ? 1 : 0.85)
-        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
     }
 
     private func labelColor(_ item: SettingsSection, isActive: Bool) -> Color {
@@ -165,18 +199,46 @@ private struct SettingsRail: View {
         return item.isInteractive ? CSColor.textBody : CSColor.textMuted
     }
 
+    @ViewBuilder
     private var footer: some View {
+        let health = model.settingsHealth
+        if let target = health.targetSection {
+            Button {
+                model.select(target)
+            } label: {
+                footerContent(health)
+            }
+            .buttonStyle(.plain)
+            .help("Open \(target.rawValue) settings")
+        } else {
+            footerContent(health)
+        }
+    }
+
+    private func footerContent(_ health: SettingsHealthState) -> some View {
         HStack(spacing: 8) {
-            Circle().fill(CSColor.oliveLight).frame(width: 6, height: 6)
-            Text("all systems healthy")
+            Circle().fill(health.level.color).frame(width: 6, height: 6)
+            Text(health.message)
                 .font(CSFont.mono(10, .medium))
-                .foregroundStyle(CSColor.textFaint)
+                .foregroundStyle(health.level.color)
+                .lineLimit(2)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .overlay(alignment: .top) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+        }
+    }
+}
+
+private extension SettingsHealthLevel {
+    var color: Color {
+        switch self {
+        case .healthy: return CSColor.oliveLight
+        case .degraded: return CSColor.amber
+        case .offline: return CSColor.terracottaLight
+        case .unknown: return CSColor.textFaint
         }
     }
 }

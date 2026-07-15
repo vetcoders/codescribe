@@ -143,6 +143,7 @@ struct MockSettingsEngine: SettingsEngine {
     var dir: String = "~/.codescribe"
     var onboarding: Bool = false
     var mode: String? = "agentic"
+    var updateConfigObserver: ((String, String) throws -> Void)?
 
     func loadSettings() -> CsSettings { settings }
     func configDir() -> String { dir }
@@ -150,7 +151,9 @@ struct MockSettingsEngine: SettingsEngine {
     func onboardingMode() -> String? { mode }
     func setOnboardingMode(mode: String) throws {}
 
-    func updateConfig(key: String, value: String) throws {}
+    func updateConfig(key: String, value: String) throws {
+        try updateConfigObserver?(key, value)
+    }
     func updateConfigMany(entries: [CsConfigEntry]) throws {}
 
     func keyStatus() -> CsKeyStatus { status }
@@ -247,7 +250,7 @@ extension CsSettings {
         aiFormattingEnabled: true,
         transcriptSendMode: "end_of_utterance",
         transcriptTaggingEnabled: false,
-        transcriptTagTemplate: "",
+        transcriptTagTemplate: "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>",
         aiMaxTokens: 1024,
         aiAssistiveMaxTokens: 2048,
         showTrayGlyph: true,
