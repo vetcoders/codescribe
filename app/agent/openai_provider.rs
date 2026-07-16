@@ -499,6 +499,12 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
                 }
             }
             ContentBlock::Image { data, media_type } => {
+                if data.is_empty() {
+                    warn!(
+                        "Skipping tool_result image reference with no bytes (likely restored from history)"
+                    );
+                    continue;
+                }
                 parts.push(json!({
                     "type": "image_reference",
                     "media_type": media_type,
@@ -550,6 +556,12 @@ fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
     for block in content {
         match block {
             ContentBlock::Image { data, media_type } => {
+                if data.is_empty() {
+                    warn!(
+                        "Skipping tool_result image content block with no bytes (likely restored from history)"
+                    );
+                    continue;
+                }
                 image_content.push(json!({
                     "type": "input_image",
                     "image_url": to_data_uri(data, media_type)
@@ -816,6 +828,33 @@ mod tests {
                 .starts_with("data:image/png;base64,")
         );
         std::fs::remove_file(asset_path).ok();
+    }
+
+    #[test]
+    fn tool_result_data_omitted_image_is_skipped_not_sent_as_empty_data_uri() {
+        // D8 parity: a tool-result image restored from history (`data_omitted`)
+        // has no bytes. It must be dropped from the native image message — never
+        // serialized as an empty data URI — while the function output remains
+        // valid via the text fallback.
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_restored".to_string(),
+                content: vec![ContentBlock::Image {
+                    data: vec![],
+                    media_type: "image/png".to_string(),
+                }],
+                is_error: false,
+            }],
+        )];
+
+        let items =
+            build_request_input_items(&messages, None).expect("request input items should build");
+
+        assert_eq!(items.len(), 1, "empty tool-result image is not sent");
+        assert_eq!(items[0]["type"], "function_call_output");
+        assert_eq!(items[0]["call_id"], "call_restored");
+        assert_eq!(items[0]["output"], "Tool executed successfully");
     }
 
     #[test]
