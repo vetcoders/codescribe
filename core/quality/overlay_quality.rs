@@ -6,8 +6,9 @@
 //! Privacy: purely local, no network, no secrets, no audio.
 //! No new Settings knobs (defaults on; VoiceLab UI later).
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::collections::VecDeque;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,30 @@ pub struct QualityRecord {
     /// Freeform meta (e.g. {"source":"overlay-final", "action":"copy"}).
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub meta: serde_json::Value,
+}
+
+/// Read-only projection of one custom lexicon rule for product surfaces.
+/// The on-disk JSONL stores one canonical term with one or more variants;
+/// Voice Lab renders the flattened `variant -> canonical` truth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomLexiconEntry {
+    pub variant: String,
+    pub canonical: String,
+}
+
+#[derive(Deserialize)]
+struct StoredCustomLexiconEntry {
+    term: String,
+    #[serde(default)]
+    mispronunciations: Vec<String>,
+    #[serde(default)]
+    extras: Option<StoredLexiconExtras>,
+}
+
+#[derive(Deserialize)]
+struct StoredLexiconExtras {
+    #[serde(default)]
+    mispronunciations: Vec<String>,
 }
 
 impl QualityRecord {
@@ -90,6 +115,99 @@ pub fn save_quality_record(record: &QualityRecord) -> Result<PathBuf> {
     let line = serde_json::to_string(record).context("serialize quality record")?;
     writeln!(f, "{}", line).context("write quality record line")?;
     Ok(path)
+}
+
+/// Return the newest correction records first, bounded to `limit` entries.
+/// A missing log is the honest empty state. Malformed historical lines are
+/// skipped individually so one damaged entry cannot hide the remaining truth.
+pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let path = quality_dir().join("corrections.jsonl");
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("open quality log {}", path.display()));
+        }
+    };
+
+    let mut recent = VecDeque::with_capacity(limit.min(256));
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("read quality log line {}", index + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<QualityRecord>(&line) {
+            Ok(record) => {
+                if recent.len() == limit {
+                    recent.pop_front();
+                }
+                recent.push_back(record);
+            }
+            Err(error) => tracing::warn!(
+                "quality: skipping malformed correction record at {}:{}: {}",
+                path.display(),
+                index + 1,
+                error
+            ),
+        }
+    }
+
+    Ok(recent.into_iter().rev().collect())
+}
+
+/// Read the custom lexicon as flattened `variant -> canonical` entries.
+/// This mirrors the existing loader format without changing candidate policy.
+pub fn custom_lexicon_entries() -> Result<Vec<CustomLexiconEntry>> {
+    let path = Config::config_dir().join("lexicon.custom.jsonl");
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("open custom lexicon {}", path.display()));
+        }
+    };
+
+    let mut entries = Vec::new();
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("read custom lexicon line {}", index + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<StoredCustomLexiconEntry>(&line) {
+            Ok(stored) => {
+                let canonical = stored.term.trim();
+                if canonical.is_empty() {
+                    continue;
+                }
+                let mut variants = stored.mispronunciations;
+                if let Some(extras) = stored.extras {
+                    variants.extend(extras.mispronunciations);
+                }
+                entries.extend(
+                    variants
+                        .into_iter()
+                        .map(|variant| variant.trim().to_string())
+                        .filter(|variant| !variant.is_empty())
+                        .map(|variant| CustomLexiconEntry {
+                            variant,
+                            canonical: canonical.to_string(),
+                        }),
+                );
+            }
+            Err(error) => tracing::warn!(
+                "quality: skipping malformed custom lexicon entry at {}:{}: {}",
+                path.display(),
+                index + 1,
+                error
+            ),
+        }
+    }
+
+    Ok(entries)
 }
 
 /// Extract candidate lexicon pairs (variant -> canonical) from a user correction.
@@ -474,5 +592,91 @@ mod tests {
             .lines()
             .count();
         assert_eq!(before, after, "no lexicon growth for long edit");
+    }
+
+    #[test]
+    #[serial]
+    fn test_voice_lab_read_surface_returns_live_records_and_lexicon_entries() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir for read surface");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp_dir.path().to_path_buf());
+        // SAFETY: this test is serial and EnvRestore restores process state.
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        assert!(
+            recent_quality_records(10)
+                .expect("missing log is empty")
+                .is_empty()
+        );
+        assert!(
+            custom_lexicon_entries()
+                .expect("missing lexicon is empty")
+                .is_empty()
+        );
+
+        commit_overlay_correction(
+            "raw one",
+            "uni agentka",
+            "Junie",
+            "overlay",
+            None,
+            Some("copy"),
+        )
+        .expect("first correction");
+        commit_overlay_correction(
+            "raw two",
+            "luks tri mapa",
+            "Loctree map",
+            "overlay",
+            None,
+            Some("send"),
+        )
+        .expect("second correction");
+        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        let mut lexicon_file = OpenOptions::new()
+            .append(true)
+            .open(&lexicon_path)
+            .expect("open custom lexicon for legacy extras fixture");
+        writeln!(
+            lexicon_file,
+            r#"{{"term":"VetCoders","extras":{{"mispronunciations":["wet coders"]}}}}"#
+        )
+        .expect("append legacy extras fixture");
+
+        let records = recent_quality_records(1).expect("recent records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].raw_text, "raw two");
+        assert_eq!(records[0].edited_text, "Loctree map");
+        assert_eq!(
+            records[0]
+                .meta
+                .get("action")
+                .and_then(|value| value.as_str()),
+            Some("send")
+        );
+
+        let lexicon = custom_lexicon_entries().expect("custom lexicon entries");
+        assert_eq!(
+            lexicon,
+            vec![
+                CustomLexiconEntry {
+                    variant: "uni agentka".into(),
+                    canonical: "Junie".into(),
+                },
+                CustomLexiconEntry {
+                    variant: "luks tri mapa".into(),
+                    canonical: "Loctree map".into(),
+                },
+                CustomLexiconEntry {
+                    variant: "wet coders".into(),
+                    canonical: "VetCoders".into(),
+                },
+            ]
+        );
     }
 }

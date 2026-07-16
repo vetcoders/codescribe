@@ -5,12 +5,10 @@ import XCTest
 final class SettingsTruthTests: XCTestCase {
     func testSectionAvailabilityKeepsPromisesHonest() {
         XCTAssertEqual(SettingsSection.audio.availability, .comingSoon)
-        XCTAssertEqual(SettingsSection.voiceLab.availability, .comingSoon)
         XCTAssertFalse(SettingsSection.audio.isInteractive)
-        XCTAssertFalse(SettingsSection.voiceLab.isInteractive)
 
         for section in [
-            SettingsSection.creator, .shortcuts, .keys, .prompts, .engine, .user,
+            SettingsSection.creator, .shortcuts, .keys, .prompts, .engine, .voiceLab, .user,
         ] {
             XCTAssertEqual(section.availability, .available)
             XCTAssertTrue(section.isInteractive)

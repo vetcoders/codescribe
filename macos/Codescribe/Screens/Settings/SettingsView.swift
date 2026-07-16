@@ -55,9 +55,11 @@ struct SettingsView: View {
                     PromptPanel(model: model)
                 case .user:
                     UserPanel(model: model)
+                case .voiceLab:
+                    VoiceLabPanel(model: model)
                 case .creator:
                     CreatorPanel(model: model)
-                case .audio, .voiceLab:
+                case .audio:
                     // `select` cannot enter coming-soon sections. Keep this
                     // exhaustive fallback for state restoration across versions.
                     CreatorPanel(model: model)

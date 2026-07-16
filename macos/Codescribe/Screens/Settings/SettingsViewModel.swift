@@ -22,8 +22,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var availability: SettingsSectionAvailability {
         switch self {
-        case .creator, .shortcuts, .keys, .prompts, .engine, .user: return .available
-        case .audio, .voiceLab: return .comingSoon
+        case .creator, .shortcuts, .keys, .prompts, .engine, .voiceLab, .user:
+            return .available
+        case .audio:
+            return .comingSoon
         }
     }
 
@@ -295,6 +297,9 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpTestPending: Set<String> = []
     @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
     @Published private(set) var keyProbePending: Set<String> = []
+    @Published private(set) var qualityRecords: [CsQualityRecord] = []
+    @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
+    @Published private(set) var voiceLabReadError: String?
     /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
     /// local callback server listening). Guards double-clicks.
     @Published private(set) var accountLoginPending: Set<String> = []
@@ -357,6 +362,7 @@ final class SettingsViewModel: ObservableObject {
         self.needsOnboarding = false
         self.agentReadiness = .sample
         self.mcpStatus = .sample
+        self.voiceLabReadError = nil
     }
 
     /// Re-read live state (permissions can change while the window is open).
@@ -373,6 +379,7 @@ final class SettingsViewModel: ObservableObject {
             configDir = engine.configDir()
             needsOnboarding = engine.shouldShowOnboarding()
             refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId, "openai-responses"])
+            refreshVoiceLab()
         }
         refreshAgentStatus()
         reloadMcpServers()
@@ -730,6 +737,91 @@ final class SettingsViewModel: ObservableObject {
         persist("TRANSCRIPT_TAGGING_ENABLED", enabled ? "1" : "0")
     }
 
+    // MARK: - Voice Lab (live quality truth + preview timing)
+
+    func refreshVoiceLab() {
+        guard let engine else { return }
+        do {
+            qualityRecords = try engine.loadQualityRecentRecords(limit: 50)
+            customLexiconEntries = try engine.loadLexiconCustomEntries()
+            voiceLabReadError = nil
+        } catch {
+            qualityRecords = []
+            customLexiconEntries = []
+            voiceLabReadError = String(describing: error)
+        }
+    }
+
+    var previewTimingConfiguration: PreviewTimingConfiguration {
+        PreviewTimingConfiguration(
+            overlayEnabled: settings.transcriptionOverlayEnabled,
+            values: PreviewTimingValues(
+                bufferDelayMs: settings.bufferDelayMs ?? PreviewTimingValues.smooth.bufferDelayMs,
+                typingCps: settings.typingCps ?? PreviewTimingValues.smooth.typingCps,
+                emitWordsMax: settings.emitWordsMax ?? PreviewTimingValues.smooth.emitWordsMax,
+                interimSeconds: settings.bufferedInterimSec ?? PreviewTimingValues.smooth.interimSeconds
+            )
+        )
+    }
+
+    var previewTimingPreset: PreviewTimingPreset {
+        detectPreset(previewTimingConfiguration)
+    }
+
+    /// Preset writes go through the existing batch router: one settings.json
+    /// transaction for overlay state plus all four coupled timing values.
+    func applyPreviewTimingPreset(_ preset: PreviewTimingPreset) {
+        switch preset {
+        case .custom:
+            return
+        case .off:
+            persistMany([
+                CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "0"),
+            ])
+        case .smooth, .snappy, .relaxed:
+            guard let values = presetValues(preset) else { return }
+            persistMany([
+                CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "1"),
+                CsConfigEntry(
+                    key: "CODESCRIBE_BUFFER_DELAY_MS",
+                    value: String(values.bufferDelayMs)
+                ),
+                CsConfigEntry(
+                    key: "CODESCRIBE_TYPING_CPS",
+                    value: String(format: "%.1f", values.typingCps)
+                ),
+                CsConfigEntry(
+                    key: "CODESCRIBE_EMIT_WORDS_MAX",
+                    value: String(values.emitWordsMax)
+                ),
+                CsConfigEntry(
+                    key: "CODESCRIBE_BUFFERED_INTERIM_SEC",
+                    value: String(format: "%.1f", values.interimSeconds)
+                ),
+            ])
+        }
+    }
+
+    func setPreviewBufferDelayMs(_ value: UInt64) {
+        settings.bufferDelayMs = value
+        persist("CODESCRIBE_BUFFER_DELAY_MS", String(value))
+    }
+
+    func setPreviewTypingCps(_ value: Float) {
+        settings.typingCps = value
+        persist("CODESCRIBE_TYPING_CPS", String(format: "%.1f", value))
+    }
+
+    func setPreviewEmitWordsMax(_ value: UInt64) {
+        settings.emitWordsMax = value
+        persist("CODESCRIBE_EMIT_WORDS_MAX", String(value))
+    }
+
+    func setPreviewInterimSeconds(_ value: Float) {
+        settings.bufferedInterimSec = value
+        persist("CODESCRIBE_BUFFERED_INTERIM_SEC", String(format: "%.1f", value))
+    }
+
     // MARK: - STT engine / layered transcription (Engine panel controls)
 
     /// Selected STT engine id ("auto" | "apple" | "whisper"); absent → auto policy.
@@ -785,6 +877,16 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.updateConfig(key: key, value: value)
+            settings = engine.loadSettings()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    private func persistMany(_ entries: [CsConfigEntry]) {
+        guard let engine else { return }
+        do {
+            try engine.updateConfigMany(entries: entries)
             settings = engine.loadSettings()
         } catch {
             lastError = String(describing: error)

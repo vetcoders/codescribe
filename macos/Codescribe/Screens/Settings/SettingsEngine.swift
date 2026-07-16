@@ -34,6 +34,10 @@ protocol SettingsEngine {
     func updateConfig(key: String, value: String) throws
     func updateConfigMany(entries: [CsConfigEntry]) throws
 
+    // Voice Lab read-only quality truth (JSONL stays behind the Rust bridge)
+    func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
+    func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
+
     // Keychain-backed API keys — presence booleans only, secrets never read back
     func keyStatus() -> CsKeyStatus
     func keyAccounts() -> [String]
@@ -89,6 +93,12 @@ final class RealSettingsEngine: SettingsEngine {
     func updateConfigMany(entries: [CsConfigEntry]) throws {
         try config.updateConfigMany(entries: entries)
     }
+    func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
+        try qualityRecentRecords(limit: limit)
+    }
+    func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
+        try lexiconCustomEntries()
+    }
 
     func keyStatus() -> CsKeyStatus { config.keyStatus() }
     func keyAccounts() -> [String] { config.keyAccounts() }
@@ -143,6 +153,9 @@ struct MockSettingsEngine: SettingsEngine {
     var dir: String = "~/.codescribe"
     var onboarding: Bool = false
     var mode: String? = "agentic"
+    var qualityRecords: [CsQualityRecord] = []
+    var lexiconEntries: [CsLexiconEntry] = []
+    var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
     var updateConfigObserver: ((String, String) throws -> Void)?
 
     func loadSettings() -> CsSettings { settings }
@@ -154,7 +167,13 @@ struct MockSettingsEngine: SettingsEngine {
     func updateConfig(key: String, value: String) throws {
         try updateConfigObserver?(key, value)
     }
-    func updateConfigMany(entries: [CsConfigEntry]) throws {}
+    func updateConfigMany(entries: [CsConfigEntry]) throws {
+        try updateConfigManyObserver?(entries)
+    }
+    func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
+        Array(qualityRecords.prefix(Int(clamping: limit)))
+    }
+    func loadLexiconCustomEntries() throws -> [CsLexiconEntry] { lexiconEntries }
 
     func keyStatus() -> CsKeyStatus { status }
     func keyAccounts() -> [String] {
