@@ -143,8 +143,12 @@ final class TrayViewModel: ObservableObject {
     }
 
     func setOverlayEnabled(_ enabled: Bool) {
-        overlayEnabled = enabled
-        engine?.setQuickToggle(.transcriptionOverlay, enabled: enabled)
+        guard let engine else {
+            overlayEnabled = enabled
+            return
+        }
+        engine.setQuickToggle(.transcriptionOverlay, enabled: enabled)
+        refreshStatus()
     }
 
     /// Notes Mode: dictation → daily note (no paste). Distinct from normal
