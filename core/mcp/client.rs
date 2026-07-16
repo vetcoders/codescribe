@@ -17,6 +17,11 @@ use crate::agent::ToolResultContent;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// A healthy server answers `initialize` in milliseconds — heavy work belongs
+/// to tool calls. A hung server must not stall agent-runtime init for the full
+/// request timeout, so the handshake gets its own, much shorter default.
+/// An explicit `timeout_seconds` in mcp.json overrides this too.
+const DEFAULT_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Upper bound on how long a failure-path stderr drain may block. A crashed
 /// server exits and yields EOF well within this; a still-alive server that
@@ -75,6 +80,12 @@ impl McpServerConfig {
         self.timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(DEFAULT_TIMEOUT)
+    }
+
+    fn initialize_timeout(&self) -> Duration {
+        self.timeout_seconds
+            .map(Duration::from_secs)
+            .unwrap_or(DEFAULT_INITIALIZE_TIMEOUT)
     }
 }
 
@@ -136,16 +147,23 @@ pub fn default_mcp_config_path() -> Result<PathBuf> {
 pub struct McpClient {
     config: McpServerConfig,
     timeout: Duration,
+    initialize_timeout: Duration,
 }
 
 impl McpClient {
     pub fn new(config: McpServerConfig) -> Self {
         let timeout = config.timeout();
-        Self { config, timeout }
+        let initialize_timeout = config.initialize_timeout();
+        Self {
+            config,
+            timeout,
+            initialize_timeout,
+        }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self.initialize_timeout = timeout;
         self
     }
 
@@ -159,16 +177,18 @@ impl McpClient {
     /// wrapper that keeps only the tools; the Settings health probe uses the full
     /// result to surface real handshake data next to a server.
     pub async fn probe(&self) -> Result<McpProbe> {
-        let mut connection = match StdioConnection::spawn(&self.config, self.timeout).await {
-            Ok(connection) => connection,
-            Err(error) => {
-                warn!(
-                    "MCP server '{}' failed to spawn: {error}",
-                    self.config.command
-                );
-                return Err(error);
-            }
-        };
+        let mut connection =
+            match StdioConnection::spawn(&self.config, self.timeout, self.initialize_timeout).await
+            {
+                Ok(connection) => connection,
+                Err(error) => {
+                    warn!(
+                        "MCP server '{}' failed to spawn: {error}",
+                        self.config.command
+                    );
+                    return Err(error);
+                }
+            };
         let result = async {
             let handshake = connection.initialize().await?;
             let response = connection.request("tools/list", json!({})).await?;
@@ -188,16 +208,18 @@ impl McpClient {
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Vec<ToolResultContent>> {
-        let mut connection = match StdioConnection::spawn(&self.config, self.timeout).await {
-            Ok(connection) => connection,
-            Err(error) => {
-                warn!(
-                    "MCP server '{}' failed to spawn for tool '{name}': {error}",
-                    self.config.command
-                );
-                return Err(error);
-            }
-        };
+        let mut connection =
+            match StdioConnection::spawn(&self.config, self.timeout, self.initialize_timeout).await
+            {
+                Ok(connection) => connection,
+                Err(error) => {
+                    warn!(
+                        "MCP server '{}' failed to spawn for tool '{name}': {error}",
+                        self.config.command
+                    );
+                    return Err(error);
+                }
+            };
         let result = async {
             connection.initialize().await?;
             let response = connection
@@ -244,10 +266,15 @@ struct StdioConnection {
     stderr: Option<ChildStderr>,
     next_id: u64,
     response_timeout: Duration,
+    initialize_timeout: Duration,
 }
 
 impl StdioConnection {
-    async fn spawn(config: &McpServerConfig, response_timeout: Duration) -> Result<Self> {
+    async fn spawn(
+        config: &McpServerConfig,
+        response_timeout: Duration,
+        initialize_timeout: Duration,
+    ) -> Result<Self> {
         let effective_path = effective_mcp_path(config.env.get("PATH").map(String::as_str));
         let resolved_command = resolve_command(&config.command, &effective_path);
         let mut command = Command::new(&resolved_command);
@@ -282,6 +309,15 @@ impl StdioConnection {
             .stdin
             .take()
             .context("MCP server stdin was not piped")?;
+        // Rust's std runtime only ignores SIGPIPE when a Rust `main` runs; this
+        // code also lives inside the codescribe-ffi dylib hosted by the SwiftUI
+        // app, where SIGPIPE keeps its default FATAL disposition. A server that
+        // dies before/mid-exchange (e.g. SIGKILLed by a code-signature check)
+        // closes its end of the stdin pipe, and the next write would kill the
+        // whole host process without a crash report. F_SETNOSIGPIPE makes such
+        // writes fail with EPIPE instead, which surfaces as a normal Result
+        // error and degrades just that server.
+        disable_sigpipe(&stdin);
         let stdout = child
             .stdout
             .take()
@@ -295,6 +331,7 @@ impl StdioConnection {
             stderr,
             next_id: 1,
             response_timeout,
+            initialize_timeout,
         })
     }
 
@@ -315,7 +352,8 @@ impl StdioConnection {
 
     async fn initialize(&mut self) -> Result<McpHandshake> {
         let result = self
-            .request(
+            .request_with_timeout(
+                self.initialize_timeout,
                 "initialize",
                 json!({
                     "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -335,6 +373,16 @@ impl StdioConnection {
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        self.request_with_timeout(self.response_timeout, method, params)
+            .await
+    }
+
+    async fn request_with_timeout(
+        &mut self,
+        response_timeout: Duration,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         self.write_message(json!({
@@ -346,7 +394,7 @@ impl StdioConnection {
         .await?;
 
         loop {
-            let line = timeout(self.response_timeout, self.stdout.next_line())
+            let line = timeout(response_timeout, self.stdout.next_line())
                 .await
                 .with_context(|| format!("Timed out waiting for MCP response to '{method}'"))?
                 .with_context(|| format!("Failed reading MCP response to '{method}'"))?
@@ -392,11 +440,18 @@ impl StdioConnection {
     }
 
     async fn shutdown(mut self) -> Result<()> {
-        let _ = timeout(SHUTDOWN_TIMEOUT, self.request("shutdown", json!({}))).await;
-        let _ = self
-            .notification("notifications/exit", json!({}))
-            .await
-            .map_err(|error| debug!("MCP exit notification failed: {error}"));
+        // A child that already exited (we saw EOF / a failed exchange) gets no
+        // JSON-RPC goodbye: writing into its closed stdin is at best EPIPE
+        // noise, at worst a fatal SIGPIPE in a host process that never ran
+        // Rust's main-thread signal setup (see `disable_sigpipe`).
+        let already_exited = matches!(self.child.try_wait(), Ok(Some(_)));
+        if !already_exited {
+            let _ = timeout(SHUTDOWN_TIMEOUT, self.request("shutdown", json!({}))).await;
+            let _ = self
+                .notification("notifications/exit", json!({}))
+                .await
+                .map_err(|error| debug!("MCP exit notification failed: {error}"));
+        }
         drop(self.stdin);
 
         match timeout(SHUTDOWN_TIMEOUT, self.child.wait()).await {
@@ -414,6 +469,27 @@ impl StdioConnection {
         Ok(())
     }
 }
+
+/// Mark the child's stdin pipe so writes to a dead peer return EPIPE instead
+/// of raising SIGPIPE. Per-fd (`F_SETNOSIGPIPE`) on purpose: it protects the
+/// MCP exchange without mutating the host process' signal table.
+#[cfg(target_os = "macos")]
+fn disable_sigpipe(stdin: &ChildStdin) {
+    use std::os::fd::AsRawFd;
+
+    // Darwin `sys/fcntl.h`: `#define F_SETNOSIGPIPE 73` — the libc crate does
+    // not export this per-fd fcntl command (only the socket-level
+    // `SO_NOSIGPIPE`), so pin the value here.
+    const F_SETNOSIGPIPE: libc::c_int = 73;
+
+    // SAFETY: fcntl on an fd we own for the child's lifetime; F_SETNOSIGPIPE
+    // only flips a per-fd flag. A failure leaves the old behavior in place and
+    // is tolerable — the try_wait guard in `shutdown` still narrows exposure.
+    let _ = unsafe { libc::fcntl(stdin.as_raw_fd(), F_SETNOSIGPIPE, 1) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn disable_sigpipe(_stdin: &ChildStdin) {}
 
 fn effective_mcp_path(config_path: Option<&str>) -> OsString {
     let mut entries = Vec::new();
@@ -571,6 +647,8 @@ mod tests {
     use std::time::Duration;
 
     use serde_json::json;
+    #[cfg(target_os = "macos")]
+    use serial_test::serial;
     use tempfile::TempDir;
 
     use super::{McpClient, McpServerConfig, effective_mcp_path, resolve_command};
@@ -767,5 +845,68 @@ mod tests {
             error.to_string().contains("closed stdout"),
             "unexpected error: {error}"
         );
+    }
+
+    /// Incident 2026-07-16 13:52 shape: the server process dies before
+    /// answering `initialize` (code-signature SIGKILL). The probe must degrade
+    /// to an error — never panic, never take the process down.
+    #[tokio::test]
+    async fn mcp_server_dead_before_initialize_degrades_to_error() {
+        let client = McpClient::new(mock_server("exit-before-initialize"))
+            .with_timeout(Duration::from_millis(500));
+
+        let error = client
+            .list_tools()
+            .await
+            .expect_err("a dead-at-start server must fail discovery");
+
+        // Depending on the exit/write race this surfaces as EOF-before-response
+        // or as a failed pipe write; both are acceptable degradations.
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("closed stdout") || message.contains("Failed to write MCP message"),
+            "unexpected error: {message}"
+        );
+    }
+
+    /// Falsification harness for the SIGPIPE hole: cargo-test binaries run with
+    /// SIGPIPE ignored (Rust `main` setup), which masks the exact condition that
+    /// killed the Swift-hosted app. Restore the default FATAL disposition for
+    /// the exchange — without the `F_SETNOSIGPIPE` + shutdown guards this test
+    /// does not fail, it kills the whole test process.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[serial]
+    async fn mcp_dead_server_survives_default_sigpipe_disposition() {
+        // SAFETY: process-wide signal disposition swap, serialized via `serial`
+        // and restored before the test returns.
+        let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+
+        let client = McpClient::new(mock_server("exit-before-initialize"))
+            .with_timeout(Duration::from_millis(500));
+        let result = client.list_tools().await;
+
+        // SAFETY: restores the disposition captured above.
+        unsafe { libc::signal(libc::SIGPIPE, previous) };
+
+        assert!(
+            result.is_err(),
+            "dead server must degrade to an error while the process survives"
+        );
+    }
+
+    #[test]
+    fn mcp_initialize_timeout_defaults_shorter_than_request_timeout() {
+        let config = mock_server("");
+        let no_override = McpServerConfig {
+            timeout_seconds: None,
+            ..config.clone()
+        };
+        assert_eq!(no_override.initialize_timeout(), Duration::from_secs(5));
+        assert_eq!(no_override.timeout(), Duration::from_secs(30));
+
+        // An explicit timeout_seconds governs BOTH phases — user truth wins.
+        assert_eq!(config.initialize_timeout(), Duration::from_secs(5));
+        assert_eq!(config.timeout(), Duration::from_secs(5));
     }
 }

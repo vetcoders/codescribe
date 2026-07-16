@@ -791,6 +791,7 @@ dependencies = [
  "hound",
  "indicatif",
  "lazy_static",
+ "libc",
  "mockito",
  "moshi",
  "ndarray",
