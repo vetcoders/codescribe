@@ -11,7 +11,7 @@ struct KeysPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            EyebrowLabel(text: "Settings · Keys")
+            EyebrowLabel(text: "Settings · Providers")
             Text("API keys.")
                 .font(CSFont.ui(26, .bold))
                 .tracking(-0.5)

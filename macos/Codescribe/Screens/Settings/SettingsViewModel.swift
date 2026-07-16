@@ -9,8 +9,8 @@ enum SettingsSectionAvailability: Equatable {
 // Every rail section declares its product truth explicitly.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case creator = "Creator"
-    case shortcuts = "Shortcuts"
-    case keys = "Keys"
+    case shortcuts = "Hotkeys"
+    case keys = "Providers"
     case prompts = "Prompts"
     case engine = "Engine"
     case audio = "Audio"

@@ -43,7 +43,7 @@ struct ShortcutsPanel: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            EyebrowLabel(text: "Settings · Shortcuts")
+            EyebrowLabel(text: "Settings · Hotkeys")
             Text("Trigger keys.")
                 .font(CSFont.ui(26, .bold))
                 .tracking(-0.5)
