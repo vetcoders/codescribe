@@ -107,6 +107,19 @@ struct AppBuildInfo: Equatable {
     }
 }
 
+func resetConfirmationMatches(_ text: String) -> Bool {
+    text == "RESET"
+}
+
+func resetImpactSummary(_ preview: CsResetPreview) -> String {
+    let recordings = preview.audioFiles == 1 ? "recording" : "recordings"
+    let days = preview.transcriptDays == 1 ? "day" : "days"
+    let threads = preview.threads == 1 ? "thread" : "threads"
+    let megabytes = Double(preview.totalBytes) / 1_048_576.0
+    return "\(preview.audioFiles) \(recordings) from \(preview.transcriptDays) \(days), "
+        + "\(preview.threads) \(threads) (\(String(format: "%.1f", megabytes)) MB)"
+}
+
 /// One-shot deep-link target for the Settings window. A surface outside Settings
 /// (e.g. the onboarding wizard routing the user to MCP setup) sets this before
 /// opening or focusing the window; `SettingsView` consumes it once on appear and
@@ -298,6 +311,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var voiceLabReadError: String?
     @Published private(set) var audioInput: CsAudioInputSnapshot
     @Published private(set) var audioInputReadError: String?
+    @Published private(set) var resetPreview: CsResetPreview
     /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
     /// local callback server listening). Guards double-clicks.
     @Published private(set) var accountLoginPending: Set<String> = []
@@ -363,6 +377,7 @@ final class SettingsViewModel: ObservableObject {
         self.voiceLabReadError = nil
         self.audioInput = .sample
         self.audioInputReadError = nil
+        self.resetPreview = .sample
     }
 
     /// Re-read live state (permissions can change while the window is open).
@@ -555,9 +570,22 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Reset app data (destructive privacy action)
+    // MARK: - Reset app data (recoverable destructive action)
 
-    /// Wipe all local app data through the Rust bridge, clear the app's
+    func refreshResetPreview() {
+        guard let engine else { return }
+        resetPreview = engine.resetPreview()
+    }
+
+    func resetImpactDescription(includeKeys: Bool) -> String {
+        var message = "Moves \(resetImpactSummary(resetPreview)) to Trash."
+        if includeKeys {
+            message += " API keys will also be removed from Keychain and are not recoverable from Trash."
+        }
+        return message + " Codescribe will relaunch as a fresh install."
+    }
+
+    /// Move all local app data to Trash through the Rust bridge, clear the app's
     /// UserDefaults domain, then relaunch so codescribe comes up fresh (first-run
     /// wizard from the top). `includeKeys` also removes the Keychain API keys.
     /// On failure the error surfaces in `lastError` and nothing is relaunched.
@@ -570,6 +598,18 @@ final class SettingsViewModel: ObservableObject {
             return
         }
         AppRelaunch.clearDefaultsAndRelaunch()
+    }
+
+    func clearMcpConfiguration() {
+        guard let engine else { return }
+        do {
+            try engine.clearMcpConfiguration()
+            mcpTestResults = [:]
+            reloadMcpServers()
+            refreshAgentStatus()
+        } catch {
+            lastError = String(describing: error)
+        }
     }
 
     // MARK: - Engine-panel derived values (runtime truth)

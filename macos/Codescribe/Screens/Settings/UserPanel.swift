@@ -85,6 +85,9 @@ struct UserPanel: View {
             }
             .padding(.top, 18)
             .accessibilityLabel("Open Codescribe documentation")
+
+            ResetAppDataSection(model: model)
+                .padding(.top, 30)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
@@ -146,6 +149,86 @@ struct UserPanel: View {
     private var cardBorder: some View {
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+    }
+}
+
+// MARK: - Danger zone
+
+/// The full-data reset lives only at the foot of User settings, away from MCP
+/// editing. Data is recoverable from Trash; Keychain deletion remains opt-in.
+private struct ResetAppDataSection: View {
+    @ObservedObject var model: SettingsViewModel
+    @State private var includeKeys = false
+    @State private var confirming = false
+    @State private var confirmationText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsSectionLabel("Danger zone")
+                .foregroundStyle(CSColor.dangerLight)
+
+            Text("Moves recordings, transcript history, conversations, logs, preferences, "
+                + "and local configuration to Trash so they can be recovered.")
+                .font(CSFont.mono(11, .medium))
+                .foregroundStyle(CSColor.textMutedAlt)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+
+            Toggle(isOn: $includeKeys) {
+                Text("Also remove API keys from Keychain")
+                    .font(CSFont.ui(12.5, .medium))
+                    .foregroundStyle(CSColor.textBody)
+            }
+            .toggleStyle(.checkbox)
+            .padding(.top, 13)
+
+            Button(role: .destructive) {
+                model.refreshResetPreview()
+                confirmationText = ""
+                confirming = true
+            } label: {
+                Text("Move app data to Trash…")
+                    .font(CSFont.ui(12, .semibold))
+                    .foregroundStyle(CSColor.dangerLight)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .fill(CSColor.danger.opacity(0.14))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 13)
+            .accessibilityLabel("Reset app data. Destructive action.")
+            .accessibilityHint("Shows the live impact and requires typing RESET before data moves to Trash.")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .fill(CSColor.danger.opacity(0.055))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.danger.opacity(0.55), lineWidth: 1)
+        )
+        .alert("Move app data to Trash?", isPresented: $confirming) {
+            TextField("Type RESET to continue", text: $confirmationText)
+            Button("Cancel", role: .cancel) {
+                confirmationText = ""
+            }
+            Button("Move to Trash & Relaunch", role: .destructive) {
+                model.resetAppData(includeKeys: includeKeys)
+            }
+            .disabled(!resetConfirmationMatches(confirmationText))
+        } message: {
+            Text(model.resetImpactDescription(includeKeys: includeKeys))
+        }
     }
 }
 

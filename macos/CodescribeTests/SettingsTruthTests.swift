@@ -66,4 +66,41 @@ final class SettingsTruthTests: XCTestCase {
         ])
         XCTAssertEqual(writes.map(\.value), ["1", "0"])
     }
+
+    func testResetPreviewMapsLiveCountsIntoConcreteConfirmationCopy() {
+        let preview = CsResetPreview(
+            audioFiles: 5_000,
+            transcriptDays: 42,
+            threads: 17,
+            totalBytes: 536_870_912
+        )
+        let model = SettingsViewModel(
+            engine: MockSettingsEngine(resetPreviewValue: preview)
+        )
+
+        model.refreshResetPreview()
+
+        XCTAssertEqual(model.resetPreview.audioFiles, 5_000)
+        XCTAssertEqual(
+            model.resetImpactDescription(includeKeys: false),
+            "Moves 5000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
+                + "Codescribe will relaunch as a fresh install."
+        )
+        XCTAssertTrue(resetConfirmationMatches("RESET"))
+        XCTAssertFalse(resetConfirmationMatches("reset"))
+        XCTAssertFalse(resetConfirmationMatches(" RESET"))
+    }
+
+    func testClearMcpConfigurationUsesDedicatedEngineContract() {
+        var calls = 0
+        let model = SettingsViewModel(
+            engine: MockSettingsEngine(
+                clearMcpConfigurationObserver: { calls += 1 }
+            )
+        )
+
+        model.clearMcpConfiguration()
+
+        XCTAssertEqual(calls, 1)
+    }
 }

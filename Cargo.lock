@@ -828,6 +828,7 @@ dependencies = [
  "codescribe-core",
  "cpal",
  "crossbeam-channel",
+ "directories",
  "serde_json",
  "serial_test",
  "tokio",

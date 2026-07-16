@@ -68,9 +68,11 @@ protocol SettingsEngine {
     func setAssistivePrompt(content: String) throws
     func resetPromptsToDefaults() throws
 
-    // Destructive privacy action: wipe all local app data (config / logs /
-    // transcriptions + Application Support store), optionally the Keychain keys.
+    // Recoverable reset: preview live impact, move local data to Trash, and
+    // optionally remove Keychain keys. MCP-only clear is a separate concern.
+    func resetPreview() -> CsResetPreview
     func resetAppData(includeKeys: Bool) throws
+    func clearMcpConfiguration() throws
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -147,9 +149,11 @@ final class RealSettingsEngine: SettingsEngine {
     }
     func resetPromptsToDefaults() throws { try config.resetPromptsToDefaults() }
 
+    func resetPreview() -> CsResetPreview { config.resetPreview() }
     func resetAppData(includeKeys: Bool) throws {
         try config.resetAppData(includeKeys: includeKeys)
     }
+    func clearMcpConfiguration() throws { try config.clearMcpConfiguration() }
 }
 
 // MARK: - Mock engine (previews)
@@ -166,6 +170,9 @@ struct MockSettingsEngine: SettingsEngine {
     var qualityRecords: [CsQualityRecord] = []
     var lexiconEntries: [CsLexiconEntry] = []
     var audioSnapshot: CsAudioInputSnapshot = .sample
+    var resetPreviewValue: CsResetPreview = .sample
+    var resetAppDataObserver: ((Bool) throws -> Void)?
+    var clearMcpConfigurationObserver: (() throws -> Void)?
     var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
     var resetAudioInputDeviceObserver: (() throws -> Void)?
     var updateConfigObserver: ((String, String) throws -> Void)?
@@ -249,7 +256,13 @@ struct MockSettingsEngine: SettingsEngine {
     func setFormattingPrompt(content: String) throws {}
     func setAssistivePrompt(content: String) throws {}
     func resetPromptsToDefaults() throws {}
-    func resetAppData(includeKeys: Bool) throws {}
+    func resetPreview() -> CsResetPreview { resetPreviewValue }
+    func resetAppData(includeKeys: Bool) throws {
+        try resetAppDataObserver?(includeKeys)
+    }
+    func clearMcpConfiguration() throws {
+        try clearMcpConfigurationObserver?()
+    }
 }
 
 // MARK: - Bridge value helpers
@@ -262,6 +275,15 @@ extension CsAudioInputSnapshot {
         configuredDeviceAvailable: true,
         fallbackToDefault: false,
         runtimeConfigurationMatches: true
+    )
+}
+
+extension CsResetPreview {
+    static let sample = CsResetPreview(
+        audioFiles: 98,
+        transcriptDays: 6,
+        threads: 12,
+        totalBytes: 31_981_568
     )
 }
 

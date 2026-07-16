@@ -80,9 +80,6 @@ struct EnginePanel: View {
 
             MCPServersSection(model: model)
                 .padding(.top, 26)
-
-            ResetAppDataSection(model: model)
-                .padding(.top, 30)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
@@ -634,89 +631,6 @@ private struct PermissionMatrixCell: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { if !granted { kind.openSystemSettings() } }
-    }
-}
-
-// MARK: - Reset app data (destructive privacy action)
-
-/// Danger-zone control at the foot of the Engine panel: a two-step, destructive
-/// "Reset app data" flow. The checkbox opts into removing Keychain API keys too;
-/// the button arms a confirmation alert that spells out exactly what disappears
-/// before the wipe + relaunch runs.
-private struct ResetAppDataSection: View {
-    @ObservedObject var model: SettingsViewModel
-    @State private var includeKeys = false
-    @State private var confirming = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SettingsSectionLabel("Reset app data")
-
-            Text("Permanently delete all local codescribe data on this Mac: "
-                + "conversation history, transcription history, logs, preferences, "
-                + "and MCP configuration. This cannot be undone.")
-                .font(CSFont.mono(11, .medium))
-                .foregroundStyle(CSColor.textFaint)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 5)
-
-            Toggle(isOn: $includeKeys) {
-                Text("Also remove API keys from Keychain")
-                    .font(CSFont.ui(12.5, .medium))
-                    .foregroundStyle(CSColor.textBody)
-            }
-            .toggleStyle(.checkbox)
-            .padding(.top, 13)
-
-            Button {
-                confirming = true
-            } label: {
-                Text("Reset app data…")
-                    .font(CSFont.ui(12, .semibold))
-                    .foregroundStyle(CSColor.terracottaLight)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                            .fill(CSColor.terracotta.opacity(0.14))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                            .strokeBorder(CSColor.terracotta.opacity(0.30), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 13)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(CSColor.terracotta.opacity(0.04))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(CSColor.terracotta.opacity(0.16), lineWidth: 1)
-        )
-        .alert("Reset app data?", isPresented: $confirming) {
-            Button("Cancel", role: .cancel) {}
-            Button("Reset & Relaunch", role: .destructive) {
-                model.resetAppData(includeKeys: includeKeys)
-            }
-        } message: {
-            Text(confirmMessage)
-        }
-    }
-
-    private var confirmMessage: String {
-        var text = "This permanently deletes conversation history, transcription "
-            + "history, logs, preferences, and MCP configuration."
-        if includeKeys {
-            text += " Your API keys will also be removed from the Keychain."
-        }
-        text += " codescribe will then relaunch as a fresh install."
-        return text
     }
 }
 
