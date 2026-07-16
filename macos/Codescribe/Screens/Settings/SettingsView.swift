@@ -12,16 +12,14 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        // Plain two-pane layout: NavigationSplitView reserved a toolbar strip above
+        // the sidebar content, pushing the rail ~70px down (dead vertical space).
+        // A fixed-width HStack keeps the rail flush with the titlebar.
+        HStack(spacing: 0) {
             SettingsRail(model: model)
-                // Firm min/ideal/max so `.balanced` can't compress the rail below the
-                // brand wordmark's width and wrap "codescribe" onto a second line.
-                .navigationSplitViewColumnWidth(min: 212, ideal: 212, max: 212)
-                .toolbar(removing: .sidebarToggle)
-        } detail: {
+                .frame(width: 212)
             detail
         }
-        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(Self.windowGradient.ignoresSafeArea())
         .preferredColorScheme(.dark)

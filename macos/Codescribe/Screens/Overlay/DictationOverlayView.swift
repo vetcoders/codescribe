@@ -77,7 +77,17 @@ struct DictationOverlayView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Wordmark(size: 15)
+            // Brand block with a LIVE dot: the orange dot sits in the window's
+            // traffic-light zone and reads as a control, so it IS one — click
+            // closes the overlay (same as the Close action). Hover shows the
+            // familiar "×" glyph; the wordmark text stays inert.
+            HStack(spacing: 9) {
+                CloseDot { state.close() }
+                Text("codescribe")
+                    .font(CSFont.ui(15, .bold))
+                    .tracking(-0.3)
+                    .foregroundStyle(CSColor.textHigh)
+            }
             // Swap the whole VIEW TYPE on live vs idle, not just a flag: the
             // animated pill (with @State + repeatForever) exists ONLY while live,
             // and is replaced by a static pill of different identity in idle/final,
@@ -602,3 +612,39 @@ private struct ToastPill: View {
         .preferredColorScheme(.dark)
 }
 #endif
+
+/// The overlay's brand dot as a real close control. It sits where macOS puts
+/// traffic lights, so it honors that promise: hover swaps in the familiar "x"
+/// glyph and a pointing-hand cursor; click closes the overlay (same path as
+/// the Close action button). Only the dot is live — the wordmark text is inert.
+private struct CloseDot: View {
+    var action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                ModeDot(color: CSColor.terracotta, size: 9)
+                if hovered {
+                    Text("\u{00D7}")
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(Color.black.opacity(0.7))
+                        .offset(y: -0.5)
+                }
+            }
+            .frame(width: 16, height: 16)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            hovered = inside
+            if inside {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+        .accessibilityLabel("Close overlay")
+        .accessibilityHint("Closes the dictation overlay")
+    }
+}
