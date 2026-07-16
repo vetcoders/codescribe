@@ -1059,7 +1059,7 @@ mod tests {
                     .map(|(_, value)| (*value).to_string())
             };
             let config = Config::default();
-            let snapshot = lane_truth_snapshot_with(case.lane, &config, &case.settings, &load_key);
+            let snapshot = lane_truth_snapshot_with(case.lane, &config, &case.settings, load_key);
 
             assert_eq!(snapshot.lane, case.lane, "{}: lane", case.name);
             match case.lane {
@@ -1082,7 +1082,7 @@ mod tests {
                         "{}: model",
                         case.name
                     );
-                    let key_present = secret_with_keychain("LLM_API_KEY", &load_key).is_some();
+                    let key_present = secret_with_keychain("LLM_API_KEY", load_key).is_some();
                     assert_eq!(snapshot.key_present, key_present, "{}: key", case.name);
                     assert_eq!(snapshot.available, key_present, "{}: available", case.name);
                 }
@@ -1103,12 +1103,12 @@ mod tests {
                     assert_eq!(snapshot.endpoint, endpoint, "{}: endpoint", case.name);
                     assert_eq!(snapshot.model, model, "{}: model", case.name);
                     let key_present =
-                        secret_with_keychain("LLM_FORMATTING_API_KEY", &load_key).is_some();
+                        secret_with_keychain("LLM_FORMATTING_API_KEY", load_key).is_some();
                     assert_eq!(snapshot.key_present, key_present, "{}: key", case.name);
                     assert_eq!(snapshot.available, key_present, "{}: available", case.name);
                 }
                 LaneTruthLane::Assistive => {
-                    let runtime = assistive_snapshot_with(&config, &case.settings, &load_key);
+                    let runtime = assistive_snapshot_with(&config, &case.settings, load_key);
                     let availability = availability_of(runtime.clone());
                     assert_eq!(
                         snapshot.provider_id,
