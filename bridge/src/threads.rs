@@ -54,6 +54,8 @@ pub struct CsThreadSummary {
     pub latest_message: Option<String>,
     pub latest_note: Option<String>,
     pub is_favorite: bool,
+    pub model: Option<String>,
+    pub total_tokens: Option<u64>,
 }
 
 impl From<&ThreadSummary> for CsThreadSummary {
@@ -71,6 +73,8 @@ impl From<&ThreadSummary> for CsThreadSummary {
             latest_message: summary.latest_message.clone(),
             latest_note: summary.latest_note.clone(),
             is_favorite: summary.is_favorite,
+            model: summary.model.clone(),
+            total_tokens: summary.total_tokens,
         }
     }
 }

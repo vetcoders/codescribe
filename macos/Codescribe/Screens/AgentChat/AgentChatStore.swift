@@ -179,12 +179,15 @@ struct MessageAttachment: Identifiable, Hashable {
 struct ChatThread: Identifiable {
     let id = UUID()
     var title: String
-    var meta: String        // mono subtitle, e.g. "active · restored" / "today · 18:40"
+    var meta: String        // mono subtitle, e.g. "active · restored" / "today 18:40 · gpt-5 · 1.2k tok"
     var isRestored: Bool = false
     var isFavorite: Bool = false
     var backendId: String? = nil      // codescribe ThreadStore id (nil = local-only, not yet persisted)
     var messagesLoaded: Bool = false  // lazy-load guard for persisted threads
     var messages: [ChatMessage] = []
+    var updatedAt: Date? = nil        // nil (local-only draft) groups under Today
+    var model: String? = nil
+    var totalTokens: UInt64? = nil
 }
 
 // MARK: - Threads provider (read-only access to persisted codescribe threads)
@@ -1061,12 +1064,15 @@ final class AgentChatStore: ObservableObject {
             ),
             ChatMessage(role: .you, timestamp: "18:41", text: "yes, and add the test"),
         ]
+        // updatedAt offsets keep the preview's recency sections honest with the
+        // hardcoded meta labels.
+        let day: TimeInterval = 86_400
         return [
             active,
-            ChatThread(title: "rate-limiter spec", meta: "today · 18:40"),
-            ChatThread(title: "release notes → PL", meta: "yesterday"),
-            ChatThread(title: "whisper warm-start idea", meta: "yesterday"),
-            ChatThread(title: "standup notes", meta: "Thu"),
+            ChatThread(title: "rate-limiter spec", meta: "today · 18:40", updatedAt: Date()),
+            ChatThread(title: "release notes → PL", meta: "yesterday", updatedAt: Date(timeIntervalSinceNow: -day)),
+            ChatThread(title: "whisper warm-start idea", meta: "yesterday", updatedAt: Date(timeIntervalSinceNow: -day)),
+            ChatThread(title: "standup notes", meta: "Thu", updatedAt: Date(timeIntervalSinceNow: -5 * day)),
         ]
     }
 }

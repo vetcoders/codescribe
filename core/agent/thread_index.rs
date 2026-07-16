@@ -12,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::thread_store::{Thread, ThreadMessage};
 
 const INDEX_FILE_NAME: &str = "index.json";
-const INDEX_VERSION: u32 = 2;
+const INDEX_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadIndexData {
@@ -47,6 +47,13 @@ pub struct ThreadSummary {
     #[serde(default)]
     pub search_text: String,
     pub is_favorite: bool,
+    /// Model the thread last ran on; `None` when the thread predates model
+    /// tracking or the stored value is empty.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Cumulative input+output tokens; `None` when the thread never recorded usage.
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
 }
 
 impl ThreadSummary {
@@ -79,6 +86,11 @@ impl ThreadSummary {
             latest_note,
             search_text,
             is_favorite,
+            model: Some(thread.model.clone()).filter(|model| !model.is_empty()),
+            total_tokens: thread
+                .total_tokens
+                .as_ref()
+                .map(|usage| usage.input.saturating_add(usage.output)),
         }
     }
 
@@ -776,6 +788,8 @@ mod tests {
                 latest_note: None,
                 search_text: "ai failed output_text".to_string(),
                 is_favorite: true,
+                model: None,
+                total_tokens: None,
             }],
         };
         fs::write(
@@ -798,6 +812,8 @@ mod tests {
         assert!(!summary.search_text.contains("input_text"));
         assert!(!summary.search_text.contains("output_text"));
         assert!(!summary.search_text.contains("ai failed output_text"));
+        assert_eq!(summary.model.as_deref(), Some("gpt-5"));
+        assert_eq!(summary.total_tokens, Some(30));
 
         let reloaded = ThreadIndex::load_or_create(tmp.path())?;
         assert_eq!(reloaded.data().version, INDEX_VERSION);
