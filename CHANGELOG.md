@@ -32,27 +32,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **U1 lane-truth resolver** — LLM formatting, assistive, and agent provider setup now share one documented lane truth for provider, endpoint, model, and credential availability.
-- **U2 reset/unset contract** — clearing LLM Settings removes the persisted override and falls back through env/config/defaults instead of leaving stale lane state behind.
-- **U3 key liveness diagnostics** — Settings key probes distinguish valid keys, invalid keys, exhausted billing, missing keys, unsupported providers, and network failures.
-- **U4/U5 lane parity docs** — provider ids, lane env names, Keychain accounts, endpoint normalization, and key-optional local endpoints are recorded in `docs/lane-truth.md` and `docs/ENV_REGISTRY.toml`.
-- **U8 Settings panels** — the refreshed Settings lanes expose the current provider/endpoint/model/key truth instead of shadow configuration.
+- **U1 canonical lane-truth snapshot** (`860e490`) — `LaneTruthSnapshot` is exposed over UniFFI as the single source of provider/endpoint/model/credential truth; the duplicate Swift-side resolver (hardcoded model ids) was removed.
+- **U3 Composer Cmd+V** (`fb9f2ff`, `31a64c3`) — pasting into the agent composer now stages Finder images, screenshots, and text as attachments (pure `pasteDisposition` routing, window/focus-scoped NSEvent monitor).
+- **U4 Settings truth surface** (`bbfb72f`) — the rail no longer renders inert fake buttons, the footer computes `healthy/degraded/offline/unknown` from live signals (with a jump to the failing section), and User became a real local-first panel.
+- **U5 chat stream cost cut + Latest pill** (`d2b73e1`) — per-delta-tick Markdown re-parse eliminated (measured 4555 µs → 0.1 µs per tick on a 20k stream), scroll signature 137 µs → 2.3 µs, plus a floating "↓ Latest" pill and a per-bubble raw↔rich toggle. Streaming and final bubbles share the same **raw-default** render policy (C2b).
+- **U7 Voice Lab on the quality loop** (`2f7f920`) — live recent overlay corrections and custom-lexicon entries (read via new bridge surfaces, never raw file reads from Swift) plus preview-timing presets (Smooth 1038/10.6/5/8.0 as recommended default, Snappy, Relaxed, Off, Custom with tolerant detection).
+- **U8 Audio panel** (`1d6c386`) — live input-device enumeration with honest runtime resolution (saved wish vs. live device shown explicitly), silence/feedback controls mapped only to keys the runtime consumes, dedicated unset-based reset; the rail has no `comingSoon` placeholders left.
+- **D4 ThreadRail sections and metadata** (`0709f4b`) — Today/Yesterday/This week/Older grouping (search filters first, then grouping) and a nil-safe `relative time · model · tokens` meta line; the thread index gained the needed fields additively via a versioned rebuild.
+- **D6 overlay Paste + failure marker** (`c207ac9`) — the formatted overlay gained a [Paste] action that delivers the user-edited text to the previous app through the single controller delivery path (tagging included), and formatting failures set a discrete state marker while copy/paste/send keep clean text.
 - **U12 recoverable reset safety** (`5ea8502`) — full app-data reset moved to **User → Danger zone**, requires typing `RESET`, previews the affected recordings/threads/bytes, moves data to **Trash**, and writes an external append-only audit log. MCP recovery is now a separate **Clear MCP configuration…** action that moves only `mcp.json` to Trash.
 
 ### Changed
 
-- **U6/U7 assistive provider path** — the app agent provider follows the assistive lane snapshot, including Anthropic Messages and key-optional OpenAI-compatible endpoints.
-- **D4 raw-default chat render policy** — streaming and final chat rendering now share the same raw-default Markdown policy (C2b), so final bubbles do not reinterpret streamed content differently.
-- **D6/D8 release docs truth** — release-facing docs now align hotkeys, Settings, and LLM lane configuration with the runtime resolver rather than the reverted README/changelog copy.
-- **Settings rail truth** (`6a00398`, `5415e7e`) — rail labels now use **Hotkeys** and **Providers**, while the navigation stack is flush-top instead of floating in unused vertical space.
+- **U2 optional-override mutation contract** (`43e50ad`) — single and batch settings writes share one `apply_optional_override` helper, so batch saves can no longer persist `Some("")` and silently blank promoted lane keys; reset means unset.
+- **U10 lane-truth documentation rebuilt** (`2df8493`) — `docs/lane-truth.md` (lanes, precedence, key-optional locals, reset=unset, endpoint normalization, probe vs. agent-gate diagnostics), `docs/ENV_REGISTRY.toml` lane coverage, secret-safe examples across docs, and this 0.12.3 changelog entry.
+- **U16 env templates = registry truth** (`7666d94`) — `.env.example` and `.env.debug.example` now mirror `docs/ENV_REGISTRY.toml` exactly (183 keys, commented, grouped, `<your-key>` placeholders only); template-only ghost keys were removed and live keys missing from the registry were added.
+- **U13 Settings rail labels + layout** (`6a00398`, `5415e7e`) — rail labels now read **Hotkeys** and **Providers** (user-facing strings only; internal identifiers unchanged), and the navigation stack is flush-top instead of floating in unused vertical space.
 - **Overlay CloseDot** (`5415e7e`) — the orange wordmark dot is now a dedicated close control with a traffic-light hover state, the existing close path, and an accessible label; the shared decorative wordmark remains non-interactive elsewhere.
 
 ### Fixed
 
-- **D-01 hands-off toggle ADR annotation** — `HOTKEYS_CONTRACT.md` records that commit `37f137e` reverted the 2026-05-28 force-RAW toggle decision and restored Settings-driven default routing when no explicit hotkey override exists.
+- **U14 MCP resilience — SIGPIPE root cause** (`a35a64b`) — a dead-at-exec MCP server could kill the whole app silently: writing `shutdown` to the dead child's stdin raised SIGPIPE, which is ignored in Rust binaries but fatal (and unreported by ReportCrash) inside the Swift-hosted dylib. Fixed with per-fd `F_SETNOSIGPIPE`, a `try_wait` guard before farewell writes, a dedicated 5 s `initialize` timeout, and parallel per-server discovery isolation; a falsification test reproduces the death (signal 13) without the fix.
 - **U15 tray toggle truth** (`c98201c`) — after writing `transcription_overlay_enabled`, the tray re-reads the bridge/settings source of truth so its On/Off label cannot remain on an optimistic stale value.
 - **U15 OpenAI restored-image guard** (`5f49f56`) — byte-less `tool_result` images now warn-skip instead of serializing an empty data URI or image reference.
-- **[landing] U14 MCP resilience** — isolate startup per MCP server and bound `initialize` plus `tools/list`; a dead, closed-stdout, or hanging server must degrade that server's tools without exiting or panicking the app session. This line is sourced from the U14 brief pending its implementation report.
+- **U11 model-discovery cancellation** (`66e123f`) — a new discovery generation now aborts the previous in-flight HTTP fetch per provider (proven by an `expect(0)` mock: the cancelled request never reaches the wire) and a stale generation can no longer overwrite the cache.
+- **D8 Anthropic image-asset parity** (`41c14de`) — tool-result images restored with `data_omitted` warn-skip instead of silently serializing (with a text fallback keeping the block valid); ImageAsset bytes load from disk at request time only, matching the OpenAI provider contract.
+- **U6 quality-chain proof** (`ad4b06d`, tests only) — a hermetic end-to-end test proves the operator promise at engine level: an overlay edit becomes a `QualityRecord`, a lexicon candidate, a custom-lexicon commit, and a corrected next transcript.
+- **D-01 hands-off toggle ADR annotation** — `HOTKEYS_CONTRACT.md` records that commit `37f137e` reverted the 2026-05-28 force-RAW toggle decision and restored Settings-driven default routing when no explicit hotkey override exists.
 
 ## [0.12.2] - 2026-06-22
 
