@@ -120,6 +120,12 @@ default or use a `Dictation` binding (force raw). The earlier unconditional
 force-RAW on this path was removed because it silently erased the Settings
 formatting default.
 
+**Revision D-01 (2026-07-16):** commit `37f137e` intentionally reverted the
+2026-05-28 ADR decision that forced toggle hands-off stops to RAW whenever no
+explicit hotkey override existed. The runtime now lets Settings decide the
+default route in that case, while explicit `Dictation` / `Formatting` bindings
+continue to win.
+
 **Events:**
 
 ```rust

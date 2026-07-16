@@ -106,17 +106,17 @@ AI_FORMATTING_ENABLED=1
 # Formatting mode - used by cleanup/formatting paths
 LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
 LLM_FORMATTING_MODEL=gpt-4.1
-LLM_FORMATTING_API_KEY=sk-xxx
+# Store LLM_FORMATTING_API_KEY in Settings / macOS Keychain.
 
 # Assistive mode - dictation-driven agent
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-5.5
-LLM_ASSISTIVE_API_KEY=sk-xxx
+# Store LLM_ASSISTIVE_API_KEY in Settings / macOS Keychain.
 
 # Shared fallback (if mode-specific not set)
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-proj-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain.
 ```
 
 ### Custom Prompts

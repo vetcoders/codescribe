@@ -79,18 +79,22 @@ Put your OpenAI API key in Settings. Codescribe stores it in macOS Keychain and 
 # Shared defaults
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-proj-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain, not in committed files.
 
 # Formatting mode / cleanup pass
 LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
 LLM_FORMATTING_MODEL=gpt-4.1
-LLM_FORMATTING_API_KEY=sk-proj-xxx
+# Store LLM_FORMATTING_API_KEY in Settings / macOS Keychain.
 
 # Assistive mode / agent chat
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-5.5
-LLM_ASSISTIVE_API_KEY=sk-proj-xxx
+# Store LLM_ASSISTIVE_API_KEY in Settings / macOS Keychain.
 ```
+
+For the exact resolver used by formatting, assistive, and the agent provider —
+including precedence, reset/unset behavior, endpoint normalization, and
+key-optional local endpoints — see [`docs/lane-truth.md`](docs/lane-truth.md).
 
 > **Note:** All requests use `previous_response_id` for conversation chaining. Context persists across transcriptions.
 
@@ -284,7 +288,7 @@ AI_FORMATTING_ENABLED=1              # 1=format via LLM, 0=raw transcript
 # OpenAI Responses provider (shared defaults)
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-proj-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain.
 
 # Mode-specific overrides (optional)
 # LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=

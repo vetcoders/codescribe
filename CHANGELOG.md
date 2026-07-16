@@ -26,6 +26,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Silero VAD reload leak** — the Silero ONNX session is now compiled once and shared process-wide instead of being rebuilt per recording (which leaked native ORT memory over long sessions).
 - **Allocator retention** — freed transient buffers are returned to the OS after each recording (`malloc_zone_pressure_relief` on macOS) instead of inflating the resident footprint across a session.
 
+## [0.12.3] - 2026-07-16
+
+> Audit-close patch line for lane-truth configuration, Settings parity, and the assistive/chat render contract.
+
+### Added
+
+- **U1 lane-truth resolver** — LLM formatting, assistive, and agent provider setup now share one documented lane truth for provider, endpoint, model, and credential availability.
+- **U2 reset/unset contract** — clearing LLM Settings removes the persisted override and falls back through env/config/defaults instead of leaving stale lane state behind.
+- **U3 key liveness diagnostics** — Settings key probes distinguish valid keys, invalid keys, exhausted billing, missing keys, unsupported providers, and network failures.
+- **U4/U5 lane parity docs** — provider ids, lane env names, Keychain accounts, endpoint normalization, and key-optional local endpoints are recorded in `docs/lane-truth.md` and `docs/ENV_REGISTRY.toml`.
+- **U8 Settings panels** — the refreshed Settings lanes expose the current provider/endpoint/model/key truth instead of shadow configuration.
+
+### Changed
+
+- **U6/U7 assistive provider path** — the app agent provider follows the assistive lane snapshot, including Anthropic Messages and key-optional OpenAI-compatible endpoints.
+- **D4 raw-default chat render policy** — streaming and final chat rendering now share the same raw-default Markdown policy (C2b), so final bubbles do not reinterpret streamed content differently.
+- **D6/D8 release docs truth** — release-facing docs now align hotkeys, Settings, and LLM lane configuration with the runtime resolver rather than the reverted README/changelog copy.
+
+### Fixed
+
+- **D-01 hands-off toggle ADR annotation** — `HOTKEYS_CONTRACT.md` records that commit `37f137e` reverted the 2026-05-28 force-RAW toggle decision and restored Settings-driven default routing when no explicit hotkey override exists.
+
 ## [0.12.2] - 2026-06-22
 
 > Public-readiness patch line for the assistive/dictation stack. This release keeps the `0.12.x` product shape but hardens the user-visible paths that made private builds feel finished while public releases lagged behind.

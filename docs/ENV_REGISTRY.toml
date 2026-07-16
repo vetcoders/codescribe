@@ -194,6 +194,94 @@ category = "ui"
 description = "Start UI-initiated recording from the tray in the assistive lane instead of dictation"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# LLM lane truth (see docs/lane-truth.md)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.LLM_ENDPOINT]
+default = "https://api.openai.com/v1/responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Shared OpenAI-compatible endpoint fallback for LLM lanes; normalized to /v1/responses"
+
+[vars.LLM_MODEL]
+default = "gpt-4.1"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Shared OpenAI model fallback for LLM lanes"
+
+[vars.LLM_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Shared/main OpenAI API key account; prefer Settings / macOS Keychain"
+
+[vars.LLM_FORMATTING_ENDPOINT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane endpoint override; falls back to shared LLM_ENDPOINT"
+
+[vars.LLM_FORMATTING_MODEL]
+default = "gpt-4.1"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane model override"
+
+[vars.LLM_FORMATTING_PROVIDER]
+default = "openai-responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane provider id: openai-responses or anthropic-messages"
+
+[vars.LLM_FORMATTING_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane OpenAI API key account; prefer Settings / macOS Keychain"
+
+[vars.LLM_ASSISTIVE_ENDPOINT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Assistive/agent-lane endpoint override; falls back to shared LLM_ENDPOINT"
+
+[vars.LLM_ASSISTIVE_MODEL]
+default = "gpt-5.5"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Assistive/agent-lane model override"
+
+[vars.LLM_ASSISTIVE_PROVIDER]
+default = "openai-responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Assistive/agent-lane provider id: openai-responses or anthropic-messages"
+
+[vars.LLM_ASSISTIVE_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Assistive OpenAI API key account; prefer Settings / macOS Keychain"
+
+[vars.LLM_ANTHROPIC_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Anthropic Messages API key account shared by Anthropic formatting and assistive lanes"
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
 # ═══════════════════════════════════════════════════════════════════════════════
 
