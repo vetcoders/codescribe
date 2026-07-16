@@ -37,16 +37,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **U3 key liveness diagnostics** — Settings key probes distinguish valid keys, invalid keys, exhausted billing, missing keys, unsupported providers, and network failures.
 - **U4/U5 lane parity docs** — provider ids, lane env names, Keychain accounts, endpoint normalization, and key-optional local endpoints are recorded in `docs/lane-truth.md` and `docs/ENV_REGISTRY.toml`.
 - **U8 Settings panels** — the refreshed Settings lanes expose the current provider/endpoint/model/key truth instead of shadow configuration.
+- **U12 recoverable reset safety** (`5ea8502`) — full app-data reset moved to **User → Danger zone**, requires typing `RESET`, previews the affected recordings/threads/bytes, moves data to **Trash**, and writes an external append-only audit log. MCP recovery is now a separate **Clear MCP configuration…** action that moves only `mcp.json` to Trash.
 
 ### Changed
 
 - **U6/U7 assistive provider path** — the app agent provider follows the assistive lane snapshot, including Anthropic Messages and key-optional OpenAI-compatible endpoints.
 - **D4 raw-default chat render policy** — streaming and final chat rendering now share the same raw-default Markdown policy (C2b), so final bubbles do not reinterpret streamed content differently.
 - **D6/D8 release docs truth** — release-facing docs now align hotkeys, Settings, and LLM lane configuration with the runtime resolver rather than the reverted README/changelog copy.
+- **Settings rail truth** (`6a00398`, `5415e7e`) — rail labels now use **Hotkeys** and **Providers**, while the navigation stack is flush-top instead of floating in unused vertical space.
+- **Overlay CloseDot** (`5415e7e`) — the orange wordmark dot is now a dedicated close control with a traffic-light hover state, the existing close path, and an accessible label; the shared decorative wordmark remains non-interactive elsewhere.
 
 ### Fixed
 
 - **D-01 hands-off toggle ADR annotation** — `HOTKEYS_CONTRACT.md` records that commit `37f137e` reverted the 2026-05-28 force-RAW toggle decision and restored Settings-driven default routing when no explicit hotkey override exists.
+- **U15 tray toggle truth** (`c98201c`) — after writing `transcription_overlay_enabled`, the tray re-reads the bridge/settings source of truth so its On/Off label cannot remain on an optimistic stale value.
+- **U15 OpenAI restored-image guard** (`5f49f56`) — byte-less `tool_result` images now warn-skip instead of serializing an empty data URI or image reference.
+- **[landing] U14 MCP resilience** — isolate startup per MCP server and bound `initialize` plus `tools/list`; a dead, closed-stdout, or hanging server must degrade that server's tools without exiting or panicking the app session. This line is sourced from the U14 brief pending its implementation report.
 
 ## [0.12.2] - 2026-06-22
 

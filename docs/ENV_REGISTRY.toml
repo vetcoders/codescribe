@@ -15,8 +15,8 @@
 # Created by Vetcoders (c)2026
 
 [meta]
-version = "1.0.0"
-updated = "2026-02-24"
+version = "1.1.0"
+updated = "2026-07-16"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD (Voice Activity Detection) - Silero Neural Network
@@ -179,6 +179,27 @@ category = "streaming"
 description = "Silence duration before utterance flush in buffered mode (sec)"
 range = "0.1-10.0"
 
+[vars.CODESCRIBE_UTTERANCE_GAP_SEC]
+default = "0.5"
+type = "f32"
+reload = "hot"
+category = "vad"
+description = "Silero utterance gap threshold in seconds"
+
+[vars.CODESCRIBE_TAIL_SILENCE_SEC]
+default = "2.0"
+type = "f32"
+reload = "hot"
+category = "vad"
+description = "Trailing silence threshold before the tail filter can drop a low-speech suffix"
+
+[vars.CODESCRIBE_TAIL_DROP_ENABLED]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "vad"
+description = "Enable low-speech trailing-tail removal after the Silero gate"
+
 [vars.TRANSCRIPTION_OVERLAY_ENABLED]
 default = "1"
 type = "bool"
@@ -280,6 +301,60 @@ type = "secret"
 reload = "hot"
 category = "llm"
 description = "Anthropic Messages API key account shared by Anthropic formatting and assistive lanes"
+
+[vars.LLM_TEMPERATURE]
+default = ""
+type = "f32"
+reload = "hot"
+category = "llm"
+description = "Shared temperature fallback; unset lets the selected model choose its default"
+
+[vars.LLM_ASSISTIVE_TEMPERATURE]
+default = ""
+type = "f32"
+reload = "hot"
+category = "llm"
+description = "Assistive-lane temperature override; falls back to LLM_TEMPERATURE"
+
+[vars.WHISPER_SERVER_URL]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Legacy migration-only alias rewritten to STT_ENDPOINT"
+deprecated = "STT_ENDPOINT"
+
+[vars.LLM_SERVER_URL]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only alias rewritten to LLM_ENDPOINT"
+deprecated = "LLM_ENDPOINT"
+
+[vars.LLM_HOST]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only host alias rewritten to LLM_ENDPOINT"
+deprecated = "LLM_ENDPOINT"
+
+[vars.OLLAMA_HOST]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only Ollama host alias rewritten to LLM_ENDPOINT"
+deprecated = "LLM_ENDPOINT"
+
+[vars.OLLAMA_MODEL]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only Ollama model alias rewritten to LLM_MODEL"
+deprecated = "LLM_MODEL"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
@@ -547,10 +622,10 @@ description = "Cloud STT API endpoint (when USE_LOCAL_STT=0)"
 
 [vars.STT_API_KEY]
 default = ""
-type = "string"
+type = "secret"
 reload = "restart"
 category = "stt"
-description = "Cloud STT API key"
+description = "Cloud STT API key; prefer Settings / macOS Keychain"
 
 [vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
 default = "0"
@@ -673,41 +748,6 @@ reload = "hot"
 category = "llm"
 description = "AI formatting level: raw, medium, or creative"
 
-[vars.LLM_ENDPOINT]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "Default LLM API endpoint"
-
-[vars.LLM_MODEL]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "Default LLM model name"
-
-[vars.LLM_API_KEY]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "Default LLM API key"
-
-[vars.LLM_FORMATTING_ENDPOINT]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM endpoint for formatting mode (overrides LLM_ENDPOINT)"
-
-[vars.LLM_FORMATTING_PROVIDER]
-default = "openai-responses"
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM provider for formatting mode: openai-responses or anthropic-messages"
-
 [vars.LLM_FORMATTING_AUTH_MODE]
 default = "api-key"
 type = "string"
@@ -715,40 +755,12 @@ reload = "hot"
 category = "llm"
 description = "Auth mode for formatting LLM provider: api-key or provider-account"
 
-[vars.LLM_FORMATTING_MODEL]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM model for formatting mode"
-
-[vars.LLM_FORMATTING_API_KEY]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM API key for formatting mode"
-
 [vars.LLM_FORMATTING_TEMPERATURE]
 default = "0.1"
 type = "f32"
 reload = "hot"
 category = "llm"
 description = "Temperature for formatting mode"
-
-[vars.LLM_ASSISTIVE_ENDPOINT]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM endpoint for assistive mode (overrides LLM_ENDPOINT)"
-
-[vars.LLM_ASSISTIVE_PROVIDER]
-default = "openai-responses"
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM provider for assistive/agent mode: openai-responses or anthropic-messages"
 
 [vars.LLM_ASSISTIVE_AUTH_MODE]
 default = "api-key"
@@ -763,20 +775,6 @@ type = "string"
 reload = "hot"
 category = "llm"
 description = "Anthropic Messages API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=anthropic-messages (override for proxies)"
-
-[vars.LLM_ASSISTIVE_MODEL]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM model for assistive mode"
-
-[vars.LLM_ASSISTIVE_API_KEY]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM API key for assistive mode"
 
 [vars.LLM_USE_STREAMING]
 default = "1"
@@ -1191,6 +1189,101 @@ type = "bool"
 reload = "restart"
 category = "debug"
 description = "Enable AppKit/UI tests gated by CODESCRIBE_UI_TESTS"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Opt-in E2E / developer probes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_E2E_CORPUS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable the real WAV/TXT corpus regression probe"
+
+[vars.CODESCRIBE_E2E_CORPUS_DATE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional date filter for the corpus regression probe"
+
+[vars.CODESCRIBE_E2E_CORPUS_DIR]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional corpus directory override for WAV/TXT regression pairs"
+
+[vars.CODESCRIBE_E2E_CORPUS_LANGUAGE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional Whisper language hint for corpus regression runs"
+
+[vars.CODESCRIBE_E2E_CORPUS_LIMIT]
+default = "3"
+type = "usize"
+reload = "restart"
+category = "test"
+description = "Maximum number of corpus pairs processed by one E2E run"
+
+[vars.CODESCRIBE_E2E_CORPUS_MAX_REGRESSION]
+default = "0.05"
+type = "f32"
+reload = "restart"
+category = "test"
+description = "Maximum accepted WER/CER regression ratio for the corpus probe"
+
+[vars.CODESCRIBE_E2E_LANG]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "test"
+description = "Language hint for opt-in local STT E2E tests"
+
+[vars.CODESCRIBE_E2E_MIC]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable opt-in E2E tests that capture from a real microphone"
+
+[vars.CODESCRIBE_E2E_MIC_LANGUAGE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional language hint for real-microphone E2E tests"
+
+[vars.CODESCRIBE_E2E_MIC_SEC]
+default = "6.0"
+type = "f32"
+reload = "restart"
+category = "test"
+description = "Recording duration in seconds for the real-microphone VAD probe"
+
+[vars.CODESCRIBE_E2E_OLLAMA]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable the real local-Ollama conversation continuity test"
+
+[vars.CODESCRIBE_E2E_RUN_MEDIUM]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Include the medium audio fixture in the example STT E2E run"
+
+[vars.CODESCRIBE_E2E_STT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable heavy local Whisper STT E2E suites"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ASSISTIVE CONTEXT CAPTURE
