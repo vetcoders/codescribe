@@ -2,6 +2,29 @@ import AppKit
 import XCTest
 @testable import Codescribe
 
+private final class OverlayStateTestEngine: DictationEngine {
+    var pastedText: String?
+    var formattedResult: Result<String, Error> = .success("")
+
+    func setListener(_ listener: CsTranscriptionListener) {}
+    func startRecording(language: CsLanguage?) async throws {}
+    func stopRecording() async throws -> String { "" }
+    func isRecording() async -> Bool { false }
+    func initModel() async throws {}
+    func isModelLoaded() -> Bool { true }
+    func isFormattingAvailable() -> Bool { true }
+    func formatText(text: String, language: CsLanguage?) async throws -> String {
+        switch formattedResult {
+        case .success(let text): return text
+        case .failure(let error): throw error
+        }
+    }
+    func pasteText(text: String) async throws { pastedText = text }
+    func transcribeFile(path: String) async throws -> CsTranscription {
+        CsTranscription(text: "", language: "en")
+    }
+}
+
 @MainActor
 final class OverlayStateTests: XCTestCase {
     func testTwoUtterancesAppendAndPreviewOnlyReplacesActiveTail() {
@@ -53,6 +76,22 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.statusText, "failed")
     }
 
+    func testFormatFailureShowsMarkerButKeepsTextClean() async {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        engine.formattedResult = .failure(NSError(domain: "OverlayStateTests", code: 1))
+        state.engine = engine
+        state.formattedText = "raw source transcript"
+        state.mode = .formatted
+
+        state.formatTranscript()
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(state.formattedText, "raw source transcript")
+        XCTAssertEqual(state.formatFailureStatus, "raw — formatting failed")
+        XCTAssertEqual(state.activeText, "raw source transcript")
+    }
+
     func testCopyAndSendDismissTheOverlay() {
         let state = OverlayState()
         var closeCount = 0
@@ -70,6 +109,23 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(sentText, "ready transcript")
         // Since 845cec0 sendToAgent delegates dismissal to the onSendToAgent
         // closure (OverlayController wires the hide there) — no direct onClose.
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testPasteUsesEditedTextAndDismissesOverlay() async {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        var closeCount = 0
+        state.engine = engine
+        state.onClose = { closeCount += 1 }
+        state.applyFinalTranscript("original delivered transcript here")
+        state.formattedText = "original delivered transcript here with user fix"
+        state.mode = .formatted
+
+        state.pasteToPreviousApp()
+        try? await Task.sleep(nanoseconds: 10_000_000)
+
+        XCTAssertEqual(engine.pastedText, "original delivered transcript here with user fix")
         XCTAssertEqual(closeCount, 1)
     }
 

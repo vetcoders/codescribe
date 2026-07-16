@@ -73,6 +73,7 @@ protocol DictationEngine: AnyObject {
     func isModelLoaded() -> Bool
     func isFormattingAvailable() -> Bool
     func formatText(text: String, language: CsLanguage?) async throws -> String
+    func pasteText(text: String) async throws
     func transcribeFile(path: String) async throws -> CsTranscription
 }
 
@@ -109,6 +110,7 @@ final class OverlayState: ObservableObject {
     @Published var toast: String?              // transient error notice
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
+    @Published var formatFailureStatus: String?
     /// Final pass phase (AI formatting / authoritative assembly after stop).
     /// Set on `applySessionFinalised`, cleared on controller finish or reset.
     /// Drives "final pass" status while the user still sees the live assembly.
@@ -336,6 +338,7 @@ final class OverlayState: ObservableObject {
         resetTranscript()
         formattedText = ""
         isFormatting = false
+        formatFailureStatus = nil
         errorMessage = nil
         recording = true
         do {
@@ -358,9 +361,14 @@ final class OverlayState: ObservableObject {
             do {
                 let formatted = try await engine.formatText(text: source, language: nil)
                 self.formattedText = formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source : formatted
+                self.formatFailureStatus = nil
                 self.mode = .formatted
                 self.cancelAutoHide()  // User acted (Format); do not auto-hide the result.
             } catch {
+                self.formattedText = source
+                self.formatFailureStatus = "raw — formatting failed"
+                self.mode = .formatted
+                self.cancelAutoHide()
                 self.errorMessage = "Couldn't format transcript: \(error)"
                 self.showToast("Couldn't format transcript")
             }
@@ -409,6 +417,21 @@ final class OverlayState: ObservableObject {
         onSendToAgent?(activeText)
         // The onSendToAgent closure (wired in OverlayController) also hides;
         // the cancel ensures timer is dead even if closure path changes.
+    }
+
+    func pasteToPreviousApp() {
+        captureQualityIfEdited(action: "paste")
+        cancelAutoHide()
+        let text = activeText
+        Task { @MainActor in
+            do {
+                try await engine?.pasteText(text: text)
+                onClose?()
+            } catch {
+                self.errorMessage = "Couldn't paste transcript: \(error)"
+                self.showToast("Couldn't paste transcript")
+            }
+        }
     }
 
     func close() {
@@ -488,6 +511,7 @@ final class OverlayState: ObservableObject {
             }
             formattedText = ""
             isFormatting = false
+            formatFailureStatus = nil
             errorMessage = nil
         }
         recording = true
@@ -755,6 +779,7 @@ final class OverlayState: ObservableObject {
         // reassign `@Published` state (each write re-invalidates the TextEditor).
         guard !clean.isEmpty, clean != authoritativeFinalText else { return }
         authoritativeFinalText = clean
+        formatFailureStatus = nil
         if mode == .formatted, formattedText != clean {
             formattedText = clean
         } else if mode == .noSpeech {
@@ -845,6 +870,7 @@ final class OverlayState: ObservableObject {
         authoritativeFinalText = nil
         deliveredText = ""
         sttRawText = ""
+        formatFailureStatus = nil
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false
@@ -1023,6 +1049,9 @@ final class ControllerDictationEngine: DictationEngine {
     func formatText(text: String, language: CsLanguage?) async throws -> String {
         try await hotkeys.formatText(text: text, language: language)
     }
+    func pasteText(text: String) async throws {
+        try await hotkeys.pasteText(text: text)
+    }
     func transcribeFile(path: String) async throws -> CsTranscription {
         throw NSError(domain: "CodescribeRedesign", code: 1, userInfo: [
             NSLocalizedDescriptionKey: "File transcription is not available through the hotkey controller."
@@ -1114,6 +1143,7 @@ final class MockDictationEngine: DictationEngine {
     func isModelLoaded() -> Bool { true }
     func isFormattingAvailable() -> Bool { false }
     func formatText(text: String, language: CsLanguage?) async throws -> String { text }
+    func pasteText(text: String) async throws {}
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }

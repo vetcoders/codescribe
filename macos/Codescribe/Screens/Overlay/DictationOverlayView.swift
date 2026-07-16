@@ -248,14 +248,22 @@ struct DictationOverlayView: View {
     }
 
     private var formattedBody: some View {
-        TextEditor(text: $state.formattedText)
-            .csFont(15)
-            .foregroundStyle(CSColor.textHigh)
-            .lineSpacing(5)
-            .scrollContentBackground(.hidden)
-            .background(Color.clear)
-            .frame(minHeight: bodyMinHeight)
-            .accessibilityIdentifier("overlay-transcript-formatted")
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $state.formattedText)
+                .csFont(15)
+                .foregroundStyle(CSColor.textHigh)
+                .lineSpacing(5)
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+                .frame(minHeight: bodyMinHeight)
+                .accessibilityIdentifier("overlay-transcript-formatted")
+            if let status = state.formatFailureStatus {
+                Text(status)
+                    .csMono(11, .medium)
+                    .foregroundStyle(CSColor.textFaint)
+                    .accessibilityIdentifier("overlay-format-failure-status")
+            }
+        }
     }
 
     /// Terminal outcome for a session that captured no usable speech. Replaces
@@ -340,6 +348,15 @@ struct DictationOverlayView: View {
                     tone: .primary,
                     iconOnly: iconOnly,
                     action: { state.copyToPasteboard() }
+                )
+
+                actionButton(
+                    title: "Paste",
+                    help: "Paste transcript to the previous app",
+                    icon: "arrow.down.doc.fill",
+                    tone: .primary,
+                    iconOnly: iconOnly,
+                    action: { state.pasteToPreviousApp() }
                 )
 
                 actionButton(

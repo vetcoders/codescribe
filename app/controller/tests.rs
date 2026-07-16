@@ -2263,7 +2263,11 @@ fn test_formatted_transcript_persists_before_paste() {
         .find("let needs_final_save")
         .expect("final-transcript save block must be present");
     let paste_idx = source
-        .find("clipboard::paste_text(")
+        .get(save_idx..)
+        .and_then(|tail| {
+            tail.find("clipboard::paste_text(")
+                .map(|idx| save_idx + idx)
+        })
         .expect("auto-paste call must be present");
     assert!(
         save_idx < paste_idx,

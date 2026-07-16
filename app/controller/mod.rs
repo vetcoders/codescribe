@@ -48,10 +48,10 @@ use crate::config::{Config, UserSettings};
 use crate::os::clipboard;
 use crate::os::hotkeys::HoldMode;
 use crate::os::selection::{
-    AssistiveContext, build_assistive_input, capture_assistive_context,
+    AssistiveContext, activate_app_by_name, build_assistive_input, capture_assistive_context,
     capture_assistive_context_with_prior_frontmost, capture_frontmost_app_only,
     capture_frontmost_app_only_with_prior_frontmost, get_recent_assistive_context,
-    store_recent_assistive_context,
+    store_recent_assistive_context, wait_for_frontmost_app,
 };
 
 // Moshi conversation engine and audio output
@@ -79,6 +79,7 @@ const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
 const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
+const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(250);
 
 fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     if assistive {
@@ -1100,6 +1101,28 @@ impl RecordingController {
     /// Snapshot of current controller configuration
     pub async fn get_config(&self) -> Config {
         self.config.read().await.clone()
+    }
+
+    /// Paste user-edited overlay text through the same controller-owned delivery
+    /// path as automatic dictation delivery: restore the pre-overlay target app,
+    /// apply transcript tagging config, then synthesize Cmd+V via clipboard.
+    pub async fn paste_text_from_overlay(&self, text: String) -> Result<()> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
+        if let Some(app_name) = target_app.as_deref()
+            && activate_app_by_name(app_name)
+        {
+            let _ = wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
+        }
+
+        let config = self.config.read().await.clone();
+        let paste_text = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
+        Ok(())
     }
 
     /// Cancel any pending delayed hold-start task

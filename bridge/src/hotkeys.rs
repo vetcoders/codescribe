@@ -454,6 +454,17 @@ impl CodescribeHotkeys {
         }
     }
 
+    /// Paste edited overlay text back into the app that was frontmost before the overlay.
+    pub async fn paste_text(&self, text: String) -> Result<(), CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .paste_text_from_overlay(text)
+            .await
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+    }
+
     /// Stop the global hotkey listener if it is active.
     pub fn stop(&self) {
         hotkeys::shutdown_global_hotkey_manager();
