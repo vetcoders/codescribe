@@ -2,8 +2,7 @@ import Combine
 import SwiftUI
 
 // Settings window: NavigationSplitView with a truthful section rail. Available
-// sections navigate, coming-soon sections are announced as such, and hidden
-// sections do not render.
+// sections navigate and hidden sections do not render.
 
 struct SettingsView: View {
     @StateObject private var model: SettingsViewModel
@@ -57,11 +56,9 @@ struct SettingsView: View {
                     UserPanel(model: model)
                 case .voiceLab:
                     VoiceLabPanel(model: model)
-                case .creator:
-                    CreatorPanel(model: model)
                 case .audio:
-                    // `select` cannot enter coming-soon sections. Keep this
-                    // exhaustive fallback for state restoration across versions.
+                    AudioPanel(model: model)
+                case .creator:
                     CreatorPanel(model: model)
                 }
             }
@@ -148,22 +145,12 @@ private struct SettingsRail: View {
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(isActive ? .isSelected : [])
-        case .comingSoon:
-            railItemContent(item, isActive: false, showsSoonChip: true)
-                .opacity(0.85)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(item.rawValue), coming soon")
-                .help("Coming soon")
         case .hidden:
             EmptyView()
         }
     }
 
-    private func railItemContent(
-        _ item: SettingsSection,
-        isActive: Bool,
-        showsSoonChip: Bool = false
-    ) -> some View {
+    private func railItemContent(_ item: SettingsSection, isActive: Bool) -> some View {
         HStack(spacing: 10) {
             Circle()
                 .fill(isActive ? CSColor.terracotta : Self.inactiveDot)
@@ -172,15 +159,6 @@ private struct SettingsRail: View {
                 .font(CSFont.ui(13, isActive ? .semibold : .medium))
                 .foregroundStyle(labelColor(item, isActive: isActive))
             Spacer(minLength: 0)
-            if showsSoonChip {
-                Text("soon")
-                    .font(CSFont.mono(8, .semibold))
-                    .tracking(0.3)
-                    .foregroundStyle(CSColor.textFaint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(CSColor.surfaceRaised(0.04), in: Capsule())
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

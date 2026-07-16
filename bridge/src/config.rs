@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
@@ -305,11 +305,36 @@ pub struct CsTrayToggles {
 #[derive(uniffi::Object)]
 pub struct CodescribeConfig {}
 
+/// Seed the recorder's legacy process-env input selector exactly once, while
+/// the macOS app is still constructing its bridge handles and before hotkey or
+/// recording worker threads start. Persisted settings remain the source of
+/// truth; an explicit launch-time process override keeps precedence.
+fn bootstrap_audio_input_runtime() {
+    static AUDIO_INPUT_BOOTSTRAP: Once = Once::new();
+    AUDIO_INPUT_BOOTSTRAP.call_once(|| {
+        if cfg!(test) || std::env::var_os("AUDIO_INPUT_DEVICE").is_some() {
+            return;
+        }
+        let Some(device) = Config::load_without_keychain()
+            .audio_input_device
+            .filter(|device| !device.trim().is_empty())
+        else {
+            return;
+        };
+
+        // SAFETY: `CodescribeConfig` is an AppDelegate-owned bridge property,
+        // constructed before `CodescribeHotkeys.start()` spawns runtime workers.
+        // The Once guard prevents later Settings-scene handles from mutating it.
+        unsafe { std::env::set_var("AUDIO_INPUT_DEVICE", device) };
+    });
+}
+
 #[uniffi::export]
 impl CodescribeConfig {
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
+        bootstrap_audio_input_runtime();
         Self {}
     }
 
@@ -344,7 +369,10 @@ impl CodescribeConfig {
             beep_on_start: config.beep_on_start,
             sound_name: config.sound_name.clone(),
             sound_volume: config.sound_volume,
-            audio_input_device: config.audio_input_device.clone(),
+            // This is the saved user choice, not the process-env selector held
+            // by the already-running recorder. AudioPanel gets that live truth
+            // separately from `CsAudioInputSnapshot`.
+            audio_input_device: setting_string(settings.audio_input_device.clone()),
             history_enabled: config.history_enabled,
             quick_notes_enabled: config.quick_notes_enabled,
             quick_notes_save_only: config.quick_notes_save_only,
@@ -471,6 +499,21 @@ impl CodescribeConfig {
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
             })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
+    }
+
+    /// Clear the persisted input-device preference so the recorder falls back
+    /// to the live system default. This is an actual `None` in settings.json,
+    /// never `Some("")`; an explicit power-user env override still wins by the
+    /// existing three-tier contract.
+    pub fn reset_audio_input_device(&self) -> Result<(), CsError> {
+        let mut settings = UserSettings::load();
+        settings.audio_input_device = None;
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
         reload_hotkey_runtime();
         crate::hotkeys::refresh_live_controller_config();
         Ok(())
@@ -1295,6 +1338,42 @@ mod settings_snapshot_tests {
             config.load_settings().llm_assistive_provider.as_deref(),
             Some("anthropic-messages")
         );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[serial]
+    fn audio_input_reset_persists_absence_not_an_empty_override() {
+        let root = scratch("audio_input_reset");
+        std::fs::create_dir_all(&root).expect("create audio reset scratch dir");
+
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        // Mirror the already-running recorder: its process selector remains
+        // pinned until restart even after the saved preference is unset.
+        let _device = EnvGuard::set("AUDIO_INPUT_DEVICE", "USB Studio Mic");
+
+        let mut settings = UserSettings {
+            audio_input_device: Some("USB Studio Mic".to_string()),
+            ..Default::default()
+        };
+        settings.save().expect("seed audio device preference");
+
+        CodescribeConfig::new()
+            .reset_audio_input_device()
+            .expect("reset audio device through the bridge");
+
+        settings = UserSettings::load();
+        assert_eq!(settings.audio_input_device, None);
+        assert_eq!(
+            CodescribeConfig::new().load_settings().audio_input_device,
+            None
+        );
+        let persisted = std::fs::read_to_string(UserSettings::settings_path())
+            .expect("read settings after audio reset");
+        assert!(!persisted.contains("USB Studio Mic"));
+        assert!(!persisted.contains("\"input_device_id\": \"\""));
 
         let _ = std::fs::remove_dir_all(root);
     }

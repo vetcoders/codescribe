@@ -34,6 +34,10 @@ protocol SettingsEngine {
     func updateConfig(key: String, value: String) throws
     func updateConfigMany(entries: [CsConfigEntry]) throws
 
+    // Live audio hardware truth + explicit unset for the preferred device.
+    func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
+    func resetAudioInputDevice() throws
+
     // Voice Lab read-only quality truth (JSONL stays behind the Rust bridge)
     func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
     func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
@@ -92,6 +96,12 @@ final class RealSettingsEngine: SettingsEngine {
     }
     func updateConfigMany(entries: [CsConfigEntry]) throws {
         try config.updateConfigMany(entries: entries)
+    }
+    func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot {
+        try audioInputSnapshot()
+    }
+    func resetAudioInputDevice() throws {
+        try config.resetAudioInputDevice()
     }
     func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
         try qualityRecentRecords(limit: limit)
@@ -155,7 +165,9 @@ struct MockSettingsEngine: SettingsEngine {
     var mode: String? = "agentic"
     var qualityRecords: [CsQualityRecord] = []
     var lexiconEntries: [CsLexiconEntry] = []
+    var audioSnapshot: CsAudioInputSnapshot = .sample
     var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
+    var resetAudioInputDeviceObserver: (() throws -> Void)?
     var updateConfigObserver: ((String, String) throws -> Void)?
 
     func loadSettings() -> CsSettings { settings }
@@ -169,6 +181,10 @@ struct MockSettingsEngine: SettingsEngine {
     }
     func updateConfigMany(entries: [CsConfigEntry]) throws {
         try updateConfigManyObserver?(entries)
+    }
+    func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot { audioSnapshot }
+    func resetAudioInputDevice() throws {
+        try resetAudioInputDeviceObserver?()
     }
     func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
         Array(qualityRecords.prefix(Int(clamping: limit)))
@@ -237,6 +253,17 @@ struct MockSettingsEngine: SettingsEngine {
 }
 
 // MARK: - Bridge value helpers
+
+extension CsAudioInputSnapshot {
+    static let sample = CsAudioInputSnapshot(
+        devices: ["MacBook Pro Microphone", "USB Studio Mic"],
+        configuredDevice: nil,
+        runtimeDevice: "MacBook Pro Microphone",
+        configuredDeviceAvailable: true,
+        fallbackToDefault: false,
+        runtimeConfigurationMatches: true
+    )
+}
 
 extension CsLanguage {
     /// Two-letter code shown in the UI and written to `WHISPER_LANGUAGE`.

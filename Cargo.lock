@@ -826,6 +826,7 @@ dependencies = [
  "chrono",
  "codescribe",
  "codescribe-core",
+ "cpal",
  "crossbeam-channel",
  "serde_json",
  "serial_test",

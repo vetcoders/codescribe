@@ -55,6 +55,8 @@ struct UserPanel: View {
                     .toggleStyle(.switch)
                     .labelsHidden()
                     .tint(CSColor.terracotta)
+                    .accessibilityLabel("Tag transcripts for AI agents")
+                    .accessibilityValue(model.settings.transcriptTaggingEnabled ? "On" : "Off")
             }
             .padding(.top, 11)
 
@@ -82,6 +84,7 @@ struct UserPanel: View {
                 .foregroundStyle(CSColor.terracottaLight)
             }
             .padding(.top, 18)
+            .accessibilityLabel("Open Codescribe documentation")
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
@@ -104,6 +107,8 @@ struct UserPanel: View {
                 .font(CSFont.mono(11.5, .medium))
                 .foregroundStyle(CSColor.textBody)
                 .textSelection(.enabled)
+                .accessibilityLabel(label)
+                .accessibilityValue(value)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 15)
@@ -121,6 +126,8 @@ struct UserPanel: View {
                 .textSelection(.enabled)
                 .lineLimit(2)
                 .truncationMode(.middle)
+                .accessibilityLabel(label)
+                .accessibilityValue(path.isEmpty ? "not loaded yet" : path)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 15)

@@ -3,12 +3,10 @@ import SwiftUI
 
 enum SettingsSectionAvailability: Equatable {
     case available
-    case comingSoon
     case hidden
 }
 
-// Every rail section declares its product truth explicitly. Wave 3 can promote
-// Audio / Voice Lab by changing only this mapping, without reworking the rail.
+// Every rail section declares its product truth explicitly.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case creator = "Creator"
     case shortcuts = "Shortcuts"
@@ -22,10 +20,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var availability: SettingsSectionAvailability {
         switch self {
-        case .creator, .shortcuts, .keys, .prompts, .engine, .voiceLab, .user:
+        case .creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user:
             return .available
-        case .audio:
-            return .comingSoon
         }
     }
 
@@ -300,6 +296,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var qualityRecords: [CsQualityRecord] = []
     @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
     @Published private(set) var voiceLabReadError: String?
+    @Published private(set) var audioInput: CsAudioInputSnapshot
+    @Published private(set) var audioInputReadError: String?
     /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
     /// local callback server listening). Guards double-clicks.
     @Published private(set) var accountLoginPending: Set<String> = []
@@ -363,6 +361,8 @@ final class SettingsViewModel: ObservableObject {
         self.agentReadiness = .sample
         self.mcpStatus = .sample
         self.voiceLabReadError = nil
+        self.audioInput = .sample
+        self.audioInputReadError = nil
     }
 
     /// Re-read live state (permissions can change while the window is open).
@@ -380,6 +380,7 @@ final class SettingsViewModel: ObservableObject {
             needsOnboarding = engine.shouldShowOnboarding()
             refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId, "openai-responses"])
             refreshVoiceLab()
+            refreshAudioInput()
         }
         refreshAgentStatus()
         reloadMcpServers()
@@ -735,6 +736,58 @@ final class SettingsViewModel: ObservableObject {
     func setTranscriptTaggingEnabled(_ enabled: Bool) {
         settings.transcriptTaggingEnabled = enabled
         persist("TRANSCRIPT_TAGGING_ENABLED", enabled ? "1" : "0")
+    }
+
+    // MARK: - Audio (live hardware + existing settings contract)
+
+    func refreshAudioInput() {
+        guard let engine else { return }
+        do {
+            audioInput = try engine.loadAudioInputSnapshot()
+            audioInputReadError = nil
+        } catch {
+            audioInput = CsAudioInputSnapshot(
+                devices: [],
+                configuredDevice: settings.audioInputDevice,
+                runtimeDevice: nil,
+                configuredDeviceAvailable: false,
+                fallbackToDefault: false,
+                runtimeConfigurationMatches: false
+            )
+            audioInputReadError = String(describing: error)
+        }
+    }
+
+    func setAudioInputDevice(_ device: String) {
+        settings.audioInputDevice = device
+        persist("AUDIO_INPUT_DEVICE", device)
+        refreshAudioInput()
+    }
+
+    func resetAudioInputDevice() {
+        guard let engine else { return }
+        do {
+            try engine.resetAudioInputDevice()
+            settings = engine.loadSettings()
+            refreshAudioInput()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    func setToggleSilenceSeconds(_ seconds: Float) {
+        settings.toggleSilenceSec = seconds
+        persist("TOGGLE_SILENCE_SEC", String(format: "%.1f", seconds))
+    }
+
+    func setSoundFeedbackEnabled(_ enabled: Bool) {
+        settings.beepOnStart = enabled
+        persist("BEEP_ON_START", enabled ? "1" : "0")
+    }
+
+    func setSoundVolume(_ volume: Float) {
+        settings.soundVolume = volume
+        persist("SOUND_VOLUME", String(format: "%.2f", volume))
     }
 
     // MARK: - Voice Lab (live quality truth + preview timing)

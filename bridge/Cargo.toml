@@ -25,6 +25,7 @@ anyhow = "1"
 chrono = "0.4"
 serde_json = { workspace = true }
 crossbeam-channel = "0.5"
+cpal = "0.17"
 
 [dev-dependencies]
 async-trait = "0.1"
