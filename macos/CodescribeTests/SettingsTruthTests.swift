@@ -5,6 +5,25 @@ import XCTest
 
 @MainActor
 final class SettingsTruthTests: XCTestCase {
+    func testRailKeyboardFocusMapsToDSHairlineWithoutChangingActiveFill() {
+        XCTAssertEqual(
+            settingsRailItemVisualState(isActive: true, isKeyboardFocused: false),
+            SettingsRailItemVisualState(showsActiveFill: true, showsHairline: true)
+        )
+        XCTAssertEqual(
+            settingsRailItemVisualState(isActive: true, isKeyboardFocused: true),
+            SettingsRailItemVisualState(showsActiveFill: true, showsHairline: true)
+        )
+        XCTAssertEqual(
+            settingsRailItemVisualState(isActive: false, isKeyboardFocused: true),
+            SettingsRailItemVisualState(showsActiveFill: false, showsHairline: true)
+        )
+        XCTAssertEqual(
+            settingsRailItemVisualState(isActive: false, isKeyboardFocused: false),
+            SettingsRailItemVisualState(showsActiveFill: false, showsHairline: false)
+        )
+    }
+
     func testSectionAvailabilityKeepsPromisesHonest() {
         for section in [
             SettingsSection.creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user,

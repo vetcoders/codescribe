@@ -1141,6 +1141,15 @@ impl RecordingController {
         self.config.read().await.clone()
     }
 
+    /// App name latched before the current overlay session took focus.
+    ///
+    /// This is a read-only snapshot for UI copy. Delivery continues to read the
+    /// same field inside `paste_text_from_overlay`; exposing it does not alter the
+    /// focus restoration or clipboard path.
+    pub async fn paste_target_app_name(&self) -> Option<String> {
+        self.pre_overlay_frontmost_app.read().await.clone()
+    }
+
     /// Paste user-edited overlay text through the same controller-owned delivery
     /// path as automatic dictation delivery: restore the pre-overlay target app,
     /// apply transcript tagging config, then synthesize Cmd+V via clipboard.

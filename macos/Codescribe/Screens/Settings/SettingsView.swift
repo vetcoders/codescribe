@@ -80,8 +80,29 @@ struct SettingsView: View {
 
 // MARK: - Rail
 
+struct SettingsRailItemVisualState: Equatable {
+    let showsActiveFill: Bool
+    let showsHairline: Bool
+}
+
+func settingsRailItemVisualState(
+    isActive: Bool,
+    isKeyboardFocused: Bool
+) -> SettingsRailItemVisualState {
+    SettingsRailItemVisualState(
+        showsActiveFill: isActive,
+        showsHairline: isActive || isKeyboardFocused
+    )
+}
+
 private struct SettingsRail: View {
     @ObservedObject var model: SettingsViewModel
+    @FocusState private var focusedControl: FocusTarget?
+
+    private enum FocusTarget: Hashable {
+        case section(String)
+        case footer
+    }
 
     // Inactive rail dot — muted gunmetal (#3a3d44, not a brand token).
     private static let inactiveDot = Color(hex: 0x3A3D44)
@@ -134,39 +155,55 @@ private struct SettingsRail: View {
     @ViewBuilder
     private func railItem(_ item: SettingsSection) -> some View {
         let isActive = model.section == item
+        let isKeyboardFocused = focusedControl == .section(item.rawValue)
         switch item.availability {
         case .available:
             Button {
                 model.select(item)
             } label: {
-                railItemContent(item, isActive: isActive)
+                railItemContent(
+                    item,
+                    visualState: settingsRailItemVisualState(
+                        isActive: isActive,
+                        isKeyboardFocused: isKeyboardFocused
+                    )
+                )
             }
             .buttonStyle(.plain)
+            .focusable(true)
+            .focused($focusedControl, equals: .section(item.rawValue))
+            .focusEffectDisabled()
             .accessibilityAddTraits(isActive ? .isSelected : [])
         case .hidden:
             EmptyView()
         }
     }
 
-    private func railItemContent(_ item: SettingsSection, isActive: Bool) -> some View {
+    private func railItemContent(
+        _ item: SettingsSection,
+        visualState: SettingsRailItemVisualState
+    ) -> some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(isActive ? CSColor.terracotta : Self.inactiveDot)
+                .fill(visualState.showsActiveFill ? CSColor.terracotta : Self.inactiveDot)
                 .frame(width: 7, height: 7)
             Text(item.rawValue)
-                .font(CSFont.ui(13, isActive ? .semibold : .medium))
-                .foregroundStyle(labelColor(item, isActive: isActive))
+                .font(CSFont.ui(13, visualState.showsActiveFill ? .semibold : .medium))
+                .foregroundStyle(labelColor(item, isActive: visualState.showsActiveFill))
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(isActive ? CSColor.terracotta.opacity(0.14) : .clear)
+                .fill(visualState.showsActiveFill ? CSColor.terracotta.opacity(0.14) : .clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .strokeBorder(isActive ? CSColor.terracotta.opacity(0.28) : .clear, lineWidth: 1)
+                .strokeBorder(
+                    visualState.showsHairline ? CSColor.terracotta.opacity(0.28) : .clear,
+                    lineWidth: 1
+                )
         )
         .contentShape(Rectangle())
     }
@@ -184,16 +221,22 @@ private struct SettingsRail: View {
             Button {
                 model.select(target)
             } label: {
-                footerContent(health)
+                footerContent(health, isKeyboardFocused: focusedControl == .footer)
             }
             .buttonStyle(.plain)
+            .focusable(true)
+            .focused($focusedControl, equals: .footer)
+            .focusEffectDisabled()
             .help("Open \(target.rawValue) settings")
         } else {
-            footerContent(health)
+            footerContent(health, isKeyboardFocused: false)
         }
     }
 
-    private func footerContent(_ health: SettingsHealthState) -> some View {
+    private func footerContent(
+        _ health: SettingsHealthState,
+        isKeyboardFocused: Bool
+    ) -> some View {
         HStack(spacing: 8) {
             Circle().fill(health.level.color).frame(width: 6, height: 6)
             Text(health.message)
@@ -206,6 +249,15 @@ private struct SettingsRail: View {
         .padding(.vertical, 14)
         .overlay(alignment: .top) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .strokeBorder(
+                    isKeyboardFocused ? CSColor.terracotta.opacity(0.28) : .clear,
+                    lineWidth: 1
+                )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
         }
     }
 }

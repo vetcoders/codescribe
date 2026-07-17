@@ -8,7 +8,7 @@ import SwiftUI
 //   mode + meta tag chip (DICTATION/FINAL) · meta line
 //   body        listening = waveform (live RMS level) + word-reveal transcript
 //               formatted = editable finalized transcript
-//   action row  recording: Finish; finalized: Copy · Paste · Format · Send.
+//   action row  recording: Finish; finalized: Copy · Insert · Format · Send.
 //               All actions are neutral/grey; Close is the ONE red control.
 //   footer      ● local whisper (olive) · meta on the right
 //
@@ -344,7 +344,7 @@ struct DictationOverlayView: View {
 
     // MARK: Action row
 
-    /// U22 semantics: every ACTION (Finish/Copy/Paste/Format/Send) is a neutral
+    /// U22 semantics: every ACTION (Finish/Copy/Insert/Format/Send) is a neutral
     /// grey surface — the one exception is Close, the sole destructive control,
     /// which wears `CSColor.danger` and must read as red at first glance.
     private enum ActionButtonTone {
@@ -386,8 +386,8 @@ struct DictationOverlayView: View {
                 )
 
                 actionButton(
-                    title: "Paste",
-                    help: "Paste transcript to the previous app",
+                    title: state.insertActionPresentation.title,
+                    help: state.insertActionPresentation.help,
                     icon: "arrow.down.doc.fill",
                     tone: .neutral,
                     iconOnly: iconOnly,

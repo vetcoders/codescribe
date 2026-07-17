@@ -7,6 +7,8 @@ private final class OverlayStateTestEngine: DictationEngine {
     var formattedResult: Result<String, Error> = .success("")
     var onFormat: (() -> Void)?
     var onPaste: (() -> Void)?
+    var pasteTargetAppNameValue: String?
+    var onPasteTargetRead: (() -> Void)?
 
     func setListener(_ listener: CsTranscriptionListener) {}
     func startRecording(language: CsLanguage?) async throws {}
@@ -25,6 +27,10 @@ private final class OverlayStateTestEngine: DictationEngine {
     func pasteText(text: String) async throws {
         pastedText = text
         onPaste?()
+    }
+    func pasteTargetAppName() async -> String? {
+        onPasteTargetRead?()
+        return pasteTargetAppNameValue
     }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
@@ -47,6 +53,47 @@ final class OverlayStateTests: XCTestCase {
         state.applyFinal(utteranceId: 1, text)
         state.finishControllerRecording()
         return state
+    }
+
+    func testInsertActionPresentationNamesKnownTargetAndFallsBackHonestly() {
+        let known = OverlayInsertActionPresentation(targetAppName: "Ghostty")
+        XCTAssertEqual(known.targetAppName, "Ghostty")
+        XCTAssertEqual(known.title, "Insert → Ghostty")
+        XCTAssertEqual(known.help, "Insert at the cursor in Ghostty")
+
+        let blank = OverlayInsertActionPresentation(targetAppName: "  ")
+        XCTAssertNil(blank.targetAppName)
+        XCTAssertEqual(blank.title, "Insert")
+
+        let unknown = OverlayInsertActionPresentation(targetAppName: nil)
+        XCTAssertEqual(unknown.title, "Insert")
+        XCTAssertEqual(unknown.help, "Insert at the cursor in the previous app")
+    }
+
+    func testPasteTargetRefreshesAtPreparingAndStartedSessionEntry() async {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        state.engine = engine
+
+        let preparingRead = expectation(description: "preparing target read")
+        engine.pasteTargetAppNameValue = "Ghostty"
+        engine.onPasteTargetRead = { preparingRead.fulfill() }
+        state.handleRecordingPreparing()
+        await fulfillment(of: [preparingRead], timeout: 1)
+        await Task.yield()
+        XCTAssertEqual(state.insertActionPresentation.title, "Insert → Ghostty")
+
+        let startedRead = expectation(description: "started target read")
+        engine.pasteTargetAppNameValue = nil
+        engine.onPasteTargetRead = { startedRead.fulfill() }
+        state.handleRecordingStarted()
+        await fulfillment(of: [startedRead], timeout: 1)
+        await Task.yield()
+        XCTAssertEqual(state.insertActionPresentation.title, "Insert")
+        XCTAssertEqual(
+            state.insertActionPresentation.help,
+            "Insert at the cursor in the previous app"
+        )
     }
 
     func testAudioLevelMeterOrdersFiniteEnergyAndRejectsInvalidInput() throws {

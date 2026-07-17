@@ -13,6 +13,18 @@ async fn test_initial_state() {
 }
 
 #[tokio::test]
+async fn test_paste_target_app_name_maps_latched_name_and_absence() {
+    let controller = RecordingController::new();
+    assert_eq!(controller.paste_target_app_name().await, None);
+
+    *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());
+    assert_eq!(
+        controller.paste_target_app_name().await.as_deref(),
+        Some("Ghostty")
+    );
+}
+
+#[tokio::test]
 async fn test_last_segment_audio_offset_initialized_to_zero() {
     // commit_segment relies on this starting at 0 — the first segment of a
     // toggle session clips from sample 0. start_toggle_recording then resets

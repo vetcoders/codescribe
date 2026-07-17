@@ -74,7 +74,27 @@ protocol DictationEngine: AnyObject {
     func isFormattingAvailable() -> Bool
     func formatText(text: String, language: CsLanguage?) async throws -> String
     func pasteText(text: String) async throws
+    func pasteTargetAppName() async -> String?
     func transcribeFile(path: String) async throws -> CsTranscription
+}
+
+struct OverlayInsertActionPresentation: Equatable {
+    let targetAppName: String?
+    let title: String
+    let help: String
+
+    init(targetAppName: String?) {
+        let normalized = targetAppName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = normalized.flatMap { $0.isEmpty ? nil : $0 }
+        self.targetAppName = target
+        if let target {
+            title = "Insert → \(target)"
+            help = "Insert at the cursor in \(target)"
+        } else {
+            title = "Insert"
+            help = "Insert at the cursor in the previous app"
+        }
+    }
 }
 
 /// State machine mirrored from the mock: live dictation, the finalized
@@ -117,6 +137,9 @@ final class OverlayState: ObservableObject {
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
     @Published var formatFailureStatus: String?
+    /// Destination name latched once at overlay session entry. The action row
+    /// reads this snapshot; it never polls the bridge during rendering.
+    @Published private(set) var pasteTargetAppName: String?
     /// Final pass phase (AI formatting / authoritative assembly after stop).
     /// Set on `applySessionFinalised`, cleared on controller finish or reset.
     /// Drives "final pass" status while the user still sees the live assembly.
@@ -198,6 +221,7 @@ final class OverlayState: ObservableObject {
     /// started/activity/stopped/finish arrives within `warmupWatchdogNanos`, the
     /// overlay dismisses itself instead of hanging on "starting" forever.
     private var warmupWatchdogTask: Task<Void, Never>?
+    private var pasteTargetRefreshTask: Task<Void, Never>?
     private static let warmupWatchdogNanos: UInt64 = 4_000_000_000
 
     // MARK: Activity-anchored auto-hide for terminal outcomes
@@ -316,6 +340,10 @@ final class OverlayState: ObservableObject {
             && !isFormatting
             && engine?.isFormattingAvailable() == true
             && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var insertActionPresentation: OverlayInsertActionPresentation {
+        OverlayInsertActionPresentation(targetAppName: pasteTargetAppName)
     }
 
     // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)
@@ -455,6 +483,7 @@ final class OverlayState: ObservableObject {
         cancelAutoHide()
         mockRevealTask?.cancel()
         toastTask?.cancel()
+        pasteTargetRefreshTask?.cancel()
         if recording, let engine {
             recording = false
             Task { @MainActor in _ = try? await engine.stopRecording() }
@@ -465,6 +494,21 @@ final class OverlayState: ObservableObject {
         transcribing = false
         isFinalPass = false
         onClose?()
+    }
+
+    private func refreshPasteTargetAppName(reset: Bool) {
+        pasteTargetRefreshTask?.cancel()
+        if reset {
+            pasteTargetAppName = nil
+        }
+        guard let engine else { return }
+        pasteTargetRefreshTask = Task { @MainActor [weak self] in
+            let target = await engine.pasteTargetAppName()
+            guard !Task.isCancelled, let self else { return }
+            self.pasteTargetAppName = OverlayInsertActionPresentation(
+                targetAppName: target
+            ).targetAppName
+        }
     }
 
     /// TextEditor writes through this seam so only actual user edits — never a
@@ -539,6 +583,7 @@ final class OverlayState: ObservableObject {
             errorMessage = nil
         }
         recording = true
+        refreshPasteTargetAppName(reset: true)
         onRecordingPreparing?()
         armWarmupWatchdog()
     }
@@ -562,6 +607,7 @@ final class OverlayState: ObservableObject {
             errorMessage = nil
         }
         recording = true
+        refreshPasteTargetAppName(reset: false)
         onRecordingStarted?()
     }
 
@@ -1152,6 +1198,9 @@ final class ControllerDictationEngine: DictationEngine {
     func pasteText(text: String) async throws {
         try await hotkeys.pasteText(text: text)
     }
+    func pasteTargetAppName() async -> String? {
+        await hotkeys.pasteTargetAppName()
+    }
     func transcribeFile(path: String) async throws -> CsTranscription {
         throw NSError(domain: "CodescribeRedesign", code: 1, userInfo: [
             NSLocalizedDescriptionKey: "File transcription is not available through the hotkey controller."
@@ -1247,6 +1296,7 @@ final class MockDictationEngine: DictationEngine {
     func isFormattingAvailable() -> Bool { false }
     func formatText(text: String, language: CsLanguage?) async throws -> String { text }
     func pasteText(text: String) async throws {}
+    func pasteTargetAppName() async -> String? { nil }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }

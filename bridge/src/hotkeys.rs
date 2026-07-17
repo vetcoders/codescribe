@@ -57,6 +57,13 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
         .map(Arc::clone)
 }
 
+fn normalize_paste_target_app_name(name: Option<String>) -> Option<String> {
+    name.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
 /// Process-global tokio runtime handle, captured when the hotkey listener
 /// starts. Lets sync surfaces (e.g. the Settings config writer) schedule async
 /// controller work on the runtime the shared controller already lives on.
@@ -464,6 +471,13 @@ impl CodescribeHotkeys {
             .map_err(|error| CsError::Recording {
                 msg: error.to_string(),
             })
+    }
+
+    /// Name of the app latched for the current overlay session, if known.
+    /// Read-only: the paste path keeps owning target activation and delivery.
+    pub async fn paste_target_app_name(&self) -> Option<String> {
+        let controller = current_controller(&shared_controller())?;
+        normalize_paste_target_app_name(controller.paste_target_app_name().await)
     }
 
     /// Stop the global hotkey listener if it is active.
@@ -1029,6 +1043,28 @@ mod mode_binding_tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod paste_target_mapping_tests {
+    use super::normalize_paste_target_app_name;
+
+    #[test]
+    fn bridge_mapping_keeps_present_app_name() {
+        assert_eq!(
+            normalize_paste_target_app_name(Some("  Ghostty  ".to_string())).as_deref(),
+            Some("Ghostty")
+        );
+    }
+
+    #[test]
+    fn bridge_mapping_returns_absent_for_unknown_or_empty_name() {
+        assert_eq!(normalize_paste_target_app_name(None), None);
+        assert_eq!(
+            normalize_paste_target_app_name(Some("   ".to_string())),
+            None
+        );
     }
 }
 
