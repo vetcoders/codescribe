@@ -200,15 +200,18 @@ final class OverlayState: ObservableObject {
     private var warmupWatchdogTask: Task<Void, Never>?
     private static let warmupWatchdogNanos: UInt64 = 4_000_000_000
 
-    // MARK: Auto-hide after passive final (no Copy/Send action)
+    // MARK: Activity-anchored auto-hide for terminal outcomes
     private var autoHideTask: Task<Void, Never>?
-    /// 12 seconds. Rationale: typical short dictation result is 1–3 sentences.
-    /// At normal reading speed + reaction to act (Copy/Send/Close) this gives
-    /// comfortable view time without the overlay remaining "król puszczy" after
-    /// the user has moved attention elsewhere. No user-facing knob (per spec).
-    private static let autoHideDelayNanos: UInt64 = 12_000_000_000
+    private var autoHideDeadline: TimeInterval?
+    private var isPointerHovering = false
+    private let nowProvider: () -> TimeInterval
+    /// Single source of truth for the operator-dictated terminal lifetime.
+    /// Five seconds is the comfortable end of the requested 3–5 second range.
+    static let autoHideDelaySeconds: TimeInterval = 5
 
-    init() {}
+    init(nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.nowProvider = nowProvider
+    }
 
     func attach() {
         engine?.setListener(listener)
@@ -363,6 +366,9 @@ final class OverlayState: ObservableObject {
         guard let engine, canFormat else { return }
         let source = formattedText
         isFormatting = true
+        // Format deliberately suspends passive dismissal. Its result stays until
+        // another user activity explicitly starts a fresh countdown.
+        cancelAutoHide()
         Task { @MainActor in
             defer { self.isFormatting = false }
             do {
@@ -413,9 +419,7 @@ final class OverlayState: ObservableObject {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(activeText, forType: .string)
-        cancelAutoHide()
-        // Per contract: after Copy the overlay hides (user acted; no linger).
-        onClose?()
+        restartAutoHideCountdown()
     }
 
     func sendToAgent() {
@@ -429,12 +433,14 @@ final class OverlayState: ObservableObject {
 
     func pasteToPreviousApp() {
         captureQualityIfEdited(action: "paste")
+        // Do not let the previous deadline fire while the async delivery is in
+        // flight. A successful or failed attempt gets a fresh full countdown.
         cancelAutoHide()
         let text = activeText
         Task { @MainActor in
+            defer { self.restartAutoHideCountdown() }
             do {
                 try await engine?.pasteText(text: text)
-                onClose?()
             } catch {
                 self.errorMessage = "Couldn't paste transcript: \(error)"
                 self.showToast("Couldn't paste transcript")
@@ -459,6 +465,35 @@ final class OverlayState: ObservableObject {
         transcribing = false
         isFinalPass = false
         onClose?()
+    }
+
+    /// TextEditor writes through this seam so only actual user edits — never a
+    /// programmatic format/final update — re-anchor the terminal lifetime.
+    func userEditedTranscript(_ text: String) {
+        formattedText = text
+        restartAutoHideCountdown()
+    }
+
+    /// AppKit reports window motion separately from SwiftUI content events.
+    func userDraggedOverlay() {
+        restartAutoHideCountdown()
+    }
+
+    /// A live edge-drag resize is activity and therefore receives a fresh window.
+    func userResizedOverlay() {
+        restartAutoHideCountdown()
+    }
+
+    /// Hover pauses dismissal entirely; leaving starts a new full five seconds.
+    func setPointerHovering(_ hovering: Bool) {
+        guard hovering != isPointerHovering else { return }
+        isPointerHovering = hovering
+        guard isTerminalMode else { return }
+        if hovering {
+            cancelAutoHide()
+        } else {
+            restartAutoHideCountdown()
+        }
     }
 
     // MARK: P0-D quality loop (user edits on FINAL → record + lexicon candidate)
@@ -587,22 +622,53 @@ final class OverlayState: ObservableObject {
         onClose?()
     }
 
-    private func armAutoHideIfNeeded() {
-        guard mode == .formatted, !finalized /* still visible */ else { return }
-        cancelAutoHide()
-        autoHideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: OverlayState.autoHideDelayNanos)
-            guard !Task.isCancelled else { return }
-            // Only auto-dismiss if still in passive formatted state (no action taken).
-            if let self = self, self.mode == .formatted {
-                self.onClose?()
-            }
+    private var isTerminalMode: Bool {
+        mode == .formatted || mode == .noSpeech || mode == .error
+    }
+
+    private func restartAutoHideCountdown() {
+        guard isTerminalMode, !isPointerHovering else {
+            cancelAutoHide()
+            return
         }
+        cancelAutoHide()
+        autoHideDeadline = nowProvider() + OverlayState.autoHideDelaySeconds
+        scheduleAutoHideWake(after: OverlayState.autoHideDelaySeconds)
+    }
+
+    private func scheduleAutoHideWake(after delay: TimeInterval) {
+        let nanoseconds = UInt64(max(0, delay) * 1_000_000_000)
+        autoHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.evaluateAutoHideDeadline(rescheduleIfEarly: true)
+        }
+    }
+
+    private func evaluateAutoHideDeadline(rescheduleIfEarly: Bool) {
+        autoHideTask = nil
+        guard isTerminalMode, !isPointerHovering, let deadline = autoHideDeadline else { return }
+        let remaining = deadline - nowProvider()
+        if remaining > 0 {
+            if rescheduleIfEarly { scheduleAutoHideWake(after: remaining) }
+            return
+        }
+        autoHideDeadline = nil
+        onClose?()
+    }
+
+    /// Deterministic XCTest seam: tests inject a monotonic clock, advance it,
+    /// and evaluate the same deadline logic without wall-clock sleeps.
+    func fireAutoHideNowForTests() {
+        autoHideTask?.cancel()
+        autoHideTask = nil
+        evaluateAutoHideDeadline(rescheduleIfEarly: false)
     }
 
     private func cancelAutoHide() {
         autoHideTask?.cancel()
         autoHideTask = nil
+        autoHideDeadline = nil
     }
 
     private func abortRecordingSession(resetTranscript shouldResetTranscript: Bool = false) {
@@ -646,6 +712,7 @@ final class OverlayState: ObservableObject {
         mode = .error
         finalized = true
         showToast(toast)
+        restartAutoHideCountdown()
     }
 
     // MARK: Listener-driven mutations (called on the main actor by DictationListener)
@@ -777,6 +844,7 @@ final class OverlayState: ObservableObject {
            formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             noSpeechNotice = message
             mode = .noSpeech
+            restartAutoHideCountdown()
         } else if mode == .noSpeech {
             noSpeechNotice = message
         }
@@ -803,6 +871,7 @@ final class OverlayState: ObservableObject {
             // time): recover it as the normal FINAL rather than losing it.
             formattedText = clean
             mode = .formatted
+            restartAutoHideCountdown()
         }
         if deliveredText.isEmpty, !clean.isEmpty {
             deliveredText = clean
@@ -867,12 +936,8 @@ final class OverlayState: ObservableObject {
         // don't re-fire and churn @Published tray state.
         if !wasFinalized { onRecordingStopped?() }
 
-        // Arm passive auto-hide for the result view when user takes no action.
-        // 12s chosen: enough to read 2–4 sentence transcript + decide (Copy/Send/Close),
-        // short enough not to linger as "król puszczy". Constant (no Settings knob).
-        if mode == .formatted {
-            armAutoHideIfNeeded()
-        }
+        // Every terminal outcome gets the same activity-anchored lifetime.
+        restartAutoHideCountdown()
     }
 
     private var usableAuthoritativeFinalText: String? {
@@ -894,6 +959,9 @@ final class OverlayState: ObservableObject {
         finalized = false
         transcribing = false
         isFinalPass = false
+        // A hidden panel may not emit a pointer-exit event. Never carry a paused
+        // hover latch into the next recording session.
+        isPointerHovering = false
         cancelAutoHide()
     }
 

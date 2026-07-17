@@ -11,9 +11,20 @@ import AppKit
 
 /// Borderless, non-activating panel that can still become key so the overlay's
 /// buttons (Copy / Send to Agent / Close) receive clicks without stealing app focus.
-final class FloatingOverlayPanel: NSPanel {
+final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
+    var onUserMove: (() -> Void)?
+    var onUserResize: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    func windowDidMove(_ notification: Notification) {
+        onUserMove?()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        onUserResize?()
+    }
 }
 
 /// Content container for the overlay panel. Its sole job is to keep the SwiftUI
@@ -113,6 +124,9 @@ enum DictationOverlayWindow {
             backing: .buffered,
             defer: false
         )
+        panel.delegate = panel
+        panel.onUserMove = { [weak state] in state?.userDraggedOverlay() }
+        panel.onUserResize = { [weak state] in state?.userResizedOverlay() }
         panel.contentView = OverlayContentContainer(hosting: hosting)
 
         // User-resizable: borderless windows still honour edge-drag resize when

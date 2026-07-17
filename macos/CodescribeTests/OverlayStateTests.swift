@@ -5,6 +5,8 @@ import XCTest
 private final class OverlayStateTestEngine: DictationEngine {
     var pastedText: String?
     var formattedResult: Result<String, Error> = .success("")
+    var onFormat: (() -> Void)?
+    var onPaste: (() -> Void)?
 
     func setListener(_ listener: CsTranscriptionListener) {}
     func startRecording(language: CsLanguage?) async throws {}
@@ -14,19 +16,39 @@ private final class OverlayStateTestEngine: DictationEngine {
     func isModelLoaded() -> Bool { true }
     func isFormattingAvailable() -> Bool { true }
     func formatText(text: String, language: CsLanguage?) async throws -> String {
+        onFormat?()
         switch formattedResult {
         case .success(let text): return text
         case .failure(let error): throw error
         }
     }
-    func pasteText(text: String) async throws { pastedText = text }
+    func pasteText(text: String) async throws {
+        pastedText = text
+        onPaste?()
+    }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }
 }
 
+private final class OverlayStateTestClock {
+    var now: TimeInterval = 0
+}
+
 @MainActor
 final class OverlayStateTests: XCTestCase {
+    private func makeFinalizedState(
+        clock: OverlayStateTestClock,
+        text: String = "ready transcript"
+    ) -> OverlayState {
+        let state = OverlayState(nowProvider: { clock.now })
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, text)
+        state.finishControllerRecording()
+        return state
+    }
+
     func testAudioLevelMeterOrdersFiniteEnergyAndRejectsInvalidInput() throws {
         let meter = AudioLevelMeter()
         XCTAssertNil(meter.gain)
@@ -142,52 +164,220 @@ final class OverlayStateTests: XCTestCase {
         let state = OverlayState()
         let engine = OverlayStateTestEngine()
         engine.formattedResult = .failure(NSError(domain: "OverlayStateTests", code: 1))
+        let formatCalled = expectation(description: "format called")
+        engine.onFormat = { formatCalled.fulfill() }
         state.engine = engine
         state.formattedText = "raw source transcript"
         state.mode = .formatted
 
         state.formatTranscript()
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        await fulfillment(of: [formatCalled], timeout: 1)
+        await Task.yield()
 
         XCTAssertEqual(state.formattedText, "raw source transcript")
         XCTAssertEqual(state.formatFailureStatus, "raw — formatting failed")
         XCTAssertEqual(state.activeText, "raw source transcript")
     }
 
-    func testCopyAndSendDismissTheOverlay() {
-        let state = OverlayState()
+    func testAutoHideDelayIsFiveSeconds() {
+        XCTAssertEqual(OverlayState.autoHideDelaySeconds, 5)
+    }
+
+    func testInjectedClockFiresFiveSecondsAfterFinalization() {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        clock.now = 4.9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testTextEditReanchorsAutoHide() {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        clock.now = 4
+        state.userEditedTranscript("ready transcript with correction")
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+
+        clock.now = 9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testWindowDragReanchorsAutoHide() {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        clock.now = 4
+        state.userDraggedOverlay()
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+
+        clock.now = 9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testWindowResizeReanchorsAutoHide() {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        clock.now = 4
+        state.userResizedOverlay()
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+
+        clock.now = 9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testHoverPausesAndPointerExitStartsFreshCountdown() {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        clock.now = 4
+        state.setPointerHovering(true)
+        clock.now = 100
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+
+        state.setPointerHovering(false)
+        clock.now = 104.9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+        clock.now = 105
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testCopyKeepsOverlayVisibleAndRearmsAutoHide() {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        clock.now = 4
+        state.copyToPasteboard()
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "ready transcript")
+
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+        clock.now = 9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testPasteUsesEditedTextKeepsOverlayVisibleAndRearmsAutoHide() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "original delivered transcript here")
+        let engine = OverlayStateTestEngine()
+        let pasteCalled = expectation(description: "paste called")
+        engine.onPaste = { pasteCalled.fulfill() }
+        var closeCount = 0
+        state.engine = engine
+        state.onClose = { closeCount += 1 }
+        state.userEditedTranscript("original delivered transcript here with user fix")
+
+        clock.now = 4
+        state.pasteToPreviousApp()
+        await fulfillment(of: [pasteCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(engine.pastedText, "original delivered transcript here with user fix")
+        XCTAssertEqual(closeCount, 0)
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+        clock.now = 9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    func testFormatCancelsAutoHideWithoutRearming() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
+        let engine = OverlayStateTestEngine()
+        let formatCalled = expectation(description: "format called")
+        engine.formattedResult = .success("formatted result")
+        engine.onFormat = { formatCalled.fulfill() }
+        state.engine = engine
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+
+        clock.now = 4
+        state.formatTranscript()
+        await fulfillment(of: [formatCalled], timeout: 1)
+        await Task.yield()
+        XCTAssertEqual(state.formattedText, "formatted result")
+
+        clock.now = 100
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+    }
+
+    func testCloseIsImmediateAndSendUsesImmediateHandoffPath() {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock)
         var closeCount = 0
         var sentText: String?
         state.onClose = { closeCount += 1 }
         state.onSendToAgent = { sentText = $0 }
-        state.formattedText = "ready transcript"
-        state.mode = .formatted
-
-        state.copyToPasteboard()
-        XCTAssertEqual(closeCount, 1)
-        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "ready transcript")
 
         state.sendToAgent()
         XCTAssertEqual(sentText, "ready transcript")
-        // Since 845cec0 sendToAgent delegates dismissal to the onSendToAgent
-        // closure (OverlayController wires the hide there) — no direct onClose.
+        XCTAssertEqual(closeCount, 0, "send delegates immediate hide to the handoff closure")
+
+        state.close()
+        XCTAssertEqual(closeCount, 1, "Close button and brand CloseDot share this action")
+    }
+
+    func testNoSpeechAutoHidesAfterFiveSeconds() {
+        let clock = OverlayStateTestClock()
+        let state = OverlayState(nowProvider: { clock.now })
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.finishControllerRecording()
+
+        XCTAssertEqual(state.mode, .noSpeech)
+        clock.now = 5
+        state.fireAutoHideNowForTests()
         XCTAssertEqual(closeCount, 1)
     }
 
-    func testPasteUsesEditedTextAndDismissesOverlay() async {
-        let state = OverlayState()
-        let engine = OverlayStateTestEngine()
+    func testErrorAutoHidesAfterFiveSeconds() {
+        let clock = OverlayStateTestClock()
+        let state = OverlayState(nowProvider: { clock.now })
         var closeCount = 0
-        state.engine = engine
         state.onClose = { closeCount += 1 }
-        state.applyFinalTranscript("original delivered transcript here")
-        state.formattedText = "original delivered transcript here with user fix"
-        state.mode = .formatted
 
-        state.pasteToPreviousApp()
-        try? await Task.sleep(nanoseconds: 10_000_000)
-
-        XCTAssertEqual(engine.pastedText, "original delivered transcript here with user fix")
+        state.handleError(message: "engine unavailable")
+        XCTAssertEqual(state.mode, .error)
+        clock.now = 5
+        state.fireAutoHideNowForTests()
         XCTAssertEqual(closeCount, 1)
     }
 
@@ -206,8 +396,68 @@ final class OverlayStateTests: XCTestCase {
 
         // Copy triggers captureQualityIfEdited because texts differ; must return immediately.
         state.copyToPasteboard()
-        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(closeCount, 0, "quality capture must not change Copy's stay-visible contract")
         // The async commit to quality + lexicon happens off-main; test reaches here without wait.
+    }
+
+    func testOverlayOffNeverOrdersPanelFront() {
+        var factoryCount = 0
+        var frontCount = 0
+        let controller = OverlayController(
+            state: OverlayState(),
+            engine: nil,
+            overlayEnabledProvider: { false },
+            assistiveStatusProvider: { false },
+            panelFactory: { _, _ in
+                factoryCount += 1
+                return NSPanel()
+            },
+            orderPanelFront: { _ in frontCount += 1 },
+            orderPanelOut: { _ in }
+        )
+
+        controller.showForRecording()
+        XCTAssertEqual(factoryCount, 0)
+        XCTAssertEqual(frontCount, 0)
+    }
+
+    func testAgentModesNeverOrderOverlayFrontEvenWhenToggleIsOn() {
+        for mode in ["Chat", "Selection"] {
+            var frontCount = 0
+            let controller = OverlayController(
+                state: OverlayState(),
+                engine: nil,
+                overlayEnabledProvider: { true },
+                assistiveStatusProvider: { true },
+                panelFactory: { _, _ in NSPanel() },
+                orderPanelFront: { _ in frontCount += 1 },
+                orderPanelOut: { _ in }
+            )
+
+            controller.showForRecording()
+            XCTAssertEqual(frontCount, 0, "\(mode) uses the authoritative assistive gate")
+        }
+    }
+
+    func testMidHoldAssistiveUpgradeImmediatelyHidesVisibleOverlay() {
+        var frontCount = 0
+        var outCount = 0
+        let controller = OverlayController(
+            state: OverlayState(),
+            engine: nil,
+            overlayEnabledProvider: { true },
+            assistiveStatusProvider: { false },
+            panelFactory: { _, _ in NSPanel() },
+            orderPanelFront: { _ in frontCount += 1 },
+            orderPanelOut: { _ in outCount += 1 }
+        )
+
+        controller.showForRecording()
+        XCTAssertEqual(frontCount, 1)
+        XCTAssertEqual(outCount, 0)
+
+        controller.handleAssistiveStatusChange(true)
+        XCTAssertEqual(outCount, 1)
     }
 
     func testOverlayPanelUsesNonActivatingStyle() {

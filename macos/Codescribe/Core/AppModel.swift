@@ -18,7 +18,7 @@ final class AppModel: ObservableObject {
     init() {
         let chat = AgentChatStore(engine: RealChatEngine(), threadsProvider: RealThreadsEngine())
         self.chat = chat
-        self.overlay = OverlayController(store: chat)
+        self.overlay = OverlayController(store: chat, engine: ControllerDictationEngine())
         self.tray = TrayViewModel(engine: RealTrayEngine())
         // Composer voice-note dictation (independent recorder; disabled while a
         // hotkey/overlay session owns the mic — see OverlayController hooks).
@@ -31,26 +31,47 @@ final class AppModel: ObservableObject {
 /// only the SwiftUI surface for that single controller.
 @MainActor
 final class OverlayController: ObservableObject {
-    let state = OverlayState()
+    let state: OverlayState
     /// Independent text scale for the dictation overlay (⌘+/-/0 while the panel is
     /// key). Separate from the chat scale so a distance-readable transcript and an
     /// up-close chat can be tuned independently.
     let textScale = TextScaleController(key: "DictationOverlayPanel.textScale.v1")
     private var panel: NSPanel?
-    // Read fresh at show-time so the tray's "Transcription Overlay" toggle takes
-    // effect on the very next dictation (stateless bridge handle — cheap).
-    private let config = CodescribeConfig()
-    // Stateless read of the Rust-side tray status (same source TrayStatusStore
-    // listens to) — used to latch whether the CURRENT session is assistive.
-    private let trayStatusBridge = CodescribeTrayStatus()
+    private let overlayEnabledProvider: () -> Bool
+    private let assistiveStatusProvider: () -> Bool
+    private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
+    private let orderPanelFront: @MainActor (NSPanel) -> Void
+    private let orderPanelOut: @MainActor (NSPanel) -> Void
     /// Latched across the session (preparing → started → stopped) because the
     /// Rust controller clears its assistive flag right after the stop pipeline —
     /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
     /// flip the tray status while recording, so every lifecycle hook re-polls.
     private var sessionWasAssistive = false
 
-    init(store: AgentChatStore) {
-        state.engine = ControllerDictationEngine()
+    init(
+        store: AgentChatStore? = nil,
+        state: OverlayState? = nil,
+        engine: DictationEngine? = nil,
+        overlayEnabledProvider: @escaping () -> Bool = {
+            CodescribeConfig().trayToggles().transcriptionOverlayEnabled
+        },
+        assistiveStatusProvider: @escaping () -> Bool = {
+            CodescribeTrayStatus().currentStatus().assistive
+        },
+        panelFactory: (@MainActor (OverlayState, TextScaleController) -> NSPanel)? = nil,
+        orderPanelFront: (@MainActor (NSPanel) -> Void)? = nil,
+        orderPanelOut: (@MainActor (NSPanel) -> Void)? = nil
+    ) {
+        let state = state ?? OverlayState()
+        self.state = state
+        self.overlayEnabledProvider = overlayEnabledProvider
+        self.assistiveStatusProvider = assistiveStatusProvider
+        self.panelFactory = panelFactory ?? {
+            DictationOverlayWindow.make(state: $0, textScale: $1)
+        }
+        self.orderPanelFront = orderPanelFront ?? { $0.orderFrontRegardless() }
+        self.orderPanelOut = orderPanelOut ?? { $0.orderOut(nil) }
+        state.engine = engine
         // Drive the tray status off the SAME authoritative recording lifecycle the
         // overlay already receives. The tray view-model otherwise only polls on
         // appear (and the popover is built once), so it stayed "Recording" after
@@ -111,17 +132,21 @@ final class OverlayController: ObservableObject {
     /// Delivery is engine-side (LocalFinalPass), independent of this window, so
     /// hiding the overlay never suppresses the paste.
     func showForRecording() {
-        guard config.trayToggles().transcriptionOverlayEnabled else { return }
+        refreshAssistiveLatch()
+        guard overlayEnabledProvider(), !sessionWasAssistive else {
+            if panel != nil { hide() }
+            return
+        }
         show()
     }
 
     func show() {
-        let panel = panel ?? DictationOverlayWindow.make(state: state, textScale: textScale)
+        let panel = panel ?? panelFactory(state, textScale)
         self.panel = panel
         // A pending fade-out must not leave a freshly shown panel invisible.
         panel.alphaValue = 1
         applyPlacement(animated: false)
-        panel.orderFrontRegardless()
+        orderPanelFront(panel)
     }
 
     /// Derive and apply the panel's frame from the placement prefs: free motion
@@ -154,10 +179,17 @@ final class OverlayController: ObservableObject {
         state.finishControllerRecording()
     }
 
+    /// Called by the live TrayStatusStore listener. A mid-hold Fn → agent-mode
+    /// upgrade flips this while recording, so hide synchronously at the latch
+    /// transition instead of waiting for the stop/handoff safety net.
+    func handleAssistiveStatusChange(_ assistive: Bool) {
+        guard assistive else { return }
+        sessionWasAssistive = true
+        if panel != nil { hide() }
+    }
+
     private func refreshAssistiveLatch() {
-        if trayStatusBridge.currentStatus().assistive {
-            sessionWasAssistive = true
-        }
+        handleAssistiveStatusChange(assistiveStatusProvider())
     }
 
     func hide() {
@@ -170,7 +202,7 @@ final class OverlayController: ObservableObject {
                 OverlayPlacement.persistOrigin(panel.frame.origin)
             }
         }
-        panel?.orderOut(nil)
+        if let panel { orderPanelOut(panel) }
     }
 
     /// The dictated transcript was handed to the agent (voice turn opened in the
@@ -186,9 +218,11 @@ final class OverlayController: ObservableObject {
             context.duration = 0.18
             panel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
-            guard let self, let panel = self.panel else { return }
-            panel.orderOut(nil)
-            panel.alphaValue = 1
+            Task { @MainActor in
+                guard let self, let panel = self.panel else { return }
+                self.orderPanelOut(panel)
+                panel.alphaValue = 1
+            }
         }
     }
 }

@@ -80,6 +80,9 @@ struct DictationOverlayView: View {
             }
         }
         .animation(CSMotion.floatIn, value: state.toast)
+        .onHover { inside in
+            state.setPointerHovering(inside)
+        }
         .onAppear {
             FontLoader.register()
         }
@@ -276,7 +279,10 @@ struct DictationOverlayView: View {
 
     private var formattedBody: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextEditor(text: $state.formattedText)
+            TextEditor(text: Binding(
+                get: { state.formattedText },
+                set: { state.userEditedTranscript($0) }
+            ))
                 .csFont(15)
                 .foregroundStyle(CSColor.textHigh)
                 .lineSpacing(5)

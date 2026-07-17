@@ -368,8 +368,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
         }
         statusItem = item
-        trayStatus.onChange = { [weak self] _ in
-            self?.applyStatusItemStatus()
+        trayStatus.onChange = { [weak self] status in
+            guard let self else { return }
+            // This listener is the live edge for mid-hold upgrades. The Rust tray
+            // status flips assistive as soon as Fn gains Shift/Command, so the
+            // dictation overlay disappears before agent handoff, not seconds later.
+            self.model.overlay.handleAssistiveStatusChange(status.assistive)
+            self.applyStatusItemStatus()
         }
         applyStatusItemStatus()
     }
