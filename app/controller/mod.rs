@@ -1156,6 +1156,7 @@ impl RecordingController {
         recorder.set_utterance_callback(None);
         recorder.set_utterance_silence_sec(None);
         recorder.set_event_sink(None);
+        recorder.set_level_callback(None);
     }
 
     async fn ensure_recorder_ready_for_start(
@@ -1349,12 +1350,29 @@ impl RecordingController {
         ))
     }
 
+    /// Feed the overlay's live level meter: RMS blocks from the capture
+    /// callback broadcast as `IpcEventPayload::AudioLevel` alongside the engine
+    /// event stream. Raw measurement only — presentation (dB mapping,
+    /// smoothing) stays UI-side per the EngineEvent intent invariant.
+    fn configure_level_broadcast(
+        recorder: &mut StreamingRecorder,
+        event_broadcast: broadcast::Sender<IpcEvent>,
+    ) {
+        recorder.set_level_callback(Some(Arc::new(move |rms| {
+            let _ = event_broadcast.send(IpcEvent {
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                payload: IpcEventPayload::AudioLevel { rms },
+            });
+        })));
+    }
+
     fn configure_hold_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
     ) {
+        Self::configure_level_broadcast(recorder, event_broadcast.clone());
         recorder.set_event_sink(Some(Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,
@@ -1377,6 +1395,7 @@ impl RecordingController {
         // appends into the current chat user bubble, and VAD end commits that bubble to the
         // agent without stopping the recorder. Do not route assistive live preview deltas
         // into the same bubble, or previews and finals will duplicate.
+        Self::configure_level_broadcast(recorder, event_broadcast.clone());
         recorder.set_event_sink(Some(Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,

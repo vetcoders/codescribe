@@ -23,6 +23,10 @@ pub struct StreamingRecorder {
     dropped_chunks: Arc<AtomicU64>,
     /// Sink used by `start_event_session`. Caller must configure it explicitly.
     event_sink: Option<Arc<dyn EventSink>>,
+    /// Per-block input level tap: receives the RMS of every captured audio
+    /// block (linear, 0..~1). Runs on the CoreAudio callback thread — keep it
+    /// cheap and non-blocking (a broadcast send, an atomic store).
+    level_callback: Option<Arc<dyn Fn(f32) + Send + Sync>>,
 }
 
 impl StreamingRecorder {
@@ -39,6 +43,7 @@ impl StreamingRecorder {
             utterance_silence_sec: None,
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
+            level_callback: None,
         })
     }
 
@@ -55,6 +60,7 @@ impl StreamingRecorder {
             utterance_silence_sec: None,
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
+            level_callback: None,
         })
     }
 
@@ -64,6 +70,13 @@ impl StreamingRecorder {
 
     pub fn set_utterance_silence_sec(&mut self, silence_sec: Option<f32>) {
         self.utterance_silence_sec = silence_sec;
+    }
+
+    /// Set the per-block input-level tap consumed by UI meters (overlay
+    /// waveform). Configure before `start_event_session`; cleared alongside the
+    /// other callbacks between sessions.
+    pub fn set_level_callback(&mut self, callback: Option<Arc<dyn Fn(f32) + Send + Sync>>) {
+        self.level_callback = callback;
     }
 
     /// Returns a cloned handle to the transcript buffer.
@@ -105,7 +118,11 @@ impl StreamingRecorder {
 
         // Setup callback to send audio data
         let dropped = Arc::clone(&self.dropped_chunks);
+        let level_callback = self.level_callback.clone();
         self.recorder.set_callback(Box::new(move |data| {
+            if let Some(ref level_cb) = level_callback {
+                level_cb(block_rms(data));
+            }
             if let Err(_e) = tx.try_send(data.to_vec()) {
                 let n = dropped.fetch_add(1, Ordering::Relaxed);
                 if n == 0 || (n + 1).is_multiple_of(50) {
@@ -239,6 +256,16 @@ impl StreamingRecorder {
     }
 }
 
+/// RMS of one captured audio block (linear, 0..~1 for full-scale input).
+/// Cheap enough for the CoreAudio callback thread (one pass + one sqrt).
+fn block_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +278,22 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tokio::time::Duration;
+
+    #[test]
+    fn block_rms_measures_signal_energy() {
+        assert_eq!(block_rms(&[]), 0.0, "empty block must read as silence");
+        assert_eq!(block_rms(&[0.0; 512]), 0.0, "digital silence is 0 RMS");
+        let full_scale = block_rms(&[1.0, -1.0, 1.0, -1.0]);
+        assert!(
+            (full_scale - 1.0).abs() < 1e-6,
+            "full-scale square wave must read ~1.0, got {full_scale}"
+        );
+        let half = block_rms(&[0.5, -0.5, 0.5, -0.5]);
+        assert!(
+            (half - 0.5).abs() < 1e-6,
+            "half-scale square wave must read ~0.5, got {half}"
+        );
+    }
 
     #[tokio::test]
     async fn start_event_session_requires_event_sink() {

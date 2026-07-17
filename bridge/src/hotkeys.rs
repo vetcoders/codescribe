@@ -146,6 +146,7 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             _ => {}
         },
         IpcEventPayload::FinalTranscript { text } => listener.on_final_transcript_ready(text),
+        IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
             EngineEventWire::VadEnd { .. } => listener.on_vad_active(false),
@@ -1115,6 +1116,7 @@ mod preparing_compensation_tests {
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}
+        fn on_audio_level(&self, _rms: f32) {}
         fn on_no_speech(&self, _reason: String) {}
         fn on_error(&self, _message: String) {}
     }

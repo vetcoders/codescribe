@@ -25,6 +25,13 @@ pub enum IpcEventPayload {
     /// delivery/Copy paths instead of the raw per-utterance streaming hypotheses.
     #[serde(rename = "final_transcript")]
     FinalTranscript { text: String },
+    /// Live microphone input level: RMS of one captured audio block (linear,
+    /// 0..~1). Emitted continuously while a dictation session records so UI
+    /// meters (the overlay waveform) can track the real voice instead of an
+    /// ambient animation. Deliberately NOT an `EngineEvent`: it is a raw
+    /// capture measurement that never enters the transcription pipeline.
+    #[serde(rename = "audio_level")]
+    AudioLevel { rms: f32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +322,21 @@ mod tests {
         let value = serde_json::to_value(payload).expect("serialize payload");
         let obj = must_object(value);
         assert_eq!(obj.get("event").and_then(Value::as_str), Some("engine"));
+    }
+
+    #[test]
+    fn audio_level_payload_serializes_rms() {
+        let payload = IpcEventPayload::AudioLevel { rms: 0.25 };
+        let value = serde_json::to_value(payload).expect("serialize audio_level");
+        let obj = must_object(value);
+        assert_eq!(
+            obj.get("event").and_then(Value::as_str),
+            Some("audio_level")
+        );
+        assert_eq!(
+            obj.get("rms").and_then(Value::as_f64).map(|v| v as f32),
+            Some(0.25)
+        );
     }
 
     #[test]

@@ -253,6 +253,11 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// fire it once per dictation stop so the overlay FINAL matches delivery/Copy.
     fn on_final_transcript_ready(&self, text: String);
     fn on_vad_active(&self, active: bool);
+    /// Live microphone input level: RMS of one captured audio block (linear,
+    /// 0..~1). Fires continuously (~40–50 Hz) while a controller dictation
+    /// session records, so the overlay waveform can track the real voice.
+    /// Surfaces without a level meter may leave it a no-op.
+    fn on_audio_level(&self, rms: f32);
     fn on_no_speech(&self, reason: String);
     fn on_error(&self, message: String);
 }
@@ -807,6 +812,7 @@ mod tests {
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}
+        fn on_audio_level(&self, _rms: f32) {}
         fn on_no_speech(&self, _reason: String) {}
         fn on_error(&self, _message: String) {}
     }
