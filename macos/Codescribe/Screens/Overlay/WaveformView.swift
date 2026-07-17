@@ -30,6 +30,7 @@ final class AudioLevelMeter {
     /// around −40…−15 dBFS), fast attack / slow release so peaks land instantly
     /// and the decay reads naturally instead of flickering per block.
     func push(rms: Float) {
+        guard rms.isFinite, rms >= 0 else { return }
         let db = 20 * log10(max(Double(rms), 1e-6))
         let target = min(max((db + 50) / 40, 0), 1)
         let current = gain ?? 0

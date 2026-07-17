@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -80,6 +80,10 @@ const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
 const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(250);
+/// At most one level sample may wait behind the controller worker. The capture
+/// thread never constructs IPC events or timestamps and never accumulates a
+/// backlog when the bridge/UI is slower than CoreAudio.
+const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
 
 fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     if assistive {
@@ -1371,20 +1375,35 @@ impl RecordingController {
         ))
     }
 
-    /// Feed the overlay's live level meter: RMS blocks from the capture
-    /// callback broadcast as `IpcEventPayload::AudioLevel` alongside the engine
-    /// event stream. Raw measurement only — presentation (dB mapping,
-    /// smoothing) stays UI-side per the EngineEvent intent invariant.
+    /// Feed the overlay's live level meter without doing allocation or timestamp
+    /// formatting on CoreAudio's capture thread. The callback only attempts a
+    /// bounded, non-blocking send; the controller worker constructs and
+    /// broadcasts the typed IPC event. When the worker is behind, the new sample
+    /// is dropped instead of growing a queue or delaying audio capture.
     fn configure_level_broadcast(
         recorder: &mut StreamingRecorder,
         event_broadcast: broadcast::Sender<IpcEvent>,
     ) {
+        let (level_tx, mut level_rx) = mpsc::channel::<f32>(AUDIO_LEVEL_QUEUE_CAPACITY);
         recorder.set_level_callback(Some(Arc::new(move |rms| {
-            let _ = event_broadcast.send(IpcEvent {
-                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                payload: IpcEventPayload::AudioLevel { rms },
-            });
+            let _ = level_tx.try_send(rms);
         })));
+
+        tokio::spawn(async move {
+            while let Some(rms) = level_rx.recv().await {
+                // Cleanup drops the callback sender. Do not drain a buffered
+                // sample after that boundary: it belongs to the closed session
+                // and must never animate a subsequently prepared overlay.
+                if level_rx.is_closed() {
+                    break;
+                }
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::AudioLevel { rms },
+                });
+            }
+        });
     }
 
     fn configure_hold_event_sink(

@@ -102,6 +102,9 @@ final class OverlayState: ObservableObject {
     /// Live capture level for the waveform. NOT @Published on purpose — the
     /// waveform's TimelineView reads it every frame; see `AudioLevelMeter`.
     let levelMeter = AudioLevelMeter()
+    /// Distinguishes a measured microphone feed from the explicit ambient
+    /// fallback used by legacy/disconnected engines before any RMS arrives.
+    @Published private(set) var hasMeasuredAudioLevel = false
     @Published var audioReady: Bool = false    // recorder confirmed; STT/VAD may still be warming
     @Published var warmingUp: Bool = false     // true after user intent, before audio/VAD proves life
     /// Stop was requested and we are awaiting the final transcript. Distinct from
@@ -220,7 +223,8 @@ final class OverlayState: ObservableObject {
         guard mode == .listening else { return "Idle" }
         if isFinalPass { return "final pass" }
         if transcribing { return "transcribing" }
-        return warmingUp ? "starting" : "recording"
+        if warmingUp { return "starting" }
+        return hasMeasuredAudioLevel ? "recording" : "recording · ambient"
     }
     var statusColor: Color {
         switch mode {
@@ -491,6 +495,8 @@ final class OverlayState: ObservableObject {
         mode = .listening
         warmingUp = true
         audioReady = false
+        hasMeasuredAudioLevel = false
+        levelMeter.reset()
         if !recording {
             resetTranscript()
             formattedText = ""
@@ -510,6 +516,8 @@ final class OverlayState: ObservableObject {
         warmingUp = false
         audioReady = true
         if !recording {
+            hasMeasuredAudioLevel = false
+            levelMeter.reset()
             if liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 resetTranscript()
             }
@@ -543,6 +551,7 @@ final class OverlayState: ObservableObject {
         warmingUp = false
         transcribing = true
         levelMeter.reset()
+        hasMeasuredAudioLevel = false
     }
 
     // MARK: Warmup watchdog (orphaned "starting" overlay recovery)
@@ -608,6 +617,7 @@ final class OverlayState: ObservableObject {
         vadActive = false
         isFinalPass = false
         levelMeter.reset()
+        hasMeasuredAudioLevel = false
         if shouldResetTranscript {
             resetTranscript()
         }
@@ -816,6 +826,7 @@ final class OverlayState: ObservableObject {
         vadActive = false
         audioReady = false
         levelMeter.reset()
+        hasMeasuredAudioLevel = false
         let shouldShowNoSpeechOutcome =
             pendingNoSpeechMessage != nil && usableAuthoritativeFinalText == nil
         if shouldShowNoSpeechOutcome {
@@ -958,8 +969,14 @@ final class OverlayState: ObservableObject {
     /// during live capture: once the session is transcribing/finalised the
     /// waveform is frozen or gone, and a late block must not wiggle it.
     func applyAudioLevel(_ rms: Float) {
-        guard !finalized, !transcribing, !isFinalPass, mode == .listening else { return }
+        guard recording,
+              (warmingUp || audioReady || vadActive),
+              !finalized,
+              !transcribing,
+              !isFinalPass,
+              mode == .listening else { return }
         levelMeter.push(rms: rms)
+        if levelMeter.gain != nil { hasMeasuredAudioLevel = true }
     }
 
     func applyVad(_ active: Bool) {

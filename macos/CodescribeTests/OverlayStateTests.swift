@@ -27,6 +27,68 @@ private final class OverlayStateTestEngine: DictationEngine {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+    func testAudioLevelMeterOrdersFiniteEnergyAndRejectsInvalidInput() throws {
+        let meter = AudioLevelMeter()
+        XCTAssertNil(meter.gain)
+
+        meter.push(rms: 0)
+        let silence = try XCTUnwrap(meter.gain)
+        meter.reset()
+        meter.push(rms: 0.01)
+        let quiet = try XCTUnwrap(meter.gain)
+        meter.reset()
+        meter.push(rms: 0.8)
+        let loud = try XCTUnwrap(meter.gain)
+
+        XCTAssertTrue(silence.isFinite && quiet.isFinite && loud.isFinite)
+        XCTAssertLessThan(silence, quiet)
+        XCTAssertLessThan(quiet, loud)
+
+        meter.reset()
+        meter.push(rms: .nan)
+        XCTAssertNil(meter.gain)
+    }
+
+    func testNoLevelFallbackRemainsExplicitlyAmbient() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+
+        XCTAssertNil(state.levelMeter.gain)
+        XCTAssertFalse(state.hasMeasuredAudioLevel)
+        XCTAssertEqual(state.statusText, "recording · ambient")
+    }
+
+    func testAudioLevelLifecycleDropsLateSamplesAndResets() {
+        let state = OverlayState()
+
+        state.applyAudioLevel(0.8)
+        XCTAssertNil(state.levelMeter.gain, "levels before capture must be ignored")
+
+        state.handleRecordingPreparing()
+        state.applyAudioLevel(0.2)
+        state.handleRecordingStarted()
+        XCTAssertNotNil(state.levelMeter.gain)
+        XCTAssertTrue(state.hasMeasuredAudioLevel)
+        XCTAssertEqual(state.statusText, "recording")
+
+        state.handleRecordingFinalising()
+        XCTAssertNil(state.levelMeter.gain)
+        XCTAssertFalse(state.hasMeasuredAudioLevel)
+
+        state.applyAudioLevel(0.9)
+        XCTAssertNil(state.levelMeter.gain, "late levels during finalisation must be ignored")
+
+        state.finishControllerRecording()
+        state.applyAudioLevel(0.9)
+        XCTAssertNil(state.levelMeter.gain, "late levels after finalisation must be ignored")
+
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        XCTAssertNil(state.levelMeter.gain, "a new session must not inherit old amplitude")
+        XCTAssertEqual(state.statusText, "recording · ambient")
+    }
+
     func testTwoUtterancesAppendAndPreviewOnlyReplacesActiveTail() {
         let state = OverlayState()
         state.handleRecordingPreparing()

@@ -1049,6 +1049,7 @@ mod mode_binding_tests {
 mod preparing_compensation_tests {
     use super::*;
     use serial_test::serial;
+    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Mutex as AsyncMutex;
 
@@ -1063,6 +1064,7 @@ mod preparing_compensation_tests {
         started: AtomicUsize,
         stopped: AtomicUsize,
         finalising: AtomicUsize,
+        audio_levels: StdMutex<Vec<f32>>,
     }
 
     impl RecordingLifecycleListener {
@@ -1077,6 +1079,12 @@ mod preparing_compensation_tests {
         }
         fn finalising(&self) -> usize {
             self.finalising.load(Ordering::SeqCst)
+        }
+        fn audio_levels(&self) -> Vec<f32> {
+            self.audio_levels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
         }
     }
 
@@ -1116,7 +1124,12 @@ mod preparing_compensation_tests {
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}
-        fn on_audio_level(&self, _rms: f32) {}
+        fn on_audio_level(&self, rms: f32) {
+            self.audio_levels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(rms);
+        }
         fn on_no_speech(&self, _reason: String) {}
         fn on_error(&self, _message: String) {}
     }
@@ -1142,6 +1155,16 @@ mod preparing_compensation_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn recording_audio_level_payload_forwards_rms() {
+        let listener = Arc::new(RecordingLifecycleListener::default());
+        forward_event_to_listener(
+            IpcEventPayload::AudioLevel { rms: 0.125 },
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+        assert_eq!(listener.audio_levels(), vec![0.125]);
     }
 
     /// Paths 1 & 2 (quick hold-release cancel, start-failure reset): preparing was
