@@ -126,13 +126,65 @@ final class SettingsTruthTests: XCTestCase {
 
         XCTAssertEqual(model.resetPreview.audioFiles, 5_000)
         XCTAssertEqual(
-            model.resetImpactDescription(includeKeys: false),
+            model.resetImpactDescription(includeKeys: false, includePrompts: false),
             "Moves 5000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
+                + "Your assistive.txt and formatting.txt base prompts will be preserved. "
                 + "Codescribe will relaunch as a fresh install."
         )
         XCTAssertTrue(resetConfirmationMatches("RESET"))
         XCTAssertFalse(resetConfirmationMatches("reset"))
         XCTAssertFalse(resetConfirmationMatches(" RESET"))
+    }
+
+    func testPromptSourceLabelsExposeFileFallbackAndReadErrorTruth() {
+        XCTAssertEqual(promptSourceLabel("custom_file"), "Custom file")
+        XCTAssertEqual(promptSourceLabel("built_in_fallback"), "Built-in fallback")
+        XCTAssertEqual(promptSourceLabel("read_error"), "Read error")
+    }
+
+    func testPromptRestoreTargetsOnlyTheConfirmedPrompt() {
+        var restored: [String] = []
+        let engine = MockSettingsEngine(
+            promptRestoreObserver: { restored.append($0) }
+        )
+        let model = SettingsViewModel(engine: engine)
+
+        XCTAssertNotNil(model.restoreFormattingPromptToDefault())
+
+        XCTAssertEqual(restored, ["formatting"])
+    }
+
+    func testFailedPromptSaveDoesNotClaimARefreshedSnapshot() {
+        let engine = MockSettingsEngine(
+            promptSaveObserver: { _, _ in
+                throw NSError(domain: "PromptWrite", code: 1)
+            }
+        )
+        let model = SettingsViewModel(engine: engine)
+
+        XCTAssertNil(model.saveAssistivePrompt("replacement"))
+        XCTAssertNotNil(model.lastError)
+        XCTAssertEqual(model.assistivePromptSnapshot().content, CsSettings.sampleAssistivePrompt)
+    }
+
+    func testAppResetPreservesPromptsUnlessSeparateOptInIsEnabled() {
+        var calls: [(keys: Bool, prompts: Bool)] = []
+        let engine = MockSettingsEngine(
+            resetAppDataObserver: { calls.append(($0, $1)) }
+        )
+        let model = SettingsViewModel(engine: engine)
+
+        // Exercise the bridge contract directly: SettingsViewModel relaunches
+        // after success, which is intentionally not invoked in XCTest.
+        try? engine.resetAppData(includeKeys: false, includePrompts: false)
+        try? engine.resetAppData(includeKeys: true, includePrompts: true)
+
+        XCTAssertEqual(calls.map(\.keys), [false, true])
+        XCTAssertEqual(calls.map(\.prompts), [false, true])
+        XCTAssertTrue(
+            model.resetImpactDescription(includeKeys: false, includePrompts: true)
+                .contains("assistive.txt and formatting.txt base prompts will also move to Trash")
+        )
     }
 
     func testClearMcpConfigurationUsesDedicatedEngineContract() {

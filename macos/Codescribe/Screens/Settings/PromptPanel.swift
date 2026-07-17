@@ -2,9 +2,8 @@ import SwiftUI
 
 // Prompt editor: edits the two BASE prompt files the core uses — the formatting
 // prompt (`formatting.txt`) and the assistive prompt (`assistive.txt`). Each is
-// loaded via the config engine, edited in a TextEditor, and saved back through
-// `setFormattingPrompt` / `setAssistivePrompt`. "Restore defaults" resets both
-// to their built-in defaults via `resetPromptsToDefaults`.
+// loaded with source/path provenance, edited in a TextEditor, and saved back
+// through the core's atomic writer. Restore is explicit and per prompt.
 //
 // NOTE: these edit only the BASE files; the core still appends its `*_tuning.txt`
 // at runtime (not shown here).
@@ -14,7 +13,8 @@ struct PromptPanel: View {
 
     @State private var formatting: String = ""
     @State private var assistive: String = ""
-    @State private var loaded = false
+    @State private var formattingSnapshot: CsPromptSnapshot?
+    @State private var assistiveSnapshot: CsPromptSnapshot?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -35,7 +35,19 @@ struct PromptPanel: View {
                 title: "Formatting prompt",
                 subtitle: "Rewrites raw transcripts (formatting.txt)",
                 text: $formatting,
-                onSave: { model.saveFormattingPrompt(formatting) }
+                snapshot: formattingSnapshot,
+                onSave: {
+                    guard let updated = model.saveFormattingPrompt(formatting) else { return false }
+                    formatting = updated.content
+                    formattingSnapshot = updated
+                    return true
+                },
+                onRestore: {
+                    guard let updated = model.restoreFormattingPromptToDefault() else { return false }
+                    formatting = updated.content
+                    formattingSnapshot = updated
+                    return true
+                }
             )
             .padding(.top, 22)
 
@@ -43,42 +55,33 @@ struct PromptPanel: View {
                 title: "Assistive prompt",
                 subtitle: "Base system prompt for the voice assistant (assistive.txt)",
                 text: $assistive,
-                onSave: { model.saveAssistivePrompt(assistive) }
+                snapshot: assistiveSnapshot,
+                onSave: {
+                    guard let updated = model.saveAssistivePrompt(assistive) else { return false }
+                    assistive = updated.content
+                    assistiveSnapshot = updated
+                    return true
+                },
+                onRestore: {
+                    guard let updated = model.restoreAssistivePromptToDefault() else { return false }
+                    assistive = updated.content
+                    assistiveSnapshot = updated
+                    return true
+                }
             )
             .padding(.top, 18)
-
-            Button(action: restoreDefaults) {
-                Text("Restore defaults")
-                    .font(CSFont.ui(12, .semibold))
-                    .foregroundStyle(CSColor.terracottaLight)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 9)
-                    .background(
-                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                            .fill(CSColor.terracotta.opacity(0.12))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                            .strokeBorder(CSColor.terracotta.opacity(0.26), lineWidth: 1)
-                    )
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 16)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
         .onAppear {
-            guard !loaded else { return }
-            formatting = model.formattingPrompt()
-            assistive = model.assistivePrompt()
-            loaded = true
+            guard formattingSnapshot == nil, assistiveSnapshot == nil else { return }
+            let formattingLoaded = model.formattingPromptSnapshot()
+            let assistiveLoaded = model.assistivePromptSnapshot()
+            formatting = formattingLoaded.content
+            assistive = assistiveLoaded.content
+            formattingSnapshot = formattingLoaded
+            assistiveSnapshot = assistiveLoaded
         }
-    }
-
-    private func restoreDefaults() {
-        model.resetPromptsToDefaults()
-        formatting = model.defaultFormattingPrompt()
-        assistive = model.defaultAssistivePrompt()
     }
 }
 
@@ -88,11 +91,14 @@ private struct PromptEditor: View {
     let title: String
     let subtitle: String
     @Binding var text: String
-    let onSave: () -> Void
+    let snapshot: CsPromptSnapshot?
+    let onSave: () -> Bool
+    let onRestore: () -> Bool
 
     /// VIEW (rendered markdown) by default; EDIT (raw editor) on demand. Saving
     /// returns to VIEW so the persisted prompt is shown rendered.
     @State private var editing = false
+    @State private var confirmingRestore = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -106,11 +112,27 @@ private struct PromptEditor: View {
                         .foregroundStyle(CSColor.textMutedAlt)
                 }
                 Spacer(minLength: 0)
-                toggleButton
+                HStack(spacing: 8) {
+                    restoreButton
+                    toggleButton
+                }
             }
+
+            sourceTruth
+                .padding(.top, 7)
 
             content
                 .padding(.top, 11)
+        }
+        .alert("Restore \(title) to the built-in default?", isPresented: $confirmingRestore) {
+            Button("Cancel", role: .cancel) {}
+            Button("Restore this prompt", role: .destructive) {
+                if onRestore() {
+                    editing = false
+                }
+            }
+        } message: {
+            Text("Only this base prompt file will change. The previous version remains recoverable in the prompt backups folder.")
         }
     }
 
@@ -119,8 +141,9 @@ private struct PromptEditor: View {
     private var toggleButton: some View {
         Button(action: {
             if editing {
-                onSave()
-                editing = false
+                if onSave() {
+                    editing = false
+                }
             } else {
                 editing = true
             }
@@ -141,6 +164,37 @@ private struct PromptEditor: View {
         }
         .buttonStyle(.plain)
         .help(editing ? "Save the prompt" : "Edit the raw markdown")
+    }
+
+    private var restoreButton: some View {
+        Button("Restore…") {
+            confirmingRestore = true
+        }
+        .buttonStyle(.plain)
+        .font(CSFont.ui(11.5, .semibold))
+        .foregroundStyle(CSColor.textMutedAlt)
+        .help("Restore only \(title.lowercased())")
+        .accessibilityHint("Requires confirmation and keeps a recoverable backup.")
+    }
+
+    private var sourceTruth: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(promptSourceLabel(snapshot?.source))
+                .font(CSFont.mono(10.5, .semibold))
+                .foregroundStyle(snapshot?.source == "read_error" ? CSColor.dangerLight : CSColor.textMutedAlt)
+            Text(snapshot?.path ?? "Path unavailable")
+                .font(CSFont.mono(10.5, .regular))
+                .foregroundStyle(CSColor.textMuted)
+                .textSelection(.enabled)
+            if let error = snapshot?.readError, !error.isEmpty {
+                Text(error)
+                    .font(CSFont.mono(10.5, .regular))
+                    .foregroundStyle(CSColor.dangerLight)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Prompt source")
+        .accessibilityValue("\(promptSourceLabel(snapshot?.source)), \(snapshot?.path ?? "path unavailable")")
     }
 
     @ViewBuilder
@@ -175,6 +229,15 @@ private struct PromptEditor: View {
     private var cardBorder: some View {
         RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+    }
+}
+
+func promptSourceLabel(_ source: String?) -> String {
+    switch source {
+    case "custom_file": return "Custom file"
+    case "built_in_fallback": return "Built-in fallback"
+    case "read_error": return "Read error"
+    default: return "Source unavailable"
     }
 }
 

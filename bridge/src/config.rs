@@ -16,9 +16,10 @@ use std::sync::{Mutex, Once, OnceLock};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
-use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
 use codescribe_core::config::{
-    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
+    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, PromptKind, PromptSnapshot,
+    PromptWriteReason, UserSettings, prompt_snapshot, prompts, reset_to_defaults,
+    restore_prompt_to_default, write_prompt, write_prompt_bytes,
 };
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
@@ -134,6 +135,28 @@ pub struct CsResetPreview {
     pub transcript_days: u64,
     pub threads: u64,
     pub total_bytes: u64,
+}
+
+/// UI-safe view of one base prompt. Content is included because this surface is
+/// the prompt editor itself; audit records never include it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct CsPromptSnapshot {
+    pub content: String,
+    pub path: String,
+    /// `custom_file`, `built_in_fallback`, or `read_error`.
+    pub source: String,
+    pub read_error: Option<String>,
+}
+
+impl From<PromptSnapshot> for CsPromptSnapshot {
+    fn from(snapshot: PromptSnapshot) -> Self {
+        Self {
+            content: snapshot.content,
+            path: snapshot.path.to_string_lossy().into_owned(),
+            source: snapshot.source.as_str().to_string(),
+            read_error: snapshot.read_error,
+        }
+    }
 }
 
 /// Presence-only view of the Keychain-backed API keys. Booleans only — the
@@ -830,31 +853,54 @@ impl CodescribeConfig {
     /// the appended `*_tuning.txt`). Falls back to the built-in default when the
     /// file does not exist yet.
     pub fn get_formatting_prompt(&self) -> String {
-        read_prompt_or_default(
-            &get_formatting_prompt_path().to_string_lossy(),
-            DEFAULT_FORMATTING_PROMPT,
-        )
+        prompt_snapshot(PromptKind::Formatting).content
     }
 
     /// Current BASE assistive prompt (the editable `assistive.txt`, WITHOUT the
     /// appended `*_tuning.txt`). Falls back to the built-in default when the file
     /// does not exist yet.
     pub fn get_assistive_prompt(&self) -> String {
-        read_prompt_or_default(
-            &get_assistive_prompt_path().to_string_lossy(),
-            DEFAULT_ASSISTIVE_PROMPT,
-        )
+        prompt_snapshot(PromptKind::Assistive).content
     }
 
-    /// Overwrite the BASE formatting prompt file. The core has no setter, so we
-    /// write `formatting.txt` directly (creating the prompts dir if needed).
+    /// Content plus provenance/path for the formatting prompt editor.
+    pub fn formatting_prompt_snapshot(&self) -> CsPromptSnapshot {
+        prompt_snapshot(PromptKind::Formatting).into()
+    }
+
+    /// Content plus provenance/path for the assistive prompt editor.
+    pub fn assistive_prompt_snapshot(&self) -> CsPromptSnapshot {
+        prompt_snapshot(PromptKind::Assistive).into()
+    }
+
+    /// Save the BASE formatting prompt through the core's atomic writer.
     pub fn set_formatting_prompt(&self, content: String) -> Result<(), CsError> {
-        write_prompt(&get_formatting_prompt_path(), &content)
+        write_prompt(
+            PromptKind::Formatting,
+            &content,
+            PromptWriteReason::SettingsSave,
+        )
+        .map_err(CsError::from)
     }
 
     /// Overwrite the BASE assistive prompt file (`assistive.txt`).
     pub fn set_assistive_prompt(&self, content: String) -> Result<(), CsError> {
-        write_prompt(&get_assistive_prompt_path(), &content)
+        write_prompt(
+            PromptKind::Assistive,
+            &content,
+            PromptWriteReason::SettingsSave,
+        )
+        .map_err(CsError::from)
+    }
+
+    /// Restore only the formatting base prompt after explicit UI confirmation.
+    pub fn restore_formatting_prompt_to_default(&self) -> Result<(), CsError> {
+        restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)
+    }
+
+    /// Restore only the assistive base prompt after explicit UI confirmation.
+    pub fn restore_assistive_prompt_to_default(&self) -> Result<(), CsError> {
+        restore_prompt_to_default(PromptKind::Assistive).map_err(CsError::from)
     }
 
     /// Reset both BASE prompt files to their built-in defaults
@@ -942,9 +988,16 @@ impl CodescribeConfig {
     /// tree first, sync copied files, and only then remove the source without
     /// following symlinks. UserDefaults are cleared by the Swift caller before
     /// relaunch; TCC grants remain untouched.
-    pub fn reset_app_data(&self, include_keys: bool) -> Result<(), CsError> {
+    pub fn reset_app_data(&self, include_keys: bool, include_prompts: bool) -> Result<(), CsError> {
         let dirs = app_data_dirs();
         let preview = reset_preview_for_dirs(&dirs);
+        let preserved_prompts = if include_prompts {
+            Vec::new()
+        } else {
+            capture_base_prompts().map_err(|error| CsError::Config {
+                msg: format!("failed to preserve base prompts before reset: {error}"),
+            })?
+        };
         let now = Utc::now();
         let trash_root = codescribe_trash_dir()?;
         let audit_path = reset_audit_path()?;
@@ -961,6 +1014,8 @@ impl CodescribeConfig {
             trash_path: &reset_destination,
             preview: &preview,
             include_keys,
+            include_prompts,
+            preserved_prompt_files: preserved_prompts.len(),
         })
         .map_err(|error| CsError::Config {
             msg: format!("failed to append reset audit log: {error}"),
@@ -979,12 +1034,32 @@ impl CodescribeConfig {
                         trash_path: &reset_destination,
                         preview: &preview,
                         include_keys,
+                        include_prompts,
+                        preserved_prompt_files: preserved_prompts.len(),
                     });
                     return Err(CsError::Config {
                         msg: format!("failed to move app data to Trash: {error}"),
                     });
                 }
             };
+
+        if let Err(error) = restore_base_prompts(&preserved_prompts) {
+            let _ = append_reset_audit(&ResetAuditEvent {
+                audit_path: &audit_path,
+                timestamp: &now,
+                status: "data_moved_prompt_restore_failed",
+                source_paths: &dirs,
+                moved_paths: &moved_paths,
+                trash_path: &reset_destination,
+                preview: &preview,
+                include_keys,
+                include_prompts,
+                preserved_prompt_files: preserved_prompts.len(),
+            });
+            return Err(CsError::Config {
+                msg: format!("app data moved to Trash but base prompt restoration failed: {error}"),
+            });
+        }
 
         let key_error = if include_keys {
             let mut failure = None;
@@ -1014,6 +1089,8 @@ impl CodescribeConfig {
             trash_path: &reset_destination,
             preview: &preview,
             include_keys,
+            include_prompts,
+            preserved_prompt_files: preserved_prompts.len(),
         })
         .map_err(|error| CsError::Config {
             msg: format!("failed to append reset audit log: {error}"),
@@ -1042,6 +1119,36 @@ impl CodescribeConfig {
 /// Mirrors `hotkeys::reload_hotkey_runtime_after_write`.
 fn reload_hotkey_runtime() {
     codescribe::os::hotkeys::apply_hotkey_config(&Config::load_without_keychain());
+}
+
+#[derive(Debug)]
+struct PreservedPrompt {
+    kind: PromptKind,
+    bytes: Vec<u8>,
+}
+
+fn capture_base_prompts() -> std::io::Result<Vec<PreservedPrompt>> {
+    let mut preserved = Vec::new();
+    for kind in [PromptKind::Formatting, PromptKind::Assistive] {
+        let path = prompts::prompts_dir().join(kind.filename());
+        match fs::read(path) {
+            Ok(bytes) => preserved.push(PreservedPrompt { kind, bytes }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(preserved)
+}
+
+fn restore_base_prompts(prompts: &[PreservedPrompt]) -> std::io::Result<()> {
+    for prompt in prompts {
+        write_prompt_bytes(
+            prompt.kind,
+            &prompt.bytes,
+            PromptWriteReason::AppResetPreservation,
+        )?;
+    }
+    Ok(())
 }
 
 /// App-owned data directories a full reset moves to Trash: config / logs /
@@ -1369,6 +1476,8 @@ struct ResetAuditEvent<'a> {
     trash_path: &'a Path,
     preview: &'a CsResetPreview,
     include_keys: bool,
+    include_prompts: bool,
+    preserved_prompt_files: usize,
 }
 
 fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
@@ -1390,6 +1499,8 @@ fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
         "threads": event.preview.threads,
         "total_bytes": event.preview.total_bytes,
         "include_keys": event.include_keys,
+        "include_prompts": event.include_prompts,
+        "preserved_prompt_files": event.preserved_prompt_files,
     });
     let mut file = OpenOptions::new()
         .create(true)
@@ -1619,28 +1730,13 @@ fn ensure_known_account(account: &str) -> Result<(), CsError> {
     }
 }
 
-/// Read a BASE prompt file, falling back to the supplied default when it is
-/// missing or unreadable.
-fn read_prompt_or_default(path: &str, default: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|_| default.to_string())
-}
-
-/// Write a BASE prompt file, creating its parent directory first.
-fn write_prompt(path: &std::path::Path, content: &str) -> Result<(), CsError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod reset_tests {
     use super::{
-        CsResetPreview, ResetAuditEvent, app_data_dirs, append_reset_audit,
+        CsResetPreview, ResetAuditEvent, app_data_dirs, append_reset_audit, capture_base_prompts,
         clear_mcp_configuration_to, create_reset_destination, move_path_recoverably_with,
         move_reset_dirs_to_destination, remove_path_without_following_symlinks,
-        reset_preview_for_dirs,
+        reset_preview_for_dirs, restore_base_prompts,
     };
     use chrono::{DateTime, Utc};
     use serial_test::serial;
@@ -1719,6 +1815,14 @@ mod reset_tests {
             br#"{"version":3,"threads":[{"id":"one"},{"id":"two"}]}"#,
         );
         write(&root.join("settings.json"), b"{}");
+        write(
+            &root.join("prompts/assistive.txt"),
+            b"sacred assistive bytes\n",
+        );
+        write(
+            &root.join("prompts/formatting.txt"),
+            b"sacred formatting bytes\n",
+        );
         let root_canon = root.canonicalize().expect("canonical reset root");
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
 
@@ -1741,11 +1845,18 @@ mod reset_tests {
         let timestamp = fixed_timestamp();
         let destination =
             create_reset_destination(&trash, &timestamp).expect("create test Trash destination");
+        let preserved_prompts = capture_base_prompts().expect("capture sacred prompts");
         let moved_paths = move_reset_dirs_to_destination(&dirs, &destination, &trash)
             .expect("move reset scope to test Trash");
-        assert!(
-            !root.exists(),
-            "source tree must be gone after a successful move"
+        restore_base_prompts(&preserved_prompts).expect("restore sacred prompts");
+        assert!(!root.join("settings.json").exists());
+        assert_eq!(
+            std::fs::read(root.join("prompts/assistive.txt")).expect("read restored assistive"),
+            b"sacred assistive bytes\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("prompts/formatting.txt")).expect("read restored formatting"),
+            b"sacred formatting bytes\n"
         );
         assert!(destination.join("codescribe-data/settings.json").is_file());
         assert!(
@@ -1763,6 +1874,8 @@ mod reset_tests {
             trash_path: &destination,
             preview: &preview,
             include_keys: false,
+            include_prompts: false,
+            preserved_prompt_files: preserved_prompts.len(),
         })
         .expect("append reset audit");
         let line = std::fs::read_to_string(&audit).expect("read reset audit");
@@ -1774,6 +1887,8 @@ mod reset_tests {
         assert_eq!(entry["transcript_days"], 2);
         assert_eq!(entry["threads"], 2);
         assert_eq!(entry["include_keys"], false);
+        assert_eq!(entry["include_prompts"], false);
+        assert_eq!(entry["preserved_prompt_files"], 2);
         assert_eq!(entry["trash_path"], destination.to_string_lossy().as_ref());
         assert!(
             entry["source_paths"]
@@ -1818,6 +1933,8 @@ mod reset_tests {
             trash_path: &destination,
             preview: &preview,
             include_keys: true,
+            include_prompts: false,
+            preserved_prompt_files: 2,
         })
         .expect("append first audit line");
         let moved_paths = vec![(sources[0].clone(), destination.join("codescribe-data"))];
@@ -1830,6 +1947,8 @@ mod reset_tests {
             trash_path: &destination,
             preview: &preview,
             include_keys: true,
+            include_prompts: false,
+            preserved_prompt_files: 2,
         })
         .expect("append second audit line");
 

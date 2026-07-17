@@ -62,16 +62,19 @@ protocol SettingsEngine {
     // Editable BASE prompts
     func getFormattingPrompt() -> String
     func getAssistivePrompt() -> String
+    func formattingPromptSnapshot() -> CsPromptSnapshot
+    func assistivePromptSnapshot() -> CsPromptSnapshot
     func defaultFormattingPrompt() -> String
     func defaultAssistivePrompt() -> String
     func setFormattingPrompt(content: String) throws
     func setAssistivePrompt(content: String) throws
-    func resetPromptsToDefaults() throws
+    func restoreFormattingPromptToDefault() throws
+    func restoreAssistivePromptToDefault() throws
 
     // Recoverable reset: preview live impact, move local data to Trash, and
     // optionally remove Keychain keys. MCP-only clear is a separate concern.
     func resetPreview() -> CsResetPreview
-    func resetAppData(includeKeys: Bool) throws
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) throws
     func clearMcpConfiguration() throws
 }
 
@@ -139,6 +142,8 @@ final class RealSettingsEngine: SettingsEngine {
 
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
     func getAssistivePrompt() -> String { config.getAssistivePrompt() }
+    func formattingPromptSnapshot() -> CsPromptSnapshot { config.formattingPromptSnapshot() }
+    func assistivePromptSnapshot() -> CsPromptSnapshot { config.assistivePromptSnapshot() }
     func defaultFormattingPrompt() -> String { config.defaultFormattingPrompt() }
     func defaultAssistivePrompt() -> String { config.defaultAssistivePrompt() }
     func setFormattingPrompt(content: String) throws {
@@ -147,11 +152,16 @@ final class RealSettingsEngine: SettingsEngine {
     func setAssistivePrompt(content: String) throws {
         try config.setAssistivePrompt(content: content)
     }
-    func resetPromptsToDefaults() throws { try config.resetPromptsToDefaults() }
+    func restoreFormattingPromptToDefault() throws {
+        try config.restoreFormattingPromptToDefault()
+    }
+    func restoreAssistivePromptToDefault() throws {
+        try config.restoreAssistivePromptToDefault()
+    }
 
     func resetPreview() -> CsResetPreview { config.resetPreview() }
-    func resetAppData(includeKeys: Bool) throws {
-        try config.resetAppData(includeKeys: includeKeys)
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
+        try config.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
     }
     func clearMcpConfiguration() throws { try config.clearMcpConfiguration() }
 }
@@ -171,7 +181,11 @@ struct MockSettingsEngine: SettingsEngine {
     var lexiconEntries: [CsLexiconEntry] = []
     var audioSnapshot: CsAudioInputSnapshot = .sample
     var resetPreviewValue: CsResetPreview = .sample
-    var resetAppDataObserver: ((Bool) throws -> Void)?
+    var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
+    var assistiveSnapshot: CsPromptSnapshot = .sampleAssistive
+    var promptSaveObserver: ((String, String) throws -> Void)?
+    var promptRestoreObserver: ((String) throws -> Void)?
+    var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
     var clearMcpConfigurationObserver: (() throws -> Void)?
     var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
     var resetAudioInputDeviceObserver: (() throws -> Void)?
@@ -251,14 +265,25 @@ struct MockSettingsEngine: SettingsEngine {
 
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
     func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
+    func formattingPromptSnapshot() -> CsPromptSnapshot { formattingSnapshot }
+    func assistivePromptSnapshot() -> CsPromptSnapshot { assistiveSnapshot }
     func defaultFormattingPrompt() -> String { CsSettings.samplePrompt }
     func defaultAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
-    func setFormattingPrompt(content: String) throws {}
-    func setAssistivePrompt(content: String) throws {}
-    func resetPromptsToDefaults() throws {}
+    func setFormattingPrompt(content: String) throws {
+        try promptSaveObserver?("formatting", content)
+    }
+    func setAssistivePrompt(content: String) throws {
+        try promptSaveObserver?("assistive", content)
+    }
+    func restoreFormattingPromptToDefault() throws {
+        try promptRestoreObserver?("formatting")
+    }
+    func restoreAssistivePromptToDefault() throws {
+        try promptRestoreObserver?("assistive")
+    }
     func resetPreview() -> CsResetPreview { resetPreviewValue }
-    func resetAppData(includeKeys: Bool) throws {
-        try resetAppDataObserver?(includeKeys)
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
+        try resetAppDataObserver?(includeKeys, includePrompts)
     }
     func clearMcpConfiguration() throws {
         try clearMcpConfigurationObserver?()
@@ -284,6 +309,22 @@ extension CsResetPreview {
         transcriptDays: 6,
         threads: 12,
         totalBytes: 31_981_568
+    )
+}
+
+extension CsPromptSnapshot {
+    static let sampleFormatting = CsPromptSnapshot(
+        content: CsSettings.samplePrompt,
+        path: "~/.codescribe/prompts/formatting.txt",
+        source: "custom_file",
+        readError: nil
+    )
+
+    static let sampleAssistive = CsPromptSnapshot(
+        content: CsSettings.sampleAssistivePrompt,
+        path: "~/.codescribe/prompts/assistive.txt",
+        source: "custom_file",
+        readError: nil
     )
 }
 

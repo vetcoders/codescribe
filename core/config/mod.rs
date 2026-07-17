@@ -41,9 +41,10 @@ pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
 pub use prompts::{
-    DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, get_assistive_prompt,
-    get_assistive_prompt_path, get_formatting_prompt, get_formatting_prompt_path, open_prompt_file,
-    open_prompts_folder, reset_to_defaults,
+    DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptSource,
+    PromptWriteReason, get_assistive_prompt, get_assistive_prompt_path, get_formatting_prompt,
+    get_formatting_prompt_path, open_prompt_file, open_prompts_folder, prompt_snapshot,
+    reset_to_defaults, restore_prompt_to_default, write_prompt, write_prompt_bytes,
 };
 
 #[cfg(test)]

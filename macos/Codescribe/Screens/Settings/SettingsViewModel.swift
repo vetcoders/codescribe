@@ -609,8 +609,13 @@ final class SettingsViewModel: ObservableObject {
         resetPreview = engine.resetPreview()
     }
 
-    func resetImpactDescription(includeKeys: Bool) -> String {
+    func resetImpactDescription(includeKeys: Bool, includePrompts: Bool) -> String {
         var message = "Moves \(resetImpactSummary(resetPreview)) to Trash."
+        if includePrompts {
+            message += " Your assistive.txt and formatting.txt base prompts will also move to Trash."
+        } else {
+            message += " Your assistive.txt and formatting.txt base prompts will be preserved."
+        }
         if includeKeys {
             message += " API keys will also be removed from Keychain and are not recoverable from Trash."
         }
@@ -621,10 +626,10 @@ final class SettingsViewModel: ObservableObject {
     /// UserDefaults domain, then relaunch so codescribe comes up fresh (first-run
     /// wizard from the top). `includeKeys` also removes the Keychain API keys.
     /// On failure the error surfaces in `lastError` and nothing is relaunched.
-    func resetAppData(includeKeys: Bool) {
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) {
         guard let engine else { return }
         do {
-            try engine.resetAppData(includeKeys: includeKeys)
+            try engine.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
         } catch {
             lastError = String(describing: error)
             return
@@ -1303,8 +1308,14 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Prompts (editable BASE prompts)
 
-    func formattingPrompt() -> String { engine?.getFormattingPrompt() ?? CsSettings.samplePrompt }
-    func assistivePrompt() -> String { engine?.getAssistivePrompt() ?? CsSettings.sampleAssistivePrompt }
+    func formattingPrompt() -> String { formattingPromptSnapshot().content }
+    func assistivePrompt() -> String { assistivePromptSnapshot().content }
+    func formattingPromptSnapshot() -> CsPromptSnapshot {
+        engine?.formattingPromptSnapshot() ?? .sampleFormatting
+    }
+    func assistivePromptSnapshot() -> CsPromptSnapshot {
+        engine?.assistivePromptSnapshot() ?? .sampleAssistive
+    }
     func defaultFormattingPrompt() -> String {
         engine?.defaultFormattingPrompt() ?? CsSettings.samplePrompt
     }
@@ -1312,19 +1323,52 @@ final class SettingsViewModel: ObservableObject {
         engine?.defaultAssistivePrompt() ?? CsSettings.sampleAssistivePrompt
     }
 
-    func saveFormattingPrompt(_ content: String) {
-        do { try engine?.setFormattingPrompt(content: content) }
-        catch { lastError = String(describing: error) }
+    @discardableResult
+    func saveFormattingPrompt(_ content: String) -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.setFormattingPrompt(content: content)
+            return engine.formattingPromptSnapshot()
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
     }
 
-    func saveAssistivePrompt(_ content: String) {
-        do { try engine?.setAssistivePrompt(content: content) }
-        catch { lastError = String(describing: error) }
+    @discardableResult
+    func saveAssistivePrompt(_ content: String) -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.setAssistivePrompt(content: content)
+            return engine.assistivePromptSnapshot()
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
     }
 
-    func resetPromptsToDefaults() {
-        do { try engine?.resetPromptsToDefaults() }
-        catch { lastError = String(describing: error) }
+    @discardableResult
+    func restoreFormattingPromptToDefault() -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.restoreFormattingPromptToDefault()
+            return engine.formattingPromptSnapshot()
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func restoreAssistivePromptToDefault() -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.restoreAssistivePromptToDefault()
+            return engine.assistivePromptSnapshot()
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
     }
 
     // MARK: - Preview seed

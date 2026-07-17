@@ -217,6 +217,7 @@ struct UserPanel: View {
 private struct ResetAppDataSection: View {
     @ObservedObject var model: SettingsViewModel
     @State private var includeKeys = false
+    @State private var includePrompts = false
     @State private var confirming = false
     @State private var confirmationText = ""
 
@@ -226,7 +227,8 @@ private struct ResetAppDataSection: View {
                 .foregroundStyle(CSColor.dangerLight)
 
             Text("Moves recordings, transcript history, conversations, logs, preferences, "
-                + "and local configuration to Trash so they can be recovered.")
+                + "and local configuration to Trash so they can be recovered. "
+                + "Your assistive.txt and formatting.txt base prompts are preserved by default.")
                 .font(CSFont.mono(11, .medium))
                 .foregroundStyle(CSColor.textMutedAlt)
                 .fixedSize(horizontal: false, vertical: true)
@@ -239,6 +241,15 @@ private struct ResetAppDataSection: View {
             }
             .toggleStyle(.checkbox)
             .padding(.top, 13)
+
+            Toggle(isOn: $includePrompts) {
+                Text("Also reset my base prompts (assistive.txt and formatting.txt)")
+                    .font(CSFont.ui(12.5, .medium))
+                    .foregroundStyle(CSColor.textBody)
+            }
+            .toggleStyle(.checkbox)
+            .padding(.top, 9)
+            .accessibilityHint("Off by default. When enabled, both prompt files move to Trash with the rest of the app data.")
 
             Button(role: .destructive) {
                 model.refreshResetPreview()
@@ -262,7 +273,7 @@ private struct ResetAppDataSection: View {
             .buttonStyle(.plain)
             .padding(.top, 13)
             .accessibilityLabel("Reset app data. Destructive action.")
-            .accessibilityHint("Shows the live impact and requires typing RESET before data moves to Trash.")
+            .accessibilityHint("Shows the live impact, names whether base prompts are preserved, and requires typing RESET before data moves to Trash.")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
@@ -281,11 +292,11 @@ private struct ResetAppDataSection: View {
                 confirmationText = ""
             }
             Button("Move to Trash & Relaunch", role: .destructive) {
-                model.resetAppData(includeKeys: includeKeys)
+                model.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
             }
             .disabled(!resetConfirmationMatches(confirmationText))
         } message: {
-            Text(model.resetImpactDescription(includeKeys: includeKeys))
+            Text(model.resetImpactDescription(includeKeys: includeKeys, includePrompts: includePrompts))
         }
     }
 }
