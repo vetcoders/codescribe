@@ -341,6 +341,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var qualityRecords: [CsQualityRecord] = []
     @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
     @Published private(set) var voiceLabReadError: String?
+    @Published private(set) var voiceLabEditPending: Set<String> = []
+    @Published private(set) var voiceLabEditErrors: [String: String] = [:]
     @Published private(set) var audioInput: CsAudioInputSnapshot
     @Published private(set) var audioInputReadError: String?
     @Published private(set) var resetPreview: CsResetPreview
@@ -889,6 +891,27 @@ final class SettingsViewModel: ObservableObject {
             qualityRecords = []
             customLexiconEntries = []
             voiceLabReadError = String(describing: error)
+        }
+    }
+
+    @discardableResult
+    func finalizeVoiceLabCorrection(id: String, canonical: String) -> Bool {
+        guard let engine else { return false }
+        let canonical = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !canonical.isEmpty, !voiceLabEditPending.contains(id) else { return false }
+
+        voiceLabEditPending.insert(id)
+        voiceLabEditErrors[id] = nil
+        defer { voiceLabEditPending.remove(id) }
+        do {
+            _ = try engine.finalizeVoiceLabCorrection(id: id, canonical: canonical)
+            refreshVoiceLab()
+            return voiceLabReadError == nil
+        } catch {
+            let message = String(describing: error)
+            voiceLabEditErrors[id] = message
+            lastError = message
+            return false
         }
     }
 

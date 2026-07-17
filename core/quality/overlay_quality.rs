@@ -6,20 +6,32 @@
 //! Privacy: purely local, no network, no secrets, no audio.
 //! No new Settings knobs (defaults on; VoiceLab UI later).
 
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::config::Config;
 
+static CUSTOM_LEXICON_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
 /// Quality record for one user correction on the overlay.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QualityRecord {
+    /// Stable logical identity shared by the original correction and revisions.
+    /// Legacy rows omit it and receive a deterministic content-derived ID.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub correction_id: String,
+    /// Monotonic revision within one correction. Legacy rows deserialize as 0.
+    #[serde(default)]
+    pub revision: u64,
     /// Unix millis at capture (Copy/Send/Close on edited FINAL).
     pub timestamp_ms: u64,
     /// Session hint if available (future).
@@ -84,6 +96,8 @@ impl QualityRecord {
             None => serde_json::json!({ "source": "overlay-final" }),
         };
         QualityRecord {
+            correction_id: Uuid::new_v4().to_string(),
+            revision: 1,
             timestamp_ms,
             session_id: None,
             mode: mode.to_string(),
@@ -93,6 +107,27 @@ impl QualityRecord {
             edited_text,
             meta,
         }
+    }
+
+    pub fn logical_id(&self) -> String {
+        let stored = self.correction_id.trim();
+        if !stored.is_empty() {
+            return stored.to_string();
+        }
+
+        let mut digest = Sha256::new();
+        for value in [
+            self.timestamp_ms.to_string(),
+            self.session_id.clone().unwrap_or_default(),
+            self.mode.clone(),
+            self.model.clone().unwrap_or_default(),
+            self.raw_text.clone(),
+            self.delivered_text.clone(),
+        ] {
+            digest.update(value.as_bytes());
+            digest.update([0]);
+        }
+        format!("legacy-{:x}", digest.finalize())
     }
 }
 
@@ -134,7 +169,7 @@ pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
         }
     };
 
-    let mut recent = VecDeque::with_capacity(limit.min(256));
+    let mut resolved: HashMap<String, (usize, QualityRecord)> = HashMap::new();
     for (index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.with_context(|| format!("read quality log line {}", index + 1))?;
         if line.trim().is_empty() {
@@ -142,10 +177,17 @@ pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
         }
         match serde_json::from_str::<QualityRecord>(&line) {
             Ok(record) => {
-                if recent.len() == limit {
-                    recent.pop_front();
+                let logical_id = record.logical_id();
+                let replace = resolved
+                    .get(&logical_id)
+                    .map(|(previous_index, previous)| {
+                        record.revision > previous.revision
+                            || (record.revision == previous.revision && index > *previous_index)
+                    })
+                    .unwrap_or(true);
+                if replace {
+                    resolved.insert(logical_id, (index, record));
                 }
-                recent.push_back(record);
             }
             Err(error) => tracing::warn!(
                 "quality: skipping malformed correction record at {}:{}: {}",
@@ -156,7 +198,41 @@ pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
         }
     }
 
-    Ok(recent.into_iter().rev().collect())
+    let mut recent: Vec<_> = resolved.into_values().collect();
+    recent.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+    Ok(recent
+        .into_iter()
+        .take(limit)
+        .map(|(_, record)| record)
+        .collect())
+}
+
+fn all_quality_records() -> Result<Vec<QualityRecord>> {
+    let path = quality_dir().join("corrections.jsonl");
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("open quality log {}", path.display()));
+        }
+    };
+    let mut records = Vec::new();
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("read quality log line {}", index + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str(&line) {
+            Ok(record) => records.push(record),
+            Err(error) => tracing::warn!(
+                "quality: skipping malformed correction record at {}:{}: {}",
+                path.display(),
+                index + 1,
+                error
+            ),
+        }
+    }
+    Ok(records)
 }
 
 /// Read the custom lexicon as flattened `variant -> canonical` entries.
@@ -263,29 +339,119 @@ pub fn is_sensible_lexicon_candidate(variant: &str, canonical: &str) -> bool {
     true
 }
 
-/// Append a correction-derived rule to the user's custom lexicon file.
-/// Format matches what load_legacy_jsonl_with_terms expects for "custom":
-///   {"term": "<canonical>", "mispronunciations": ["<variant>"]}
-/// The loader already skips unsafe plain-word regressions for custom.
-pub fn append_correction_to_custom_lexicon(variant: &str, canonical: &str) -> Result<()> {
+/// Atomically upsert one correction-derived rule in the user's custom lexicon.
+/// Every prior mapping for the normalized variant is removed before one
+/// canonical row is appended. Unknown and malformed legacy rows are preserved.
+pub fn upsert_correction_in_custom_lexicon(variant: &str, canonical: &str) -> Result<()> {
+    let _write_guard = CUSTOM_LEXICON_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("custom lexicon write lock was poisoned"))?;
+    upsert_correction_in_custom_lexicon_unlocked(variant, canonical)
+}
+
+fn upsert_correction_in_custom_lexicon_unlocked(variant: &str, canonical: &str) -> Result<()> {
     if !is_sensible_lexicon_candidate(variant, canonical) {
         return Ok(());
     }
     let path = Config::config_dir().join("lexicon.custom.jsonl");
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
+    let existing = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error).with_context(|| format!("read custom lexicon {}", path.display()));
+        }
+    };
+    let rewritten = rewrite_custom_lexicon(&existing, variant, canonical)?;
+    atomic_write_with_rename(&path, rewritten.as_bytes(), |from, to| fs::rename(from, to))
+}
+
+fn normalized_variant(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn remove_normalized_variant(value: &mut serde_json::Value, target: &str) {
+    if let Some(entries) = value
+        .get_mut("mispronunciations")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        entries.retain(|entry| {
+            entry
+                .as_str()
+                .map(|variant| normalized_variant(variant) != target)
+                .unwrap_or(true)
+        });
     }
-    let entry = serde_json::json!({
-        "term": canonical,
-        "mispronunciations": [variant]
-    });
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("open custom lexicon {}", path.display()))?;
-    let line = serde_json::to_string(&entry).context("serialize lexicon entry")?;
-    writeln!(f, "{}", line).context("append lexicon rule")?;
+    if let Some(entries) = value
+        .get_mut("extras")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|extras| extras.get_mut("mispronunciations"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        entries.retain(|entry| {
+            entry
+                .as_str()
+                .map(|variant| normalized_variant(variant) != target)
+                .unwrap_or(true)
+        });
+    }
+}
+
+fn rewrite_custom_lexicon(existing: &str, variant: &str, canonical: &str) -> Result<String> {
+    let target = normalized_variant(variant);
+    let mut lines = Vec::new();
+    for line in existing.lines().filter(|line| !line.trim().is_empty()) {
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(mut value) => {
+                remove_normalized_variant(&mut value, &target);
+                lines.push(
+                    serde_json::to_string(&value).context("serialize preserved lexicon row")?,
+                );
+            }
+            Err(_) => lines.push(line.to_string()),
+        }
+    }
+    lines.push(
+        serde_json::to_string(&serde_json::json!({
+            "term": canonical.trim(),
+            "mispronunciations": [variant.trim()]
+        }))
+        .context("serialize lexicon upsert")?,
+    );
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn atomic_write_with_rename<F>(path: &Path, content: &[u8], rename: F) -> Result<()>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    let parent = path
+        .parent()
+        .context("custom lexicon path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create custom lexicon directory {}", parent.display()))?;
+    let temp_path = parent.join(format!(
+        ".lexicon.custom.jsonl.tmp.{}.{}",
+        std::process::id(),
+        Uuid::new_v4()
+    ));
+    let outcome = (|| -> std::io::Result<()> {
+        let mut temp = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        temp.write_all(content)?;
+        temp.sync_all()?;
+        drop(temp);
+        rename(&temp_path, path)?;
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Config::config_dir plus a fixed lexicon filename only.
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = outcome {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error).with_context(|| format!("atomically replace {}", path.display()));
+    }
     Ok(())
 }
 
@@ -314,7 +480,7 @@ pub fn commit_overlay_correction(
     for (variant, canonical) in extract_lexicon_candidates(delivered_text, edited_text) {
         if is_sensible_lexicon_candidate(&variant, &canonical) {
             // Best-effort; do not fail the whole commit on lexicon append.
-            if let Err(e) = append_correction_to_custom_lexicon(&variant, &canonical) {
+            if let Err(e) = upsert_correction_in_custom_lexicon(&variant, &canonical) {
                 tracing::warn!(
                     "quality: failed to append lexicon candidate {} -> {}: {}",
                     variant,
@@ -331,6 +497,102 @@ pub fn commit_overlay_correction(
         }
     }
     Ok(qpath)
+}
+
+/// Finalize the canonical value of one learned correction. The variant and
+/// immutable audit fields come from the latest resolved revision. The custom
+/// dictionary is atomically replaced first; only then is the superseding
+/// revision appended and exposed by the Voice Lab projection.
+pub fn finalize_voice_lab_correction(
+    correction_id: &str,
+    canonical: &str,
+) -> Result<QualityRecord> {
+    let correction_id = correction_id.trim();
+    let canonical = canonical.trim();
+    anyhow::ensure!(
+        !correction_id.is_empty()
+            && correction_id.len() <= 128
+            && correction_id.chars().all(
+                |character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            ),
+        "invalid correction ID"
+    );
+    anyhow::ensure!(
+        !canonical.is_empty(),
+        "canonical correction cannot be empty"
+    );
+
+    let records = all_quality_records()?;
+    let (_, current) = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record.logical_id() == correction_id)
+        .max_by_key(|(index, record)| (record.revision, *index))
+        .context("correction ID was not found")?;
+    anyhow::ensure!(
+        is_sensible_lexicon_candidate(&current.delivered_text, canonical),
+        "canonical correction does not satisfy the existing lexicon safety policy"
+    );
+    if current.edited_text.trim() == canonical {
+        return Ok(current.clone());
+    }
+
+    // Serialize the lexicon snapshot, rewrite, audit append, and rollback as
+    // one process-local transaction so simultaneous edits cannot lose rules.
+    let _write_guard = CUSTOM_LEXICON_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("custom lexicon write lock was poisoned"))?;
+    let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+    let previous_lexicon = match fs::read(&lexicon_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read custom lexicon {}", lexicon_path.display()));
+        }
+    };
+    upsert_correction_in_custom_lexicon_unlocked(&current.delivered_text, canonical)?;
+
+    let mut revision = current.clone();
+    revision.correction_id = correction_id.to_string();
+    revision.revision = current.revision.saturating_add(1);
+    revision.timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(current.timestamp_ms);
+    revision.edited_text = canonical.to_string();
+    revision.meta = serde_json::json!({
+        "source": "voice-lab",
+        "action": "edit",
+        "supersedes_revision": current.revision,
+    });
+
+    if let Err(error) = save_quality_record(&revision) {
+        let rollback = match previous_lexicon {
+            Some(bytes) => {
+                atomic_write_with_rename(&lexicon_path, &bytes, |from, to| fs::rename(from, to))
+            }
+            None => match fs::remove_file(&lexicon_path) {
+                Ok(()) => Ok(()),
+                Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(remove_error) => Err(remove_error).with_context(|| {
+                    format!(
+                        "remove rolled-back custom lexicon {}",
+                        lexicon_path.display()
+                    )
+                }),
+            },
+        };
+        if let Err(rollback_error) = rollback {
+            tracing::error!(
+                "quality: lexicon rollback failed after revision append error: {rollback_error:#}"
+            );
+        }
+        return Err(error).context("append finalized correction revision");
+    }
+
+    Ok(revision)
 }
 
 #[cfg(test)]
@@ -677,6 +939,99 @@ mod tests {
                     canonical: "VetCoders".into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn legacy_records_receive_deterministic_logical_ids() {
+        let legacy = r#"{"timestamp_ms":42,"mode":"overlay","raw_text":"uni agentka","delivered_text":"uni agentka","edited_text":"Junie","meta":{"action":"copy"}}"#;
+        let first: QualityRecord = serde_json::from_str(legacy).expect("legacy record");
+        let second: QualityRecord = serde_json::from_str(legacy).expect("legacy record again");
+
+        assert_eq!(first.revision, 0);
+        assert!(first.correction_id.is_empty());
+        assert!(first.logical_id().starts_with("legacy-"));
+        assert_eq!(first.logical_id(), second.logical_id());
+    }
+
+    #[test]
+    #[serial]
+    fn finalizing_correction_appends_revision_and_leaves_one_active_mapping() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir for Voice Lab edit");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let quality_path = commit_overlay_correction(
+            "uni agentka",
+            "uni agentka",
+            "Junie",
+            "overlay",
+            None,
+            Some("copy"),
+        )
+        .expect("initial correction");
+        let original = recent_quality_records(10).expect("initial projection")[0].clone();
+        let id = original.logical_id();
+
+        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        let mut duplicate = OpenOptions::new()
+            .append(true)
+            .open(&lexicon_path)
+            .expect("open duplicate fixture");
+        writeln!(
+            duplicate,
+            r#"{{"term":"Stale","mispronunciations":[" UNI AGENTKA "]}}"#
+        )
+        .expect("append stale duplicate");
+        drop(duplicate);
+
+        let revised = finalize_voice_lab_correction(&id, "Junie Prime")
+            .expect("finalize canonical correction");
+        assert_eq!(revised.correction_id, id);
+        assert_eq!(revised.revision, original.revision + 1);
+        assert_eq!(revised.delivered_text, "uni agentka");
+        assert_eq!(revised.edited_text, "Junie Prime");
+
+        let audit: Vec<QualityRecord> = fs::read_to_string(&quality_path)
+            .expect("read append-only audit")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("quality revision"))
+            .collect();
+        assert_eq!(audit.len(), 2);
+        assert_eq!(audit[0].edited_text, "Junie");
+        assert_eq!(audit[1].edited_text, "Junie Prime");
+        assert_eq!(recent_quality_records(10).unwrap()[0], revised);
+
+        let active: Vec<_> = custom_lexicon_entries()
+            .expect("active lexicon projection")
+            .into_iter()
+            .filter(|entry| normalized_variant(&entry.variant) == "uni agentka")
+            .collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].canonical, "Junie Prime");
+    }
+
+    #[test]
+    fn injected_atomic_replace_failure_keeps_previous_lexicon_bytes() {
+        let temp_dir = tempfile::tempdir().expect("temp lexicon");
+        let path = temp_dir.path().join("lexicon.custom.jsonl");
+        let previous = b"{\"term\":\"Junie\",\"mispronunciations\":[\"uni agentka\"]}\n";
+        fs::write(&path, previous).expect("seed previous lexicon");
+
+        let error = atomic_write_with_rename(&path, b"replacement\n", |_, _| {
+            Err(std::io::Error::other("injected rename failure"))
+        })
+        .expect_err("injected rename must fail");
+
+        assert!(error.to_string().contains("atomically replace"));
+        assert_eq!(fs::read(&path).expect("read unchanged lexicon"), previous);
+        assert_eq!(
+            fs::read_dir(temp_dir.path()).unwrap().count(),
+            1,
+            "temporary file is cleaned up"
         );
     }
 }

@@ -9,7 +9,8 @@
 //! Privacy: local disk only.
 
 use codescribe_core::quality::overlay_quality::{
-    CustomLexiconEntry, QualityRecord, custom_lexicon_entries, recent_quality_records,
+    CustomLexiconEntry, QualityRecord, custom_lexicon_entries, finalize_voice_lab_correction,
+    recent_quality_records,
 };
 
 use crate::CsError;
@@ -17,7 +18,10 @@ use crate::CsError;
 /// UI-safe projection of a persisted overlay correction.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsQualityRecord {
+    pub id: String,
+    pub revision: u64,
     pub raw_text: String,
+    pub variant: String,
     pub edited_text: String,
     pub action: String,
     pub timestamp_ms: u64,
@@ -32,12 +36,29 @@ impl From<QualityRecord> for CsQualityRecord {
             .unwrap_or("unknown")
             .to_string();
         Self {
+            id: record.logical_id(),
+            revision: record.revision,
             raw_text: record.raw_text,
+            variant: record.delivered_text,
             edited_text: record.edited_text,
             action,
             timestamp_ms: record.timestamp_ms,
         }
     }
+}
+
+/// Finalize one correction through the core's revision + atomic lexicon
+/// transaction and return the refreshed resolved record.
+#[uniffi::export]
+pub fn quality_finalize_correction(
+    correction_id: String,
+    canonical: String,
+) -> Result<CsQualityRecord, CsError> {
+    finalize_voice_lab_correction(&correction_id, &canonical)
+        .map(Into::into)
+        .map_err(|error| CsError::Quality {
+            msg: format!("Voice Lab correction update failed: {error:#}"),
+        })
 }
 
 /// UI-safe flattened custom lexicon row (`variant -> canonical`).
@@ -110,6 +131,8 @@ mod tests {
     #[test]
     fn quality_record_projection_maps_live_fields_and_action() {
         let record = QualityRecord {
+            correction_id: "correction-42".into(),
+            revision: 3,
             timestamp_ms: 42,
             session_id: None,
             mode: "overlay".into(),
@@ -123,7 +146,10 @@ mod tests {
         assert_eq!(
             CsQualityRecord::from(record),
             CsQualityRecord {
+                id: "correction-42".into(),
+                revision: 3,
                 raw_text: "raw".into(),
+                variant: "delivered".into(),
                 edited_text: "edited".into(),
                 action: "copy".into(),
                 timestamp_ms: 42,

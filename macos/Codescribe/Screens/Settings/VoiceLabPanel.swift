@@ -70,11 +70,28 @@ func detectPreset(_ configuration: PreviewTimingConfiguration) -> PreviewTimingP
 }
 
 struct VoiceLabCorrectionRow: Identifiable, Equatable {
-    let id: Int
+    let id: String
+    let revision: UInt64
     let rawText: String
+    let variant: String
     let editedText: String
     let action: String
     let timestampMs: UInt64
+}
+
+struct VoiceLabEditorState: Equatable {
+    var correctionID: String?
+    var canonical = ""
+
+    mutating func begin(_ row: VoiceLabCorrectionRow) {
+        correctionID = row.id
+        canonical = row.editedText
+    }
+
+    mutating func cancel() {
+        correctionID = nil
+        canonical = ""
+    }
 }
 
 struct VoiceLabLexiconRow: Identifiable, Equatable {
@@ -84,10 +101,12 @@ struct VoiceLabLexiconRow: Identifiable, Equatable {
 }
 
 func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionRow] {
-    records.enumerated().map { index, record in
+    records.map { record in
         VoiceLabCorrectionRow(
-            id: index,
+            id: record.id,
+            revision: record.revision,
             rawText: record.rawText,
+            variant: record.variant,
             editedText: record.editedText,
             action: record.action,
             timestampMs: record.timestampMs
@@ -108,6 +127,7 @@ func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
 struct VoiceLabPanel: View {
     @ObservedObject var model: SettingsViewModel
     @State private var advancedExpanded = false
+    @State private var editor = VoiceLabEditorState()
 
     private var corrections: [VoiceLabCorrectionRow] {
         qualityCorrectionRows(model.qualityRecords)
@@ -235,22 +255,54 @@ struct VoiceLabPanel: View {
             VStack(spacing: 8) {
                 ForEach(corrections) { row in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(row.rawText)
+                        Text("Heard: \(row.variant)")
                             .font(CSFont.ui(12.5, .medium))
                             .foregroundStyle(CSColor.textMutedAlt)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        HStack(spacing: 7) {
-                            Text("→")
-                                .font(CSFont.mono(11, .semibold))
+                        if editor.correctionID == row.id {
+                            HStack(spacing: 8) {
+                                TextField("Canonical correction", text: $editor.canonical)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { saveEdit(row) }
+                                    .onExitCommand { editor.cancel() }
+                                    .accessibilityLabel("Canonical correction for \(row.variant)")
+                                Button("Save") { saveEdit(row) }
+                                    .disabled(
+                                        editor.canonical.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                            || model.voiceLabEditPending.contains(row.id)
+                                    )
+                                Button("Cancel") { editor.cancel() }
+                            }
+                        } else {
+                            HStack(spacing: 7) {
+                                Text("→")
+                                    .font(CSFont.mono(11, .semibold))
+                                    .foregroundStyle(CSColor.terracottaLight)
+                                Text(row.editedText)
+                                    .font(CSFont.ui(13, .semibold))
+                                    .foregroundStyle(CSColor.textBody)
+                                    .textSelection(.enabled)
+                                Spacer(minLength: 0)
+                                Button("Edit") { editor.begin(row) }
+                                    .disabled(model.voiceLabEditPending.contains(row.id))
+                                    .accessibilityLabel("Edit correction for \(row.variant)")
+                            }
+                        }
+                        if model.voiceLabEditPending.contains(row.id) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityLabel("Saving correction")
+                        }
+                        if let error = model.voiceLabEditErrors[row.id] {
+                            Text("Save failed: \(error)")
+                                .font(CSFont.ui(10.5))
                                 .foregroundStyle(CSColor.terracottaLight)
-                            Text(row.editedText)
-                                .font(CSFont.ui(13, .semibold))
-                                .foregroundStyle(CSColor.textBody)
-                                .textSelection(.enabled)
                         }
                         HStack(spacing: 7) {
                             Text(row.action)
                                 .foregroundStyle(CSColor.oliveLight)
+                            Text("·")
+                            Text("revision \(row.revision)")
                             Text("·")
                             Text(timestampLabel(row.timestampMs))
                         }
@@ -260,8 +312,18 @@ struct VoiceLabPanel: View {
                     .padding(14)
                     .background(card)
                     .overlay(cardBorder)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(
+                        "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
+                    )
                 }
             }
+        }
+    }
+
+    private func saveEdit(_ row: VoiceLabCorrectionRow) {
+        if model.finalizeVoiceLabCorrection(id: row.id, canonical: editor.canonical) {
+            editor.cancel()
         }
     }
 

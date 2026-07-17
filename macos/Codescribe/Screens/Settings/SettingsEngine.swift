@@ -38,9 +38,10 @@ protocol SettingsEngine {
     func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
     func resetAudioInputDevice() throws
 
-    // Voice Lab read-only quality truth (JSONL stays behind the Rust bridge)
+    // Voice Lab quality truth (JSONL stays behind the Rust bridge)
     func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
     func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord
 
     // Keychain-backed API keys — presence booleans only, secrets never read back
     func keyStatus() -> CsKeyStatus
@@ -114,6 +115,9 @@ final class RealSettingsEngine: SettingsEngine {
     func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
         try lexiconCustomEntries()
     }
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord {
+        try qualityFinalizeCorrection(correctionId: id, canonical: canonical)
+    }
 
     func keyStatus() -> CsKeyStatus { config.keyStatus() }
     func keyAccounts() -> [String] { config.keyAccounts() }
@@ -179,6 +183,8 @@ struct MockSettingsEngine: SettingsEngine {
     var mode: String? = "agentic"
     var qualityRecords: [CsQualityRecord] = []
     var lexiconEntries: [CsLexiconEntry] = []
+    var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
+    var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
     var audioSnapshot: CsAudioInputSnapshot = .sample
     var resetPreviewValue: CsResetPreview = .sample
     var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
@@ -189,6 +195,9 @@ struct MockSettingsEngine: SettingsEngine {
     var clearMcpConfigurationObserver: (() throws -> Void)?
     var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
     var resetAudioInputDeviceObserver: (() throws -> Void)?
+    var voiceLabEditObserver: ((String, String) throws -> CsQualityRecord)?
+    // Keep the long-standing config observer last so existing trailing-closure
+    // call sites continue to bind to config writes, not Voice Lab edits.
     var updateConfigObserver: ((String, String) throws -> Void)?
 
     func loadSettings() -> CsSettings { settings }
@@ -208,9 +217,29 @@ struct MockSettingsEngine: SettingsEngine {
         try resetAudioInputDeviceObserver?()
     }
     func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
-        Array(qualityRecords.prefix(Int(clamping: limit)))
+        let records = try qualityRecordsLoader?() ?? qualityRecords
+        return Array(records.prefix(Int(clamping: limit)))
     }
-    func loadLexiconCustomEntries() throws -> [CsLexiconEntry] { lexiconEntries }
+    func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
+        try lexiconEntriesLoader?() ?? lexiconEntries
+    }
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord {
+        if let voiceLabEditObserver {
+            return try voiceLabEditObserver(id, canonical)
+        }
+        guard let record = qualityRecords.first(where: { $0.id == id }) else {
+            throw NSError(domain: "VoiceLab", code: 404)
+        }
+        return CsQualityRecord(
+            id: record.id,
+            revision: record.revision + 1,
+            rawText: record.rawText,
+            variant: record.variant,
+            editedText: canonical,
+            action: "edit",
+            timestampMs: record.timestampMs
+        )
+    }
 
     func keyStatus() -> CsKeyStatus { status }
     func keyAccounts() -> [String] {

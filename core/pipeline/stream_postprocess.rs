@@ -1285,6 +1285,7 @@ mod tests {
         assert_eq!(record.raw_text, "uni agentka");
         assert_eq!(record.delivered_text, "uni agentka");
         assert_eq!(record.edited_text, "Junie");
+        let correction_id = record.logical_id();
         assert_eq!(
             record.meta.get("action").and_then(|v| v.as_str()),
             Some("copy")
@@ -1306,11 +1307,13 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(custom_canonicals, vec!["Junie".to_string()]);
 
-        let lexicon = Lexicon {
+        let mut lexicon = Lexicon {
             builtin_rules: Vec::new(),
             custom_rules,
-            custom_path,
-            custom_mtime: None,
+            custom_path: custom_path.clone(),
+            custom_mtime: std::fs::metadata(&custom_path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok()),
             protected_canonicals: Vec::new(),
             custom_canonicals,
         };
@@ -1318,6 +1321,23 @@ mod tests {
         assert_eq!(
             lexicon.apply("Następny transcript: uni agentka."),
             "Następny transcript: Junie."
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let revision = crate::quality::overlay_quality::finalize_voice_lab_correction(
+            &correction_id,
+            "Junie Prime",
+        )
+        .expect("finalize Voice Lab correction");
+        assert_eq!(revision.revision, record.revision + 1);
+        assert_eq!(revision.edited_text, "Junie Prime");
+
+        lexicon.maybe_reload();
+        assert_eq!(lexicon.custom_rules.len(), 1);
+        assert_eq!(lexicon.apply("uni agentka"), "Junie Prime");
+        assert_eq!(
+            lexicon.apply("Następny transcript: uni agentka."),
+            "Następny transcript: Junie Prime."
         );
     }
 
