@@ -1,6 +1,38 @@
 import AppKit
 import SwiftUI
 
+let defaultTranscriptTagTemplate = "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>"
+let transcriptTagTemplatePlaceholders = ["{mode}", "{lang}", "{text}", "{conf}", "{flags}"]
+
+func transcriptTagTemplatePreview(
+    _ template: String,
+    mode: String = "dictation",
+    lang: String = "pl",
+    text: String = "…",
+    conf: String = "medium",
+    flags: String = "possible_hallucination_logprob"
+) -> String {
+    var rendered = template
+        .replacingOccurrences(of: "{mode}", with: mode)
+        .replacingOccurrences(of: "{lang}", with: lang)
+        .replacingOccurrences(of: "{conf}", with: conf)
+        .replacingOccurrences(of: "{flags}", with: flags)
+    if rendered.contains("{text}") {
+        return rendered.replacingOccurrences(of: "{text}", with: text)
+    }
+    if !rendered.isEmpty, !rendered.hasSuffix("\n") {
+        rendered.append("\n")
+    }
+    rendered.append(text)
+    return rendered
+}
+
+func transcriptTagTemplateAppendWarning(_ template: String) -> String? {
+    template.contains("{text}")
+        ? nil
+        : "Missing {text}; delivered transcript will be appended after the template."
+}
+
 enum SettingsSectionAvailability: Equatable {
     case available
     case hidden
@@ -767,15 +799,25 @@ final class SettingsViewModel: ObservableObject {
     }
 
     var transcriptTagPreview: String {
-        settings.transcriptTagTemplate
-            .replacingOccurrences(of: "{mode}", with: "dictation")
-            .replacingOccurrences(of: "{lang}", with: "pl")
-            .replacingOccurrences(of: "{text}", with: "…")
+        transcriptTagTemplatePreview(settings.transcriptTagTemplate)
+    }
+
+    var transcriptTagTemplateWarning: String? {
+        transcriptTagTemplateAppendWarning(settings.transcriptTagTemplate)
     }
 
     func setTranscriptTaggingEnabled(_ enabled: Bool) {
         settings.transcriptTaggingEnabled = enabled
         persist("TRANSCRIPT_TAGGING_ENABLED", enabled ? "1" : "0")
+    }
+
+    func setTranscriptTagTemplate(_ template: String) {
+        settings.transcriptTagTemplate = template
+        persist("TRANSCRIPT_TAG_TEMPLATE", template)
+    }
+
+    func restoreDefaultTranscriptTagTemplate() {
+        setTranscriptTagTemplate(defaultTranscriptTagTemplate)
     }
 
     // MARK: - Audio (live hardware + existing settings contract)

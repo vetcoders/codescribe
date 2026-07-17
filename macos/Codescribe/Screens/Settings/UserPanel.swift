@@ -60,7 +60,58 @@ struct UserPanel: View {
             }
             .padding(.top, 11)
 
-            Text("Template preview")
+            Text("Template")
+                .font(CSFont.mono(10, .semibold))
+                .foregroundStyle(CSColor.textFaint)
+                .padding(.top, 12)
+            TextField("Transcript tag template", text: transcriptTemplateBinding, axis: .vertical)
+                .font(CSFont.mono(11.5, .regular))
+                .foregroundStyle(CSColor.textBody)
+                .textFieldStyle(.plain)
+                .lineLimit(3...8)
+                .padding(12)
+                .background(card)
+                .overlay(cardBorder)
+                .accessibilityLabel("Transcript tag template editor")
+                .accessibilityValue(model.settings.transcriptTagTemplate)
+
+            if let warning = model.transcriptTagTemplateWarning {
+                Text(warning)
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.dangerLight)
+                    .padding(.top, 7)
+                    .accessibilityLabel("Transcript tag template warning")
+                    .accessibilityValue(warning)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(transcriptTagTemplatePlaceholders, id: \.self) { placeholder in
+                    Text(placeholder)
+                        .font(CSFont.mono(10, .semibold))
+                        .foregroundStyle(CSColor.textMutedAlt)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(CSColor.surfaceRaised(0.04))
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+                        )
+                }
+                Spacer(minLength: 0)
+                Button("Restore default") {
+                    model.restoreDefaultTranscriptTagTemplate()
+                }
+                .buttonStyle(.plain)
+                .font(CSFont.mono(10.5, .semibold))
+                .foregroundStyle(CSColor.terracottaLight)
+                .accessibilityLabel("Restore default transcript tag template")
+            }
+            .padding(.top, 9)
+
+            Text("Live preview")
                 .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(CSColor.textFaint)
                 .padding(.top, 12)
@@ -97,6 +148,13 @@ struct UserPanel: View {
         Binding(
             get: { model.settings.transcriptTaggingEnabled },
             set: { model.setTranscriptTaggingEnabled($0) }
+        )
+    }
+
+    private var transcriptTemplateBinding: Binding<String> {
+        Binding(
+            get: { model.settings.transcriptTagTemplate },
+            set: { model.setTranscriptTagTemplate($0) }
         )
     }
 

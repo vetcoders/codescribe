@@ -597,15 +597,36 @@ fn truth_recording_mode_label(
 }
 
 fn maybe_wrap_transcript_for_delivery(text: &str, config: &Config, mode: &str) -> String {
+    maybe_wrap_transcript_for_delivery_with_quality(text, config, mode, None)
+}
+
+fn maybe_wrap_transcript_for_delivery_with_quality(
+    text: &str,
+    config: &Config,
+    mode: &str,
+    metadata: Option<&RecordingTruthMetadata>,
+) -> String {
     if !config.transcript_tagging_enabled {
         return text.to_string();
     }
 
-    codescribe_core::transcript_tagging::wrap_transcript(
+    let confidence_flags = metadata
+        .map(|metadata| {
+            metadata
+                .confidence_flags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    codescribe_core::transcript_tagging::wrap_transcript_with_quality(
         text,
         &config.transcript_tag_template,
         mode,
         config.whisper_language.as_str(),
+        metadata.and_then(|metadata| metadata.avg_logprob),
+        &confidence_flags,
     )
 }
 
@@ -3633,8 +3654,12 @@ impl RecordingController {
         if cfg!(test) {
             info!("Skipping paste in tests (mode={})", mode_label);
         } else if should_auto_paste {
-            let paste_text =
-                maybe_wrap_transcript_for_delivery(&final_formatted_text, &config, &mode_label);
+            let paste_text = maybe_wrap_transcript_for_delivery_with_quality(
+                &final_formatted_text,
+                &config,
+                &mode_label,
+                Some(&truth_metadata),
+            );
             // Paste the text into the active application
             clipboard::paste_text(&paste_text).context("Failed to paste text")?;
             info!("Text pasted successfully");

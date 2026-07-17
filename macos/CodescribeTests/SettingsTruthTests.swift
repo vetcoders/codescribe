@@ -67,6 +67,50 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(writes.map(\.value), ["1", "0"])
     }
 
+    func testTranscriptTagTemplateWritesPromotedConfigKeyAndAllowsStaticAttributes() {
+        var writes: [(key: String, value: String)] = []
+        let engine = MockSettingsEngine { key, value in
+            writes.append((key, value))
+        }
+        let model = SettingsViewModel(engine: engine)
+
+        model.setTranscriptTagTemplate("<codescribe warn=\"may contain misspelling\">{text}</codescribe>")
+
+        XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"])
+        XCTAssertEqual(
+            writes.map(\.value),
+            ["<codescribe warn=\"may contain misspelling\">{text}</codescribe>"]
+        )
+    }
+
+    func testTranscriptTagTemplatePreviewWarnsAndAppendsWhenTextPlaceholderMissing() {
+        let model = SettingsViewModel()
+
+        model.setTranscriptTagTemplate("<codescribe conf=\"{conf}\" flags=\"{flags}\">")
+
+        XCTAssertEqual(
+            model.transcriptTagPreview,
+            "<codescribe conf=\"medium\" flags=\"possible_hallucination_logprob\">\n…"
+        )
+        XCTAssertEqual(
+            model.transcriptTagTemplateWarning,
+            "Missing {text}; delivered transcript will be appended after the template."
+        )
+    }
+
+    func testRestoreTranscriptTagTemplateWritesDefault() {
+        var writes: [(key: String, value: String)] = []
+        let engine = MockSettingsEngine { key, value in
+            writes.append((key, value))
+        }
+        let model = SettingsViewModel(engine: engine)
+
+        model.restoreDefaultTranscriptTagTemplate()
+
+        XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"])
+        XCTAssertEqual(writes.map(\.value), [defaultTranscriptTagTemplate])
+    }
+
     func testResetPreviewMapsLiveCountsIntoConcreteConfirmationCopy() {
         let preview = CsResetPreview(
             audioFiles: 5_000,

@@ -436,6 +436,33 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
     );
 }
 
+#[test]
+fn test_transcript_delivery_wrap_uses_truth_quality_placeholders() {
+    let config = Config {
+        transcript_tagging_enabled: true,
+        transcript_tag_template: "<tag conf=\"{conf}\" flags=\"{flags}\">{text}</tag>".to_string(),
+        ..Config::default()
+    };
+    let metadata = RecordingTruthMetadata {
+        avg_logprob: Some(-1.45),
+        confidence_flags: vec![
+            TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+            TranscriptionConfidenceFlag::UnverifiedStream,
+        ],
+        ..RecordingTruthMetadata::default()
+    };
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery_with_quality(
+            "literal transcript",
+            &config,
+            "dictation",
+            Some(&metadata),
+        ),
+        "<tag conf=\"low\" flags=\"possible_hallucination_logprob,unverified_stream\">literal transcript</tag>"
+    );
+}
+
 fn test_transcript_pipeline_params(
     raw_text: &str,
     config: Config,
