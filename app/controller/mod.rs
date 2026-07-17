@@ -583,6 +583,19 @@ fn recording_mode_label(
     }
 }
 
+fn truth_recording_mode_label(
+    assistive: bool,
+    hold_mode: HoldMode,
+    force_raw: bool,
+    force_ai: bool,
+) -> &'static str {
+    if assistive {
+        "assistive"
+    } else {
+        recording_mode_label(assistive, hold_mode, force_raw, force_ai)
+    }
+}
+
 fn maybe_wrap_transcript_for_delivery(text: &str, config: &Config, mode: &str) -> String {
     if !config.transcript_tagging_enabled {
         return text.to_string();
@@ -2974,7 +2987,8 @@ impl RecordingController {
                     truth_verdict.display_status.clone()
                 };
                 let mode_label =
-                    recording_mode_label(assistive, hold_mode, force_raw, force_ai).to_string();
+                    truth_recording_mode_label(assistive, hold_mode, force_raw, force_ai)
+                        .to_string();
                 let truth_metadata = RecordingTruthMetadata {
                     source: truth_verdict.transcript_source,
                     engine: truth_engine_label(truth_verdict.transcript_source),
@@ -3172,7 +3186,7 @@ impl RecordingController {
             postprocess_stats.lexicon_rewrites
         );
 
-        let raw_entry_path = if raw_save_enabled && !live_stream_session {
+        let raw_entry_path = if !live_stream_session && (raw_save_enabled || assistive) {
             let raw_entry = crate::state::history::save_entry_with_timestamp_and_slug(
                 &raw_text,
                 Some(recording_timestamp),
@@ -3394,6 +3408,9 @@ impl RecordingController {
 
         let mode_label =
             recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai).to_string();
+        let truth_mode_label =
+            truth_recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai)
+                .to_string();
         info!(
             "Final transcript ready ({} chars, mode={})",
             formatted_text.len(),
@@ -3482,7 +3499,7 @@ impl RecordingController {
         let truth_metadata = RecordingTruthMetadata {
             source: transcript_source,
             engine: truth_engine_label(transcript_source),
-            mode: Some(mode_label.clone()),
+            mode: Some(truth_mode_label.clone()),
             fallback_class: truth_fallback_class,
             fallback_used: truth_fallback_class.is_some()
                 || matches!(
@@ -3590,10 +3607,6 @@ impl RecordingController {
             );
             info!("Transcript saved: {}", entry.path.display());
             write_truth_sidecar_logged(&entry.path, &truth_metadata);
-        } else if assistive {
-            info!(
-                "Assistive flow: skipping legacy final transcript save (ThreadStore is source of truth)"
-            );
         } else {
             info!("Final transcript matches RAW; skipping duplicate save");
         }
@@ -3623,7 +3636,7 @@ impl RecordingController {
                 &RecordingTruthMetadata {
                     source: Some(RecordingTranscriptSource::CloudPrimary),
                     engine: truth_engine_label(Some(RecordingTranscriptSource::CloudPrimary)),
-                    mode: Some(mode_label.clone()),
+                    mode: Some(truth_mode_label.clone()),
                     fallback_class: None,
                     fallback_used: false,
                     vad_speech_pct: None,
@@ -3641,7 +3654,7 @@ impl RecordingController {
         } else if let Some(handle) = cloud_handle {
             let slug_hint = raw_text.clone();
             let timestamp = recording_timestamp;
-            let mode_label = mode_label.clone();
+            let truth_mode_label = truth_mode_label.clone();
             tokio::spawn(async move {
                 match handle.await {
                     Ok(Ok(cloud_verdict)) => {
@@ -3659,7 +3672,7 @@ impl RecordingController {
                                 engine: truth_engine_label(Some(
                                     RecordingTranscriptSource::CloudPrimary,
                                 )),
-                                mode: Some(mode_label),
+                                mode: Some(truth_mode_label),
                                 fallback_class: None,
                                 fallback_used: false,
                                 vad_speech_pct: None,

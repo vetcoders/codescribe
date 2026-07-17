@@ -81,8 +81,6 @@ static AGENT_THREAD_GENERATION: AtomicU64 = AtomicU64::new(1);
 static AGENT_SEND_IN_FLIGHT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static SHARED_AGENT_RUNTIME_STATE: OnceLock<StdMutex<Option<Arc<TokioMutex<AgentRuntimeState>>>>> =
     OnceLock::new();
-const CODESCRIBE_ASSISTIVE_LEGACY_BACKUP_ENV: &str =
-    "CODESCRIBE_ASSISTIVE_LEGACY_TRANSCRIPT_BACKUP";
 
 struct AgentRuntime {
     session: AgentSession,
@@ -917,23 +915,9 @@ pub(crate) async fn send_assistive_with_agent_runtime(
     .await;
 }
 
-/// Legacy transcript backup for assistive mode is opt-in.
-///
-/// Non-assistive dictation keeps legacy transcript persistence unchanged.
-pub fn raw_save_enabled(is_assistive: bool) -> bool {
-    if !is_assistive {
-        return true;
-    }
-
-    std::env::var(CODESCRIBE_ASSISTIVE_LEGACY_BACKUP_ENV)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+/// Every recorded mode writes the raw transcript corpus entry once.
+pub fn raw_save_enabled(_is_assistive: bool) -> bool {
+    true
 }
 
 // ═══════════════════════════════════════════════════════════

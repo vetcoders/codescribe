@@ -493,11 +493,25 @@ struct EnvVarGuard {
 
 impl EnvVarGuard {
     fn set(key: &'static str, value: &std::path::Path) -> Self {
+        Self::set_value(key, value.to_string_lossy().as_ref())
+    }
+
+    fn set_value(key: &'static str, value: &str) -> Self {
         let previous = std::env::var(key).ok();
         // SAFETY: tests using this guard are serialized with `#[serial]`, so no
         // other thread touches the process environment concurrently.
         unsafe {
             std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: tests using this guard are serialized with `#[serial]`, so no
+        // other thread touches the process environment concurrently.
+        unsafe {
+            std::env::remove_var(key);
         }
         Self { key, previous }
     }
@@ -542,6 +556,56 @@ fn latest_truth_metadata(root: &std::path::Path) -> RecordingTruthMetadata {
             .trim_end_matches(".truth.json"),
     );
     read_truth_sidecar(&transcript_path).expect("read truth sidecar")
+}
+
+fn history_txt_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let transcriptions = root.join("transcriptions");
+    let mut paths = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path.extension().is_some_and(|ext| ext == "txt") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn history_audio_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let transcriptions = root.join("transcriptions");
+    let mut paths = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| matches!(ext, "m4a" | "wav"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn disable_assistive_agent_credentials_for_test() -> Vec<EnvVarGuard> {
+    vec![
+        EnvVarGuard::set_value("CODESCRIBE_DISABLE_KEYCHAIN", "1"),
+        EnvVarGuard::set_value(
+            "LLM_ASSISTIVE_ENDPOINT",
+            "https://api.openai.com/v1/responses",
+        ),
+        EnvVarGuard::set_value("LLM_ASSISTIVE_PROVIDER", "openai"),
+        EnvVarGuard::unset("LLM_ASSISTIVE_API_KEY"),
+        EnvVarGuard::unset("LLM_ANTHROPIC_API_KEY"),
+        EnvVarGuard::unset("LLM_OPENAI_ACCOUNT_TOKENS"),
+    ]
 }
 
 #[tokio::test]
@@ -655,6 +719,130 @@ async fn test_toggle_adjudicated_explicit_raw_override_still_wins() {
         metadata.mode.as_deref(),
         Some("raw"),
         "explicit RAW hotkey override must still win over the Settings default"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_pipeline_persists_raw_voice_history() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _agent_guards = disable_assistive_agent_credentials_for_test();
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: true,
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+    let source_audio_path = temp_dir.path().join("assistive-source.wav");
+    std::fs::write(&source_audio_path, b"not a wav but copy fallback is enough")
+        .expect("write source audio");
+    let raw_voice = "Proszę sprawdzić dawkowanie leku bez szkieletu promptu.";
+    let mut params = test_transcript_pipeline_params(
+        raw_voice,
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+    params.raw_save_enabled = false;
+    params.audio_path = Some(ValidatedAudioPath::new(&source_audio_path).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds even when agent lane is unavailable");
+
+    let txt_files = history_txt_files(temp_dir.path());
+    assert_eq!(
+        txt_files.len(),
+        1,
+        "assistive should persist exactly one raw transcript"
+    );
+    let transcript_path = &txt_files[0];
+    assert!(
+        transcript_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("_raw.txt")),
+        "assistive transcript must be stored as Raw: {}",
+        transcript_path.display()
+    );
+    let saved = std::fs::read_to_string(transcript_path).expect("read transcript");
+    assert_eq!(saved, raw_voice);
+    assert!(!saved.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+
+    let metadata = read_truth_sidecar(transcript_path).expect("assistive truth sidecar");
+    assert_eq!(metadata.mode.as_deref(), Some("assistive"));
+
+    let audio_files = history_audio_files(temp_dir.path());
+    assert_eq!(
+        audio_files.len(),
+        1,
+        "dump_audio_logs should save one audio pair"
+    );
+    assert_eq!(
+        audio_files[0].file_stem(),
+        transcript_path.file_stem(),
+        "audio artifact should share the transcript stem"
+    );
+    let audio_metadata =
+        read_truth_sidecar(&audio_files[0]).expect("assistive audio truth sidecar");
+    assert_eq!(audio_metadata.mode.as_deref(), Some("assistive"));
+
+    let recent = crate::state::history::recent_entries(8);
+    let transcript_path = transcript_path
+        .canonicalize()
+        .expect("canonical transcript path");
+    assert!(
+        recent.iter().any(|entry| {
+            entry.path.canonicalize().ok().as_ref() == Some(&transcript_path)
+                && entry.kind == crate::state::history::TranscriptKind::Raw
+        }),
+        "Open history surface should list the Raw transcript artifact via recent_entries"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_raw_save_is_idempotent_when_early_gate_already_saved() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _agent_guards = disable_assistive_agent_credentials_for_test();
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+    let raw_voice = "Nie zapisuj drugi raz tego samego nagrania.";
+    let mut params = test_transcript_pipeline_params(
+        raw_voice,
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+    params.raw_save_enabled = true;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds");
+
+    let txt_files = history_txt_files(temp_dir.path());
+    assert_eq!(
+        txt_files.len(),
+        1,
+        "assistive path must not add a second final transcript"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&txt_files[0]).expect("read transcript"),
+        raw_voice
     );
 }
 
