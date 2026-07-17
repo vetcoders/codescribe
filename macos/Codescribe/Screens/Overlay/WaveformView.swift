@@ -3,14 +3,43 @@ import Foundation
 
 // 34-bar listening waveform — Canvas + per-bar `eq` animation with staggered delays.
 //
-// AMBIENT, NOT AMPLITUDE-DRIVEN: the FFI exposes no audio-level callback, so the bars
-// breathe synthetically. The caller gates `active` on VAD activity (on_vad_active),
-// so the bars pulse while speech is detected and settle to the rest scale otherwise.
+// AMPLITUDE-DRIVEN when the engine provides it: `on_audio_level` streams the
+// capture RMS per audio block into `AudioLevelMeter`, and the bars scale with the
+// real voice. When no live level has arrived (older engine, previews, warm-up)
+// the bars fall back to the original ambient breathing, gated on VAD activity
+// (`on_vad_active`) via `active`.
 // The per-bar period and phase offset reproduce the mock's formula exactly:
 //   duration = 0.7 + ((i*7) % 9) / 10   seconds
 //   delay    = ((i*13) % 11) / 14       seconds
 // and the `eq` keyframe (scaleY .35 → 1 → .35) is modeled as a raised cosine so the
 // motion reads identically to the CSS `@keyframes eq` without a discrete keyframe rig.
+
+/// Live input-level meter driving the waveform when the engine streams real RMS
+/// blocks (`on_audio_level`). Deliberately NOT an ObservableObject: the
+/// TimelineView already redraws every frame while active, so the Canvas simply
+/// reads the latest smoothed value on each tick — republishing every ~21ms
+/// block through @Published would only add invalidation churn on the host view.
+/// Main-actor only: pushed from the hopped listener callback, read from body.
+@MainActor
+final class AudioLevelMeter {
+    /// Smoothed display gain in 0...1, or nil when no live signal has arrived —
+    /// callers fall back to the ambient animation.
+    private(set) var gain: Double?
+
+    /// Map one linear RMS block onto display gain: dB scale (speech lives
+    /// around −40…−15 dBFS), fast attack / slow release so peaks land instantly
+    /// and the decay reads naturally instead of flickering per block.
+    func push(rms: Float) {
+        let db = 20 * log10(max(Double(rms), 1e-6))
+        let target = min(max((db + 50) / 40, 0), 1)
+        let current = gain ?? 0
+        let smoothing = target > current ? 0.6 : 0.15
+        gain = current + (target - current) * smoothing
+    }
+
+    func reset() { gain = nil }
+}
+
 struct WaveformView: View {
     var barCount: Int = 34
     var active: Bool = true
@@ -19,6 +48,8 @@ struct WaveformView: View {
     /// that breathes together on one slow synchronous cycle at reduced opacity —
     /// unmistakably "processing", not "listening", and not a hung freeze either.
     var transcribing: Bool = false
+    /// Real capture level, when the engine streams it. nil → ambient animation.
+    var meter: AudioLevelMeter? = nil
 
     private let barWidth: CGFloat = 3
     private let gap: CGFloat = 4
@@ -60,7 +91,14 @@ struct WaveformView: View {
         // raised cosine: 0.675 - 0.325*cos → .35 at phase 0/1, 1.0 at phase 0.5
         let mid = (1 + minScale) / 2          // 0.675
         let amp = (1 - minScale) / 2          // 0.325
-        return mid - amp * CGFloat(cos(phase * 2 * .pi))
+        let ambient = mid - amp * CGFloat(cos(phase * 2 * .pi))
+        // Real signal: the per-bar sweep becomes the SHAPE and the live level
+        // the AMPLITUDE — full voice reads like the original animation, silence
+        // settles the bars near the rest scale. No signal → pure ambient.
+        if let gain = meter?.gain {
+            return minScale + (ambient - minScale) * CGFloat(gain)
+        }
+        return ambient
     }
 
     /// Frozen per-bar silhouette (deterministic, no audio input — the capture

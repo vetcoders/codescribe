@@ -58,9 +58,12 @@ enum DictationOverlayWindow {
     /// AND for every programmatic `setFrame` via `clamp(_:to:)` (AppKit does not
     /// apply `minSize` to programmatic frames).
     /// Height raised 250 → 300 so the live-transcript body keeps its reserved floor
-    /// (`DictationOverlayView.bodyMinHeight` = waveform block + ~2–3 transcript
+    /// (`DictationOverlayView.bodyMinHeight` = waveform block + ~3 transcript
     /// lines) without the content column overflowing the window and squaring the
-    /// glass corners. Width floor (320) is unchanged.
+    /// glass corners. U22 kept 300 in lockstep: the action row slimmed by ~16pt
+    /// and `bodyMinHeight` grew 114 → 130 by the same amount, so the chrome +
+    /// body sum is unchanged (and the view now carries a terminal window-frame
+    /// clip as the structural backstop). Width floor (320) is unchanged.
     static let minSize = NSSize(width: 320, height: 300)
     /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
     /// operator spec: the resting state is a horizontal bar (waveform + a few

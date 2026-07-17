@@ -14,11 +14,11 @@ import AppKit
 //                   preserve visible text and append the corrected fragment.
 //   on_final      → completed VAD-bounded utterance → commit + clear preview.
 //   on_vad_active → speech start/stop → drives the WaveformView pulse.
+//   on_audio_level → capture RMS per block → real waveform amplitude (U22;
+//                   closes the old AMPLITUDE GAP — ambient eq is now only the
+//                   fallback when no live level arrives).
 //   on_no_speech → dedicated `.noSpeech` outcome body (Close only).
 //   on_error     → transient toast.
-//
-// AMPLITUDE GAP unchanged: the FFI exposes no audio-level callback, so the
-// waveform is ambient (synthetic eq) and merely gated on VAD activity.
 
 // MARK: - Engine seam (orchestrator injects the real adapter in App.swift)
 
@@ -99,6 +99,9 @@ final class OverlayState: ObservableObject {
     @Published var committedUtterances: [String] = [] // accumulated finals, one item per utterance
     @Published var formattedText: String = ""  // finalized transcript after stop
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
+    /// Live capture level for the waveform. NOT @Published on purpose — the
+    /// waveform's TimelineView reads it every frame; see `AudioLevelMeter`.
+    let levelMeter = AudioLevelMeter()
     @Published var audioReady: Bool = false    // recorder confirmed; STT/VAD may still be warming
     @Published var warmingUp: Bool = false     // true after user intent, before audio/VAD proves life
     /// Stop was requested and we are awaiting the final transcript. Distinct from
@@ -382,6 +385,7 @@ final class OverlayState: ObservableObject {
         // instead of leaving the recording UI up while the final pass runs.
         transcribing = true
         warmingUp = false
+        levelMeter.reset()
         do {
             // The controller bridge returns "" here; the authoritative transcript
             // is the id-ordered assembly of `UtteranceFinal` events (see liveText).
@@ -538,6 +542,7 @@ final class OverlayState: ObservableObject {
         cancelWarmupWatchdog()
         warmingUp = false
         transcribing = true
+        levelMeter.reset()
     }
 
     // MARK: Warmup watchdog (orphaned "starting" overlay recovery)
@@ -602,6 +607,7 @@ final class OverlayState: ObservableObject {
         audioReady = false
         vadActive = false
         isFinalPass = false
+        levelMeter.reset()
         if shouldResetTranscript {
             resetTranscript()
         }
@@ -809,6 +815,7 @@ final class OverlayState: ObservableObject {
         transcribing = false
         vadActive = false
         audioReady = false
+        levelMeter.reset()
         let shouldShowNoSpeechOutcome =
             pendingNoSpeechMessage != nil && usableAuthoritativeFinalText == nil
         if shouldShowNoSpeechOutcome {
@@ -945,6 +952,14 @@ final class OverlayState: ObservableObject {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// `on_audio_level` — capture RMS per audio block. Only feeds the meter
+    /// during live capture: once the session is transcribing/finalised the
+    /// waveform is frozen or gone, and a late block must not wiggle it.
+    func applyAudioLevel(_ rms: Float) {
+        guard !finalized, !transcribing, !isFinalPass, mode == .listening else { return }
+        levelMeter.push(rms: rms)
     }
 
     func applyVad(_ active: Bool) {
@@ -1114,6 +1129,9 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     }
     func onVadActive(active: Bool) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyVad(active) } }
+    }
+    func onAudioLevel(rms: Float) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyAudioLevel(rms) } }
     }
     func onNoSpeech(reason: String) {
         // Route the reason into the dedicated no-speech OUTCOME (a persistent
