@@ -1162,6 +1162,34 @@ fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_previ
 }
 
 #[test]
+fn test_recon_final_pass_replaces_correct_live_preview_even_when_text_is_worse() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "podmieniony final pass",
+            82.0,
+            Some(-0.24),
+            false,
+        )),
+        "poprawny tekst z live preview".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("podmieniony final pass"));
+    assert_ne!(
+        verdict.raw_text.as_deref(),
+        Some("poprawny tekst z live preview")
+    );
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
 fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallback() {
     let verdict = adjudicate_recording_truth(
         true,
