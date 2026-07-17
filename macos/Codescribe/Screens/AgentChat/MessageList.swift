@@ -182,12 +182,16 @@ private struct YouTurn: View {
             : message.text
     }
 
+    private var hasContext: Bool {
+        message.contextSelection != nil || message.contextApp != nil
+    }
+
     var body: some View {
         VStack(alignment: .trailing, spacing: 5) {
             HStack(spacing: 8) {
                 Text("You · \(message.timestamp)")
                     .font(CSFont.mono(10, .medium))
-                    .foregroundStyle(CSColor.textFaintAlt)
+                    .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
                 CopyMessageButton(text: copyText)
             }
             VStack(alignment: .leading, spacing: 9) {
@@ -199,26 +203,96 @@ private struct YouTurn: View {
                 if !message.text.isEmpty {
                     MarkdownText(raw: message.text, bodyColor: ChatPalette.nameActive)
                 }
+                if hasContext {
+                    ContextChip(
+                        selection: message.contextSelection,
+                        app: message.contextApp
+                    )
+                }
             }
             .padding(.horizontal, 15)
             .padding(.vertical, 12)
-            .background(CSColor.terracotta.opacity(0.15))
+            // Calm surface, not an alarm plate (U17): the bubble sits on the
+            // shared raised surface; terracotta stays on ACCENTS only — the
+            // timestamp above and this thin border.
+            .background(CSColor.surfaceRaised(0.06))
             .overlay(
                 UnevenRoundedRectangle(
                     topLeadingRadius: 14, bottomLeadingRadius: 14,
                     bottomTrailingRadius: 4, topTrailingRadius: 14,
                     style: .continuous
                 )
-                .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
+                .strokeBorder(CSColor.terracotta.opacity(0.18), lineWidth: 1)
             )
             .clipShape(UnevenRoundedRectangle(
                 topLeadingRadius: 14, bottomLeadingRadius: 14,
                 bottomTrailingRadius: 4, topTrailingRadius: 14,
                 style: .continuous
             ))
-            .contextMenu { CopyButton(text: message.text) }
+            .contextMenu {
+                CopyButton(text: message.text)
+                if let wire = message.wireText {
+                    // Debug affordance: the exact prompt the model received,
+                    // skeleton and all.
+                    Button("Copy full prompt") { chatCopy(wire) }
+                }
+            }
         }
         .frame(maxWidth: 510, alignment: .trailing)
+    }
+}
+
+/// Collapsed "context ▸" disclosure inside the You bubble: reveals the selection
+/// and frontmost app that rode along with an assistive voice turn. Collapsed by
+/// default so the bubble reads as just the spoken instruction.
+private struct ContextChip: View {
+    let selection: String?
+    let app: String?
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    CSIconView(
+                        icon: expanded ? .chevronDown : .chevronRight,
+                        size: 8,
+                        weight: .semibold,
+                        color: CSColor.textFaintAlt
+                    )
+                    Text("context")
+                        .font(CSFont.mono(10, .medium))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Selection and app captured with this voice turn")
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 5) {
+                    if let app {
+                        Text("app · \(app)")
+                            .font(CSFont.mono(10.5, .medium))
+                            .foregroundStyle(CSColor.textMuted)
+                    }
+                    if let selection {
+                        Text(selection)
+                            .font(CSFont.mono(10.5))
+                            .foregroundStyle(CSColor.textBodyAlt)
+                            .textSelection(.enabled)
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(CSColor.surfaceRaised(0.05))
+                            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+                    }
+                }
+            }
+        }
     }
 }
 

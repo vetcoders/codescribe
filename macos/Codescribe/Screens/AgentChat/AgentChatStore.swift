@@ -124,6 +124,18 @@ struct ChatMessage: Identifiable {
     /// carries image blocks but not original file names.
     var attachments: [MessageAttachment] = []
 
+    // Assistive wire split (U17). For a voice-assistive user turn the engine
+    // sends a fixed prompt skeleton to the LLM; the bubble must show the spoken
+    // instruction, not the skeleton. `text` holds the display text; the fields
+    // below carry the rest of the wire truth (nil for composer/plain turns).
+    /// Full prompt as sent to the model ("Copy full prompt" / debug). Non-nil
+    /// only when `text` was rewritten from an assistive skeleton.
+    var wireText: String? = nil
+    /// ZAZNACZONY_TEKST captured with the turn, shown behind the context chip.
+    var contextSelection: String? = nil
+    /// Frontmost app from the KONTEKST section, shown behind the context chip.
+    var contextApp: String? = nil
+
     // Tool-activity turn
     var toolTitle: String = ""        // "What I checked · 2 tools"
     var toolLines: [ToolLine] = []
@@ -482,10 +494,13 @@ final class AgentChatStore: ObservableObject {
               let ti = threads.firstIndex(where: { $0.id == id }),
               let backendId = threads[ti].backendId,
               !threads[ti].messagesLoaded else { return }
+        // Persisted user turns carry the wire skeleton (disk keeps the LLM
+        // truth); rewrite them for display so restored threads render the
+        // spoken instruction, exactly like a live turn.
         threads[ti].messages = applyingPersistedAttachmentMetadata(
             to: provider.loadMessages(backendId: backendId),
             backendId: backendId
-        )
+        ).map(AssistivePromptParser.presented)
         threads[ti].messagesLoaded = true
     }
 
@@ -638,12 +653,19 @@ final class AgentChatStore: ObservableObject {
             }
         }
 
+        // The core sends the WIRE prompt (assistive skeleton); the bubble shows
+        // the spoken instruction. The wire + selection/app context ride along on
+        // the message for the context chip and "Copy full prompt".
+        let userTurn = AssistivePromptParser.presented(
+            ChatMessage(role: .you, timestamp: now(), text: userText)
+        )
+
         let threadID: UUID
         if let existing = threads.first(where: { $0.backendId == backendId }) {
             threadID = existing.id
             loadMessagesIfNeeded(threadID)  // surface prior history before appending
         } else {
-            let title = userText.isEmpty ? "Voice chat" : String(userText.prefix(48))
+            let title = userTurn.text.isEmpty ? "Voice chat" : String(userTurn.text.prefix(48))
             var thread = ChatThread(title: title, meta: "now")
             thread.backendId = backendId
             thread.messagesLoaded = true  // freshly bound to a core id → in sync
@@ -652,8 +674,10 @@ final class AgentChatStore: ObservableObject {
         }
         selectedThreadID = threadID
 
-        if !userText.isEmpty {
-            append(ChatMessage(role: .you, timestamp: now(), text: userText), to: threadID)
+        // A skeleton turn can carry context with an empty instruction (e.g. a
+        // clipped dictation) — the bubble still renders for the chip.
+        if !userTurn.text.isEmpty || userTurn.wireText != nil {
+            append(userTurn, to: threadID)
         }
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         voiceTurnThreadID = threadID
