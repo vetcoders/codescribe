@@ -176,6 +176,8 @@ struct TrayMenuView: View {
                 title: "Transcription Overlay",
                 isOn: viewModel.overlayEnabled
             ) { viewModel.setOverlayEnabled($0) }
+            autoPasteToggle
+            autoFormatMenu
             toggleRow(icon: .notesMode, title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
                 viewModel.setNotesMode($0)
             }
@@ -186,6 +188,76 @@ struct TrayMenuView: View {
                 onColor: CSColor.assistive
             ) { viewModel.setStartInAssistive($0) }
         }
+    }
+
+    /// A native switch keeps Auto Paste keyboard-focusable and gives VoiceOver
+    /// the actual persisted on/off value without relying on decorative keycaps.
+    private var autoPasteToggle: some View {
+        HStack(spacing: 11) {
+            CSIconView(icon: .send, size: 13, color: CSColor.textBodyAlt)
+                .frame(width: 18)
+            Text("Auto Paste")
+                .font(CSFont.ui(13, .medium))
+                .foregroundStyle(CSColor.textBodyAlt)
+            Spacer(minLength: 8)
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { viewModel.autoPasteEnabled },
+                    set: { viewModel.setAutoPasteEnabled($0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .accessibilityLabel("Auto Paste")
+            .accessibilityValue(viewModel.autoPasteEnabled ? "On" : "Off")
+            .accessibilityHint("Automatically insert completed dictation")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+    }
+
+    /// Four explicit normalized states in a compact native menu. A segmented
+    /// row would force the 300pt popover to abbreviate Correction; the menu keeps
+    /// every label legible while remaining keyboard and VoiceOver reachable.
+    private var autoFormatMenu: some View {
+        HStack(spacing: 11) {
+            CSIconView(icon: .edit, size: 13, color: CSColor.textBodyAlt)
+                .frame(width: 18)
+            Text("Auto Format")
+                .font(CSFont.ui(13, .medium))
+                .foregroundStyle(CSColor.textBodyAlt)
+            Spacer(minLength: 8)
+            Menu {
+                ForEach(FormattingPolicyOption.allCases) { level in
+                    Button {
+                        viewModel.setAutoFormatLevel(level)
+                    } label: {
+                        if level == viewModel.autoFormatLevel {
+                            Label(level.visibleName, systemImage: "checkmark")
+                        } else {
+                            Text(level.visibleName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(viewModel.autoFormatLevel.visibleName)
+                        .font(CSFont.mono(10, .medium))
+                        .foregroundStyle(CSColor.oliveLight)
+                    CSIconView(icon: .chevronUpDown, size: 11, color: CSColor.textFaint)
+                }
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .accessibilityLabel("Auto Format")
+            .accessibilityValue(viewModel.autoFormatLevel.visibleName)
+            .accessibilityHint("Choose automatic formatting level")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
     }
 
     /// A checkbox-style row reusing `TrayRow`, with the on/off state shown as the

@@ -17,6 +17,8 @@ final class TrayViewModel: ObservableObject {
     // Quick config toggles (reflected on disk via the engine).
     @Published var showDockIcon: Bool = true
     @Published var overlayEnabled: Bool = true
+    @Published var autoPasteEnabled: Bool = true
+    @Published var autoFormatLevel: FormattingPolicyOption = .correction
     @Published var notesModeEnabled: Bool = false
     @Published var startInAssistive: Bool = false
 
@@ -92,6 +94,8 @@ final class TrayViewModel: ObservableObject {
         if let toggles = engine.currentToggles() {
             showDockIcon = toggles.showDockIcon
             overlayEnabled = toggles.overlayEnabled
+            autoPasteEnabled = toggles.autoPasteEnabled
+            autoFormatLevel = toggles.autoFormatLevel
             notesModeEnabled = toggles.notesMode
             startInAssistive = toggles.startInAssistive
         }
@@ -148,6 +152,28 @@ final class TrayViewModel: ObservableObject {
             return
         }
         engine.setQuickToggle(.transcriptionOverlay, enabled: enabled)
+        refreshStatus()
+    }
+
+    /// Persisted delivery policy. Re-read the complete tray snapshot after the
+    /// write so a rejected save never leaves an optimistic switch behind.
+    func setAutoPasteEnabled(_ enabled: Bool) {
+        guard let engine else {
+            autoPasteEnabled = enabled
+            return
+        }
+        engine.setAutoPasteEnabled(enabled)
+        refreshStatus()
+    }
+
+    /// Persist one of the four normalized formatting IDs, then reconcile with
+    /// prompt-free settings truth even when the bridge rejects the write.
+    func setAutoFormatLevel(_ level: FormattingPolicyOption) {
+        guard let engine else {
+            autoFormatLevel = level
+            return
+        }
+        engine.setAutoFormatLevel(level)
         refreshStatus()
     }
 
