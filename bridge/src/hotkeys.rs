@@ -12,7 +12,9 @@ use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
-use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
+use codescribe_core::config::{
+    Config, FormattingPolicy, ModeBinding, ShortcutBinding, UserSettings, WorkMode,
+};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Handle;
@@ -462,6 +464,37 @@ impl CodescribeHotkeys {
         }
     }
 
+    /// Format overlay text through an explicitly selected one-shot level
+    /// (`correction` / `smart` / `max`). Never reads or writes the persisted
+    /// Auto Format policy; `off` is rejected — a manual action must act.
+    pub async fn format_text_for_level(
+        &self,
+        text: String,
+        language: Option<CsLanguage>,
+        level: String,
+    ) -> Result<String, CsError> {
+        let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        if policy == FormattingPolicy::Off {
+            return Err(CsError::Config {
+                msg: "manual format level cannot be 'off'".to_string(),
+            });
+        }
+        let language = language.map(|l| l.as_code().to_string());
+        let result = codescribe::ai_formatting::format_text_with_status_for_policy(
+            &text,
+            language.as_deref(),
+            policy,
+        )
+        .await;
+        if result.text.trim().is_empty() {
+            Ok(text)
+        } else {
+            Ok(result.text)
+        }
+    }
+
     /// Paste edited overlay text back into the app that was frontmost before the overlay.
     pub async fn paste_text(&self, text: String) -> Result<(), CsError> {
         let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
@@ -580,6 +613,42 @@ async fn dispatch_hotkey_event(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod format_level_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn format_text_for_level_rejects_unknown_level() {
+        let hotkeys = CodescribeHotkeys::default();
+        let result = hotkeys
+            .format_text_for_level("hello".to_string(), None, "mega".to_string())
+            .await;
+        assert!(matches!(result, Err(CsError::Config { .. })));
+    }
+
+    #[tokio::test]
+    async fn format_text_for_level_rejects_off() {
+        let hotkeys = CodescribeHotkeys::default();
+        let result = hotkeys
+            .format_text_for_level("hello".to_string(), None, "off".to_string())
+            .await;
+        assert!(matches!(result, Err(CsError::Config { .. })));
+    }
+
+    #[tokio::test]
+    async fn format_text_for_level_accepts_legacy_alias_shape() {
+        // Aliases normalize through the same FormattingPolicy owner as C01;
+        // "creative" must map to Max, not fail. No provider is configured in
+        // tests, so the formatter falls back to returning usable text without
+        // any network call.
+        let hotkeys = CodescribeHotkeys::default();
+        let result = hotkeys
+            .format_text_for_level("hi".to_string(), None, "creative".to_string())
+            .await;
+        assert!(result.is_ok());
+    }
 }
 
 #[cfg(test)]
