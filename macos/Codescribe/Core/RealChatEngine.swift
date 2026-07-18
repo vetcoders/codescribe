@@ -59,11 +59,11 @@ final class RealChatEngine: AgentChatEngine {
         )
     }
 
-    func cancelReply(threadId: String) {
+    func cancelReply(threadId: String) -> Bool {
         // Swift Task cancellation never reaches the Rust future through the
         // generated UniFFI bindings (they poll to completion), so this explicit
         // bridge call is what actually aborts the in-flight turn.
-        _ = agent.cancelTurn(threadId: threadId)
+        agent.cancelTurn(threadId: threadId)
     }
 }
 

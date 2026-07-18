@@ -24,8 +24,9 @@ final class AgentSummonTests: XCTestCase {
             return "unexpected"
         }
 
-        func cancelReply(threadId: String) {
+        func cancelReply(threadId: String) -> Bool {
             cancelCalls += 1
+            return false
         }
     }
 

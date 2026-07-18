@@ -895,18 +895,24 @@ mod tests {
     #[derive(Default)]
     struct RecordingListener {
         tool_started: AtomicBool,
+        text_done_count: AtomicUsize,
+        done_count: AtomicUsize,
         error_count: AtomicUsize,
     }
 
     impl CsAgentListener for RecordingListener {
         fn on_text_delta(&self, _delta: String) {}
-        fn on_text_done(&self, _text: String) {}
+        fn on_text_done(&self, _text: String) {
+            self.text_done_count.fetch_add(1, Ordering::SeqCst);
+        }
         fn on_reasoning_delta(&self, _delta: String) {}
         fn on_tool_executing(&self, _name: String, _id: String) {
             self.tool_started.store(true, Ordering::SeqCst);
         }
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
-        fn on_done(&self) {}
+        fn on_done(&self) {
+            self.done_count.fetch_add(1, Ordering::SeqCst);
+        }
         fn on_error(&self, _message: String) {
             self.error_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -1085,6 +1091,21 @@ mod tests {
         assert!(
             msg.contains("cancelled"),
             "cancel surfaces as a readable cancellation: {msg}"
+        );
+        assert_eq!(
+            listener.text_done_count.load(Ordering::SeqCst),
+            0,
+            "a cancelled turn must not emit a successful final text"
+        );
+        assert_eq!(
+            listener.done_count.load(Ordering::SeqCst),
+            0,
+            "a cancelled turn must not emit the successful Done terminal"
+        );
+        assert_eq!(
+            listener.error_count.load(Ordering::SeqCst),
+            0,
+            "cancellation is returned once through the async result, not double-signalled"
         );
 
         // Wait well past the tool's own delay: the side effect must never fire

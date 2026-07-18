@@ -52,10 +52,28 @@ protocol AgentChatEngine: AnyObject {
     /// generated UniFFI bindings poll the Rust future to completion, so without
     /// this call the agent keeps executing tools (typing/clipboard/fs) after a
     /// "cancelled" turn.
-    func cancelReply(threadId: String)
+    @discardableResult
+    func cancelReply(threadId: String) -> Bool
 }
 
 // MARK: - Models
+
+enum ComposerTurnPhase: Equatable {
+    case thinking
+    case streaming
+    case cancelling
+}
+
+/// The single composer-originated turn owned by the Swift UI. The local thread
+/// id targets the bubble/task; the backend id is the exact Rust cancellation
+/// key. `id` prevents a draining cancelled task from clearing a newer send.
+struct ActiveComposerTurn: Equatable {
+    let id: UUID
+    let threadID: UUID
+    let backendThreadID: String
+    let assistantMessageID: UUID
+    var phase: ComposerTurnPhase
+}
 
 enum ChatRole {
     case you
@@ -80,6 +98,7 @@ enum ToolLineState: Hashable {
     case running
     case succeeded
     case failed
+    case cancelled
     case unknown
 }
 
@@ -144,6 +163,7 @@ struct ChatMessage: Identifiable {
     var reasonedSeconds: Double? = nil
     var isThinking: Bool = false      // pre-reply "thinking…" state
     var isStreaming: Bool = false     // word-reveal in progress (shows caret)
+    var wasStopped: Bool = false      // cancelled terminal; partial text remains intact
     var reasoning: String = ""        // streamed model reasoning, rendered separately
     var renderMode: MessageRenderMode = .raw  // raw default (C2b); rich = opt-in
 }
@@ -338,6 +358,10 @@ final class AgentChatStore: ObservableObject {
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 
+    /// Exactly one composer send may own the visible Stop action. Voice turns
+    /// remain separately owned until W2-A adds parity through its runtime adapter.
+    @Published private(set) var activeComposerTurn: ActiveComposerTurn?
+
     /// Active voice-assistive turn being streamed from the core runtime (hotkey /
     /// hands-off), NOT the composer. `nil` when no voice reply is in flight. The
     /// core owns the provider call + disk persistence for this turn; the store
@@ -351,7 +375,12 @@ final class AgentChatStore: ObservableObject {
     /// thread can cancel its running reply — otherwise the task's post-stream
     /// `refreshThreads` (plus the agent's best-effort re-persist) would resurrect
     /// the just-deleted thread.
-    private var inFlightSends: [UUID: Task<Void, Never>] = [:]
+    private struct InFlightSend {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private var inFlightSends: [UUID: InFlightSend] = [:]
 
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
@@ -391,6 +420,15 @@ final class AgentChatStore: ObservableObject {
     var isStreaming: Bool {
         currentThread?.messages.last { $0.role == .assistant }?.isStreaming ?? false
     }
+
+    /// Active composer phase for the selected thread only. A background thread's
+    /// turn never steals this thread's send affordance.
+    var selectedComposerTurnPhase: ComposerTurnPhase? {
+        guard let turn = activeComposerTurn, turn.threadID == selectedThreadID else { return nil }
+        return turn.phase
+    }
+
+    var isCancelling: Bool { selectedComposerTurnPhase == .cancelling }
 
     // MARK: Thread ops
 
@@ -480,10 +518,13 @@ final class AgentChatStore: ObservableObject {
         // Swift-task cancel first (so the awaiting send sees isCancelled and
         // stays silent), then the engine-side cancel, which actually aborts the
         // Rust turn — stopping tool side effects, not just the UI updates.
-        inFlightSends[thread.id]?.cancel()
+        inFlightSends[thread.id]?.task.cancel()
         inFlightSends[thread.id] = nil
         if let backendId = thread.backendId {
-            engine?.cancelReply(threadId: backendId)
+            _ = engine?.cancelReply(threadId: backendId)
+        }
+        if activeComposerTurn?.threadID == thread.id {
+            activeComposerTurn = nil
         }
         threads.removeAll { $0.id == thread.id }
         if selectedThreadID == thread.id {
@@ -545,12 +586,14 @@ final class AgentChatStore: ObservableObject {
     /// True when there is something to send: text, at least one staged image, or
     /// both. Drives the send button's enabled state.
     var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty
+        activeComposerTurn == nil
+            && (!draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty)
     }
 
     // MARK: Send (real single-shot FFI round-trip)
 
     func send() {
+        guard activeComposerTurn == nil else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = pendingAttachments
         let attachmentPaths = staged.map { $0.url.path }
@@ -571,8 +614,16 @@ final class AgentChatStore: ObservableObject {
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
+        let turnID = UUID()
+        activeComposerTurn = ActiveComposerTurn(
+            id: turnID,
+            threadID: threadID,
+            backendThreadID: backendId,
+            assistantMessageID: assistantID,
+            phase: .thinking
+        )
         let sendTask = Task { @MainActor in
-            defer { inFlightSends[threadID] = nil }
+            defer { releaseComposerTurn(turnID, in: threadID) }
             guard let engine else {
                 finish(assistantID, in: threadID,
                        text: "Engine not wired yet.")
@@ -592,6 +643,10 @@ final class AgentChatStore: ObservableObject {
                     threadId: backendId,
                     attachmentPaths: attachmentPaths,
                     onDelta: { [weak self] delta in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
+                        self?.setComposerPhase(.streaming, for: turnID)
                         self?.update(assistantID, in: threadID) {
                             $0.isThinking = false
                             $0.isStreaming = true
@@ -602,12 +657,21 @@ final class AgentChatStore: ObservableObject {
                         }
                     },
                     onReasoning: { [weak self] delta in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
                         self?.appendReasoning(delta, to: assistantID, in: threadID)
                     },
                     onToolExecuting: { [weak self] name, id in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
                         self?.recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
                     },
                     onToolResult: { [weak self] name, id, isError, reason in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
                         self?.recordToolResult(name: name, callID: id, isError: isError, reason: reason,
                                                before: assistantID, in: threadID)
                     }
@@ -632,7 +696,41 @@ final class AgentChatStore: ObservableObject {
                        text: "Something went wrong: \(error.localizedDescription)")
             }
         }
-        inFlightSends[threadID] = sendTask
+        inFlightSends[threadID] = InFlightSend(id: turnID, task: sendTask)
+    }
+
+    /// Stop the selected composer turn. Ordering is deliberate: cancel the
+    /// Swift waiter first, then call the explicit Rust registry path using the
+    /// exact backend thread id. A second click sees `.cancelling` and no-ops.
+    func stopActiveTurn() {
+        guard var turn = activeComposerTurn,
+              turn.threadID == selectedThreadID,
+              turn.phase != .cancelling else { return }
+
+        turn.phase = .cancelling
+        activeComposerTurn = turn
+        inFlightSends[turn.threadID]?.task.cancel()
+        let firstAcknowledgement = engine?.cancelReply(threadId: turn.backendThreadID) ?? false
+
+        // A very fast Stop can beat Rust's registry setup while the provider and
+        // persisted history are still loading. Retry only that unacknowledged
+        // race; the UI click remains idempotent and every probe uses the same
+        // exact backend id. Settle after acknowledgement (or a bounded idle race).
+        Task { @MainActor [weak self] in
+            var acknowledged = firstAcknowledgement
+            var attempts = 0
+            while !acknowledged, attempts < 80 {
+                guard let self,
+                      self.activeComposerTurn?.id == turn.id,
+                      self.activeComposerTurn?.phase == .cancelling,
+                      let engine = self.engine else { break }
+                attempts += 1
+                try? await Task.sleep(for: .milliseconds(25))
+                acknowledged = engine.cancelReply(threadId: turn.backendThreadID)
+            }
+            await Task.yield()
+            self?.settleStoppedComposerTurn(turn)
+        }
     }
 
     // MARK: Voice-assistive delivery (core runtime → live render, no re-send)
@@ -823,6 +921,47 @@ final class AgentChatStore: ObservableObject {
         }
     }
 
+    private func acceptsComposerEvent(_ turnID: UUID, assistantID: UUID, in threadID: UUID) -> Bool {
+        guard let turn = activeComposerTurn else { return false }
+        return turn.id == turnID
+            && turn.threadID == threadID
+            && turn.assistantMessageID == assistantID
+            && turn.phase != .cancelling
+    }
+
+    private func setComposerPhase(_ phase: ComposerTurnPhase, for turnID: UUID) {
+        guard var turn = activeComposerTurn, turn.id == turnID, turn.phase != .cancelling else { return }
+        turn.phase = phase
+        activeComposerTurn = turn
+    }
+
+    private func releaseComposerTurn(_ turnID: UUID, in threadID: UUID) {
+        if inFlightSends[threadID]?.id == turnID {
+            inFlightSends[threadID] = nil
+        }
+        if activeComposerTurn?.id == turnID,
+           activeComposerTurn?.phase != .cancelling {
+            activeComposerTurn = nil
+        }
+    }
+
+    private func settleStoppedComposerTurn(_ turn: ActiveComposerTurn) {
+        guard activeComposerTurn?.id == turn.id,
+              activeComposerTurn?.phase == .cancelling else { return }
+        cancelPendingTools(before: turn.assistantMessageID, in: turn.threadID)
+        update(turn.assistantMessageID, in: turn.threadID) {
+            $0.isThinking = false
+            $0.isStreaming = false
+            $0.wasStopped = true
+            if $0.text.isEmpty { $0.text = "Stopped" }
+            $0.timestamp = self.now()
+        }
+        if inFlightSends[turn.threadID]?.id == turn.id {
+            inFlightSends[turn.threadID] = nil
+        }
+        activeComposerTurn = nil
+    }
+
     // MARK: Mutation helpers
 
     private func append(_ message: ChatMessage, to threadID: UUID) {
@@ -987,6 +1126,20 @@ final class AgentChatStore: ObservableObject {
         if changed { updateToolTitle(threadIndex: ti, messageIndex: row) }
     }
 
+    private func cancelPendingTools(before assistantID: UUID, in threadID: UUID) {
+        guard let ti = threads.firstIndex(where: { $0.id == threadID }),
+              let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }),
+              let row = toolRowIndex(before: ai, inThreadAt: ti) else { return }
+        var changed = false
+        for index in threads[ti].messages[row].toolLines.indices
+            where threads[ti].messages[row].toolLines[index].state == .running {
+            threads[ti].messages[row].toolLines[index].state = .cancelled
+            threads[ti].messages[row].toolLines[index].verb = "stopped"
+            changed = true
+        }
+        if changed { updateToolTitle(threadIndex: ti, messageIndex: row) }
+    }
+
     private func appendReasoning(_ delta: String, to assistantID: UUID, in threadID: UUID) {
         guard !delta.isEmpty else { return }
         update(assistantID, in: threadID) {
@@ -1008,9 +1161,13 @@ final class AgentChatStore: ObservableObject {
     private static func toolTitle(for lines: [ToolLine]) -> String {
         let count = lines.count
         let running = lines.filter { $0.state == .running }.count
+        let cancelled = lines.filter { $0.state == .cancelled }.count
         let noun = count == 1 ? "tool" : "tools"
         if running > 0 {
             return "What I checked · \(running) running · \(count) \(noun)"
+        }
+        if cancelled > 0 {
+            return "What I checked · \(cancelled) stopped · \(count) \(noun)"
         }
         return "What I checked · \(count) \(noun)"
     }
@@ -1139,6 +1296,6 @@ final class MockChatEngine: AgentChatEngine {
         return assembled
     }
 
-    func cancelReply(threadId: String) {}
+    func cancelReply(threadId: String) -> Bool { false }
 }
 #endif

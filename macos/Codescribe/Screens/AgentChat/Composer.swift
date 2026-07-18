@@ -75,14 +75,31 @@ struct Composer: View {
 
                 micButton
 
-                Button(action: { store.send() }) {
-                    CSIconView(icon: .send, size: 15, weight: .semibold, color: ChatPalette.sendGlyph)
+                Button(action: performPrimaryAction) {
+                    ZStack {
+                        CSIconView(
+                            icon: primaryAction.icon,
+                            size: 15,
+                            weight: primaryAction.iconWeight,
+                            color: ChatPalette.sendGlyph
+                        )
+                        if primaryAction == .stopping {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.5)
+                                .tint(ChatPalette.sendGlyph)
+                        }
+                    }
                         .frame(width: 32, height: 32)
                         .background(CSColor.terracotta)
                         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(!store.canSend)
+                .disabled(!primaryAction.isEnabled)
+                .opacity(primaryAction == .stopping ? 0.72 : 1)
+                .help(primaryAction.accessibilityLabel)
+                .accessibilityIdentifier(ComposerActionAccessibility.identifier)
+                .accessibilityLabel(Text(primaryAction.accessibilityLabel))
             }
             .padding(.leading, 13)
             .padding(.trailing, 11)
@@ -136,6 +153,24 @@ struct Composer: View {
             // same run-loop turn. Yield once so the native field editor exists.
             await Task.yield()
             focusNativeComposer()
+        }
+    }
+
+    private var primaryAction: ComposerActionVisualState {
+        ComposerActionVisualState.resolve(
+            canSend: store.canSend,
+            activePhase: store.selectedComposerTurnPhase
+        )
+    }
+
+    private func performPrimaryAction() {
+        switch primaryAction {
+        case .send:
+            store.send()
+        case .stop:
+            store.stopActiveTurn()
+        case .stopping:
+            break
         }
     }
 
@@ -504,6 +539,55 @@ struct Composer: View {
         "· streaming",
         "· attach file / image",
     ]
+}
+
+enum ComposerActionAccessibility {
+    static let identifier = "agent-composer-primary-action"
+}
+
+/// Pure Send/Stop/Stopping projection used by the view and focused tests.
+enum ComposerActionVisualState: Equatable {
+    case send(enabled: Bool)
+    case stop
+    case stopping
+
+    static func resolve(canSend: Bool, activePhase: ComposerTurnPhase?) -> ComposerActionVisualState {
+        switch activePhase {
+        case .thinking?, .streaming?: return .stop
+        case .cancelling?: return .stopping
+        case nil: return .send(enabled: canSend)
+        }
+    }
+
+    var isEnabled: Bool {
+        switch self {
+        case .send(let enabled): return enabled
+        case .stop: return true
+        case .stopping: return false
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .send: return "Send message"
+        case .stop: return "Stop response"
+        case .stopping: return "Stopping response"
+        }
+    }
+
+    var icon: CSIcon {
+        switch self {
+        case .send: return .send
+        case .stop, .stopping: return .stop
+        }
+    }
+
+    var iconWeight: CSIconWeight {
+        switch self {
+        case .send: return .semibold
+        case .stop, .stopping: return .fill
+        }
+    }
 }
 
 /// Minimal probe reporting the `NSWindow` that hosts a SwiftUI hierarchy. The
