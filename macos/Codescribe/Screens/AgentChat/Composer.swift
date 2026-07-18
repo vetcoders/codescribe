@@ -17,13 +17,14 @@ private let attachLog = Logger(
 /// drag & drop, and ⌘V paste — all landing in `store.addAttachments`.
 struct Composer: View {
     @ObservedObject var store: AgentChatStore
-    @FocusState private var fieldFocused: Bool
+    @State private var fieldFocused = false
     /// Chat text scale (⌘+/-/0) — applied to the message field + placeholder so the
     /// composer input tracks the message bodies. Chrome (chips, affordance hints,
     /// icons) keeps its intrinsic size.
     @Environment(\.csTextScale) private var textScale
+    @State private var fieldHeight = ComposerTextLayout.minimumHeight(fontSize: 13.5)
 
-    // ⌘V interception. The NSTextField field editor consumes `paste:` before any
+    // ⌘V interception. The native text editor consumes `paste:` before any
     // SwiftUI `.onPasteCommand` gets a look-in, so pasting an image needs a local
     // key monitor (same pattern as the ⌘+/-/0 monitor in App.swift). Scoped hard:
     // only fires when the composer field itself is focused in this view's own
@@ -37,7 +38,7 @@ struct Composer: View {
     // Drag-over is tracked by two OR'd targets so it stays stable as the pointer
     // crosses from the composer padding onto the text field. The outer target
     // (whole strip) bootstraps the drag; the inner clear overlay (above the
-    // NSTextField) actually intercepts a drop that lands *on* the field, so the
+    // text view) actually intercepts a drop that lands *on* the field, so the
     // field editor never eats it as pasted path text. See `dropCatcher`.
     @State private var overOuter = false
     @State private var overInner = false
@@ -50,7 +51,7 @@ struct Composer: View {
                 attachmentChips
             }
 
-            HStack(spacing: 10) {
+            HStack(alignment: .bottom, spacing: 10) {
                 // Attach images (NSOpenPanel → staged chips → vision FFI on send).
                 Button(action: pickAttachments) {
                     CSIconView(
@@ -62,16 +63,15 @@ struct Composer: View {
                 .buttonStyle(.plain)
                 .help("Attach an image (PNG, JPEG, GIF, WebP)")
 
-                TextField("", text: $store.draft, prompt:
-                    Text("Type a message…")
-                        .font(CSFont.ui(13.5 * textScale))
-                        .foregroundColor(CSColor.textFaint)
+                ComposerTextView(
+                    text: $store.draft,
+                    height: $fieldHeight,
+                    textScale: textScale,
+                    isFocused: $fieldFocused,
+                    onSend: { store.send() }
                 )
-                .textFieldStyle(.plain)
-                .font(CSFont.ui(13.5 * textScale))
-                .foregroundStyle(CSColor.textBody)
-                .focused($fieldFocused)
-                .onSubmit { store.send() }
+                .frame(height: fieldHeight)
+                .accessibilityIdentifier(ComposerAccessibility.textViewIdentifier)
 
                 micButton
 
@@ -176,33 +176,39 @@ struct Composer: View {
             micVisual
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
-                .opacity(store.dictationBlocked ? 0.35 : 1)
+                .opacity(micState == .blocked ? 0.35 : micState == .preparing ? 0.68 : 1)
         }
         .buttonStyle(.plain)
-        .disabled(store.dictationBlocked || store.dictationPhase == .preparing)
-        .help(micHelp)
+        .disabled(!micState.isEnabled)
+        .help(micState.accessibilityLabel)
+        .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
+        .accessibilityLabel(Text(micState.accessibilityLabel))
         .animation(.easeOut(duration: 0.15), value: store.dictationPhase)
     }
 
-    @ViewBuilder
-    private var micVisual: some View {
+    private var micState: ComposerMicVisualState {
+        if store.dictationBlocked { return .blocked }
         switch store.dictationPhase {
-        case .preparing:
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.6)
-                .frame(width: 12, height: 12)
-        default:
-            RippleMic(isActive: store.dictationPhase == .recording)
+        case .preparing: return .preparing
+        case .recording: return .recording
+        case .idle, .failed: return .idle
         }
     }
 
-    private var micHelp: String {
-        if store.dictationBlocked { return "Microphone is busy with a shortcut dictation" }
-        switch store.dictationPhase {
-        case .recording: return "Stop dictation and insert the transcript"
-        case .preparing: return "Preparing dictation…"
-        default: return "Dictate a voice message"
+    private var micVisual: some View {
+        ZStack(alignment: .bottomTrailing) {
+            RippleMic(state: micState)
+            if micState == .preparing {
+                Circle()
+                    .fill(CSColor.glassUnder)
+                    .frame(width: 10, height: 10)
+                    .overlay {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.42)
+                    }
+                    .offset(x: 2, y: 2)
+            }
         }
     }
 
@@ -241,7 +247,7 @@ struct Composer: View {
 
     /// Transparent drop target layered over the input box. Hit-testable only
     /// while a drag is in progress, so it intercepts a field drop (beating the
-    /// NSTextField field editor) without blocking clicks/typing at rest. Its own
+    /// native text editor) without blocking clicks/typing at rest. Its own
     /// `isTargeted` binding keeps `isDragging` true while the pointer is over the
     /// field even as the outer target reports false — no highlight flicker.
     private var dropCatcher: some View {
