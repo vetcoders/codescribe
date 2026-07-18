@@ -72,10 +72,29 @@ protocol DictationEngine: AnyObject {
     func initModel() async throws
     func isModelLoaded() -> Bool
     func isFormattingAvailable() -> Bool
-    func formatText(text: String, language: CsLanguage?) async throws -> String
+    func currentOverlayPolicy() -> OverlayPolicySnapshot?
+    func setAutoPasteEnabled(_ enabled: Bool)
+    func formatText(
+        text: String,
+        language: CsLanguage?,
+        level: FormattingPolicyOption
+    ) async throws -> String
     func pasteText(text: String) async throws
     func pasteTargetAppName() async -> String?
     func transcribeFile(path: String) async throws -> CsTranscription
+}
+
+struct OverlayPolicySnapshot: Equatable {
+    let autoPasteEnabled: Bool
+    let autoFormatLevel: FormattingPolicyOption
+}
+
+enum OverlayActionPresentation {
+    static let manualFormatLevels = FormattingPolicyOption.editablePrompts
+    static let formatTitle = "Format"
+    static let formatHelp = "Format transcript once as Correction, Smart, or Max"
+    static let sendTitle = "To Agent"
+    static let sendHelp = "Send transcript to the agent"
 }
 
 struct OverlayInsertActionPresentation: Equatable {
@@ -137,6 +156,13 @@ final class OverlayState: ObservableObject {
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
     @Published var formatFailureStatus: String?
+    /// Prompt-free policy snapshot from C02's persisted settings owner. These
+    /// values are replaced only by a fresh engine read, never by optimistic UI.
+    @Published private(set) var autoPasteEnabled = true
+    @Published private(set) var autoFormatLevel: FormattingPolicyOption = .correction
+    /// Assistive sessions never expose delivery controls. The controller owns
+    /// that authoritative session gate and updates this presentation fence.
+    @Published private(set) var autoPasteControlAvailable = true
     /// Destination name latched once at overlay session entry. The action row
     /// reads this snapshot; it never polls the bridge during rendering.
     @Published private(set) var pasteTargetAppName: String?
@@ -346,6 +372,17 @@ final class OverlayState: ObservableObject {
         OverlayInsertActionPresentation(targetAppName: pasteTargetAppName)
     }
 
+    var autoPasteAccessibilityValue: String {
+        autoPasteEnabled ? "On" : "Off"
+    }
+
+    var manualFormatHelp: String {
+        let automatic = autoFormatLevel == .off
+            ? "Auto Format is Off."
+            : "Auto Format is \(autoFormatLevel.visibleName)."
+        return "\(automatic) \(OverlayActionPresentation.formatHelp)."
+    }
+
     // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)
 
     /// Start mic dictation. Gated on `micPermissionGranted()`; requests access
@@ -390,8 +427,10 @@ final class OverlayState: ObservableObject {
         }
     }
 
-    func formatTranscript() {
-        guard let engine, canFormat else { return }
+    func formatTranscript(level: FormattingPolicyOption) {
+        guard let engine,
+              canFormat,
+              OverlayActionPresentation.manualFormatLevels.contains(level) else { return }
         let source = formattedText
         isFormatting = true
         // Format deliberately suspends passive dismissal. Its result stays until
@@ -400,7 +439,11 @@ final class OverlayState: ObservableObject {
         Task { @MainActor in
             defer { self.isFormatting = false }
             do {
-                let formatted = try await engine.formatText(text: source, language: nil)
+                let formatted = try await engine.formatText(
+                    text: source,
+                    language: nil,
+                    level: level
+                )
                 self.formattedText = formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source : formatted
                 self.formatFailureStatus = nil
                 self.mode = .formatted
@@ -476,6 +519,20 @@ final class OverlayState: ObservableObject {
         }
     }
 
+    /// Persist through C02's single config seam, then immediately replace local
+    /// state with a fresh disk-backed snapshot. A rejected write therefore snaps
+    /// back to durable truth instead of leaving an optimistic switch behind.
+    func setAutoPasteEnabled(_ enabled: Bool) {
+        guard autoPasteControlAvailable, let engine else { return }
+        engine.setAutoPasteEnabled(enabled)
+        refreshOverlayPolicyTruth()
+        restartAutoHideCountdown()
+    }
+
+    func setAutoPasteControlAvailable(_ available: Bool) {
+        autoPasteControlAvailable = available
+    }
+
     func close() {
         // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
         captureQualityIfEdited(action: "close")
@@ -509,6 +566,12 @@ final class OverlayState: ObservableObject {
                 targetAppName: target
             ).targetAppName
         }
+    }
+
+    private func refreshOverlayPolicyTruth() {
+        guard let truth = engine?.currentOverlayPolicy() else { return }
+        autoPasteEnabled = truth.autoPasteEnabled
+        autoFormatLevel = truth.autoFormatLevel
     }
 
     /// TextEditor writes through this seam so only actual user edits — never a
@@ -583,6 +646,7 @@ final class OverlayState: ObservableObject {
             errorMessage = nil
         }
         recording = true
+        refreshOverlayPolicyTruth()
         refreshPasteTargetAppName(reset: true)
         onRecordingPreparing?()
         armWarmupWatchdog()
@@ -607,6 +671,7 @@ final class OverlayState: ObservableObject {
             errorMessage = nil
         }
         recording = true
+        refreshOverlayPolicyTruth()
         refreshPasteTargetAppName(reset: false)
         onRecordingStarted?()
     }
@@ -1173,6 +1238,7 @@ final class OverlayState: ObservableObject {
 /// one `RecordingController`, one event stream, one Swift overlay surface.
 final class ControllerDictationEngine: DictationEngine {
     private let hotkeys = CodescribeHotkeys()
+    private let config = CodescribeConfig()
 
     func setListener(_ listener: CsTranscriptionListener) {
         hotkeys.setListener(listener: listener)
@@ -1192,8 +1258,29 @@ final class ControllerDictationEngine: DictationEngine {
     func isFormattingAvailable() -> Bool {
         hotkeys.isFormattingAvailable()
     }
-    func formatText(text: String, language: CsLanguage?) async throws -> String {
-        try await hotkeys.formatText(text: text, language: language)
+    func currentOverlayPolicy() -> OverlayPolicySnapshot? {
+        let toggles = config.trayToggles()
+        guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
+            return nil
+        }
+        return OverlayPolicySnapshot(
+            autoPasteEnabled: toggles.autoPasteEnabled,
+            autoFormatLevel: formatLevel
+        )
+    }
+    func setAutoPasteEnabled(_ enabled: Bool) {
+        _ = try? config.setAutoPasteEnabled(enabled: enabled)
+    }
+    func formatText(
+        text: String,
+        language: CsLanguage?,
+        level: FormattingPolicyOption
+    ) async throws -> String {
+        try await hotkeys.formatTextForLevel(
+            text: text,
+            language: language,
+            level: level.rawValue
+        )
     }
     func pasteText(text: String) async throws {
         try await hotkeys.pasteText(text: text)
@@ -1294,7 +1381,15 @@ final class MockDictationEngine: DictationEngine {
     func initModel() async throws {}
     func isModelLoaded() -> Bool { true }
     func isFormattingAvailable() -> Bool { false }
-    func formatText(text: String, language: CsLanguage?) async throws -> String { text }
+    func currentOverlayPolicy() -> OverlayPolicySnapshot? {
+        OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .correction)
+    }
+    func setAutoPasteEnabled(_ enabled: Bool) {}
+    func formatText(
+        text: String,
+        language: CsLanguage?,
+        level: FormattingPolicyOption
+    ) async throws -> String { text }
     func pasteText(text: String) async throws {}
     func pasteTargetAppName() async -> String? { nil }
     func transcribeFile(path: String) async throws -> CsTranscription {

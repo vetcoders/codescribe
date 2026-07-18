@@ -4,11 +4,11 @@ import SwiftUI
 // "codescribe App - Dictation Overlay.dc.html".
 //
 // Layout (top → bottom):
-//   header      brand wordmark · status pill · placement (…) menu
+//   header      brand wordmark · status pill · Auto Paste · placement (…) menu
 //   mode + meta tag chip (DICTATION/FINAL) · meta line
 //   body        listening = waveform (live RMS level) + word-reveal transcript
 //               formatted = editable finalized transcript
-//   action row  recording: Finish; finalized: Copy · Insert · Format · Send.
+//   action row  recording: Finish; finalized: Copy · Insert · Format · To Agent.
 //               All actions are neutral/grey; Close is the ONE red control.
 //   footer      ● local whisper (olive) · meta on the right
 //
@@ -126,14 +126,57 @@ struct DictationOverlayView: View {
                     .accessibilityIdentifier("overlay-phase-status")
             }
             Spacer(minLength: 0)
-            // U22: the settings gear (dead — settings live in the tray) and the
-            // decorative mic glyph (no action, duplicated the status pill) are
-            // gone. The placement (…) menu is the header's only utility control.
+            if state.autoPasteControlAvailable {
+                autoPasteControl
+            }
             placementMenu
                 .foregroundStyle(CSColor.textFaint)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
+    }
+
+    /// Compact persisted delivery control. `ViewThatFits` keeps the literal label
+    /// in normal widths and falls back to the same truthful icon/value control at
+    /// the 320pt floor. Both variants share one explicit accessibility contract.
+    private var autoPasteControl: some View {
+        Button {
+            state.setAutoPasteEnabled(!state.autoPasteEnabled)
+        } label: {
+            ViewThatFits(in: .horizontal) {
+                autoPasteControlLabel(showTitle: true)
+                autoPasteControlLabel(showTitle: false)
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Auto Paste: \(state.autoPasteAccessibilityValue)")
+        .accessibilityLabel("Auto Paste")
+        .accessibilityValue(state.autoPasteAccessibilityValue)
+        .accessibilityHint("Automatically insert completed dictation in the previous app")
+        .accessibilityIdentifier("overlay-auto-paste")
+    }
+
+    private func autoPasteControlLabel(showTitle: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.down.doc.fill")
+                .font(.system(size: 10, weight: .semibold))
+            if showTitle {
+                Text("Auto Paste")
+                    .csMono(9, .semibold)
+                    .lineLimit(1)
+            }
+            Circle()
+                .fill(state.autoPasteEnabled ? CSColor.oliveLight : CSColor.textFaint)
+                .frame(width: 6, height: 6)
+        }
+        .foregroundStyle(CSColor.textFaint)
+        .padding(.horizontal, showTitle ? 8 : 7)
+        .padding(.vertical, 5)
+        .background(CSColor.surfaceRaised(0.04))
+        .overlay(
+            Capsule().strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
+        )
+        .clipShape(Capsule())
     }
 
     /// Placement config under the `…` icon: six screen anchors or free motion.
@@ -344,7 +387,7 @@ struct DictationOverlayView: View {
 
     // MARK: Action row
 
-    /// U22 semantics: every ACTION (Finish/Copy/Insert/Format/Send) is a neutral
+    /// U22 semantics: every ACTION (Finish/Copy/Insert/Format/To Agent) is a neutral
     /// grey surface — the one exception is Close, the sole destructive control,
     /// which wears `CSColor.danger` and must read as red at first glance.
     private enum ActionButtonTone {
@@ -394,19 +437,11 @@ struct DictationOverlayView: View {
                     action: { state.pasteToPreviousApp() }
                 )
 
-                actionButton(
-                    title: state.isFormatting ? "Formatting..." : "Format",
-                    help: "Format",
-                    icon: "wand.and.stars",
-                    tone: .neutral,
-                    iconOnly: iconOnly,
-                    isEnabled: state.canFormat,
-                    action: { state.formatTranscript() }
-                )
+                manualFormatMenu(iconOnly: iconOnly)
 
                 actionButton(
-                    title: "Send",
-                    help: "Send transcript to the agent",
+                    title: OverlayActionPresentation.sendTitle,
+                    help: OverlayActionPresentation.sendHelp,
                     icon: "paperplane.fill",
                     tone: .neutral,
                     iconOnly: iconOnly,
@@ -426,6 +461,33 @@ struct DictationOverlayView: View {
         }
     }
 
+    private func manualFormatMenu(iconOnly: Bool) -> some View {
+        Menu {
+            ForEach(OverlayActionPresentation.manualFormatLevels) { level in
+                Button(level.visibleName) {
+                    state.formatTranscript(level: level)
+                }
+            }
+        } label: {
+            actionButtonLabel(
+                title: state.isFormatting ? "Formatting..." : OverlayActionPresentation.formatTitle,
+                icon: "wand.and.stars",
+                tone: .neutral,
+                iconOnly: iconOnly
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .help(state.manualFormatHelp)
+        .disabled(!state.canFormat)
+        .opacity(state.canFormat ? 1 : 0.45)
+        .accessibilityLabel(OverlayActionPresentation.formatTitle)
+        .accessibilityValue(state.autoFormatLevel == .off ? "Auto Format Off" : "Auto Format \(state.autoFormatLevel.visibleName)")
+        .accessibilityHint(OverlayActionPresentation.formatHelp)
+        .accessibilityIdentifier("overlay-format-menu")
+    }
+
     private func actionButton(
         title: String,
         help: String? = nil,
@@ -440,6 +502,8 @@ struct DictationOverlayView: View {
         }
         .buttonStyle(.plain)
         .help(help ?? title)
+        .accessibilityLabel(title)
+        .accessibilityHint(help ?? title)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.45)
     }

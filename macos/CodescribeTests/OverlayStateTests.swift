@@ -4,11 +4,20 @@ import XCTest
 
 private final class OverlayStateTestEngine: DictationEngine {
     var pastedText: String?
+    var pasteCallCount = 0
     var formattedResult: Result<String, Error> = .success("")
-    var onFormat: (() -> Void)?
+    var formattedLevels: [FormattingPolicyOption] = []
+    var onFormat: ((FormattingPolicyOption) -> Void)?
     var onPaste: (() -> Void)?
     var pasteTargetAppNameValue: String?
     var onPasteTargetRead: (() -> Void)?
+    var persistedPolicy = OverlayPolicySnapshot(
+        autoPasteEnabled: true,
+        autoFormatLevel: .correction
+    )
+    var persistAutoPasteWrites = true
+    var autoPasteWrites: [Bool] = []
+    var policyReadCount = 0
 
     func setListener(_ listener: CsTranscriptionListener) {}
     func startRecording(language: CsLanguage?) async throws {}
@@ -17,8 +26,25 @@ private final class OverlayStateTestEngine: DictationEngine {
     func initModel() async throws {}
     func isModelLoaded() -> Bool { true }
     func isFormattingAvailable() -> Bool { true }
-    func formatText(text: String, language: CsLanguage?) async throws -> String {
-        onFormat?()
+    func currentOverlayPolicy() -> OverlayPolicySnapshot? {
+        policyReadCount += 1
+        return persistedPolicy
+    }
+    func setAutoPasteEnabled(_ enabled: Bool) {
+        autoPasteWrites.append(enabled)
+        guard persistAutoPasteWrites else { return }
+        persistedPolicy = OverlayPolicySnapshot(
+            autoPasteEnabled: enabled,
+            autoFormatLevel: persistedPolicy.autoFormatLevel
+        )
+    }
+    func formatText(
+        text: String,
+        language: CsLanguage?,
+        level: FormattingPolicyOption
+    ) async throws -> String {
+        formattedLevels.append(level)
+        onFormat?(level)
         switch formattedResult {
         case .success(let text): return text
         case .failure(let error): throw error
@@ -26,6 +52,7 @@ private final class OverlayStateTestEngine: DictationEngine {
     }
     func pasteText(text: String) async throws {
         pastedText = text
+        pasteCallCount += 1
         onPaste?()
     }
     func pasteTargetAppName() async -> String? {
@@ -68,6 +95,78 @@ final class OverlayStateTests: XCTestCase {
         let unknown = OverlayInsertActionPresentation(targetAppName: nil)
         XCTAssertEqual(unknown.title, "Insert")
         XCTAssertEqual(unknown.help, "Insert at the cursor in the previous app")
+    }
+
+    func testApprovedOverlayActionPresentationIsLiteralAndLevelBounded() {
+        XCTAssertEqual(OverlayActionPresentation.sendTitle, "To Agent")
+        XCTAssertEqual(OverlayActionPresentation.sendHelp, "Send transcript to the agent")
+        XCTAssertEqual(
+            OverlayActionPresentation.manualFormatLevels.map(\.rawValue),
+            ["correction", "smart", "max"]
+        )
+        XCTAssertEqual(
+            OverlayActionPresentation.manualFormatLevels.map(\.visibleName),
+            ["Correction", "Smart", "Max"]
+        )
+    }
+
+    func testOverlayPolicyRefreshesAtSessionEntryFromPersistedTruth() {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        engine.persistedPolicy = OverlayPolicySnapshot(
+            autoPasteEnabled: false,
+            autoFormatLevel: .off
+        )
+        state.engine = engine
+
+        state.handleRecordingPreparing()
+        XCTAssertFalse(state.autoPasteEnabled)
+        XCTAssertEqual(state.autoFormatLevel, .off)
+        XCTAssertEqual(engine.policyReadCount, 1)
+
+        engine.persistedPolicy = OverlayPolicySnapshot(
+            autoPasteEnabled: true,
+            autoFormatLevel: .max
+        )
+        state.handleRecordingStarted()
+        XCTAssertTrue(state.autoPasteEnabled)
+        XCTAssertEqual(state.autoFormatLevel, .max)
+        XCTAssertEqual(engine.policyReadCount, 2)
+    }
+
+    func testAutoPasteWriteReconcilesSuccessAndFailureWithoutDelivery() {
+        for persists in [true, false] {
+            let state = OverlayState()
+            let engine = OverlayStateTestEngine()
+            engine.persistedPolicy = OverlayPolicySnapshot(
+                autoPasteEnabled: false,
+                autoFormatLevel: .off
+            )
+            engine.persistAutoPasteWrites = persists
+            state.engine = engine
+            state.handleRecordingPreparing()
+
+            state.setAutoPasteEnabled(true)
+
+            XCTAssertEqual(engine.autoPasteWrites, [true])
+            XCTAssertEqual(state.autoPasteEnabled, persists)
+            XCTAssertEqual(state.autoFormatLevel, .off)
+            XCTAssertEqual(engine.policyReadCount, 2)
+            XCTAssertEqual(engine.pasteCallCount, 0)
+        }
+    }
+
+    func testAssistiveFenceMakesAutoPasteControlUnavailableAndNonWriting() {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        state.engine = engine
+        state.setAutoPasteControlAvailable(false)
+
+        state.setAutoPasteEnabled(false)
+
+        XCTAssertFalse(state.autoPasteControlAvailable)
+        XCTAssertTrue(engine.autoPasteWrites.isEmpty)
+        XCTAssertEqual(engine.pasteCallCount, 0)
     }
 
     func testPasteTargetRefreshesAtPreparingAndStartedSessionEntry() async {
@@ -212,18 +311,58 @@ final class OverlayStateTests: XCTestCase {
         let engine = OverlayStateTestEngine()
         engine.formattedResult = .failure(NSError(domain: "OverlayStateTests", code: 1))
         let formatCalled = expectation(description: "format called")
-        engine.onFormat = { formatCalled.fulfill() }
+        engine.onFormat = { _ in formatCalled.fulfill() }
         state.engine = engine
         state.formattedText = "raw source transcript"
         state.mode = .formatted
 
-        state.formatTranscript()
+        state.formatTranscript(level: .correction)
         await fulfillment(of: [formatCalled], timeout: 1)
         await Task.yield()
 
         XCTAssertEqual(state.formattedText, "raw source transcript")
         XCTAssertEqual(state.formatFailureStatus, "raw — formatting failed")
         XCTAssertEqual(state.activeText, "raw source transcript")
+    }
+
+    func testManualFormatPassesEveryExplicitLevelAndKeepsAutoFormatOff() async {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        engine.persistedPolicy = OverlayPolicySnapshot(
+            autoPasteEnabled: false,
+            autoFormatLevel: .off
+        )
+        state.engine = engine
+        state.handleRecordingPreparing()
+        state.formattedText = "source transcript"
+        state.mode = .formatted
+
+        for level in OverlayActionPresentation.manualFormatLevels {
+            let called = expectation(description: "format \(level.rawValue)")
+            engine.formattedResult = .success("\(level.rawValue) output")
+            engine.onFormat = { selected in
+                XCTAssertEqual(selected, level)
+                called.fulfill()
+            }
+
+            state.formatTranscript(level: level)
+            await fulfillment(of: [called], timeout: 1)
+            await Task.yield()
+
+            XCTAssertEqual(state.formattedText, "\(level.rawValue) output")
+            XCTAssertEqual(state.autoFormatLevel, .off)
+            XCTAssertEqual(engine.pasteCallCount, 0)
+        }
+
+        XCTAssertEqual(engine.formattedLevels, [.correction, .smart, .max])
+        XCTAssertTrue(engine.autoPasteWrites.isEmpty)
+
+        state.formatTranscript(level: .off)
+        await Task.yield()
+
+        XCTAssertEqual(engine.formattedLevels, [.correction, .smart, .max])
+        XCTAssertEqual(state.formattedText, "max output")
+        XCTAssertEqual(engine.pasteCallCount, 0)
     }
 
     func testAutoHideDelayIsFiveSeconds() {
@@ -368,13 +507,13 @@ final class OverlayStateTests: XCTestCase {
         let engine = OverlayStateTestEngine()
         let formatCalled = expectation(description: "format called")
         engine.formattedResult = .success("formatted result")
-        engine.onFormat = { formatCalled.fulfill() }
+        engine.onFormat = { _ in formatCalled.fulfill() }
         state.engine = engine
         var closeCount = 0
         state.onClose = { closeCount += 1 }
 
         clock.now = 4
-        state.formatTranscript()
+        state.formatTranscript(level: .correction)
         await fulfillment(of: [formatCalled], timeout: 1)
         await Task.yield()
         XCTAssertEqual(state.formattedText, "formatted result")
@@ -466,6 +605,7 @@ final class OverlayStateTests: XCTestCase {
         controller.showForRecording()
         XCTAssertEqual(factoryCount, 0)
         XCTAssertEqual(frontCount, 0)
+        XCTAssertTrue(controller.state.autoPasteControlAvailable)
     }
 
     func testAgentModesNeverOrderOverlayFrontEvenWhenToggleIsOn() {
@@ -483,6 +623,7 @@ final class OverlayStateTests: XCTestCase {
 
             controller.showForRecording()
             XCTAssertEqual(frontCount, 0, "\(mode) uses the authoritative assistive gate")
+            XCTAssertFalse(controller.state.autoPasteControlAvailable)
         }
     }
 
@@ -505,6 +646,7 @@ final class OverlayStateTests: XCTestCase {
 
         controller.handleAssistiveStatusChange(true)
         XCTAssertEqual(outCount, 1)
+        XCTAssertFalse(controller.state.autoPasteControlAvailable)
     }
 
     func testOverlayPanelUsesNonActivatingStyle() {
@@ -518,4 +660,5 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(panel.isFloatingPanel)
         XCTAssertFalse(panel.canBecomeMain)
     }
+
 }
