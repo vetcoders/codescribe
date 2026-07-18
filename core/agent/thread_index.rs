@@ -1,8 +1,10 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
@@ -10,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use super::thread_store::{Thread, ThreadMessage};
 
 const INDEX_FILE_NAME: &str = "index.json";
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadIndexData {
@@ -45,6 +47,13 @@ pub struct ThreadSummary {
     #[serde(default)]
     pub search_text: String,
     pub is_favorite: bool,
+    /// Model the thread last ran on; `None` when the thread predates model
+    /// tracking or the stored value is empty.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Cumulative input+output tokens; `None` when the thread never recorded usage.
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
 }
 
 impl ThreadSummary {
@@ -77,6 +86,11 @@ impl ThreadSummary {
             latest_note,
             search_text,
             is_favorite,
+            model: Some(thread.model.clone()).filter(|model| !model.is_empty()),
+            total_tokens: thread
+                .total_tokens
+                .as_ref()
+                .map(|usage| usage.input.saturating_add(usage.output)),
         }
     }
 
@@ -131,12 +145,27 @@ impl ThreadIndex {
             )
         })?;
 
+        // `path` joins a compile-time constant filename (`INDEX_FILE_NAME`) onto
+        // the store-owned `threads_dir`. No caller-supplied component reaches it,
+        // so there is no path-traversal source to taint.
         let path = threads_dir.join(INDEX_FILE_NAME);
         if path.exists() {
-            let raw = fs::read_to_string(&path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+            let path = canonical_existing_child(threads_dir, &path)?;
+            let mut raw = String::new();
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is canonicalized and checked to stay under threads_dir immediately above.
+            fs::File::open(&path)
+                .with_context(|| format!("Failed to open thread index: {}", path.display()))?
+                .read_to_string(&mut raw)
                 .with_context(|| format!("Failed to read thread index: {}", path.display()))?;
-            let data = serde_json::from_str::<ThreadIndexData>(&raw)
+            let mut data = serde_json::from_str::<ThreadIndexData>(&raw)
                 .with_context(|| format!("Failed to parse thread index: {}", path.display()))?;
+            if data.version < INDEX_VERSION {
+                let rebuild_dir = path.parent().unwrap_or(threads_dir);
+                data = rebuild_index_from_threads(rebuild_dir, &data)?;
+                let index = Self { path, data };
+                index.save()?;
+                return Ok(index);
+            }
             return Ok(Self { path, data });
         }
 
@@ -288,6 +317,62 @@ fn build_search_text(
     out
 }
 
+fn rebuild_index_from_threads(
+    threads_dir: &Path,
+    existing: &ThreadIndexData,
+) -> Result<ThreadIndexData> {
+    let favorites_by_id = existing
+        .threads
+        .iter()
+        .map(|summary| (summary.id.clone(), summary.is_favorite))
+        .collect::<HashMap<_, _>>();
+    let mut threads = Vec::new();
+
+    // `threads_dir` is store-owned: the only caller passes `path.parent()` of the
+    // index file, which itself is `threads_dir.join(INDEX_FILE_NAME)`. No
+    // caller-supplied component reaches it, so there is no path-traversal source to taint.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- threads_dir is store-owned (derived from the store-owned index path), not caller-supplied.
+    for entry in fs::read_dir(threads_dir).with_context(|| {
+        format!(
+            "Failed to read threads directory: {}",
+            threads_dir.display()
+        )
+    })? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        if !is_thread_json_file(&path) {
+            continue;
+        }
+
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(thread) = serde_json::from_str::<Thread>(&raw) else {
+            continue;
+        };
+        let is_favorite = favorites_by_id.get(&thread.id).copied().unwrap_or(false);
+        threads.push(ThreadSummary::from_thread(&thread, is_favorite));
+    }
+
+    sort_by_updated_desc(&mut threads);
+    Ok(ThreadIndexData {
+        version: INDEX_VERSION,
+        threads,
+    })
+}
+
+fn is_thread_json_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("t_"))
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+}
+
 fn append_search_chunk(out: &mut String, value: &str, max_len: usize) {
     if value.is_empty() || out.len() >= max_len {
         return;
@@ -345,6 +430,10 @@ fn thread_message_preview_text(message: &ThreadMessage) -> Option<String> {
     }
 }
 
+/// Collect preview/search prose from stored thread content. Only text-like
+/// blocks (`text`, plus legacy `input_text` / `output_text`) contribute their
+/// `text`; `tool_result` recurses into nested content, and structural fields are
+/// never walked blindly.
 fn collect_message_text(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::String(text) if !text.trim().is_empty() => {
@@ -359,25 +448,22 @@ fn collect_message_text(value: &serde_json::Value, out: &mut Vec<String>) {
                 collect_message_text(item, out);
             }
         }
-        serde_json::Value::Object(map) => {
-            if let Some(text) = map.get("text").and_then(serde_json::Value::as_str)
-                && !text.trim().is_empty()
-            {
-                out.push(text.to_string());
-            }
-            if let Some(content) = map.get("content") {
-                collect_message_text(content, out);
-            }
-            if let Some(input) = map.get("input") {
-                collect_message_text(input, out);
-            }
-            for (key, nested) in map {
-                if matches!(key.as_str(), "text" | "content" | "input" | "data") {
-                    continue;
+        serde_json::Value::Object(map) => match map.get("type").and_then(serde_json::Value::as_str)
+        {
+            Some("text") | Some("input_text") | Some("output_text") | None => {
+                if let Some(text) = map.get("text").and_then(serde_json::Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.to_string());
                 }
-                collect_message_text(nested, out);
             }
-        }
+            Some("tool_result") => {
+                if let Some(content) = map.get("content") {
+                    collect_message_text(content, out);
+                }
+            }
+            Some(_) => {}
+        },
         _ => {}
     }
 }
@@ -428,6 +514,23 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
+    let base = base
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize base dir: {}", base.display()))?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize file path: {}", path.display()))?;
+    if !path.starts_with(&base) {
+        bail!(
+            "Thread index path escaped threads dir: {} outside {}",
+            path.display(),
+            base.display()
+        );
+    }
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -451,6 +554,7 @@ mod tests {
             created_at: updated_at - Duration::minutes(5),
             updated_at,
             title: title.to_string(),
+            title_is_custom: false,
             mode: mode.to_string(),
             tags: vec!["vet".to_string(), "urgent".to_string()],
             notes: Vec::new(),
@@ -582,6 +686,138 @@ mod tests {
         let note_results = index.search("call owner kidney");
         assert_eq!(note_results.len(), 1);
         assert_eq!(note_results[0].id, "t_2026-02-23_note_search");
+
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_openai_text_aliases_feed_preview_and_search_without_type_leak() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let mut index = ThreadIndex::load_or_create(tmp.path())?;
+
+        let mut thread = sample_thread(
+            "t_2026-07-05_legacy_aliases",
+            "Legacy aliases",
+            None,
+            "assistive",
+            1,
+        );
+        thread.messages = vec![
+            ThreadMessage {
+                role: "user".to_string(),
+                content: vec![json!({"type":"input_text","text":"Owner asked about appetite"})],
+                timestamp: Utc::now(),
+                metadata: None,
+            },
+            ThreadMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    json!({"type":"tool_use","id":"toolu_1","name":"search_threads","input":{"query":"output_text"}}),
+                    json!({"type":"output_text","text":"Appetite improved overnight"}),
+                ],
+                timestamp: Utc::now(),
+                metadata: None,
+            },
+        ];
+        index.add(&thread)?;
+
+        let summary = index
+            .list(None)
+            .into_iter()
+            .find(|summary| summary.id == "t_2026-07-05_legacy_aliases")
+            .expect("thread summary should be indexed");
+        assert_eq!(
+            summary.latest_message.as_deref(),
+            Some("appetite improved overnight")
+        );
+        assert!(summary.search_text.contains("owner asked about appetite"));
+        assert!(summary.search_text.contains("appetite improved overnight"));
+        assert!(!summary.search_text.contains("input_text"));
+        assert!(!summary.search_text.contains("output_text"));
+
+        let results = index.search("appetite improved");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "t_2026-07-05_legacy_aliases");
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_migrates_legacy_index_summaries_from_thread_files() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let mut thread = sample_thread(
+            "t_2026-07-05_legacy_rebuild",
+            "Legacy rebuild",
+            None,
+            "assistive",
+            1,
+        );
+        thread.messages = vec![
+            ThreadMessage {
+                role: "user".to_string(),
+                content: vec![json!({"type":"input_text","text":"Owner reports appetite"})],
+                timestamp: Utc::now(),
+                metadata: None,
+            },
+            ThreadMessage {
+                role: "assistant".to_string(),
+                content: vec![json!({"type":"output_text","text":"Appetite improved overnight"})],
+                timestamp: Utc::now(),
+                metadata: None,
+            },
+        ];
+        fs::write(
+            tmp.path().join(format!("{}.json", thread.id)),
+            serde_json::to_vec_pretty(&thread)?,
+        )?;
+        fs::write(tmp.path().join("t_2026-07-05_broken.json"), "{not-json")?;
+
+        let stale_index = ThreadIndexData {
+            version: 1,
+            threads: vec![ThreadSummary {
+                id: thread.id.clone(),
+                title: thread.title.clone(),
+                created_at: thread.created_at,
+                updated_at: thread.updated_at,
+                message_count: thread.messages.len(),
+                mode: thread.mode.clone(),
+                tags: thread.tags.clone(),
+                summary: None,
+                has_notes: false,
+                latest_message: Some("ai failed output_text".to_string()),
+                latest_note: None,
+                search_text: "ai failed output_text".to_string(),
+                is_favorite: true,
+                model: None,
+                total_tokens: None,
+            }],
+        };
+        fs::write(
+            tmp.path().join(INDEX_FILE_NAME),
+            serde_json::to_vec_pretty(&stale_index)?,
+        )?;
+
+        let index = ThreadIndex::load_or_create(tmp.path())?;
+        assert_eq!(index.data().version, INDEX_VERSION);
+        assert_eq!(index.data().threads.len(), 1);
+        let summary = &index.data().threads[0];
+        assert_eq!(summary.id, thread.id);
+        assert!(summary.is_favorite);
+        assert_eq!(
+            summary.latest_message.as_deref(),
+            Some("appetite improved overnight")
+        );
+        assert!(summary.search_text.contains("owner reports appetite"));
+        assert!(summary.search_text.contains("appetite improved overnight"));
+        assert!(!summary.search_text.contains("input_text"));
+        assert!(!summary.search_text.contains("output_text"));
+        assert!(!summary.search_text.contains("ai failed output_text"));
+        assert_eq!(summary.model.as_deref(), Some("gpt-5"));
+        assert_eq!(summary.total_tokens, Some(30));
+
+        let reloaded = ThreadIndex::load_or_create(tmp.path())?;
+        assert_eq!(reloaded.data().version, INDEX_VERSION);
+        assert!(reloaded.data().threads[0].is_favorite);
 
         Ok(())
     }

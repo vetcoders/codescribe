@@ -10,6 +10,8 @@
 // to grant permissions in System Settings if not already granted.
 
 #[cfg(target_os = "macos")]
+use block2::RcBlock;
+#[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
@@ -17,6 +19,8 @@ use core_foundation::string::CFString;
 use dispatch::Queue;
 #[cfg(target_os = "macos")]
 use objc::{msg_send, runtime::Class, sel, sel_impl};
+#[cfg(target_os = "macos")]
+use objc2::runtime::Bool;
 #[cfg(target_os = "macos")]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 #[cfg(target_os = "macos")]
@@ -31,6 +35,31 @@ pub enum PermissionStatus {
     Denied,
     /// Permission not yet requested (user hasn't been asked)
     NotDetermined,
+}
+
+/// The macOS permission classes Codescribe probes at startup and during
+/// onboarding. Relocated here (out of `app/ui/onboarding/steps`) so the
+/// non-UI permission model lives next to the `check_*` probes it drives and
+/// survives the legacy AppKit UI excision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionKind {
+    Microphone,
+    Accessibility,
+    InputMonitoring,
+    ScreenRecording,
+    FullDiskAccess,
+}
+
+/// Probe the live status of a single permission class. Dispatches to the
+/// per-permission `check_*` probes in this module.
+pub fn permission_status(kind: PermissionKind) -> PermissionStatus {
+    match kind {
+        PermissionKind::Microphone => check_microphone(),
+        PermissionKind::Accessibility => check_accessibility(),
+        PermissionKind::InputMonitoring => check_input_monitoring(),
+        PermissionKind::ScreenRecording => check_screen_recording(),
+        PermissionKind::FullDiskAccess => check_full_disk_access(),
+    }
 }
 
 /// Check if Accessibility permission is granted
@@ -80,51 +109,6 @@ pub fn check_input_monitoring() -> PermissionStatus {
 #[cfg(not(target_os = "macos"))]
 pub fn check_input_monitoring() -> PermissionStatus {
     PermissionStatus::Granted
-}
-
-/// Prompt user to grant Accessibility permission
-///
-/// Opens System Settings > Privacy & Security > Accessibility
-/// Returns true if the prompt was shown successfully
-#[cfg(target_os = "macos")]
-pub fn request_accessibility() -> bool {
-    // Use AXIsProcessTrustedWithOptions() to show the system prompt
-    unsafe extern "C" {
-        fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
-    }
-
-    use core_foundation::boolean::CFBoolean;
-    use core_foundation::dictionary::CFDictionary;
-
-    // Create options dictionary with kAXTrustedCheckOptionPrompt = true
-    let key = CFString::new("AXTrustedCheckOptionPrompt");
-    let value = CFBoolean::true_value();
-
-    let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
-
-    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef() as *const _) }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn request_accessibility() -> bool {
-    true // Not needed on other platforms
-}
-
-/// Request Input Monitoring permission (macOS)
-///
-/// Shows system prompt asking to allow key event listening.
-#[cfg(target_os = "macos")]
-pub fn request_input_monitoring() -> bool {
-    unsafe extern "C" {
-        fn CGRequestListenEventAccess() -> bool;
-    }
-
-    unsafe { CGRequestListenEventAccess() }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn request_input_monitoring() -> bool {
-    true
 }
 
 /// Check if Microphone permission is granted
@@ -184,10 +168,9 @@ fn start_microphone_request(callback_tx: Sender<bool>) -> bool {
 
     let media_type = CFString::new("soun");
     unsafe {
-        let request_block = block::ConcreteBlock::new(move |granted: bool| {
-            let _ = callback_tx.send(granted);
-        })
-        .copy();
+        let request_block: RcBlock<dyn Fn(Bool)> = RcBlock::new(move |granted: Bool| {
+            let _ = callback_tx.send(granted.as_bool());
+        });
 
         let _: () = msg_send![
             av_class,
@@ -257,7 +240,7 @@ fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
                 }
 
                 warn!(
-                    "Microphone permission denied. Enable CodeScribe in System Settings > Privacy & Security > Microphone."
+                    "Microphone permission denied. Enable Codescribe in System Settings > Privacy & Security > Microphone."
                 );
                 return false;
             }
@@ -268,7 +251,7 @@ fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
                 }
                 PermissionStatus::Denied => {
                     warn!(
-                        "Microphone permission is denied/restricted. Enable CodeScribe in System Settings > Privacy & Security > Microphone."
+                        "Microphone permission is denied/restricted. Enable Codescribe in System Settings > Privacy & Security > Microphone."
                     );
                     return false;
                 }
@@ -380,26 +363,6 @@ pub fn check_full_disk_access() -> PermissionStatus {
     PermissionStatus::Granted
 }
 
-pub fn hotkey_permissions_granted() -> bool {
-    check_accessibility() == PermissionStatus::Granted
-        && check_input_monitoring() == PermissionStatus::Granted
-}
-
-/// Request Full Disk Access by opening the relevant System Settings pane.
-#[cfg(target_os = "macos")]
-pub fn request_full_disk_access() -> bool {
-    if check_full_disk_access() == PermissionStatus::Granted {
-        return true;
-    }
-    open_privacy_settings("Privacy_AllFiles");
-    false
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn request_full_disk_access() -> bool {
-    true
-}
-
 #[cfg(target_os = "macos")]
 fn full_disk_access_status() -> PermissionStatus {
     use std::path::Path;
@@ -432,260 +395,6 @@ fn full_disk_access_status() -> PermissionStatus {
         // Could be "not requested yet" or paths absent on this machine.
         PermissionStatus::NotDetermined
     }
-}
-
-#[cfg(target_os = "macos")]
-pub fn open_privacy_settings(deeplink: &str) {
-    let url = format!(
-        "x-apple.systempreferences:com.apple.preference.security?{}",
-        deeplink
-    );
-    let _ = std::process::Command::new("open").arg(url).spawn();
-}
-
-/// Check all required permissions and log status
-pub fn check_all_permissions() {
-    use tracing::{info, warn};
-
-    // Check Accessibility
-    match check_accessibility() {
-        PermissionStatus::Granted => {
-            info!("Accessibility permission: Granted");
-        }
-        PermissionStatus::Denied => {
-            warn!("Accessibility permission: DENIED - Mode bindings may not trigger.");
-            warn!("Grant access in: System Settings > Privacy & Security > Accessibility");
-        }
-        _ => {
-            warn!("Accessibility permission: Unknown status");
-        }
-    }
-
-    // Check Input Monitoring
-    match check_input_monitoring() {
-        PermissionStatus::Granted => {
-            info!("Input Monitoring permission: Granted");
-        }
-        PermissionStatus::Denied => {
-            warn!("Input Monitoring permission: DENIED - Mode bindings may not trigger.");
-            warn!("Grant access in: System Settings > Privacy & Security > Input Monitoring");
-        }
-        _ => {
-            warn!("Input Monitoring permission: Unknown status");
-        }
-    }
-
-    // Check Microphone
-    match check_microphone() {
-        PermissionStatus::Granted => {
-            info!("Microphone permission: Granted");
-        }
-        PermissionStatus::NotDetermined => {
-            info!(
-                "Microphone permission: Not determined (macOS prompt may appear on first recording attempt)."
-            );
-            info!(
-                "If recording does not start, open System Settings > Privacy & Security > Microphone and enable CodeScribe."
-            );
-        }
-        PermissionStatus::Denied => {
-            warn!("Microphone permission: DENIED - Recording will not work!");
-            warn!("Grant access in: System Settings > Privacy & Security > Microphone");
-            warn!(
-                "After enabling access, retry recording or reopen Setup so CodeScribe can recheck live."
-            );
-        }
-    }
-}
-
-/// Request all required permissions (with user prompts)
-pub fn request_all_permissions() {
-    use tracing::info;
-
-    info!("Checking and requesting required permissions...");
-
-    // Request Accessibility (shows system prompt if not granted)
-    if check_accessibility() != PermissionStatus::Granted {
-        info!("Requesting Accessibility permission...");
-        request_accessibility();
-    }
-
-    // Request Input Monitoring (shows system prompt if not granted)
-    if check_input_monitoring() != PermissionStatus::Granted {
-        info!("Requesting Input Monitoring permission...");
-        request_input_monitoring();
-    }
-
-    if check_microphone() != PermissionStatus::Granted {
-        info!(
-            "Microphone permission not granted yet; CodeScribe will request it when recording starts. If no prompt appears, open System Settings > Privacy & Security > Microphone."
-        );
-    }
-}
-
-pub fn diagnostics_report() -> String {
-    use std::fmt::Write;
-
-    let mut out = String::new();
-    let _ = writeln!(&mut out, "CodeScribe diagnostics");
-    let _ = writeln!(&mut out, "pid: {}", std::process::id());
-    let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
-    let _ = writeln!(&mut out, "exe: {}", exe);
-
-    if let Some(bundle_id) = current_bundle_identifier() {
-        let _ = writeln!(&mut out, "bundle_id: {}", bundle_id);
-    }
-
-    let app_bundle = exe.contains(".app/Contents/MacOS/");
-    let _ = writeln!(
-        &mut out,
-        "app_bundle: {}",
-        if app_bundle { "yes" } else { "no" }
-    );
-
-    let _ = writeln!(&mut out, "accessibility: {:?}", check_accessibility());
-    let _ = writeln!(&mut out, "input_monitoring: {:?}", check_input_monitoring());
-
-    let settings = crate::config::UserSettings::load();
-    let _ = writeln!(
-        &mut out,
-        "mode_binding.dictation: {}",
-        settings
-            .mode_binding_for(crate::config::WorkMode::Dictation)
-            .as_str()
-    );
-    let _ = writeln!(
-        &mut out,
-        "mode_binding.formatting: {}",
-        settings
-            .mode_binding_for(crate::config::WorkMode::Formatting)
-            .as_str()
-    );
-    let _ = writeln!(
-        &mut out,
-        "mode_binding.assistive: {}",
-        settings
-            .mode_binding_for(crate::config::WorkMode::Assistive)
-            .as_str()
-    );
-
-    let conflicts = crate::os::shortcut_registry::detect_hotkey_conflicts(&settings);
-    let _ = writeln!(
-        &mut out,
-        "mode_binding.conflicts.count: {}",
-        conflicts.len()
-    );
-    if conflicts.is_empty() {
-        let _ = writeln!(&mut out, "mode_binding.conflicts.status: clear");
-    } else {
-        let _ = writeln!(&mut out, "mode_binding.conflicts.status: detected");
-        for (index, conflict) in conflicts.iter().take(5).enumerate() {
-            let _ = writeln!(
-                &mut out,
-                "mode_binding.conflict.{}: {} -> {}",
-                index + 1,
-                conflict.gesture.label(),
-                conflict.message
-            );
-        }
-    }
-    if let Some(note) = crate::os::shortcut_registry::fn_tap_intercept_note(&settings) {
-        let _ = writeln!(&mut out, "mode_binding.note: {note}");
-    }
-
-    // Small, safe config hints (do not print secrets).
-    let config = crate::config::Config::load();
-    let _ = writeln!(
-        &mut out,
-        "WHISPER_LANGUAGE: {}",
-        config.whisper_language.as_str()
-    );
-    let _ = writeln!(
-        &mut out,
-        "mode_binding.hold_start_delay_ms: {}",
-        config.hold_start_delay_ms
-    );
-    let _ = writeln!(
-        &mut out,
-        "mode_binding.double_tap_interval_ms: {}",
-        config.double_tap_interval_ms
-    );
-    let _ = writeln!(
-        &mut out,
-        "mode_binding.toggle_silence_sec: {}",
-        config.toggle_silence_sec
-    );
-    if let Ok(val) = std::env::var("CODESCRIBE_STREAM_CHUNK_SEC") {
-        let _ = writeln!(&mut out, "CODESCRIBE_STREAM_CHUNK_SEC: {val}");
-    }
-    let _ = writeln!(
-        &mut out,
-        "thermal.level: {:?}",
-        crate::os::thermal::current_thermal_level()
-    );
-
-    // Best-effort codesign info (helps debug TCC resets).
-    #[cfg(target_os = "macos")]
-    {
-        let _ = writeln!(&mut out);
-        let _ = writeln!(&mut out, "codesign:");
-        if let Ok(output) = std::process::Command::new("codesign")
-            .args(["-dv", "--verbose=2", &exe])
-            .output()
-        {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            for line in stderr.lines().take(40) {
-                let _ = writeln!(&mut out, "  {}", line);
-            }
-        } else {
-            let _ = writeln!(&mut out, "  <unavailable>");
-        }
-    }
-
-    // Best-effort process list (helps spot stray CLI/daemon processes).
-    #[cfg(target_os = "macos")]
-    {
-        let _ = writeln!(&mut out);
-        let _ = writeln!(&mut out, "processes:");
-        if let Ok(output) = std::process::Command::new("ps")
-            .args(["-ax", "-o", "pid=,comm=,args="])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout
-                .lines()
-                .filter(|l| l.to_lowercase().contains("codescribe"))
-                .take(30)
-            {
-                let _ = writeln!(&mut out, "  {}", line.trim());
-            }
-        } else {
-            let _ = writeln!(&mut out, "  <unavailable>");
-        }
-    }
-
-    out
-}
-
-fn current_bundle_identifier() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
-    // If running from an .app bundle, Info.plist is usually at ../Info.plist.
-    // Example: .../CodeScribe.app/Contents/MacOS/codescribe
-    let info_plist = exe
-        .parent()
-        .and_then(|p| p.parent())
-        .map(|p| p.join("Info.plist"))?;
-    let content = std::fs::read_to_string(info_plist).ok()?;
-
-    // Extremely small parser: find the first string after CFBundleIdentifier key.
-    let key_idx = content.find("CFBundleIdentifier")?;
-    let after_key = &content[key_idx..];
-    let string_open = after_key.find("<string>")?;
-    let after_open = &after_key[string_open + "<string>".len()..];
-    let string_close = after_open.find("</string>")?;
-    Some(after_open[..string_close].trim().to_string())
 }
 
 #[cfg(test)]

@@ -114,12 +114,12 @@ pub(crate) fn postprocess_correction_with_snapshot(
 }
 
 pub(crate) fn correction_is_stale(
-    expected_preview_rev: u64,
-    current_preview_rev: u64,
-    expected_text: &str,
-    current_text: &str,
+    expected_boundary_rev: u64,
+    current_boundary_rev: u64,
+    _expected_text: &str,
+    _current_text: &str,
 ) -> bool {
-    expected_preview_rev != current_preview_rev || expected_text != current_text
+    expected_boundary_rev != current_boundary_rev
 }
 
 /// Build correction baseline text for replacement semantics across boundaries.
@@ -142,6 +142,63 @@ pub(crate) fn correction_baseline_text(
         return (window_text.to_string(), true);
     }
     (String::new(), true)
+}
+
+/// Merge a corrected re-transcription of the correction window back into the
+/// full preview baseline.
+///
+/// `window_snapshot` is the text mirror of the exact audio slice that was
+/// submitted to the Refine lane (taken in lockstep by `schedule_partial_pass`).
+/// The correction therefore only has authority over that slice — everything
+/// else in `baseline` must survive verbatim. Returns `None` when the snapshot
+/// can no longer be anchored inside the baseline (boundary rewrote it, cap
+/// trimmed it); the caller must then suppress the correction instead of
+/// destroying accumulated text.
+pub(crate) fn merge_corrected_window(
+    baseline: &str,
+    window_snapshot: &str,
+    corrected: &str,
+) -> Option<String> {
+    let baseline_trim = baseline.trim();
+    let snapshot = window_snapshot.trim();
+    if snapshot.is_empty() {
+        // No text mirror for the corrected audio (e.g. every partial in the
+        // slice was dropped). Only safe when there is nothing to protect.
+        return baseline_trim
+            .is_empty()
+            .then(|| corrected.trim().to_string());
+    }
+    if baseline_trim == snapshot {
+        return Some(corrected.trim().to_string());
+    }
+    if let Some(pos) = baseline_trim.rfind(snapshot) {
+        // The snapshot sits inside the baseline (typically the tail, or the
+        // middle when newer previews appended while Refine ran) — splice the
+        // corrected text into its place and keep the rest untouched.
+        let prefix = baseline_trim[..pos].trim_end();
+        let suffix = baseline_trim[pos + snapshot.len()..].trim_start();
+        let corrected = corrected.trim();
+        let mut merged = String::with_capacity(prefix.len() + corrected.len() + suffix.len() + 2);
+        merged.push_str(prefix);
+        if !merged.is_empty() && !corrected.is_empty() {
+            merged.push(' ');
+        }
+        merged.push_str(corrected);
+        if !suffix.is_empty() {
+            if !merged.is_empty() {
+                merged.push(' ');
+            }
+            merged.push_str(suffix);
+        }
+        return Some(merged);
+    }
+    if snapshot.ends_with(baseline_trim) {
+        // The corrected audio covers a superset of the current baseline (a
+        // final boundary replaced accumulated text mid-window) — the refine
+        // pass legitimately supersedes the whole preview.
+        return Some(corrected.trim().to_string());
+    }
+    None
 }
 
 /// Apply final boundary text while preserving a non-empty preview fallback.
@@ -217,12 +274,12 @@ pub(crate) fn schedule_partial_pass(
     pipeline_language: Option<String>,
     correction_audio_buf: &mut Vec<f32>,
     correction_in_flight: &mut Option<SttTaskHandle>,
-    correction_expected_preview_rev: &mut Option<u64>,
+    correction_expected_boundary_rev: &mut Option<u64>,
     correction_expected_text: &mut Option<String>,
     correction_suffix_snapshot: &mut Option<String>,
     suffix_snapshot: &str,
-    preview_rev: u64,
-    accumulated_text: &str,
+    boundary_rev: u64,
+    window_text: &mut String,
     speech_ms_since_partial: u64,
     trigger: PartialPassTrigger,
     partial_telemetry: &mut PartialPassTelemetry,
@@ -232,6 +289,11 @@ pub(crate) fn schedule_partial_pass(
         return false;
     }
     let audio = std::mem::take(correction_audio_buf);
+    // Take the text mirror in lockstep with the audio slice: expected_text
+    // must describe exactly the audio submitted below, or the receive-side
+    // merge (`merge_corrected_window`) has no anchor and the correction would
+    // have to be suppressed.
+    let baseline_text = std::mem::take(window_text);
     let audio_duration_s = audio.len() as f32 / output_sample_rate as f32;
 
     if let Some(old) = correction_in_flight.take() {
@@ -244,8 +306,8 @@ pub(crate) fn schedule_partial_pass(
     }
 
     debug!(
-        expected_rev = preview_rev,
-        baseline_len = accumulated_text.chars().count(),
+        expected_boundary_rev = boundary_rev,
+        baseline_len = baseline_text.chars().count(),
         audio_sec = audio_duration_s,
         silero_speech_sec = silero_speech_seconds(speech_ms_since_partial),
         trigger = ?trigger,
@@ -261,8 +323,8 @@ pub(crate) fn schedule_partial_pass(
     ) {
         Ok(handle) => {
             partial_telemetry.record_run(trigger);
-            *correction_expected_preview_rev = Some(preview_rev);
-            *correction_expected_text = Some(accumulated_text.to_string());
+            *correction_expected_boundary_rev = Some(boundary_rev);
+            *correction_expected_text = Some(baseline_text);
             *correction_suffix_snapshot = Some(suffix_snapshot.to_string());
             *correction_in_flight = Some(handle);
             true
@@ -276,5 +338,88 @@ pub(crate) fn schedule_partial_pass(
             });
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::merge_corrected_window;
+
+    #[test]
+    fn corrected_tail_splices_onto_untouched_head() {
+        // Hold-mode regression: 52s of speech, correction re-decodes only the
+        // trailing window — the head must survive verbatim.
+        let merged = merge_corrected_window(
+            "ala ma kota i psa oraz chomika",
+            "oraz chomika",
+            "oraz chomika w klatce",
+        );
+        assert_eq!(
+            merged.as_deref(),
+            Some("ala ma kota i psa oraz chomika w klatce")
+        );
+    }
+
+    #[test]
+    fn corrected_middle_keeps_previews_appended_while_refine_ran() {
+        // Previews kept landing after the audio take: the snapshot sits in the
+        // middle of the baseline, and the newer tail must survive.
+        let merged = merge_corrected_window(
+            "stara głowa środek okna nowy ogon",
+            "środek okna",
+            "środek OKNA poprawiony",
+        );
+        assert_eq!(
+            merged.as_deref(),
+            Some("stara głowa środek OKNA poprawiony nowy ogon")
+        );
+    }
+
+    #[test]
+    fn full_window_replacement_when_snapshot_equals_baseline() {
+        let merged = merge_corrected_window("cały tekst", "cały tekst", "cały tekst lepszy");
+        assert_eq!(merged.as_deref(), Some("cały tekst lepszy"));
+    }
+
+    #[test]
+    fn superset_window_supersedes_boundary_rewritten_baseline() {
+        // Final boundary replaced accumulated text with the commit-lane final;
+        // the refine window still covers partials + final, so it wins whole.
+        let merged = merge_corrected_window(
+            "finalny tekst",
+            "czesc pierwsza finalny tekst",
+            "część pierwsza finalny tekst",
+        );
+        assert_eq!(merged.as_deref(), Some("część pierwsza finalny tekst"));
+    }
+
+    #[test]
+    fn unanchored_snapshot_suppresses_instead_of_destroying() {
+        let merged = merge_corrected_window(
+            "zupełnie inny tekst po granicy",
+            "stare okno którego już nie ma",
+            "poprawka starego okna",
+        );
+        assert_eq!(merged, None);
+    }
+
+    #[test]
+    fn empty_snapshot_only_replaces_empty_baseline() {
+        assert_eq!(
+            merge_corrected_window("", "", "świeży tekst").as_deref(),
+            Some("świeży tekst")
+        );
+        assert_eq!(
+            merge_corrected_window("istniejący tekst", "", "cokolwiek"),
+            None
+        );
+    }
+
+    #[test]
+    fn repeated_phrase_anchors_to_last_occurrence() {
+        // rfind: the most recent occurrence is the live window, not an echo
+        // earlier in the session.
+        let merged = merge_corrected_window("tak tak tak", "tak", "tak jest");
+        assert_eq!(merged.as_deref(), Some("tak tak tak jest"));
     }
 }

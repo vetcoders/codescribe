@@ -26,6 +26,11 @@ if MODE == "malformed":
     print("{not-json", flush=True)
     sys.exit(0)
 
+# Simulate a server killed at exec time (e.g. macOS code-signature SIGKILL):
+# both pipe ends close before any JSON-RPC response is written.
+if MODE == "exit-before-initialize":
+    sys.exit(0)
+
 for raw_line in sys.stdin:
     if MODE == "silent":
         continue

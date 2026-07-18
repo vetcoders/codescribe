@@ -1,6 +1,6 @@
 # Settings & Configuration
 
-CodeScribe now has one native Settings window with five tabs:
+Codescribe now has one native Settings window with five tabs:
 
 1. **Transcription**
 2. **Modes & Shortcuts**
@@ -10,7 +10,7 @@ CodeScribe now has one native Settings window with five tabs:
 
 Configuration still lives in three layers:
 
-1. **GUI settings**: `~/Library/Application Support/CodeScribe/settings.json`
+1. **GUI settings**: `~/Library/Application Support/Codescribe/settings.json`
 2. **Secrets**: macOS Keychain (`com.vetcoders.codescribe`)
 3. **Power-user overrides**: `~/.codescribe/.env`
 
@@ -124,7 +124,7 @@ Use this tab when the app lies about permissions, focus, shortcuts, or runtime a
 If you need direct overrides outside the GUI:
 
 ```bash
-codescribe --config
+make config
 ```
 
 That opens or creates `~/.codescribe/.env`.
@@ -144,4 +144,4 @@ Common overrides:
 - **New agent context**: Chat Overlay → **New thread**
 - **Reset prompts**: Settings → **AI & Prompts** → **Reset**
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

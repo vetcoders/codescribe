@@ -103,12 +103,11 @@ fn parse_github_spec(spec: &str) -> Option<GitHubRef> {
         let git_ref = &after_at[..colon_pos];
         let path = &after_at[colon_pos + 1..];
         (repo, git_ref, path)
-    } else if let Some(colon_pos) = rest.find(':') {
+    } else {
+        let colon_pos = rest.find(':')?;
         let repo = &rest[..colon_pos];
         let path = &rest[colon_pos + 1..];
         (repo, "main", path)
-    } else {
-        return None;
     };
 
     if repo.is_empty() || path.is_empty() {
@@ -236,9 +235,9 @@ pub async fn fetch_github_blob(gh: &GitHubRef, token: Option<&str>) -> Result<(V
     Ok((buf, filename))
 }
 
-/// Load GitHub token from Keychain (if available).
+/// Load the current GitHub token from an explicit env override or Keychain.
 pub fn load_github_token() -> Option<String> {
-    crate::config::keychain::load_key("GITHUB_TOKEN")
+    crate::config::keychain::runtime_key("GITHUB_TOKEN")
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -251,12 +250,15 @@ mod tests {
 
     #[test]
     fn test_parse_github_url_blob() {
-        let gh = parse_github_ref("https://github.com/VetCoders/CodeScribe/blob/main/src/lib.rs");
+        let gh = parse_github_ref("https://github.com/vetcoders/codescribe/blob/main/src/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "VetCoders".into(),
-                repo: "CodeScribe".into(),
+                // A ref parser preserves the case present in the URL path;
+                // GitHub `contents`/raw paths are case-sensitive, so brand
+                // Title-casing here would break fetches of real repositories.
+                owner: "vetcoders".into(),
+                repo: "codescribe".into(),
                 git_ref: "main".into(),
                 path: "src/lib.rs".into(),
             })
@@ -281,12 +283,12 @@ mod tests {
 
     #[test]
     fn test_parse_github_spec_full() {
-        let gh = parse_github_ref("VetCoders/CodeScribe@fix/multiple-fixes:core/lib.rs");
+        let gh = parse_github_ref("Vetcoders/Codescribe@fix/multiple-fixes:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "VetCoders".into(),
-                repo: "CodeScribe".into(),
+                owner: "Vetcoders".into(),
+                repo: "Codescribe".into(),
                 git_ref: "fix/multiple-fixes".into(),
                 path: "core/lib.rs".into(),
             })
@@ -295,12 +297,12 @@ mod tests {
 
     #[test]
     fn test_parse_github_spec_default_ref() {
-        let gh = parse_github_ref("VetCoders/CodeScribe:core/lib.rs");
+        let gh = parse_github_ref("Vetcoders/Codescribe:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "VetCoders".into(),
-                repo: "CodeScribe".into(),
+                owner: "Vetcoders".into(),
+                repo: "Codescribe".into(),
                 git_ref: "main".into(),
                 path: "core/lib.rs".into(),
             })
@@ -338,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_percent_encode_param_safe() {
-        assert_eq!(percent_encode_param("VetCoders"), "VetCoders");
+        assert_eq!(percent_encode_param("Vetcoders"), "Vetcoders");
         assert_eq!(percent_encode_param("my-repo_v2"), "my-repo_v2");
     }
 

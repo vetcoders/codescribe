@@ -4,6 +4,7 @@
 //! Model: silero_vad.onnx v6 from https://github.com/snakers4/silero-vad
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use ndarray::ArrayD;
@@ -16,6 +17,42 @@ use crate::hf_cache;
 
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/embedded_vad_data.rs"));
+}
+
+/// Process-wide shared Silero ONNX session for the embedded model.
+///
+/// The Silero graph is **stateless** between calls — the recurrent state
+/// (`state`) and the 64-sample `context` live in each [`SileroVad`] instance
+/// and are passed in/out as tensors per inference. Only the compiled graph is
+/// heavy (ORT arena + graph optimizer scratch), and rebuilding it per recording
+/// leaked native memory (the session is created hundreds of times over a long
+/// run and ORT arenas do not return to the OS). We therefore build it **once**
+/// and share it behind a `Mutex` (ORT's `Session::run` takes `&mut self`).
+static EMBEDDED_SESSION: OnceLock<Arc<Mutex<Session>>> = OnceLock::new();
+
+/// Build (once) and return a handle to the shared embedded Silero session.
+///
+/// First call compiles the graph from the embedded bytes and caches it; every
+/// subsequent call clones the `Arc` — no reload, no extra native allocation.
+fn embedded_session() -> Result<Arc<Mutex<Session>>> {
+    // Fast path: already initialized.
+    if let Some(existing) = EMBEDDED_SESSION.get() {
+        return Ok(Arc::clone(existing));
+    }
+    // Build outside the OnceLock so a failure isn't cached as a poisoned slot.
+    info!(
+        "Loading Silero VAD model from embedded bytes ({} bytes) — shared once, reused",
+        embedded::MODEL.len()
+    );
+    let session = Session::builder()?
+        .with_intra_threads(1)?
+        .commit_from_memory(embedded::MODEL)
+        .context("Failed to load embedded Silero VAD ONNX model")?;
+    debug!("Silero VAD model loaded successfully (embedded, shared)");
+    // Race-safe: if another thread won the init, drop ours and use theirs.
+    let handle = Arc::new(Mutex::new(session));
+    let stored = EMBEDDED_SESSION.get_or_init(|| handle);
+    Ok(Arc::clone(stored))
 }
 
 /// Silero VAD sample rate (always 16kHz)
@@ -89,7 +126,11 @@ impl Resampler {
 ///  - Output names: `output`, `stateN` (v4: positional)
 ///  - Context window: 64 samples prepended to each 512-sample chunk
 pub struct SileroVad {
-    session: Session,
+    /// Shared, compiled Silero graph. The embedded production path hands out a
+    /// clone of one process-wide session (see [`embedded_session`]); the legacy
+    /// path-based loader builds its own. The graph is stateless across calls, so
+    /// sharing it behind a `Mutex` is safe — per-stream state lives below.
+    session: Arc<Mutex<Session>>,
     state: ArrayD<f32>,
     context: Vec<f32>,
     config: VadConfig,
@@ -110,7 +151,9 @@ impl SileroVad {
         debug!("Silero VAD model loaded successfully");
 
         Ok(Self {
-            session,
+            // Path-based loads are dev/test overrides with a caller-chosen file,
+            // so they are not cached — each gets its own session.
+            session: Arc::new(Mutex::new(session)),
             state: ArrayD::zeros(STATE_SHAPE.as_slice()),
             context: vec![0.0; CONTEXT_SIZE],
             config,
@@ -119,17 +162,13 @@ impl SileroVad {
     }
 
     /// Load Silero VAD model from embedded bytes (production path, zero I/O).
+    ///
+    /// The compiled ONNX graph is shared process-wide (built once, cloned
+    /// thereafter) — only the lightweight per-stream state is allocated here.
+    /// This is the hot path: it runs once per recording, so rebuilding the graph
+    /// every time previously leaked native ORT memory over long sessions.
     pub(crate) fn new_embedded(config: VadConfig) -> Result<Self> {
-        info!(
-            "Loading Silero VAD model from embedded bytes ({} bytes)",
-            embedded::MODEL.len()
-        );
-        let session = Session::builder()?
-            .with_intra_threads(1)?
-            .commit_from_memory(embedded::MODEL)
-            .context("Failed to load embedded Silero VAD ONNX model")?;
-
-        debug!("Silero VAD model loaded successfully (embedded)");
+        let session = embedded_session()?;
 
         Ok(Self {
             session,
@@ -200,31 +239,45 @@ impl SileroVad {
         let state_value = Value::from_array(state)?;
         let sr_value = Value::from_array(sr)?;
 
-        let outputs = self.session.run([
-            (&input_value).into(),
-            (&state_value).into(),
-            (&sr_value).into(),
-        ])?;
+        // Lock the shared session only for the inference call. The graph is
+        // stateless across runs, so serializing concurrent streams here is
+        // correct — each keeps its own `state`/`context`. Extract everything we
+        // need from `outputs` (which borrows the guard) before the guard drops.
+        let (prob, next_state) = {
+            let mut session = self
+                .session
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Silero session lock poisoned: {e}"))?;
+            let outputs = session.run([
+                (&input_value).into(),
+                (&state_value).into(),
+                (&sr_value).into(),
+            ])?;
 
-        // Read probability from "output" (safe access — no panic on missing key)
-        let prob = {
-            let output = outputs
-                .get("output")
-                .context("Silero model missing 'output' tensor")?;
-            let (_shape, data) = output.try_extract_tensor::<f32>()?;
-            data.first().copied().unwrap_or(0.0)
+            // Read probability from "output" (safe access — no panic on missing key)
+            let prob = {
+                let output = outputs
+                    .get("output")
+                    .context("Silero model missing 'output' tensor")?;
+                let (_shape, data) = output.try_extract_tensor::<f32>()?;
+                data.first().copied().unwrap_or(0.0)
+            };
+
+            // Read updated state from "stateN" (safe access — no panic on missing key)
+            let next_state = {
+                let state_output = outputs
+                    .get("stateN")
+                    .context("Silero model missing 'stateN' tensor")?;
+                let (shape, data) = state_output.try_extract_tensor::<f32>()?;
+                let shape_usize: Vec<usize> = shape.as_ref().iter().map(|&d| d as usize).collect();
+                ArrayD::from_shape_vec(shape_usize.as_slice(), data.to_vec()).ok()
+            };
+
+            (prob, next_state)
         };
 
-        // Read updated state from "stateN" (safe access — no panic on missing key)
-        {
-            let state_output = outputs
-                .get("stateN")
-                .context("Silero model missing 'stateN' tensor")?;
-            let (shape, data) = state_output.try_extract_tensor::<f32>()?;
-            let shape_usize: Vec<usize> = shape.as_ref().iter().map(|&d| d as usize).collect();
-            if let Ok(arr) = ArrayD::from_shape_vec(shape_usize.as_slice(), data.to_vec()) {
-                self.state = arr;
-            }
+        if let Some(arr) = next_state {
+            self.state = arr;
         }
 
         Ok(prob)
@@ -320,6 +373,47 @@ impl AccumulatingVad {
             }
         }
         self.last_prob
+    }
+
+    /// Like [`feed`](Self::feed), but returns the **maximum** speech probability
+    /// across all 512-sample chunks processed in THIS call instead of only the
+    /// last chunk's probability.
+    ///
+    /// Window-based extraction (`vad::extract_speech`) feeds ~500ms slabs and
+    /// keeps a slab when its probability clears the threshold. With `feed`'s
+    /// last-chunk semantics, a slab containing a fully-spoken word would be
+    /// dropped if it merely *ends* in the micro-pause after that word. Using the
+    /// per-call max makes the keep/drop decision reflect any speech inside the
+    /// window, not just its final 32ms.
+    ///
+    /// `last_prob` / [`probability`](Self::probability) are still updated to the
+    /// final chunk's value, so callers relying on the latest-probability
+    /// semantics (live indicators, turn detection) are unaffected.
+    pub fn feed_max(&mut self, samples: &[f32]) -> f32 {
+        let resampled = if let Some(ref mut r) = self.resampler {
+            r.resample(samples)
+        } else {
+            samples.to_vec()
+        };
+        self.accumulator.extend_from_slice(&resampled);
+
+        let mut max_prob = 0.0f32;
+        let mut processed_any = false;
+        while self.accumulator.len() >= CHUNK_SIZE {
+            let chunk: Vec<f32> = self.accumulator.drain(..CHUNK_SIZE).collect();
+            if let Ok(prob) = self.vad.predict(&chunk) {
+                self.last_prob = prob;
+                max_prob = max_prob.max(prob);
+                processed_any = true;
+            }
+        }
+        // No full chunk available this call (or all predicts errored): fall back
+        // to the latest known probability, matching `feed`'s sub-chunk behavior.
+        if processed_any {
+            max_prob
+        } else {
+            self.last_prob
+        }
     }
 
     /// Current speech probability without feeding new audio.
@@ -451,5 +545,38 @@ mod tests {
         // independent of any disk file at default_model_path().
         let vad = AccumulatingVad::new(16000);
         assert!(vad.is_ok(), "embedded VAD must load: {:?}", vad.err());
+    }
+
+    #[test]
+    fn embedded_session_is_shared_across_instances() {
+        // The core of the memory fix: two embedded VAD instances must point at
+        // ONE underlying ONNX session (graph built once, cloned thereafter),
+        // instead of each rebuilding it and leaking native ORT memory.
+        let a = SileroVad::new_embedded(VadConfig::default()).expect("first embedded VAD");
+        let b = SileroVad::new_embedded(VadConfig::default()).expect("second embedded VAD");
+        assert!(
+            Arc::ptr_eq(&a.session, &b.session),
+            "embedded Silero session must be shared, not rebuilt per instance"
+        );
+    }
+
+    #[test]
+    fn shared_session_keeps_per_instance_state() {
+        // Sharing the session must not couple per-stream recurrent state: each
+        // instance owns its `state`/`context`, so both predict correctly and a
+        // reset on one does not disturb the other.
+        let mut a = SileroVad::new_embedded(VadConfig::default()).expect("VAD a");
+        let mut b = SileroVad::new_embedded(VadConfig::default()).expect("VAD b");
+
+        let chunk = vec![0.0f32; CHUNK_SIZE];
+        let pa = a.predict(&chunk).expect("predict a");
+        let pb = b.predict(&chunk).expect("predict b");
+        assert!((0.0..=1.0).contains(&pa), "prob a in range: {pa}");
+        assert!((0.0..=1.0).contains(&pb), "prob b in range: {pb}");
+
+        // Reset one stream; the other must keep working on the shared session.
+        a.reset();
+        let pb2 = b.predict(&chunk).expect("predict b after a.reset");
+        assert!((0.0..=1.0).contains(&pb2), "prob b2 in range: {pb2}");
     }
 }

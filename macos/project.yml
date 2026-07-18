@@ -1,0 +1,99 @@
+name: Codescribe
+options:
+  bundleIdPrefix: com.vetcoders
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  # Phosphor Icons — MIT, first-party Swift package. The brand stroke layer
+  # behind the `CSIcon` wrapper (DesignSystem/CSIcon.swift). macOS 10.15+.
+  PhosphorSwift:
+    url: https://github.com/phosphor-icons/swift
+    from: 2.1.0
+  # HighlightSwift — MIT, highlight.js via JavaScriptCore. Powers syntax
+  # highlighting of finalized agent-chat code blocks. Returns AttributedString
+  # from an async actor (tokenize runs off the main thread); we feed it our own
+  # brand-token CSS via HighlightColors.custom (no bundled foreign theme).
+  # macOS 13+.
+  HighlightSwift:
+    url: https://github.com/appstefan/HighlightSwift
+    from: 1.1.0
+targets:
+  Codescribe:
+    type: application
+    platform: macOS
+    sources: [Codescribe]
+    dependencies:
+      - package: PhosphorSwift
+        product: PhosphorSwift
+      - package: HighlightSwift
+        product: HighlightSwift
+    info:
+      path: Codescribe/Info.plist
+      properties:
+        CFBundleDisplayName: Codescribe
+        CFBundleName: Codescribe
+        # Build provenance — expanded from build settings at xcodebuild time;
+        # scripts/build-app.sh passes the real values (Cargo version, git commit,
+        # commit count, UTC timestamp). settings.base holds bare-Xcode defaults.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CSBuildCommit: $(CS_BUILD_COMMIT)
+        CSBuiltAt: $(CS_BUILT_AT)
+        LSUIElement: true
+        NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
+        NSAppleEventsUsageDescription: "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
+        NSScreenCaptureUsageDescription: "Codescribe captures the screen when you ask the assistant to look at what is currently on screen."
+    settings:
+      base:
+        # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Build-provenance defaults for bare `xcodebuild` / Xcode runs; the
+        # verified pipeline (scripts/build-app.sh) overrides all four.
+        MARKETING_VERSION: 0.0.0-dev
+        CURRENT_PROJECT_VERSION: "0"
+        CS_BUILD_COMMIT: dev
+        CS_BUILT_AT: unknown
+        # Stable dev identity → own TCC/keychain slot across rebuilds.
+        PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Codescribe Dev"
+        ENABLE_HARDENED_RUNTIME: NO
+        SWIFT_VERSION: 5.0
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h
+        OTHER_LDFLAGS: "-lcodescribe_ffi"
+        # Runpath so the app finds the @rpath-id'd dylib both when run from Xcode
+        # (against target/debug) and when distributed (embedded in Frameworks by
+        # scripts/build-app.sh).
+        LD_RUNPATH_SEARCH_PATHS:
+          - "@executable_path/../Frameworks"
+          - "$(SRCROOT)/../target/debug"
+          - "$(SRCROOT)/../target/release"
+      configs:
+        # Links libcodescribe_ffi.dylib produced by `cargo build -p codescribe-ffi`.
+        # Per-config so a Release link never resolves against a stale debug dylib
+        # (and vice versa) — the base value used to hardcode target/debug, which
+        # made every Release build fail with `ld: library 'codescribe_ffi' not found`.
+        Debug:
+          LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
+        Release:
+          LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"
+  CodescribeTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [CodescribeTests]
+    dependencies:
+      - target: Codescribe
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+# Without an explicit scheme the test bundle is unreachable: xcodegen emits no
+# scheme for bundle.unit-test targets, and old-style `-target` builds cannot
+# resolve SPM dependencies. `xcodebuild test -scheme Codescribe` is the entry.
+schemes:
+  Codescribe:
+    build:
+      targets:
+        Codescribe: all
+    test:
+      targets:
+        - CodescribeTests

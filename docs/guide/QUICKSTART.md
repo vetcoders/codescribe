@@ -1,6 +1,6 @@
-# CodeScribe Quick Start Guide
+# Codescribe Quick Start Guide
 
-Get CodeScribe running in 5 minutes.
+Get codescribe running in 5 minutes.
 
 ---
 
@@ -10,20 +10,19 @@ Get CodeScribe running in 5 minutes.
 
 ```bash
 # Clone and enter directory
-git clone https://github.com/VetCoders/CodeScribe.git
-cd CodeScribe
+git clone https://github.com/vetcoders/codescribe.git
+cd codescribe
 
-# Build and install
-make install           # Binary to ~/.cargo/bin/codescribe; ensures runtime model/cache availability
-make bundle            # Create CodeScribe.app
-make install-app       # Copy to /Applications
+# Build and install the SwiftUI app
+make app PROFILE=release
+make install-app       # Build + copy Codescribe.app to /Applications
 ```
 
 ### Option B: From Release (Users)
 
-1. Download `CodeScribe_x.x.x.dmg` from [Releases](https://github.com/VetCoders/CodeScribe/releases)
+1. Download `Codescribe_x.x.x.dmg` from [Releases](https://github.com/vetcoders/codescribe/releases)
 2. Open DMG, drag to Applications
-3. Open CodeScribe from Applications
+3. Open Codescribe from Applications
 
 > If Releases is empty for the branch you are on, fall back to Option A and build locally.
 
@@ -39,23 +38,23 @@ On first launch, grant these permissions in **System Settings → Privacy & Secu
 | **Accessibility**    | Privacy → Accessibility    | Global hotkeys       |
 | **Input Monitoring** | Privacy → Input Monitoring | Detect modifier keys |
 
-> **Tip**: Restart CodeScribe after granting permissions.
+> **Tip**: Restart Codescribe after granting permissions.
 
 ---
 
 ## 3. Configure
 
-Recommended: configure CodeScribe in the **Settings** window.
+Recommended: configure Codescribe in the **Settings** window.
 
 ```bash
 # Menu bar icon → Settings
-# or: codescribe --config (power-user overrides)
+# or: edit ~/.codescribe/.env (power-user overrides)
 ```
 
 ### Essential Settings
 
 - **Audio & Input**
-  - Set `Whisper language` (no auto-detect; pick the language you speak)
+  - Set `Whisper language` (`Auto-detect / multilingual` is the default; pick Polish or English only to force a language)
   - Toggle **AI Formatting** for Dictation (optional)
 - **Modes & Shortcuts**
   - Dictation: hold a modifier (default: `Fn/Globe`)
@@ -96,7 +95,7 @@ Look at the menu bar icon:
 
 ```bash
 # Check version
-codescribe --version
+make version
 
 # Check status
 make status
@@ -112,13 +111,13 @@ make logs
 ### Hotkeys don't work
 
 1. Check all three permissions are granted
-2. Restart CodeScribe
-3. Try `codescribe -v` for verbose logging
+2. Restart Codescribe
+3. Check `make logs` for recent app output
 
 ### No transcription
 
 1. Check microphone permission
-2. Verify `WHISPER_LANGUAGE` is set (not empty!)
+2. Leave `WHISPER_LANGUAGE` unset or set it to `auto` unless you need to force `pl` or `en`
 3. Check logs: `make logs`
 
 ### Error icon appears
@@ -138,4 +137,4 @@ tail -50 /tmp/codescribe.log
 
 ---
 
-_Copyright © 2024–2026 VetCoders_
+_Copyright © 2024–2026 Vetcoders_

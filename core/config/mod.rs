@@ -1,4 +1,4 @@
-//! Configuration module for CodeScribe Rust app.
+//! Configuration module for Codescribe Rust app.
 //!
 //! Manages persistent settings with a tiered truth model:
 //! 1. Code defaults define zero-state runtime behaviour
@@ -6,7 +6,7 @@
 //! 3. `.env` is optional and only used for env-managed / developer overrides
 //!
 //! Runtime/user settings are stored under:
-//! - `~/Library/Application Support/CodeScribe/settings.json` on macOS
+//! - `~/Library/Application Support/Codescribe/settings.json` on macOS
 //! - `~/.codescribe/.env` only when an optional power-user env file exists
 //!
 //! ## Module Structure
@@ -36,14 +36,17 @@ pub use types::{
     Config, ModeBinding, OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
-pub use settings::UserSettings;
+pub use settings::{FormattingPolicy, UserSettings};
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
 pub use prompts::{
-    DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, get_assistive_prompt,
-    get_assistive_prompt_path, get_formatting_prompt, get_formatting_prompt_path, open_prompt_file,
-    open_prompts_folder, reset_to_defaults,
+    DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, DEFAULT_MAX_FORMATTING_PROMPT,
+    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptSource, PromptWriteReason,
+    get_assistive_prompt, get_assistive_prompt_path, get_formatting_prompt,
+    get_formatting_prompt_for_policy, get_formatting_prompt_path,
+    get_formatting_prompt_path_for_policy, open_prompt_file, open_prompts_folder, prompt_snapshot,
+    reset_to_defaults, restore_prompt_to_default, write_prompt, write_prompt_bytes,
 };
 
 #[cfg(test)]
@@ -54,7 +57,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.whisper_language, Language::Polish); // Polish is default
+        assert_eq!(config.whisper_language, Language::Auto);
         assert_eq!(config.ai_max_tokens, 0); // 0 = no limit (API decides)
         assert!(!config.ai_formatting_enabled);
         assert!(!config.transcript_tagging_enabled);
@@ -111,10 +114,11 @@ mod tests {
 
     #[test]
     fn test_language_parsing() {
+        assert_eq!("auto".parse::<Language>(), Ok(Language::Auto));
+        assert_eq!("detect".parse::<Language>(), Ok(Language::Auto));
+        assert_eq!("multilingual".parse::<Language>(), Ok(Language::Auto));
         assert_eq!("pl".parse::<Language>(), Ok(Language::Polish));
         assert_eq!("en".parse::<Language>(), Ok(Language::English));
-        // "auto" maps to Polish (legacy compatibility)
-        assert_eq!("auto".parse::<Language>(), Ok(Language::Polish));
         assert!("invalid".parse::<Language>().is_err());
     }
 

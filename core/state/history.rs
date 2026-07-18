@@ -1,4 +1,4 @@
-//! Simple transcript history manager for CodeScribe
+//! Simple transcript history manager for Codescribe
 //!
 //! Saves transcripts and audio to ~/.codescribe/transcriptions/YYYY-MM-DD/
 //! Files are paired: HHMMSS_slug_kind.m4a + HHMMSS_slug_kind.txt with matching timestamps.
@@ -428,6 +428,24 @@ pub fn recent_entries(limit: usize) -> Vec<HistoryEntry> {
         let b_time = fs::metadata(b).and_then(|m| m.modified()).ok();
         b_time.cmp(&a_time)
     });
+
+    // Collapse same-save families: a raw draft and its post-processed final can
+    // land within the same second as `base.txt` + `base_1.txt` (see the collision
+    // suffix in save_entry_with_timestamp_and_slug). History surfaces one row per
+    // dictation — newest file of each (dir, base, kind) family wins.
+    let mut seen_families: HashSet<(PathBuf, String, &'static str)> = HashSet::new();
+    let files: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|path| {
+            let stem = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            let (kind, base, _) = split_kind_and_index(stem, TranscriptKind::Raw);
+            let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            seen_families.insert((dir, base, kind.suffix()))
+        })
+        .collect();
 
     // Take the requested limit and create entries
     for path in files.into_iter().take(limit) {
@@ -908,6 +926,63 @@ mod tests {
 
         // Clean up
         let _ = fs::remove_file(&entry.path);
+    }
+
+    #[test]
+    #[serial]
+    fn test_recent_entries_collapse_same_second_save_family() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+
+        // Raw draft and its post-processed final land in the same second with
+        // the same slug → the second save collides into `…_raw_1.txt`.
+        let now = Local::now();
+        let slug_hint = Some("event zwykly nie");
+        let draft = save_entry_with_timestamp_and_slug(
+            "event zwykły nie może",
+            Some(now),
+            TranscriptKind::Raw,
+            slug_hint,
+        );
+        let finalized = save_entry_with_timestamp_and_slug(
+            "Event zwykły nie może być agentowym.",
+            Some(now),
+            TranscriptKind::Raw,
+            slug_hint,
+        );
+        assert_ne!(draft.path, finalized.path, "collision suffix expected");
+
+        // A different kind at the same second is a separate history row.
+        let interpretation = save_entry_with_timestamp_and_slug(
+            "Odpowiedź asystenta.",
+            Some(now),
+            TranscriptKind::AssistantInterpretation,
+            slug_hint,
+        );
+
+        let entries = recent_entries(10);
+        let raw_rows: Vec<_> = entries
+            .iter()
+            .filter(|e| e.kind == TranscriptKind::Raw)
+            .collect();
+        assert_eq!(
+            raw_rows.len(),
+            1,
+            "same-family raw draft + final must collapse to one row: {:?}",
+            entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            raw_rows[0].path, finalized.path,
+            "the newest (post-processed) file wins the family"
+        );
+        assert!(
+            entries.iter().any(|e| e.path == interpretation.path),
+            "different kind survives as its own row"
+        );
+
+        for path in [&draft.path, &finalized.path, &interpretation.path] {
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 #!/bin/bash
-# CodeScribe Embedder Download Script
+# Codescribe Embedder Download Script
 # Downloads paraphrase-multilingual-MiniLM-L12-v2 (or override) from HuggingFace
 #
 # Prerequisites:
@@ -9,7 +9,7 @@
 #   HF_TOKEN=hf_xxx ./scripts/download-embedder.sh
 #   CODESCRIBE_EMBEDDER_REPO=your/repo ./scripts/download-embedder.sh
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ MODEL_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-multili
 MODEL_NAME="${MODEL_REPO##*/}"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe Embedder Download"
+echo "  Codescribe Embedder Download"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Model:  ${MODEL_NAME}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
@@ -36,16 +36,24 @@ elif "$HF_BIN" auth whoami &>/dev/null; then
     echo "▶ Using cached HuggingFace credentials"
 else
     echo "⚠ No HuggingFace authentication found"
-    echo ""
-    echo "  If the model is gated, you need to authenticate:"
-    echo "    1. Create token at https://huggingface.co/settings/tokens"
-    echo "    2. Run: hf auth login"
-    echo "    3. Or set: export HF_TOKEN=hf_xxx"
-    echo ""
-    read -p "  Continue without auth? (y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
+    if [[ "${CI:-}" == "true" || ! -t 0 ]]; then
+        # Non-interactive (CI or no TTY): never block on a prompt.
+        # The default embedder is public and downloads without auth; a gated
+        # model needs HF_TOKEN, in which case the download below fails clearly.
+        echo "  Non-interactive mode: proceeding without auth."
+        echo "  If the model is gated, set HF_TOKEN=hf_xxx and re-run."
+    else
+        echo ""
+        echo "  If the model is gated, you need to authenticate:"
+        echo "    1. Create token at https://huggingface.co/settings/tokens"
+        echo "    2. Run: hf auth login"
+        echo "    3. Or set: export HF_TOKEN=hf_xxx"
+        echo ""
+        read -p "  Continue without auth? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
     fi
 fi
 
@@ -63,5 +71,5 @@ echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Location: HF cache (use: hf cache ls)"
 echo ""
-echo "  Embedder ready for use with CodeScribe."
+echo "  Embedder ready for use with Codescribe."
 echo "───────────────────────────────────────────────────────────"

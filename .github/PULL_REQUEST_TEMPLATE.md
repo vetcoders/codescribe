@@ -4,7 +4,7 @@ What changed, and why?
 
 ## User Impact
 
-What does this improve or prevent for a real CodeScribe user?
+What does this improve or prevent for a real codescribe user?
 
 ## Runtime Impact
 

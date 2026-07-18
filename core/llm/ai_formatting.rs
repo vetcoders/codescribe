@@ -21,12 +21,16 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::env;
-use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
+use crate::config::{Config, FormattingPolicy};
+
+use super::lane_truth;
+use super::provider::{LlmMode, ProviderKind, capability_policy};
 use super::responses_streaming_manager::{ResponsesStreamingManager, StreamCallbacks};
 
 /// HTTP client for AI providers
@@ -103,6 +107,8 @@ const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_TCP_KEEPALIVE_MS: u64 = 30_000;
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+const DEFAULT_ANTHROPIC_MAX_TOKENS: u32 = 8192;
 
 #[derive(Debug, Clone, Copy)]
 struct RetryPolicy {
@@ -159,6 +165,9 @@ fn should_retry_provider_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     !(message.contains("No text content in SSE stream")
         || message.contains("No text content in response")
+        || message.contains("No text content in Anthropic response")
+        || message.contains("Anthropic refusal stop")
+        || message.contains("Anthropic response truncated")
         || message.contains("SSE error internal_error")
         || message.contains("SSE error bad_request"))
 }
@@ -196,31 +205,6 @@ fn get_client() -> &'static Client {
     })
 }
 
-/// Read env var by priority list, ensure non-empty, return detailed error
-fn get_env_non_empty(candidates: &[&str], what: &str) -> Result<String> {
-    for key in candidates {
-        if let Ok(value) = env::var(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
-        }
-    }
-
-    match candidates {
-        [single] => anyhow::bail!("{} is required. Set {}.", what, single),
-        [first, second, ..] => {
-            anyhow::bail!(
-                "{} is required. Set {} (or fallback {}).",
-                what,
-                first,
-                second
-            )
-        }
-        [] => anyhow::bail!("{} is required.", what),
-    }
-}
-
 // ============================================================================
 // LLM Configuration - Separate providers for Formatting vs Assistive
 // ============================================================================
@@ -232,43 +216,35 @@ fn get_env_non_empty(candidates: &[&str], what: &str) -> Result<String> {
 //
 // NO legacy variables. Clean contract only.
 
-/// Helper: require mode-specific key (no fallback to shared keys)
-fn get_mode_config(specific_key: &str, what: &str) -> Result<String> {
-    if let Ok(val) = env::var(specific_key) {
-        let val = val.trim();
-        if !val.is_empty() {
-            return Ok(val.to_string());
-        }
-    }
-    get_env_non_empty(&[specific_key], what)
-}
-
 // ---- FORMATTING mode config ----
 
 fn get_formatting_endpoint() -> Result<String> {
-    get_mode_config("LLM_FORMATTING_ENDPOINT", "LLM endpoint (formatting)")
+    Ok(lane_truth::endpoint(LlmMode::Formatting, &Config::load()))
 }
 
 fn get_formatting_model() -> Result<String> {
-    get_mode_config("LLM_FORMATTING_MODEL", "LLM model (formatting)")
+    Ok(lane_truth::formatting_identity(&Config::load()).1)
 }
 
 fn get_formatting_api_key() -> Result<String> {
-    get_mode_config("LLM_FORMATTING_API_KEY", "LLM API key (formatting)")
+    lane_truth::secret("LLM_FORMATTING_API_KEY")
+        .context("LLM API key (formatting) is required. Set LLM_FORMATTING_API_KEY.")
 }
 
 // ---- ASSISTIVE mode config ----
 
 fn get_assistive_endpoint() -> Result<String> {
-    get_mode_config("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")
+    Ok(lane_truth::assistive_snapshot(&Config::load()).endpoint)
 }
 
 fn get_assistive_model() -> Result<String> {
-    get_mode_config("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")
+    Ok(lane_truth::assistive_snapshot(&Config::load()).model)
 }
 
-fn get_assistive_api_key() -> Result<String> {
-    get_mode_config("LLM_ASSISTIVE_API_KEY", "LLM API key (assistive)")
+fn get_anthropic_api_key() -> Result<String> {
+    let account = ProviderKind::AnthropicMessages.api_key_env_key();
+    lane_truth::secret(account)
+        .with_context(|| format!("Anthropic API key is required. Set {account}."))
 }
 
 /// Get temperature from env var. Returns None if empty/unset (skip parameter).
@@ -310,14 +286,19 @@ enum EndpointFormat {
     ResponsesApi,
     /// Ollama native chat (/api/chat) — legacy compatibility
     OllamaChat,
+    /// Anthropic Messages API (/v1/messages)
+    AnthropicMessages,
 }
 
-/// Detect format from endpoint path. No domain checks, no guessing.
-fn detect_format(endpoint: &str) -> EndpointFormat {
-    if endpoint.contains("/api/chat") {
-        EndpointFormat::OllamaChat
-    } else {
-        EndpointFormat::ResponsesApi
+/// Resolve request format from explicit provider, preserving path-based Ollama
+/// compatibility only for the protected OpenAI/default lane.
+fn detect_format(endpoint: &str, provider: ProviderKind) -> EndpointFormat {
+    match provider {
+        ProviderKind::AnthropicMessages => EndpointFormat::AnthropicMessages,
+        ProviderKind::OpenAiResponses if endpoint.contains("/api/chat") => {
+            EndpointFormat::OllamaChat
+        }
+        ProviderKind::OpenAiResponses => EndpointFormat::ResponsesApi,
     }
 }
 
@@ -448,92 +429,58 @@ enum InputContent {
     Image { image_url: String },
 }
 
-fn image_mime_from_path(path: &std::path::Path) -> Option<&'static str> {
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "webp" => Some("image/webp"),
-        "gif" => Some("image/gif"),
-        "bmp" => Some("image/bmp"),
-        "tif" | "tiff" => Some("image/tiff"),
-        _ => None,
-    }
+/// Anthropic Messages request format (/v1/messages)
+#[derive(Debug, Serialize)]
+struct AnthropicMessagesRequest {
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    messages: Vec<AnthropicMessage>,
+    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
-fn strip_image_attachments(user_message: &str) -> (String, Vec<PathBuf>) {
-    let mut out_lines: Vec<String> = Vec::new();
-    let mut image_paths: Vec<PathBuf> = Vec::new();
-    let mut in_block = false;
-
-    for line in user_message.lines() {
-        let trimmed = line.trim();
-
-        if trimmed == "ATTACHMENTS (image paths)" {
-            // Drop a preceding separator if present to avoid leaving a dangling "---".
-            if out_lines
-                .last()
-                .is_some_and(|l| l.trim() == "---" || l.trim() == "—")
-            {
-                out_lines.pop();
-            }
-            in_block = true;
-            continue;
-        }
-
-        if in_block {
-            if trimmed.is_empty() {
-                in_block = false;
-                continue;
-            }
-            if let Some(rest) = trimmed.strip_prefix("- ") {
-                let p = rest.trim();
-                if !p.is_empty() {
-                    image_paths.push(PathBuf::from(p));
-                }
-                continue;
-            }
-            // Unexpected line → end block, keep the line.
-            in_block = false;
-            out_lines.push(line.to_string());
-            continue;
-        }
-
-        out_lines.push(line.to_string());
-    }
-
-    (out_lines.join("\n"), image_paths)
+#[derive(Debug, Serialize)]
+struct AnthropicMessage {
+    role: &'static str,
+    content: Vec<AnthropicContentBlock>,
 }
 
-fn encode_image_as_data_url(path: &PathBuf) -> Option<String> {
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum AnthropicContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: AnthropicImageSource },
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicImageSource {
+    #[serde(rename = "type")]
+    source_type: &'static str,
+    media_type: String,
+    data: String,
+}
+
+fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
-    const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024; // 8MB per image
-
-    let mime = image_mime_from_path(path)?;
-
-    let meta = std::fs::metadata(path).ok()?;
-    if meta.len() > MAX_IMAGE_BYTES {
-        warn!(
-            "Skipping image attachment (too large, {} bytes): {}",
-            meta.len(),
-            path.display()
-        );
-        return None;
-    }
-
-    let bytes = std::fs::read(path).ok()?;
+    // Marker parsing, MIME mapping and the size cap are shared with the agent
+    // send path via `crate::attachment` so both routes honor one contract.
+    let (bytes, mime) =
+        crate::attachment::load_image_for_vision(path, crate::attachment::MAX_VISION_IMAGE_BYTES)?;
     let b64 = BASE64.encode(bytes);
     Some(format!("data:{mime};base64,{b64}"))
 }
 
 fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
-    const MAX_IMAGES: usize = 4;
+    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    const MAX_IMAGES: usize = 16;
 
-    let (mut cleaned, mut image_paths) = strip_image_attachments(user_message);
+    let (mut cleaned, mut image_paths) =
+        crate::attachment::parse_image_attachment_block(user_message);
     if image_paths.len() > MAX_IMAGES {
         warn!(
             "Too many image attachments ({}); keeping first {}",
@@ -565,6 +512,64 @@ fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
     content
 }
 
+fn build_anthropic_user_content(user_message: &str) -> Vec<AnthropicContentBlock> {
+    // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    const MAX_IMAGES: usize = 16;
+
+    let (mut cleaned, mut image_paths) =
+        crate::attachment::parse_image_attachment_block(user_message);
+    if image_paths.len() > MAX_IMAGES {
+        warn!(
+            "Too many image attachments ({}); keeping first {}",
+            image_paths.len(),
+            MAX_IMAGES
+        );
+        image_paths.truncate(MAX_IMAGES);
+    }
+
+    if !image_paths.is_empty() {
+        let names = image_paths
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        cleaned.push_str("\n\n[Attached images: ");
+        cleaned.push_str(&names);
+        cleaned.push_str("]\n");
+    }
+
+    let mut content = Vec::new();
+    if !cleaned.is_empty() || image_paths.is_empty() {
+        content.push(AnthropicContentBlock::Text { text: cleaned });
+    }
+
+    for p in image_paths {
+        let Some(url) = encode_image_as_data_url(&p) else {
+            warn!("Failed to encode image attachment: {}", p.display());
+            continue;
+        };
+        let Some(source) = anthropic_image_source_from_data_url(&url) else {
+            warn!(
+                "Failed to convert image attachment for Anthropic: {}",
+                p.display()
+            );
+            continue;
+        };
+        content.push(AnthropicContentBlock::Image { source });
+    }
+    content
+}
+
+fn anthropic_image_source_from_data_url(url: &str) -> Option<AnthropicImageSource> {
+    let payload = url.strip_prefix("data:")?;
+    let (media_type, data) = payload.split_once(";base64,")?;
+    Some(AnthropicImageSource {
+        source_type: "base64",
+        media_type: media_type.to_string(),
+        data: data.to_string(),
+    })
+}
+
 /// Responses API response format
 #[derive(Debug, Deserialize)]
 struct ResponsesResponse {
@@ -588,6 +593,27 @@ struct ContentPart {
     text: Option<String>,
     #[serde(default)]
     summary: Option<String>,
+}
+
+/// Anthropic Messages response format
+#[derive(Debug, Deserialize)]
+struct AnthropicMessagesResponse {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    content: Vec<AnthropicResponseContent>,
+    #[serde(default)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    stop_details: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicResponseContent {
+    #[serde(rename = "type")]
+    part_type: String,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// Legacy chat message (for Ollama compatibility)
@@ -644,6 +670,32 @@ fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
             Some(reasoning_text)
         },
     }
+}
+
+fn extract_anthropic_text(response: &AnthropicMessagesResponse) -> String {
+    response
+        .content
+        .iter()
+        .filter(|part| part.part_type == "text")
+        .filter_map(|part| part.text.as_deref())
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string()
+}
+
+fn anthropic_response_id(response: &AnthropicMessagesResponse) -> &str {
+    response.id.as_deref().unwrap_or("unknown")
+}
+
+fn anthropic_stop_detail(response: &AnthropicMessagesResponse) -> String {
+    response
+        .stop_details
+        .as_ref()
+        .map(Value::to_string)
+        .or_else(|| response.stop_reason.clone())
+        .unwrap_or_else(|| "unknown stop reason".to_string())
 }
 
 // No token limits - let the API decide. Tokens are cheap, lost notes are not.
@@ -848,6 +900,59 @@ pub async fn format_text_with_status_channels(
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
 ) -> AiFormatResult {
+    let policy = if assistive {
+        FormattingPolicy::Correction
+    } else {
+        match Config::formatting_policy() {
+            Ok(policy) => policy,
+            Err(error) => {
+                warn!("Rejected invalid formatting policy: {error}");
+                return AiFormatResult {
+                    text: text.to_string(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Failed,
+                };
+            }
+        }
+    };
+    format_text_with_status_channels_for_policy(
+        text,
+        language,
+        assistive,
+        policy,
+        on_assistant_delta,
+        on_reasoning_delta,
+    )
+    .await
+}
+
+/// Format through an explicitly selected normalized policy. This is the seam
+/// used by deliberate one-shot formatting actions; it never changes persisted
+/// Auto Format state.
+pub async fn format_text_with_status_for_policy(
+    text: &str,
+    language: Option<&str>,
+    policy: FormattingPolicy,
+) -> AiFormatResult {
+    format_text_with_status_channels_for_policy(text, language, false, policy, None, None).await
+}
+
+async fn format_text_with_status_channels_for_policy(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+    policy: FormattingPolicy,
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
+) -> AiFormatResult {
+    if !assistive && policy == FormattingPolicy::Off {
+        return AiFormatResult {
+            text: text.to_string(),
+            reasoning_text: None,
+            status: AiFormatStatus::Skipped,
+        };
+    }
+
     // Skip short non-assistive texts. The controller quality gate starts at 24 chars,
     // so formatting anything shorter would create an unguarded rewrite zone.
     if should_skip_ai_formatting(text, assistive) {
@@ -891,13 +996,15 @@ pub async fn format_text_with_status_channels(
                 let model = get_assistive_model().unwrap_or_else(|_| "unknown".into());
                 info!("Using assistive mode (model: {})", model);
             }
-            crate::config::prompts::get_assistive_prompt()
+            formatting_provider_system_prompt(true, policy)
+                .expect("assistive mode always owns a provider prompt")
         } else {
             if attempt == 0 {
                 let model = get_formatting_model().unwrap_or_else(|_| "unknown".into());
                 info!("Using formatting mode (model: {})", model);
             }
-            crate::config::prompts::get_formatting_prompt()
+            formatting_provider_system_prompt(false, policy)
+                .expect("Off policy bypasses before provider prompt selection")
         };
 
         // If retrying, wait and strengthen instructions
@@ -921,17 +1028,26 @@ pub async fn format_text_with_status_channels(
             cleaned.clone()
         };
 
-        // Route based on endpoint path — no domain heuristics
+        // Route from explicit provider selection, retaining endpoint-path Ollama
+        // compatibility only for the default OpenAI Responses lane.
         let endpoint = if assistive {
             get_assistive_endpoint().unwrap_or_default()
         } else {
             get_formatting_endpoint().unwrap_or_default()
         };
-        let endpoint_format = detect_format(&endpoint);
+        let provider = lane_truth::provider(if assistive {
+            LlmMode::Assistive
+        } else {
+            LlmMode::Formatting
+        });
+        let endpoint_format = detect_format(&endpoint, provider);
         // Streaming is always enabled. Callbacks only decide whether UI receives live chunks.
         let streaming_enabled = use_streaming();
-        let route = match (endpoint_format, streaming_enabled) {
+        let should_stream =
+            streaming_enabled && matches!(endpoint_format, EndpointFormat::ResponsesApi);
+        let route = match (endpoint_format, should_stream) {
             (EndpointFormat::OllamaChat, _) => "ollama",
+            (EndpointFormat::AnthropicMessages, _) => "anthropic-messages-json",
             (EndpointFormat::ResponsesApi, true) => "responses-sse",
             (EndpointFormat::ResponsesApi, false) => "responses-json",
         };
@@ -951,13 +1067,13 @@ pub async fn format_text_with_status_channels(
             inter_chunk_timeout: retry_policy.inter_chunk_timeout,
         };
         let mut retryable_error = true;
-        let result_opt = if streaming_enabled && endpoint_format != EndpointFormat::OllamaChat {
+        let result_opt = if should_stream {
             match call_provider_once(
                 endpoint_format,
                 &user_message,
                 &system_prompt,
                 assistive,
-                streaming_enabled,
+                should_stream,
                 stream_context.clone(),
             )
             .await
@@ -988,7 +1104,7 @@ pub async fn format_text_with_status_channels(
                     &user_message,
                     &system_prompt,
                     assistive,
-                    streaming_enabled,
+                    should_stream,
                     stream_context.clone(),
                 ),
             )
@@ -1020,7 +1136,13 @@ pub async fn format_text_with_status_channels(
         };
 
         if let Some(output) = result_opt {
-            let formatted = output.assistant_text;
+            // Deterministic protected-vocabulary pass AFTER the LLM. The model can
+            // silently corrupt proper nouns ("Loctree" -> "Luxury") or drop
+            // operator/tool/agent names while rewriting prose; re-applying the
+            // lexicon restores any registered mispronunciation to its canonical
+            // form. Safe + idempotent: it only rewrites known variants, never
+            // ordinary language. Applies to both formatting and assistive modes.
+            let formatted = crate::stream_postprocess::apply_lexicon(&output.assistant_text);
             let reasoning_text = output.reasoning_text;
 
             // Detect AI refusal responses (OpenAI content policy)
@@ -1114,6 +1236,20 @@ pub async fn format_text_with_status_channels(
     }
 }
 
+/// Exact system prompt handed to the provider for a normalized request.
+/// Exposed so delivery tests can observe the provider seam rather than merely
+/// asserting enum-to-enum mappings.
+pub fn formatting_provider_system_prompt(
+    assistive: bool,
+    policy: FormattingPolicy,
+) -> Option<String> {
+    if assistive {
+        Some(crate::config::prompts::get_assistive_prompt())
+    } else {
+        crate::config::prompts::get_formatting_prompt_for_policy(policy)
+    }
+}
+
 async fn call_provider_once(
     endpoint_format: EndpointFormat,
     user_message: &str,
@@ -1124,6 +1260,9 @@ async fn call_provider_once(
 ) -> Result<ProviderOutput> {
     match endpoint_format {
         EndpointFormat::OllamaChat => call_ollama(user_message, system_prompt, assistive).await,
+        EndpointFormat::AnthropicMessages => {
+            call_anthropic_messages(user_message, system_prompt, assistive).await
+        }
         EndpointFormat::ResponsesApi => {
             if streaming_enabled {
                 call_llm_endpoint_streaming(user_message, system_prompt, assistive, stream_context)
@@ -1133,6 +1272,128 @@ async fn call_provider_once(
             }
         }
     }
+}
+
+async fn call_anthropic_messages(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+) -> Result<ProviderOutput> {
+    let mode = if assistive {
+        LlmMode::Assistive
+    } else {
+        LlmMode::Formatting
+    };
+    let configured_endpoint = if assistive {
+        get_assistive_endpoint()?
+    } else {
+        get_formatting_endpoint()?
+    };
+    let model =
+        lane_truth::model_for_provider(mode, ProviderKind::AnthropicMessages, &Config::load());
+    let api_key = get_anthropic_api_key()?;
+
+    call_anthropic_messages_resolved(
+        user_message,
+        system_prompt,
+        assistive,
+        &configured_endpoint,
+        &model,
+        &api_key,
+    )
+    .await
+}
+
+async fn call_anthropic_messages_resolved(
+    user_message: &str,
+    system_prompt: &str,
+    assistive: bool,
+    configured_endpoint: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<ProviderOutput> {
+    let endpoint = lane_truth::normalize_anthropic_messages_endpoint(configured_endpoint);
+    let policy = capability_policy(ProviderKind::AnthropicMessages, model);
+    let temperature = policy.sanitize_temperature(get_temperature(assistive));
+    let max_tokens = env_u32(
+        "CODESCRIBE_ANTHROPIC_MAX_TOKENS",
+        DEFAULT_ANTHROPIC_MAX_TOKENS,
+    );
+
+    trace!(
+        "Anthropic Messages request: endpoint={}, model={}, mode={}, temp={:?}, max_tokens={}",
+        endpoint,
+        model,
+        if assistive { "assistive" } else { "formatting" },
+        temperature,
+        max_tokens
+    );
+
+    let request = AnthropicMessagesRequest {
+        model: model.to_string(),
+        system: Some(system_prompt.to_string()).filter(|value| !value.trim().is_empty()),
+        messages: vec![AnthropicMessage {
+            role: "user",
+            content: build_anthropic_user_content(user_message),
+        }],
+        max_tokens,
+        temperature,
+    };
+
+    let response = get_client()
+        .post(&endpoint)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Anthropic request failed")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Anthropic HTTP {} - {}", status, body);
+    }
+
+    let anthropic_response: AnthropicMessagesResponse = response
+        .json()
+        .await
+        .context("Failed to parse Anthropic response")?;
+
+    if policy.refusal_stop_reason
+        && matches!(anthropic_response.stop_reason.as_deref(), Some("refusal"))
+    {
+        anyhow::bail!(
+            "Anthropic refusal stop (id: {}): {}",
+            anthropic_response_id(&anthropic_response),
+            anthropic_stop_detail(&anthropic_response)
+        );
+    }
+
+    let assistant_text = extract_anthropic_text(&anthropic_response);
+    if assistant_text.is_empty() {
+        anyhow::bail!(
+            "No text content in Anthropic response (id: {}, stop_reason: {})",
+            anthropic_response_id(&anthropic_response),
+            anthropic_stop_detail(&anthropic_response)
+        );
+    }
+
+    if matches!(
+        anthropic_response.stop_reason.as_deref(),
+        Some("max_tokens")
+    ) {
+        anyhow::bail!(
+            "Anthropic response truncated by max_tokens (id: {})",
+            anthropic_response_id(&anthropic_response)
+        );
+    }
+
+    Ok(ProviderOutput {
+        assistant_text,
+        reasoning_text: None,
+    })
 }
 
 /// Call LLM endpoint using /v1/responses API
@@ -1146,11 +1407,12 @@ async fn call_llm_endpoint(
 ) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
     let (endpoint, model, api_key) = if assistive {
-        (
-            get_assistive_endpoint()?,
-            get_assistive_model()?,
-            get_assistive_api_key()?,
-        )
+        let lane = lane_truth::assistive_snapshot(&Config::load());
+        let account = lane.provider.api_key_env_key();
+        let api_key = lane
+            .api_key
+            .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
+        (lane.endpoint, lane.model, api_key)
     } else {
         (
             get_formatting_endpoint()?,
@@ -1250,11 +1512,12 @@ async fn call_llm_endpoint_streaming(
 ) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
     let (endpoint, model, api_key) = if assistive {
-        (
-            get_assistive_endpoint()?,
-            get_assistive_model()?,
-            get_assistive_api_key()?,
-        )
+        let lane = lane_truth::assistive_snapshot(&Config::load());
+        let account = lane.provider.api_key_env_key();
+        let api_key = lane
+            .api_key
+            .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
+        (lane.endpoint, lane.model, api_key)
     } else {
         (
             get_formatting_endpoint()?,
@@ -1448,9 +1711,16 @@ pub fn has_api_key() -> bool {
         return false;
     }
 
+    let provider = lane_truth::provider(LlmMode::Formatting);
+    let endpoint_format = detect_format(&endpoint, provider);
+
     // OllamaChat doesn't need API key
-    if matches!(detect_format(&endpoint), EndpointFormat::OllamaChat) {
+    if matches!(endpoint_format, EndpointFormat::OllamaChat) {
         return true;
+    }
+
+    if matches!(endpoint_format, EndpointFormat::AnthropicMessages) {
+        return get_anthropic_api_key().is_ok();
     }
 
     // Responses API requires API key
@@ -1465,6 +1735,63 @@ pub fn is_formatting_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mockito::Matcher;
+    use serde_json::json;
+    use serial_test::serial;
+
+    const ANTHROPIC_TEST_ENV_KEYS: &[&str] = &[
+        "LLM_FORMATTING_TEMPERATURE",
+        "LLM_TEMPERATURE",
+        "CODESCRIBE_ANTHROPIC_MAX_TOKENS",
+    ];
+    const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prev.as_deref() {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    struct TestEnv {
+        guards: Vec<EnvGuard>,
+    }
+
+    impl TestEnv {
+        fn clean() -> Self {
+            Self {
+                guards: ANTHROPIC_TEST_ENV_KEYS
+                    .iter()
+                    .map(|key| EnvGuard::remove(key))
+                    .collect(),
+            }
+        }
+
+        fn set(&mut self, key: &'static str, value: &str) {
+            self.guards.push(EnvGuard::set(key, value));
+        }
+    }
 
     #[test]
     fn test_has_repetition_loop() {
@@ -1556,6 +1883,253 @@ mod tests {
     }
 
     #[test]
+    fn lane_configs_read_fresh_truth_after_settings_save() {
+        if std::env::var_os(LANE_TRUTH_TEST_CHILD).is_none() {
+            let data_dir = tempfile::TempDir::new().expect("isolated data dir");
+            let executable = std::env::current_exe().expect("current core test executable");
+            let status = std::process::Command::new(executable)
+                .arg("--exact")
+                .arg("llm::ai_formatting::tests::lane_configs_read_fresh_truth_after_settings_save")
+                .arg("--nocapture")
+                .env(LANE_TRUTH_TEST_CHILD, "1")
+                .env("CODESCRIBE_DATA_DIR", data_dir.path())
+                .env("CODESCRIBE_DISABLE_KEYCHAIN", "1")
+                .envs([
+                    ("LLM_FORMATTING_PROVIDER", "openai-responses"),
+                    (
+                        "LLM_FORMATTING_ENDPOINT",
+                        "https://stale-formatting.example/v1",
+                    ),
+                    ("LLM_FORMATTING_MODEL", "stale-formatting-model"),
+                    ("LLM_ASSISTIVE_PROVIDER", "openai-responses"),
+                    (
+                        "LLM_ASSISTIVE_ENDPOINT",
+                        "https://stale-assistive.example/v1",
+                    ),
+                    ("LLM_ASSISTIVE_MODEL", "stale-assistive-model"),
+                ])
+                .status()
+                .expect("run isolated lane-truth test");
+            assert!(
+                status.success(),
+                "isolated lane-truth test failed: {status}"
+            );
+            return;
+        }
+
+        crate::config::UserSettings {
+            llm_formatting_endpoint: Some("https://fresh-formatting.example/v1".to_string()),
+            llm_formatting_model: Some("fresh-formatting-model".to_string()),
+            llm_assistive_provider: Some("openai-responses".to_string()),
+            llm_assistive_endpoint: Some("https://fresh-assistive.example/v1".to_string()),
+            llm_assistive_model: Some("fresh-assistive-model".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist lane settings");
+
+        assert_eq!(
+            get_formatting_endpoint().expect("formatting endpoint"),
+            "https://fresh-formatting.example/v1/responses"
+        );
+        assert_eq!(
+            get_formatting_model().expect("formatting model"),
+            "fresh-formatting-model"
+        );
+        assert_eq!(
+            get_assistive_endpoint().expect("assistive endpoint"),
+            "https://fresh-assistive.example/v1/responses"
+        );
+        assert_eq!(
+            get_assistive_model().expect("assistive model"),
+            "fresh-assistive-model"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn anthropic_sonnet_request_keeps_temperature() {
+        let mut env = TestEnv::clean();
+        let mut server = mockito::Server::new_async().await;
+        env.set("LLM_FORMATTING_TEMPERATURE", "0.5");
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("x-api-key", "anthropic-test-key")
+            .match_header("anthropic-version", ANTHROPIC_VERSION)
+            .match_body(Matcher::Json(json!({
+                "model": "claude-sonnet-4-6",
+                "system": "format carefully",
+                "messages": [{
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hello world"}]
+                }],
+                "max_tokens": DEFAULT_ANTHROPIC_MAX_TOKENS,
+                "temperature": 0.5
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "msg_sonnet",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hello world."}],
+                    "stop_reason": "end_turn"
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let output = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-sonnet-4-6",
+            "anthropic-test-key",
+        )
+        .await
+        .expect("sonnet formatting request should succeed");
+
+        assert_eq!(output.assistant_text, "Hello world.");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn anthropic_opus_request_strips_temperature() {
+        let mut env = TestEnv::clean();
+        let mut server = mockito::Server::new_async().await;
+        env.set("LLM_FORMATTING_TEMPERATURE", "0.5");
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_body(Matcher::Json(json!({
+                "model": "claude-opus-4-8",
+                "system": "format carefully",
+                "messages": [{
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hello world"}]
+                }],
+                "max_tokens": DEFAULT_ANTHROPIC_MAX_TOKENS
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "msg_opus",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hello world."}],
+                    "stop_reason": "end_turn"
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let output = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-opus-4-8",
+            "anthropic-test-key",
+        )
+        .await
+        .expect("opus formatting request should succeed without temperature");
+
+        assert_eq!(output.assistant_text, "Hello world.");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn anthropic_refusal_stop_reason_is_readable_error() {
+        let _env = TestEnv::clean();
+        let mut server = mockito::Server::new_async().await;
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_body(Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "msg_refusal",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "stop_reason": "refusal",
+                    "stop_details": {"reason": "safety"}
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let err = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-sonnet-4-6",
+            "anthropic-test-key",
+        )
+        .await
+        .expect_err("refusal stop_reason should not parse as empty success");
+
+        let message = err.to_string();
+        assert!(message.contains("Anthropic refusal stop"));
+        assert!(message.contains("safety"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn anthropic_happy_path_joins_text_content_blocks() {
+        let _env = TestEnv::clean();
+        let mut server = mockito::Server::new_async().await;
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_body(Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "msg_joined",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Hello"},
+                        {"type": "text", "text": " world."}
+                    ],
+                    "stop_reason": "end_turn"
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let output = call_anthropic_messages_resolved(
+            "hello world",
+            "format carefully",
+            false,
+            &server.url(),
+            "claude-sonnet-4-6",
+            "anthropic-test-key",
+        )
+        .await
+        .expect("text content blocks should parse");
+
+        assert_eq!(output.assistant_text, "Hello world.");
+        mock.assert_async().await;
+    }
+
+    #[test]
     fn empty_content_provider_errors_are_not_retryable() {
         assert!(!should_retry_provider_error(&anyhow::anyhow!(
             "No text content in SSE stream"
@@ -1568,6 +2142,9 @@ mod tests {
         )));
         assert!(!should_retry_provider_error(&anyhow::anyhow!(
             "SSE error bad_request: invalid input"
+        )));
+        assert!(!should_retry_provider_error(&anyhow::anyhow!(
+            "Anthropic refusal stop (id: msg_1): safety"
         )));
         assert!(should_retry_provider_error(&anyhow::anyhow!(
             "SSE stream inter-chunk timeout"

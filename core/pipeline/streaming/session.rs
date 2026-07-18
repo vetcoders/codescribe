@@ -7,22 +7,27 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
-use futures_util::stream::FuturesOrdered;
+use futures_util::stream::{FuturesOrdered, FuturesUnordered};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
-    DropKind, EngineEvent, EventSink, TranscriptSegment, collect_confidence_flags,
+    DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
+    collect_confidence_flags,
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
+use crate::stt::tail_patcher::{
+    TailPatchConfig, TailPatchOutcome, compute_tail_patch, layered_phase,
+};
 use crate::vad;
 
 use super::correction::{
     PARTIAL_PASS_TRIGGER_TIMER_MS, PartialPassTelemetry, PartialPassTriggerState,
     apply_final_boundary_text, classify_partial_trigger, correction_baseline_text,
-    correction_is_stale, postprocess_correction_with_snapshot, schedule_partial_pass,
+    correction_is_stale, merge_corrected_window, postprocess_correction_with_snapshot,
+    schedule_partial_pass,
 };
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
 use super::quality_gate::{
@@ -43,6 +48,12 @@ use super::tuning::{inference_max_concurrency, interim_vad_accumulate_samples};
 /// exceed the partial-pass cadence so no spoken tail is ever dropped before a
 /// Refine consumes it.
 const CORRECTION_WINDOW_SEC: f32 = 18.0;
+/// Maximum text retained for Refine's window baseline.
+///
+/// Text has no exact timestamps here, so keep a conservative character tail
+/// that comfortably covers 18s of dense speech while bounding clone/compare
+/// work in long sessions.
+const CORRECTION_WINDOW_TEXT_MAX_CHARS: usize = 4096;
 
 /// Trim `buf` in place so it retains at most `window_sec` of trailing audio at
 /// `sample_rate`. Returns the number of leading samples drained.
@@ -54,6 +65,38 @@ fn cap_correction_buffer(buf: &mut Vec<f32>, sample_rate: u32, window_sec: f32) 
     let drain_n = buf.len() - cap;
     buf.drain(..drain_n);
     drain_n
+}
+
+fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
+    let char_count = text.chars().count();
+    if max_chars == 0 || char_count <= max_chars {
+        return 0;
+    }
+
+    let drain_chars = char_count - max_chars;
+    let drain_bytes = text
+        .char_indices()
+        .nth(drain_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    text.drain(..drain_bytes);
+    let trimmed = text.trim_start();
+    if trimmed.len() != text.len() {
+        *text = trimmed.to_string();
+    }
+    drain_chars
+}
+
+fn append_to_correction_window_text(window_text: &mut String, text: &str, max_chars: usize) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    if !window_text.is_empty() {
+        window_text.push(' ');
+    }
+    window_text.push_str(text);
+    cap_correction_window_text(window_text, max_chars);
 }
 
 // ── Unified session config ───────────────────────────────────────────────────
@@ -125,6 +168,97 @@ pub(crate) fn enqueue_pending_utterance(
     }
 }
 
+fn tail_patch_enabled() -> bool {
+    layered_phase().is_some_and(|phase| phase >= 1)
+}
+
+fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_final: bool) {
+    if is_final && quality_gate_dropped {
+        *counter = counter.saturating_add(1);
+    }
+}
+
+async fn compute_tail_patch_job(
+    utterance_id: u64,
+    committed_text: String,
+    audio: Vec<f32>,
+    sample_rate: u32,
+    language: Option<String>,
+    config: TailPatchConfig,
+) -> Result<(u64, TailPatchOutcome)> {
+    debug_assert_eq!(
+        committed_text.trim(),
+        committed_text,
+        "tail-patch committed_text must be the exact, pre-trimmed UtteranceFinal text \
+         (single trim owner: final_text at the emit site)"
+    );
+    tokio::task::spawn_blocking(move || {
+        let retranscribed =
+            crate::stt::whisper_tail_patch_transcribe(&audio, sample_rate, language.as_deref())?;
+        Ok((
+            utterance_id,
+            compute_tail_patch(&committed_text, &retranscribed.text, utterance_id, &config),
+        ))
+    })
+    .await
+    .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
+}
+
+fn emit_tail_patch_result(
+    event_sink: &dyn EventSink,
+    result: Result<(u64, TailPatchOutcome)>,
+) -> u64 {
+    match result {
+        Ok((utterance_id, TailPatchOutcome::Patches(events))) => {
+            let mut emitted = 0u64;
+            for event in events {
+                if matches!(
+                    event,
+                    EngineEvent::ReplaceRange {
+                        source: LayerSource::TailPatch,
+                        ..
+                    }
+                ) {
+                    emitted = emitted.saturating_add(1);
+                }
+                event_sink.on_event(&event);
+            }
+            debug!(utterance_id, emitted, "Applied tail patch replacements");
+            emitted
+        }
+        Ok((utterance_id, TailPatchOutcome::NoChange)) => {
+            debug!(utterance_id, "Tail patch found no changes");
+            0
+        }
+        Ok((utterance_id, TailPatchOutcome::Skipped { reason })) => {
+            debug!(utterance_id, reason, "Tail patch skipped");
+            0
+        }
+        Err(e) => {
+            warn!("Tail patch failed; keeping Layer 0 committed text: {}", e);
+            event_sink.on_event(&EngineEvent::Warning {
+                code: "tail_patch_error".to_string(),
+                message: format!("{}", e),
+            });
+            0
+        }
+    }
+}
+
+fn emit_session_finalised(
+    event_sink: &dyn EventSink,
+    session_id: String,
+    tail_patch_replacements: u64,
+) {
+    event_sink.on_event(&EngineEvent::SessionFinalised {
+        session_id,
+        layer_summary: LayerSummary {
+            tail_patch_replacements,
+            ..LayerSummary::default()
+        },
+    });
+}
+
 // ── Unified transcription session (event-based) ─────────────────────────────
 
 /// Unified transcription session exposed as a single event-emitting pipeline.
@@ -145,6 +279,7 @@ pub(crate) async fn transcription_session(
     } = config;
 
     info!("Transcription session started (event-based pipeline)");
+    let session_id = uuid::Uuid::new_v4().to_string();
 
     let mut session = if let Some(sec) = utterance_silence_sec {
         SpeechSession::new_utterance_with_silence(sample_rate, sec)
@@ -153,15 +288,18 @@ pub(crate) async fn transcription_session(
     };
     let output_sample_rate = session.output_sample_rate();
     let stt_scheduler = SttScheduler::new();
+    let tail_patch_enabled = tail_patch_enabled();
+    let tail_patch_config = TailPatchConfig::from_env();
 
     let mut pipeline = TranscriptionPipeline::new(language);
     let mut preview_rev: u64 = 0;
     let mut utterance_id: u64 = 0;
     let mut scheduler_utterance_id: u64 = 1;
     let mut total_utterances: u64 = 0;
-    let semantic_gate_drops: u64 = 0;
+    let mut semantic_gate_drops: u64 = 0;
     let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
+    let mut tail_patch_replacements: u64 = 0;
     let mut partial_telemetry = PartialPassTelemetry::default();
     let mut vad_started = false;
     let mut speech_activity_observed = false;
@@ -193,12 +331,14 @@ pub(crate) async fn transcription_session(
     // chunk suffixes that advanced during Phase 1 preview processing.
     let mut utterance_boundary_suffix = String::new();
 
-    // Fix D: Speech-window-scoped text/rev for partial-pass stale guard.
-    // Unlike accumulated_text (cleared on UtteranceFinal), these track all text
-    // emitted in the current correction window — giving schedule_partial_pass
-    // a stable baseline that survives utterance boundaries.
+    // Fix D: Speech-window-scoped text and boundary revision for partial-pass stale guard.
+    // window_text mirrors correction_audio_buf in lockstep: previews append to
+    // both, and schedule_partial_pass takes (and clears) both together — so
+    // correction_expected_text always describes exactly the audio slice that a
+    // Refine pass re-decodes, which is what lets merge_corrected_window splice
+    // the correction into accumulated_text instead of replacing it wholesale.
     let mut window_text = String::new();
-    let mut window_rev: u64 = 0;
+    let mut boundary_rev: u64 = 0;
 
     // Decouple audio ingestion from Whisper inference.
     const MAX_PENDING_UTTERANCES: usize = 64;
@@ -231,10 +371,11 @@ pub(crate) async fn transcription_session(
         "Phase 1 inference pipeline configured"
     );
     let mut inference_pipeline = FuturesOrdered::new();
+    let mut tail_patch_pipeline = FuturesUnordered::new();
 
     // Phase 2 (buffered correction) — request tracked for stale guards.
     let mut correction_in_flight: Option<SttTaskHandle> = None;
-    let mut correction_expected_preview_rev: Option<u64> = None;
+    let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
 
@@ -316,6 +457,11 @@ pub(crate) async fn transcription_session(
                 audio,
                 inference_audio_len: inference_audio.len(),
                 is_final,
+                tail_patch_audio: if is_final && tail_patch_enabled {
+                    Some(inference_audio.clone())
+                } else {
+                    None
+                },
                 speech_vad_samples,
             };
 
@@ -357,12 +503,12 @@ pub(crate) async fn transcription_session(
                     pipeline.language.clone(),
                     &mut correction_audio_buf,
                     &mut correction_in_flight,
-                    &mut correction_expected_preview_rev,
+                    &mut correction_expected_boundary_rev,
                     &mut correction_expected_text,
                     &mut correction_suffix_snapshot,
                     &suffix_snapshot,
-                    window_rev,
-                    &window_text,
+                    boundary_rev,
+                    &mut window_text,
                     partial_trigger_state.silero_speech_ms_since_partial,
                     trigger,
                     &mut partial_telemetry,
@@ -378,6 +524,7 @@ pub(crate) async fn transcription_session(
             && pending_utterances.is_empty()
             && inference_pipeline.is_empty()
             && correction_in_flight.is_none()
+            && tail_patch_pipeline.is_empty()
         {
             break;
         }
@@ -626,12 +773,12 @@ pub(crate) async fn transcription_session(
                         pipeline.language.clone(),
                         &mut correction_audio_buf,
                         &mut correction_in_flight,
-                        &mut correction_expected_preview_rev,
+                        &mut correction_expected_boundary_rev,
                         &mut correction_expected_text,
                         &mut correction_suffix_snapshot,
                         &suffix_snapshot,
-                        window_rev,
-                        &window_text,
+                        boundary_rev,
+                        &mut window_text,
                         partial_trigger_state.silero_speech_ms_since_partial,
                         trigger,
                         &mut partial_telemetry,
@@ -644,26 +791,26 @@ pub(crate) async fn transcription_session(
             result = async {
                 correction_in_flight.as_mut().unwrap().recv().await
             }, if correction_in_flight.is_some() => {
-                // Fix D: Use window_rev as fallback (schedule_partial_pass now stores window_rev).
-                let expected_preview_rev = correction_expected_preview_rev.take().unwrap_or(window_rev);
+                let expected_boundary_rev =
+                    correction_expected_boundary_rev.take().unwrap_or(boundary_rev);
                 let expected_text = correction_expected_text.take().unwrap_or_default();
                 let suffix_snapshot = correction_suffix_snapshot.take().unwrap_or_default();
                 match result {
                     Ok(raw) => {
                         // Fix D: Compare against window-scoped state (survives utterance boundaries).
                         if correction_is_stale(
-                            expected_preview_rev,
-                            window_rev,
+                            expected_boundary_rev,
+                            boundary_rev,
                             &expected_text,
                             &window_text,
                         ) {
                             partial_telemetry.record_stale();
                             debug!(
-                                expected_preview_rev,
-                                window_rev,
+                                expected_boundary_rev,
+                                boundary_rev,
                                 expected_len = expected_text.chars().count(),
                                 current_len = window_text.chars().count(),
-                                "Suppressing stale correction (window advanced or text changed)"
+                                "Suppressing stale correction (boundary advanced)"
                             );
                         } else {
                             match postprocess_correction_with_snapshot(
@@ -678,30 +825,55 @@ pub(crate) async fn transcription_session(
                                             &expected_text,
                                             &window_text,
                                         );
-                                    if cleaned != previous_text {
-                                        preview_rev += 1;
-                                        corrections_applied += 1;
-                                        debug!(
-                                            rev = preview_rev,
-                                            previous_len = previous_text.chars().count(),
-                                            corrected_len = cleaned.chars().count(),
-                                            "BOUNDARY correction"
-                                        );
-                                        event_sink.on_event(&EngineEvent::Correction {
-                                            rev: preview_rev,
-                                            text: cleaned.clone(),
-                                            previous_text,
-                                        });
-                                        if correction_after_boundary {
-                                            debug!(
-                                                "Applied correction after boundary without reopening utterance-local preview state"
-                                            );
-                                        } else {
-                                            // Update accumulated text so next Preview builds from corrected state.
-                                            accumulated_text = cleaned;
-                                        }
+                                    // `cleaned` re-decodes only the audio slice taken by
+                                    // schedule_partial_pass — splice it into the full
+                                    // baseline instead of replacing the whole preview
+                                    // (long hold sessions lost everything before the
+                                    // correction window otherwise).
+                                    let merged = if correction_after_boundary {
+                                        Some(cleaned)
                                     } else {
-                                        debug!("Skipping correction emit: no text delta after postprocess");
+                                        merge_corrected_window(
+                                            &previous_text,
+                                            &expected_text,
+                                            &cleaned,
+                                        )
+                                    };
+                                    match merged {
+                                        Some(merged) if merged != previous_text => {
+                                            preview_rev += 1;
+                                            corrections_applied += 1;
+                                            debug!(
+                                                rev = preview_rev,
+                                                previous_len = previous_text.chars().count(),
+                                                corrected_len = merged.chars().count(),
+                                                "BOUNDARY correction"
+                                            );
+                                            event_sink.on_event(&EngineEvent::Correction {
+                                                rev: preview_rev,
+                                                text: merged.clone(),
+                                                previous_text,
+                                            });
+                                            if correction_after_boundary {
+                                                debug!(
+                                                    "Applied correction after boundary without reopening utterance-local preview state"
+                                                );
+                                            } else {
+                                                // Update accumulated text so next Preview builds from corrected state.
+                                                accumulated_text = merged;
+                                            }
+                                        }
+                                        Some(_) => {
+                                            debug!("Skipping correction emit: no text delta after postprocess");
+                                        }
+                                        None => {
+                                            partial_telemetry.record_stale();
+                                            debug!(
+                                                expected_len = expected_text.chars().count(),
+                                                baseline_len = previous_text.chars().count(),
+                                                "Suppressing correction: window snapshot no longer anchored in preview baseline"
+                                            );
+                                        }
                                     }
                                 }
                                 Err(PostprocessDrop::Hallucination) => {
@@ -734,7 +906,13 @@ pub(crate) async fn transcription_session(
             }
             // Drain the pipeline. FuturesOrdered guarantees results arrive in the order submitted.
             // This is critical for timestamp calculation and text accumulation.
-            Some((result, item)) = inference_pipeline.next() => {
+            Some(result) = tail_patch_pipeline.next() => {
+                tail_patch_replacements = tail_patch_replacements
+                    .saturating_add(emit_tail_patch_result(event_sink.as_ref(), result));
+            }
+            // Drain the pipeline. FuturesOrdered guarantees results arrive in the order submitted.
+            // This is critical for timestamp calculation and text accumulation.
+            Some((result, mut item)) = inference_pipeline.next() => {
                 // Track audio duration for timestamp computation.
                 let chunk_start_samples = utterance_audio_samples;
                 utterance_audio_samples += item.audio.len();
@@ -757,14 +935,22 @@ pub(crate) async fn transcription_session(
 
                 match result {
                     Ok(raw_transcript) => {
+                        let raw_avg_logprob = raw_transcript.avg_logprob;
+                        let raw_compression_ratio = raw_transcript.compression_ratio;
+                        let raw_quality_gate_dropped = raw_transcript.quality_gate_dropped;
+                        record_semantic_gate_drop(
+                            &mut semantic_gate_drops,
+                            raw_quality_gate_dropped,
+                            item.is_final,
+                        );
                         if item.is_final {
-                            utterance_avg_logprob = raw_transcript.avg_logprob;
-                            utterance_compression_ratio = raw_transcript.compression_ratio;
-                            utterance_quality_gate_dropped = raw_transcript.quality_gate_dropped;
+                            utterance_avg_logprob = raw_avg_logprob;
+                            utterance_compression_ratio = raw_compression_ratio;
+                            utterance_quality_gate_dropped = raw_quality_gate_dropped;
                         } else if utterance_avg_logprob.is_none() {
-                            utterance_avg_logprob = raw_transcript.avg_logprob;
-                            utterance_compression_ratio = raw_transcript.compression_ratio;
-                            if raw_transcript.quality_gate_dropped {
+                            utterance_avg_logprob = raw_avg_logprob;
+                            utterance_compression_ratio = raw_compression_ratio;
+                            if raw_quality_gate_dropped {
                                 utterance_quality_gate_dropped = true;
                             }
                         }
@@ -814,9 +1000,10 @@ pub(crate) async fn transcription_session(
                                 ),
                             });
                         } else {
-                            match pipeline.postprocess_with_reason_and_segments(
+                            match pipeline.postprocess_with_reason_and_segments_with_quality(
                                 &raw_text,
                                 &raw_segments,
+                                raw_avg_logprob,
                             ) {
                                 Ok(cleaned) => {
                                     if item.is_final {
@@ -825,11 +1012,12 @@ pub(crate) async fn transcription_session(
                                             if !cleaned_final.is_empty() {
                                                 // Fix D: Append FINAL text to window-scoped state
                                                 // (not replace — window spans multiple utterances).
-                                                if !window_text.is_empty() {
-                                                    window_text.push(' ');
-                                                }
-                                                window_text.push_str(cleaned_final);
-                                                window_rev += 1;
+                                                append_to_correction_window_text(
+                                                    &mut window_text,
+                                                    cleaned_final,
+                                                    CORRECTION_WINDOW_TEXT_MAX_CHARS,
+                                                );
+                                                boundary_rev += 1;
                                             } else {
                                                 // Keep the latest preview when FINAL postprocess is empty.
                                                 // Otherwise silence boundary may never emit UtteranceFinal,
@@ -847,12 +1035,14 @@ pub(crate) async fn transcription_session(
                                         }
                                         accumulated_text.push_str(cleaned.trim());
 
-                                        // Fix D: Mirror into window-scoped state for partial-pass stale guard.
-                                        if !window_text.is_empty() {
-                                            window_text.push(' ');
-                                        }
-                                        window_text.push_str(cleaned.trim());
-                                        window_rev += 1;
+                                        // Fix D: Mirror into window-scoped state for partial-pass baseline.
+                                        // Do not bump boundary_rev here: interim previews are same-boundary
+                                        // drafts and must not stale a live Refine correction.
+                                        append_to_correction_window_text(
+                                            &mut window_text,
+                                            cleaned.trim(),
+                                            CORRECTION_WINDOW_TEXT_MAX_CHARS,
+                                        );
 
                                         debug!(
                                             rev = preview_rev,
@@ -900,6 +1090,11 @@ pub(crate) async fn transcription_session(
                         if item.is_final {
                             utterance_id += 1;
                             total_utterances += 1;
+                            // TRIM CONTRACT (single owner): this .trim() is the ONE place that
+                            // guarantees UtteranceFinal.text == tail-patch committed_text ==
+                            // already-trimmed. ReplaceRange char offsets are computed against
+                            // THIS string; the SwiftUI sink stores it verbatim (its own trim is
+                            // an idempotent no-op). Do not emit untrimmed text from any path.
                             let final_text = accumulated_text.trim().to_string();
                             let end_ts = utterance_start_s
                                 + utterance_audio_samples as f32 / output_sample_rate as f32;
@@ -928,7 +1123,7 @@ pub(crate) async fn transcription_session(
                                 );
                                 event_sink.on_event(&EngineEvent::UtteranceFinal {
                                     utterance_id,
-                                    text: final_text,
+                                    text: final_text.clone(),
                                     raw_text: raw_text.clone(),
                                     start_ts: utterance_start_s,
                                     end_ts,
@@ -939,6 +1134,18 @@ pub(crate) async fn transcription_session(
                                     quality_gate_dropped,
                                     confidence_flags,
                                 });
+                                if tail_patch_enabled
+                                    && let Some(audio) = item.tail_patch_audio.take()
+                                {
+                                    tail_patch_pipeline.push(compute_tail_patch_job(
+                                        utterance_id,
+                                        final_text,
+                                        audio,
+                                        output_sample_rate,
+                                        pipeline.language.clone(),
+                                        tail_patch_config,
+                                    ));
+                                }
                             } else {
                                 utterance_segments.clear();
                             }
@@ -974,12 +1181,12 @@ pub(crate) async fn transcription_session(
                                 pipeline.language.clone(),
                                 &mut correction_audio_buf,
                                 &mut correction_in_flight,
-                                &mut correction_expected_preview_rev,
+                                &mut correction_expected_boundary_rev,
                                 &mut correction_expected_text,
                                 &mut correction_suffix_snapshot,
                                 &suffix_snapshot,
-                                window_rev,
-                                &window_text,
+                                boundary_rev,
+                                &mut window_text,
                                 partial_trigger_state.silero_speech_ms_since_partial,
                                 trigger,
                                 &mut partial_telemetry,
@@ -1076,6 +1283,7 @@ pub(crate) async fn transcription_session(
         }
         let reason = if speech_activity_observed
             || pipeline.hallucination_drops > 0
+            || semantic_gate_drops > 0
             || filtered_empty_drops > 0
             || dropped_utterances > 0
         {
@@ -1105,6 +1313,8 @@ pub(crate) async fn transcription_session(
         partial_dropped_count: partial_telemetry.dropped_count,
     });
 
+    emit_session_finalised(event_sink.as_ref(), session_id, tail_patch_replacements);
+
     if dropped_utterances > 0 {
         warn!(
             "Session dropped {} utterance(s) due to backpressure or scheduler stalls",
@@ -1113,11 +1323,12 @@ pub(crate) async fn transcription_session(
     }
 
     info!(
-        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
+        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops, {} tail patches, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
         total_utterances,
         pipeline.hallucination_drops,
         semantic_gate_drops,
         filtered_empty_drops,
+        tail_patch_replacements,
         partial_telemetry.runs_total,
         partial_telemetry.trigger_utterance_count,
         partial_telemetry.trigger_speech_count,
@@ -1143,6 +1354,7 @@ struct UtteranceWorkItem {
     audio: Vec<f32>,
     inference_audio_len: usize,
     is_final: bool,
+    tail_patch_audio: Option<Vec<f32>>,
     speech_vad_samples: u64,
 }
 
@@ -1307,6 +1519,102 @@ mod session_tests {
     use super::*;
 
     #[test]
+    fn semantic_gate_drop_counter_tracks_quality_gate_flag() {
+        let mut drops = 0;
+        record_semantic_gate_drop(&mut drops, false, true);
+        assert_eq!(drops, 0);
+
+        record_semantic_gate_drop(&mut drops, true, false);
+        assert_eq!(
+            drops, 0,
+            "interim preview drops must not count as utterance drops"
+        );
+
+        record_semantic_gate_drop(&mut drops, true, true);
+        assert_eq!(drops, 1);
+    }
+
+    #[test]
+    fn tail_patch_result_emits_replace_range_events() {
+        let collector = SessionEventCollector::new();
+        let emitted = emit_tail_patch_result(
+            &collector,
+            Ok((
+                42,
+                TailPatchOutcome::Patches(vec![EngineEvent::ReplaceRange {
+                    utterance_id: 42,
+                    start: 4,
+                    end: 7,
+                    text: "kot".to_string(),
+                    source: LayerSource::TailPatch,
+                }]),
+            )),
+        );
+
+        assert_eq!(emitted, 1);
+        assert!(matches!(
+            collector.events().as_slice(),
+            [EngineEvent::ReplaceRange {
+                utterance_id: 42,
+                start: 4,
+                end: 7,
+                text,
+                source: LayerSource::TailPatch,
+            }] if text == "kot"
+        ));
+    }
+
+    #[test]
+    fn final_text_trim_contract_keeps_tail_patch_offsets_aligned() {
+        // Simulate the emit site: accumulated_text carries whitespace, the single
+        // trim owner produces final_text, and that SAME string is both
+        // UtteranceFinal.text and the tail-patch committed_text.
+        let accumulated = "  ala ma kota  ";
+        let final_text = accumulated.trim().to_string();
+
+        // Retranscribed side mimics real Whisper output shape: leading/trailing
+        // whitespace and a newline. It must never skew offsets or get skipped.
+        let outcome = compute_tail_patch(
+            &final_text,
+            " ala ma psa \n",
+            1,
+            &TailPatchConfig::default(),
+        );
+        let TailPatchOutcome::Patches(events) = &outcome else {
+            panic!("expected Patches (not Skipped/NoChange), got {outcome:?}");
+        };
+
+        // Offsets must apply cleanly against the exact string the consumer holds.
+        let mut buf = final_text.clone();
+        for event in events {
+            let applied = event
+                .apply_to_committed_text(&mut buf)
+                .expect("patch offsets must be in range for the trimmed final_text");
+            assert!(applied, "ReplaceRange must mutate the committed buffer");
+        }
+        assert_eq!(buf, "ala ma psa");
+    }
+
+    #[test]
+    fn session_finalised_emits_layer_summary() {
+        let collector = SessionEventCollector::new();
+        emit_session_finalised(&collector, "session-test".to_string(), 3);
+
+        assert!(matches!(
+            collector.events().as_slice(),
+            [EngineEvent::SessionFinalised {
+                session_id,
+                layer_summary,
+            }] if session_id == "session-test"
+                && layer_summary.tail_patch_replacements == 3
+                && layer_summary.lexicon_replacements == 0
+                && layer_summary.inline_llm_replacements == 0
+                && layer_summary.final_bam_replacements == 0
+                && layer_summary.annotations_inserted == 0
+        ));
+    }
+
+    #[test]
     fn correction_buffer_window_cap() {
         let sr = 16_000u32;
         let window = CORRECTION_WINDOW_SEC;
@@ -1338,5 +1646,34 @@ mod session_tests {
         let mut buf: Vec<f32> = vec![1.0; 100];
         assert_eq!(cap_correction_buffer(&mut buf, sr, 0.0), 0);
         assert_eq!(buf.len(), 100);
+    }
+
+    #[test]
+    fn correction_window_text_cap_keeps_recent_tail() {
+        let max_chars = 64usize;
+        let mut window_text = String::new();
+
+        for idx in 0..40 {
+            append_to_correction_window_text(
+                &mut window_text,
+                &format!("utterance-{idx:02}"),
+                max_chars,
+            );
+            assert!(
+                window_text.chars().count() <= max_chars,
+                "window text {} chars exceeds cap {}",
+                window_text.chars().count(),
+                max_chars
+            );
+        }
+
+        assert!(
+            !window_text.contains("utterance-00"),
+            "old text should be evicted from the correction window"
+        );
+        assert!(
+            window_text.ends_with("utterance-39"),
+            "fresh correction tail must stay available"
+        );
     }
 }

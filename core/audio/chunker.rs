@@ -28,6 +28,7 @@ use crate::vad;
 // ═══════════════════════════════════════════════════════════
 
 const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
+pub(crate) const DEFAULT_BUFFERED_SILENCE_SEC: f32 = 1.2;
 
 // ═══════════════════════════════════════════════════════════
 // Public types
@@ -515,9 +516,15 @@ impl SpeechSession {
                 self.last_boundary_prob = speech_prob;
             }
 
-            // Speech-time integrity: count only Silero-positive VAD frames while
-            // a Supervisor segment is active.
-            if self.segment_start.is_some() && speech_prob >= self.threshold {
+            // Speech-time integrity: count Silero-positive VAD frames while a
+            // Supervisor segment is active. Use `neg_threshold` (the same
+            // segment-open hysteresis used by `gate_with_prob`), NOT the higher
+            // onset `threshold`: speech hovering in the 0.35–0.50 band keeps the
+            // segment open, so counting it at >= threshold under-reports real
+            // speech and makes the downstream silence-drop ratio gate
+            // (`should_drop_silence_chunk`) wrongly classify present speech as
+            // silence.
+            if self.segment_start.is_some() && speech_prob >= self.neg_threshold {
                 self.pending_event_speech_vad_samples = self
                     .pending_event_speech_vad_samples
                     .saturating_add(vad::CHUNK_SIZE as u64);
@@ -960,10 +967,18 @@ impl SpeechSession {
     }
 
     /// Override VAD threshold (test-only). Set impossibly high to prevent
-    /// VadIterState from firing `Start`.
+    /// VadIterState from firing `Start`, or below zero to force a deterministic
+    /// open segment when the Silero model is unavailable.
+    ///
+    /// Forces `neg_threshold` to the same value: the speech-sample accounting
+    /// (see `feed`) now counts frames at `neg_threshold`, not `threshold`, so a
+    /// test that drives the onset threshold below the silence floor must move
+    /// the hysteresis bound with it — otherwise forced-open segments would
+    /// report zero accounted speech.
     #[cfg(test)]
     pub fn set_vad_threshold_for_test(&mut self, threshold: f32) {
         self.threshold = threshold;
+        self.neg_threshold = threshold;
         if let Some(iter_state) = self.iter_state.as_mut() {
             iter_state.params.threshold = threshold;
         }
@@ -1126,13 +1141,13 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
 }
 
 pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
-    let mut vad_cfg = vad::VadConfig::default();
-
-    // Optional per-utterance override (buffered mode). This is separate from global VAD silence
-    // and exists for buffered mode only.
-    if let Some(sec) = utterance_silence_sec_override() {
-        vad_cfg.max_silence_duration_sec = sec;
-    }
+    // Buffered mode feeds final utterances through the serialized Commit lane.
+    // Keep the base stream VAD at 0.3s, but avoid over-fragmenting buffered speech.
+    let vad_cfg = vad::VadConfig {
+        max_silence_duration_sec: utterance_silence_sec_override()
+            .unwrap_or(DEFAULT_BUFFERED_SILENCE_SEC),
+        ..vad::VadConfig::default()
+    };
 
     let pre_roll = vad_cfg.pre_roll_sec;
     let speech_pad = pre_roll;
@@ -1445,7 +1460,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn utterance_default_silence_is_not_forced_to_stream_default() {
+    fn utterance_default_silence_uses_buffered_cadence_default() {
         let _g = EnvGuard::unset("CODESCRIBE_BUFFERED_SILENCE_SEC");
 
         let sr = 16000u32;
@@ -1459,9 +1474,8 @@ mod tests {
             .max(1.0) as usize;
         assert_eq!(stream.min_silence_samples(), stream_expected);
 
-        let utter_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
-            .round()
-            .max(1.0) as usize;
+        let utter_expected =
+            (DEFAULT_BUFFERED_SILENCE_SEC * vad::VAD_SAMPLE_RATE as f32).round() as usize;
         assert_eq!(utterance.min_silence_samples(), utter_expected);
     }
 

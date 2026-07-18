@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  ===========================================================================
+  DRAFT TEMPLATE — NOT WIRED INTO ANY BUILD. Do not treat as "done".
+  ===========================================================================
+
+  This is the sandbox-clean entitlement set for the FUTURE Mac App Store
+  "Basic" SKU (on-device dictation: microphone -> transcript -> in-app /
+  clipboard). It is intentionally NOT referenced by the Makefile bundle
+  target, scripts/build-dmg.sh, or any signing step. The current shipping
+  lane is Developer ID + notarization (scripts/entitlements.plist), which
+  does NOT enable the sandbox.
+
+  Sibling file: scripts/entitlements.plist is the SHIPPING (Developer ID)
+  entitlement set. The two are deliberately separate because a single binary
+  cannot be both sandboxed (store) and un-sandboxed (Agentic). See
+  docs/APP_STORE_READINESS.md for the two-SKU rationale and Apple citations.
+
+  ---------------------------------------------------------------------------
+  WHAT CHANGED vs. the Developer ID entitlements, and WHY (Apple-verified):
+
+  * com.apple.security.app-sandbox = true
+      Mandatory for every Mac App Store app; builds without it are rejected
+      at submission.
+      https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.app-sandbox
+
+  * com.apple.security.cs.disable-library-validation is REMOVED.
+      Library validation lets a binary link any library signed with the SAME
+      team identifier (or an Apple system library). The Developer ID build
+      disables it only because the embedded Whisper/MiniLM dylibs are signed
+      ad-hoc / under a foreign team. For a MAS build, RE-SIGN every nested
+      dylib/framework under the app's own team ID at bundle time; then library
+      validation is satisfied and this relaxation is unnecessary.
+      VERIFY with a real productbuild + App Store Connect upload before
+      trusting that the embedded ML stack loads under the sandbox.
+      https://developer.apple.com/library/archive/technotes/tn2206/_index.html
+
+  * com.apple.security.cs.allow-unsigned-executable-memory / allow-jit:
+      Per Apple's entitlement docs these are compatible with BOTH the Mac App
+      Store and Developer ID. Keep ONLY if the ML runtime actually needs
+      JIT/codegen; drop if a launch test shows it loads without them.
+      https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.allow-unsigned-executable-memory
+
+  * NO Accessibility, NO Apple Events, NO broad file access:
+      Accessibility-for-paste risks Guideline 2.4.5 rejection; Apple-events
+      temporary exceptions are "most often rejected". The Basic SKU MUST
+      deliver the transcript in-app or via the standard clipboard, never by
+      driving another app. These capabilities live ONLY in the Developer ID
+      Agentic SKU.
+
+  * Input Monitoring (global hotkeys) is NOT an entitlement here:
+      Listen-only CGEventTap via CGPreflightListenEventAccess /
+      CGRequestListenEventAccess uses the runtime Input Monitoring privilege
+      (System Settings > Privacy & Security > Input Monitoring), which IS
+      available to sandboxed Mac App Store apps. No sandbox entitlement key is
+      required for it; the user grants it at runtime. (Codescribe already uses
+      CGEventTap, not the Accessibility-bound NSEvent monitor.)
+
+  Created by Vetcoders (c)2026
+  ===========================================================================
+-->
+<dict>
+    <!-- REQUIRED for Mac App Store: turn the App Sandbox on. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Microphone access for on-device speech capture. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- Keep ONLY if a launch test proves the ML runtime needs JIT/codegen.
+         Compatible with MAS per Apple; drop if the models load without it. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!--
+      DELIBERATELY ABSENT (do not add without re-checking against a real
+      App Store Connect upload):
+        com.apple.security.cs.disable-library-validation
+            -> instead re-sign nested ML dylibs under the app's team ID
+        com.apple.security.cs.allow-dyld-environment-variables
+            -> sandbox-hostile; avoid, fix dyld paths at sign time instead
+        com.apple.security.automation.apple-events
+            -> "most often rejected" by App Review
+        com.apple.security.files.user-selected.read-write or broad file access
+            -> Basic SKU stays in its own container + clipboard
+    -->
+</dict>
+</plist>

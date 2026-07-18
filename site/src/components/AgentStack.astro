@@ -1,0 +1,183 @@
+---
+// Agent stack section (WEBSITE_SPEC §4.9). VibeCrafted-safe wording only:
+// "works naturally with agent runtimes & MCP-powered tools" / "agent-stack ready".
+// No hard-integration claims (see brand rules §1).
+---
+
+<section class="section agentstack" id="agent-stack" data-screen-label="Agent stack" aria-labelledby="agentstack-title">
+  <div class="container">
+    <p class="eyebrow">AGENT-STACK READY</p>
+    <h2 id="agentstack-title">Speak tasks into your agent stack.</h2>
+    <p class="sub">
+      Native tools and MCP support turn spoken intent into structured input for
+      agent runtimes — a voice control layer for VibeCrafted-style workflows.
+    </p>
+
+    <div class="flow" aria-hidden="true">
+      <div class="node">
+        <div class="circle circle--voice"><span class="bead bead--terra"></span></div>
+        <div class="node__label">Voice</div>
+      </div>
+      <div class="connector"></div>
+      <div class="node">
+        <div class="circle circle--intent"><span class="bead bead--sq bead--terra2"></span></div>
+        <div class="node__label">Intent</div>
+      </div>
+      <div class="connector"></div>
+      <div class="node">
+        <div class="circle circle--agents"><span class="bead bead--sq bead--olive"></span></div>
+        <div class="node__label">Agents</div>
+      </div>
+      <div class="connector"></div>
+      <div class="node">
+        <div class="circle circle--result"><span class="check">✓</span></div>
+        <div class="node__label">Result</div>
+      </div>
+    </div>
+
+    <div class="tools">
+      <span class="tool">clipboard</span>
+      <span class="tool">selection</span>
+      <span class="tool">screenshot</span>
+      <span class="tool">file read</span>
+      <span class="tool">type text</span>
+      <span class="tool">GitHub fetch</span>
+      <span class="tool">thread search</span>
+      <span class="tool tool--mcp">+ MCP tools</span>
+    </div>
+
+    <div class="dispatch">
+      <span class="dispatch__label">power-user · dispatch</span>
+      <span class="dispatch__cmd">"run a repo check and prepare a minimal patch plan."</span>
+    </div>
+  </div>
+</section>
+
+<style>
+  .agentstack { padding: 120px 24px; }
+  .container {
+    max-width: 1000px;
+    text-align: center;
+  }
+  h2 {
+    font: 700 clamp(32px, 5vw, 50px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 8px;
+    color: var(--ink);
+  }
+  .sub {
+    font: 400 16px / 1.55 var(--font-display);
+    color: var(--muted-2);
+    max-width: 520px;
+    margin: 0 auto 50px;
+  }
+  .flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 44px;
+  }
+  .node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 11px;
+    width: 140px;
+  }
+  .circle {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .circle--voice {
+    background: rgba(217, 119, 87, 0.1);
+    border: 1px solid #3a2c25;
+    animation: glowpulse 3s ease-in-out infinite;
+  }
+  .circle--intent {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--stroke-3);
+  }
+  .circle--agents {
+    background: rgba(95, 107, 62, 0.1);
+    border: 1px solid #2f3a26;
+  }
+  .circle--result {
+    background: rgba(157, 177, 120, 0.12);
+    border: 1px solid #2f3a26;
+  }
+  .bead {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+  }
+  .bead--sq { border-radius: 3px; }
+  .bead--terra { background: var(--terracotta); }
+  .bead--terra2 { background: var(--terracotta-2); }
+  .bead--olive { background: var(--olive-ink); }
+  .check {
+    font: 600 21px var(--font-display);
+    color: var(--olive-ink);
+  }
+  .connector {
+    flex: 0 0 44px;
+    height: 1px;
+    background: linear-gradient(90deg, #2a2d33, #3a3d44, #2a2d33);
+    margin-bottom: 30px;
+  }
+  .node__label {
+    font: 600 13px var(--font-display);
+    color: var(--ink-2);
+  }
+  .tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    justify-content: center;
+    max-width: 680px;
+    margin: 0 auto;
+  }
+  .tool {
+    padding: 7px 13px;
+    background: var(--bg-chip);
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    font: 500 11px var(--font-mono);
+    color: #b6b9b2;
+  }
+  .tool--mcp {
+    background: rgba(217, 119, 87, 0.1);
+    border-color: #3a2c25;
+    color: #e0a187;
+  }
+  .dispatch {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 30px;
+    padding: 10px 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--stroke);
+    border-radius: 30px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .dispatch__label {
+    font: 500 12px var(--font-mono);
+    color: var(--muted-2);
+  }
+  .dispatch__cmd {
+    font: 500 12px var(--font-mono);
+    color: #cfd2cb;
+  }
+  @media (max-width: 900px) {
+    .connector { flex-basis: 28px; }
+  }
+  @media (max-width: 480px) {
+    .agentstack { padding: 84px 20px; }
+  }
+</style>

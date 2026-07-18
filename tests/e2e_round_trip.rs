@@ -1,6 +1,6 @@
 //! E2E Round-Trip Tests - verify speech pipeline integrity
 //!
-//! Tests the ACTUAL components used by CodeScribe:
+//! Tests the ACTUAL components used by Codescribe:
 //! - TTS (CSM) → audio generation
 //! - STT (Whisper) → transcription
 //! - Embedder (MiniLM) → semantic similarity
@@ -9,7 +9,7 @@
 //!
 //! Run with: CODESCRIBE_E2E_ROUNDTRIP=1 cargo test --test e2e_round_trip
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use anyhow::Result;
 

@@ -14,7 +14,7 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
         std::env::set_var("CODESCRIBE_DATA_DIR", tmp.path());
     }
 
-    // --- Prompts: load-or-create ---
+    // --- Prompts: built-ins are memory fallback until an explicit write ---
     let formatting = prompts::get_formatting_prompt();
     assert!(formatting.contains("TRANSCRIPTION FORMATTER"));
 
@@ -25,7 +25,8 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
     assert!(assistive.contains("zero-width"));
     assert!(assistive.contains("Reply in the language of the user instruction"));
 
-    // Files should exist under CODESCRIBE_DATA_DIR/prompts/...
+    // Reads resolve paths under CODESCRIBE_DATA_DIR but must not materialize
+    // built-ins on disk. Only an explicit save/restore may create the files.
     let formatting_path = prompts::get_formatting_prompt_path();
     let assistive_path = prompts::get_assistive_prompt_path();
     // Canonicalize tmp.path() to handle macOS /var → /private/var symlink
@@ -35,11 +36,16 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
         .unwrap_or_else(|_| tmp.path().to_path_buf());
     assert!(formatting_path.starts_with(&tmp_canon));
     assert!(assistive_path.starts_with(&tmp_canon));
-    assert!(formatting_path.exists());
-    assert!(assistive_path.exists());
+    assert!(!formatting_path.exists());
+    assert!(!assistive_path.exists());
 
     // Overwrite formatting prompt and re-load
-    fs::write(&formatting_path, "CUSTOM_FORMATTING_PROMPT").expect("write prompt");
+    prompts::write_prompt(
+        prompts::PromptKind::Formatting,
+        "CUSTOM_FORMATTING_PROMPT",
+        prompts::PromptWriteReason::SettingsSave,
+    )
+    .expect("write prompt");
     assert_eq!(
         prompts::get_formatting_prompt().trim(),
         "CUSTOM_FORMATTING_PROMPT"

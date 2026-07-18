@@ -7,7 +7,7 @@
 //! Run with:
 //!   cargo test --test e2e_settings_lifecycle
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use codescribe::config::{Config, ShortcutBinding, UserSettings, WorkMode};
 use serial_test::serial;
@@ -229,7 +229,7 @@ fn test_settings_use_local_stt_false_roundtrips_through_config_load() {
 fn test_settings_language_persistence() {
     let _tmp = setup_test_env();
 
-    for lang in ["pl", "en"] {
+    for lang in ["auto", "pl", "en"] {
         let config = Config::load();
         config.save_to_env("WHISPER_LANGUAGE", lang).expect("save");
         let reloaded = Config::load();
@@ -270,10 +270,9 @@ fn test_settings_typing_cps_decimal_persistence() {
         .save_to_env("CODESCRIBE_TYPING_CPS", "36.5")
         .expect("save typing cps");
 
-    assert_eq!(
-        std::env::var("CODESCRIBE_TYPING_CPS").expect("CODESCRIBE_TYPING_CPS env"),
-        "36.5",
-        "runtime env should preserve decimal value"
+    assert!(
+        std::env::var("CODESCRIBE_TYPING_CPS").is_err(),
+        "runtime writes must not mutate process env"
     );
 
     let settings = UserSettings::load();
@@ -350,8 +349,9 @@ fn test_settings_full_round_trip() {
     assert_eq!(r.whisper_language.as_str(), "en");
     assert!(!r.ai_formatting_enabled);
     assert_eq!(
-        std::env::var("CODESCRIBE_TYPING_CPS").expect("CODESCRIBE_TYPING_CPS env"),
-        "90"
+        settings.typing_cps,
+        Some(90.0),
+        "typing cps should round-trip through settings.json, not live env"
     );
 }
 
@@ -364,8 +364,8 @@ fn test_settings_full_round_trip() {
 fn test_engine_tab_stt_engine_env_default() {
     let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
     unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
-    assert_eq!(engine, "candle", "default STT engine should be candle");
+    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "auto".to_string());
+    assert_eq!(engine, "auto", "default STT engine policy should be auto");
     match previous {
         Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
         None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },

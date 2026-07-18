@@ -9,7 +9,7 @@
 //   cargo run --example test_clipboard_snapshot
 
 use codescribe::os::clipboard::{
-    copy, get_clipboard, paste_and_restore, paste_text_smart, snapshot_clipboard,
+    ClipboardSnapshot, get_clipboard, paste_and_restore, paste_text_smart, set_clipboard,
 };
 use std::thread;
 use std::time::Duration;
@@ -20,16 +20,16 @@ fn main() {
     // Test 1: Basic snapshot and restore
     println!("Test 1: Snapshot and Restore");
     println!("Setting clipboard to: 'Original Content'");
-    copy("Original Content").expect("Failed to copy");
+    set_clipboard("Original Content").expect("Failed to copy");
 
     println!("Capturing snapshot...");
-    let snapshot = snapshot_clipboard().expect("Failed to capture snapshot");
+    let snapshot = ClipboardSnapshot::capture().expect("Failed to capture snapshot");
     println!("  Snapshot has text: {}", snapshot.text.is_some());
     println!("  Snapshot has image: {}", snapshot.image.is_some());
     println!("  Snapshot is empty: {}", snapshot.is_empty());
 
     println!("\nChanging clipboard to: 'Modified Content'");
-    copy("Modified Content").expect("Failed to copy");
+    set_clipboard("Modified Content").expect("Failed to copy");
 
     let current = get_clipboard().expect("Failed to get clipboard");
     println!("  Current clipboard: '{}'", current);
@@ -45,7 +45,7 @@ fn main() {
     // Test 2: Smart paste without restore
     println!("Test 2: Smart paste (restore=false)");
     println!("Setting clipboard to: 'Preserved Content'");
-    copy("Preserved Content").expect("Failed to copy");
+    set_clipboard("Preserved Content").expect("Failed to copy");
 
     println!("Note: This will paste 'Pasted Text' to your active window");
     println!("Press Enter when ready (make sure you have a text field focused)...");
@@ -67,7 +67,7 @@ fn main() {
     // Test 3: Smart paste with restore
     println!("Test 3: Smart paste (restore=true)");
     println!("Setting clipboard to: 'Will Be Restored'");
-    copy("Will Be Restored").expect("Failed to copy");
+    set_clipboard("Will Be Restored").expect("Failed to copy");
 
     println!("Note: This will paste 'Temporary Text' to your active window");
     println!("Press Enter when ready...");
@@ -90,7 +90,7 @@ fn main() {
     // Test 4: paste_and_restore convenience function
     println!("Test 4: paste_and_restore()");
     println!("Setting clipboard to: 'Important Data'");
-    copy("Important Data").expect("Failed to copy");
+    set_clipboard("Important Data").expect("Failed to copy");
 
     println!("Note: This will paste 'Quick Paste' to your active window");
     println!("Press Enter when ready...");

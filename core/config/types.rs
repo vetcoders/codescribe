@@ -1,4 +1,4 @@
-//! Type definitions for CodeScribe configuration.
+//! Type definitions for Codescribe configuration.
 //!
 //! Contains all enums and the main Config struct.
 
@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 use super::defaults::*;
+
+const fn default_auto_paste_enabled() -> bool {
+    true
+}
 
 /// First-class work modes used by the runtime and settings UI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -35,9 +39,9 @@ impl WorkMode {
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Dictation => "Fast transcript / auto-paste mode.",
-            Self::Formatting => "AI formatting pass for dictation text.",
-            Self::Assistive => "AI assistive conversation mode.",
+            Self::Dictation => "Transcribes your voice and pastes the text.",
+            Self::Formatting => "Records dictation, then formats it before pasting.",
+            Self::Assistive => "Sends your voice to the agent instead of pasting.",
         }
     }
 
@@ -154,12 +158,16 @@ pub fn default_mode_bindings() -> Vec<ModeBinding> {
     ]
 }
 
-/// Language options for Whisper transcription
-/// NOTE: No "Auto" - Whisper requires explicit language for reliable transcription
+/// Language options for Whisper transcription.
+///
+/// `Auto` leaves language detection to Whisper. Use `whisper_hint()` when
+/// calling STT/formatting paths: forcing `Some("pl")`/`Some("en")` is only for
+/// explicit single-language sessions.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     #[default]
+    Auto,
     Polish,
     English,
 }
@@ -167,8 +175,25 @@ pub enum Language {
 impl Language {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Polish => "pl",
             Self::English => "en",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Auto => "Auto-detect / multilingual",
+            Self::Polish => "Polish (pl)",
+            Self::English => "English (en)",
+        }
+    }
+
+    pub fn whisper_hint(&self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Polish => Some("pl"),
+            Self::English => Some("en"),
         }
     }
 }
@@ -178,10 +203,9 @@ impl FromStr for Language {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "auto" | "" | "detect" | "multilingual" | "any" => Ok(Self::Auto),
             "pl" | "polish" => Ok(Self::Polish),
             "en" | "english" => Ok(Self::English),
-            // Legacy "auto" maps to Polish (default)
-            "auto" | "" => Ok(Self::Polish),
             _ => Err(format!("Unknown Language: {}", s)),
         }
     }
@@ -247,7 +271,7 @@ impl FromStr for OverlayPositionMode {
     }
 }
 
-/// CodeScribe configuration structure.
+/// Codescribe configuration structure.
 ///
 /// This struct contains all configuration options for the app.
 /// Values are loaded from .env file (single source of truth).
@@ -279,6 +303,12 @@ pub struct Config {
     /// Whether AI formatting is enabled for transcriptions
     #[serde(default)]
     pub ai_formatting_enabled: bool,
+
+    /// User-owned automatic paste policy for non-assistive dictation.
+    /// Assistive, empty/no-speech, Notes save-only, and safety branches remain
+    /// controller-owned vetoes even when this preference is enabled.
+    #[serde(default = "default_auto_paste_enabled")]
+    pub auto_paste_enabled: bool,
 
     /// Strategy for sending transcript (end-of-utterance vs streaming)
     #[serde(default)]
@@ -315,6 +345,10 @@ pub struct Config {
     /// intended for longer recordings and lower local Whisper pressure.
     #[serde(default = "default_transcription_overlay_enabled")]
     pub transcription_overlay_enabled: bool,
+
+    /// Whether recording started from UI surfaces uses the assistive lane.
+    #[serde(default)]
+    pub tray_start_assistive: bool,
 
     /// Whether to show hold indicator badge
     #[serde(default = "default_hold_indicator")]
@@ -395,6 +429,14 @@ pub struct Config {
     /// Cloud STT endpoint used when cloud is selected as the committed verdict path.
     pub stt_endpoint: Option<String>,
 
+    /// Opt-in Whisper domain-vocabulary initial prompt.
+    ///
+    /// Default OFF after W2-F measured the active runtime lexicon prompt as a
+    /// 100% WER regression. Runtime env/settings can still enable the feature
+    /// for diagnosis and future retuning.
+    #[serde(default = "default_stt_initial_prompt_enabled")]
+    pub stt_initial_prompt_enabled: bool,
+
     /// Full LLM endpoint URL (default: https://api.openai.com/v1/responses)
     #[serde(default = "default_llm_endpoint_option")]
     pub llm_endpoint: Option<String>,
@@ -439,6 +481,7 @@ impl Default for Config {
             toggle_silence_sec: default_toggle_silence_sec(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
+            auto_paste_enabled: default_auto_paste_enabled(),
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,
             transcript_tag_template: default_transcript_tag_template(),
@@ -447,6 +490,7 @@ impl Default for Config {
             show_tray_glyph: default_show_tray_glyph(),
             show_dock_icon: default_show_dock_icon(),
             transcription_overlay_enabled: default_transcription_overlay_enabled(),
+            tray_start_assistive: false,
             hold_indicator: default_hold_indicator(),
             hold_badge_size: default_hold_badge_size(),
             hold_badge_offset_x: default_hold_badge_offset_x(),
@@ -464,6 +508,7 @@ impl Default for Config {
             use_local_stt: true,
             local_model: default_local_model(),
             stt_endpoint: None,
+            stt_initial_prompt_enabled: default_stt_initial_prompt_enabled(),
             llm_endpoint: Some(default_llm_endpoint()),
             llm_api_key: None,
             stt_api_key: None,
@@ -529,6 +574,14 @@ mod tests {
         assert_eq!(
             Config::default().llm_endpoint.as_deref(),
             Some(DEFAULT_OPENAI_RESPONSES_ENDPOINT)
+        );
+    }
+
+    #[test]
+    fn default_config_disables_stt_initial_prompt() {
+        assert!(
+            !Config::default().stt_initial_prompt_enabled,
+            "Whisper initial_prompt must stay opt-in after W2-F WER collapse"
         );
     }
 }

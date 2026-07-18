@@ -1,20 +1,20 @@
 # Hotkeys Contract
 
-> Technical specification for CodeScribe hotkey system.
+> Technical specification for codescribe hotkey system.
 >
-> Created by M&K (c)2026 VetCoders
+> Created by vetcoders (c)2026
 
 ---
 
 ## Overview
 
-CodeScribe uses a low-level CGEventTap to detect modifier-only keypresses on macOS.
+Codescribe uses a low-level CGEventTap to detect modifier-only keypresses on macOS.
 This approach avoids TSMGetInputSourceProperty crashes on macOS 26.2+ (Sequoia).
 
 Canonical hotkey configuration is **mode-first**:
 
 - `Dictation`, `Formatting`, and `Assistive` each own one `ShortcutBinding`
-- bindings are persisted in `~/Library/Application Support/CodeScribe/settings.json`
+- bindings are persisted in `~/Library/Application Support/Codescribe/settings.json`
 - legacy `.env` hotkey keys such as `HOLD_MODS` / `TOGGLE_TRIGGER` are no longer part of the runtime contract
 
 ```mermaid
@@ -60,13 +60,13 @@ flowchart TB
 **Behavior:** Recording starts on key down, stops on key up
 **VAD:** DISABLED - user has 100% control via key release
 
-| Mode binding          | Keys         | Use Case                         |
-| --------------------- | ------------ | -------------------------------- |
-| `Dictation=HoldFn`    | Fn           | **Default** (best for terminals) |
-| `Dictation=HoldCtrl`  | Ctrl         | Terminal-heavy users             |
-| `Dictation=HoldCtrlAlt` | Ctrl+Option | Power-combo preset               |
-| `Dictation=HoldCtrlShift` | Ctrl+Shift | Alternate hold dictation         |
-| `Dictation=HoldCtrlCmd` | Ctrl+Command | macOS power users               |
+| Mode binding              | Keys         | Use Case                         |
+| ------------------------- | ------------ | -------------------------------- |
+| `Dictation=HoldFn`        | Fn           | **Default** (best for terminals) |
+| `Dictation=HoldCtrl`      | Ctrl         | Terminal-heavy users             |
+| `Dictation=HoldCtrlAlt`   | Ctrl+Option  | Power-combo preset               |
+| `Dictation=HoldCtrlShift` | Ctrl+Shift   | Alternate hold dictation         |
+| `Dictation=HoldCtrlCmd`   | Ctrl+Command | macOS power users                |
 
 If `Assistive` itself is configured to a hold binding, that binding becomes the assistive hold trigger.
 
@@ -81,6 +81,13 @@ HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 
 **Mode modifiers (default Fn):** Shift → Chat, Cmd → Selection (while holding Fn).
 
+**Engine and delivery parity:** Hold and toggle both start
+`StreamingRecorder::start_event_session` and fan the same `EngineEvent` stream
+through `PresentationEmitter`, IPC, and telemetry sinks. Their intentional
+difference is boundary policy (key-up for hold, VAD for toggle), not the STT
+engine. A late `Correction` patches the active preview or the matching most
+recent committed utterance; it must never create a second delivered utterance.
+
 ---
 
 ### 2. Toggle Mode (Hands-Free)
@@ -90,12 +97,34 @@ HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 **VAD:** ENABLED – finalized utterances append to the active draft; `TOGGLE_SILENCE_SEC` of silence
 (default 5s) sends the accumulated draft without stopping recording
 
-| Mode binding                  | Keys                            | Mode             |
-| ---------------------------- | ------------------------------- | ---------------- |
-| `Formatting=DoubleLeftOption` | Left Option double-tap          | Formatting        |
-| `Assistive=DoubleRightOption` | Right Option double-tap         | Assistive         |
-| `Dictation=DoubleCtrl`        | Ctrl double-tap                 | Raw dictation     |
-| `Disabled`                    | no toggle for that work mode    | Hold-only profile |
+| Mode binding                  | Keys                         | Mode              |
+| ----------------------------- | ---------------------------- | ----------------- |
+| `Formatting=DoubleLeftOption` | Left Option double-tap       | Formatting        |
+| `Assistive=DoubleRightOption` | Right Option double-tap      | Assistive         |
+| `Dictation=DoubleCtrl`        | Ctrl double-tap              | Raw dictation     |
+| `Disabled`                    | no toggle for that work mode | Hold-only profile |
+
+If a recording path does **not** carry an explicit hotkey override (`force_raw`
+or `force_ai`), the controller resolves delivery from Settings: formatting mode
+enabled means the default route is formatting; disabled means raw. Explicit
+hotkey bindings still win over that default (`Dictation` forces raw,
+`Formatting` forces formatting).
+
+**Stop latency trade-off (supersedes ADR 2026-05-28 Faza 1 force-RAW):** with
+formatting enabled in Settings, a hands-off toggle stop performs one AI
+formatting call on the stop path before delivery. This latency is the user's
+explicit choice, not a surprise: the overlay reports the phase as `final pass`
+while the call runs, a formatting failure falls back to the post-processed raw
+text, and users who want a zero-latency stop either disable the formatting
+default or use a `Dictation` binding (force raw). The earlier unconditional
+force-RAW on this path was removed because it silently erased the Settings
+formatting default.
+
+**Revision D-01 (2026-07-16):** commit `37f137e` intentionally reverted the
+2026-05-28 ADR decision that forced toggle hands-off stops to RAW whenever no
+explicit hotkey override existed. The runtime now lets Settings decide the
+default route in that case, while explicit `Dictation` / `Formatting` bindings
+continue to win.
 
 **Events:**
 
@@ -204,12 +233,12 @@ flowchart LR
 Bindings themselves are persisted in `settings.json`.
 The remaining runtime env surface only tunes detector behavior:
 
-| Variable                 | Default | Options   | Reload  |
-| ------------------------ | ------- | --------- | ------- |
-| `HOLD_EXCLUSIVE`         | `true`  | `true`, `false` | RESTART |
-| `HOLD_START_DELAY_MS`    | `800`   | 0-1000    | RESTART |
-| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450   | RESTART |
-| `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-10.0  | RESTART |
+| Variable                 | Default | Options         | Reload  |
+| ------------------------ | ------- | --------------- | ------- |
+| `HOLD_EXCLUSIVE`         | `false` | `true`, `false` | RESTART |
+| `HOLD_START_DELAY_MS`    | `800`   | 0-1000          | RESTART |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | RESTART |
+| `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-10.0        | RESTART |
 
 ### VAD Configuration
 
@@ -350,7 +379,12 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 ### Exclusive Mode
 
-When `HOLD_EXCLUSIVE=true` (default):
+When `HOLD_EXCLUSIVE=false` (default), modifier variants work out of the box:
+
+- Fn+Shift can start voice chat
+- Fn+Command can act on the current selection
+
+Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
 - Option taps are ignored if Option is part of an unrelated hold combo
 - Prevents accidental toggle while trying to hold legacy Ctrl-based combos
@@ -361,7 +395,7 @@ When `HOLD_EXCLUSIVE=true` (default):
 
 | Symptom                      | Cause                           | Fix                                                           |
 | ---------------------------- | ------------------------------- | ------------------------------------------------------------- |
-| Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable CodeScribe |
+| Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable codescribe |
 | Double-tap too sensitive     | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
 | Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
 | VAD cuts utterance too early | VAD defaults too conservative   | Tune constants in `core/vad/config.rs` and rebuild            |
@@ -380,4 +414,4 @@ When `HOLD_EXCLUSIVE=true` (default):
 
 ---
 
-_Copyright © 2024–2026 VetCoders_
+_Copyright © 2024–2026 Vetcoders_

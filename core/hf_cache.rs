@@ -48,7 +48,7 @@ fn cache_bases() -> Vec<PathBuf> {
                 .join("huggingface")
                 .join("hub"),
         );
-        // Support local cache used by CodeScribe tools (hf download into ~/.codescribe/embeddings)
+        // Support local cache used by Codescribe tools (hf download into ~/.codescribe/embeddings)
         out.push(dirs.home_dir().join(".codescribe").join("embeddings"));
         out.push(
             dirs.home_dir()

@@ -33,7 +33,8 @@ use crate::pipeline::contracts::{
     VadVerdict,
 };
 use crate::pipeline::stream_postprocess::{
-    StreamPostProcessStats, StreamPostProcessor, final_pass_guardrail_reason,
+    StreamPostProcessStats, StreamPostProcessor, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
+    final_pass_guardrail_reason,
 };
 use crate::safe_path;
 
@@ -55,6 +56,7 @@ const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
 /// Minimum token budget for the runaway watchdog regardless of audio length, so
 /// very short chunks still get enough headroom to emit normal short utterances.
 const RUNAWAY_MIN_BUDGET: usize = 64;
+const WHISPER_START_OF_PREVIOUS_TOKEN: &str = "<|startofprev|>";
 
 /// Token budget for the in-loop runaway watchdog given the chunk audio length.
 ///
@@ -69,6 +71,24 @@ fn runaway_token_budget(audio_sec: f32) -> usize {
         * RUNAWAY_BUDGET_MARGIN)
         .ceil();
     (raw as usize).max(RUNAWAY_MIN_BUDGET)
+}
+
+fn prepend_initial_prompt_tokens(
+    tokens: &mut Vec<u32>,
+    start_of_previous_token: u32,
+    prompt_tokens: &[u32],
+) -> usize {
+    let keep = prompt_tokens.len().min(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+    if keep == 0 {
+        return 0;
+    }
+
+    let current_prefix = std::mem::take(tokens);
+    tokens.reserve_exact(1 + keep + current_prefix.len());
+    tokens.push(start_of_previous_token);
+    tokens.extend_from_slice(&prompt_tokens[..keep]);
+    tokens.extend_from_slice(&current_prefix);
+    keep
 }
 
 fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option<FinalPassVerdict> {
@@ -166,6 +186,60 @@ fn apply_requested_final_pass(
             }
         }
     }
+}
+
+fn apply_silero_filter_outcome(
+    raw: &RawTranscript,
+    filtered_text: String,
+    filtered_segments: Vec<crate::pipeline::contracts::TranscriptSegment>,
+    dropped_count: u32,
+) -> RawTranscript {
+    let mut filtered = raw.clone();
+    let should_preserve_raw_text = dropped_count == 0
+        && (is_text_equivalent(&filtered_text, &raw.text)
+            || is_strict_text_subset(&filtered_text, &raw.text));
+    filtered.text = if should_preserve_raw_text {
+        raw.text.clone()
+    } else {
+        filtered_text
+    };
+    filtered.segments = filtered_segments;
+    filtered
+}
+
+fn is_strict_text_subset(candidate: &str, full_text: &str) -> bool {
+    let candidate = normalize_transcript_text(candidate);
+    let full_text = normalize_transcript_text(full_text);
+    !candidate.is_empty() && candidate != full_text && full_text.contains(&candidate)
+}
+
+fn is_text_equivalent(candidate: &str, full_text: &str) -> bool {
+    let candidate = normalize_transcript_text(candidate);
+    let full_text = normalize_transcript_text(full_text);
+    !candidate.is_empty() && candidate == full_text
+}
+
+fn normalize_transcript_text(text: &str) -> String {
+    text.split_whitespace()
+        .filter_map(|token| {
+            let mut normalized = String::new();
+            for ch in token.chars() {
+                if ch.is_alphanumeric() {
+                    normalized.extend(ch.to_lowercase());
+                }
+            }
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
+    generated_tokens == 0
 }
 
 pub struct LocalWhisperEngine {
@@ -517,10 +591,10 @@ impl LocalWhisperEngine {
                 );
             }
 
-            let mut filtered = raw.clone();
-            filtered.text = outcome.text;
-            filtered.segments = outcome.segments;
-            (filtered, outcome.dropped_count)
+            let dropped_count = outcome.dropped_count;
+            let filtered =
+                apply_silero_filter_outcome(&raw, outcome.text, outcome.segments, dropped_count);
+            (filtered, dropped_count)
         };
 
         let (text, final_pass) = apply_requested_final_pass(&raw_for_final_pass, options);
@@ -898,6 +972,7 @@ impl LocalWhisperEngine {
             .token_to_id("<|endoftext|>")
             .ok_or_else(|| anyhow!("Tokenizer missing <|endoftext|>"))?;
         let nospeech_token = self.tokenizer.token_to_id("<|nospeech|>");
+        let start_of_previous_token = self.tokenizer.token_to_id(WHISPER_START_OF_PREVIOUS_TOKEN);
 
         // Initial tokens: <|startoftranscript|> <|lang|>? <|transcribe|> <|notimestamps|>
         let mut tokens = vec![start_token];
@@ -915,18 +990,26 @@ impl LocalWhisperEngine {
             tokens.push(t);
         }
 
-        // Initial prompt: tokenize and prepend to decoder context (helps with vocabulary/formatting)
+        // Initial prompt is previous-context text, not current transcript text:
+        // <|startofprev|> prompt... <|startoftranscript|> <|lang|>? <|transcribe|> ...
         if let Some(ref prompt) = self.decoding_params.initial_prompt
             && let Ok(encoding) = self.tokenizer.encode(prompt.as_str(), false)
         {
             let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
             if !prompt_tokens.is_empty() {
-                tracing::debug!(
-                    "Initial prompt: {} ({} tokens)",
-                    prompt,
-                    prompt_tokens.len()
-                );
-                tokens.extend(prompt_tokens);
+                if let Some(start_of_previous_token) = start_of_previous_token {
+                    let used = prepend_initial_prompt_tokens(
+                        &mut tokens,
+                        start_of_previous_token,
+                        &prompt_tokens,
+                    );
+                    tracing::debug!("Initial prompt: {} ({} tokens)", prompt, used);
+                } else {
+                    tracing::warn!(
+                        "Ignoring Whisper initial prompt: tokenizer missing {}",
+                        WHISPER_START_OF_PREVIOUS_TOKEN
+                    );
+                }
             }
         }
 
@@ -1018,7 +1101,7 @@ impl LocalWhisperEngine {
             }
 
             // Avoid terminating immediately when nothing has been emitted yet
-            let suppress_tokens = all_tokens.len() < 16;
+            let suppress_tokens = should_suppress_decoder_control_tokens(all_tokens.len());
             if suppress_tokens {
                 if (eot_token as usize) < logits_vec.len() {
                     logits_vec[eot_token as usize] = f32::NEG_INFINITY;
@@ -1851,6 +1934,40 @@ mod dedup_tests {
     }
 
     #[test]
+    fn initial_prompt_tokens_are_previous_context_before_current_decode_prefix() {
+        let without_prompt = vec![1_u32, 2, 3];
+        let mut with_prompt = without_prompt.clone();
+
+        let used = prepend_initial_prompt_tokens(&mut with_prompt, 99, &[10, 11, 12]);
+
+        assert_eq!(used, 3);
+        assert_ne!(with_prompt, without_prompt);
+        assert_eq!(&with_prompt[..4], &[99, 10, 11, 12]);
+        assert_eq!(&with_prompt[4..], without_prompt.as_slice());
+    }
+
+    #[test]
+    fn initial_prompt_tokens_are_capped_before_decode() {
+        let mut tokens = vec![1_u32, 2, 3];
+        let prompt_tokens: Vec<u32> =
+            (0..(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET as u32 + 10)).collect();
+
+        let used = prepend_initial_prompt_tokens(&mut tokens, 99, &prompt_tokens);
+
+        assert_eq!(used, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+        assert_eq!(tokens.len(), 4 + WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+        assert_eq!(tokens[0], 99);
+        assert_eq!(
+            tokens[WHISPER_INITIAL_PROMPT_TOKEN_BUDGET],
+            WHISPER_INITIAL_PROMPT_TOKEN_BUDGET as u32 - 1
+        );
+        assert_eq!(
+            &tokens[(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET + 1)..],
+            &[1, 2, 3]
+        );
+    }
+
+    #[test]
     fn ngram_block_parity() {
         // Repetition-heavy synthetic sequence exercises the block path.
         let seq = [5u32, 6, 7, 5, 6, 7, 5, 6, 7, 8, 9, 8, 9, 8, 9, 8];
@@ -1871,6 +1988,88 @@ mod dedup_tests {
         assert!(!should_drop_for_quality_gate(Some(-0.2), 3.0, &params));
         assert!(!should_drop_for_quality_gate(Some(-3.0), 1.4, &params));
         assert!(should_drop_for_quality_gate(Some(-3.0), 3.0, &params));
+    }
+
+    #[test]
+    fn silero_filter_preserves_raw_text_when_no_segments_were_dropped() {
+        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
+            text: "close chart".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.2,
+        }];
+        let raw = RawTranscript {
+            text: "Close chart, and add plan.".to_string(),
+            segments: segments.clone(),
+            ..Default::default()
+        };
+
+        let filtered = apply_silero_filter_outcome(&raw, "close chart".to_string(), segments, 0);
+
+        assert_eq!(filtered.text, raw.text);
+        assert_eq!(filtered.segments, raw.segments);
+    }
+
+    #[test]
+    fn silero_filter_preserves_raw_text_when_no_drop_only_case_or_punctuation_differs() {
+        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
+            text: "close chart and add plan".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.2,
+        }];
+        let raw = RawTranscript {
+            text: "Close chart, and add plan.".to_string(),
+            segments: segments.clone(),
+            ..Default::default()
+        };
+
+        let filtered =
+            apply_silero_filter_outcome(&raw, "close chart and add plan".to_string(), segments, 0);
+
+        assert_eq!(filtered.text, raw.text);
+        assert_eq!(filtered.segments, raw.segments);
+        assert!(!is_strict_text_subset(
+            "close chart and add plan",
+            "Close chart, and add plan."
+        ));
+    }
+
+    #[test]
+    fn silero_filter_uses_filtered_text_when_segments_were_dropped() {
+        let raw_segments = vec![
+            crate::pipeline::contracts::TranscriptSegment {
+                text: "close chart".to_string(),
+                start_ts: 0.0,
+                end_ts: 1.2,
+            },
+            crate::pipeline::contracts::TranscriptSegment {
+                text: "subscribe".to_string(),
+                start_ts: 1.2,
+                end_ts: 2.0,
+            },
+        ];
+        let filtered_segments = vec![raw_segments[0].clone()];
+        let raw = RawTranscript {
+            text: "Close chart, and subscribe.".to_string(),
+            segments: raw_segments,
+            ..Default::default()
+        };
+
+        let filtered = apply_silero_filter_outcome(
+            &raw,
+            "close chart".to_string(),
+            filtered_segments.clone(),
+            1,
+        );
+
+        assert_eq!(filtered.text, "close chart");
+        assert_eq!(filtered.segments, filtered_segments);
+    }
+
+    #[test]
+    fn decoder_control_tokens_are_only_suppressed_before_first_token() {
+        assert!(should_suppress_decoder_control_tokens(0));
+        assert!(!should_suppress_decoder_control_tokens(1));
+        assert!(!should_suppress_decoder_control_tokens(15));
     }
 
     #[test]

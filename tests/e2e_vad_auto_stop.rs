@@ -8,36 +8,16 @@
 //! Run with:
 //!   cargo test --test e2e_vad_auto_stop
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-struct EnvVarGuard {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl EnvVarGuard {
-    fn unset(key: &'static str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: this guard is used by a serial test and restores the
-        // process-global env var before returning.
-        unsafe { std::env::remove_var(key) };
-        Self { key, prev }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            // SAFETY: see EnvVarGuard::unset.
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            // SAFETY: see EnvVarGuard::unset.
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
+fn expected_auto_silence_from_process_env() -> bool {
+    std::env::var("AUTO_SILENCE")
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(false)
 }
 
 /// Test atomic flag mechanism used for VAD signaling
@@ -192,17 +172,15 @@ fn test_vad_flag_persistence() {
 
 /// Test RecorderConfig VAD defaults
 #[test]
-#[serial_test::serial]
 fn test_recorder_vad_config_defaults() {
     use codescribe::RecorderConfig;
 
-    let _auto_silence = EnvVarGuard::unset("AUTO_SILENCE");
     let config = RecorderConfig::default();
 
-    // VAD should be enabled by default
-    assert!(
+    assert_eq!(
         config.auto_silence,
-        "auto_silence should be true by default"
+        expected_auto_silence_from_process_env(),
+        "auto_silence should follow AUTO_SILENCE, defaulting off when unset"
     );
 
     // Speech threshold should be probability (0.0-1.0)
@@ -243,9 +221,13 @@ fn test_recorder_vad_config_custom() {
 /// Note: Does not actually record - tests API only
 #[test]
 fn test_recorder_vad_callback_api() {
-    use codescribe::Recorder;
+    use codescribe::{Recorder, RecorderConfig};
 
-    let mut recorder = Recorder::new().expect("Should create recorder");
+    let config = RecorderConfig {
+        auto_silence: true,
+        ..Default::default()
+    };
+    let mut recorder = Recorder::with_config(config).expect("Should create recorder");
     let called = Arc::new(AtomicBool::new(false));
 
     // Set callback

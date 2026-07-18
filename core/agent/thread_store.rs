@@ -8,7 +8,7 @@ use rand::distributions::Alphanumeric;
 use rand::{Rng, thread_rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::thread_index::ThreadIndex;
 use super::types::{ContentBlock, Message, Role};
@@ -23,6 +23,12 @@ pub struct Thread {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub title: String,
+    /// True when the user renamed the thread by hand. Auto-titling (deriving a
+    /// title from the first message) must never overwrite a custom title.
+    /// `#[serde(default)]` keeps threads saved before this field deserializable
+    /// (they default to auto-titled).
+    #[serde(default)]
+    pub title_is_custom: bool,
     pub mode: String,
     pub tags: Vec<String>,
     pub notes: Vec<ThreadNote>,
@@ -136,8 +142,7 @@ impl ThreadStore {
     }
 
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
-        validate_thread_id(&thread.id)?;
-        let path = self.thread_path(&thread.id);
+        let path = self.thread_path(&thread.id)?;
         let json = serde_json::to_vec_pretty(thread).context("Failed to serialize thread JSON")?;
         atomic_write(&path, &json)?;
 
@@ -147,9 +152,9 @@ impl ThreadStore {
     }
 
     pub fn load_thread(&self, id: &str) -> Result<Thread> {
-        validate_thread_id(id)?;
-        let path = self.thread_path(id);
-        let raw = fs::read_to_string(&path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+        let path = self.thread_path(id)?;
+        let path = canonical_existing_child(&self.threads_dir, &path)?;
+        let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read thread file: {}", path.display()))?;
         let thread = serde_json::from_str::<Thread>(&raw)
             .with_context(|| format!("Failed to parse thread file: {}", path.display()))?;
@@ -157,8 +162,7 @@ impl ThreadStore {
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
-        validate_thread_id(id)?;
-        let path = self.thread_path(id);
+        let path = self.thread_path(id)?;
         if path.exists() {
             fs::remove_file(&path)
                 .with_context(|| format!("Failed to remove thread file: {}", path.display()))?;
@@ -176,9 +180,27 @@ impl ThreadStore {
         index.set_favorite(id, is_favorite)
     }
 
+    /// Rename a thread and mark the title as user-custom so later auto-titling
+    /// won't clobber it. Returns `false` when no such thread exists on disk.
+    /// `updated_at` is left untouched so a rename does not reorder the rail.
+    pub fn set_thread_title(&self, id: &str, title: &str) -> Result<bool> {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            bail!("Thread title cannot be empty");
+        }
+        let path = self.thread_path(id)?;
+        if !path.exists() {
+            return Ok(false);
+        }
+        let mut thread = self.load_thread(id)?;
+        thread.title = trimmed.to_string();
+        thread.title_is_custom = true;
+        self.save_thread(&thread)?;
+        Ok(true)
+    }
+
     pub fn thread_file_path(&self, id: &str) -> Result<PathBuf> {
-        validate_thread_id(id)?;
-        Ok(self.thread_path(id))
+        self.thread_path(id)
     }
 
     pub fn save_blob(&self, data: &[u8], name: &str) -> Result<PathBuf> {
@@ -200,8 +222,16 @@ impl ThreadStore {
         &self.blobs_dir
     }
 
-    fn thread_path(&self, id: &str) -> PathBuf {
-        self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}"))
+    /// Build the on-disk path for a thread id.
+    ///
+    /// Validation lives here — at path *construction* — so every caller
+    /// (current or future) that turns an id into a filesystem path is forced
+    /// through `validate_thread_id`. This keeps the path-traversal guard
+    /// adjacent to the join that produces the path, instead of relying on each
+    /// API entry point to remember to validate first.
+    fn thread_path(&self, id: &str) -> Result<PathBuf> {
+        validate_thread_id(id)?;
+        Ok(self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}")))
     }
 
     fn unique_blob_path(&self, file_name: &str) -> PathBuf {
@@ -242,10 +272,10 @@ fn app_data_dir() -> PathBuf {
     }
 
     BaseDirs::new()
-        .map(|dirs| dirs.data_dir().join("CodeScribe"))
+        .map(|dirs| dirs.data_dir().join("Codescribe"))
         .unwrap_or_else(|| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            PathBuf::from(home).join("Library/Application Support/CodeScribe")
+            PathBuf::from(home).join("Library/Application Support/Codescribe")
         })
 }
 
@@ -287,6 +317,23 @@ fn validate_thread_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
+    let base = base
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize base dir: {}", base.display()))?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize file path: {}", path.display()))?;
+    if !path.starts_with(&base) {
+        bail!(
+            "Thread path escaped threads dir: {} outside {}",
+            path.display(),
+            base.display()
+        );
+    }
+    Ok(path)
+}
+
 fn role_to_string(role: Role) -> &'static str {
     match role {
         Role::User => "user",
@@ -309,12 +356,37 @@ fn content_block_to_value(block: &ContentBlock) -> Value {
             "type": "text",
             "text": text,
         }),
-        ContentBlock::Image { data, media_type } => json!({
-            "type": "image",
-            "media_type": media_type,
-            "size_bytes": data.len(),
-            "data_omitted": true,
-        }),
+        // Inline images (composer attachments) are spilled to the shared
+        // agent asset store so they survive the persist/restore roundtrip —
+        // the JSON thread file itself never carries image bytes. Empty blocks
+        // (restored from pre-asset thread files) and failed spills keep the
+        // explicit `data_omitted` marker instead of minting an empty asset.
+        ContentBlock::Image { data, media_type } => {
+            let data_omitted = || {
+                json!({
+                    "type": "image",
+                    "media_type": media_type,
+                    "size_bytes": data.len(),
+                    "data_omitted": true,
+                })
+            };
+            if data.is_empty() {
+                return data_omitted();
+            }
+            match crate::agent::AgentAssetStore::save_inline_image(data, media_type) {
+                Ok(asset) => json!({
+                    "type": "image_asset",
+                    "asset_id": asset.asset_id,
+                    "path": asset.path,
+                    "media_type": asset.media_type,
+                    "size_bytes": asset.size_bytes,
+                }),
+                Err(error) => {
+                    warn!("Failed to persist inline image as disk-backed asset: {error}");
+                    data_omitted()
+                }
+            }
+        }
         ContentBlock::ImageAsset(asset) => json!({
             "type": "image_asset",
             "asset_id": asset.asset_id,
@@ -347,7 +419,7 @@ fn value_to_content_block(value: &Value) -> ContentBlock {
     };
 
     match value_type {
-        "text" => ContentBlock::Text(
+        "text" | "input_text" | "output_text" => ContentBlock::Text(
             value
                 .get("text")
                 .and_then(Value::as_str)
@@ -473,6 +545,7 @@ mod tests {
             created_at: updated_at - Duration::minutes(10),
             updated_at,
             title: "Parvo patient follow-up".to_string(),
+            title_is_custom: false,
             mode: "assistive".to_string(),
             tags: vec!["urgent".to_string(), "canine".to_string()],
             notes: vec![ThreadNote {
@@ -523,6 +596,30 @@ mod tests {
     }
 
     #[test]
+    fn legacy_openai_text_aliases_restore_as_plain_text() {
+        let message = ThreadMessage {
+            role: "assistant".to_string(),
+            content: vec![
+                json!({"type":"input_text","text":"Owner asked about appetite"}),
+                json!({"type":"output_text","text":"Appetite improved overnight"}),
+            ],
+            timestamp: Utc::now(),
+            metadata: None,
+        }
+        .to_message();
+
+        assert_eq!(message.content.len(), 2);
+        match &message.content[0] {
+            ContentBlock::Text(text) => assert_eq!(text, "Owner asked about appetite"),
+            other => panic!("input_text restored as unexpected block: {other:?}"),
+        }
+        match &message.content[1] {
+            ContentBlock::Text(text) => assert_eq!(text, "Appetite improved overnight"),
+            other => panic!("output_text restored as unexpected block: {other:?}"),
+        }
+    }
+
+    #[test]
     fn delete_removes_thread_and_index_entry() -> Result<()> {
         let tmp = TempDir::new()?;
         let store = ThreadStore::new_in(tmp.path().join("threads"))?;
@@ -531,7 +628,7 @@ mod tests {
         store.save_thread(&thread)?;
         store.delete_thread(&thread.id)?;
 
-        let path = store.thread_path(&thread.id);
+        let path = store.thread_path(&thread.id)?;
         assert!(!path.exists());
 
         let index = ThreadIndex::load_or_create(store.threads_dir())?;
@@ -626,6 +723,153 @@ mod tests {
         assert!(summary.is_favorite);
 
         Ok(())
+    }
+
+    #[test]
+    fn set_thread_title_marks_custom_and_persists() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        let id = thread.id.clone();
+        store.save_thread(&thread)?;
+
+        let renamed = store.set_thread_title(&id, "  Custom name  ")?;
+        assert!(renamed);
+
+        let loaded = store.load_thread(&id)?;
+        assert_eq!(loaded.title, "Custom name");
+        assert!(
+            loaded.title_is_custom,
+            "rename marks the title as user-custom"
+        );
+
+        let index = ThreadIndex::load_or_create(store.threads_dir())?;
+        let summary = index
+            .data()
+            .threads
+            .iter()
+            .find(|value| value.id == id)
+            .expect("summary should exist");
+        assert_eq!(summary.title, "Custom name", "index reflects renamed title");
+
+        assert!(
+            store.set_thread_title(&id, "   ").is_err(),
+            "empty title is rejected"
+        );
+        assert!(
+            !store.set_thread_title("t_2026-01-01_missing", "x")?,
+            "renaming an absent thread returns false"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let image_bytes = format!("w5a-inline-roundtrip-bytes-{}", std::process::id()).into_bytes();
+
+        let message = Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text("look at this".to_string()),
+                ContentBlock::Image {
+                    data: image_bytes.clone(),
+                    media_type: "image/png".to_string(),
+                },
+            ],
+            timestamp: Some(Utc::now()),
+        };
+
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.messages = vec![ThreadMessage::from(&message)];
+        store.save_thread(&thread)?;
+
+        let restored = store.load_thread(&thread.id)?.messages[0].to_message();
+        let ContentBlock::ImageAsset(asset) = &restored.content[1] else {
+            panic!(
+                "inline image should restore as a disk-backed asset, got: {:?}",
+                restored.content[1]
+            );
+        };
+        let data = crate::agent::AgentAssetStore::read_image(&asset.path)?;
+        assert_eq!(
+            data, image_bytes,
+            "restored asset bytes must match the original image"
+        );
+        assert_eq!(asset.size_bytes, image_bytes.len() as u64);
+        assert_eq!(asset.media_type, "image/png");
+
+        // The persisted thread JSON must not carry raw image bytes.
+        let raw = fs::read_to_string(store.thread_file_path(&thread.id)?)?;
+        assert!(raw.contains("image_asset"));
+        assert!(!raw.contains("data_omitted"));
+
+        fs::remove_file(&asset.path).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn inline_image_asset_is_written_once_across_saves() -> Result<()> {
+        let block = ContentBlock::Image {
+            data: b"w5a-dedup-bytes".to_vec(),
+            media_type: "image/png".to_string(),
+        };
+
+        let first = content_block_to_value(&block);
+        let path = PathBuf::from(
+            first
+                .get("path")
+                .and_then(Value::as_str)
+                .expect("persisted inline image should carry an asset path"),
+        );
+        assert!(path.exists(), "first persist must write the asset file");
+
+        // Simulate a pre-existing asset: if the second persist rewrote the
+        // file, the sentinel would be clobbered.
+        fs::write(&path, b"sentinel")?;
+        let second = content_block_to_value(&block);
+        assert_eq!(
+            first, second,
+            "same bytes must map to the same asset across saves"
+        );
+        assert_eq!(
+            fs::read(&path)?,
+            b"sentinel",
+            "existing asset must be referenced, not rewritten"
+        );
+
+        fs::remove_file(&path).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_data_omitted_image_restores_without_bytes_and_repersists_safely() {
+        let legacy = json!({
+            "type": "image",
+            "media_type": "image/png",
+            "size_bytes": 123,
+            "data_omitted": true,
+        });
+
+        let block = value_to_content_block(&legacy);
+        let ContentBlock::Image { data, media_type } = &block else {
+            panic!("legacy image value should restore as an image block: {block:?}");
+        };
+        assert!(data.is_empty(), "legacy blocks carry no bytes by design");
+        assert_eq!(media_type, "image/png");
+
+        // Re-persisting a byteless block keeps the explicit degraded marker
+        // instead of minting an empty asset.
+        let repersisted = content_block_to_value(&block);
+        assert_eq!(
+            repersisted.get("data_omitted").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            repersisted.get("type").and_then(Value::as_str),
+            Some("image")
+        );
     }
 
     #[test]

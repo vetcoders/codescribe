@@ -6,8 +6,7 @@ dist/
 *.app/
 target-noembed/
 
-# Cargo lockfile (per latest GitHub security recommendations for libraries/apps)
-Cargo.lock
+# Cargo.lock is tracked for reproducible app builds and cargo-audit evidence.
 __pycache__/
 *.pyc
 .venv/
@@ -65,7 +64,7 @@ nohup.out.backup
 *codex*
 /agents
 
-# CodeScribe
+# Codescribe
 .codescribe/state/
 codescribe_memory_*.md
 codescribe_memory_*.json

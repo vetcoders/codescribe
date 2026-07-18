@@ -1,4 +1,4 @@
-//! Attachment model and on-disk store for CodeScribe.
+//! Attachment model and on-disk store for Codescribe.
 //!
 //! Provides a thin wrapper around file paths with metadata (kind, source,
 //! display name) used by the Agent chat UI and LLM context pipeline.
@@ -191,6 +191,125 @@ fn kind_from_extension(path: &Path) -> AttachmentKind {
         | "vue" | "svelte" | "astro" | "env" | "ini" | "cfg" | "conf" | "diff" | "patch"
         | "tex" | "bib" | "dockerfile" | "makefile" | "cmake" => AttachmentKind::Text,
         _ => AttachmentKind::File,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Vision attachment parsing (shared by agent + legacy send paths)
+// ═══════════════════════════════════════════════════════════
+
+/// Marker line emitted by `build_attachments_block` that introduces the list of
+/// image file paths appended to a chat payload as text.
+pub const IMAGE_PATHS_MARKER: &str = "ATTACHMENTS (image paths)";
+
+/// Default per-image byte cap honored when loading images for vision input.
+pub const MAX_VISION_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// MIME media type for a vision-supported image, inferred from extension.
+///
+/// Returns `None` for extensions the model APIs do not accept as image input
+/// (e.g. `svg`, `heic`, `raw`), even though [`AttachmentKind::Image`] classifies
+/// them as images for UI purposes.
+pub fn image_media_type(path: &Path) -> Option<&'static str> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "tif" | "tiff" => Some("image/tiff"),
+        _ => None,
+    }
+}
+
+/// Split a chat payload into its visible text and the image paths listed under
+/// the `ATTACHMENTS (image paths)` marker appended by `build_attachments_block`.
+///
+/// The marker block (and a dangling `---`/`—` separator directly above it) is
+/// removed from the returned text so the model never sees raw file paths where a
+/// real vision input belongs. The original payload is returned verbatim in
+/// `.0` when no marker is present, so non-attachment messages pass through
+/// unchanged.
+pub fn parse_image_attachment_block(text: &str) -> (String, Vec<PathBuf>) {
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut image_paths: Vec<PathBuf> = Vec::new();
+    let mut in_block = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == IMAGE_PATHS_MARKER {
+            // Drop a preceding separator if present to avoid leaving a dangling "---".
+            if out_lines
+                .last()
+                .is_some_and(|l| l.trim() == "---" || l.trim() == "—")
+            {
+                out_lines.pop();
+            }
+            in_block = true;
+            continue;
+        }
+
+        if in_block {
+            if trimmed.is_empty() {
+                in_block = false;
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("- ") {
+                let p = rest.trim();
+                if !p.is_empty() {
+                    image_paths.push(PathBuf::from(p));
+                }
+                continue;
+            }
+            // Unexpected line → end block, keep the line.
+            in_block = false;
+            out_lines.push(line.to_string());
+            continue;
+        }
+
+        out_lines.push(line.to_string());
+    }
+
+    (out_lines.join("\n"), image_paths)
+}
+
+/// Load an image file as `(bytes, media_type)` for vision input.
+///
+/// Returns `None` (with a warning) when the extension is not a vision-supported
+/// image, the file is unreadable, or it exceeds `max_bytes`.
+pub fn load_image_for_vision(path: &Path, max_bytes: u64) -> Option<(Vec<u8>, String)> {
+    let media_type = image_media_type(path)?;
+
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > max_bytes {
+        warn!(
+            "Skipping image attachment (too large, {} bytes > {} max): {}",
+            meta.len(),
+            max_bytes,
+            path.display()
+        );
+        return None;
+    }
+
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.is_empty() => {
+            // An empty/zero-byte file would encode to an empty base64 string,
+            // which providers reject ("empty base64-encoded bytes") and which
+            // fails the whole request. Drop it instead.
+            warn!("Skipping image attachment (empty file): {}", path.display());
+            None
+        }
+        Ok(bytes) => Some((bytes, media_type.to_string())),
+        Err(e) => {
+            warn!("Failed to read image attachment {}: {}", path.display(), e);
+            None
+        }
     }
 }
 
@@ -447,6 +566,82 @@ mod tests {
         assert_eq!(sanitize_filename("...."), "attachment");
         let many_dots = format!("{}abc.txt", ".".repeat(120));
         assert_eq!(sanitize_filename(&many_dots), "abc.txt");
+    }
+
+    #[test]
+    fn test_image_media_type() {
+        assert_eq!(image_media_type(Path::new("a.png")), Some("image/png"));
+        assert_eq!(image_media_type(Path::new("a.JPG")), Some("image/jpeg"));
+        assert_eq!(image_media_type(Path::new("a.jpeg")), Some("image/jpeg"));
+        assert_eq!(image_media_type(Path::new("a.webp")), Some("image/webp"));
+        assert_eq!(image_media_type(Path::new("a.tiff")), Some("image/tiff"));
+        // Not accepted as vision input despite being "images" for the UI.
+        assert_eq!(image_media_type(Path::new("a.svg")), None);
+        assert_eq!(image_media_type(Path::new("a.heic")), None);
+        assert_eq!(image_media_type(Path::new("a.txt")), None);
+        assert_eq!(image_media_type(Path::new("noext")), None);
+    }
+
+    #[test]
+    fn test_parse_image_attachment_block_passthrough() {
+        // No marker → text returned unchanged, no paths.
+        let text = "just a normal message\nwith two lines";
+        let (cleaned, paths) = parse_image_attachment_block(text);
+        assert_eq!(cleaned, text);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_parse_image_attachment_block_extracts_paths() {
+        let text = "Look at these\n\n---\nATTACHMENTS (image paths)\n- /tmp/a.png\n- /tmp/b.jpg\n";
+        let (cleaned, paths) = parse_image_attachment_block(text);
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.jpg")]
+        );
+        // The marker block and the dangling separator are stripped.
+        assert!(!cleaned.contains(IMAGE_PATHS_MARKER));
+        assert!(!cleaned.contains("/tmp/a.png"));
+        assert!(cleaned.contains("Look at these"));
+        assert!(!cleaned.trim_end().ends_with("---"));
+    }
+
+    #[test]
+    fn test_parse_image_attachment_block_stops_at_blank_line() {
+        let text = "msg\nATTACHMENTS (image paths)\n- /tmp/a.png\n\ntrailing text kept";
+        let (cleaned, paths) = parse_image_attachment_block(text);
+        assert_eq!(paths, vec![PathBuf::from("/tmp/a.png")]);
+        assert!(cleaned.contains("trailing text kept"));
+    }
+
+    #[test]
+    fn test_load_image_for_vision_rejects_oversize_and_nonimage() {
+        let dir = std::env::temp_dir().join(format!("cs_vision_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let png = dir.join("small.png");
+        std::fs::write(&png, b"\x89PNG\r\n\x1a\nfake").unwrap();
+        let loaded = load_image_for_vision(&png, MAX_VISION_IMAGE_BYTES);
+        assert!(loaded.is_some());
+        let (bytes, mt) = loaded.unwrap();
+        assert_eq!(mt, "image/png");
+        assert!(!bytes.is_empty());
+
+        // Oversize → rejected.
+        assert!(load_image_for_vision(&png, 2).is_none());
+
+        // Non-vision extension → rejected even if file exists.
+        let txt = dir.join("note.txt");
+        std::fs::write(&txt, b"hello").unwrap();
+        assert!(load_image_for_vision(&txt, MAX_VISION_IMAGE_BYTES).is_none());
+
+        // Empty (0-byte) image → rejected: an empty base64 payload would make
+        // the provider reject the whole request.
+        let empty = dir.join("empty.png");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(load_image_for_vision(&empty, MAX_VISION_IMAGE_BYTES).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

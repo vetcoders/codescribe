@@ -6,7 +6,7 @@
 //! Run with:
 //!   cargo test --test e2e_state_machine
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use codescribe::config::{Config, Language, ShortcutBinding, UserSettings, WorkMode};
 use serial_test::serial;
@@ -157,7 +157,7 @@ fn test_whisper_language_config() {
     let _tmp = setup_test_env();
 
     let config = Config::load();
-    assert_eq!(config.whisper_language, Language::Polish);
+    assert_eq!(config.whisper_language, Language::Auto);
 
     config.save_to_env("WHISPER_LANGUAGE", "en").expect("save");
     let reloaded = Config::load();

@@ -2,7 +2,7 @@ use serial_test::serial;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::audio::chunker::SpeechSession;
+use crate::audio::chunker::{DEFAULT_BUFFERED_SILENCE_SEC, SpeechSession};
 use crate::vad;
 
 struct EnvGuard {
@@ -67,10 +67,9 @@ fn utterance_silence_default_regression() {
         .max(1.0) as usize;
     assert_eq!(stream.min_silence_samples(), stream_expected);
 
-    // Utterance mode should keep VadConfig default silence unless explicitly overridden.
-    let utter_expected = (base.max_silence_duration_sec * vad::VAD_SAMPLE_RATE as f32)
-        .round()
-        .max(1.0) as usize;
+    // Utterance mode uses the buffered cadence default unless explicitly overridden.
+    let utter_expected =
+        (DEFAULT_BUFFERED_SILENCE_SEC * vad::VAD_SAMPLE_RATE as f32).round() as usize;
     assert_eq!(utterance.min_silence_samples(), utter_expected);
 }
 
@@ -120,7 +119,10 @@ fn runtime_contract_blocks_legacy_worker_symbols() {
     let mut guarded_sources: Vec<(String, String)> = [
         "core/audio/streaming_recorder.rs",
         "app/controller/mod.rs",
-        "bin/codescribe.rs",
+        // Runtime entrypoint that installs the hotkey listener and hosts the
+        // RecordingController for the SwiftUI app — successor to the removed
+        // `bin/codescribe.rs` tray binary.
+        "bridge/src/hotkeys.rs",
     ]
     .into_iter()
     .map(|relative_path| {

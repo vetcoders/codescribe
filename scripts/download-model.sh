@@ -1,5 +1,5 @@
 #!/bin/bash
-# CodeScribe Model Download Script
+# Codescribe Model Download Script
 # Downloads whisper-large-v3-turbo-mlx-q8 from HuggingFace
 #
 # Prerequisites:
@@ -10,7 +10,7 @@
 #   HF_TOKEN=hf_xxx ./scripts/download-model.sh
 #   ./scripts/download-model.sh  # Uses cached token from `hf auth login`
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -euo pipefail
 
@@ -36,7 +36,7 @@ fi
 MODEL_NAME="${MODEL_REPO##*/}"
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  CodeScribe Model Download"
+echo "  Codescribe Model Download"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Model:  ${MODEL_NAME}"
 echo "  Source: https://huggingface.co/${MODEL_REPO}"
@@ -53,16 +53,24 @@ elif "$HF_BIN" auth whoami &>/dev/null; then
     echo "▶ Using cached HuggingFace credentials"
 else
     echo "⚠ No HuggingFace authentication found"
-    echo ""
-    echo "  For gated models, you need to authenticate:"
-    echo "    1. Create token at https://huggingface.co/settings/tokens"
-    echo "    2. Run: hf auth login"
-    echo "    3. Or set: export HF_TOKEN=hf_xxx"
-    echo ""
-    read -p "  Continue without auth? (y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
+    if [[ "${CI:-}" == "true" || ! -t 0 ]]; then
+        # Non-interactive (CI or no TTY): never block on a prompt.
+        # The default model is public and downloads without auth; a gated
+        # model needs HF_TOKEN, in which case the download below fails clearly.
+        echo "  Non-interactive mode: proceeding without auth."
+        echo "  If the model is gated, set HF_TOKEN=hf_xxx and re-run."
+    else
+        echo ""
+        echo "  For gated models, you need to authenticate:"
+        echo "    1. Create token at https://huggingface.co/settings/tokens"
+        echo "    2. Run: hf auth login"
+        echo "    3. Or set: export HF_TOKEN=hf_xxx"
+        echo ""
+        read -p "  Continue without auth? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
     fi
 fi
 
@@ -80,5 +88,5 @@ echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
 echo "  Location: HF cache (use: hf cache ls)"
 echo ""
-echo "  Model ready for use with CodeScribe."
+echo "  Model ready for use with Codescribe."
 echo "───────────────────────────────────────────────────────────"

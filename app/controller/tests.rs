@@ -1,6 +1,8 @@
 //! Controller unit tests
 
 use super::*;
+use crate::controller::types::{TranscriptPipelineParams, read_truth_sidecar};
+use codescribe_core::pipeline::contracts::EngineEvent;
 use serial_test::serial;
 use std::time::Duration;
 
@@ -8,6 +10,18 @@ use std::time::Duration;
 async fn test_initial_state() {
     let controller = RecordingController::new();
     assert_eq!(controller.current_state().await, State::Idle);
+}
+
+#[tokio::test]
+async fn test_paste_target_app_name_maps_latched_name_and_absence() {
+    let controller = RecordingController::new();
+    assert_eq!(controller.paste_target_app_name().await, None);
+
+    *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());
+    assert_eq!(
+        controller.paste_target_app_name().await.as_deref(),
+        Some("Ghostty")
+    );
 }
 
 #[tokio::test]
@@ -53,18 +67,6 @@ async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
 }
 
 #[test]
-fn test_renamed_request_recording_stop_is_callable() {
-    // Compile-time guard that the rename `request_recording_commit` →
-    // `request_recording_stop` shipped intact. If anyone re-renames or
-    // removes the function this test stops compiling. Body doesn't have to
-    // execute (OVERLAY_CONTROLLER won't be registered in tests, so the call
-    // gates out early with a warn!) — we just need the symbol to resolve.
-    let _: fn() = request_recording_stop;
-    let _: fn() = request_segment_commit;
-    let _: fn() = request_segment_commit_and_augment;
-}
-
-#[test]
 fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
     assert_eq!(effective_hold_start_delay_ms(200, false), 200);
     assert_eq!(effective_hold_start_delay_ms(200, true), 400);
@@ -77,48 +79,6 @@ fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
         toggle_stop_adjudicate_timeout() >= Duration::from_secs(90),
         "toggle stop watchdog must not fire before the default AI attempt/inter-chunk budget"
     );
-}
-
-#[test]
-fn test_overlay_format_result_marks_failed_formatting_raw() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "raw transcript".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Failed,
-        },
-    );
-
-    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
-}
-
-#[test]
-fn test_overlay_format_result_marks_empty_formatting_output() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "   ".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Applied,
-        },
-    );
-
-    assert_eq!(out, "raw transcript\n\n(raw — formatting failed)");
-}
-
-#[test]
-fn test_overlay_format_result_keeps_applied_formatting() {
-    let out = overlay_format_result_text(
-        "raw transcript",
-        crate::ai_formatting::AiFormatResult {
-            text: "Formatted transcript.".to_string(),
-            reasoning_text: None,
-            status: crate::ai_formatting::AiFormatStatus::Applied,
-        },
-    );
-
-    assert_eq!(out, "Formatted transcript.");
 }
 
 #[tokio::test]
@@ -137,7 +97,10 @@ async fn test_hold_down_schedules_delayed_start() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("down hotkey must schedule without error in test");
 
     // Should still be IDLE (delay not elapsed)
     assert_eq!(controller.current_state().await, State::Idle);
@@ -164,7 +127,10 @@ async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("assistive ctrl hold hotkey must process in test");
 
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(controller.current_state().await, State::Idle);
@@ -189,7 +155,10 @@ async fn test_hold_up_before_delay_cancels() {
         force_raw: true,
         force_ai: false,
     };
-    controller.handle_hotkey_event(down_event).await.unwrap();
+    controller
+        .handle_hotkey_event(down_event)
+        .await
+        .expect("down must process for cancel test");
 
     // Release before delay elapses
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -201,7 +170,10 @@ async fn test_hold_up_before_delay_cancels() {
         force_raw: true,
         force_ai: false,
     };
-    controller.handle_hotkey_event(up_event).await.unwrap();
+    controller
+        .handle_hotkey_event(up_event)
+        .await
+        .expect("up must cancel the pending hold");
 
     // Wait past the original delay
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -224,8 +196,10 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(down_event).await.unwrap();
-
+    controller
+        .handle_hotkey_event(down_event)
+        .await
+        .expect("hotkey down must succeed in test harness (P2-07 over-correct)");
     tokio::time::sleep(Duration::from_millis(100)).await;
     let up_event = HotkeyInput {
         key_type: HotkeyType::Hold,
@@ -235,7 +209,10 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(up_event).await.unwrap();
+    controller
+        .handle_hotkey_event(up_event)
+        .await
+        .expect("hotkey up must succeed in test harness (P2-07 over-correct)");
 
     tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(controller.current_state().await, State::Idle);
@@ -255,7 +232,10 @@ async fn test_toggle_starts_immediately() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle press must start recording immediately in test");
 
     // Should immediately transition to REC_TOGGLE
     assert_eq!(controller.current_state().await, State::RecToggle);
@@ -278,7 +258,10 @@ async fn test_busy_state_ignores_hotkeys() {
         force_ai: false,
     };
 
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("ignored hotkey in busy must not error the handler");
 
     // Should remain BUSY
     assert_eq!(controller.current_state().await, State::Busy);
@@ -364,42 +347,6 @@ async fn test_hold_down_sets_force_raw_mode() {
     assert!(
         !*controller.assistive_mode.read().await,
         "Hold Down without Shift should keep assistive_mode=false"
-    );
-}
-
-#[test]
-fn test_action_contract_mode_prefers_raw_when_forced() {
-    let mode = resolve_transcription_action_contract_mode(true, false, true, true);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_ai_format_when_force_ai_enabled() {
-    let mode = resolve_transcription_action_contract_mode(false, true, false, false);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_ai_format_for_toggle_ai_path() {
-    let mode = resolve_transcription_action_contract_mode(false, false, true, true);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::AiFormat
-    );
-}
-
-#[test]
-fn test_action_contract_mode_uses_raw_for_toggle_without_ai() {
-    let mode = resolve_transcription_action_contract_mode(false, false, true, false);
-    assert_eq!(
-        mode,
-        crate::ui::overlay::TranscriptionActionContractMode::Raw
     );
 }
 
@@ -497,7 +444,560 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
 
     assert_eq!(
         maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
-        "<codescribe mode=\"dictation\" lang=\"pl\">\nliteral transcript\n</codescribe>"
+        "<codescribe mode=\"dictation\" lang=\"auto\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+#[test]
+fn test_transcript_delivery_wrap_uses_truth_quality_placeholders() {
+    let config = Config {
+        transcript_tagging_enabled: true,
+        transcript_tag_template: "<tag conf=\"{conf}\" flags=\"{flags}\">{text}</tag>".to_string(),
+        ..Config::default()
+    };
+    let metadata = RecordingTruthMetadata {
+        avg_logprob: Some(-1.45),
+        confidence_flags: vec![
+            TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+            TranscriptionConfidenceFlag::UnverifiedStream,
+        ],
+        ..RecordingTruthMetadata::default()
+    };
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery_with_quality(
+            "literal transcript",
+            &config,
+            "dictation",
+            Some(&metadata),
+        ),
+        "<tag conf=\"low\" flags=\"possible_hallucination_logprob,unverified_stream\">literal transcript</tag>"
+    );
+}
+
+#[test]
+fn auto_paste_policy_matrix() {
+    let triggers = [AutoPasteTrigger::Hold, AutoPasteTrigger::DoubleLeftOption];
+    for trigger in triggers {
+        for persisted_enabled in [false, true] {
+            for overlay_enabled in [false, true] {
+                let allowed = resolve_auto_paste_policy(AutoPastePolicyContext {
+                    trigger,
+                    persisted_enabled,
+                    overlay_enabled,
+                    assistive: false,
+                    no_speech: false,
+                    empty_output: false,
+                    notes_save_only: false,
+                    live_stream_session: false,
+                    commit_required: false,
+                });
+                assert_eq!(
+                    allowed, persisted_enabled,
+                    "trigger={trigger:?}, policy={persisted_enabled}, overlay={overlay_enabled}"
+                );
+            }
+        }
+    }
+
+    let vetoes = [
+        ("assistive", true, false, false, false, false, false),
+        ("no_speech", false, true, false, false, false, false),
+        ("empty_output", false, false, true, false, false, false),
+        ("notes_save_only", false, false, false, true, false, false),
+        (
+            "live_stream_session",
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+        ),
+        ("commit_required", false, false, false, false, false, true),
+    ];
+    for trigger in triggers {
+        for overlay_enabled in [false, true] {
+            for (
+                name,
+                assistive,
+                no_speech,
+                empty_output,
+                notes_save_only,
+                live_stream_session,
+                commit_required,
+            ) in vetoes
+            {
+                assert!(
+                    !resolve_auto_paste_policy(AutoPastePolicyContext {
+                        trigger,
+                        persisted_enabled: true,
+                        overlay_enabled,
+                        assistive,
+                        no_speech,
+                        empty_output,
+                        notes_save_only,
+                        live_stream_session,
+                        commit_required,
+                    }),
+                    "veto={name}, trigger={trigger:?}, overlay={overlay_enabled}"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct FakeAutomaticDeliverySink {
+    events: std::sync::Mutex<Vec<String>>,
+}
+
+impl AutomaticDeliverySink for FakeAutomaticDeliverySink {
+    fn paste(&self, text: &str) -> anyhow::Result<()> {
+        self.events
+            .lock()
+            .expect("fake delivery sink lock")
+            .push(text.to_string());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn automatic_delivery_is_once_per_recording_timestamp() {
+    let sink = Arc::new(FakeAutomaticDeliverySink::default());
+    let owner = AutomaticDeliveryOwner::new(sink.clone());
+    let timestamp_a = chrono::Local::now();
+    let timestamp_b = timestamp_a + chrono::Duration::milliseconds(1);
+
+    assert!(owner.deliver_once(timestamp_a, "visible A").await.unwrap());
+    assert!(!owner.deliver_once(timestamp_a, "headless A").await.unwrap());
+    assert!(
+        !owner
+            .deliver_once(timestamp_a, "duplicate final A")
+            .await
+            .unwrap()
+    );
+    assert!(owner.deliver_once(timestamp_b, "visible B").await.unwrap());
+    assert!(
+        !owner
+            .deliver_once(timestamp_a, "late duplicate A")
+            .await
+            .unwrap()
+    );
+
+    assert_eq!(
+        *sink.events.lock().expect("fake delivery events"),
+        ["visible A".to_string(), "visible B".to_string()]
+    );
+}
+
+fn test_transcript_pipeline_params(
+    raw_text: &str,
+    config: Config,
+    force_raw: bool,
+    force_ai: bool,
+    transcript_source: Option<RecordingTranscriptSource>,
+) -> TranscriptPipelineParams {
+    TranscriptPipelineParams {
+        raw_text: raw_text.to_string(),
+        recording_timestamp: chrono::Local::now(),
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw,
+        force_ai,
+        config,
+        language_opt: None,
+        raw_save_enabled: false,
+        audio_path: None,
+        cloud_verdict_opt: None,
+        cloud_handle: None,
+        transcript_source,
+        truth_fallback_class: None,
+        truth_no_speech_reason: None,
+        truth_speech_pct: None,
+        truth_avg_logprob: None,
+        truth_confidence_flags: Vec::new(),
+        truth_sparkline: None,
+        truth_final_pass_disposition: None,
+        truth_commit_trigger: None,
+        truth_display_status: "Ready".to_string(),
+        append_mode: false,
+        live_stream_session: false,
+        user_needs_separator: false,
+        assistant_needs_separator: false,
+        skip_user_bubble: false,
+    }
+}
+
+async fn final_transcript_text(events: &mut tokio::sync::broadcast::Receiver<IpcEvent>) -> String {
+    loop {
+        match events.recv().await.expect("final transcript event") {
+            IpcEvent {
+                payload: IpcEventPayload::FinalTranscript { text },
+                ..
+            } => return text,
+            _ => continue,
+        }
+    }
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::path::Path) -> Self {
+        Self::set_value(key, value.to_string_lossy().as_ref())
+    }
+
+    fn set_value(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: tests using this guard are serialized with `#[serial]`, so no
+        // other thread touches the process environment concurrently.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: tests using this guard are serialized with `#[serial]`, so no
+        // other thread touches the process environment concurrently.
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: restore runs under the same `#[serial]` serialization as `set`.
+        unsafe {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
+
+fn latest_truth_metadata(root: &std::path::Path) -> RecordingTruthMetadata {
+    let transcriptions = root.join("transcriptions");
+    let mut truth_files = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".txt.truth.json"))
+            {
+                truth_files.push(path);
+            }
+        }
+    }
+    truth_files.sort();
+    let truth_path = truth_files.pop().expect("truth sidecar");
+    let transcript_path = truth_path.with_file_name(
+        truth_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("truth file name")
+            .trim_end_matches(".truth.json"),
+    );
+    read_truth_sidecar(&transcript_path).expect("read truth sidecar")
+}
+
+fn history_txt_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let transcriptions = root.join("transcriptions");
+    let mut paths = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path.extension().is_some_and(|ext| ext == "txt") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn history_audio_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let transcriptions = root.join("transcriptions");
+    let mut paths = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| matches!(ext, "m4a" | "wav"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn disable_assistive_agent_credentials_for_test() -> Vec<EnvVarGuard> {
+    vec![
+        EnvVarGuard::set_value("CODESCRIBE_DISABLE_KEYCHAIN", "1"),
+        EnvVarGuard::set_value(
+            "LLM_ASSISTIVE_ENDPOINT",
+            "https://api.openai.com/v1/responses",
+        ),
+        EnvVarGuard::set_value("LLM_ASSISTIVE_PROVIDER", "openai"),
+        EnvVarGuard::unset("LLM_ASSISTIVE_API_KEY"),
+        EnvVarGuard::unset("LLM_ANTHROPIC_API_KEY"),
+        EnvVarGuard::unset("LLM_OPENAI_ACCOUNT_TOKENS"),
+    ]
+}
+
+#[tokio::test]
+#[serial]
+async fn test_raw_pipeline_applies_lexicon_without_ai_formatting() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "Uzywam doker do kontenerow.",
+            config,
+            true,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("raw pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert!(
+        final_text.contains("Docker"),
+        "RAW delivery must still apply deterministic lexicon corrections: {final_text}"
+    );
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("raw"),
+        "force_raw must remain RAW and must not run AI formatting"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_toggle_adjudicated_respects_settings_default_without_hotkey_override() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "literal transcript",
+            config,
+            false,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("settings-default pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert_eq!(final_text, "literal transcript");
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("toggle"),
+        "no hotkey override must preserve the Settings-default toggle route, not force RAW"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_toggle_adjudicated_explicit_raw_override_still_wins() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let config = Config {
+        ai_formatting_enabled: true,
+        transcript_tagging_enabled: true,
+        transcript_tag_template:
+            codescribe_core::transcript_tagging::DEFAULT_TRANSCRIPT_TAG_TEMPLATE.to_string(),
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+
+    let mut events = controller.subscribe_events();
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "literal transcript",
+            config,
+            true,
+            false,
+            Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        ))
+        .await
+        .expect("explicit raw override pipeline succeeds");
+    let final_text = final_transcript_text(&mut events).await;
+
+    assert_eq!(final_text, "literal transcript");
+    let metadata = latest_truth_metadata(temp_dir.path());
+    assert_eq!(
+        metadata.mode.as_deref(),
+        Some("raw"),
+        "explicit RAW hotkey override must still win over the Settings default"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_pipeline_persists_raw_voice_history() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _agent_guards = disable_assistive_agent_credentials_for_test();
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: true,
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+    let source_audio_path = temp_dir.path().join("assistive-source.wav");
+    std::fs::write(&source_audio_path, b"not a wav but copy fallback is enough")
+        .expect("write source audio");
+    let raw_voice = "Proszę sprawdzić dawkowanie leku bez szkieletu promptu.";
+    let mut params = test_transcript_pipeline_params(
+        raw_voice,
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+    params.raw_save_enabled = false;
+    params.audio_path = Some(ValidatedAudioPath::new(&source_audio_path).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds even when agent lane is unavailable");
+
+    let txt_files = history_txt_files(temp_dir.path());
+    assert_eq!(
+        txt_files.len(),
+        1,
+        "assistive should persist exactly one raw transcript"
+    );
+    let transcript_path = &txt_files[0];
+    assert!(
+        transcript_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("_raw.txt")),
+        "assistive transcript must be stored as Raw: {}",
+        transcript_path.display()
+    );
+    let saved = std::fs::read_to_string(transcript_path).expect("read transcript");
+    assert_eq!(saved, raw_voice);
+    assert!(!saved.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+
+    let metadata = read_truth_sidecar(transcript_path).expect("assistive truth sidecar");
+    assert_eq!(metadata.mode.as_deref(), Some("assistive"));
+
+    let audio_files = history_audio_files(temp_dir.path());
+    assert_eq!(
+        audio_files.len(),
+        1,
+        "dump_audio_logs should save one audio pair"
+    );
+    assert_eq!(
+        audio_files[0].file_stem(),
+        transcript_path.file_stem(),
+        "audio artifact should share the transcript stem"
+    );
+    let audio_metadata =
+        read_truth_sidecar(&audio_files[0]).expect("assistive audio truth sidecar");
+    assert_eq!(audio_metadata.mode.as_deref(), Some("assistive"));
+
+    let recent = crate::state::history::recent_entries(8);
+    let transcript_path = transcript_path
+        .canonicalize()
+        .expect("canonical transcript path");
+    assert!(
+        recent.iter().any(|entry| {
+            entry.path.canonicalize().ok().as_ref() == Some(&transcript_path)
+                && entry.kind == crate::state::history::TranscriptKind::Raw
+        }),
+        "Open history surface should list the Raw transcript artifact via recent_entries"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_raw_save_is_idempotent_when_early_gate_already_saved() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _agent_guards = disable_assistive_agent_credentials_for_test();
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+    let raw_voice = "Nie zapisuj drugi raz tego samego nagrania.";
+    let mut params = test_transcript_pipeline_params(
+        raw_voice,
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+    params.raw_save_enabled = true;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds");
+
+    let txt_files = history_txt_files(temp_dir.path());
+    assert_eq!(
+        txt_files.len(),
+        1,
+        "assistive path must not add a second final transcript"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&txt_files[0]).expect("read transcript"),
+        raw_voice
     );
 }
 
@@ -523,21 +1023,26 @@ fn test_toggle_stop_event_preserves_active_session_identity() {
 
 #[tokio::test]
 #[serial]
-async fn test_agent_send_in_flight_blocks_new_hotkey_starts() {
+async fn test_agent_send_in_flight_blocks_nonassistive_hotkey_starts() {
+    // Contract (preserved): a *raw* dictation start fired while a background
+    // agent turn is still streaming stays blocked — barging a raw transcript
+    // into a live agent turn is never wanted, and it preserves the single audio
+    // pipeline. The block lands before the mode-flag section, so the controller
+    // stays Idle with default flags.
     let controller = RecordingController::new();
     helpers::set_agent_send_in_flight_for_test(true);
 
-    let selection_hold = HotkeyInput {
+    let raw_hold = HotkeyInput {
         key_type: HotkeyType::Hold,
         action: HotkeyAction::Down,
-        assistive: true,
-        hold_mode: HoldMode::Selection,
-        force_raw: false,
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw: true,
         force_ai: false,
     };
 
     controller
-        .handle_hotkey_event(selection_hold)
+        .handle_hotkey_event(raw_hold)
         .await
         .expect("agent-busy hotkey block should be non-fatal");
 
@@ -545,6 +1050,97 @@ async fn test_agent_send_in_flight_blocks_new_hotkey_starts() {
     assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
     assert!(!*controller.assistive_mode.read().await);
     helpers::set_agent_send_in_flight_for_test(false);
+}
+
+/// Assistive Talk Anytime — the agent-send gate decision is a pure function of
+/// (state, event, in-flight flag). These assertions pin the new contract
+/// without spawning the heavy async recording machinery.
+#[test]
+fn test_assistive_talk_anytime_gate_predicate() {
+    let assistive_chat_hold = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: true,
+        hold_mode: HoldMode::Chat,
+        force_raw: false,
+        force_ai: false,
+    };
+    let raw_hold = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw: true,
+        force_ai: false,
+    };
+    let assistive_toggle = HotkeyInput {
+        key_type: HotkeyType::Toggle,
+        action: HotkeyAction::Press,
+        assistive: true,
+        hold_mode: HoldMode::Raw,
+        force_raw: false,
+        force_ai: false,
+    };
+    let release = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Up,
+        assistive: true,
+        hold_mode: HoldMode::Chat,
+        force_raw: false,
+        force_ai: false,
+    };
+
+    // Classifier: only *start* events flagged assistive are Talk-Anytime starts.
+    assert!(is_assistive_start_event(&assistive_chat_hold));
+    assert!(is_assistive_start_event(&assistive_toggle));
+    assert!(!is_assistive_start_event(&raw_hold)); // raw start is not assistive
+    assert!(!is_assistive_start_event(&release)); // a release is not a start
+
+    // Talk Anytime: an assistive start is ALLOWED through while the agent
+    // answers in the background (Idle + in-flight) — it must reach the recording
+    // path so its utterance flows into the pending-follow-up buffer.
+    assert!(
+        !should_block_hotkey_during_agent_send(State::Idle, &assistive_chat_hold, true),
+        "FN+Shift Talk Anytime must not be ignored while an agent turn streams"
+    );
+    assert!(
+        !should_block_hotkey_during_agent_send(State::Idle, &assistive_toggle, true),
+        "assistive toggle Talk Anytime must not be ignored while an agent turn streams"
+    );
+
+    // Protected: a raw dictation start stays blocked during a streaming turn.
+    assert!(
+        should_block_hotkey_during_agent_send(State::Idle, &raw_hold, true),
+        "raw dictation must not barge a live agent turn"
+    );
+
+    // No agent in flight → nothing is gated (normal idle dictation works).
+    assert!(!should_block_hotkey_during_agent_send(
+        State::Idle,
+        &raw_hold,
+        false
+    ));
+    assert!(!should_block_hotkey_during_agent_send(
+        State::Idle,
+        &assistive_chat_hold,
+        false
+    ));
+
+    // Non-start events (key release) are never blocked by this gate, so a hold
+    // release can always cancel/finish even mid-turn.
+    assert!(!should_block_hotkey_during_agent_send(
+        State::Idle,
+        &release,
+        true
+    ));
+
+    // The gate only acts at Idle: while audio/transcription holds State::Busy the
+    // separate Busy guard owns the decision (this gate stays out of its way).
+    assert!(!should_block_hotkey_during_agent_send(
+        State::Busy,
+        &raw_hold,
+        true
+    ));
 }
 
 fn make_final_pass_verdict(
@@ -694,6 +1290,34 @@ fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_previ
 }
 
 #[test]
+fn test_recon_final_pass_replaces_correct_live_preview_even_when_text_is_worse() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "podmieniony final pass",
+            82.0,
+            Some(-0.24),
+            false,
+        )),
+        "poprawny tekst z live preview".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("podmieniony final pass"));
+    assert_ne!(
+        verdict.raw_text.as_deref(),
+        Some("poprawny tekst z live preview")
+    );
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
 fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallback() {
     let verdict = adjudicate_recording_truth(
         true,
@@ -728,6 +1352,78 @@ fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallb
         Some("streaming_preview_used_as_verdict")
     );
     assert_eq!(verdict.display_status, "Streaming fallback");
+}
+
+#[test]
+fn test_adjudicate_recording_truth_cold_whisper_empty_live_recovers_via_final_pass() {
+    // P0 decoupling contract: recording readiness != Whisper readiness.
+    //
+    // Cold-start scenario — the user pressed record and spoke while Whisper was
+    // still loading (or had been idle-unloaded). The live worker therefore
+    // produced NOTHING (its chunks dropped under backpressure during the cold
+    // load), so `streaming_text` is empty. But audio capture never blocked: the
+    // full WAV was saved, and `finish_recording` ran the final pass on it,
+    // lazy-loading the engine. The beginning the user spoke during warm-up must
+    // be recovered, not lost — the saved audio path is the authoritative truth.
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "poczatek wypowiedzi z zimnego startu",
+            79.0,
+            Some(-0.28),
+            false,
+        )),
+        // Empty live preview: cold Whisper meant no live transcript at all.
+        String::new(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(
+        verdict.raw_text.as_deref(),
+        Some("poczatek wypowiedzi z zimnego startu"),
+        "final pass on the saved WAV must recover speech spoken during Whisper warm-up"
+    );
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+        "cold-start recovery is authoritative LocalFinalPass, not a degraded fallback"
+    );
+    assert_eq!(verdict.fallback_class, None);
+    assert!(
+        verdict.confidence_flags.is_empty(),
+        "a clean final-pass recovery carries no degraded/unverified flags"
+    );
+    assert_eq!(verdict.commit_trigger, None);
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
+fn test_recording_start_paths_do_not_gate_on_whisper_health() {
+    let source = include_str!("mod.rs");
+    let hold_start = source
+        .split("let task = tokio::spawn(async move {")
+        .nth(1)
+        .and_then(|tail| tail.split("Self::configure_hold_event_sink(").next())
+        .expect("hold start pre-recorder block should be present");
+    let toggle_start = source
+        .split("async fn start_toggle_recording")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("let _guard = self.serial_lock.lock().await;")
+                .next()
+        })
+        .expect("toggle start pre-lock block should be present");
+
+    assert!(
+        !hold_start.contains("check_health"),
+        "hold recording start must not wait for Whisper health; saved audio/final pass recovers cold STT"
+    );
+    assert!(
+        !toggle_start.contains("check_health"),
+        "toggle recording start must not wait for Whisper health; saved audio/final pass recovers cold STT"
+    );
 }
 
 #[test]
@@ -781,46 +1477,6 @@ fn test_adjudicate_recording_truth_marks_low_logprob_as_unsafe() {
         Some("possible_hallucination_logprob")
     );
     assert_eq!(verdict.display_status, "Possible hallucination");
-}
-
-#[test]
-fn test_recorder_runtime_recovery_requires_granted_microphone_and_missing_recorder() {
-    assert!(should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Granted,
-        true
-    ));
-    assert!(!should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Denied,
-        true
-    ));
-    assert!(!should_attempt_recorder_runtime_recovery(
-        PermissionStatus::Granted,
-        false
-    ));
-}
-
-#[test]
-fn test_recorder_recovery_message_uses_settings_language() {
-    let message = RecordingController::format_recorder_recovery_message(
-        &["Accessibility", "Microphone"],
-        "DictationHotkey",
-        "FormattingHotkey",
-        "AssistiveHotkey",
-    );
-
-    assert!(message.contains("Open Settings"));
-    assert!(!message.contains("Setup"));
-    assert!(message.contains("Accessibility, Microphone"));
-}
-
-#[test]
-fn test_backend_recovery_message_uses_settings_language() {
-    let message =
-        RecordingController::format_backend_recovery_message(Some("Cloud endpoint timed out"));
-
-    assert!(message.contains("Open Settings"));
-    assert!(!message.contains("Setup"));
-    assert!(message.contains("Cloud endpoint timed out"));
 }
 
 // ── Pure-function unit tests for truth helpers (push_typed_flag,
@@ -1058,7 +1714,10 @@ async fn test_toggle_press_does_not_set_force_raw_mode() {
         force_raw: false,
         force_ai: false,
     };
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle press hotkey must succeed in test (P2-07)");
 
     // force_raw should be false
     assert!(
@@ -1084,7 +1743,10 @@ async fn test_toggle_press_sets_force_ai_mode() {
         force_raw: false,
         force_ai: true,
     };
-    controller.handle_hotkey_event(event).await.unwrap();
+    controller
+        .handle_hotkey_event(event)
+        .await
+        .expect("toggle force_ai hotkey must succeed (P2-07 over-correct)");
 
     assert!(
         *controller.force_ai_mode.read().await,
@@ -1404,7 +2066,7 @@ async fn test_finish_recording_resets_unconditionally_assistive() {
 async fn test_no_decision_mode_state_exists() {
     // Compile-time + runtime proof: State enum has exactly these variants.
     // There is NO "DecisionMode" variant — the paste regression was caused
-    // by `enter_decision_mode()` which has been replaced by `schedule_auto_hide()`.
+    // by the old legacy transcription overlay decision mode, which has been removed.
     let states = [State::Idle, State::RecHold, State::RecToggle];
     for state in &states {
         let controller = RecordingController::new();
@@ -1557,14 +2219,12 @@ fn test_delta_first_guards_allow_full_rewrite_offline() {
 
 #[test]
 fn test_process_recording_outcome_no_speech_is_soft() {
-    let outcome =
-        ProcessRecordingOutcome::no_speech("vad_no_speech_detected", "No reliable speech detected");
+    let outcome = ProcessRecordingOutcome::no_speech("vad_no_speech_detected");
     assert_eq!(
         outcome.no_speech_reason.as_deref(),
         Some("vad_no_speech_detected")
     );
     assert!(outcome.commit_trigger.is_none());
-    assert_eq!(outcome.final_status, "No reliable speech detected");
 }
 
 #[tokio::test]
@@ -1714,6 +2374,73 @@ async fn test_reset_session_after_start_failure_clears_transient_state() {
     assert!(!is_assistive_session());
 }
 
+#[tokio::test(start_paused = true)]
+#[serial]
+async fn test_hold_stuck_stop_watchdog_recovers_idle_and_clears_session_fields() {
+    let _hang = hang_process_recording_for_test();
+    let controller = RecordingController::new();
+    *controller.state.write().await = State::RecHold;
+    *controller.assistive_mode.write().await = true;
+    *controller.hold_mode.write().await = HoldMode::Chat;
+    *controller.force_raw_mode.write().await = true;
+    *controller.force_ai_mode.write().await = true;
+    *controller.session_id.write().await = Some("stuck-hold-session".to_string());
+    *controller.assistive_context.write().await = Some(AssistiveContext::default());
+    *controller.pre_overlay_frontmost_app.write().await = Some("com.example.Editor".to_string());
+    controller
+        .start_transition_in_flight
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    controller
+        .assistive_loop_active
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    controller
+        .toggle_user_has_text
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    controller
+        .toggle_assistant_has_text
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    set_assistive_session(true);
+
+    let err = controller
+        .finish_recording()
+        .await
+        .expect_err("pending process_recording must trip the hold stuck-stop watchdog");
+
+    assert!(
+        err.to_string().contains("Hold stop timeout"),
+        "unexpected timeout error: {err}"
+    );
+    assert_eq!(controller.current_state().await, State::Idle);
+    assert!(!*controller.assistive_mode.read().await);
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert!(!*controller.force_raw_mode.read().await);
+    assert!(!*controller.force_ai_mode.read().await);
+    assert!(controller.session_id.read().await.is_none());
+    assert!(controller.assistive_context.read().await.is_none());
+    assert!(controller.pre_overlay_frontmost_app.read().await.is_none());
+    assert!(
+        !controller
+            .start_transition_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        !controller
+            .assistive_loop_active
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        !controller
+            .toggle_user_has_text
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(
+        !controller
+            .toggle_assistant_has_text
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(!is_assistive_session());
+}
+
 /// Regression guard for the toggle-stop self-deadlock (root cause behind
 /// commit 91b2346's watchdog).
 ///
@@ -1754,5 +2481,165 @@ async fn rwlock_session_id_read_then_write_does_not_self_deadlock() {
         *lock.read().await,
         Some("session-xyz:stopping".to_string()),
         "expected the write to land after the read guard dropped"
+    );
+}
+
+/// A failed transcription must reach the user, not just the log. The Err branch
+/// of `handle_processed_recording_result` broadcasts an engine `Warning` over the
+/// existing IPC channel; the bridge forwarder turns that into `listener.on_error`
+/// + a tray Error state on the SwiftUI surface. Without this the failure was a
+/// silent `error!()` and the user saw nothing.
+#[tokio::test]
+async fn test_processing_failure_emits_user_visible_warning() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+
+    controller
+        .handle_processed_recording_result(
+            false,
+            &Err(anyhow::anyhow!("simulated transcription failure")),
+        )
+        .await;
+
+    let event = events
+        .try_recv()
+        .expect("a processing failure must broadcast a user-visible warning event");
+    match event.payload {
+        IpcEventPayload::Engine(EngineEventWire::Warning { code, message }) => {
+            assert_eq!(code, "transcription_failed");
+            assert!(
+                message.contains("simulated transcription failure"),
+                "warning message must carry the underlying failure: {message}"
+            );
+        }
+        other => panic!("expected an engine Warning payload, got {other:?}"),
+    }
+}
+
+fn test_final_event(utterance_id: u64, text: &str) -> EngineEvent {
+    EngineEvent::UtteranceFinal {
+        utterance_id,
+        text: text.to_string(),
+        raw_text: text.to_string(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: Vec::new(),
+        vad_speech_pct: Some(100.0),
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn hold_event_sink_forwards_live_preview_then_final_in_order() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+    let sink = RecordingController::build_recording_event_sink(
+        Arc::new(tokio::sync::Mutex::new(String::new())),
+        true,
+        controller.event_broadcast.clone(),
+        Arc::clone(&controller.session_telemetry),
+    );
+
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "live words".to_string(),
+    });
+    sink.on_event(&test_final_event(41, "live words"));
+
+    let preview = events.try_recv().expect("hold preview must reach IPC");
+    let final_event = events.try_recv().expect("hold final must reach IPC");
+    assert!(matches!(
+        preview.payload,
+        IpcEventPayload::Engine(EngineEventWire::Preview { rev: 1, ref text })
+            if text == "live words"
+    ));
+    assert!(matches!(
+        final_event.payload,
+        IpcEventPayload::Engine(EngineEventWire::UtteranceFinal {
+            utterance_id: 41,
+            ref text,
+            ..
+        }) if text == "live words"
+    ));
+    assert!(
+        events.try_recv().is_err(),
+        "one engine event must yield one IPC event"
+    );
+}
+
+#[tokio::test]
+async fn late_correction_after_final_is_a_single_patch_event_not_a_second_final() {
+    let controller = RecordingController::new();
+    let mut events = controller.subscribe_events();
+    let sink = RecordingController::build_recording_event_sink(
+        Arc::new(tokio::sync::Mutex::new(String::new())),
+        true,
+        controller.event_broadcast.clone(),
+        Arc::clone(&controller.session_telemetry),
+    );
+
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "raw text".to_string(),
+    });
+    sink.on_event(&test_final_event(7, "raw text"));
+    sink.on_event(&EngineEvent::Correction {
+        rev: 2,
+        text: "corrected text".to_string(),
+        previous_text: "raw text".to_string(),
+    });
+
+    let payloads = [
+        events.try_recv().expect("preview event").payload,
+        events.try_recv().expect("final event").payload,
+        events.try_recv().expect("correction event").payload,
+    ];
+    assert_eq!(
+        payloads
+            .iter()
+            .filter(|payload| matches!(
+                payload,
+                IpcEventPayload::Engine(EngineEventWire::UtteranceFinal { .. })
+            ))
+            .count(),
+        1,
+        "postprocess correction must not masquerade as a second delivery final"
+    );
+    assert!(matches!(
+        &payloads[2],
+        IpcEventPayload::Engine(EngineEventWire::Correction {
+            text,
+            previous_text,
+            ..
+        }) if text == "corrected text" && previous_text == "raw text"
+    ));
+    assert!(
+        events.try_recv().is_err(),
+        "late correction must be emitted exactly once"
+    );
+}
+
+/// The formatted transcript must be persisted BEFORE the paste attempt so a paste
+/// error (which `?`-early-returns from `process_stopped_recording`) cannot drop the
+/// AI-formatted layer from history. Paste is skipped under `cfg!(test)`, so the
+/// ordering invariant is asserted structurally against the source: if anyone moves
+/// the `needs_final_save` block back below the paste call, this fails.
+#[test]
+fn test_formatted_transcript_persists_before_paste() {
+    let source = include_str!("mod.rs");
+    let save_idx = source
+        .find("let needs_final_save")
+        .expect("final-transcript save block must be present");
+    let paste_idx = source
+        .get(save_idx..)
+        .and_then(|tail| tail.find(".automatic_delivery").map(|idx| save_idx + idx))
+        .expect("automatic delivery owner call must be present");
+    assert!(
+        save_idx < paste_idx,
+        "formatted transcript save must precede the paste attempt so a failed paste \
+         cannot drop the AI-formatted layer from history"
     );
 }

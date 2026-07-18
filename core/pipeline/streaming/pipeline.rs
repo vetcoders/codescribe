@@ -5,7 +5,7 @@ use crate::pipeline::contracts::TranscriptSegment;
 use crate::pipeline::dedup::{strip_segment_overlap, strip_suffix_overlap_live};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 
-use super::quality_gate::is_hallucination;
+use super::quality_gate::is_hallucination_with_quality;
 
 // ── TranscriptionPipeline ────────────────────────────────────────────────────
 
@@ -72,7 +72,17 @@ impl TranscriptionPipeline {
         text: &str,
         segments: &[TranscriptSegment],
     ) -> Result<String, PostprocessDrop> {
-        if is_hallucination(text, self.language.as_deref()) {
+        self.postprocess_with_reason_and_segments_with_quality(text, segments, None)
+    }
+
+    /// Segment-aware postprocess with engine confidence metadata.
+    pub(crate) fn postprocess_with_reason_and_segments_with_quality(
+        &mut self,
+        text: &str,
+        segments: &[TranscriptSegment],
+        avg_logprob: Option<f32>,
+    ) -> Result<String, PostprocessDrop> {
+        if is_hallucination_with_quality(text, self.language.as_deref(), avg_logprob) {
             self.hallucination_drops += 1;
             return Err(PostprocessDrop::Hallucination);
         }

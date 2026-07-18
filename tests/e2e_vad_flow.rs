@@ -7,7 +7,7 @@
 //! - VadConfig presets and clamping
 //! - Real audio speech detection
 //!
-//! Created by M&K (c)2026 VetCoders
+//! Created by Vetcoders (c)2026
 
 use codescribe_core::vad::{self, AccumulatingVad, VadConfig};
 use std::path::PathBuf;

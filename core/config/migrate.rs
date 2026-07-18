@@ -4,7 +4,7 @@
 //! macOS Keychain. This is an import path, not an ongoing precedence rule.
 
 use super::keychain;
-use super::settings::UserSettings;
+use super::settings::{FormattingPolicy, UserSettings};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
@@ -50,7 +50,10 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
         settings.llm_assistive_model = Some(v);
     }
     if let Some(v) = migrated_value(file_env, "FORMATTING_LEVEL") {
-        settings.formatting_level = Some(v);
+        match FormattingPolicy::parse(&v) {
+            Ok(policy) => settings.formatting_level = Some(policy.as_str().to_string()),
+            Err(error) => tracing::warn!("Migration: ignored invalid formatting policy: {error}"),
+        }
     }
     // Promoted fields (previously .env only)
     if let Some(v) = migrated_value(file_env, "LLM_FORMATTING_ENDPOINT") {
@@ -81,6 +84,12 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
     // Migrate boolean settings
     if let Some(v) = migrated_value(file_env, "AI_FORMATTING_ENABLED") {
         settings.ai_formatting_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
+    if let Some(v) = migrated_value(file_env, "AUTO_PASTE_ENABLED") {
+        settings.auto_paste_enabled = Some(matches!(
+            v.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        ));
     }
     if let Some(v) = migrated_value(file_env, "BEEP_ON_START") {
         settings.beep_on_start = Some(v == "1" || v.eq_ignore_ascii_case("true"));
@@ -156,20 +165,25 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
         settings.backend_max_upload_mb = Some(n);
     }
 
-    // Save settings.json
-    if let Err(e) = settings.save() {
-        tracing::warn!("Migration: failed to save settings.json: {e}");
-        return;
-    }
-
-    // Migrate API keys to Keychain
+    // Migrate API keys to Keychain before writing settings.json. The existence
+    // of settings.json is the migration-complete sentinel, so a failed secret
+    // write must leave the migration retryable on the next launch.
     for &account in keychain::KEYCHAIN_ACCOUNTS {
         if let Some(secret) = migrated_value(file_env, account)
             && !secret.is_empty()
-            && let Err(e) = keychain::save_key(account, &secret)
+            && let Err(e) = save_migrated_key(account, &secret)
         {
-            tracing::warn!("Migration: failed to save {account} to Keychain: {e}");
+            tracing::warn!(
+                "Migration: failed to save {account} to Keychain; will retry on next launch: {e}"
+            );
+            return;
         }
+    }
+
+    // Save settings.json last because its presence marks the one-time import as complete.
+    if let Err(e) = settings.save() {
+        tracing::warn!("Migration: failed to save settings.json: {e}");
+        return;
     }
 
     info!("Migrated config to settings.json + Keychain");
@@ -177,6 +191,38 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
 
 fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
     file_env.and_then(|vars| vars.get(key).cloned())
+}
+
+fn save_migrated_key(account: &str, secret: &str) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if test_save_key_failure_account(account) {
+        anyhow::bail!("injected save_key failure for {account}");
+    }
+
+    keychain::save_key(account, secret)
+}
+
+#[cfg(test)]
+static TEST_SAVE_KEY_FAILURE: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn test_save_key_failure_account(account: &str) -> bool {
+    TEST_SAVE_KEY_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map(|guard| guard.as_deref() == Some(account))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+fn set_test_save_key_failure(account: Option<&str>) {
+    if let Ok(mut guard) = TEST_SAVE_KEY_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        *guard = account.map(str::to_owned);
+    }
 }
 
 #[cfg(test)]
@@ -258,6 +304,149 @@ mod tests {
             "runtime env value must not leak into migrated settings.json"
         );
 
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn formatting_policy_env_migration_normalizes_aliases_and_preserves_correction_digest() {
+        use sha2::{Digest, Sha256};
+
+        let cases = [
+            ("off", Some("off")),
+            ("correction", Some("correction")),
+            ("smart", Some("smart")),
+            ("max", Some("max")),
+            ("raw", Some("off")),
+            ("medium", Some("correction")),
+            ("creative", Some("max")),
+            ("aggressive", None),
+        ];
+
+        for (input, expected) in cases {
+            let _tmp = setup_isolated_data_dir();
+            let correction_path = crate::config::prompts::get_formatting_prompt_path();
+            std::fs::create_dir_all(correction_path.parent().expect("prompt parent"))
+                .expect("create prompt directory");
+            let original = b"existing correction bytes\n\0tail\n";
+            std::fs::write(&correction_path, original).expect("seed correction prompt");
+            let before = format!("{:x}", Sha256::digest(original));
+
+            let mut file_env = HashMap::new();
+            file_env.insert("FORMATTING_LEVEL".to_string(), input.to_string());
+            migrate_if_needed(Some(&file_env));
+
+            assert_eq!(UserSettings::load().formatting_level.as_deref(), expected);
+            for _probe in 0..3 {
+                let snapshot = crate::config::prompts::prompt_snapshot(
+                    crate::config::prompts::PromptKind::Formatting,
+                );
+                assert_eq!(snapshot.content.as_bytes(), original);
+            }
+            let after = format!(
+                "{:x}",
+                Sha256::digest(std::fs::read(&correction_path).expect("read correction prompt"))
+            );
+            assert_eq!(
+                after, before,
+                "migration changed formatting.txt for {input}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn auto_paste_env_migration_preserves_explicit_policy() {
+        for (input, expected) in [("0", false), ("1", true), ("false", false), ("true", true)] {
+            let _tmp = setup_isolated_data_dir();
+            let mut file_env = HashMap::new();
+            file_env.insert("AUTO_PASTE_ENABLED".to_string(), input.to_string());
+
+            migrate_if_needed(Some(&file_env));
+
+            assert_eq!(
+                UserSettings::load().auto_paste_enabled,
+                Some(expected),
+                "input={input}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn migrate_retries_when_keychain_save_fails() {
+        let _tmp = setup_isolated_data_dir();
+        let mut file_env = HashMap::new();
+        file_env.insert("WHISPER_LANGUAGE".to_string(), "en".to_string());
+        file_env.insert("LLM_API_KEY".to_string(), "retry-secret".to_string());
+
+        set_test_save_key_failure(Some("LLM_API_KEY"));
+        remove_env_for_test("LLM_API_KEY");
+
+        migrate_if_needed(Some(&file_env));
+
+        assert!(
+            !UserSettings::settings_path().exists(),
+            "failed keychain save must not mark migration complete"
+        );
+        assert!(
+            std::env::var("LLM_API_KEY").is_err(),
+            "injected failure happens before test key persistence"
+        );
+
+        set_test_save_key_failure(None);
+        migrate_if_needed(Some(&file_env));
+
+        assert!(
+            UserSettings::settings_path().exists(),
+            "retry after keychain recovery should complete migration"
+        );
+        assert_eq!(
+            std::env::var("LLM_API_KEY").as_deref(),
+            Ok("retry-secret"),
+            "retry writes the migrated secret"
+        );
+
+        remove_env_for_test("LLM_API_KEY");
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn successful_migration_marks_complete_once() {
+        let _tmp = setup_isolated_data_dir();
+        let mut first_env = HashMap::new();
+        first_env.insert("WHISPER_LANGUAGE".to_string(), "en".to_string());
+        first_env.insert("LLM_API_KEY".to_string(), "first-secret".to_string());
+
+        migrate_if_needed(Some(&first_env));
+
+        let path = UserSettings::settings_path();
+        assert!(
+            path.exists(),
+            "successful migration writes completion sentinel"
+        );
+        assert_eq!(std::env::var("LLM_API_KEY").as_deref(), Ok("first-secret"));
+
+        let mut second_env = HashMap::new();
+        second_env.insert("WHISPER_LANGUAGE".to_string(), "pl".to_string());
+        second_env.insert("LLM_API_KEY".to_string(), "second-secret".to_string());
+
+        migrate_if_needed(Some(&second_env));
+
+        let persisted = UserSettings::load();
+        assert_eq!(
+            persisted.whisper_language.as_deref(),
+            Some("en"),
+            "existing settings.json skips re-migration"
+        );
+        assert_eq!(
+            std::env::var("LLM_API_KEY").as_deref(),
+            Ok("first-secret"),
+            "existing completion sentinel skips duplicate key migration"
+        );
+
+        remove_env_for_test("LLM_API_KEY");
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 }

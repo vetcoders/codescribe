@@ -1,4 +1,4 @@
-# CodeScribe - Team Setup (Pure Rust Era)
+# Codescribe - Team Setup (Rust Core + SwiftUI App)
 
 ## Quick Start
 
@@ -7,23 +7,25 @@
 - macOS 14+ (Apple Silicon ARM64 only)
 - Rust 1.83+
 
-### 2. Build & Run (CLI)
+### 2. Build & Run (Native App)
 
 ```bash
 # Clone
-git clone git@github.com:VetCoders/CodeScribe.git
-cd CodeScribe
+git clone git@github.com:Vetcoders/Codescribe.git
+cd codescribe
 
-# Build and run CLI
-cargo build --release -p codescribe
-./target/release/codescribe
+# Build and install the SwiftUI app over the Rust UniFFI core
+make app PROFILE=release
+make install-app
+make start
 ```
 
 ### 3. Development Mode
 
 ```bash
-# Run debug binary
-cargo run
+# Build and launch the debug app bundle
+make app PROFILE=debug
+open macos/build/Build/Products/Debug/Codescribe.app
 ```
 
 ## Permissions Required
@@ -62,22 +64,18 @@ Grant in: System Settings > Privacy & Security
 - Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
   `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
   default local turbo model → default HF cache snapshot.
-- `make install` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
+- `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
 
 **Developer note:**
 If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a valid Whisper directory.
 
-## CLI Usage
+## Qube CLI Utilities
+
+The app path is the SwiftUI bundle. Terminal utilities are limited to batch quality/reporting tools:
 
 ```bash
-# Transcribe audio file
-codescribe transcribe audio.wav
-
-# With AI formatting
-codescribe transcribe audio.wav --format
-
-# Specify language
-codescribe transcribe audio.wav --language pl
+qube-report --help
+qube-daemon --help
 ```
 
 ## Quality & Tools
@@ -85,10 +83,10 @@ codescribe transcribe audio.wav --language pl
 New CLI tools for batch processing and automation:
 
 ```bash
-# Batch quality report (renamed from codescribe-quality in 0.9.0)
+# Batch quality report
 qube-report --help
 
-# Self-improving quality daemon (renamed from codescribe-loop in 0.9.0)
+# Quality daemon
 qube-daemon --help
 ```
 
@@ -100,7 +98,7 @@ File: `~/.codescribe/.env`
 USE_LOCAL_STT=1
 
 # Whisper
-WHISPER_LANGUAGE=pl
+WHISPER_LANGUAGE=auto
 
 # AI formatting (optional) - OpenAI Responses by default
 AI_FORMATTING_ENABLED=1
@@ -108,17 +106,17 @@ AI_FORMATTING_ENABLED=1
 # Formatting mode - used by cleanup/formatting paths
 LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
 LLM_FORMATTING_MODEL=gpt-4.1
-LLM_FORMATTING_API_KEY=sk-xxx
+# Store LLM_FORMATTING_API_KEY in Settings / macOS Keychain.
 
 # Assistive mode - dictation-driven agent
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-5.5
-LLM_ASSISTIVE_API_KEY=sk-xxx
+# Store LLM_ASSISTIVE_API_KEY in Settings / macOS Keychain.
 
 # Shared fallback (if mode-specific not set)
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-proj-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain.
 ```
 
 ### Custom Prompts
@@ -154,7 +152,7 @@ make test-sse    # SSE streaming tests (requires ~/.codescribe/.env)
 
 Clippy and tests run **locally** via pre-commit hooks or `make check`.
 
-For full CI, configure a self-hosted macOS runner (Dragon recommended).
+For full CI, configure a self-hosted macOS runner (a high-RAM Apple Silicon workstation recommended).
 
 ## Troubleshooting
 
@@ -176,4 +174,4 @@ For full CI, configure a self-hosted macOS runner (Dragon recommended).
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

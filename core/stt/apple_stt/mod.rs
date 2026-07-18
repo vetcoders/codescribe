@@ -200,20 +200,35 @@ fn transcribe_via_bridge(
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
         .context("Apple STT bridge transcribe failed")?;
 
+    Ok(raw_transcript_from_bridge_response(response))
+}
+
+fn raw_transcript_from_bridge_response(response: BridgeResponse) -> RawTranscript {
     let segments = response
         .segments
         .into_iter()
-        .map(|seg| TranscriptSegment {
-            text: seg.text,
-            start_ts: seg.start_ts,
-            end_ts: seg.end_ts,
-        })
+        .filter_map(bridge_segment_to_transcript_segment)
         .collect();
-
-    Ok(RawTranscript {
+    RawTranscript {
         text: response.text.trim().to_string(),
         segments,
         ..Default::default()
+    }
+}
+
+fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<TranscriptSegment> {
+    let text = seg.text.trim().to_string();
+    if text.is_empty()
+        || !seg.start_ts.is_finite()
+        || !seg.end_ts.is_finite()
+        || seg.end_ts < seg.start_ts
+    {
+        return None;
+    }
+    Some(TranscriptSegment {
+        text,
+        start_ts: seg.start_ts,
+        end_ts: seg.end_ts,
     })
 }
 
@@ -227,7 +242,12 @@ fn run_bridge_with_timeout(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("failed to spawn Apple STT bridge '{bridge_bin}'"))?;
+        .with_context(|| {
+            format!(
+                "failed to spawn Apple STT bridge '{}'",
+                bridge_bin.display()
+            )
+        })?;
 
     // Write request to stdin; on error, reap the child to avoid zombie.
     let write_result = (|| -> Result<()> {
@@ -359,11 +379,86 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<(bool, bool)> {
     ))
 }
 
-fn bridge_binary() -> String {
-    match std::env::var(ENV_STT_BRIDGE) {
-        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
-        _ => DEFAULT_BRIDGE_BIN.to_string(),
+fn bridge_binary() -> PathBuf {
+    let current_exe = std::env::current_exe().ok();
+    bridge_binary_for_current_exe(current_exe.as_deref())
+}
+
+fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
+    if let Some(override_bin) = bridge_override_binary() {
+        return override_bin;
     }
+
+    bundled_bridge_binary_for_exe(current_exe).unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
+}
+
+fn bridge_override_binary() -> Option<PathBuf> {
+    match std::env::var(ENV_STT_BRIDGE) {
+        Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
+        _ => None,
+    }
+}
+
+fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> {
+    let executable_dir = current_exe?.parent()?;
+    let contents_dir = executable_dir.parent()?;
+    let bundle_dir = contents_dir.parent()?;
+    if executable_dir.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+    if contents_dir.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+    if bundle_dir.extension()?.to_str()? != "app" {
+        return None;
+    }
+
+    let candidate = executable_dir.join(DEFAULT_BRIDGE_BIN);
+    candidate.is_file().then_some(candidate)
+}
+
+/// Cheap, process-cached check that the Apple STT bridge binary can actually be
+/// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins first, then a
+/// bridge bundled beside the current `.app` executable, then the default bare
+/// command name on `PATH`. AUTO engine selection gates on this so it never
+/// advertises Apple on a host where the bridge is absent (which wastes a probe
+/// and then silently falls back to Candle). Explicit `CODESCRIBE_STT_ENGINE=apple`
+/// bypasses this and still probes + fails loudly.
+pub(crate) fn is_bridge_resolvable() -> bool {
+    static RESOLVABLE: OnceLock<bool> = OnceLock::new();
+    *RESOLVABLE.get_or_init(bridge_binary_resolvable)
+}
+
+fn bridge_binary_resolvable() -> bool {
+    let current_exe = std::env::current_exe().ok();
+    bridge_binary_resolvable_for_current_exe(current_exe.as_deref())
+}
+
+fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool {
+    if let Some(override_bin) = bridge_override_binary() {
+        return bridge_candidate_resolvable(&override_bin);
+    }
+    if bundled_bridge_binary_for_exe(current_exe).is_some() {
+        return true;
+    }
+
+    which_in_path(DEFAULT_BRIDGE_BIN).is_some()
+}
+
+fn bridge_candidate_resolvable(candidate: &Path) -> bool {
+    let bin = candidate.to_string_lossy();
+    if candidate.is_absolute() || bin.contains(std::path::MAIN_SEPARATOR) {
+        return candidate.is_file();
+    }
+
+    which_in_path(&bin).is_some()
+}
+
+fn which_in_path(bin: &str) -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(bin))
+        .find(|candidate| candidate.is_file())
 }
 
 fn ensure_supported_platform() -> Result<()> {
@@ -516,6 +611,124 @@ impl Drop for TempWavFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn bridge_resolvable_honors_explicit_override_path() {
+        let previous = std::env::var(ENV_STT_BRIDGE).ok();
+
+        let present = std::env::temp_dir().join(format!("cs-stt-bridge-{}", Uuid::new_v4()));
+        std::fs::write(&present, b"#!/bin/sh\n").expect("write probe bin");
+        // SAFETY: serialized by #[serial]; env restored before the test returns.
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &present) };
+        assert!(
+            bridge_binary_resolvable(),
+            "an existing override path must resolve"
+        );
+
+        let missing =
+            std::env::temp_dir().join(format!("cs-stt-bridge-missing-{}", Uuid::new_v4()));
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &missing) };
+        assert!(
+            !bridge_binary_resolvable(),
+            "a missing override path must be unresolvable"
+        );
+
+        // SAFETY: serialized by #[serial].
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(ENV_STT_BRIDGE, value),
+                None => std::env::remove_var(ENV_STT_BRIDGE),
+            }
+        }
+        let _ = std::fs::remove_file(&present);
+    }
+
+    #[test]
+    #[serial]
+    fn bridge_resolver_prefers_env_then_bundle_then_path() {
+        let previous_bridge = std::env::var_os(ENV_STT_BRIDGE);
+        let previous_path = std::env::var_os("PATH");
+        let root = std::env::temp_dir().join(format!("cs-stt-resolver-{}", Uuid::new_v4()));
+        let bundle_macos = root.join("Codescribe.app/Contents/MacOS");
+        let exe = bundle_macos.join("Codescribe");
+        let bundled = bundle_macos.join(DEFAULT_BRIDGE_BIN);
+        let path_dir = root.join("path-bin");
+        let path_bridge = path_dir.join(DEFAULT_BRIDGE_BIN);
+        let override_bin = root.join("override-bridge");
+        let missing_override = root.join("missing-override");
+
+        std::fs::create_dir_all(&bundle_macos).expect("create bundle dir");
+        std::fs::create_dir_all(&path_dir).expect("create PATH dir");
+        std::fs::write(&exe, b"app").expect("write fake app executable");
+        std::fs::write(&bundled, b"#!/bin/sh\n").expect("write bundled bridge");
+        std::fs::write(&path_bridge, b"#!/bin/sh\n").expect("write PATH bridge");
+        std::fs::write(&override_bin, b"#!/bin/sh\n").expect("write override bridge");
+
+        // SAFETY: serialized by #[serial]; env restored before the test returns.
+        unsafe {
+            std::env::set_var("PATH", &path_dir);
+            std::env::set_var(ENV_STT_BRIDGE, &override_bin);
+        }
+        assert_eq!(
+            bridge_binary_for_current_exe(Some(&exe)),
+            override_bin,
+            "explicit env override must beat the bundled bridge"
+        );
+        assert!(
+            bridge_binary_resolvable_for_current_exe(Some(&exe)),
+            "existing env override path must resolve"
+        );
+
+        // SAFETY: serialized by #[serial].
+        unsafe { std::env::set_var(ENV_STT_BRIDGE, &missing_override) };
+        assert_eq!(
+            bridge_binary_for_current_exe(Some(&exe)),
+            missing_override,
+            "missing env override still wins instead of falling through"
+        );
+        assert!(
+            !bridge_binary_resolvable_for_current_exe(Some(&exe)),
+            "missing explicit override must not fall through to bundle or PATH"
+        );
+
+        // SAFETY: serialized by #[serial].
+        unsafe { std::env::remove_var(ENV_STT_BRIDGE) };
+        assert_eq!(
+            bridge_binary_for_current_exe(Some(&exe)),
+            bundled,
+            "bundled bridge must beat PATH when env is unset"
+        );
+        assert!(
+            bridge_binary_resolvable_for_current_exe(Some(&exe)),
+            "bundled bridge must resolve"
+        );
+
+        std::fs::remove_file(&bundled).expect("remove bundled bridge");
+        assert_eq!(
+            bridge_binary_for_current_exe(Some(&exe)),
+            PathBuf::from(DEFAULT_BRIDGE_BIN),
+            "missing bundled bridge must fall through to bare PATH command"
+        );
+        assert!(
+            bridge_binary_resolvable_for_current_exe(Some(&exe)),
+            "PATH bridge must resolve after bundled bridge is absent"
+        );
+
+        // SAFETY: serialized by #[serial].
+        unsafe {
+            match previous_bridge {
+                Some(value) => std::env::set_var(ENV_STT_BRIDGE, value),
+                None => std::env::remove_var(ENV_STT_BRIDGE),
+            }
+            match previous_path {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn adapter_is_send_sync() {
@@ -548,5 +761,54 @@ mod tests {
         assert_eq!(parse_bool_flag("no"), Some(false));
         assert_eq!(parse_bool_flag("0"), Some(false));
         assert_eq!(parse_bool_flag("maybe"), None);
+    }
+
+    #[test]
+    fn bridge_response_segments_flow_to_raw_transcript_and_silero_tail_drop() {
+        let response: BridgeResponse = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "status": "ok",
+                "text": "To jest początek Dziękuję za uwagę",
+                "segments": [
+                    {"text": "To jest początek", "start_ts": 0.0, "end_ts": 0.4},
+                    {"text": "Dziękuję za uwagę", "start_ts": 2.0, "end_ts": 2.4}
+                ]
+            }"#,
+        )
+        .expect("fixture bridge response must parse");
+
+        let raw = raw_transcript_from_bridge_response(response);
+
+        assert_eq!(raw.segments.len(), 2);
+        assert!(
+            raw.segments
+                .windows(2)
+                .all(|pair| pair[0].end_ts <= pair[1].start_ts),
+            "Apple bridge segments must preserve a monotonic timeline"
+        );
+
+        let timeline = crate::vad::discriminator::VadTimeline {
+            classes: vec![
+                crate::pipeline::contracts::VadClass::Speech,
+                crate::pipeline::contracts::VadClass::Speech,
+                crate::pipeline::contracts::VadClass::TrailingSilence,
+                crate::pipeline::contracts::VadClass::TrailingSilence,
+                crate::pipeline::contracts::VadClass::TrailingSilence,
+            ],
+            window_sec: 0.5,
+        };
+        let vad_config = crate::vad::VadConfig {
+            tail_drop_enabled: true,
+            ..Default::default()
+        };
+        let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
+            &raw.segments,
+            &timeline,
+            &vad_config,
+        );
+
+        assert_eq!(outcome.dropped_count, 1);
+        assert_eq!(outcome.text, "To jest początek");
     }
 }

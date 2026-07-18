@@ -21,7 +21,7 @@ pub fn register(registry: &mut ToolRegistry) {
 fn search_threads_definition() -> ToolDefinition {
     ToolDefinition {
         name: "search_threads".to_string(),
-        description: "Search the local CodeScribe thread index by title, tags, summary, notes, and message text. Read-only; returns top matching thread ids and snippets.".to_string(),
+        description: "Search the local Codescribe thread index by title, tags, summary, notes, and message text. Read-only; returns top matching thread ids and snippets.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -173,6 +173,7 @@ mod tests {
             created_at: updated_at - Duration::minutes(5),
             updated_at,
             title: title.to_string(),
+            title_is_custom: false,
             mode: "assistive".to_string(),
             tags: vec!["clinic".to_string()],
             notes: Vec::new(),

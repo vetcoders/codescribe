@@ -1,0 +1,215 @@
+---
+// Selection section (WEBSITE_SPEC §4.5). The before/after Mail mocks are
+// pure HTML/CSS — not screenshots.
+---
+
+<section class="section selection" data-screen-label="Selection" aria-labelledby="selection-title">
+  <div class="container">
+    <div class="head">
+      <p class="eyebrow">WORKS OVER ANY APP</p>
+      <h2 id="selection-title">Select. Speak. Done.</h2>
+      <p class="sub">
+        Highlight text anywhere, say what to do, and the result drops back in its
+        place — no copy, no chat window, no context-switch.
+      </p>
+    </div>
+    <div class="demo">
+      <div class="mock">
+        <div class="mock__head">
+          <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+          <span class="mock__title">Mail — reply draft</span>
+        </div>
+        <p class="mock__body">
+          Hey, yeah we can do the call.
+          <mark class="hl hl--raw">i think tuesday works but maybe later is better idk, lmk what suits u</mark>
+          Talk soon.
+        </p>
+      </div>
+
+      <div class="cmd" aria-hidden="true">
+        <div class="cmd__pill">
+          <span class="rippledot rippledot--sm">
+            <span class="rippledot__ring rippledot__ring--sel"></span>
+            <span class="rippledot__core rippledot__core--sel"></span>
+          </span>
+          <span class="cmd__text">"make it formal"</span>
+        </div>
+        <span class="cmd__arrow">↓</span>
+        <div class="cmd__meta">in place · 0.8s · local</div>
+      </div>
+
+      <div class="mock mock--after">
+        <div class="mock__head">
+          <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+          <span class="mock__title">Mail — reply draft</span>
+        </div>
+        <p class="mock__body">
+          Hey, yeah we can do the call.
+          <mark class="hl hl--clean">Tuesday works for me, though a later slot would be preferable. Please let me know what suits you.</mark>
+          Talk soon.
+        </p>
+      </div>
+    </div>
+    <div class="chips">
+      <span class="chip">"fix the grammar"</span>
+      <span class="chip">"summarize this"</span>
+      <span class="chip">"translate to Polish"</span>
+      <span class="chip">"explain this code"</span>
+      <span class="chip">"turn into a checklist"</span>
+    </div>
+  </div>
+</section>
+
+<style>
+  .selection { padding: 120px 24px; }
+  .container { max-width: 1000px; }
+  .head {
+    text-align: center;
+    margin-bottom: 54px;
+  }
+  h2 {
+    font: 700 clamp(32px, 5vw, 50px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 14px;
+    color: var(--ink);
+  }
+  .sub {
+    font: 400 16px / 1.55 var(--font-display);
+    color: var(--muted-2);
+    max-width: 480px;
+    margin: 0 auto;
+  }
+  .demo {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .mock {
+    flex: 1;
+    min-width: 290px;
+    background: #0d0f13;
+    border: 1px solid var(--stroke);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 24px 50px rgba(0, 0, 0, 0.4);
+  }
+  .mock--after { border-color: #2a2722; }
+  .mock__head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .tl {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #2c2f37;
+  }
+  .mock__title {
+    margin-left: 8px;
+    font: 500 10px var(--font-mono);
+    color: var(--muted-4);
+  }
+  .mock__body {
+    padding: 22px 20px;
+    margin: 0;
+    font: 400 14px / 1.7 var(--font-display);
+    color: var(--muted);
+  }
+  .hl {
+    border-radius: 3px;
+    color: var(--ink-3);
+    background: transparent;
+  }
+  .hl--raw {
+    background: rgba(217, 119, 87, 0.22);
+    box-shadow: 0 0 0 1px rgba(217, 119, 87, 0.4);
+  }
+  .hl--clean {
+    background: rgba(95, 107, 62, 0.16);
+    box-shadow: 0 0 0 1px rgba(95, 107, 62, 0.4);
+  }
+  .cmd {
+    flex: 0 0 220px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 13px;
+    padding: 24px 18px;
+  }
+  .cmd__pill {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--stroke-3);
+    border-radius: 30px;
+    padding: 9px 16px 9px 11px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
+  }
+  .rippledot {
+    position: relative;
+    display: inline-flex;
+    width: 11px;
+    height: 11px;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .rippledot__ring--sel {
+    position: absolute;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1px solid var(--terracotta-2);
+    animation: ripple 2.6s ease-out infinite;
+  }
+  .rippledot__core--sel {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--terracotta-2);
+    animation: softpulse 2.6s ease-in-out infinite;
+  }
+  .cmd__text {
+    font: 500 13px var(--font-mono);
+    color: var(--ink-2);
+  }
+  .cmd__arrow {
+    font: 700 20px var(--font-display);
+    color: var(--terracotta-2);
+    animation: glowpulse 2.6s ease-in-out infinite;
+    border-radius: 50%;
+    padding: 4px 8px;
+  }
+  .cmd__meta {
+    font: 500 10px var(--font-mono);
+    color: var(--muted-4);
+    text-align: center;
+    letter-spacing: 0.04em;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 42px;
+  }
+  .chip {
+    padding: 8px 15px;
+    background: var(--bg-chip);
+    border: 1px solid var(--stroke);
+    border-radius: 30px;
+    font: 500 12px var(--font-mono);
+    color: #b6b9b2;
+  }
+  @media (max-width: 900px) {
+    .cmd__arrow { transform: none; }
+  }
+  @media (max-width: 480px) {
+    .selection { padding: 84px 20px; }
+  }
+</style>

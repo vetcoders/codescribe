@@ -1,11 +1,14 @@
-//! Quick notes storage (voice → text notes).
+//! Daily-note storage — the single "brain dump buffer" sink.
 //!
-//! This is a lightweight, Vista-friendly primitive:
-//! - Append each finalized transcript as a timestamped bullet into a daily Markdown file.
+//! One daily Markdown file, append-only, intentionally structureless:
+//! - Append text as-is (edge-trimmed; internal newlines preserved), with one
+//!   blank line between entries. No header, no timestamp, no bullets — the
+//!   file's date lives in its name (`YYYY-MM-DD.md`).
 //! - Default location: `~/.codescribe/notes/YYYY-MM-DD.md`
 //! - Override location: `CODESCRIBE_NOTES_DIR=/some/path`
 //!
-//! The host app (CodeScribe/Vista) decides UX and trigger; this module is just persistence.
+//! Every input (Notes Mode voice, Save last transcript, Save selection) funnels
+//! through `append_quick_note`; the host app decides UX and trigger.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
@@ -38,28 +41,15 @@ pub fn today_note_path(timestamp: &DateTime<Local>) -> PathBuf {
     notes_dir().join(format!("{}.md", timestamp.format("%Y-%m-%d")))
 }
 
-fn normalize_note_line(text: &str) -> String {
-    // Turn any multi-line transcript into a single, readable line.
-    // (Doctors dictating quickly tend to produce punctuation and pauses, not intentional newlines.)
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Append a single "quick note" entry to today's Markdown file.
+/// Append one entry to today's daily note — the single brain-dump sink.
 ///
-/// Format:
-/// - `# YYYY-MM-DD` (created once if file is empty/new)
-/// - `- HH:MM:SS …`
-pub fn append_quick_note(
-    transcript_text: &str,
-    timestamp: DateTime<Local>,
-    frontmost_app: Option<&str>,
-) -> Result<PathBuf> {
-    let line = normalize_note_line(transcript_text.trim());
-    if line.is_empty() {
+/// Raw and structureless by design: the text is written as-is (only edge-trimmed
+/// so internal newlines survive — multi-line selections must be preserved), then
+/// a blank line separates it from the next entry. No header, no timestamp, no
+/// bullets. `timestamp` only picks the dated file name.
+pub fn append_quick_note(text: &str, timestamp: DateTime<Local>) -> Result<PathBuf> {
+    let entry = text.trim();
+    if entry.is_empty() {
         anyhow::bail!("Empty note");
     }
 
@@ -67,31 +57,16 @@ pub fn append_quick_note(
     let dir = path.parent().map(PathBuf::from).unwrap_or_else(notes_dir);
     fs::create_dir_all(&dir).context("Failed to create notes dir")?;
 
-    let is_new_or_empty = match fs::metadata(&path) {
-        Ok(m) => m.len() == 0,
-        Err(_) => true,
-    };
-
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .with_context(|| format!("Failed to open note file: {}", path.display()))?;
 
-    if is_new_or_empty {
-        writeln!(file, "# {}", timestamp.format("%Y-%m-%d"))?;
-        writeln!(file)?;
-    }
+    // Entry as-is, then a single blank line as the only separator.
+    writeln!(file, "{entry}\n")?;
 
-    let time = timestamp.format("%H:%M:%S");
-    let app_suffix = frontmost_app
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| format!(" ({})", s))
-        .unwrap_or_default();
-    writeln!(file, "- {}{} {}", time, app_suffix, line)?;
-
-    info!("Quick note appended: {}", path.display());
+    info!("Note appended: {}", path.display());
     Ok(path)
 }
 
@@ -164,7 +139,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_append_quick_note_creates_daily_file() {
+    fn test_append_quick_note_writes_raw_entry() {
         let tmp = TempDir::new().expect("tempdir");
         let _guard = EnvGuard::set(
             "CODESCRIBE_NOTES_DIR",
@@ -172,18 +147,20 @@ mod tests {
         );
 
         let ts = Local::now();
-        let path = append_quick_note("Dzień dobry", ts, Some("TestApp")).expect("append");
+        let path = append_quick_note("Dzień dobry", ts).expect("append");
         assert!(path.exists());
         let body = fs::read_to_string(&path).expect("read");
-        assert!(body.contains("# "));
-        assert!(body.contains("- "));
+        // Raw: text present, and NONE of the old scaffolding (header/bullet).
         assert!(body.contains("Dzień dobry"));
-        assert!(body.contains("(TestApp)"));
+        assert!(!body.contains("# "), "no date header");
+        assert!(!body.contains("- "), "no bullet prefix");
+        // Blank-line separator terminates the entry.
+        assert!(body.ends_with("\n\n"));
     }
 
     #[test]
     #[serial]
-    fn test_append_quick_note_normalizes_multiline() {
+    fn test_append_quick_note_preserves_internal_newlines() {
         let tmp = TempDir::new().expect("tempdir");
         let _guard = EnvGuard::set(
             "CODESCRIBE_NOTES_DIR",
@@ -191,9 +168,25 @@ mod tests {
         );
 
         let ts = Local::now();
-        let path = append_quick_note("Ala\n\nma kota\n", ts, None).expect("append");
+        // A multi-line selection (e.g. an agent reply) must survive verbatim.
+        let path = append_quick_note("Ala\nma kota", ts).expect("append");
         let body = fs::read_to_string(&path).expect("read");
-        assert!(body.contains("Ala ma kota"));
-        assert!(!body.contains("Ala\n"));
+        assert!(body.contains("Ala\nma kota"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_append_quick_note_blank_line_between_entries() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set(
+            "CODESCRIBE_NOTES_DIR",
+            tmp.path().to_string_lossy().as_ref(),
+        );
+
+        let ts = Local::now();
+        append_quick_note("first", ts).expect("append 1");
+        let path = append_quick_note("second", ts).expect("append 2");
+        let body = fs::read_to_string(&path).expect("read");
+        assert_eq!(body, "first\n\nsecond\n\n");
     }
 }

@@ -1,37 +1,33 @@
 [workspace]
 resolver = "2"
-members = [".", "core"]
+members = [".", "core", "bridge"]
 
 [workspace.package]
-version = "0.12.2"
+version = "0.12.3"
 edition = "2024"
-authors = ["VetCoders <hello@vetcoders.io>"]
+authors = ["Vetcoders <hello@vetcoders.io>"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 base64 = "0.22"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 anyhow = "1"
 tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.12.2"
+version = "0.12.3"
 edition = "2024"
-description = "Speech-to-text tray app for macOS - Pure Rust"
-authors = ["VetCoders <hello@vetcoders.io>"]
+description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"
+authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
-repository = "https://github.com/VetCoders/CodeScribe"
-homepage = "https://vetcoders.github.io/CodeScribe/"
-documentation = "https://vetcoders.github.io/CodeScribe/quickstart/"
+repository = "https://github.com/vetcoders/codescribe"
+homepage = "https://vetcoders.github.io/codescribe/"
+documentation = "https://vetcoders.github.io/codescribe/quickstart/"
 keywords = ["speech-to-text", "whisper", "macos", "dictation", "audio"]
 categories = ["command-line-utilities", "multimedia::audio"]
-
-[[bin]]
-name = "codescribe"
-path = "bin/codescribe.rs"
 
 [[bin]]
 name = "qube-report"
@@ -44,16 +40,12 @@ path = "bin/qube_daemon.rs"
 [lib]
 path = "app/lib.rs"
 
-[features]
-default = ["liquid_glass"]
-liquid_glass = []
-
 [dependencies]
 # Core library
 codescribe_core = { package = "codescribe-core", path = "core" }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 
 # System tray
 tray-icon = "0.21"
@@ -126,7 +118,7 @@ objc2-core-foundation = "0.3"
 # Legacy objc for runtime declarations (ClassDecl) and msg_send! macro
 objc = "0.2"
 # ObjC blocks for callback-based permission APIs (e.g. AVCaptureDevice requestAccess)
-block = "0.1"
+block2 = "0.6"
 # Grand Central Dispatch for main thread operations
 dispatch = "0.2"
 

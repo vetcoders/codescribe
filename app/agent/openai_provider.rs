@@ -9,14 +9,17 @@ use reqwest::Client;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
-use tracing::info;
+use tracing::{info, warn};
 
 use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::llm::account_auth;
+use codescribe_core::llm::lane_truth::AssistiveLaneSnapshot;
+use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
-    ResponsesStreamingManager, StreamCallbacks,
+    AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
 
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
@@ -52,13 +55,27 @@ pub struct OpenAiProvider {
     previous_response_id: Arc<Mutex<Option<String>>>,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
+    /// Lane resolved to "Sign in with ChatGPT" account auth (no API key, official
+    /// endpoint, stored tokens). Each request fetches a FRESH access token via
+    /// `account_auth` so the auto-refresh path keeps long sessions alive.
+    use_account_auth: bool,
 }
 
 impl OpenAiProvider {
-    pub fn from_env() -> Result<Self> {
-        let endpoint = get_env_non_empty("LLM_ASSISTIVE_ENDPOINT", "LLM endpoint (assistive)")?;
-        let default_model = get_env_non_empty("LLM_ASSISTIVE_MODEL", "LLM model (assistive)")?;
-        let api_key = get_env_non_empty("LLM_ASSISTIVE_API_KEY", "OpenAI API key (assistive)")?;
+    /// Build from the resolved assistive lane (fresh settings → env →
+    /// Keychain) instead of the frozen bootstrap process env. `api_key: None`
+    /// becomes an empty key, which the streaming manager translates into a
+    /// clean unauthenticated request — key-optional local endpoints are a
+    /// first-class configuration, not an error.
+    pub fn from_lane(lane: AssistiveLaneSnapshot) -> Result<Self> {
+        let AssistiveLaneSnapshot {
+            endpoint,
+            model: default_model,
+            api_key,
+            account_auth: use_account_auth,
+            provider: _,
+        } = lane;
+        let api_key = api_key.unwrap_or_default();
 
         let use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
@@ -93,6 +110,7 @@ impl OpenAiProvider {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout,
             inter_chunk_timeout,
+            use_account_auth,
         })
     }
 }
@@ -152,17 +170,39 @@ impl AgentProvider for OpenAiProvider {
             stream: true,
         };
 
+        // Account-auth lanes fetch a fresh access token per request (60s-skew
+        // auto-refresh) — never a token frozen at provider construction. The
+        // manager formats the `Bearer` header itself, so this is the raw token.
+        let account_token = if self.use_account_auth {
+            Some(
+                account_auth::access_token(ProviderKind::OpenAiResponses)
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("ChatGPT account authentication failed: {error}")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let auth_secret = account_token.as_deref().unwrap_or(&self.api_key);
+
+        let auth_header_mode = if self.use_account_auth {
+            AuthHeaderMode::BearerOnly
+        } else {
+            AuthHeaderMode::BearerAndApiKey
+        };
         let manager = ResponsesStreamingManager::new(
             &self.client,
             &self.endpoint,
-            &self.api_key,
+            auth_secret,
             StreamCallbacks {
                 assistant: None,
                 reasoning: None,
             },
             self.initial_response_timeout,
             self.inter_chunk_timeout,
-        );
+        )
+        .with_auth_header_mode(auth_header_mode);
 
         let provider_rx = manager.stream_agent(&request).await?;
 
@@ -376,6 +416,16 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
                     }
                 }
                 ContentBlock::Image { data, media_type } => {
+                    // Images restored from the thread store carry no bytes
+                    // (persisted with `data_omitted`). Emitting an empty data URL
+                    // makes the provider reject the whole request
+                    // ("empty base64-encoded bytes"), so skip empty images.
+                    if data.is_empty() {
+                        warn!(
+                            "Skipping image content block with no bytes (likely restored from history)"
+                        );
+                        continue;
+                    }
                     content.push(json!({
                         "type": "input_image",
                         "image_url": to_data_uri(data, media_type)
@@ -449,6 +499,12 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
                 }
             }
             ContentBlock::Image { data, media_type } => {
+                if data.is_empty() {
+                    warn!(
+                        "Skipping tool_result image reference with no bytes (likely restored from history)"
+                    );
+                    continue;
+                }
                 parts.push(json!({
                     "type": "image_reference",
                     "media_type": media_type,
@@ -500,6 +556,12 @@ fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
     for block in content {
         match block {
             ContentBlock::Image { data, media_type } => {
+                if data.is_empty() {
+                    warn!(
+                        "Skipping tool_result image content block with no bytes (likely restored from history)"
+                    );
+                    continue;
+                }
                 image_content.push(json!({
                     "type": "input_image",
                     "image_url": to_data_uri(data, media_type)
@@ -547,15 +609,6 @@ fn to_data_uri(data: &[u8], media_type: &str) -> String {
     format!("data:{media_type};base64,{}", BASE64.encode(data))
 }
 
-fn get_env_non_empty(key: &str, label: &str) -> Result<String> {
-    let value = env::var(key).with_context(|| format!("{label} is required. Set {key}."))?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("{label} is required. Set {key}.");
-    }
-    Ok(trimmed.to_string())
-}
-
 fn parse_env_u64(key: &str, default: u64) -> u64 {
     env::var(key)
         .ok()
@@ -578,7 +631,7 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 mod tests {
     use super::{
         OpenAiProvider, build_request_input_items, format_tool_output,
-        forward_events_and_track_chain, request_messages,
+        forward_events_and_track_chain, request_messages, to_data_uri,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -711,6 +764,36 @@ mod tests {
     }
 
     #[test]
+    fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
+        // Turn 2 on a restored thread: an inline composer image persisted via
+        // the thread store must come back as a disk-backed asset and still
+        // reach the request payload instead of being skipped as byteless.
+        let image_bytes = b"w5a-openai-turn2".to_vec();
+        let original = Message::new(
+            Role::User,
+            vec![ContentBlock::Image {
+                data: image_bytes.clone(),
+                media_type: "image/png".to_string(),
+            }],
+        );
+        let restored = codescribe_core::agent::ThreadMessage::from(&original).to_message();
+
+        let items = build_request_input_items(std::slice::from_ref(&restored), None)
+            .expect("restored image should serialize");
+        assert_eq!(items.len(), 1, "restored image must not be skipped");
+        assert_eq!(items[0]["type"], "message");
+        assert_eq!(items[0]["content"][0]["type"], "input_image");
+        let image_url = items[0]["content"][0]["image_url"]
+            .as_str()
+            .expect("image_url should be a string");
+        assert_eq!(image_url, to_data_uri(&image_bytes, "image/png"));
+
+        if let ContentBlock::ImageAsset(asset) = &restored.content[0] {
+            std::fs::remove_file(&asset.path).ok();
+        }
+    }
+
+    #[test]
     fn tool_result_image_asset_adds_native_input_image_item() {
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
@@ -747,6 +830,67 @@ mod tests {
         std::fs::remove_file(asset_path).ok();
     }
 
+    #[test]
+    fn tool_result_data_omitted_image_is_skipped_not_sent_as_empty_data_uri() {
+        // D8 parity: a tool-result image restored from history (`data_omitted`)
+        // has no bytes. It must be dropped from the native image message — never
+        // serialized as an empty data URI — while the function output remains
+        // valid via the text fallback.
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_restored".to_string(),
+                content: vec![ContentBlock::Image {
+                    data: vec![],
+                    media_type: "image/png".to_string(),
+                }],
+                is_error: false,
+            }],
+        )];
+
+        let items =
+            build_request_input_items(&messages, None).expect("request input items should build");
+
+        assert_eq!(items.len(), 1, "empty tool-result image is not sent");
+        assert_eq!(items[0]["type"], "function_call_output");
+        assert_eq!(items[0]["call_id"], "call_restored");
+        assert_eq!(items[0]["output"], "Tool executed successfully");
+    }
+
+    #[test]
+    fn user_message_inline_image_serializes_as_input_image() {
+        // Composer 📎 path parity with Anthropic: `AgentSession::send` builds a
+        // [Text, Image{bytes}] user turn via `build_image_block`. The request
+        // must carry the image as a native input_image data URI alongside the
+        // caption — a regression here silently drops user attachments.
+        let messages = vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text("what is in this image?".to_string()),
+                ContentBlock::Image {
+                    data: b"png bytes".to_vec(),
+                    media_type: "image/png".to_string(),
+                },
+            ],
+        )];
+
+        let items =
+            build_request_input_items(&messages, None).expect("request input items should build");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["role"], "user");
+        let content = items[0]["content"].as_array().expect("content array");
+        assert_eq!(content.len(), 2, "caption + image both survive");
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[1]["type"], "input_image");
+        assert!(
+            content[1]["image_url"]
+                .as_str()
+                .expect("image_url string")
+                .starts_with("data:image/png;base64,")
+        );
+    }
+
     #[tokio::test]
     async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
         let mut server = mockito::Server::new_async().await;
@@ -774,6 +918,7 @@ mod tests {
             previous_response_id: Arc::new(Mutex::new(None)),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
         let messages = vec![Message::new(
             Role::User,
@@ -816,6 +961,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
 
         // Pre-condition: stored chain holds prior failed attempt's response id.
@@ -849,6 +995,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
 
         let options = StreamOptions::default();
@@ -927,6 +1074,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
         };
         let reset_options = StreamOptions {
             reset_chain: true,
@@ -1103,6 +1251,7 @@ mod tests {
             previous_response_id: Arc::clone(&stored_chain),
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
+            use_account_auth: false,
         };
         let messages = vec![Message::new(
             Role::User,

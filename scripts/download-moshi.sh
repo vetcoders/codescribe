@@ -10,7 +10,7 @@
 #
 # Note: Mimi codec is shared with CSM - run download-csm.sh if not present.
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 set -e
 

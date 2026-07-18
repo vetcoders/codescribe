@@ -1,13 +1,13 @@
 // codescribe-stt-bridge.swift
 //
-// SpeechAnalyzer bridge for CodeScribe:
+// SpeechAnalyzer bridge for Codescribe:
 // - Reads one JSON request from stdin
 // - Emits one JSON response to stdout
 //
 // Build example:
 //   swiftc -O -o codescribe-stt-bridge core/stt/apple_stt/codescribe-stt-bridge.swift
 //
-// Created by M&K (c)2026 VetCoders
+// Created by Vetcoders (c)2026
 
 import AVFoundation
 import Dispatch
@@ -147,7 +147,7 @@ private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeRe
             error: nil
         )
     }
-    let transcriber = SpeechTranscriber(locale: effectiveLocale, preset: .transcription)
+    let transcriber = makeTranscriber(locale: effectiveLocale)
     let isSupported = true
     var isInstalled = containsLocale(installed, locale: effectiveLocale)
 
@@ -188,12 +188,16 @@ private struct TranscriptionPayload {
     let segments: [BridgeSegment]
 }
 
+private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
+    SpeechTranscriber(locale: locale, preset: .timeIndexedTranscriptionWithAlternatives)
+}
+
 private func transcribe(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
     let supportedLocales = await SpeechTranscriber.supportedLocales
     guard let effectiveLocale = bestAvailableLocale(requested: locale, available: supportedLocales) else {
         throw BridgeError.runtime("locale \(locale.identifier) is not supported")
     }
-    let transcriber = SpeechTranscriber(locale: effectiveLocale, preset: .transcription)
+    let transcriber = makeTranscriber(locale: effectiveLocale)
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
         throw BridgeError.runtime("no compatible analyzer audio format available")
@@ -201,15 +205,22 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
     let (inputSequence, inputBuilder) = AsyncStream<AnalyzerInput>.makeStream()
 
     var volatileText = ""
+    var volatileSegments: [BridgeSegment] = []
     var finalTextParts: [String] = []
+    var finalSegments: [BridgeSegment] = []
 
     let collector = Task {
         for try await result in transcriber.results {
             let text = String(result.text.characters)
+            let segments = segmentsFromAttributedText(result.text)
             if result.isFinal {
                 finalTextParts.append(text)
+                finalSegments.append(contentsOf: segments)
+                volatileText = ""
+                volatileSegments = []
             } else {
                 volatileText = text
+                volatileSegments = segments
             }
         }
     }
@@ -227,7 +238,58 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
     let combined = finalTextParts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     let fallback = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
     let text = combined.isEmpty ? fallback : combined
-    return TranscriptionPayload(text: text, segments: [])
+    let segments = normalizeSegments(finalSegments.isEmpty ? volatileSegments : finalSegments)
+    return TranscriptionPayload(text: text, segments: segments)
+}
+
+private func segmentsFromAttributedText(_ attributedText: AttributedString) -> [BridgeSegment] {
+    attributedText.runs.compactMap { run in
+        guard let timeRange = run.audioTimeRange else {
+            return nil
+        }
+        let text = String(attributedText[run.range].characters)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return nil
+        }
+        let start = timeRange.start.seconds
+        let end = timeRange.end.seconds
+        guard start.isFinite, end.isFinite, end >= start else {
+            return nil
+        }
+        return BridgeSegment(text: text, startTs: start, endTs: end)
+    }
+}
+
+private func normalizeSegments(_ segments: [BridgeSegment]) -> [BridgeSegment] {
+    let sorted = segments.sorted {
+        if $0.startTs == $1.startTs {
+            return $0.endTs < $1.endTs
+        }
+        return $0.startTs < $1.startTs
+    }
+    var normalized: [BridgeSegment] = []
+    var previousEnd = -Double.infinity
+    for segment in sorted {
+        let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty,
+              segment.startTs.isFinite,
+              segment.endTs.isFinite,
+              segment.endTs >= segment.startTs
+        else {
+            continue
+        }
+        if segment.startTs < previousEnd, segment.endTs <= previousEnd {
+            continue
+        }
+        let start = max(segment.startTs, previousEnd)
+        guard segment.endTs >= start else {
+            continue
+        }
+        normalized.append(BridgeSegment(text: text, startTs: start, endTs: segment.endTs))
+        previousEnd = segment.endTs
+    }
+    return normalized
 }
 
 private func streamAudio(

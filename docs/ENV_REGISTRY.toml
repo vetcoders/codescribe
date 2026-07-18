@@ -1,6 +1,6 @@
 # ENV_REGISTRY.toml - Central registry of all environment variables
 #
-# SINGLE SOURCE OF TRUTH for CodeScribe environment configuration.
+# SINGLE SOURCE OF TRUTH for Codescribe environment configuration.
 # This file is validated by pre-commit hooks - any new env var MUST be added here.
 #
 # Schema per variable:
@@ -12,11 +12,11 @@
 #   description = "..."         # Human-readable description
 #   deprecated = "NEW_VAR"      # If deprecated, points to replacement
 #
-# Created by M&K (c)2026 VetCoders
+# Created by Vetcoders (c)2026
 
 [meta]
-version = "1.0.0"
-updated = "2026-02-24"
+version = "1.1.0"
+updated = "2026-07-16"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD (Voice Activity Detection) - Silero Neural Network
@@ -172,12 +172,33 @@ description = "Interim emission cadence for buffered mode (sec)"
 range = "1.0-30.0"
 
 [vars.CODESCRIBE_BUFFERED_SILENCE_SEC]
-default = ""
+default = "1.2"
 type = "f32"
 reload = "restart"
 category = "streaming"
-description = "Override silence duration before utterance flush in buffered mode (sec)"
+description = "Silence duration before utterance flush in buffered mode (sec)"
 range = "0.1-10.0"
+
+[vars.CODESCRIBE_UTTERANCE_GAP_SEC]
+default = "0.5"
+type = "f32"
+reload = "hot"
+category = "vad"
+description = "Silero utterance gap threshold in seconds"
+
+[vars.CODESCRIBE_TAIL_SILENCE_SEC]
+default = "2.0"
+type = "f32"
+reload = "hot"
+category = "vad"
+description = "Trailing silence threshold before the tail filter can drop a low-speech suffix"
+
+[vars.CODESCRIBE_TAIL_DROP_ENABLED]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "vad"
+description = "Enable low-speech trailing-tail removal after the Silero gate"
 
 [vars.TRANSCRIPTION_OVERLAY_ENABLED]
 default = "1"
@@ -185,6 +206,162 @@ type = "bool"
 reload = "hot"
 category = "ui"
 description = "Enable live non-assistive transcription overlay; when disabled the next capture uses a buffered no-overlay profile"
+
+[vars.AUTO_PASTE_ENABLED]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "clipboard"
+description = "Automatically paste completed non-assistive dictation; no-speech, empty output, Notes save-only, assistive, and safety failures remain hard vetoes"
+
+[vars.TRAY_START_ASSISTIVE]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "ui"
+description = "Start UI-initiated recording from the tray in the assistive lane instead of dictation"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LLM lane truth (see docs/lane-truth.md)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.LLM_ENDPOINT]
+default = "https://api.openai.com/v1/responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Shared OpenAI-compatible endpoint fallback for LLM lanes; normalized to /v1/responses"
+
+[vars.LLM_MODEL]
+default = "gpt-4.1"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Shared OpenAI model fallback for LLM lanes"
+
+[vars.LLM_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Shared/main OpenAI API key account; prefer Settings / macOS Keychain"
+
+[vars.LLM_FORMATTING_ENDPOINT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane endpoint override; falls back to shared LLM_ENDPOINT"
+
+[vars.LLM_FORMATTING_MODEL]
+default = "gpt-4.1"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane model override"
+
+[vars.LLM_FORMATTING_PROVIDER]
+default = "openai-responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane provider id: openai-responses or anthropic-messages"
+
+[vars.LLM_FORMATTING_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Formatting-lane OpenAI API key account; prefer Settings / macOS Keychain"
+
+[vars.LLM_ASSISTIVE_ENDPOINT]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Assistive/agent-lane endpoint override; falls back to shared LLM_ENDPOINT"
+
+[vars.LLM_ASSISTIVE_MODEL]
+default = "gpt-5.5"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Assistive/agent-lane model override"
+
+[vars.LLM_ASSISTIVE_PROVIDER]
+default = "openai-responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Assistive/agent-lane provider id: openai-responses or anthropic-messages"
+
+[vars.LLM_ASSISTIVE_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Assistive OpenAI API key account; prefer Settings / macOS Keychain"
+
+[vars.LLM_ANTHROPIC_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Anthropic Messages API key account shared by Anthropic formatting and assistive lanes"
+
+[vars.LLM_TEMPERATURE]
+default = ""
+type = "f32"
+reload = "hot"
+category = "llm"
+description = "Shared temperature fallback; unset lets the selected model choose its default"
+
+[vars.LLM_ASSISTIVE_TEMPERATURE]
+default = ""
+type = "f32"
+reload = "hot"
+category = "llm"
+description = "Assistive-lane temperature override; falls back to LLM_TEMPERATURE"
+
+[vars.WHISPER_SERVER_URL]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Legacy migration-only alias rewritten to STT_ENDPOINT"
+deprecated = "STT_ENDPOINT"
+
+[vars.LLM_SERVER_URL]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only alias rewritten to LLM_ENDPOINT"
+deprecated = "LLM_ENDPOINT"
+
+[vars.LLM_HOST]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only host alias rewritten to LLM_ENDPOINT"
+deprecated = "LLM_ENDPOINT"
+
+[vars.OLLAMA_HOST]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only Ollama host alias rewritten to LLM_ENDPOINT"
+deprecated = "LLM_ENDPOINT"
+
+[vars.OLLAMA_MODEL]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Legacy migration-only Ollama model alias rewritten to LLM_MODEL"
+deprecated = "LLM_MODEL"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Whisper / STT
@@ -212,11 +389,11 @@ category = "stt"
 description = "Whisper model id for cloud/multipart STT"
 
 [vars.WHISPER_LANGUAGE]
-default = "pl"
+default = "auto"
 type = "string"
-reload = "restart"
+reload = "hot"
 category = "stt"
-description = "Whisper transcription language code"
+description = "Whisper transcription language hint. auto leaves detection to Whisper and applies on the next capture."
 
 [vars.CODESCRIBE_WHISPER_INITIAL_PROMPT]
 default = ""
@@ -224,6 +401,20 @@ type = "string"
 reload = "restart"
 category = "stt"
 description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
+
+[vars.CODESCRIBE_STT_INITIAL_PROMPT_ENABLED]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
+
+[vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
+default = "300"
+type = "u64"
+reload = "hot"
+category = "stt"
+description = "Unload idle Whisper engine after this many seconds (0 disables)"
 
 [vars.WHISPER_INITIAL_PROMPT]
 default = ""
@@ -248,11 +439,18 @@ category = "stt"
 description = "Directory containing all models"
 
 [vars.CODESCRIBE_STT_ENGINE]
-default = "candle"
+default = "auto"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "STT engine: candle (default), onnx, or apple (SpeechAnalyzer on macOS 26+)"
+description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
+
+[vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
+default = "off"
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Layered transcription gate: off or phase1..phase4"
 
 [vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
 default = "1"
@@ -262,18 +460,32 @@ category = "stt"
 description = "Enable thermal-aware STT scheduling backoff"
 
 [vars.CODESCRIBE_STT_MIN_INFER_INTERVAL_MS]
+default = "90"
+type = "int"
+reload = "restart"
+category = "stt"
+description = "Minimum interval between live preview STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
 default = "180"
 type = "int"
 reload = "restart"
 category = "stt"
-description = "Minimum interval between live STT inference jobs in milliseconds"
+description = "Minimum interval between committed/final STT inference jobs in milliseconds"
 
-[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
-default = "350"
+[vars.CODESCRIBE_STT_REFINE_MIN_INTERVAL_MS]
+default = "240"
 type = "int"
 reload = "restart"
 category = "stt"
-description = "Minimum interval between committed STT inference jobs in milliseconds"
+description = "Minimum interval between refinement STT inference jobs in milliseconds"
+
+[vars.CODESCRIBE_STT_THERMAL_NOMINAL_MULT]
+default = "0.0"
+type = "float"
+reload = "restart"
+category = "stt"
+description = "Thermal duty-cycle multiplier for nominal system thermal pressure; 0.0 disables nominal backoff"
 
 [vars.CODESCRIBE_STT_THERMAL_FAIR_MULT]
 default = "1.0"
@@ -296,12 +508,75 @@ reload = "restart"
 category = "stt"
 description = "Thermal multiplier for critical system thermal pressure"
 
+[vars.BENCH_STT_FIXTURES]
+default = "auto"
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh fixture source selector: auto, historical, or repo"
+
+[vars.BENCH_STT_LIMIT]
+default = "10"
+type = "int"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh fixture limit for historical corpus runs"
+
+[vars.BENCH_STT_OUT]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh output directory under ~/.codescribe"
+
+[vars.BENCH_STT_LANGUAGE]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh Whisper language hint for bench probes"
+
+[vars.BENCH_STT_LATENCY_MANIFEST]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Internal bench hook: fixture manifest path for the scheduler-lane latency probe"
+
+[vars.BENCH_STT_LATENCY_OUT]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Internal bench hook: TSV output path for the scheduler-lane latency probe"
+
+[vars.CODESCRIBE_BENCH_FORCE_PROMPT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh prompted-WER probe: generate deterministic fixture prompt when runtime prompt is disabled or empty"
+
+[vars.CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT]
+default = ""
+type = "int"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh prompted-WER probe: trim active runtime prompt to the first N deterministic terms; unset uses the full prompt"
+
+[vars.CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP]
+default = "5.0"
+type = "float"
+reload = "restart"
+category = "test"
+description = "scripts/bench-stt.sh prompted-WER probe: fail when active prompt increases WER above this percentage-point threshold"
+
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
-default = "codescribe-stt-bridge"
+default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Executable path for SpeechAnalyzer bridge binary"
+description = "Optional SpeechAnalyzer bridge override; unset uses bundled Contents/MacOS helper before PATH"
 
 [vars.CODESCRIBE_APPLE_STT_LOCALE]
 default = "pl-PL"
@@ -354,10 +629,10 @@ description = "Cloud STT API endpoint (when USE_LOCAL_STT=0)"
 
 [vars.STT_API_KEY]
 default = ""
-type = "string"
+type = "secret"
 reload = "restart"
 category = "stt"
-description = "Cloud STT API key"
+description = "Cloud STT API key; prefer Settings / macOS Keychain"
 
 [vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
 default = "0"
@@ -427,6 +702,13 @@ reload = "rebuild"
 category = "embedder"
 description = "HF repo for E5 embedder (used for embedding at build/runtime)"
 
+[vars.CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS]
+default = "300"
+type = "u64"
+reload = "hot"
+category = "embedder"
+description = "Unload idle embedder engine after this many seconds (0 disables)"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM / AI Formatting
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -436,14 +718,14 @@ default = "1"
 type = "bool"
 reload = "restart"
 category = "llm"
-description = "Enable AI formatting of transcripts"
+description = "Compatibility gate for AI formatting; FORMATTING_LEVEL=off still bypasses the formatting provider even when this is enabled"
 
 [vars.CODESCRIBE_TRANSCRIPT_TAGGING]
 default = "0"
 type = "bool"
 reload = "hot"
 category = "llm"
-description = "Override settings.json to wrap pasted dictation transcripts in an epistemic CodeScribe tag"
+description = "Override settings.json to wrap pasted dictation transcripts in an epistemic Codescribe tag"
 
 [vars.CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE]
 default = "<codescribe mode=\"{mode}\" lang=\"{lang}\">\\n{text}\\n</codescribe>"
@@ -467,53 +749,18 @@ category = "llm"
 description = "Max tokens for assistive LLM (0 = no limit)"
 
 [vars.FORMATTING_LEVEL]
-default = "medium"
+default = "correction"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "AI formatting level: raw, medium, or creative"
+description = "Normalized formatting policy: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max"
 
-[vars.LLM_ENDPOINT]
-default = ""
+[vars.LLM_FORMATTING_AUTH_MODE]
+default = "api-key"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Default LLM API endpoint"
-
-[vars.LLM_MODEL]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "Default LLM model name"
-
-[vars.LLM_API_KEY]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "Default LLM API key"
-
-[vars.LLM_FORMATTING_ENDPOINT]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM endpoint for formatting mode (overrides LLM_ENDPOINT)"
-
-[vars.LLM_FORMATTING_MODEL]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM model for formatting mode"
-
-[vars.LLM_FORMATTING_API_KEY]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM API key for formatting mode"
+description = "Auth mode for formatting LLM provider: api-key or provider-account"
 
 [vars.LLM_FORMATTING_TEMPERATURE]
 default = "0.1"
@@ -522,26 +769,19 @@ reload = "hot"
 category = "llm"
 description = "Temperature for formatting mode"
 
-[vars.LLM_ASSISTIVE_ENDPOINT]
-default = ""
+[vars.LLM_ASSISTIVE_AUTH_MODE]
+default = "api-key"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "LLM endpoint for assistive mode (overrides LLM_ENDPOINT)"
+description = "Auth mode for assistive LLM provider: api-key or provider-account"
 
-[vars.LLM_ASSISTIVE_MODEL]
-default = ""
+[vars.LLM_ANTHROPIC_ENDPOINT]
+default = "https://api.anthropic.com/v1/messages"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "LLM model for assistive mode"
-
-[vars.LLM_ASSISTIVE_API_KEY]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-description = "LLM API key for assistive mode"
+description = "Anthropic Messages API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=anthropic-messages (override for proxies)"
 
 [vars.LLM_USE_STREAMING]
 default = "1"
@@ -693,7 +933,7 @@ default = "0"
 type = "bool"
 reload = "restart"
 category = "ui"
-description = "Start CodeScribe at login"
+description = "Start Codescribe at login"
 
 [vars.HOLD_INDICATOR]
 default = "1"
@@ -814,6 +1054,13 @@ type = "string"
 reload = "restart"
 category = "storage"
 description = "Override data directory (default: ~/.codescribe)"
+
+[vars.CODESCRIBE_DISABLE_KEYCHAIN]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "storage"
+description = "Disable macOS Keychain access and use env-backed secrets for tests/CI"
 
 [vars.CODESCRIBE_ENV_PATH]
 default = ""
@@ -951,6 +1198,101 @@ category = "debug"
 description = "Enable AppKit/UI tests gated by CODESCRIBE_UI_TESTS"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Opt-in E2E / developer probes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_E2E_CORPUS]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable the real WAV/TXT corpus regression probe"
+
+[vars.CODESCRIBE_E2E_CORPUS_DATE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional date filter for the corpus regression probe"
+
+[vars.CODESCRIBE_E2E_CORPUS_DIR]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional corpus directory override for WAV/TXT regression pairs"
+
+[vars.CODESCRIBE_E2E_CORPUS_LANGUAGE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional Whisper language hint for corpus regression runs"
+
+[vars.CODESCRIBE_E2E_CORPUS_LIMIT]
+default = "3"
+type = "usize"
+reload = "restart"
+category = "test"
+description = "Maximum number of corpus pairs processed by one E2E run"
+
+[vars.CODESCRIBE_E2E_CORPUS_MAX_REGRESSION]
+default = "0.05"
+type = "f32"
+reload = "restart"
+category = "test"
+description = "Maximum accepted WER/CER regression ratio for the corpus probe"
+
+[vars.CODESCRIBE_E2E_LANG]
+default = "pl"
+type = "string"
+reload = "restart"
+category = "test"
+description = "Language hint for opt-in local STT E2E tests"
+
+[vars.CODESCRIBE_E2E_MIC]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable opt-in E2E tests that capture from a real microphone"
+
+[vars.CODESCRIBE_E2E_MIC_LANGUAGE]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Optional language hint for real-microphone E2E tests"
+
+[vars.CODESCRIBE_E2E_MIC_SEC]
+default = "6.0"
+type = "f32"
+reload = "restart"
+category = "test"
+description = "Recording duration in seconds for the real-microphone VAD probe"
+
+[vars.CODESCRIBE_E2E_OLLAMA]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable the real local-Ollama conversation continuity test"
+
+[vars.CODESCRIBE_E2E_RUN_MEDIUM]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Include the medium audio fixture in the example STT E2E run"
+
+[vars.CODESCRIBE_E2E_STT]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "test"
+description = "Enable heavy local Whisper STT E2E suites"
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ASSISTIVE CONTEXT CAPTURE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1004,6 +1346,13 @@ type = "bool"
 reload = "restart"
 category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
+
+[vars.AGENT_WORKSPACE_ROOTS]
+default = "~/Git"
+type = "string"
+reload = "restart"
+category = "assistive"
+description = "Colon-separated workspace root directories the agent's list_projects tool scans (one level deep) to resolve a project name to an absolute path. Defaults to ~/Git."
 
 [vars.ASSISTIVE_CONTEXT_PROMPT_MAX_CHARS]
 default = "5000"

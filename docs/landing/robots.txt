@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://vetcoders.github.io/CodeScribe/sitemap.xml

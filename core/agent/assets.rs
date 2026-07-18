@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rand::distributions::Alphanumeric;
 use rand::{Rng, thread_rng};
+use sha2::{Digest, Sha256};
 
 use super::types::ImageAsset;
 
@@ -28,6 +29,37 @@ impl AgentAssetStore {
         let file_name = format!("{asset_id}.{extension}");
         let path = dir.join(file_name);
         atomic_write(&path, data)?;
+
+        Ok(ImageAsset {
+            asset_id,
+            path,
+            media_type: normalize_media_type(media_type),
+            size_bytes: u64::try_from(data.len()).expect("usize length should fit in u64"),
+        })
+    }
+
+    /// Persist an inline (composer-attached) image as a disk-backed asset.
+    ///
+    /// Unlike `save_image`, the file name is derived from the content hash:
+    /// the whole thread is re-saved every turn, so the same bytes must map to
+    /// the same asset file instead of minting a new copy per save.
+    pub fn save_inline_image(data: &[u8], media_type: &str) -> Result<ImageAsset> {
+        let dir = Self::assets_dir();
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("Failed to create agent assets dir: {}", dir.display()))?;
+
+        let hash = Sha256::digest(data)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let asset_id = format!("inline_{hash}");
+        let path = dir.join(format!(
+            "{asset_id}.{}",
+            extension_for_media_type(media_type)
+        ));
+        if !path.exists() {
+            atomic_write(&path, data)?;
+        }
 
         Ok(ImageAsset {
             asset_id,

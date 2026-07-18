@@ -1,30 +1,33 @@
-# CodeScribe Installation and Launch Guide
+# Codescribe Installation and Launch Guide
 
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
 ## Installation Methods
 
-### Method 1: CLI Install (Recommended for Development)
+### Method 1: App Bundle From Source (Recommended for Development)
 
 ```bash
-# Install CLI (embedded Silero + embedder; Whisper from cache/download)
+# Build the SwiftUI app bundle
+make app PROFILE=release
+
+# Build and copy to /Applications/Codescribe.app
+make install-app
+```
+
+**Result**: App bundle installed at `/Applications/Codescribe.app`, with model/cache checks handled by `scripts/build-app.sh`.
+
+**How it runs**: Launch from Finder, Spotlight, or `make start`.
+
+### Method 2: Qube CLI Tools (Batch Quality Work)
+
+```bash
+make release-qube
 make install
 ```
 
-**Result**: Binary `codescribe` installed to `~/.cargo/bin/`, with install-time model/cache checks.
+**Result**: `qube-report` and `qube-daemon` installed from `bin/qube_report.rs` and `bin/qube_daemon.rs`.
 
-**How it runs**: Direct execution from terminal or as background daemon.
-
-### Method 2: App Bundle (For Distribution)
-
-```bash
-make bundle           # Creates bundle/CodeScribe.app
-make install-app      # Copies to /Applications/CodeScribe.app (auto-caches models)
-```
-
-**Result**: Standard macOS .app bundle in `/Applications/`.
-
-**How it runs**: Double-click or launch from Spotlight.
+**How it runs**: Terminal-only quality/reporting utilities, not the user-facing app.
 
 `make install-app` now prefers a stable local signing identity automatically:
 
@@ -43,7 +46,7 @@ make notarize         # Notarize with Apple (requires Developer ID)
 # make release-dmgs    # Build + sign + notarize standard and full DMGs
 ```
 
-**Result**: `CodeScribe_X.Y.Z.dmg` and `CodeScribe_X.Y.Z_full.dmg` ready for distribution. The standard DMG embeds Silero + embedder and resolves Whisper from cache/download. The full DMG embeds Silero + embedder + Whisper.
+**Result**: `Codescribe_X.Y.Z.dmg` and `Codescribe_X.Y.Z_full.dmg` ready for distribution. The standard DMG embeds Silero + embedder and resolves Whisper from cache/download. The full DMG embeds Silero + embedder + Whisper.
 
 ## Configuration
 
@@ -52,7 +55,7 @@ make notarize         # Notarize with Apple (requires Developer ID)
 Configuration is **tiered**:
 
 ```
-~/Library/Application Support/CodeScribe/
+~/Library/Application Support/Codescribe/
 ├── settings.json     # GUI-managed settings (regular-user tier)
 └── ...               # app data
 
@@ -96,7 +99,7 @@ flowchart TD
 
 ```env
 # Speech-to-Text
-WHISPER_LANGUAGE=pl              # pl | en | de | fr
+WHISPER_LANGUAGE=auto            # auto | pl | en
 USE_LOCAL_STT=1                  # 1 = keep local transcript as committed result
 
 # Hotkeys timing / behavior
@@ -109,7 +112,7 @@ TOGGLE_SILENCE_SEC=5.0
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain.
 
 # Optional: Mode-specific OpenAI overrides
 LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=...
@@ -119,24 +122,24 @@ LLM_ASSISTIVE_{ENDPOINT,MODEL,API_KEY}=...
 ## Bundle Structure
 
 ```
-CodeScribe.app/
+Codescribe.app/
 └── Contents/
     ├── Info.plist           # Bundle metadata (icon, identifier, version)
     ├── MacOS/
-    │   └── codescribe       # Main executable
+    │   └── Codescribe       # App executable
     └── Resources/
         └── AppIcon.icns     # Application icon
 ```
 
 ### Info.plist Keys
 
-| Key                          | Value                 | Purpose                      |
-| ---------------------------- | --------------------- | ---------------------------- |
-| CFBundleIdentifier           | com.codescribe.app    | Unique app identifier        |
-| CFBundleIconFile             | AppIcon               | Points to AppIcon.icns       |
-| CFBundleExecutable           | codescribe            | Main binary name             |
-| LSMinimumSystemVersion       | 14.0                  | Requires macOS Sonoma+       |
-| NSMicrophoneUsageDescription | ...                   | Microphone permission prompt |
+| Key                          | Value                    | Purpose                      |
+| ---------------------------- | ------------------------ | ---------------------------- |
+| CFBundleIdentifier           | com.vetcoders.codescribe | Unique app identifier        |
+| CFBundleIconFile             | AppIcon                  | Points to AppIcon.icns       |
+| CFBundleExecutable           | Codescribe               | Main binary name             |
+| LSMinimumSystemVersion       | 14.0                     | Requires macOS Sonoma+       |
+| NSMicrophoneUsageDescription | ...                      | Microphone permission prompt |
 
 ## Icons
 
@@ -191,18 +194,18 @@ Grant in **System Settings > Privacy & Security**:
 
 - **CLI mode**: `set_dock_icon()` should set it programmatically
 - **Bundle mode**: Check that `Info.plist` exists and has `CFBundleIconFile`
-- **Verify**: `plutil -lint /Applications/CodeScribe.app/Contents/Info.plist`
+- **Verify**: `plutil -lint /Applications/Codescribe.app/Contents/Info.plist`
 
 ### Empty Tray Icon
 
 - Check that `assets/icon.png` exists and is valid PNG
-- Rebuild with `cargo build --release`
+- Rebuild with `make app PROFILE=release`
 
 ### Config Not Loading
 
 - Check `~/.codescribe/.env` exists
 - Verify syntax: `cat ~/.codescribe/.env`
-- Check logs: `codescribe -v` for verbose output
+- Check logs: `make logs`
 
 ### Hotkeys Not Working
 
@@ -212,4 +215,4 @@ Grant in **System Settings > Privacy & Security**:
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

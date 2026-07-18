@@ -12,8 +12,17 @@ use tokio::time::{Duration, Instant};
 const REFINE_SUPERSEDED_ERR: &str = "STT refine request superseded by a newer pending refine";
 const LIVE_SUPERSEDED_ERR: &str = "STT live request superseded by a newer pending live preview";
 const SHUTDOWN_ERR: &str = "STT scheduler is shutting down";
+const DEFAULT_LIVE_MIN_INTERVAL_MS: u64 = 90;
+const DEFAULT_COMMIT_MIN_INTERVAL_MS: u64 = 180;
+const DEFAULT_REFINE_MIN_INTERVAL_MS: u64 = 240;
+const DEFAULT_THERMAL_NOMINAL_MULT: f32 = 0.0;
+const DEFAULT_THERMAL_FAIR_MULT: f32 = 1.0;
+const DEFAULT_THERMAL_SERIOUS_MULT: f32 = 2.0;
+const DEFAULT_THERMAL_CRITICAL_MULT: f32 = 4.0;
 
-type InferFn = Arc<dyn Fn(Vec<f32>, u32, Option<String>) -> Result<RawTranscript> + Send + Sync>;
+type InferFn = Arc<
+    dyn Fn(Vec<f32>, u32, Option<String>, Option<String>) -> Result<RawTranscript> + Send + Sync,
+>;
 type CommitPrefilterFn = Arc<dyn Fn(&[f32], u32) -> Vec<f32> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,8 +64,8 @@ impl ThermalLevel {
 }
 
 static PROCESS_THERMAL_LEVEL: AtomicU64 = AtomicU64::new(0);
-static SCHEDULER_REGISTRY: OnceLock<StdMutex<Vec<mpsc::UnboundedSender<SchedulerCommand>>>> =
-    OnceLock::new();
+static NEXT_SCHEDULER_ID: AtomicU64 = AtomicU64::new(0);
+static SCHEDULER_REGISTRY: OnceLock<StdMutex<Vec<SchedulerRegistration>>> = OnceLock::new();
 
 pub fn current_process_thermal_level() -> ThermalLevel {
     ThermalLevel::from_u8(PROCESS_THERMAL_LEVEL.load(Ordering::Relaxed) as u8)
@@ -65,9 +74,19 @@ pub fn current_process_thermal_level() -> ThermalLevel {
 pub fn set_process_thermal_level(level: ThermalLevel) {
     PROCESS_THERMAL_LEVEL.store(u64::from(level.as_u8()), Ordering::Relaxed);
     if let Some(registry) = SCHEDULER_REGISTRY.get() {
-        let mut senders = registry.lock().unwrap_or_else(|e| e.into_inner());
-        senders.retain(|tx| tx.send(SchedulerCommand::SetThermalLevel(level)).is_ok());
+        let mut registrations = registry.lock().unwrap_or_else(|e| e.into_inner());
+        registrations.retain(|registration| {
+            registration
+                .tx
+                .send(SchedulerCommand::SetThermalLevel(level))
+                .is_ok()
+        });
     }
+}
+
+struct SchedulerRegistration {
+    id: u64,
+    tx: mpsc::UnboundedSender<SchedulerCommand>,
 }
 
 #[derive(Debug)]
@@ -99,6 +118,7 @@ impl SttTaskHandle {
 }
 
 pub(crate) struct SttScheduler {
+    registry_id: u64,
     command_tx: mpsc::UnboundedSender<SchedulerCommand>,
     worker_handle: Option<JoinHandle<()>>,
     next_request_id: AtomicU64,
@@ -124,6 +144,8 @@ impl SttScheduler {
             sample_rate,
             language,
             utterance_id: None,
+            initial_prompt: initial_prompt_for_lane(lane),
+            queued_at: Instant::now(),
             result_tx,
         };
         self.command_tx
@@ -152,6 +174,8 @@ impl SttScheduler {
             sample_rate,
             language,
             utterance_id: Some(utterance_id),
+            initial_prompt: initial_prompt_for_lane(lane),
+            queued_at: Instant::now(),
             result_tx,
         };
         self.command_tx
@@ -174,7 +198,7 @@ impl SttScheduler {
     pub(crate) async fn shutdown(mut self) -> Result<()> {
         let (ack_tx, ack_rx) = oneshot::channel();
         let _ = self.command_tx.send(SchedulerCommand::Shutdown { ack_tx });
-        drop(self.command_tx);
+        deregister_scheduler_sender(self.registry_id);
 
         let _ = ack_rx.await;
 
@@ -230,11 +254,15 @@ impl SttScheduler {
         governor: SttGovernorConfig,
     ) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let registry_id = NEXT_SCHEDULER_ID.fetch_add(1, Ordering::Relaxed) + 1;
         SCHEDULER_REGISTRY
             .get_or_init(|| StdMutex::new(Vec::new()))
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(command_tx.clone());
+            .push(SchedulerRegistration {
+                id: registry_id,
+                tx: command_tx.clone(),
+            });
         let worker_handle = tokio::spawn(scheduler_worker(
             command_rx,
             infer_fn,
@@ -242,6 +270,7 @@ impl SttScheduler {
             governor,
         ));
         Self {
+            registry_id,
             command_tx,
             worker_handle: Some(worker_handle),
             next_request_id: AtomicU64::new(0),
@@ -249,17 +278,51 @@ impl SttScheduler {
     }
 }
 
+impl Drop for SttScheduler {
+    fn drop(&mut self) {
+        deregister_scheduler_sender(self.registry_id);
+    }
+}
+
+fn deregister_scheduler_sender(registry_id: u64) {
+    if let Some(registry) = SCHEDULER_REGISTRY.get() {
+        let mut registrations = registry.lock().unwrap_or_else(|e| e.into_inner());
+        registrations.retain(|registration| registration.id != registry_id);
+    }
+}
+
 fn default_infer(
     samples: Vec<f32>,
     sample_rate: u32,
     language: Option<String>,
+    initial_prompt: Option<String>,
 ) -> Result<RawTranscript> {
-    crate::stt::transcribe_long_with_segments(&samples, sample_rate, language.as_deref())
+    crate::stt::transcribe_long_with_segments_with_initial_prompt(
+        &samples,
+        sample_rate,
+        language.as_deref(),
+        initial_prompt,
+    )
+}
+
+fn initial_prompt_for_lane(lane: SttLane) -> Option<String> {
+    match lane {
+        SttLane::Live => None,
+        SttLane::Commit | SttLane::Refine => {
+            crate::pipeline::stream_postprocess::whisper_initial_prompt()
+        }
+    }
 }
 
 fn default_commit_prefilter(samples: &[f32], sample_rate: u32) -> Vec<f32> {
-    let (speech, _) = crate::vad::extract_speech(samples, sample_rate);
-    speech
+    // Commit/final lane: trim only LEADING/TRAILING silence and keep every
+    // interior window. Using `extract_speech` here (which concatenates only the
+    // speech windows) would excise interior windows that dip below threshold —
+    // e.g. the micro-pause between two spoken digits — dropping mid-utterance
+    // speech from the AUTHORITATIVE transcript. `extract_speech_trim_edges`
+    // returns the contiguous first..=last speech slab instead, so words are
+    // never lost mid-utterance; it still returns empty on genuine silence.
+    crate::vad::extract_speech_trim_edges(samples, sample_rate)
 }
 
 struct SttRequest {
@@ -268,6 +331,8 @@ struct SttRequest {
     sample_rate: u32,
     language: Option<String>,
     utterance_id: Option<u64>,
+    initial_prompt: Option<String>,
+    queued_at: Instant,
     result_tx: oneshot::Sender<Result<RawTranscript>>,
 }
 
@@ -282,6 +347,8 @@ struct SttGovernorConfig {
     enabled: bool,
     live_min_interval: Duration,
     commit_min_interval: Duration,
+    refine_min_interval: Duration,
+    nominal_multiplier: f32,
     fair_multiplier: f32,
     serious_multiplier: f32,
     critical_multiplier: f32,
@@ -293,27 +360,55 @@ impl SttGovernorConfig {
             enabled: env_bool("CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED", true),
             live_min_interval: Duration::from_millis(env_u64(
                 "CODESCRIBE_STT_MIN_INFER_INTERVAL_MS",
-                180,
+                DEFAULT_LIVE_MIN_INTERVAL_MS,
             )),
             commit_min_interval: Duration::from_millis(env_u64(
                 "CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS",
-                350,
+                DEFAULT_COMMIT_MIN_INTERVAL_MS,
             )),
-            fair_multiplier: env_f32("CODESCRIBE_STT_THERMAL_FAIR_MULT", 1.0).max(0.1),
-            serious_multiplier: env_f32("CODESCRIBE_STT_THERMAL_SERIOUS_MULT", 2.0).max(0.1),
-            critical_multiplier: env_f32("CODESCRIBE_STT_THERMAL_CRITICAL_MULT", 4.0).max(0.1),
+            refine_min_interval: Duration::from_millis(env_u64(
+                "CODESCRIBE_STT_REFINE_MIN_INTERVAL_MS",
+                DEFAULT_REFINE_MIN_INTERVAL_MS,
+            )),
+            nominal_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_NOMINAL_MULT",
+                DEFAULT_THERMAL_NOMINAL_MULT,
+            )
+            .max(0.0),
+            fair_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_FAIR_MULT",
+                DEFAULT_THERMAL_FAIR_MULT,
+            )
+            .max(0.1),
+            serious_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_SERIOUS_MULT",
+                DEFAULT_THERMAL_SERIOUS_MULT,
+            )
+            .max(0.1),
+            critical_multiplier: env_f32(
+                "CODESCRIBE_STT_THERMAL_CRITICAL_MULT",
+                DEFAULT_THERMAL_CRITICAL_MULT,
+            )
+            .max(0.1),
         }
     }
 
     #[cfg(test)]
     fn test(live_ms: u64, commit_ms: u64) -> Self {
+        Self::test_with_intervals(live_ms, commit_ms, commit_ms)
+    }
+
+    #[cfg(test)]
+    fn test_with_intervals(live_ms: u64, commit_ms: u64, refine_ms: u64) -> Self {
         Self {
             enabled: true,
             live_min_interval: Duration::from_millis(live_ms),
             commit_min_interval: Duration::from_millis(commit_ms),
-            fair_multiplier: 1.0,
-            serious_multiplier: 2.0,
-            critical_multiplier: 4.0,
+            refine_min_interval: Duration::from_millis(refine_ms),
+            nominal_multiplier: DEFAULT_THERMAL_NOMINAL_MULT,
+            fair_multiplier: DEFAULT_THERMAL_FAIR_MULT,
+            serious_multiplier: DEFAULT_THERMAL_SERIOUS_MULT,
+            critical_multiplier: DEFAULT_THERMAL_CRITICAL_MULT,
         }
     }
 
@@ -323,10 +418,11 @@ impl SttGovernorConfig {
         }
         let base = match lane {
             SttLane::Live => self.live_min_interval,
-            SttLane::Commit | SttLane::Refine => self.commit_min_interval,
+            SttLane::Commit => self.commit_min_interval,
+            SttLane::Refine => self.refine_min_interval,
         };
         base.mul_f32(match level {
-            ThermalLevel::Nominal => 1.0,
+            ThermalLevel::Nominal => self.nominal_multiplier,
             ThermalLevel::Fair => self.fair_multiplier,
             ThermalLevel::Serious => self.serious_multiplier,
             ThermalLevel::Critical => self.critical_multiplier,
@@ -386,10 +482,15 @@ async fn scheduler_worker(
             &mut refine_pending,
             thermal_level,
         ) {
-            sleep_for_duty_cycle(&governor, thermal_level, req.lane, last_infer_completed_at).await;
+            let dequeued_at = Instant::now();
+            let lane = req.lane;
+            let utterance_id = req.utterance_id;
+            let queue_ms = dequeued_at.duration_since(req.queued_at).as_millis();
+            let duty_sleep =
+                sleep_for_duty_cycle(&governor, thermal_level, lane, last_infer_completed_at).await;
             let infer = Arc::clone(&infer_fn);
             let commit_prefilter = Arc::clone(&commit_prefilter_fn);
-            let lane = req.lane;
+            let infer_started_at = Instant::now();
             let result = tokio::task::spawn_blocking(move || {
                 let samples = if lane == SttLane::Commit {
                     // Commit contract (hard): always VAD-prefilter before inference.
@@ -429,12 +530,23 @@ async fn scheduler_worker(
                 } else {
                     req.samples
                 };
-                (infer)(samples, req.sample_rate, req.language)
+                (infer)(samples, req.sample_rate, req.language, req.initial_prompt)
             })
             .await
             .map_err(|e| anyhow!("STT blocking worker task failed: {}", e))
             .and_then(|r| r);
+            let infer_elapsed = infer_started_at.elapsed();
             last_infer_completed_at = Some(Instant::now());
+            tracing::debug!(
+                ?lane,
+                ?thermal_level,
+                ?utterance_id,
+                queue_ms,
+                duty_sleep_ms = duty_sleep.as_millis(),
+                infer_ms = infer_elapsed.as_millis(),
+                ok = result.is_ok(),
+                "STT scheduler lane timing"
+            );
             let _ = req.result_tx.send(result);
             continue;
         }
@@ -572,12 +684,13 @@ fn pop_next_request(
     refine_pending: &mut Option<SttRequest>,
     thermal_level: ThermalLevel,
 ) -> Option<SttRequest> {
+    if thermal_level == ThermalLevel::Critical {
+        return commit_queue.pop_front();
+    }
     if let Some(req) = live_queue.pop_front() {
         return Some(req);
     }
-    if thermal_level != ThermalLevel::Critical
-        && let Some(req) = commit_queue.pop_front()
-    {
+    if let Some(req) = commit_queue.pop_front() {
         return Some(req);
     }
     if matches!(thermal_level, ThermalLevel::Nominal | ThermalLevel::Fair) {
@@ -591,19 +704,22 @@ async fn sleep_for_duty_cycle(
     thermal_level: ThermalLevel,
     lane: SttLane,
     last_completed_at: Option<Instant>,
-) {
+) -> Duration {
     let Some(last_completed_at) = last_completed_at else {
-        return;
+        return Duration::ZERO;
     };
     let interval = governor.min_interval_for(lane, thermal_level);
     if interval.is_zero() {
-        return;
+        return Duration::ZERO;
     }
     let next_allowed = last_completed_at + interval;
     let now = Instant::now();
     if next_allowed > now {
+        let sleep_for = next_allowed.duration_since(now);
         tokio::time::sleep_until(next_allowed).await;
+        return sleep_for;
     }
+    Duration::ZERO
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -634,8 +750,33 @@ fn env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::ffi::OsString;
     use std::sync::{Condvar, Mutex as StdMutex};
     use tokio::time::{Duration, timeout};
+
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 
     fn transcript_for_id(id: u32) -> RawTranscript {
         RawTranscript {
@@ -649,6 +790,173 @@ mod tests {
         samples.to_vec()
     }
 
+    fn scheduler_registry_contains(registry_id: u64) -> bool {
+        SCHEDULER_REGISTRY
+            .get()
+            .map(|registry| {
+                registry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .any(|registration| registration.id == registry_id)
+            })
+            .unwrap_or(false)
+    }
+
+    fn assert_duration_near(actual: Duration, expected: Duration) {
+        let diff = actual.abs_diff(expected);
+        assert!(
+            diff <= Duration::from_millis(1),
+            "expected {actual:?} to be within 1ms of {expected:?}"
+        );
+    }
+
+    #[test]
+    fn governor_thermal_mapping_keeps_serious_and_critical_throttles() {
+        let governor = SttGovernorConfig::test_with_intervals(90, 180, 240);
+
+        assert_eq!(
+            governor.min_interval_for(SttLane::Commit, ThermalLevel::Nominal),
+            Duration::ZERO,
+            "Nominal thermal should not add scheduler duty-cycle latency"
+        );
+        assert_duration_near(
+            governor.min_interval_for(SttLane::Live, ThermalLevel::Fair),
+            Duration::from_millis(90),
+        );
+        assert_duration_near(
+            governor.min_interval_for(SttLane::Commit, ThermalLevel::Serious),
+            Duration::from_millis(360),
+        );
+        assert_duration_near(
+            governor.min_interval_for(SttLane::Refine, ThermalLevel::Critical),
+            Duration::from_millis(960),
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_nominal_thermal_skips_duty_cycle_sleep() {
+        let governor = SttGovernorConfig::test_with_intervals(200, 200, 200);
+        let started = Instant::now();
+        let slept = sleep_for_duty_cycle(
+            &governor,
+            ThermalLevel::Nominal,
+            SttLane::Commit,
+            Some(Instant::now()),
+        )
+        .await;
+
+        assert_eq!(slept, Duration::ZERO);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "Nominal thermal should return immediately without sleeping"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn scheduler_initial_prompt_defaults_off_for_all_lanes() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(
+            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+        );
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::remove_var(
+                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+            );
+        }
+
+        assert_eq!(initial_prompt_for_lane(SttLane::Live), None);
+        assert_eq!(initial_prompt_for_lane(SttLane::Commit), None);
+        assert_eq!(initial_prompt_for_lane(SttLane::Refine), None);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn scheduler_seeds_prompt_only_for_commit_and_refine_lanes() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
+        let _prompt_enabled = EnvRestore::capture(
+            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+        );
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
+            std::env::remove_var("CODESCRIBE_ENV_PATH");
+            std::env::set_var(
+                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+                "1",
+            );
+        }
+
+        let captured = Arc::new(StdMutex::new(Vec::<(u32, Option<String>)>::new()));
+        let captured_ref = Arc::clone(&captured);
+        let infer = Arc::new(
+            move |samples: Vec<f32>,
+                  _sample_rate: u32,
+                  _language: Option<String>,
+                  initial_prompt: Option<String>|
+                  -> Result<RawTranscript> {
+                let id = samples.first().copied().unwrap_or_default() as u32;
+                captured_ref
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((id, initial_prompt));
+                Ok(transcript_for_id(id))
+            },
+        );
+
+        let scheduler = SttScheduler::with_infer_and_commit_prefilter(
+            infer,
+            Arc::new(passthrough_commit_prefilter),
+        );
+        let mut live = scheduler
+            .submit(SttLane::Live, vec![1.0], 16_000, None)
+            .expect("submit live");
+        let mut commit = scheduler
+            .submit(SttLane::Commit, vec![2.0], 16_000, None)
+            .expect("submit commit");
+        let mut refine = scheduler
+            .submit(SttLane::Refine, vec![3.0], 16_000, None)
+            .expect("submit refine");
+
+        assert_eq!(live.recv().await.expect("live ok").text, "job-1");
+        assert_eq!(commit.recv().await.expect("commit ok").text, "job-2");
+        assert_eq!(refine.recv().await.expect("refine ok").text, "job-3");
+        scheduler.shutdown().await.expect("shutdown");
+
+        let captured = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(captured.len(), 3);
+        let live_prompt = captured
+            .iter()
+            .find(|(id, _)| *id == 1)
+            .and_then(|(_, prompt)| prompt.as_ref());
+        let commit_prompt = captured
+            .iter()
+            .find(|(id, _)| *id == 2)
+            .and_then(|(_, prompt)| prompt.as_ref());
+        let refine_prompt = captured
+            .iter()
+            .find(|(id, _)| *id == 3)
+            .and_then(|(_, prompt)| prompt.as_ref());
+
+        assert!(live_prompt.is_none(), "Live preview must stay unprompted");
+        assert!(
+            commit_prompt.is_some_and(|prompt| prompt.contains("Loctree")),
+            "Commit lane should receive the protected-term prompt"
+        );
+        assert!(
+            refine_prompt.is_some_and(|prompt| prompt.contains("Loctree")),
+            "Refine lane should receive the protected-term prompt"
+        );
+    }
+
     #[tokio::test]
     async fn scheduler_prioritizes_live_then_commit_then_refine() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
@@ -659,7 +967,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -726,7 +1035,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -794,7 +1104,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -856,7 +1167,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 started_ref
                     .lock()
@@ -873,6 +1185,9 @@ mod tests {
             Arc::new(passthrough_commit_prefilter),
             SttGovernorConfig::test(0, 40),
         );
+        scheduler
+            .set_thermal_level(ThermalLevel::Fair)
+            .expect("set fair thermal");
         let mut live = scheduler
             .submit(SttLane::Live, vec![1.0], 16_000, None)
             .expect("submit live");
@@ -899,7 +1214,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -946,13 +1262,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduler_critical_thermal_runs_only_latest_live() {
+    async fn scheduler_critical_thermal_runs_commit_and_throttles_live() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
         let started_ref = Arc::clone(&started);
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref
@@ -991,14 +1308,14 @@ mod tests {
             old_err.to_string().contains("superseded"),
             "unexpected old live error: {old_err}"
         );
-        assert_eq!(new_live.recv().await.expect("new live ok").text, "job-11");
+        assert_eq!(commit.recv().await.expect("commit ok").text, "job-2");
 
         let shutdown_task = tokio::spawn(async move { scheduler.shutdown().await });
         assert!(
-            commit
+            new_live
                 .recv()
                 .await
-                .expect_err("commit should remain paused until shutdown")
+                .expect_err("live should remain throttled until shutdown")
                 .to_string()
                 .contains(SHUTDOWN_ERR)
         );
@@ -1017,8 +1334,37 @@ mod tests {
 
         assert_eq!(
             started.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-            vec![11]
+            vec![2]
         );
+    }
+
+    #[tokio::test]
+    async fn scheduler_registry_deregisters_senders_on_drop() {
+        let mut dropped_ids = Vec::new();
+
+        for _ in 0..5 {
+            let scheduler = SttScheduler::with_infer_fn(Arc::new(
+                |_samples, _sample_rate, _language, _initial_prompt| Ok(RawTranscript::default()),
+            ));
+            let registry_id = scheduler.registry_id;
+            assert!(
+                scheduler_registry_contains(registry_id),
+                "scheduler sender should be registered after creation"
+            );
+            drop(scheduler);
+            assert!(
+                !scheduler_registry_contains(registry_id),
+                "scheduler sender should be deregistered on drop"
+            );
+            dropped_ids.push(registry_id);
+        }
+
+        let leaked = dropped_ids
+            .iter()
+            .filter(|id| scheduler_registry_contains(**id))
+            .count();
+        assert_eq!(dropped_ids.len(), 5, "expected create/drop proof count");
+        assert_eq!(leaked, 0, "dropped scheduler senders leaked in registry");
     }
 
     #[tokio::test]
@@ -1028,7 +1374,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 started_ref
                     .lock()
@@ -1077,7 +1424,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 captured_ref
                     .lock()
@@ -1136,7 +1484,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 captured_ref
                     .lock()
@@ -1189,7 +1538,8 @@ mod tests {
         let infer = Arc::new(
             move |samples: Vec<f32>,
                   _sample_rate: u32,
-                  _language: Option<String>|
+                  _language: Option<String>,
+                  _initial_prompt: Option<String>|
                   -> Result<RawTranscript> {
                 let id = samples.first().copied().unwrap_or_default() as u32;
                 started_ref

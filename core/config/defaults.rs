@@ -1,4 +1,4 @@
-//! Default value functions for CodeScribe configuration.
+//! Default value functions for Codescribe configuration.
 //!
 //! These are used by serde for deserialization defaults.
 
@@ -6,6 +6,11 @@ pub const DEFAULT_OPENAI_RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/r
 pub const DEFAULT_LLM_MODEL: &str = DEFAULT_FORMATTING_MODEL;
 pub const DEFAULT_FORMATTING_MODEL: &str = "gpt-4.1";
 pub const DEFAULT_ASSISTIVE_MODEL: &str = "gpt-5.5";
+
+/// Default LLM provider identity for both lanes — OpenAI Responses. This is the
+/// protected default: neither lane routes to another provider unless explicitly
+/// configured. Mirrors [`crate::llm::provider::ProviderKind::default`].
+pub const DEFAULT_LLM_PROVIDER: &str = "openai-responses";
 
 pub fn default_llm_endpoint() -> String {
     DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string()
@@ -25,6 +30,14 @@ pub fn default_formatting_model() -> String {
 
 pub fn default_assistive_model() -> String {
     DEFAULT_ASSISTIVE_MODEL.to_string()
+}
+
+pub fn default_formatting_provider() -> String {
+    DEFAULT_LLM_PROVIDER.to_string()
+}
+
+pub fn default_assistive_provider() -> String {
+    DEFAULT_LLM_PROVIDER.to_string()
 }
 
 pub fn default_hold_start_delay_ms() -> u64 {
@@ -113,4 +126,8 @@ pub fn default_dump_audio_logs() -> bool {
 
 pub fn default_local_model() -> String {
     super::models::DEFAULT_MODEL.to_string()
+}
+
+pub fn default_stt_initial_prompt_enabled() -> bool {
+    false
 }

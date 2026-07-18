@@ -1,4 +1,4 @@
-//! CodeScribe Core - speech, transcription, and assistive runtime primitives.
+//! Codescribe Core - speech, transcription, and assistive runtime primitives.
 //!
 //! ## Quick Start
 //!
@@ -48,6 +48,7 @@ mod hf_cache;
 pub mod ipc;
 pub mod llm;
 pub mod mcp;
+pub mod memory;
 pub mod pipeline;
 pub mod quality;
 pub mod state;
@@ -142,5 +143,5 @@ pub use config::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to
 pub use llm::{ai_formatting, client};
 pub use pipeline::contracts;
 pub use pipeline::stream_postprocess;
-pub use quality::{qube_daemon, qube_report};
+pub use quality::{overlay_quality, qube_daemon, qube_report};
 pub use util::{safe_path, status};

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -273,7 +273,11 @@ impl AgentSession {
                             self.provider.name(),
                             message
                         );
-                        send_ui_event(&self.ui_tx, AgentUiEvent::Error(message.clone())).await;
+                        // Fatal agent failures use the Result channel only.
+                        // Swift already turns the thrown bridge error into the
+                        // visible failed assistant bubble; also emitting
+                        // AgentUiEvent::Error would double-signal the same
+                        // failure through listener.on_error + throw.
                         return Err(anyhow::anyhow!("Provider stream error: {message}"));
                     }
                 }
@@ -318,14 +322,6 @@ impl AgentSession {
                 match serde_json::from_str::<serde_json::Value>(buffered) {
                     Ok(arguments) => ready_calls.push((call.id, call.name, arguments)),
                     Err(error) => {
-                        send_ui_event(
-                            &self.ui_tx,
-                            AgentUiEvent::Error(format!(
-                                "Failed to parse tool arguments for '{}': {}",
-                                call.name, error
-                            )),
-                        )
-                        .await;
                         return Err(anyhow::anyhow!(
                             "Failed to parse tool arguments for '{}': {}",
                             call.name,
@@ -364,6 +360,7 @@ impl AgentSession {
                 )
                 .await;
 
+                let dispatch_started = Instant::now();
                 let tool_outputs = match self.tools.dispatch(&tool_name, arguments).await {
                     Ok(outputs) => outputs,
                     Err(error) => {
@@ -379,6 +376,24 @@ impl AgentSession {
                 let is_error = tool_outputs
                     .iter()
                     .any(|output| matches!(output, ToolResultContent::Error(_)));
+
+                // Per-call observability: one INFO line per agent tool call (native
+                // or MCP) so failures are diagnosable from codescribe.log after the
+                // fact. Never logs arguments or full payloads — only the tool name,
+                // duration, outcome, and (on error) the error's first line. For MCP
+                // tools the server segment of the public name is surfaced.
+                let dispatch_ms = dispatch_started.elapsed().as_millis();
+                let server_label = mcp_server_name(&tool_name)
+                    .map(|server| format!(" (mcp server `{server}`)"))
+                    .unwrap_or_default();
+                if is_error {
+                    info!(
+                        "agent tool `{tool_name}`{server_label} failed in {dispatch_ms}ms: {}",
+                        first_error_line(&tool_outputs)
+                    );
+                } else {
+                    info!("agent tool `{tool_name}`{server_label} ok in {dispatch_ms}ms");
+                }
 
                 let mut content_blocks = Vec::new();
                 for output in tool_outputs {
@@ -414,6 +429,7 @@ impl AgentSession {
                         name: tool_name,
                         id: call_id,
                         summary,
+                        is_error,
                     },
                 )
                 .await;
@@ -424,7 +440,6 @@ impl AgentSession {
             "Agent loop exceeded max iterations ({})",
             self.max_iterations
         );
-        send_ui_event(&self.ui_tx, AgentUiEvent::Error(message.clone())).await;
         Err(anyhow::anyhow!(message))
     }
 }
@@ -461,10 +476,36 @@ fn is_transient_stream_start_error(error: &anyhow::Error) -> bool {
     .any(|pattern| message.contains(pattern))
 }
 
+/// Extract the MCP server segment from a public tool name shaped
+/// `mcp__<server>__<tool>`. Native tools return `None`.
+fn mcp_server_name(tool_name: &str) -> Option<&str> {
+    tool_name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split_once("__"))
+        .map(|(server, _)| server)
+}
+
+/// First line of the first error result, trimmed and truncated for a single log
+/// line. Never includes tool arguments — only the message the tool produced.
+fn first_error_line(outputs: &[ToolResultContent]) -> String {
+    outputs
+        .iter()
+        .find_map(|output| match output {
+            ToolResultContent::Error(message) => Some(message),
+            _ => None,
+        })
+        .map(|message| {
+            let line = message.lines().next().unwrap_or("").trim();
+            truncate_summary(line, 200)
+        })
+        .unwrap_or_default()
+}
+
 fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
     const SUMMARY_MAX_CHARS: usize = 120;
 
     let mut first_text: Option<String> = None;
+    let mut first_error: Option<String> = None;
     let mut image_count = 0usize;
     let mut error_count = 0usize;
 
@@ -476,7 +517,12 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
                 }
             }
             ToolResultContent::Image { .. } | ToolResultContent::ImageAsset(_) => image_count += 1,
-            ToolResultContent::Error(_) => error_count += 1,
+            ToolResultContent::Error(message) => {
+                error_count += 1;
+                if first_error.is_none() {
+                    first_error = Some(message.trim().to_string());
+                }
+            }
         }
     }
 
@@ -491,8 +537,14 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
         return format!("{image_count} image result(s)");
     }
 
-    if error_count > 0 {
-        return format!("{error_count} error result(s)");
+    // Surface the real failure reason (e.g. "empty index") so the grouped Tool
+    // Activity block can show it compactly. Fall back to a count when the error
+    // carries no message. The full payload still goes to the debug log.
+    if let Some(error) = first_error {
+        if error.is_empty() {
+            return format!("{error_count} error result(s)");
+        }
+        return truncate_summary(&error, SUMMARY_MAX_CHARS);
     }
 
     "No tool output".to_string()
@@ -1006,13 +1058,28 @@ mod tests {
             }),
             "expected ToolExecuting event, got {ui_events:?}"
         );
+        let tool_result_event = ui_events
+            .iter()
+            .find_map(|event| match event {
+                AgentUiEvent::ToolResult {
+                    name,
+                    id,
+                    summary,
+                    is_error,
+                } => Some((name.clone(), id.clone(), summary.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("expected a ToolResult UI event");
+        assert_eq!(tool_result_event.0, "missing_tool");
+        assert_eq!(tool_result_event.1, "call_missing");
         assert!(
-            ui_events.contains(&AgentUiEvent::ToolResult {
-                name: "missing_tool".to_string(),
-                id: "call_missing".to_string(),
-                summary: "1 error result(s)".to_string(),
-            }),
-            "expected ToolResult fallback summary, got {ui_events:?}"
+            tool_result_event.3,
+            "missing tool dispatch must flag the UI event as an error, got {ui_events:?}"
+        );
+        assert!(
+            tool_result_event.2.contains("not registered"),
+            "expected the failure reason to reach the UI summary, got {:?}",
+            tool_result_event.2
         );
         assert!(
             ui_events
@@ -1143,11 +1210,10 @@ mod tests {
             ui_events.push(event);
         }
         assert!(
-            ui_events.iter().any(|event| matches!(
-                event,
-                AgentUiEvent::Error(message) if message.contains("server_error")
-            )),
-            "expected provider Error surfaced to UI, got {ui_events:?}"
+            ui_events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::Error(_))),
+            "fatal provider errors are surfaced through the Result channel only: {ui_events:?}"
         );
     }
 
@@ -1161,7 +1227,7 @@ mod tests {
             "Agent response was cancelled before completion".to_string(),
         )]]);
 
-        let (ui_tx, mut _ui_rx) = mpsc::channel(16);
+        let (ui_tx, mut ui_rx) = mpsc::channel(16);
         let mut session =
             AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
         session.thread_id = Some("resp_poisoned".to_string());
@@ -1186,6 +1252,16 @@ mod tests {
             session.thread_id(),
             None,
             "a bare Error must still clear the chain (belt-and-suspenders)"
+        );
+        let mut ui_events = Vec::new();
+        while let Ok(event) = ui_rx.try_recv() {
+            ui_events.push(event);
+        }
+        assert!(
+            ui_events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::Error(_))),
+            "fatal provider errors are surfaced through the Result channel only: {ui_events:?}"
         );
     }
 

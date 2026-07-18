@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CodeScribe • Generator .env</title>
+    <title>Codescribe • Generator .env</title>
     <style>
       :root {
         --bg: #0e131a;
@@ -290,7 +290,7 @@
   <body>
     <div class="wrap">
       <header>
-        <h1>CodeScribe • Generator .env</h1>
+        <h1>Codescribe • Generator .env</h1>
         <div class="subtitle">
           Wypełnij pola i skopiuj wygenerowany config do
           <code>~/.codescribe/.env</code>
@@ -317,7 +317,9 @@
               id="toggle-local-stt"
               onclick="toggleSwitch(this)"
             ></div>
-            <span class="toggle-label">Use Local STT (embedded-first Whisper)</span>
+            <span class="toggle-label"
+              >Use Local STT (embedded-first Whisper)</span
+            >
           </div>
           <div class="split">
             <div class="field">
@@ -406,8 +408,9 @@
           <h2>⌨️ Hotkeys</h2>
           <p class="muted">
             Mode bindings for Dictation, Formatting, and Assistive now live in
-            <code>settings.json</code> via <strong>Settings → Modes &amp; Shortcuts</strong>.
-            This generator only emits the remaining env-backed timing toggles.
+            <code>settings.json</code> via
+            <strong>Settings → Modes &amp; Shortcuts</strong>. This generator
+            only emits the remaining env-backed timing toggles.
           </p>
           <div class="split">
             <div class="field">
@@ -534,7 +537,7 @@
       </div>
 
       <footer>
-        CodeScribe Config Generator v1.0 • Created by M&K (c)2026 VetCoders<br />
+        Codescribe Config Generator v1.0 • Created by vetcoders (c)2026<br />
         <a href="env.md" style="color: var(--accent-2)"
           >📖 Full documentation</a
         >
@@ -563,10 +566,10 @@
         const lines = [];
         const now = new Date().toISOString().split("T")[0];
 
-        lines.push(`# CodeScribe .env`);
+        lines.push(`# Codescribe .env`);
         lines.push(`# Generated: ${now}`);
         lines.push(
-          `# Docs: https://github.com/VetCoders/CodeScribe/blob/main/docs/env.md`
+          `# Docs: https://github.com/vetcoders/codescribe/blob/main/docs/env.md`
         );
         lines.push(``);
 
@@ -657,7 +660,9 @@
           }`
         );
         lines.push(
-          `TOGGLE_SILENCE_SEC=${document.getElementById("toggle-silence").value}`
+          `TOGGLE_SILENCE_SEC=${
+            document.getElementById("toggle-silence").value
+          }`
         );
         lines.push(``);
 

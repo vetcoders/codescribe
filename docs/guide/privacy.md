@@ -1,6 +1,6 @@
 # Privacy & Security
 
-CodeScribe is designed with privacy as a core principle. Your audio is processed locally by default.
+Codescribe is designed with privacy as a core principle. Your audio is processed locally by default.
 
 ---
 
@@ -19,14 +19,14 @@ CodeScribe is designed with privacy as a core principle. Your audio is processed
 
 ### Always Local (Cannot Be Changed)
 
-| Component       | Location                                              | Notes                                 |
-| --------------- | ----------------------------------------------------- | ------------------------------------- |
-| Whisper model   | Runtime-resolved local path/cache                     | Local STT still runs on-device        |
-| Audio recording | RAM only                                              | Deleted after transcription           |
-| Transcripts     | ~/.codescribe/transcriptions/                         | You control retention                 |
-| Configuration   | settings.json + optional ~/.codescribe/.env          | GUI defaults plus power-user overrides |
-| API keys        | macOS Keychain                                        | Secrets stay out of plaintext config  |
-| Prompts         | ~/.codescribe/prompts/                                | Your custom prompts                   |
+| Component       | Location                                    | Notes                                  |
+| --------------- | ------------------------------------------- | -------------------------------------- |
+| Whisper model   | Runtime-resolved local path/cache           | Local STT still runs on-device         |
+| Audio recording | RAM only                                    | Deleted after transcription            |
+| Transcripts     | ~/.codescribe/transcriptions/               | You control retention                  |
+| Configuration   | settings.json + optional ~/.codescribe/.env | GUI defaults plus power-user overrides |
+| API keys        | macOS Keychain                              | Secrets stay out of plaintext config   |
+| Prompts         | ~/.codescribe/prompts/                      | Your custom prompts                    |
 
 ### No Network Required For
 
@@ -36,7 +36,7 @@ CodeScribe is designed with privacy as a core principle. Your audio is processed
 - Storing transcripts
 - All hotkey operations
 
-**CodeScribe works completely offline in Raw mode.**
+**Codescribe works completely offline in Raw mode.**
 
 ---
 
@@ -127,7 +127,7 @@ ollama serve
 # Pull a model
 ollama pull llama3.2
 
-# Configure CodeScribe
+# Configure codescribe
 LLM_ENDPOINT=http://localhost:11434/v1
 LLM_API_KEY=ollama
 LLM_MODEL=llama3.2
@@ -140,7 +140,7 @@ Now AI formatting runs 100% locally.
 
 ## System Permissions
 
-CodeScribe requests these permissions:
+Codescribe requests these permissions:
 
 | Permission           | Why                        | Risk Level                            |
 | -------------------- | -------------------------- | ------------------------------------- |
@@ -199,17 +199,17 @@ Audio files go to `~/.codescribe/audio/`.
 
 ## Network Connections
 
-### CodeScribe Makes No Connections If:
+### Codescribe Makes No Connections If:
 
 - AI formatting is disabled
 - Using only Raw mode (Ctrl hold)
 - No LLM_ENDPOINT configured
 
-### CodeScribe Connects To:
+### Codescribe Connects To:
 
-| Destination    | When               | Data               |
-| -------------- | ------------------ | ------------------ |
-| `LLM_ENDPOINT` | AI formatting      | Text transcript    |
+| Destination    | When                   | Data                             |
+| -------------- | ---------------------- | -------------------------------- |
+| `LLM_ENDPOINT` | AI formatting          | Text transcript                  |
 | `STT_ENDPOINT` | Cloud final transcript | Audio after capture (if enabled) |
 
 ### Verify Network Activity
@@ -246,9 +246,9 @@ chmod 600 ~/.codescribe/.env
 
 ## Source Availability
 
-CodeScribe is source-available under FSL-1.1-ALv2:
+Codescribe is source-available under FSL-1.1-ALv2:
 
-- **Repository**: github.com/VetCoders/CodeScribe
+- **Repository**: github.com/vetcoders/codescribe
 - **License**: Functional Source License 1.1, ALv2 Future License (FSL-1.1-ALv2)
 - **Audit**: You can inspect all code
 
@@ -288,4 +288,4 @@ For EU users:
 
 ---
 
-_Created by M&K (c)2026 VetCoders_
+_Created by vetcoders (c)2026_

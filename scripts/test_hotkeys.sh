@@ -3,11 +3,11 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Test script for dual hotkey modes in CodeScribe
+# Test script for dual hotkey modes in Codescribe
 # This script helps verify CTRL vs CTRL+SHIFT functionality
 
 echo "================================================"
-echo "CodeScribe Dual Hotkey Mode Test"
+echo "Codescribe Dual Hotkey Mode Test"
 echo "================================================"
 echo ""
 echo "Current configuration:"
@@ -38,11 +38,14 @@ echo "   - Both modes should only apply light_plus baseline"
 echo "   - No AI processing, just basic cleanup"
 echo ""
 echo "================================================"
-echo "Starting CodeScribe with debug logging..."
+echo "Starting Codescribe with debug logging..."
 echo ""
 
 # Enable debug logging
 export LOG_LEVEL=DEBUG
 
-# Run the application (local Rust app)
-cargo run --bin codescribe
+# Build, then launch the app's executable directly (not via `open`) so LOG_LEVEL
+# is inherited and logs stream to this terminal. The Rust `codescribe` binary was
+# retired; the app is now produced by scripts/build-app.sh via `make app`.
+make app
+"$REPO_ROOT/macos/build/Build/Products/Debug/Codescribe.app/Contents/MacOS/Codescribe"

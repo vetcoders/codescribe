@@ -4,7 +4,7 @@
 //! Requires a proper app bundle — bare binaries (e.g. `~/.cargo/bin/`) get a
 //! graceful no-op with a tracing::warn instead of an ObjC exception crash.
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+//! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
 use objc::runtime::Class;
 use objc::{msg_send, sel, sel_impl};
@@ -16,7 +16,7 @@ use tracing::warn;
 #[link(name = "UserNotifications", kind = "framework")]
 unsafe extern "C" {}
 
-use crate::ui_helpers::Id;
+use crate::os::Id;
 
 static AUTH_ONCE: Once = Once::new();
 
@@ -131,57 +131,6 @@ pub fn notify(title: &str, body: &str) {
         let request: Id = msg_send![request_cls, requestWithIdentifier:identifier content:content trigger:trigger];
 
         // nil completion handler
-        let nil_block: Id = std::ptr::null_mut();
-        let _: () =
-            msg_send![center, addNotificationRequest:request withCompletionHandler:nil_block];
-    }
-}
-
-/// Show notification with title, subtitle, and body.
-pub fn notify_with_subtitle(title: &str, subtitle: &str, body: &str) {
-    ensure_authorized();
-
-    unsafe {
-        let center = notification_center();
-        if center.is_null() {
-            warn!("Notification skipped (no app bundle): {title} — {subtitle} — {body}");
-            return;
-        }
-
-        let content_cls = match Class::get("UNMutableNotificationContent") {
-            Some(c) => c,
-            None => return,
-        };
-        let content: Id = msg_send![content_cls, new];
-        if content.is_null() {
-            return;
-        }
-
-        let _: () = msg_send![content, setTitle: ns_string(title)];
-        let _: () = msg_send![content, setSubtitle: ns_string(subtitle)];
-        let _: () = msg_send![content, setBody: ns_string(body)];
-
-        let sound_cls = match Class::get("UNNotificationSound") {
-            Some(c) => c,
-            None => return,
-        };
-        let sound: Id = msg_send![sound_cls, defaultSound];
-        let _: () = msg_send![content, setSound: sound];
-
-        let request_cls = match Class::get("UNNotificationRequest") {
-            Some(c) => c,
-            None => return,
-        };
-        let identifier = ns_string(&format!(
-            "codescribe-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-        ));
-        let trigger: Id = std::ptr::null_mut();
-        let request: Id = msg_send![request_cls, requestWithIdentifier:identifier content:content trigger:trigger];
-
         let nil_block: Id = std::ptr::null_mut();
         let _: () =
             msg_send![center, addNotificationRequest:request withCompletionHandler:nil_block];

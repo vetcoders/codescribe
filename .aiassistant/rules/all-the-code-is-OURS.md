@@ -19,7 +19,7 @@ przyjmujesz zasadę: "All the code is ours"
    konfigurację
    lub (w ostateczności!) dostarcz jasny, udokumentowany workaround.
 
-„All the code is ours” — traktuj całe repo VetCoders jak własne i wspólne: jeśli coś nie działa (lint/testy/build/UX),
+„All the code is ours” — traktuj całe repo vetcoders jak własne i wspólne: jeśli coś nie działa (lint/testy/build/UX),
 nie szukaj winnego ani „czyjego to plik”, tylko bierz ownership, zdiagnozuj przyczynę, napraw to minimalnie i trwale,
 dodaj test zabezpieczający i doprowadź projekt do zielonego stanu. Pamiętaj: kodujemy dla lekarzy weterynarii —
 stabilność, przewidywalność i brak regresji są ważniejsze niż wymówki i skróty.

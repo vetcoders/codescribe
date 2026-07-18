@@ -9,6 +9,52 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
+/// Canonical formatting policy shared by persistence, runtime selection, and UI.
+///
+/// Legacy values are accepted only at this boundary and are normalized before
+/// any new write. Unknown values are errors; they are never promoted to a more
+/// aggressive policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FormattingPolicy {
+    Off,
+    #[default]
+    Correction,
+    Smart,
+    Max,
+}
+
+impl FormattingPolicy {
+    pub const ALL: [Self; 4] = [Self::Off, Self::Correction, Self::Smart, Self::Max];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Correction => "correction",
+            Self::Smart => "smart",
+            Self::Max => "max",
+        }
+    }
+
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim() {
+            "off" | "raw" => Ok(Self::Off),
+            "correction" | "medium" => Ok(Self::Correction),
+            "smart" => Ok(Self::Smart),
+            "max" | "creative" => Ok(Self::Max),
+            value => anyhow::bail!(
+                "unknown FORMATTING_LEVEL {value:?}; expected off, correction, smart, or max"
+            ),
+        }
+    }
+
+    pub fn resolve(runtime: Option<&str>, persisted: Option<&str>) -> anyhow::Result<Self> {
+        runtime
+            .or(persisted)
+            .map(Self::parse)
+            .unwrap_or_else(|| Ok(Self::default()))
+    }
+}
+
 /// Regular-user settings (JSON, GUI-managed).
 /// All fields are Option — None means "use default or .env override".
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -29,6 +75,8 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_paste_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_tagging_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_tag_template: Option<String>,
@@ -47,11 +95,21 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_assistive_provider: Option<String>,
+    /// OAuth client id for "Sign in with ChatGPT" (non-secret app identity, not
+    /// a credential). `None` means "awaiting app registration" — the account
+    /// login stays gated. Env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID` remains the
+    /// dev-only fallback when this is unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_oauth_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_overlay_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tray_start_assistive: Option<bool>,
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,6 +140,10 @@ pub struct UserSettings {
     pub qube_daemon_autostart: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
+    /// First-run operating lane chosen during onboarding ("basic" | "agentic").
+    /// `None` means "not yet chosen" — callers treat that as the safe Basic lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onboarding_mode: Option<String>,
 
     // ── Voice Lab survivors (user-facing UX knobs) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +158,31 @@ pub struct UserSettings {
     pub whisper_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_max_upload_mb: Option<u64>,
+
+    // ── STT engine / layered transcription (F1) ──
+    /// STT engine selection ("auto" | "apple" | "whisper").
+    /// Seeds `CODESCRIBE_STT_ENGINE`; string on purpose (1:1 env mapping, like
+    /// `onboarding_mode`). `None`/absent means the built-in auto policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_engine: Option<String>,
+    /// Layered incremental transcription phase ("off" | "phase1").
+    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`; anything other than
+    /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layered_transcription: Option<String>,
+    /// Opt-in Whisper `initial_prompt` vocabulary hint.
+    /// Seeds `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`; absent means default OFF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_initial_prompt_enabled: Option<bool>,
+
+    // ── Agent workspace ──
+    /// Workspace root directories the agent scans (`list_projects`) to resolve a
+    /// project name to an absolute path. Seeds `AGENT_WORKSPACE_ROOTS`
+    /// (colon-joined); `None`/absent means the built-in default (`~/Git`).
+    /// Env-managed (NOT promoted), same rationale as the F1 STT knobs: a manual
+    /// `~/.codescribe/.env` line keeps winning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_workspace_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -132,6 +219,10 @@ struct InteractionV2 {
     send_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_enter_sends: Option<bool>,
+    /// User-owned automatic delivery policy shared by Hold and hands-free
+    /// dictation. Assistive and safety vetoes are enforced by the controller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_paste_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -187,6 +278,13 @@ struct SpeechEngineV2 {
     // De-ghosted (2026-05-30): Whisper model id (distinct from local_model_id path).
     #[serde(skip_serializing_if = "Option::is_none")]
     whisper_model: Option<String>,
+    // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stt_engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layered_transcription: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_prompt_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -213,6 +311,8 @@ struct AssistiveV2 {
     llm_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -257,6 +357,8 @@ struct UiV2 {
     show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcription_overlay_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tray_start_assistive: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -278,6 +380,15 @@ struct SystemV2 {
     start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     qube_daemon_autostart: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    onboarding_mode: Option<String>,
+    // Agent workspace roots (colon-joined into AGENT_WORKSPACE_ROOTS). List on
+    // purpose — mirrors mode_bindings' Vec round-trip through the V2 schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_workspace_roots: Option<Vec<String>>,
+    // "Sign in with ChatGPT" OAuth client id (non-secret app identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    openai_oauth_client_id: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -296,6 +407,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOLD_EXCLUSIVE",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
+    "AUTO_PASTE_ENABLED",
     "TRANSCRIPT_TAGGING_ENABLED",
     "TRANSCRIPT_TAG_TEMPLATE",
     "FORMATTING_LEVEL",
@@ -306,13 +418,18 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     // App visibility
     "SHOW_DOCK_ICON",
     "TRANSCRIPTION_OVERLAY_ENABLED",
+    "TRAY_START_ASSISTIVE",
     // LLM endpoints
     "LLM_ENDPOINT",
     "LLM_MODEL",
     "LLM_ASSISTIVE_ENDPOINT",
     "LLM_ASSISTIVE_MODEL",
+    "LLM_ASSISTIVE_PROVIDER",
     "LLM_FORMATTING_ENDPOINT",
     "LLM_FORMATTING_MODEL",
+    // "Sign in with ChatGPT" OAuth client id — non-secret app identity, so it
+    // lives in settings.json (NOT the Keychain); env stays the dev fallback.
+    "LLM_OPENAI_OAUTH_CLIENT_ID",
     // Promoted from .env
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
@@ -325,6 +442,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "START_AT_LOGIN",
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
+    "ONBOARDING_MODE",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
     "CODESCRIBE_TYPING_CPS",
@@ -332,6 +450,10 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_BUFFERED_INTERIM_SEC",
     "WHISPER_MODEL",
     "BACKEND_MAX_UPLOAD_MB",
+    // NOTE (F1/W2-G): CODESCRIBE_STT_ENGINE / CODESCRIBE_LAYERED_TRANSCRIPTION /
+    // CODESCRIBE_STT_INITIAL_PROMPT_ENABLED are deliberately NOT promoted — they
+    // stay env-managed so an existing ~/.codescribe/.env line keeps winning.
+    // settings.json only seeds them when the env var is absent (loader.rs).
 ];
 
 /// Check if a key is a promoted (settings.json) setting.
@@ -356,6 +478,7 @@ impl UserSettings {
                 mode_bindings: Some(normalized_mode_bindings),
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
+                auto_paste_enabled: self.auto_paste_enabled,
             }),
             speech: Some(SpeechV2 {
                 language: self.whisper_language.clone(),
@@ -367,18 +490,26 @@ impl UserSettings {
                     cloud_transcription_endpoint: self.stt_endpoint.clone(),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
+                    stt_engine: self.stt_engine.clone(),
+                    layered_transcription: self.layered_transcription.clone(),
+                    initial_prompt_enabled: self.stt_initial_prompt_enabled,
                 }),
                 formatting: Some(FormattingV2 {
                     enabled: self.ai_formatting_enabled,
                     transcript_tagging_enabled: self.transcript_tagging_enabled,
                     transcript_tag_template: self.transcript_tag_template.clone(),
-                    level: self.formatting_level.clone(),
+                    level: self
+                        .formatting_level
+                        .as_deref()
+                        .and_then(|value| FormattingPolicy::parse(value).ok())
+                        .map(|policy| policy.as_str().to_string()),
                     llm_endpoint: self.llm_formatting_endpoint.clone(),
                     llm_model: self.llm_formatting_model.clone(),
                 }),
                 assistive: Some(AssistiveV2 {
                     llm_endpoint: self.llm_assistive_endpoint.clone(),
                     llm_model: self.llm_assistive_model.clone(),
+                    provider: self.llm_assistive_provider.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -401,6 +532,7 @@ impl UserSettings {
                 chat_zoom: self.chat_zoom,
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
+                tray_start_assistive: self.tray_start_assistive,
             }),
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
@@ -410,6 +542,9 @@ impl UserSettings {
             system: Some(SystemV2 {
                 start_at_login: self.start_at_login,
                 qube_daemon_autostart: self.qube_daemon_autostart,
+                onboarding_mode: self.onboarding_mode.clone(),
+                agent_workspace_roots: self.agent_workspace_roots.clone(),
+                openai_oauth_client_id: self.openai_oauth_client_id.clone(),
             }),
         }
     }
@@ -446,6 +581,10 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.formatting.as_ref())
                 .and_then(|f| f.enabled),
+            auto_paste_enabled: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.auto_paste_enabled),
             transcript_tagging_enabled: v2
                 .speech
                 .as_ref()
@@ -470,7 +609,9 @@ impl UserSettings {
                 .speech
                 .as_ref()
                 .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.level.clone()),
+                .and_then(|f| f.level.as_deref())
+                .and_then(|value| FormattingPolicy::parse(value).ok())
+                .map(|policy| policy.as_str().to_string()),
             llm_endpoint: v2.speech.as_ref().and_then(|s| s.llm_endpoint.clone()),
             llm_model: v2.speech.as_ref().and_then(|s| s.llm_model.clone()),
             llm_assistive_endpoint: v2
@@ -483,12 +624,18 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.assistive.as_ref())
                 .and_then(|a| a.llm_model.clone()),
+            llm_assistive_provider: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.assistive.as_ref())
+                .and_then(|a| a.provider.clone()),
             chat_zoom: v2.ui.as_ref().and_then(|ui| ui.chat_zoom),
             show_dock_icon: v2.ui.as_ref().and_then(|ui| ui.show_dock_icon),
             transcription_overlay_enabled: v2
                 .ui
                 .as_ref()
                 .and_then(|ui| ui.transcription_overlay_enabled),
+            tray_start_assistive: v2.ui.as_ref().and_then(|ui| ui.tray_start_assistive),
             llm_formatting_endpoint: v2
                 .speech
                 .as_ref()
@@ -527,6 +674,15 @@ impl UserSettings {
             quick_notes_save_only: v2.features.as_ref().and_then(|f| f.quick_notes_save_only),
             start_at_login: v2.system.as_ref().and_then(|s| s.start_at_login),
             qube_daemon_autostart: v2.system.as_ref().and_then(|s| s.qube_daemon_autostart),
+            onboarding_mode: v2.system.as_ref().and_then(|s| s.onboarding_mode.clone()),
+            agent_workspace_roots: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.agent_workspace_roots.clone()),
+            openai_oauth_client_id: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.openai_oauth_client_id.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
@@ -558,6 +714,21 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_max_upload_mb),
+            stt_engine: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.stt_engine.clone()),
+            layered_transcription: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.layered_transcription.clone()),
+            stt_initial_prompt_enabled: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.initial_prompt_enabled),
         }
     }
 
@@ -569,6 +740,14 @@ impl UserSettings {
             && !(0.75..=2.0).contains(&chat_zoom)
         {
             anyhow::bail!("ui.chat_zoom must be within [0.75, 2.0]")
+        }
+        if let Some(level) = v2
+            .speech
+            .as_ref()
+            .and_then(|speech| speech.formatting.as_ref())
+            .and_then(|formatting| formatting.level.as_deref())
+        {
+            FormattingPolicy::parse(level)?;
         }
         Ok(())
     }
@@ -583,16 +762,16 @@ impl UserSettings {
     /// Returns the settings directory.
     ///
     /// Respects `CODESCRIBE_DATA_DIR` for test isolation; otherwise uses
-    /// `~/Library/Application Support/CodeScribe/`.
+    /// `~/Library/Application Support/Codescribe/`.
     pub fn settings_dir() -> PathBuf {
         let dir = if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
             PathBuf::from(test_dir)
         } else {
             BaseDirs::new()
-                .map(|b| b.data_dir().join("CodeScribe"))
+                .map(|b| b.data_dir().join("Codescribe"))
                 .unwrap_or_else(|| {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                    PathBuf::from(home).join("Library/Application Support/CodeScribe")
+                    PathBuf::from(home).join("Library/Application Support/Codescribe")
                 })
         };
 
@@ -677,6 +856,9 @@ impl UserSettings {
         let dir = Self::settings_dir();
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
+        if let Some(level) = self.formatting_level.as_deref() {
+            FormattingPolicy::parse(level)?;
+        }
         let v2 = self.to_v2();
         Self::validate_v2(&v2)?;
         let json = serde_json::to_string_pretty(&v2)?;
@@ -783,7 +965,19 @@ impl UserSettings {
             "LLM_MODEL" => self.llm_model = Some(value.to_owned()),
             "LLM_ASSISTIVE_ENDPOINT" => self.llm_assistive_endpoint = Some(value.to_owned()),
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
-            "FORMATTING_LEVEL" => self.formatting_level = Some(value.to_owned()),
+            "LLM_ASSISTIVE_PROVIDER" => self.llm_assistive_provider = Some(value.to_owned()),
+            "LLM_OPENAI_OAUTH_CLIENT_ID" => {
+                // Empty clears back to "awaiting app registration".
+                let trimmed = value.trim();
+                self.openai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
+            "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
+                Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),
+                Err(error) => {
+                    warn!("Rejected formatting policy write: {error}");
+                    return;
+                }
+            },
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
             "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
@@ -793,6 +987,22 @@ impl UserSettings {
             "AUDIO_INPUT_DEVICE" => self.audio_input_device = Some(value.to_owned()),
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
+            "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
+            "CODESCRIBE_STT_ENGINE" => self.stt_engine = Some(value.to_owned()),
+            "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
+                self.layered_transcription = Some(value.to_owned())
+            }
+            "AGENT_WORKSPACE_ROOTS" => {
+                // Colon-separated on the wire (PATH-style); empty → None so the
+                // core falls back to the built-in default (`~/Git`).
+                let roots: Vec<String> = value
+                    .split(':')
+                    .map(str::trim)
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                self.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
+            }
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
@@ -806,10 +1016,12 @@ impl UserSettings {
         let before = self.clone();
         match key {
             "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
+            "AUTO_PASTE_ENABLED" => self.auto_paste_enabled = Some(value),
             "TRANSCRIPT_TAGGING_ENABLED" => self.transcript_tagging_enabled = Some(value),
             "BEEP_ON_START" => self.beep_on_start = Some(value),
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
             "TRANSCRIPTION_OVERLAY_ENABLED" => self.transcription_overlay_enabled = Some(value),
+            "TRAY_START_ASSISTIVE" => self.tray_start_assistive = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
@@ -818,6 +1030,9 @@ impl UserSettings {
             "START_AT_LOGIN" => self.start_at_login = Some(value),
             "QUBE_DAEMON_AUTOSTART" => self.qube_daemon_autostart = Some(value),
             "AGENT_ENTER_SENDS" => self.agent_enter_sends = Some(value),
+            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
+                self.stt_initial_prompt_enabled = Some(value)
+            }
             other => {
                 warn!("Unknown bool setting key: {other}");
                 return;
@@ -862,7 +1077,7 @@ impl UserSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::UserSettings;
+    use super::{FormattingPolicy, UserSettings, is_promoted_key};
     use crate::config::{ShortcutBinding, WorkMode};
     use serial_test::serial;
     use std::fs;
@@ -952,6 +1167,79 @@ mod tests {
 
     #[test]
     #[serial]
+    fn formatting_policy_v1_v2_alias_matrix_normalizes_and_rejects_unknowns() {
+        let cases = [
+            ("off", FormattingPolicy::Off, "off"),
+            ("correction", FormattingPolicy::Correction, "correction"),
+            ("smart", FormattingPolicy::Smart, "smart"),
+            ("max", FormattingPolicy::Max, "max"),
+            ("raw", FormattingPolicy::Off, "off"),
+            ("medium", FormattingPolicy::Correction, "correction"),
+            ("creative", FormattingPolicy::Max, "max"),
+        ];
+
+        for (input, policy, normalized) in cases {
+            assert_eq!(
+                FormattingPolicy::parse(input).expect("known policy"),
+                policy
+            );
+
+            let v1_dir = setup_isolated_data_dir();
+            let v1_path = UserSettings::settings_path();
+            fs::write(&v1_path, format!(r#"{{"formatting_level":"{input}"}}"#)).expect("write V1");
+            let v1 = UserSettings::load();
+            assert_eq!(v1.formatting_level.as_deref(), Some(normalized));
+            let v1_json: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&v1_path).expect("read migrated V1"))
+                    .expect("parse migrated V1");
+            assert_eq!(
+                v1_json
+                    .pointer("/speech/formatting/level")
+                    .and_then(|v| v.as_str()),
+                Some(normalized)
+            );
+            drop(v1_dir);
+
+            let v2_dir = setup_isolated_data_dir();
+            let v2_path = UserSettings::settings_path();
+            fs::write(
+                &v2_path,
+                format!(
+                    r#"{{"schema_version":3,"speech":{{"formatting":{{"level":"{input}"}}}}}}"#
+                ),
+            )
+            .expect("write V2");
+            let v2 = UserSettings::load();
+            assert_eq!(v2.formatting_level.as_deref(), Some(normalized));
+            v2.save().expect("rewrite normalized V2");
+            let v2_json: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&v2_path).expect("read rewritten V2"))
+                    .expect("parse rewritten V2");
+            assert_eq!(
+                v2_json
+                    .pointer("/speech/formatting/level")
+                    .and_then(|v| v.as_str()),
+                Some(normalized)
+            );
+            drop(v2_dir);
+        }
+
+        for unknown in ["", "basic", "aggressive", "SMART", "maximum"] {
+            assert!(
+                FormattingPolicy::parse(unknown).is_err(),
+                "accepted {unknown:?}"
+            );
+        }
+
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("FORMATTING_LEVEL", "aggressive");
+        assert_eq!(settings.formatting_level, None);
+        assert!(!UserSettings::settings_path().exists());
+    }
+
+    #[test]
+    #[serial]
     fn test_show_dock_icon_bool_persists_and_roundtrips() {
         let _tmp = setup_isolated_data_dir();
         let mut settings = UserSettings::default();
@@ -961,6 +1249,48 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.show_dock_icon, Some(false));
+    }
+
+    #[test]
+    #[serial]
+    fn auto_paste_v1_v2_roundtrips_and_registry_contract_is_promoted_hot() {
+        let v1_dir = setup_isolated_data_dir();
+        let v1_path = UserSettings::settings_path();
+        fs::write(&v1_path, r#"{"auto_paste_enabled":false}"#).expect("write V1");
+        let v1 = UserSettings::load();
+        assert_eq!(v1.auto_paste_enabled, Some(false));
+        let migrated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&v1_path).expect("read migrated V1"))
+                .expect("parse migrated V1");
+        assert_eq!(
+            migrated
+                .pointer("/interaction/auto_paste_enabled")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        drop(v1_dir);
+
+        let _v2_dir = setup_isolated_data_dir();
+        let v2_path = UserSettings::settings_path();
+        fs::write(
+            &v2_path,
+            r#"{"schema_version":3,"interaction":{"auto_paste_enabled":true}}"#,
+        )
+        .expect("write V2");
+        let v2 = UserSettings::load();
+        assert_eq!(v2.auto_paste_enabled, Some(true));
+        v2.save().expect("round-trip V2");
+        assert!(is_promoted_key("AUTO_PASTE_ENABLED"));
+
+        let registry = include_str!("../../docs/ENV_REGISTRY.toml");
+        let section = registry
+            .split("[vars.AUTO_PASTE_ENABLED]")
+            .nth(1)
+            .and_then(|tail| tail.split("\n[vars.").next())
+            .expect("AUTO_PASTE_ENABLED registry section");
+        assert!(section.contains("default = \"1\""));
+        assert!(section.contains("type = \"bool\""));
+        assert!(section.contains("reload = \"hot\""));
     }
 
     #[test]
@@ -999,6 +1329,83 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_stt_engine_and_layered_transcription_survive_roundtrip() {
+        // F1 layered transcription: both env-managed keys must round-trip through
+        // the V2 speech.engine section, or save→load silently drops the seed value.
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings {
+            stt_engine: Some("apple".to_string()),
+            layered_transcription: Some("phase1".to_string()),
+            stt_initial_prompt_enabled: Some(true),
+            ..Default::default()
+        };
+        settings.save().expect("save settings");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
+        assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
+        assert_eq!(loaded.stt_initial_prompt_enabled, Some(true));
+
+        // Setters route all three keys (settings.json stays a valid seed source).
+        let mut mutated = loaded;
+        mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
+        mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
+        mutated.set_bool("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", false);
+        let reloaded = UserSettings::load();
+        assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
+        assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
+        assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
+    }
+
+    #[test]
+    #[serial]
+    fn test_agent_workspace_roots_survive_v2_system_roundtrip() {
+        // Workspace roots must round-trip through the V2 `system` section (Vec,
+        // like mode_bindings) or save→load silently drops the AGENT_WORKSPACE_ROOTS
+        // seed the list_projects tool depends on.
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings {
+            agent_workspace_roots: Some(vec!["~/Git".to_string(), "~/dev".to_string()]),
+            ..Default::default()
+        };
+        settings.save().expect("save settings");
+
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.agent_workspace_roots.as_deref(),
+            Some(["~/Git".to_string(), "~/dev".to_string()].as_slice())
+        );
+
+        // Land under the V2 `system` section (not a stray top-level key).
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("system")
+                .and_then(|v| v.get("agent_workspace_roots"))
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(2)
+        );
+
+        // set_string parses the colon-joined wire form; empty clears back to None.
+        let mut mutated = loaded;
+        mutated.set_string("AGENT_WORKSPACE_ROOTS", "~/code : ~/work");
+        let reloaded = UserSettings::load();
+        assert_eq!(
+            reloaded.agent_workspace_roots.as_deref(),
+            Some(["~/code".to_string(), "~/work".to_string()].as_slice())
+        );
+
+        let mut cleared = reloaded;
+        cleared.set_string("AGENT_WORKSPACE_ROOTS", "");
+        assert_eq!(cleared.agent_workspace_roots, None);
+    }
+
+    #[test]
+    #[serial]
     fn test_transcription_overlay_enabled_persists_in_v2_ui_section() {
         let _tmp = setup_isolated_data_dir();
         let mut settings = UserSettings::default();
@@ -1017,6 +1424,29 @@ mod tests {
                 .and_then(|v| v.get("transcription_overlay_enabled"))
                 .and_then(|v| v.as_bool()),
             Some(false)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_tray_start_assistive_persists_in_v2_ui_section() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_bool("TRAY_START_ASSISTIVE", true);
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.tray_start_assistive, Some(true));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("ui")
+                .and_then(|v| v.get("tray_start_assistive"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
     }
 
@@ -1041,6 +1471,67 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_onboarding_mode_persists_in_v2_system_section() {
+        // Ghosting guard (W1-C1): onboarding_mode must survive the flat ->
+        // SettingsV2 -> flat round-trip and land in the V2 `system` section.
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("ONBOARDING_MODE", "agentic");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.onboarding_mode.as_deref(), Some("agentic"));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("read persisted settings"))
+                .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("system")
+                .and_then(|v| v.get("onboarding_mode"))
+                .and_then(|v| v.as_str()),
+            Some("agentic")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_oauth_client_id_persists_in_v2_system_section_and_empty_clears() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("LLM_OPENAI_OAUTH_CLIENT_ID", "app_abc123");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.openai_oauth_client_id.as_deref(), Some("app_abc123"));
+
+        let persisted: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read persisted settings"),
+        )
+        .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("system")
+                .and_then(|v| v.get("openai_oauth_client_id"))
+                .and_then(|v| v.as_str()),
+            Some("app_abc123")
+        );
+
+        // Empty (or whitespace) clears back to the registration gate.
+        let mut cleared = loaded;
+        cleared.set_string("LLM_OPENAI_OAUTH_CLIENT_ID", "   ");
+        assert_eq!(UserSettings::load().openai_oauth_client_id, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_onboarding_mode_defaults_to_none_when_unset() {
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings::default();
+        assert_eq!(settings.onboarding_mode, None);
     }
 
     #[test]

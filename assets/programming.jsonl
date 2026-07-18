@@ -42,7 +42,7 @@
 {"term": "Tauri", "mispronunciations": ["taurii", "tałri", "taury", "taury real"], "category": "tech"}
 {"term": "Tokio", "mispronunciations": ["tokijo", "tokjo"], "category": "rust"}
 {"term": "TypeScript", "mispronunciations": ["tajpskrypt", "type script"], "category": "tech"}
-{"term": "VistaScribe", "mispronunciations": ["wistaszkrajb", "vista scribe", "wissie skype", "wissie scribe", "vista skribe", "vista skrajb"], "category": "project"}
+{"term": "Codescribe", "mispronunciations": ["kod skrajb", "kołdskrajb", "code scribe", "kod skrybe", "code skrajb", "kod skrajb"], "category": "project"}
 {"term": "Vite", "mispronunciations": ["vajt", "vit", "fajt"], "category": "tooling"}
 {"term": "WebSocket", "mispronunciations": ["websoket", "web socket"], "category": "tech"}
 {"term": "YAML", "mispronunciations": ["jamel", "jaml"], "category": "data"}
@@ -73,7 +73,7 @@
 {"term": "idempotent", "mispronunciations": ["ajdempotent", "idem potent", "idem potent"], "category": "net"}
 {"term": "jq", "mispronunciations": ["dżej ku", "jot ku", "dżej kiu"], "category": "cmd"}
 {"term": "latency", "mispronunciations": ["lejten si", "lejten sji", "lej ten si"], "category": "net"}
-{"term": "loctree", "mispronunciations": ["log tree", "log three", "log 3", "log3", "loc tree", "lock tree", "locktree", "lock three", "logTree", "logtri", "locktri", "loktree", "loktri", "eloksy", "e loksy", "eloksji", "lock3", "LOCK3", "lok 3"], "category": "tools"}
+{"term": "Loctree", "mispronunciations": ["loctree", "log tree", "log three", "log 3", "log3", "loc tree", "lock tree", "locktree", "lock three", "logTree", "logtri", "locktri", "loktree", "loktri", "eloksy", "e loksy", "eloksji", "lock3", "LOCK3", "lok 3", "luxury", "luxery", "luxujri", "lux tree", "luxe tree", "lakszeri", "lukstri"], "category": "tools"}
 {"term": "merge", "mispronunciations": ["merdż", "merdżu"], "category": "git"}
 {"term": "mlx_embeddings", "mispronunciations": ["em el eks embeddings", "mlx embeddings", "emeliks embeddings"], "category": "ai"}
 {"term": "multipart/form-data", "mispronunciations": ["multi part form data", "multi part formdejta", "multipart form data"], "category": "net"}

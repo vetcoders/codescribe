@@ -1,4 +1,7 @@
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
 
 use anyhow::Result;
@@ -34,14 +37,33 @@ fn pending_item_with_marker(is_final: bool, marker: f32) -> PendingUtteranceWork
 #[test]
 fn test_postprocess_components() {
     // Hallucination
-    assert!(is_hallucination("Thank you", None));
-    assert!(is_hallucination("  Dziękuję za uwagę  ", Some("pl")));
-    assert!(is_hallucination(
-        "Napisy stworzone przez społeczność",
-        Some("pl")
+    assert!(is_hallucination_with_quality("Thank you", None, None));
+    assert!(is_hallucination_with_quality(
+        "  Dziękuję za uwagę  ",
+        Some("pl"),
+        None
     ));
-    assert!(!is_hallucination("Tak", Some("pl"))); // Whitelisted
-    assert!(!is_hallucination("This is a normal sentence.", Some("en")));
+    assert!(is_hallucination_with_quality(
+        "Napisy stworzone przez społeczność",
+        Some("pl"),
+        None
+    ));
+    assert!(!is_hallucination_with_quality("Tak", Some("pl"), None)); // Whitelisted
+    assert!(!is_hallucination_with_quality(
+        "This is a normal sentence.",
+        Some("en"),
+        None
+    ));
+    assert!(!is_hallucination_with_quality(
+        "tłumaczenie",
+        Some("pl"),
+        Some(-0.2)
+    ));
+    assert!(is_hallucination_with_quality(
+        "tłumaczenie",
+        Some("pl"),
+        Some(-1.2)
+    ));
 
     // Overlap
     let mut pipeline = TranscriptionPipeline::new(None);
@@ -977,14 +999,14 @@ fn test_correction_delta_polish_diacritics() {
 }
 
 #[test]
-fn test_correction_stale_guard_detects_preview_rev_drift() {
+fn test_correction_stale_guard_detects_boundary_rev_drift() {
     assert!(correction_is_stale(7, 8, "draft", "draft"));
     assert!(!correction_is_stale(7, 7, "draft", "draft"));
 }
 
 #[test]
-fn test_correction_stale_guard_detects_text_drift() {
-    assert!(correction_is_stale(9, 9, "ala ma", "ala ma kota"));
+fn test_correction_stale_guard_allows_text_drift_with_same_boundary() {
+    assert!(!correction_is_stale(9, 9, "ala ma", "ala ma kota"));
 }
 
 #[test]
@@ -1016,7 +1038,8 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let infer = Arc::new(
         move |samples: Vec<f32>,
               _sample_rate: u32,
-              _language: Option<String>|
+              _language: Option<String>,
+              _initial_prompt: Option<String>|
               -> Result<RawTranscript> {
             let id = samples.first().copied().unwrap_or_default() as u32;
             started_ref
@@ -1046,24 +1069,25 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let collector = Arc::new(CollectorEventSink::new());
     let event_sink: Arc<dyn EventSink> = collector.clone();
     let mut correction_in_flight: Option<SttTaskHandle> = None;
-    let mut correction_expected_preview_rev: Option<u64> = None;
+    let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
     let mut partial_telemetry = PartialPassTelemetry::default();
 
     let mut first_audio = vec![21.0];
+    let mut first_window = String::from("draft-a");
     assert!(schedule_partial_pass(
         &scheduler,
         16_000,
         Some("en".to_string()),
         &mut first_audio,
         &mut correction_in_flight,
-        &mut correction_expected_preview_rev,
+        &mut correction_expected_boundary_rev,
         &mut correction_expected_text,
         &mut correction_suffix_snapshot,
         "suffix-a",
         7,
-        "draft-a",
+        &mut first_window,
         PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
         PartialPassTrigger::Timer,
         &mut partial_telemetry,
@@ -1073,10 +1097,14 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         first_audio.is_empty(),
         "correction audio buffer should be consumed on schedule"
     );
+    assert!(
+        first_window.is_empty(),
+        "window text mirror should be taken in lockstep with the audio buffer"
+    );
     assert_eq!(
-        correction_expected_preview_rev,
+        correction_expected_boundary_rev,
         Some(7),
-        "tracked preview revision should match first scheduled correction"
+        "tracked boundary revision should match first scheduled correction"
     );
     assert_eq!(
         correction_expected_text.as_deref(),
@@ -1094,18 +1122,19 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         .id();
 
     let mut second_audio = vec![22.0];
+    let mut second_window = String::from("draft-b");
     assert!(schedule_partial_pass(
         &scheduler,
         16_000,
         Some("en".to_string()),
         &mut second_audio,
         &mut correction_in_flight,
-        &mut correction_expected_preview_rev,
+        &mut correction_expected_boundary_rev,
         &mut correction_expected_text,
         &mut correction_suffix_snapshot,
         "suffix-b",
         8,
-        "draft-b",
+        &mut second_window,
         PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
         PartialPassTrigger::Speech,
         &mut partial_telemetry,
@@ -1127,9 +1156,9 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     assert_eq!(partial_telemetry.stale_count, 0);
     assert_eq!(partial_telemetry.dropped_count, 0);
     assert_eq!(
-        correction_expected_preview_rev,
+        correction_expected_boundary_rev,
         Some(8),
-        "new schedule should overwrite tracked preview revision"
+        "new schedule should overwrite tracked boundary revision"
     );
     assert_eq!(
         correction_expected_text.as_deref(),
@@ -1195,7 +1224,8 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     let infer = Arc::new(
         move |samples: Vec<f32>,
               _sample_rate: u32,
-              _language: Option<String>|
+              _language: Option<String>,
+              _initial_prompt: Option<String>|
               -> Result<RawTranscript> {
             let id = samples.first().copied().unwrap_or_default() as u32;
             started_ref
@@ -1225,7 +1255,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     let collector = Arc::new(CollectorEventSink::new());
     let event_sink: Arc<dyn EventSink> = collector.clone();
     let mut correction_in_flight: Option<SttTaskHandle> = None;
-    let mut correction_expected_preview_rev: Option<u64> = None;
+    let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
     let mut partial_telemetry = PartialPassTelemetry::default();
@@ -1245,6 +1275,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
         let expected_text = format!("draft-{index}");
         let expected_suffix = format!("suffix-{index}");
         let mut audio = vec![marker];
+        let mut window = expected_text.clone();
 
         assert!(schedule_partial_pass(
             &scheduler,
@@ -1252,12 +1283,12 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
             Some("en".to_string()),
             &mut audio,
             &mut correction_in_flight,
-            &mut correction_expected_preview_rev,
+            &mut correction_expected_boundary_rev,
             &mut correction_expected_text,
             &mut correction_suffix_snapshot,
             &expected_suffix,
             expected_rev,
-            &expected_text,
+            &mut window,
             PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS + index as u64,
             trigger,
             &mut partial_telemetry,
@@ -1267,7 +1298,7 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
             audio.is_empty(),
             "schedule should consume correction audio buffer"
         );
-        assert_eq!(correction_expected_preview_rev, Some(expected_rev));
+        assert_eq!(correction_expected_boundary_rev, Some(expected_rev));
         assert_eq!(
             correction_expected_text.as_deref(),
             Some(expected_text.as_str())
@@ -1406,6 +1437,220 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
         "empty session should report VAD no-speech reason"
     );
     assert_eq!(stats_count, 1, "expected exactly one Stats event");
+}
+
+#[test]
+fn transcription_events_keep_monotonic_previews_before_final() {
+    let sink = CollectorEventSink::new();
+    sink.on_event(&EngineEvent::Preview {
+        rev: 1,
+        text: "ala".to_string(),
+    });
+    sink.on_event(&EngineEvent::Preview {
+        rev: 2,
+        text: "ala ma".to_string(),
+    });
+    sink.on_event(&EngineEvent::UtteranceFinal {
+        utterance_id: 1,
+        text: "ala ma kota".to_string(),
+        raw_text: "ala ma kota".to_string(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: Vec::new(),
+        vad_speech_pct: Some(100.0),
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: Vec::new(),
+    });
+
+    let events = sink.events();
+    let final_pos = events
+        .iter()
+        .position(|event| matches!(event, EngineEvent::UtteranceFinal { .. }))
+        .expect("synthetic stream should include a final event");
+    let preview_revs: Vec<(usize, u64)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(pos, event)| match event {
+            EngineEvent::Preview { rev, .. } => Some((pos, *rev)),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        !preview_revs.is_empty(),
+        "stream should emit at least one preview before final"
+    );
+    assert!(
+        preview_revs.iter().all(|(pos, _)| *pos < final_pos),
+        "all previews must be emitted before UtteranceFinal"
+    );
+    for pair in preview_revs.windows(2) {
+        assert!(
+            pair[0].1 < pair[1].1,
+            "Preview revisions must increase monotonically"
+        );
+    }
+}
+
+#[derive(Clone)]
+struct BenchTimedEventSink {
+    started_at: Instant,
+    events: Arc<StdMutex<Vec<(u128, EngineEvent)>>>,
+}
+
+impl BenchTimedEventSink {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            events: Arc::new(StdMutex::new(Vec::new())),
+        }
+    }
+
+    fn events(&self) -> Vec<(u128, EngineEvent)> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+impl EventSink for BenchTimedEventSink {
+    fn on_event(&self, event: &EngineEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((self.started_at.elapsed().as_millis(), event.clone()));
+    }
+}
+
+fn bench_manifest_audio_paths(path: &str) -> Result<Vec<PathBuf>> {
+    // Bench helper reads a local developer-provided manifest TSV path; no untrusted/network input.
+    let file = File::open(path)?; // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+    let mut lines = BufReader::new(file).lines();
+    let header = lines
+        .next()
+        .transpose()?
+        .ok_or_else(|| anyhow::anyhow!("latency manifest is empty"))?;
+    let columns: Vec<&str> = header.split('\t').collect();
+    let staged_audio_idx = columns
+        .iter()
+        .position(|name| *name == "staged_audio")
+        .ok_or_else(|| anyhow::anyhow!("latency manifest lacks staged_audio column"))?;
+
+    let mut audio_paths = Vec::new();
+    for line in lines {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        let Some(audio_path) = fields.get(staged_audio_idx) else {
+            continue;
+        };
+        if !audio_path.is_empty() {
+            audio_paths.push(PathBuf::from(audio_path));
+        }
+    }
+    Ok(audio_paths)
+}
+
+fn bench_entry_id(path: &std::path::Path) -> String {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("audio");
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("bench");
+    format!("{parent}__{stem}")
+}
+
+#[tokio::test]
+#[ignore = "env-driven STT bench probe invoked by scripts/bench-stt.sh"]
+async fn bench_stt_scheduler_latency_probe_from_env() -> Result<()> {
+    let manifest_path = std::env::var("BENCH_STT_LATENCY_MANIFEST")?;
+    let output_path = std::env::var("BENCH_STT_LATENCY_OUT")?;
+    let language = std::env::var("BENCH_STT_LANGUAGE").ok();
+    let audio_paths = bench_manifest_audio_paths(&manifest_path)?;
+
+    crate::stt::whisper::init()?;
+
+    let mut out = File::create(&output_path)?;
+    writeln!(
+        out,
+        "id\taudio_path\tduration_sec\tfirst_preview_ms\tfinal_ms\tsession_done_ms\tpreviews\tfinals\tfinal_chars"
+    )?;
+
+    for audio_path in audio_paths {
+        let (samples, sample_rate) = crate::audio::load_audio_file(&audio_path)?;
+        let duration_sec = samples.len() as f64 / sample_rate as f64;
+        let chunk_size = ((sample_rate as f32) * 0.1).round().max(1.0) as usize;
+        let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
+        let sink = Arc::new(BenchTimedEventSink::new());
+        let event_sink: Arc<dyn EventSink> = sink.clone();
+        let session_started = Instant::now();
+        let session = tokio::spawn(transcription_session(
+            rx,
+            event_sink,
+            SessionConfig {
+                sample_rate,
+                language: language.clone(),
+                stream_log_path: None,
+                utterance_silence_sec: None,
+            },
+        ));
+
+        for chunk in samples.chunks(chunk_size) {
+            tx.send(chunk.to_vec())
+                .await
+                .map_err(|_| anyhow::anyhow!("transcription session dropped channel"))?;
+        }
+        drop(tx);
+
+        session
+            .await
+            .map_err(|e| anyhow::anyhow!("transcription session join error: {e}"))?;
+
+        let events = sink.events();
+        let first_preview_ms = events.iter().find_map(|(ms, event)| match event {
+            EngineEvent::Preview { text, .. } if !text.trim().is_empty() => Some(*ms),
+            _ => None,
+        });
+        let mut final_ms = None;
+        let mut previews = 0usize;
+        let mut finals = 0usize;
+        let mut final_chars = 0usize;
+        for (ms, event) in &events {
+            match event {
+                EngineEvent::Preview { text, .. } if !text.trim().is_empty() => {
+                    previews += 1;
+                }
+                EngineEvent::UtteranceFinal { text, .. } => {
+                    finals += 1;
+                    final_ms = Some(*ms);
+                    final_chars += text.chars().count();
+                }
+                _ => {}
+            }
+        }
+
+        writeln!(
+            out,
+            "{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}",
+            bench_entry_id(&audio_path),
+            audio_path.display(),
+            duration_sec,
+            first_preview_ms.map_or_else(|| "NA".to_string(), |ms| ms.to_string()),
+            final_ms.map_or_else(|| "NA".to_string(), |ms| ms.to_string()),
+            session_started.elapsed().as_millis(),
+            previews,
+            finals,
+            final_chars
+        )?;
+    }
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -1608,28 +1853,28 @@ fn test_fix_a_final_uses_boundary_suffix_not_nonfinal_suffix() {
     );
 }
 
-// ── Fix D contract: window-scoped stale guard survives utterance boundaries ──
+// ── Fix D contract: boundary-scoped stale guard survives utterance boundaries ──
 
 #[test]
-fn test_fix_d_stale_guard_with_window_rev_survives_final() {
+fn test_fix_d_stale_guard_with_boundary_rev_survives_final() {
     // Before Fix D: schedule_partial_pass stored preview_rev / accumulated_text.
     // After FINAL: accumulated_text.clear() → correction_is_stale could pass
     // when it shouldn't (empty == empty).
     //
-    // After Fix D: schedule_partial_pass stores window_rev / window_text.
-    // FINAL increments window_rev → correction_is_stale correctly detects staleness.
+    // After Fix D: schedule_partial_pass stores boundary_rev / window_text.
+    // FINAL increments boundary_rev → correction_is_stale correctly detects staleness.
 
-    let window_rev_at_schedule: u64 = 5;
+    let boundary_rev_at_schedule: u64 = 5;
     let window_text_at_schedule = "cześć jak się masz";
 
     // Simulate FINAL boundary advancing window state.
-    let window_rev_after_final: u64 = 6; // FINAL incremented it
+    let boundary_rev_after_final: u64 = 6; // FINAL incremented it
     let window_text_after_final = "cześć jak się masz dobrze";
 
     assert!(
         correction_is_stale(
-            window_rev_at_schedule,
-            window_rev_after_final,
+            boundary_rev_at_schedule,
+            boundary_rev_after_final,
             window_text_at_schedule,
             window_text_after_final,
         ),
@@ -1639,37 +1884,73 @@ fn test_fix_d_stale_guard_with_window_rev_survives_final() {
 
 #[test]
 fn test_fix_d_stale_guard_passes_when_window_unchanged() {
-    // When no FINAL or new text arrives between schedule and correction result,
-    // the window state matches and correction should apply.
-    let window_rev: u64 = 5;
+    // When no boundary arrives between schedule and correction result,
+    // correction should apply.
+    let boundary_rev: u64 = 5;
     let window_text = "cześć jak się masz";
 
     assert!(
-        !correction_is_stale(window_rev, window_rev, window_text, window_text),
+        !correction_is_stale(boundary_rev, boundary_rev, window_text, window_text),
         "correction should not be stale when window state unchanged"
     );
 }
 
 #[test]
-fn test_fix_d_empty_accumulated_text_after_final_detected_by_window_rev() {
+fn test_refine_stale_guard_allows_interim_preview_text_drift() {
+    // Interim previews are same-boundary drafts. They can change text while the
+    // Refine lane is in flight, but they must not make live correction inert.
+    let boundary_rev_at_schedule: u64 = 5;
+    let boundary_rev_after_interim_previews: u64 = 5;
+    let expected_text = "cześć jak";
+    let current_text_after_interim_previews = "cześć jak się masz";
+
+    assert!(
+        !correction_is_stale(
+            boundary_rev_at_schedule,
+            boundary_rev_after_interim_previews,
+            expected_text,
+            current_text_after_interim_previews,
+        ),
+        "same-boundary interim preview text drift must not stale a Refine correction"
+    );
+}
+
+#[test]
+fn test_refine_stale_guard_rejects_after_boundary_change() {
+    let boundary_rev_at_schedule: u64 = 5;
+    let boundary_rev_after_final: u64 = 6;
+
+    assert!(
+        correction_is_stale(
+            boundary_rev_at_schedule,
+            boundary_rev_after_final,
+            "cześć jak",
+            "cześć jak się masz",
+        ),
+        "real boundary changes must still stale older Refine corrections"
+    );
+}
+
+#[test]
+fn test_fix_d_empty_accumulated_text_after_final_detected_by_boundary_rev() {
     // Edge case: FINAL clears accumulated_text. Before Fix D, stale guard
     // compared "" vs "" → not stale → correction applies to empty text.
-    // After Fix D, window_rev incremented by FINAL → stale.
+    // After Fix D, boundary_rev incremented by FINAL → stale.
 
     // Old behavior (broken): accumulated_text scope — expected "hello world"
     // vs current "" (cleared by FINAL). This would pass if revs matched
     // (both based on preview_rev which didn't increment for FINAL).
 
-    // New behavior: window scope
-    let window_rev_at_schedule: u64 = 3;
+    // New behavior: boundary scope
+    let boundary_rev_at_schedule: u64 = 3;
     let window_text_at_schedule = "hello world";
-    let window_rev_after_final: u64 = 4; // FINAL bumped it
+    let boundary_rev_after_final: u64 = 4; // FINAL bumped it
     let window_text_after_final = "hello world and more"; // FINAL appended
 
     assert!(
         correction_is_stale(
-            window_rev_at_schedule,
-            window_rev_after_final,
+            boundary_rev_at_schedule,
+            boundary_rev_after_final,
             window_text_at_schedule,
             window_text_after_final,
         ),

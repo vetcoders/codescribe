@@ -9,15 +9,24 @@
 //! - explicit process env can still override for tests and developer runs.
 
 use directories::BaseDirs;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::env::VarError;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use tracing::{info, warn};
 
 use super::defaults::{
-    default_assistive_model, default_formatting_model, default_llm_endpoint, default_llm_model,
+    default_assistive_model, default_assistive_provider, default_formatting_model,
+    default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
+use super::settings::FormattingPolicy;
 use super::types::{Config, Language, OverlayPositionMode, TranscriptSendMode};
+
+static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
+static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static CONFIG_SEEDED_ENV_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 impl Config {
     /// Load configuration from disk or environment.
@@ -31,6 +40,20 @@ impl Config {
     /// If the .env file doesn't exist or is malformed, returns default configuration
     /// without raising an error.
     pub fn load() -> Self {
+        Self::load_with_keychain_population(true)
+    }
+
+    /// Load runtime configuration without reading Keychain.
+    ///
+    /// This is for UI/runtime surfaces that must not trigger a macOS Keychain
+    /// password prompt as a side effect of starting local dictation.
+    pub fn load_without_keychain() -> Self {
+        Self::load_with_keychain_population(false)
+    }
+
+    fn load_with_keychain_population(populate_keychain: bool) -> Self {
+        let _bootstrap_guard = Self::config_env_bootstrap_guard();
+        let seed_process_env = Self::can_seed_process_env();
         let env_path = Self::env_path();
         let mut file_env_vars: Option<HashMap<String, String>> = None;
 
@@ -56,8 +79,10 @@ impl Config {
             Self::inject_file_env_for_runtime(vars);
         }
 
-        // Load API keys from Keychain (only if not already set by .env)
-        super::keychain::populate_env_from_keychain();
+        // Load API keys from Keychain (only if not already set by .env).
+        if populate_keychain && seed_process_env {
+            super::keychain::populate_env_from_keychain();
+        }
 
         // Load user settings from JSON
         let user_settings = super::settings::UserSettings::load();
@@ -71,7 +96,74 @@ impl Config {
         config.load_from_env();
         config.apply_default_llm_runtime_env();
         config.sanitize();
+        Self::mark_process_env_bootstrapped(seed_process_env);
         config
+    }
+
+    fn config_env_bootstrap_guard() -> Option<std::sync::MutexGuard<'static, ()>> {
+        if cfg!(test) {
+            None
+        } else {
+            Some(
+                CONFIG_ENV_BOOTSTRAP_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .expect("config env bootstrap lock poisoned"),
+            )
+        }
+    }
+
+    fn can_seed_process_env() -> bool {
+        cfg!(test) || !CONFIG_ENV_BOOTSTRAPPED.load(Ordering::SeqCst)
+    }
+
+    fn mark_process_env_bootstrapped(seed_process_env: bool) {
+        if seed_process_env && !cfg!(test) {
+            CONFIG_ENV_BOOTSTRAPPED.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn seeded_env_keys() -> &'static Mutex<HashSet<String>> {
+        CONFIG_SEEDED_ENV_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn remember_seeded_env_key(key: &str) {
+        if cfg!(test) {
+            return;
+        }
+        if let Ok(mut keys) = Self::seeded_env_keys().lock() {
+            keys.insert(key.to_string());
+        }
+    }
+
+    fn was_seeded_env_key(key: &str) -> bool {
+        if cfg!(test) {
+            return false;
+        }
+        Self::seeded_env_keys()
+            .lock()
+            .map(|keys| keys.contains(key))
+            .unwrap_or(false)
+    }
+
+    fn config_runtime_env_var(key: &str) -> Result<String, VarError> {
+        if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
+            return super::keychain::cached_runtime_key(key).ok_or(VarError::NotPresent);
+        }
+        if !Self::can_seed_process_env() && Self::was_seeded_env_key(key) {
+            return Err(VarError::NotPresent);
+        }
+        std::env::var(key)
+    }
+
+    /// Resolve the effective formatting policy from fresh runtime truth.
+    ///
+    /// Explicit process env wins. Values seeded internally during bootstrap are
+    /// ignored after bootstrap so a Settings write takes effect without restart.
+    pub fn formatting_policy() -> anyhow::Result<FormattingPolicy> {
+        let runtime = Self::config_runtime_env_var("FORMATTING_LEVEL").ok();
+        let settings = super::settings::UserSettings::load();
+        FormattingPolicy::resolve(runtime.as_deref(), settings.formatting_level.as_deref())
     }
 
     /// Inject optional .env values into the process environment without allowing
@@ -92,7 +184,7 @@ impl Config {
     }
 
     fn env_missing_or_empty(key: &str) -> bool {
-        std::env::var(key)
+        Self::config_runtime_env_var(key)
             .ok()
             .is_none_or(|value| value.trim().is_empty())
     }
@@ -117,131 +209,146 @@ impl Config {
         Self::config_init_set_env_if_missing("LLM_MODEL", default_llm_model());
         Self::config_init_set_env_if_missing("LLM_FORMATTING_ENDPOINT", &endpoint);
         Self::config_init_set_env_if_missing("LLM_FORMATTING_MODEL", default_formatting_model());
+        Self::config_init_set_env_if_missing(
+            "LLM_FORMATTING_PROVIDER",
+            default_formatting_provider(),
+        );
         Self::config_init_set_env_if_missing("LLM_ASSISTIVE_ENDPOINT", &endpoint);
         Self::config_init_set_env_if_missing("LLM_ASSISTIVE_MODEL", default_assistive_model());
+        Self::config_init_set_env_if_missing(
+            "LLM_ASSISTIVE_PROVIDER",
+            default_assistive_provider(),
+        );
     }
 
     /// Load configuration values from environment variables.
     pub fn load_from_env(&mut self) {
         // Hotkeys
-        if let Ok(val) = std::env::var("HOLD_EXCLUSIVE") {
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_EXCLUSIVE") {
             self.hold_exclusive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        if let Ok(val) = std::env::var("HOLD_START_DELAY_MS")
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_START_DELAY_MS")
             && let Ok(ms) = val.parse()
         {
             self.hold_start_delay_ms = ms;
         }
-        if let Ok(val) = std::env::var("DOUBLE_TAP_INTERVAL_MS")
+        if let Ok(val) = Self::config_runtime_env_var("DOUBLE_TAP_INTERVAL_MS")
             && let Ok(ms) = val.parse()
         {
             self.double_tap_interval_ms = ms;
         }
-        if let Ok(val) = std::env::var("TOGGLE_SILENCE_SEC")
+        if let Ok(val) = Self::config_runtime_env_var("TOGGLE_SILENCE_SEC")
             && let Ok(sec) = val.parse()
         {
             self.toggle_silence_sec = sec;
         }
 
         // Language
-        if let Ok(val) = std::env::var("WHISPER_LANGUAGE")
+        if let Ok(val) = Self::config_runtime_env_var("WHISPER_LANGUAGE")
             && let Ok(lang) = val.parse::<Language>()
         {
             self.whisper_language = lang;
         }
 
         // AI Formatting
-        if let Ok(val) = std::env::var("AI_FORMATTING_ENABLED") {
+        if let Ok(val) = Self::config_runtime_env_var("AI_FORMATTING_ENABLED") {
             self.ai_formatting_enabled =
                 matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
         }
-        if let Ok(val) = std::env::var("TRANSCRIPT_SEND_MODE")
+        if let Ok(val) = Self::config_runtime_env_var("AUTO_PASTE_ENABLED") {
+            self.auto_paste_enabled =
+                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        }
+        if let Ok(val) = Self::config_runtime_env_var("TRANSCRIPT_SEND_MODE")
             && let Ok(mode) = val.parse::<TranscriptSendMode>()
         {
             self.transcript_send_mode = mode;
         }
-        if let Ok(val) = std::env::var("CODESCRIBE_TRANSCRIPT_TAGGING") {
+        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAGGING") {
             self.transcript_tagging_enabled =
                 matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
         }
-        if let Ok(val) = std::env::var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE") {
+        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE") {
             self.transcript_tag_template = val;
         }
-        if let Ok(val) = std::env::var("AI_MAX_TOKENS")
+        if let Ok(val) = Self::config_runtime_env_var("AI_MAX_TOKENS")
             && let Ok(tokens) = val.parse()
         {
             self.ai_max_tokens = tokens;
         }
-        if let Ok(val) = std::env::var("AI_ASSISTIVE_MAX_TOKENS")
+        if let Ok(val) = Self::config_runtime_env_var("AI_ASSISTIVE_MAX_TOKENS")
             && let Ok(tokens) = val.parse()
         {
             self.ai_assistive_max_tokens = tokens;
         }
 
         // UI
-        if let Ok(val) = std::env::var("SHOW_TRAY_GLYPH") {
+        if let Ok(val) = Self::config_runtime_env_var("SHOW_TRAY_GLYPH") {
             self.show_tray_glyph = val.parse().unwrap_or(true);
         }
-        if let Ok(val) = std::env::var("SHOW_DOCK_ICON") {
+        if let Ok(val) = Self::config_runtime_env_var("SHOW_DOCK_ICON") {
             self.show_dock_icon = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        if let Ok(val) = std::env::var("TRANSCRIPTION_OVERLAY_ENABLED") {
+        if let Ok(val) = Self::config_runtime_env_var("TRANSCRIPTION_OVERLAY_ENABLED") {
             self.transcription_overlay_enabled =
                 matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        if let Ok(val) = std::env::var("HOLD_INDICATOR") {
+        if let Ok(val) = Self::config_runtime_env_var("TRAY_START_ASSISTIVE") {
+            self.tray_start_assistive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
+        }
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_INDICATOR") {
             self.hold_indicator = val.parse().unwrap_or(true);
         }
-        if let Ok(val) = std::env::var("HOLD_BADGE_SIZE")
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_SIZE")
             && let Ok(size) = val.parse()
         {
             self.hold_badge_size = size;
         }
-        if let Ok(val) = std::env::var("HOLD_BADGE_OFFSET_X")
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_OFFSET_X")
             && let Ok(offset) = val.parse()
         {
             self.hold_badge_offset_x = offset;
         }
-        if let Ok(val) = std::env::var("HOLD_BADGE_OFFSET_Y")
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_OFFSET_Y")
             && let Ok(offset) = val.parse()
         {
             self.hold_badge_offset_y = offset;
         }
 
-        if let Ok(val) = std::env::var("OVERLAY_POSITION_MODE")
+        if let Ok(val) = Self::config_runtime_env_var("OVERLAY_POSITION_MODE")
             && let Ok(mode) = val.parse::<OverlayPositionMode>()
         {
             self.overlay_position_mode = mode;
         }
-        if let Ok(val) = std::env::var("OVERLAY_CUSTOM_X")
+        if let Ok(val) = Self::config_runtime_env_var("OVERLAY_CUSTOM_X")
             && let Ok(x) = val.parse()
         {
             self.overlay_custom_x = Some(x);
         }
-        if let Ok(val) = std::env::var("OVERLAY_CUSTOM_Y")
+        if let Ok(val) = Self::config_runtime_env_var("OVERLAY_CUSTOM_Y")
             && let Ok(y) = val.parse()
         {
             self.overlay_custom_y = Some(y);
         }
 
         // Sound
-        if let Ok(val) = std::env::var("BEEP_ON_START") {
+        if let Ok(val) = Self::config_runtime_env_var("BEEP_ON_START") {
             self.beep_on_start = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        if let Ok(val) = std::env::var("AGENT_ENTER_SENDS") {
+        if let Ok(val) = Self::config_runtime_env_var("AGENT_ENTER_SENDS") {
             self.agent_enter_sends = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        if let Ok(val) = std::env::var("SOUND_NAME") {
+        if let Ok(val) = Self::config_runtime_env_var("SOUND_NAME") {
             self.sound_name = val;
         }
-        if let Ok(val) = std::env::var("SOUND_VOLUME")
+        if let Ok(val) = Self::config_runtime_env_var("SOUND_VOLUME")
             && let Ok(volume) = val.parse()
         {
             self.sound_volume = volume;
         }
 
         // Audio
-        if let Ok(val) = std::env::var("AUDIO_INPUT_DEVICE") {
+        if let Ok(val) = Self::config_runtime_env_var("AUDIO_INPUT_DEVICE") {
             self.audio_input_device = (!val.trim().is_empty()).then_some(val);
         }
         // VAD config lives in `core/vad/config.rs` with hardcoded defaults and
@@ -250,61 +357,65 @@ impl Config {
         // No legacy SILENCE_* variables - single source of truth.
 
         // History (default: on to avoid data loss)
-        if let Ok(val) = std::env::var("HISTORY_ENABLED") {
+        if let Ok(val) = Self::config_runtime_env_var("HISTORY_ENABLED") {
             self.history_enabled = val.parse().unwrap_or(true);
         }
 
         // Quick Notes (default: off)
-        if let Ok(val) = std::env::var("QUICK_NOTES_ENABLED") {
+        if let Ok(val) = Self::config_runtime_env_var("QUICK_NOTES_ENABLED") {
             self.quick_notes_enabled = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        if let Ok(val) = std::env::var("QUICK_NOTES_SAVE_ONLY") {
+        if let Ok(val) = Self::config_runtime_env_var("QUICK_NOTES_SAVE_ONLY") {
             self.quick_notes_save_only = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
 
         // Backends - LLM
         // LLM_API_KEY for cloud providers
-        if let Ok(val) = std::env::var("LLM_API_KEY") {
+        if let Ok(val) = Self::config_runtime_env_var("LLM_API_KEY") {
             self.llm_api_key = Some(val);
         }
-        if let Ok(val) = std::env::var("LLM_ENDPOINT") {
+        if let Ok(val) = Self::config_runtime_env_var("LLM_ENDPOINT") {
             self.llm_endpoint = Some(val);
         }
 
         // Backends - STT
-        if let Ok(val) = std::env::var("STT_ENDPOINT") {
+        if let Ok(val) = Self::config_runtime_env_var("STT_ENDPOINT") {
             self.stt_endpoint = Some(val);
         }
+        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED") {
+            self.stt_initial_prompt_enabled =
+                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        }
         // STT_API_KEY for cloud STT
-        if let Ok(val) = std::env::var("STT_API_KEY") {
+        if let Ok(val) = Self::config_runtime_env_var("STT_API_KEY") {
             self.stt_api_key = Some(val);
         }
 
         // Local STT (Pure Rust Whisper)
-        if let Ok(val) = std::env::var("USE_LOCAL_STT") {
+        if let Ok(val) = Self::config_runtime_env_var("USE_LOCAL_STT") {
             self.use_local_stt = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
-        if let Ok(val) = std::env::var("LOCAL_MODEL") {
+        if let Ok(val) = Self::config_runtime_env_var("LOCAL_MODEL") {
             self.local_model = val;
         }
 
         // Clipboard
-        if let Ok(val) = std::env::var("RESTORE_CLIPBOARD") {
+        if let Ok(val) = Self::config_runtime_env_var("RESTORE_CLIPBOARD") {
             self.restore_clipboard = val.parse().unwrap_or(true);
         }
-        if let Ok(val) = std::env::var("RESTORE_CLIPBOARD_DELAY_MS")
+        if let Ok(val) = Self::config_runtime_env_var("RESTORE_CLIPBOARD_DELAY_MS")
             && let Ok(delay) = val.parse()
         {
             self.restore_clipboard_delay_ms = delay;
         }
 
         // System
-        if let Ok(val) = std::env::var("START_AT_LOGIN") {
+        if let Ok(val) = Self::config_runtime_env_var("START_AT_LOGIN") {
             self.start_at_login = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
 
         // Debugging (default: on to keep paired .wav with transcripts)
-        if let Ok(val) = std::env::var("DUMP_AUDIO_LOGS") {
+        if let Ok(val) = Self::config_runtime_env_var("DUMP_AUDIO_LOGS") {
             self.dump_audio_logs = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
     }
@@ -323,15 +434,13 @@ impl Config {
     }
 
     fn config_init_set_env(key: &str, value: impl AsRef<str>) {
-        // SAFETY: config init happens before background workers consume configuration,
-        // so process-env mutation is confined to a single writer during bootstrap.
+        if !Self::can_seed_process_env() {
+            return;
+        }
+        // SAFETY: a process-wide bootstrap lock confines config env mutation to
+        // the one pre-runtime writer; later loads read settings snapshots instead.
         unsafe { std::env::set_var(key, value.as_ref()) };
-    }
-
-    fn ui_thread_set_env(key: &str, value: &str) {
-        // SAFETY: settings writes originate from the main UI thread; runtime readers
-        // consume refreshed Config snapshots rather than racing direct env access.
-        unsafe { std::env::set_var(key, value) };
+        Self::remember_seeded_env_key(key);
     }
 
     /// Apply user settings from JSON (lower priority than .env).
@@ -340,7 +449,7 @@ impl Config {
         // Helper: only apply if the env var is NOT set
         macro_rules! apply_parsed_if_no_env {
             ($env_key:expr, $field:expr, $val:expr) => {
-                if std::env::var($env_key).is_err() {
+                if Self::config_runtime_env_var($env_key).is_err() {
                     if let Some(ref v) = $val {
                         if let Ok(parsed) = v.parse() {
                             $field = parsed;
@@ -357,77 +466,94 @@ impl Config {
             settings.whisper_language
         );
         // Hotkeys
-        if std::env::var("HOLD_START_DELAY_MS").is_err()
+        if Self::config_runtime_env_var("HOLD_START_DELAY_MS").is_err()
             && let Some(v) = settings.hold_start_delay_ms
         {
             self.hold_start_delay_ms = v;
         }
-        if std::env::var("DOUBLE_TAP_INTERVAL_MS").is_err()
+        if Self::config_runtime_env_var("DOUBLE_TAP_INTERVAL_MS").is_err()
             && let Some(v) = settings.double_tap_interval_ms
         {
             self.double_tap_interval_ms = v;
         }
-        if std::env::var("TOGGLE_SILENCE_SEC").is_err()
+        if Self::config_runtime_env_var("TOGGLE_SILENCE_SEC").is_err()
             && let Some(v) = settings.toggle_silence_sec
         {
             self.toggle_silence_sec = v;
         }
-        if std::env::var("HOLD_EXCLUSIVE").is_err()
+        if Self::config_runtime_env_var("HOLD_EXCLUSIVE").is_err()
             && let Some(v) = settings.hold_exclusive
         {
             self.hold_exclusive = v;
         }
         // AI
-        if std::env::var("AI_FORMATTING_ENABLED").is_err()
+        if Self::config_runtime_env_var("AI_FORMATTING_ENABLED").is_err()
             && let Some(v) = settings.ai_formatting_enabled
         {
             self.ai_formatting_enabled = v;
         }
-        if std::env::var("CODESCRIBE_TRANSCRIPT_TAGGING").is_err()
+        if Self::config_runtime_env_var("AUTO_PASTE_ENABLED").is_err()
+            && let Some(v) = settings.auto_paste_enabled
+        {
+            self.auto_paste_enabled = v;
+        }
+        if Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAGGING").is_err()
             && let Some(v) = settings.transcript_tagging_enabled
         {
             self.transcript_tagging_enabled = v;
         }
-        if std::env::var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE").is_err()
+        if Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAG_TEMPLATE").is_err()
             && let Some(ref v) = settings.transcript_tag_template
         {
             self.transcript_tag_template = v.clone();
         }
-        if std::env::var("FORMATTING_LEVEL").is_err()
+        if Self::config_runtime_env_var("FORMATTING_LEVEL").is_err()
             && let Some(ref v) = settings.formatting_level
         {
-            // FORMATTING_LEVEL is read from env at runtime (not a Config field).
-            Self::safe_set_env("FORMATTING_LEVEL", v);
+            match FormattingPolicy::parse(v) {
+                Ok(policy) => Self::safe_set_env("FORMATTING_LEVEL", policy.as_str()),
+                Err(error) => warn!("Ignoring invalid persisted formatting policy: {error}"),
+            }
         }
         // Sound
-        if std::env::var("BEEP_ON_START").is_err()
+        if Self::config_runtime_env_var("BEEP_ON_START").is_err()
             && let Some(v) = settings.beep_on_start
         {
             self.beep_on_start = v;
         }
-        if std::env::var("SHOW_DOCK_ICON").is_err()
+        if Self::config_runtime_env_var("SHOW_DOCK_ICON").is_err()
             && let Some(v) = settings.show_dock_icon
         {
             self.show_dock_icon = v;
         }
-        if std::env::var("TRANSCRIPTION_OVERLAY_ENABLED").is_err()
+        if Self::config_runtime_env_var("TRANSCRIPTION_OVERLAY_ENABLED").is_err()
             && let Some(v) = settings.transcription_overlay_enabled
         {
             self.transcription_overlay_enabled = v;
             Self::safe_set_env("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" });
         }
-        if std::env::var("SOUND_VOLUME").is_err()
+        if Self::config_runtime_env_var("TRAY_START_ASSISTIVE").is_err()
+            && let Some(v) = settings.tray_start_assistive
+        {
+            // `tray_start_assistive` is a Config struct field; downstream reads it
+            // directly (e.g. `tray_toggles`). Persistence lives in settings.json,
+            // so no runtime env mutation is needed here - and `load_without_keychain`
+            // runs on UI actions (tray/composer mic), where `set_var` would race
+            // background threads.
+            self.tray_start_assistive = v;
+        }
+        if Self::config_runtime_env_var("SOUND_VOLUME").is_err()
             && let Some(v) = settings.sound_volume
         {
             self.sound_volume = v;
         }
         // LLM endpoints (from JSON, lower priority than .env)
-        if std::env::var("LLM_ENDPOINT").is_err()
+        if Self::config_runtime_env_var("LLM_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_endpoint
         {
             self.llm_endpoint = Some(v.clone());
         }
-        if std::env::var("LLM_MODEL").is_err()
+        if Self::config_runtime_env_var("LLM_MODEL").is_err()
             && let Some(ref v) = settings.llm_model
         {
             // LLM_MODEL is not in Config struct but read from env at runtime
@@ -435,45 +561,50 @@ impl Config {
             Self::safe_set_env("LLM_MODEL", v);
         }
         // Assistive LLM (not in Config struct, read from env at runtime)
-        if std::env::var("LLM_ASSISTIVE_ENDPOINT").is_err()
+        if Self::config_runtime_env_var("LLM_ASSISTIVE_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_assistive_endpoint
         {
             Self::safe_set_env("LLM_ASSISTIVE_ENDPOINT", v);
         }
-        if std::env::var("LLM_ASSISTIVE_MODEL").is_err()
+        if Self::config_runtime_env_var("LLM_ASSISTIVE_MODEL").is_err()
             && let Some(ref v) = settings.llm_assistive_model
         {
             Self::safe_set_env("LLM_ASSISTIVE_MODEL", v);
         }
+        if Self::config_runtime_env_var("LLM_ASSISTIVE_PROVIDER").is_err()
+            && let Some(ref v) = settings.llm_assistive_provider
+        {
+            Self::safe_set_env("LLM_ASSISTIVE_PROVIDER", v);
+        }
         // ── Promoted fields (previously .env only) ──
 
         // LLM formatting (not in Config struct, read from env at runtime)
-        if std::env::var("LLM_FORMATTING_ENDPOINT").is_err()
+        if Self::config_runtime_env_var("LLM_FORMATTING_ENDPOINT").is_err()
             && let Some(ref v) = settings.llm_formatting_endpoint
         {
             Self::safe_set_env("LLM_FORMATTING_ENDPOINT", v);
         }
-        if std::env::var("LLM_FORMATTING_MODEL").is_err()
+        if Self::config_runtime_env_var("LLM_FORMATTING_MODEL").is_err()
             && let Some(ref v) = settings.llm_formatting_model
         {
             Self::safe_set_env("LLM_FORMATTING_MODEL", v);
         }
 
         // Local STT
-        if std::env::var("USE_LOCAL_STT").is_err()
+        if Self::config_runtime_env_var("USE_LOCAL_STT").is_err()
             && let Some(v) = settings.use_local_stt
         {
             self.use_local_stt = v;
             Self::config_init_set_env("USE_LOCAL_STT", if v { "1" } else { "0" });
         }
-        if std::env::var("LOCAL_MODEL").is_err()
+        if Self::config_runtime_env_var("LOCAL_MODEL").is_err()
             && let Some(ref v) = settings.local_model
         {
             self.local_model = v.clone();
         }
 
         // STT endpoint
-        if std::env::var("STT_ENDPOINT").is_err()
+        if Self::config_runtime_env_var("STT_ENDPOINT").is_err()
             && let Some(ref v) = settings.stt_endpoint
         {
             self.stt_endpoint = Some(v.clone());
@@ -487,85 +618,118 @@ impl Config {
         );
 
         // Audio input device
-        if std::env::var("AUDIO_INPUT_DEVICE").is_err()
+        if Self::config_runtime_env_var("AUDIO_INPUT_DEVICE").is_err()
             && let Some(ref v) = settings.audio_input_device
         {
             self.audio_input_device = Some(v.clone());
         }
 
         // Sound name
-        if std::env::var("SOUND_NAME").is_err()
+        if Self::config_runtime_env_var("SOUND_NAME").is_err()
             && let Some(ref v) = settings.sound_name
         {
             self.sound_name = v.clone();
         }
 
         // History
-        if std::env::var("HISTORY_ENABLED").is_err()
+        if Self::config_runtime_env_var("HISTORY_ENABLED").is_err()
             && let Some(v) = settings.history_enabled
         {
             self.history_enabled = v;
         }
 
         // Quick Notes
-        if std::env::var("QUICK_NOTES_ENABLED").is_err()
+        if Self::config_runtime_env_var("QUICK_NOTES_ENABLED").is_err()
             && let Some(v) = settings.quick_notes_enabled
         {
             self.quick_notes_enabled = v;
         }
-        if std::env::var("QUICK_NOTES_SAVE_ONLY").is_err()
+        if Self::config_runtime_env_var("QUICK_NOTES_SAVE_ONLY").is_err()
             && let Some(v) = settings.quick_notes_save_only
         {
             self.quick_notes_save_only = v;
         }
 
         // System
-        if std::env::var("START_AT_LOGIN").is_err()
+        if Self::config_runtime_env_var("START_AT_LOGIN").is_err()
             && let Some(v) = settings.start_at_login
         {
             self.start_at_login = v;
         }
-        if std::env::var("QUBE_DAEMON_AUTOSTART").is_err()
+        if Self::config_runtime_env_var("QUBE_DAEMON_AUTOSTART").is_err()
             && let Some(v) = settings.qube_daemon_autostart
         {
             Self::config_init_set_env("QUBE_DAEMON_AUTOSTART", if v { "1" } else { "0" });
         }
-        if std::env::var("AGENT_ENTER_SENDS").is_err()
+        if Self::config_runtime_env_var("AGENT_ENTER_SENDS").is_err()
             && let Some(v) = settings.agent_enter_sends
         {
             self.agent_enter_sends = v;
         }
 
         // ── Voice Lab survivors (runtime env vars, not Config struct fields) ──
-        if std::env::var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
+        if Self::config_runtime_env_var("CODESCRIBE_BUFFER_DELAY_MS").is_err()
             && let Some(v) = settings.buffer_delay_ms
         {
             Self::config_init_set_env("CODESCRIBE_BUFFER_DELAY_MS", v.to_string());
         }
-        if std::env::var("CODESCRIBE_TYPING_CPS").is_err()
+        if Self::config_runtime_env_var("CODESCRIBE_TYPING_CPS").is_err()
             && let Some(v) = settings.typing_cps
         {
             Self::config_init_set_env("CODESCRIBE_TYPING_CPS", v.to_string());
         }
-        if std::env::var("CODESCRIBE_EMIT_WORDS_MAX").is_err()
+        if Self::config_runtime_env_var("CODESCRIBE_EMIT_WORDS_MAX").is_err()
             && let Some(v) = settings.emit_words_max
         {
             Self::config_init_set_env("CODESCRIBE_EMIT_WORDS_MAX", v.to_string());
         }
-        if std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC").is_err()
+        if Self::config_runtime_env_var("CODESCRIBE_BUFFERED_INTERIM_SEC").is_err()
             && let Some(v) = settings.buffered_interim_sec
         {
             Self::config_init_set_env("CODESCRIBE_BUFFERED_INTERIM_SEC", format!("{v:.1}"));
         }
-        if std::env::var("WHISPER_MODEL").is_err()
+        if Self::config_runtime_env_var("WHISPER_MODEL").is_err()
             && let Some(ref v) = settings.whisper_model
         {
             Self::safe_set_env("WHISPER_MODEL", v);
         }
-        if std::env::var("BACKEND_MAX_UPLOAD_MB").is_err()
+        if Self::config_runtime_env_var("BACKEND_MAX_UPLOAD_MB").is_err()
             && let Some(v) = settings.backend_max_upload_mb
         {
             Self::config_init_set_env("BACKEND_MAX_UPLOAD_MB", v.to_string());
+        }
+
+        // ── STT engine / layered transcription (F1) ──
+        // Explicit process env wins; settings.json seeds the env-only knobs that
+        // core/stt reads per-call (selected_engine / layered_phase).
+        if Self::config_runtime_env_var("CODESCRIBE_STT_ENGINE").is_err()
+            && let Some(ref v) = settings.stt_engine
+        {
+            Self::safe_set_env("CODESCRIBE_STT_ENGINE", v);
+        }
+        if Self::config_runtime_env_var("CODESCRIBE_LAYERED_TRANSCRIPTION").is_err()
+            && let Some(ref v) = settings.layered_transcription
+        {
+            Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
+        }
+        if Self::config_runtime_env_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").is_err()
+            && let Some(v) = settings.stt_initial_prompt_enabled
+        {
+            self.stt_initial_prompt_enabled = v;
+            Self::config_init_set_env(
+                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
+                if v { "1" } else { "0" },
+            );
+        }
+
+        // ── Agent workspace roots ──
+        // Colon-joined (PATH-style); the `list_projects` tool reads and splits it.
+        // Explicit process env / .env wins; settings.json only seeds when absent.
+        if Self::config_runtime_env_var("AGENT_WORKSPACE_ROOTS").is_err()
+            && let Some(ref roots) = settings.agent_workspace_roots
+            && !roots.is_empty()
+        {
+            Self::safe_set_env("AGENT_WORKSPACE_ROOTS", &roots.join(":"));
         }
     }
 
@@ -573,12 +737,19 @@ impl Config {
     /// - API keys → Keychain
     /// - Regular-user fields → settings.json
     /// - Everything else → .env
+    ///
+    /// This is a persistence write only. Process-env seeding is restricted to
+    /// bootstrap loads; live readers must reload the config/settings snapshot.
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let normalized_formatting = (key == "FORMATTING_LEVEL")
+            .then(|| FormattingPolicy::parse(value))
+            .transpose()?
+            .map(|policy| policy.as_str().to_string());
+        let value = normalized_formatting.as_deref().unwrap_or(value);
+
         // API keys → Keychain
         if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
             super::keychain::save_key(key, value)?;
-            // Also update runtime env var.
-            Self::ui_thread_set_env(key, value);
             return Ok(());
         }
 
@@ -587,6 +758,10 @@ impl Config {
 
         if is_regular {
             let mut settings = super::settings::UserSettings::load();
+            if Self::apply_optional_override(&mut settings, key, value) {
+                settings.save()?;
+                return Ok(());
+            }
             // Route to appropriate setter based on value type
             match key {
                 "HOLD_START_DELAY_MS"
@@ -607,10 +782,12 @@ impl Config {
                     }
                 }
                 "AI_FORMATTING_ENABLED"
+                | "AUTO_PASTE_ENABLED"
                 | "TRANSCRIPT_TAGGING_ENABLED"
                 | "BEEP_ON_START"
                 | "SHOW_DOCK_ICON"
                 | "TRANSCRIPTION_OVERLAY_ENABLED"
+                | "TRAY_START_ASSISTIVE"
                 | "HOLD_EXCLUSIVE"
                 | "USE_LOCAL_STT"
                 | "HISTORY_ENABLED"
@@ -618,7 +795,8 @@ impl Config {
                 | "QUICK_NOTES_SAVE_ONLY"
                 | "START_AT_LOGIN"
                 | "QUBE_DAEMON_AUTOSTART"
-                | "AGENT_ENTER_SENDS" => {
+                | "AGENT_ENTER_SENDS"
+                | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
@@ -626,8 +804,6 @@ impl Config {
                     settings.set_string(key, value);
                 }
             }
-            // Also update runtime env var.
-            Self::ui_thread_set_env(key, value);
             return Ok(());
         }
 
@@ -643,7 +819,6 @@ impl Config {
         };
         env_vars.insert(key.to_string(), value.to_string());
         Self::write_env_file(&env_path, &env_vars)?;
-        Self::ui_thread_set_env(key, value);
         Ok(())
     }
 
@@ -661,10 +836,15 @@ impl Config {
         let mut env_path: Option<PathBuf> = None;
 
         for (key, value) in entries {
+            if *key == "FORMATTING_LEVEL" {
+                FormattingPolicy::parse(value)?;
+            }
+        }
+
+        for (key, value) in entries {
             // API keys → Keychain
             if super::keychain::KEYCHAIN_ACCOUNTS.contains(key) {
                 super::keychain::save_key(key, value)?;
-                Self::ui_thread_set_env(key, value);
                 continue;
             }
 
@@ -673,27 +853,17 @@ impl Config {
 
             if is_regular {
                 let settings_ref = settings.get_or_insert_with(super::settings::UserSettings::load);
+                if Self::apply_optional_override(settings_ref, key, value) {
+                    continue;
+                }
                 match *key {
                     // ── Strings ──
                     "WHISPER_LANGUAGE" => {
                         settings_ref.whisper_language = Some((*value).to_string())
                     }
-                    "LLM_ENDPOINT" => settings_ref.llm_endpoint = Some((*value).to_string()),
-                    "LLM_MODEL" => settings_ref.llm_model = Some((*value).to_string()),
-                    "LLM_ASSISTIVE_ENDPOINT" => {
-                        settings_ref.llm_assistive_endpoint = Some((*value).to_string())
-                    }
-                    "LLM_ASSISTIVE_MODEL" => {
-                        settings_ref.llm_assistive_model = Some((*value).to_string())
-                    }
                     "FORMATTING_LEVEL" => {
-                        settings_ref.formatting_level = Some((*value).to_string())
-                    }
-                    "LLM_FORMATTING_ENDPOINT" => {
-                        settings_ref.llm_formatting_endpoint = Some((*value).to_string())
-                    }
-                    "LLM_FORMATTING_MODEL" => {
-                        settings_ref.llm_formatting_model = Some((*value).to_string())
+                        settings_ref.formatting_level =
+                            Some(FormattingPolicy::parse(value)?.as_str().to_string())
                     }
                     "LOCAL_MODEL" => settings_ref.local_model = Some((*value).to_string()),
                     "STT_ENDPOINT" => settings_ref.stt_endpoint = Some((*value).to_string()),
@@ -757,10 +927,12 @@ impl Config {
                     }
                     // ── Bools ──
                     "AI_FORMATTING_ENABLED"
+                    | "AUTO_PASTE_ENABLED"
                     | "TRANSCRIPT_TAGGING_ENABLED"
                     | "BEEP_ON_START"
                     | "SHOW_DOCK_ICON"
                     | "TRANSCRIPTION_OVERLAY_ENABLED"
+                    | "TRAY_START_ASSISTIVE"
                     | "HOLD_EXCLUSIVE"
                     | "USE_LOCAL_STT"
                     | "HISTORY_ENABLED"
@@ -768,17 +940,20 @@ impl Config {
                     | "QUICK_NOTES_SAVE_ONLY"
                     | "START_AT_LOGIN"
                     | "QUBE_DAEMON_AUTOSTART"
-                    | "AGENT_ENTER_SENDS" => {
+                    | "AGENT_ENTER_SENDS"
+                    | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                         let bv = matches!(*value, "1" | "true" | "yes" | "on");
                         match *key {
                             "AI_FORMATTING_ENABLED" => {
                                 settings_ref.ai_formatting_enabled = Some(bv)
                             }
+                            "AUTO_PASTE_ENABLED" => settings_ref.auto_paste_enabled = Some(bv),
                             "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
                             "SHOW_DOCK_ICON" => settings_ref.show_dock_icon = Some(bv),
                             "TRANSCRIPTION_OVERLAY_ENABLED" => {
                                 settings_ref.transcription_overlay_enabled = Some(bv)
                             }
+                            "TRAY_START_ASSISTIVE" => settings_ref.tray_start_assistive = Some(bv),
                             "HOLD_EXCLUSIVE" => settings_ref.hold_exclusive = Some(bv),
                             "USE_LOCAL_STT" => settings_ref.use_local_stt = Some(bv),
                             "HISTORY_ENABLED" => settings_ref.history_enabled = Some(bv),
@@ -791,12 +966,14 @@ impl Config {
                                 settings_ref.qube_daemon_autostart = Some(bv)
                             }
                             "AGENT_ENTER_SENDS" => settings_ref.agent_enter_sends = Some(bv),
+                            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
+                                settings_ref.stt_initial_prompt_enabled = Some(bv)
+                            }
                             _ => {}
                         }
                     }
                     _ => {}
                 }
-                Self::ui_thread_set_env(key, value);
                 continue;
             }
 
@@ -810,7 +987,6 @@ impl Config {
                 }
             });
             vars_ref.insert((*key).to_string(), (*value).to_string());
-            Self::ui_thread_set_env(key, value);
         }
 
         if let Some(settings) = settings
@@ -828,11 +1004,33 @@ impl Config {
         Ok(())
     }
 
+    fn apply_optional_override(
+        settings: &mut super::settings::UserSettings,
+        key: &str,
+        value: &str,
+    ) -> bool {
+        let normalized = (!value.trim().is_empty()).then(|| value.to_string());
+        match key {
+            "LLM_ENDPOINT" => settings.llm_endpoint = normalized,
+            "LLM_MODEL" => settings.llm_model = normalized,
+            "LLM_ASSISTIVE_ENDPOINT" => settings.llm_assistive_endpoint = normalized,
+            "LLM_ASSISTIVE_MODEL" => settings.llm_assistive_model = normalized,
+            "LLM_ASSISTIVE_PROVIDER" => settings.llm_assistive_provider = normalized,
+            "LLM_FORMATTING_ENDPOINT" => settings.llm_formatting_endpoint = normalized,
+            "LLM_FORMATTING_MODEL" => settings.llm_formatting_model = normalized,
+            _ => return false,
+        }
+        true
+    }
+
     /// Parse .env file into HashMap.
-    pub fn parse_env_file(path: &PathBuf) -> anyhow::Result<HashMap<String, String>> {
-        // Path comes from Config::env_path() which is hardcoded to ~/.codescribe/.env
-        // nosemgrep: tainted-path
-        let contents = fs::read_to_string(path)?;
+    pub fn parse_env_file(path: &Path) -> anyhow::Result<HashMap<String, String>> {
+        // `path` is always internally derived from `Config::env_path()`
+        // (config_dir()/.env, or the `CODESCRIBE_ENV_PATH` override used by tests
+        // and power users) — never raw request or end-user input. No external
+        // path-traversal source reaches this read.
+        let path = canonical_existing_file(path)?;
+        let contents = fs::read_to_string(&path)?;
         let mut vars = HashMap::new();
 
         for line in contents.lines() {
@@ -914,7 +1112,7 @@ impl Config {
             {
                 output_lines.push(String::new()); // blank line before new section
             }
-            output_lines.push("# Added by CodeScribe".to_string());
+            output_lines.push("# Added by Codescribe".to_string());
 
             let mut keys: Vec<_> = remaining_vars.keys().collect();
             keys.sort();
@@ -1048,6 +1246,14 @@ impl Config {
     }
 }
 
+fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
+    let path = path.canonicalize()?;
+    if !path.is_file() {
+        anyhow::bail!("Config env path is not a file: {}", path.display());
+    }
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,8 +1303,347 @@ mod tests {
     fn setup_isolated_data_dir() -> TempDir {
         let tmp = TempDir::new().expect("tempdir");
         set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
+        remove_env_for_test("CODESCRIBE_ENV_PATH");
         remove_env_for_test("USE_LOCAL_STT");
+        remove_env_for_test("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         tmp
+    }
+
+    fn llm_write_key_cases() -> &'static [(&'static str, &'static str, Option<&'static str>)] {
+        &[
+            (
+                "LLM_ENDPOINT",
+                "https://main.example/v1",
+                Some("/speech/llm_endpoint"),
+            ),
+            ("LLM_MODEL", "gpt-main-test", Some("/speech/llm_model")),
+            ("LLM_PROVIDER", "openai-responses", None),
+            (
+                "LLM_ASSISTIVE_ENDPOINT",
+                "https://assistive.example/v1",
+                Some("/speech/assistive/llm_endpoint"),
+            ),
+            (
+                "LLM_ASSISTIVE_MODEL",
+                "gpt-assistive-test",
+                Some("/speech/assistive/llm_model"),
+            ),
+            (
+                "LLM_ASSISTIVE_PROVIDER",
+                "anthropic-messages",
+                Some("/speech/assistive/llm_provider"),
+            ),
+            (
+                "LLM_FORMATTING_ENDPOINT",
+                "https://formatting.example/v1",
+                Some("/speech/formatting/llm_endpoint"),
+            ),
+            (
+                "LLM_FORMATTING_MODEL",
+                "gpt-formatting-test",
+                Some("/speech/formatting/llm_model"),
+            ),
+            ("LLM_FORMATTING_PROVIDER", "openai-responses", None),
+        ]
+    }
+
+    fn save_snapshot(key: &str, value: &str, batch: bool) -> UserSettings {
+        let _tmp = setup_isolated_data_dir();
+        let config = Config::default();
+        if batch {
+            config
+                .save_to_env_many(&[(key, value)])
+                .expect("save batch");
+        } else {
+            config.save_to_env(key, value).expect("save single");
+        }
+        UserSettings::load()
+    }
+
+    fn assert_optional_override_absent(settings: &UserSettings, key: &str) {
+        let actual = match key {
+            "LLM_ENDPOINT" => settings.llm_endpoint.as_deref(),
+            "LLM_MODEL" => settings.llm_model.as_deref(),
+            "LLM_ASSISTIVE_ENDPOINT" => settings.llm_assistive_endpoint.as_deref(),
+            "LLM_ASSISTIVE_MODEL" => settings.llm_assistive_model.as_deref(),
+            "LLM_ASSISTIVE_PROVIDER" => settings.llm_assistive_provider.as_deref(),
+            "LLM_FORMATTING_ENDPOINT" => settings.llm_formatting_endpoint.as_deref(),
+            "LLM_FORMATTING_MODEL" => settings.llm_formatting_model.as_deref(),
+            _ => return,
+        };
+        assert_eq!(actual, None, "{key} must be unset, got {actual:?}");
+    }
+
+    #[test]
+    #[serial]
+    fn save_to_env_persists_promoted_setting_without_process_env_mutation() {
+        let _tmp = setup_isolated_data_dir();
+        let _model = TestEnvGuard::unset("LLM_MODEL");
+
+        Config::default()
+            .save_to_env("LLM_MODEL", "runtime-model")
+            .expect("save setting");
+
+        assert!(std::env::var("LLM_MODEL").is_err());
+        assert_eq!(
+            UserSettings::load().llm_model.as_deref(),
+            Some("runtime-model")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn auto_paste_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
+        let _tmp = setup_isolated_data_dir();
+        let _runtime = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let config = Config::default();
+
+        config
+            .save_to_env("AUTO_PASTE_ENABLED", "0")
+            .expect("save auto paste off");
+        assert_eq!(UserSettings::load().auto_paste_enabled, Some(false));
+        assert!(!Config::load_without_keychain().auto_paste_enabled);
+
+        config
+            .save_to_env_many(&[("AUTO_PASTE_ENABLED", "1")])
+            .expect("save auto paste on");
+        assert_eq!(UserSettings::load().auto_paste_enabled, Some(true));
+        assert!(Config::load_without_keychain().auto_paste_enabled);
+
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let env = Config::parse_env_file(&env_path).expect("parse optional env");
+            assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
+        }
+        assert!(std::env::var("AUTO_PASTE_ENABLED").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn formatting_policy_single_and_batch_writes_normalize_every_alias() {
+        let cases = [
+            ("off", "off"),
+            ("correction", "correction"),
+            ("smart", "smart"),
+            ("max", "max"),
+            ("raw", "off"),
+            ("medium", "correction"),
+            ("creative", "max"),
+        ];
+
+        for (input, normalized) in cases {
+            for batch in [false, true] {
+                let _tmp = setup_isolated_data_dir();
+                let config = Config::default();
+                if batch {
+                    config
+                        .save_to_env_many(&[("FORMATTING_LEVEL", input)])
+                        .expect("save policy batch");
+                } else {
+                    config
+                        .save_to_env("FORMATTING_LEVEL", input)
+                        .expect("save policy single");
+                }
+                assert_eq!(
+                    UserSettings::load().formatting_level.as_deref(),
+                    Some(normalized),
+                    "input={input}, batch={batch}"
+                );
+            }
+        }
+
+        for batch in [false, true] {
+            let _tmp = setup_isolated_data_dir();
+            let config = Config::default();
+            let result = if batch {
+                config.save_to_env_many(&[("FORMATTING_LEVEL", "aggressive")])
+            } else {
+                config.save_to_env("FORMATTING_LEVEL", "aggressive")
+            };
+            assert!(
+                result.is_err(),
+                "unknown policy was accepted, batch={batch}"
+            );
+            assert!(!UserSettings::settings_path().exists());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn empty_llm_override_unsets_json_path_and_restores_resolved_fallback() {
+        let _tmp = setup_isolated_data_dir();
+        let _lane_endpoint = TestEnvGuard::unset("LLM_ASSISTIVE_ENDPOINT");
+        let _shared_endpoint = TestEnvGuard::unset("LLM_ENDPOINT");
+        let config = Config::default();
+
+        config
+            .save_to_env(
+                "LLM_ASSISTIVE_ENDPOINT",
+                "https://api.libraxis.cloud/v1/responses",
+            )
+            .expect("set assistive endpoint override");
+
+        let set_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after set"),
+        )
+        .expect("parse settings after set");
+        assert_eq!(
+            set_json
+                .pointer("/speech/assistive/llm_endpoint")
+                .and_then(serde_json::Value::as_str),
+            Some("https://api.libraxis.cloud/v1/responses")
+        );
+
+        config
+            .save_to_env("LLM_ASSISTIVE_ENDPOINT", "")
+            .expect("reset assistive endpoint override");
+
+        let reset_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after reset"),
+        )
+        .expect("parse settings after reset");
+        assert!(
+            reset_json
+                .pointer("/speech/assistive/llm_endpoint")
+                .is_none(),
+            "reset must remove the override path, got {reset_json}"
+        );
+        assert_eq!(UserSettings::load().llm_assistive_endpoint, None);
+        assert_eq!(
+            crate::llm::lane_truth::endpoint(
+                crate::llm::provider::LlmMode::Assistive,
+                &Config::default(),
+            ),
+            crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn empty_assistive_provider_unsets_json_path_and_restores_default() {
+        let _tmp = setup_isolated_data_dir();
+        let _provider = TestEnvGuard::unset("LLM_ASSISTIVE_PROVIDER");
+        let config = Config::default();
+
+        config
+            .save_to_env("LLM_ASSISTIVE_PROVIDER", "anthropic-messages")
+            .expect("set assistive provider override");
+        assert_eq!(
+            UserSettings::load().llm_assistive_provider.as_deref(),
+            Some("anthropic-messages")
+        );
+
+        config
+            .save_to_env("LLM_ASSISTIVE_PROVIDER", "")
+            .expect("reset assistive provider override");
+
+        let reset_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after reset"),
+        )
+        .expect("parse settings after reset");
+        assert!(
+            reset_json
+                .pointer("/speech/assistive/llm_provider")
+                .is_none(),
+            "reset must remove the provider override path, got {reset_json}"
+        );
+        assert_eq!(UserSettings::load().llm_assistive_provider, None);
+        assert_eq!(
+            crate::llm::lane_truth::provider(crate::llm::provider::LlmMode::Assistive),
+            crate::llm::provider::ProviderKind::OpenAiResponses
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn llm_key_single_and_batch_writes_produce_identical_settings_snapshots() {
+        for (key, value, _) in llm_write_key_cases() {
+            for input in [*value, "", "   \t  "] {
+                let single = save_snapshot(key, input, false);
+                let batch = save_snapshot(key, input, true);
+                assert_eq!(single, batch, "snapshot mismatch for {key}={input:?}");
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn save_to_env_many_blank_llm_overrides_remove_json_paths_and_restore_fallbacks() {
+        let _tmp = setup_isolated_data_dir();
+        let _endpoint = TestEnvGuard::unset("LLM_ENDPOINT");
+        let _model = TestEnvGuard::unset("LLM_MODEL");
+        let _formatting_endpoint = TestEnvGuard::unset("LLM_FORMATTING_ENDPOINT");
+        let _formatting_model = TestEnvGuard::unset("LLM_FORMATTING_MODEL");
+        let _assistive_endpoint = TestEnvGuard::unset("LLM_ASSISTIVE_ENDPOINT");
+        let _assistive_model = TestEnvGuard::unset("LLM_ASSISTIVE_MODEL");
+        let _assistive_provider = TestEnvGuard::unset("LLM_ASSISTIVE_PROVIDER");
+        let config = Config::default();
+
+        let set_entries: Vec<(&str, &str)> = llm_write_key_cases()
+            .iter()
+            .filter_map(|(key, value, pointer)| pointer.map(|_| (*key, *value)))
+            .collect();
+        config
+            .save_to_env_many(&set_entries)
+            .expect("set optional LLM overrides");
+
+        let reset_entries: Vec<(&str, &str)> = set_entries
+            .iter()
+            .enumerate()
+            .map(|(index, (key, _))| (*key, if index % 2 == 0 { "" } else { "  \n\t " }))
+            .collect();
+        config
+            .save_to_env_many(&reset_entries)
+            .expect("reset optional LLM overrides");
+
+        let reset_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings after reset"),
+        )
+        .expect("parse settings after reset");
+        let settings = UserSettings::load();
+        for (key, _, pointer) in llm_write_key_cases() {
+            if let Some(pointer) = pointer {
+                assert!(
+                    reset_json.pointer(pointer).is_none(),
+                    "batch reset must remove {key} at {pointer}, got {reset_json}"
+                );
+                assert_optional_override_absent(&settings, key);
+            }
+        }
+        assert_eq!(
+            crate::llm::lane_truth::endpoint(
+                crate::llm::provider::LlmMode::Assistive,
+                &Config::default(),
+            ),
+            crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn save_to_env_many_persists_batch_without_process_env_mutation() {
+        let _tmp = setup_isolated_data_dir();
+        let _model = TestEnvGuard::unset("LLM_MODEL");
+        let _workspace_roots = TestEnvGuard::unset("AGENT_WORKSPACE_ROOTS");
+
+        Config::default()
+            .save_to_env_many(&[
+                ("LLM_MODEL", "batch-model"),
+                ("AGENT_WORKSPACE_ROOTS", "/tmp/a:/tmp/b"),
+            ])
+            .expect("save settings batch");
+
+        assert!(std::env::var("LLM_MODEL").is_err());
+        assert!(std::env::var("AGENT_WORKSPACE_ROOTS").is_err());
+        assert_eq!(
+            UserSettings::load().llm_model.as_deref(),
+            Some("batch-model")
+        );
+        let env_vars = Config::parse_env_file(&Config::env_path()).expect("parse .env");
+        assert_eq!(
+            env_vars.get("AGENT_WORKSPACE_ROOTS").map(String::as_str),
+            Some("/tmp/a:/tmp/b")
+        );
     }
 
     #[test]
@@ -1203,6 +1748,52 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_stt_initial_prompt_defaults_off_and_requires_opt_in() {
+        let _tmp = setup_isolated_data_dir();
+        let _prompt_env = TestEnvGuard::unset("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
+
+        let default_config = Config::load();
+        assert!(
+            !default_config.stt_initial_prompt_enabled,
+            "fresh config must not enable Whisper initial_prompt"
+        );
+
+        let mut settings = UserSettings::load();
+        settings.stt_initial_prompt_enabled = Some(true);
+        settings.save().expect("save settings");
+
+        let config = Config::load();
+        assert!(
+            config.stt_initial_prompt_enabled,
+            "settings.json seed should be able to opt into Whisper initial_prompt"
+        );
+        assert_eq!(
+            std::env::var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").as_deref(),
+            Ok("1"),
+            "settings seed should publish the env-managed STT prompt knob"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_runtime_env_can_force_stt_initial_prompt_off_over_settings() {
+        let _tmp = setup_isolated_data_dir();
+        let _prompt_env = TestEnvGuard::unset("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
+
+        let mut settings = UserSettings::load();
+        settings.stt_initial_prompt_enabled = Some(true);
+        settings.save().expect("save settings");
+
+        set_env_for_test("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "0");
+        let config = Config::load();
+        assert!(
+            !config.stt_initial_prompt_enabled,
+            "explicit env must be able to keep Whisper initial_prompt disabled"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_load_respects_transcription_overlay_enabled_from_settings_json() {
         let _tmp = setup_isolated_data_dir();
         let _overlay_env = TestEnvGuard::unset("TRANSCRIPTION_OVERLAY_ENABLED");
@@ -1215,6 +1806,29 @@ mod tests {
         assert!(
             !config.transcription_overlay_enabled,
             "settings.json should be able to disable transcription overlay"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_respects_tray_start_assistive_from_settings_json() {
+        let _tmp = setup_isolated_data_dir();
+        let _tray_start_env = TestEnvGuard::unset("TRAY_START_ASSISTIVE");
+
+        let default_config = Config::load();
+        assert!(
+            !default_config.tray_start_assistive,
+            "UI-initiated recording should default to dictation"
+        );
+
+        let mut settings = UserSettings::load();
+        settings.tray_start_assistive = Some(true);
+        settings.save().expect("save settings");
+
+        let config = Config::load();
+        assert!(
+            config.tray_start_assistive,
+            "settings.json should be able to switch UI-initiated recording to assistive"
         );
     }
 

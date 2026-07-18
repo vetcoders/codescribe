@@ -12,6 +12,15 @@ use tracing::{debug, warn};
 
 use crate::os::clipboard::{self, ClipboardSnapshot};
 
+// Accessibility (AX) FFI surface for reading the focused element's selection.
+// Migrated out of `app/ui/mod.rs` so selection capture no longer depends on `ui`.
+#[cfg(target_os = "macos")]
+use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
+use core_foundation::string::CFString;
+#[cfg(target_os = "macos")]
+use std::ptr;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AssistiveContext {
     pub frontmost_app: Option<String>,
@@ -101,7 +110,7 @@ pub fn capture_assistive_context() -> AssistiveContext {
 }
 
 /// Capture assistive context while preferring the app that was frontmost before
-/// CodeScribe UI could activate.
+/// Codescribe UI could activate.
 pub fn capture_assistive_context_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
 ) -> AssistiveContext {
@@ -145,7 +154,7 @@ pub fn capture_frontmost_app_only() -> AssistiveContext {
     capture_frontmost_app_only_with_prior_frontmost(None)
 }
 
-/// Capture only the frontmost app name, using a pre-overlay app if CodeScribe is
+/// Capture only the frontmost app name, using a pre-overlay app if Codescribe is
 /// currently frontmost.
 pub fn capture_frontmost_app_only_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
@@ -175,7 +184,7 @@ pub fn capture_frontmost_app_only_with_prior_frontmost(
 
 /// Best-effort app activation by localized app name.
 ///
-/// Used to recover focus before synthetic paste when frontmost temporarily flips to CodeScribe.
+/// Used to recover focus before synthetic paste when frontmost temporarily flips to Codescribe.
 #[cfg(target_os = "macos")]
 pub fn activate_app_by_name(app_name: &str) -> bool {
     use std::process::Command;
@@ -274,15 +283,10 @@ fn nsworkspace_frontmost_app_name() -> Option<String> {
 /// confirm and fall through after the budget so the caller may still attempt the
 /// copy (best-effort, never break recording).
 ///
-/// This is the shared focus-confirm primitive. It already backs the Cmd+C
+/// This is the shared focus-confirm primitive backing the Cmd+C
 /// selection-capture path (`capture_selected_text_with_effective_frontmost`).
-/// The Cmd+V *paste* path has the same activation→focus race but lives in
-/// `app/controller/mod.rs` (`paste_overlay_text_with_target`) and still uses a
-/// fixed `sleep(80ms)` after `activate_target_app`. It is exposed `pub(crate)`
-/// so that paste path can reuse this confirm instead of the fixed sleep; that
-/// rewire is deferred to a controller-owned follow-up (single-file ownership:
-/// the sleep is not in this module). See the scope note on
-/// `crate::os::clipboard::paste` / `paste_text_smart`.
+/// Exposed `pub(crate)` so any other activation→focus path can reuse this
+/// confirm instead of a fixed sleep.
 #[cfg(target_os = "macos")]
 pub(crate) fn wait_for_frontmost_app(expected_app: &str, budget: Duration) -> bool {
     let expected = expected_app.trim();
@@ -359,9 +363,9 @@ fn capture_assistive_context_from_parts(
     let (frontmost_app, should_restore_prior_app) =
         resolve_effective_frontmost_app(current_frontmost_app, prior_frontmost_app);
 
-    // Avoid capturing from ourselves (frontmost can temporarily become CodeScribe)
+    // Avoid capturing from ourselves (frontmost can temporarily become Codescribe)
     if frontmost_app.as_deref().is_some_and(is_codescribe_app) {
-        debug!("Assistive context: frontmost is CodeScribe, skipping selection capture");
+        debug!("Assistive context: frontmost is Codescribe, skipping selection capture");
         return AssistiveContext {
             frontmost_app,
             selected_text: None,
@@ -503,8 +507,7 @@ fn selected_text_from_frontmost(
     //
     // Some apps report `AXSelectedTextRange.length == 0` even when `AXSelectedText` is non-empty,
     // so we do *not* early-return on length==0 before checking `AXSelectedText`.
-    let sel_len = crate::ui::get_selected_text_length();
-    if let Some(selected) = crate::ui::get_selected_text(max_chars) {
+    if let Some(selected) = crate::os::selection::get_selected_text(max_chars) {
         return Some(selected);
     }
 
@@ -521,6 +524,10 @@ fn selected_text_from_frontmost(
         );
         return None;
     }
+    // Only now (fallback path) pay for the system-wide AX length probe — it feeds
+    // this diagnostic only, and the AX-selection early-return above skips it
+    // entirely on the common success path.
+    let sel_len = crate::os::selection::get_selected_text_length();
     debug!(
         "Assistive context: AX gave no selection for {:?} (range len={:?}); trying Cmd+C fallback",
         frontmost_app, sel_len
@@ -598,6 +605,170 @@ fn selected_text_from_frontmost(
     Some(copied)
 }
 
+// ---------------------------------------------------------------------------
+// Accessibility (AX) selection queries
+//
+// Migrated verbatim from `app/ui/mod.rs` (the originals remain there until the
+// later `app/ui` delete step). These are pure Accessibility AX queries with no
+// UI windows. Duplicate `extern "C"` declarations and constants against a system
+// framework are legal, so this compiles alongside the originals.
+// ---------------------------------------------------------------------------
+
+// Accessibility API bindings (use raw pointers compatible with C FFI)
+#[cfg(target_os = "macos")]
+type AXId = *mut std::ffi::c_void;
+
+#[cfg(target_os = "macos")]
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXUIElementCopyAttributeValue(element: AXId, attribute: AXId, value: *mut AXId) -> i32;
+    fn AXUIElementCreateSystemWide() -> AXId;
+    fn AXValueGetValue(value: AXId, type_: i32, value_ptr: *mut std::ffi::c_void) -> bool;
+    fn CFRelease(cf: *const std::ffi::c_void);
+}
+
+// AX constants
+#[cfg(target_os = "macos")]
+const AX_ERROR_SUCCESS: i32 = 0;
+#[cfg(target_os = "macos")]
+const AX_FOCUSED_UIELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
+#[cfg(target_os = "macos")]
+const AX_SELECTED_TEXT_ATTRIBUTE: &str = "AXSelectedText";
+#[cfg(target_os = "macos")]
+const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
+
+// AXValue types
+#[cfg(target_os = "macos")]
+const AX_VALUE_CFRANGE_TYPE: i32 = 3;
+
+/// Get the currently selected text from the focused UI element via Accessibility.
+///
+/// Notes:
+/// - Requires Accessibility permission.
+/// - Many apps expose selected text via `AXSelectedText`, but not all.
+/// - Returns `None` if there's no selection or the attribute isn't supported.
+#[cfg(target_os = "macos")]
+pub fn get_selected_text(max_chars: usize) -> Option<String> {
+    unsafe {
+        let system_wide = AXUIElementCreateSystemWide();
+        if system_wide.is_null() {
+            return None;
+        }
+
+        let mut focused_element: AXId = ptr::null_mut();
+        let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
+        let result = AXUIElementCopyAttributeValue(
+            system_wide,
+            attr_name.as_concrete_TypeRef() as AXId,
+            &mut focused_element,
+        );
+
+        CFRelease(system_wide);
+
+        if result != AX_ERROR_SUCCESS || focused_element.is_null() {
+            return None;
+        }
+
+        let mut selected_value: AXId = ptr::null_mut();
+        let selected_attr = CFString::new(AX_SELECTED_TEXT_ATTRIBUTE);
+        let selected_result = AXUIElementCopyAttributeValue(
+            focused_element,
+            selected_attr.as_concrete_TypeRef() as AXId,
+            &mut selected_value,
+        );
+
+        CFRelease(focused_element);
+
+        if selected_result != AX_ERROR_SUCCESS || selected_value.is_null() {
+            return None;
+        }
+
+        let selected_str = CFString::wrap_under_get_rule(selected_value as *const _).to_string();
+        CFRelease(selected_value);
+
+        let mut s = selected_str.trim().to_string();
+        if s.is_empty() {
+            return None;
+        }
+
+        let char_count = s.chars().count();
+        if max_chars > 0 && char_count > max_chars {
+            s = s.chars().take(max_chars).collect();
+            s.push('…');
+        }
+
+        Some(s)
+    }
+}
+
+/// Get the current selected text length (range length) from the focused UI element.
+///
+/// Returns:
+/// - `Some(0)` if the element supports `AXSelectedTextRange` but there's no selection
+/// - `Some(n>0)` if there's a selection
+/// - `None` if the attribute isn't available or any step fails
+#[cfg(target_os = "macos")]
+pub fn get_selected_text_length() -> Option<usize> {
+    unsafe {
+        let system_wide = AXUIElementCreateSystemWide();
+        if system_wide.is_null() {
+            return None;
+        }
+
+        let mut focused_element: AXId = ptr::null_mut();
+        let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
+        let result = AXUIElementCopyAttributeValue(
+            system_wide,
+            attr_name.as_concrete_TypeRef() as AXId,
+            &mut focused_element,
+        );
+
+        CFRelease(system_wide);
+
+        if result != AX_ERROR_SUCCESS || focused_element.is_null() {
+            return None;
+        }
+
+        let mut range_value: AXId = ptr::null_mut();
+        let range_attr = CFString::new(AX_SELECTED_TEXT_RANGE_ATTRIBUTE);
+        let range_result = AXUIElementCopyAttributeValue(
+            focused_element,
+            range_attr.as_concrete_TypeRef() as AXId,
+            &mut range_value,
+        );
+
+        CFRelease(focused_element);
+
+        if range_result != AX_ERROR_SUCCESS || range_value.is_null() {
+            return None;
+        }
+
+        #[repr(C)]
+        struct CFRange {
+            location: i64,
+            length: i64,
+        }
+
+        let mut cf_range = CFRange {
+            location: 0,
+            length: 0,
+        };
+
+        let ok = AXValueGetValue(
+            range_value,
+            AX_VALUE_CFRANGE_TYPE,
+            &mut cf_range as *mut _ as *mut std::ffi::c_void,
+        );
+        CFRelease(range_value);
+
+        if !ok {
+            return None;
+        }
+
+        Some(cf_range.length.max(0) as usize)
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn selected_text_from_frontmost(
     _max_chars: usize,
@@ -615,7 +786,7 @@ mod tests {
     #[test]
     fn effective_frontmost_prefers_prior_when_codescribe_is_current() {
         let (app, should_restore) = resolve_effective_frontmost_app(
-            Some("CodeScribe".to_string()),
+            Some("Codescribe".to_string()),
             Some("Terminal".to_string()),
         );
 
@@ -626,7 +797,7 @@ mod tests {
     #[test]
     fn assistive_capture_uses_prior_frontmost_after_overlay_activation() {
         let ctx = capture_assistive_context_from_parts(
-            Some("CodeScribe".to_string()),
+            Some("Codescribe".to_string()),
             Some("Terminal".to_string()),
             |frontmost_app, should_restore_prior_app| {
                 assert_eq!(frontmost_app, Some("Terminal"));
@@ -682,9 +853,9 @@ mod tests {
     #[test]
     fn effective_frontmost_preserves_codescribe_guard_without_prior_app() {
         let (app, should_restore) =
-            resolve_effective_frontmost_app(Some("CodeScribe".to_string()), None);
+            resolve_effective_frontmost_app(Some("Codescribe".to_string()), None);
 
-        assert_eq!(app.as_deref(), Some("CodeScribe"));
+        assert_eq!(app.as_deref(), Some("Codescribe"));
         assert!(!should_restore);
     }
 
@@ -711,7 +882,7 @@ mod tests {
         clear_recent_assistive_context_for_tests();
 
         let ctx = AssistiveContext {
-            frontmost_app: Some("CodeScribe".to_string()),
+            frontmost_app: Some("Codescribe".to_string()),
             selected_text: Some("old".to_string()),
         };
         store_recent_assistive_context(&ctx);

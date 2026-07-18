@@ -22,7 +22,7 @@ See the ADR for the full contract.
 
 ## TL;DR
 
-CodeScribe’s Whisper layer power-ups:
+Codescribe’s Whisper layer power-ups:
 
 1. **Embedded-first Whisper model** (`whisper-large-v3-turbo-mlx-q8` by default)
    - build policy embeds Whisper whenever the model is available at build time
@@ -89,13 +89,13 @@ Practical win:
 
 ## Layer mapping for this file
 
-| Section below | Layer it lights up |
-| --- | --- |
-| Embedded Whisper (build + runtime lookup) | Layer 1 (Tail Patch) backend resolution |
-| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail |
-| Stream postprocess, semantic gate | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision |
-| Cloud STT alternatives | Pluggable Layer 1 backend |
-| (NEW, Phase 2) Lexicon + small LLM passes | Layer 2 (Polish) — see ADR §Layer specifications |
+| Section below                                   | Layer it lights up                                         |
+| ----------------------------------------------- | ---------------------------------------------------------- |
+| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                    |
+| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                  |
+| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision |
+| Cloud STT alternatives                          | Pluggable Layer 1 backend                                  |
+| (NEW, Phase 2) Lexicon + small LLM passes       | Layer 2 (Polish) — see ADR §Layer specifications           |
 
 Everything below this point is the same Whisper-Live tech that existed before the ADR — it is
 **not removed**, just relocated in the architecture: Whisper became the silent partner that makes
@@ -150,7 +150,7 @@ make install          # ensures runtime model/cache availability and installs th
 ### Bundle / DMG
 
 ```bash
-make bundle
+make app PROFILE=release
 make dmg-signed
 ```
 
@@ -191,5 +191,4 @@ get hallucinations and low confidence (classic “gibberish” pattern).
 
 ---
 
-**Made with (งಠ_ಠ)ง by the ⌜ CodeScribe ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026
-Maciej & Monika + Klaudiusz (AI) + Junie (AI)**
+**Made with (งಠ_ಠ)ง by the ⌜ Codescribe ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026**

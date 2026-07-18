@@ -16,6 +16,8 @@ use crate::ai_formatting;
 use crate::audio::load_audio_file;
 use crate::client;
 use crate::config::Config;
+use crate::llm::lane_truth;
+use crate::llm::provider::{LlmMode, ProviderKind};
 use crate::pipeline::contracts::RawTranscript;
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
@@ -66,14 +68,12 @@ impl MetricsReference {
 #[serde(rename_all = "snake_case")]
 pub enum LocalTranscriptionMode {
     LocalWhisper,
-    CodeScribeIpc,
 }
 
 impl LocalTranscriptionMode {
     fn as_str(self) -> &'static str {
         match self {
             Self::LocalWhisper => "local_whisper",
-            Self::CodeScribeIpc => "codescribe_ipc",
         }
     }
 }
@@ -274,7 +274,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
         crate::stt::init_active_engine()
             .context("Failed to init active STT engine via core::stt")?;
     } else {
-        info!("Local Whisper init skipped: quality report uses CodeScribe IPC transcription");
+        info!("Local Whisper init skipped: quality report uses Codescribe IPC transcription");
     }
 
     // Resume: skip pairs that already have artifacts.
@@ -473,7 +473,7 @@ async fn process_pair(
     let (_speech_only, vad_stats) = crate::vad::extract_speech(&samples, sample_rate);
 
     let raw_transcript =
-        transcribe_raw_for_report(&audio_canon, &samples, sample_rate, config, &mut errors).await;
+        transcribe_raw_for_report(&samples, sample_rate, config, &mut errors).await;
     let raw_semantics = classify_raw_semantics(
         raw_transcript.as_ref(),
         vad_stats.no_speech_reason.as_deref(),
@@ -524,6 +524,20 @@ async fn process_pair(
     } else {
         None
     };
+
+    // Protected-vocabulary audit: flag operator/tool/agent names that survived
+    // the post-lexicon transcript but were dropped or mutated by the AI pass.
+    // This makes technical-name corruption visible to the operator instead of
+    // silently shipping "plausible prose" that lost the intended terms.
+    if let (Some(post_text), Some(ai_text)) = (post.as_deref(), ai_formatted.as_deref()) {
+        let lost = crate::stream_postprocess::protected_terms_lost(post_text, ai_text);
+        if !lost.is_empty() {
+            errors.push(format!(
+                "Protected terms lost in AI formatting: {}",
+                lost.join(", ")
+            ));
+        }
+    }
 
     let cloud = cloud_jobs.take_for(&id, &mut errors).await;
 
@@ -719,7 +733,7 @@ fn write_report_files(
 
 fn render_markdown(report: &QualityReport) -> String {
     let mut out = String::new();
-    out.push_str("# CodeScribe Quality Report\n\n");
+    out.push_str("# Codescribe Quality Report\n\n");
     out.push_str(&format!("Generated: {}\n\n", report.generated_at));
     out.push_str(&format!(
         "Metrics reference: {}\n\n",
@@ -778,7 +792,7 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
     let mut body = String::new();
 
     body.push_str(&format!(
-        "<h1>CodeScribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
+        "<h1>Codescribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
         html_escape(&report.generated_at),
         html_escape(&report.environment.metrics_reference),
         report.summary.raw_text_committed,
@@ -938,7 +952,7 @@ fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>CodeScribe Quality Report</title>
+<title>Codescribe Quality Report</title>
 <style>
 body {{ font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 24px; color: #111; }}
 h1 {{ margin-bottom: 8px; }}
@@ -1390,7 +1404,6 @@ fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<S
 }
 
 async fn transcribe_raw_for_report(
-    audio_path: &Path,
     samples: &[f32],
     sample_rate: u32,
     config: &QualityReportConfig,
@@ -1411,35 +1424,6 @@ async fn transcribe_raw_for_report(
                 }
             }
         }
-        LocalTranscriptionMode::CodeScribeIpc => {
-            match crate::ipc::transcribe_file(audio_path).await {
-                Ok(text) => {
-                    let text = text.trim().to_string();
-                    if text.is_empty() {
-                        errors.push(
-                            "Raw transcription skipped: CodeScribe IPC returned empty transcript"
-                                .into(),
-                        );
-                        None
-                    } else {
-                        Some(RawTranscript {
-                            text,
-                            segments: Vec::new(),
-                            avg_logprob: None,
-                            compression_ratio: None,
-                            quality_gate_dropped: false,
-                        })
-                    }
-                }
-                Err(e) => {
-                    errors.push(format!(
-                        "Raw transcription skipped: CodeScribe IPC unavailable/degraded: {}",
-                        e
-                    ));
-                    None
-                }
-            }
-        }
     }
 }
 
@@ -1448,6 +1432,14 @@ fn snapshot_environment(
     local_transcription: LocalTranscriptionMode,
 ) -> ReportEnvironment {
     let config = Config::load();
+    let (formatting_provider, formatting_model) = lane_truth::formatting_identity(&config);
+    let formatting_endpoint = lane_truth::endpoint(LlmMode::Formatting, &config);
+    let formatting_endpoint = match formatting_provider {
+        ProviderKind::OpenAiResponses => formatting_endpoint,
+        ProviderKind::AnthropicMessages => {
+            lane_truth::normalize_anthropic_messages_endpoint(&formatting_endpoint)
+        }
+    };
     ReportEnvironment {
         stt_endpoint: config.stt_endpoint.clone(),
         stt_api_key_present: config
@@ -1455,11 +1447,9 @@ fn snapshot_environment(
             .as_ref()
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false),
-        llm_formatting_endpoint: std::env::var("LLM_FORMATTING_ENDPOINT").ok(),
-        llm_formatting_model: std::env::var("LLM_FORMATTING_MODEL").ok(),
-        llm_formatting_key_present: std::env::var("LLM_FORMATTING_API_KEY")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false),
+        llm_formatting_endpoint: Some(formatting_endpoint),
+        llm_formatting_model: Some(formatting_model),
+        llm_formatting_key_present: lane_truth::secret("LLM_FORMATTING_API_KEY").is_some(),
         local_model: Some(config.local_model),
         whisper_language: Some(config.whisper_language.as_str().to_string()),
         metrics_reference: metrics_reference.as_str().to_string(),
@@ -1852,41 +1842,6 @@ mod tests {
 
         config.stt_api_key = Some("   ".into());
         assert_eq!(cloud_reference_credentials(&config), None);
-    }
-
-    #[tokio::test]
-    async fn codescribe_ipc_transcription_failure_is_degraded_not_local_fallback() {
-        let temp = tempfile::tempdir().expect("create temp dir for ipc fallback test");
-        let config = QualityReportConfig {
-            input_dir: temp.path().join("input"),
-            output_dir: temp.path().join("output"),
-            date_filter: None,
-            limit: 0,
-            language: Some("pl".to_string()),
-            skip_cloud: true,
-            cloud_concurrency: 1,
-            skip_formatting: true,
-            debug_mode: false,
-            copy_audio: false,
-            metrics_reference: MetricsReference::Corpus,
-            local_transcription: LocalTranscriptionMode::CodeScribeIpc,
-        };
-        let mut errors = Vec::new();
-        let missing_audio = temp.path().join("missing.wav");
-
-        let transcript =
-            transcribe_raw_for_report(&missing_audio, &[], 16_000, &config, &mut errors).await;
-
-        assert!(
-            transcript.is_none(),
-            "IPC failure must not fall back to in-daemon local Whisper"
-        );
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.starts_with("Raw transcription skipped: CodeScribe IPC")),
-            "expected degraded IPC error, got: {errors:?}"
-        );
     }
 
     #[test]

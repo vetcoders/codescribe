@@ -69,8 +69,25 @@ impl SessionTranscriptState {
         }
     }
 
-    fn apply_correction(&mut self, text: &str) {
-        self.apply_preview(text);
+    fn apply_correction(&mut self, previous_text: &str, text: &str) {
+        let previous = normalize_transcript_fragment(previous_text);
+        let corrected = normalize_transcript_fragment(text);
+
+        // Over-correct for P3-03 (late correction to penultimate/older utterance):
+        // search committed from the tail for a match and patch it. This prevents
+        // append-dupe when a correction for non-tail arrives after its finalize.
+        // Only falls back to preview-append if no match found (new content).
+        if self.active_preview.is_empty() {
+            // Fast path + P3-03: search from tail (last first). Collapsed if for clippy.
+            for rec in self.committed.iter_mut().rev() {
+                if normalize_transcript_fragment(&rec.text) == previous {
+                    rec.text = corrected;
+                    return;
+                }
+            }
+        }
+
+        self.apply_preview(&corrected);
     }
 
     #[cfg(test)]
@@ -131,6 +148,39 @@ impl SessionTranscriptState {
         }
         append_rendered_fragment(&mut rendered, &self.active_preview);
         rendered
+    }
+
+    /// Apply an ADR bounded patch (`ReplaceRange` / `InsertAnnotation`) to the
+    /// committed utterance it targets, so the authoritative transcript
+    /// (`transcript_buffer` → paste/history) reflects the same correction the
+    /// overlay receives. Offsets are char offsets within `utterance_id` (see
+    /// `EngineEvent::apply_to_committed_text`). Returns whether the buffer
+    /// changed — `false` when the utterance is not (yet) committed or the offsets
+    /// fall outside it (the patch is dropped rather than corrupting the buffer).
+    fn apply_layered_patch(&mut self, event: &EngineEvent) -> bool {
+        let utterance_id = match event {
+            EngineEvent::ReplaceRange { utterance_id, .. }
+            | EngineEvent::InsertAnnotation { utterance_id, .. } => *utterance_id,
+            _ => return false,
+        };
+        let Some(record) = self
+            .committed
+            .iter_mut()
+            .find(|record| record.utterance_id == utterance_id)
+        else {
+            return false;
+        };
+        match event.apply_to_committed_text(&mut record.text) {
+            Ok(applied) => applied,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    utterance_id,
+                    "layered transcript patch offsets out of range; dropped"
+                );
+                false
+            }
+        }
     }
 
     #[cfg(test)]
@@ -332,10 +382,14 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
-            EngineEvent::Correction { text, .. } => {
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.apply_correction(text);
+                    state.apply_correction(previous_text, text);
                     match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
@@ -466,6 +520,27 @@ impl EventSink for PresentationEmitter {
             EngineEvent::Warning { code, message } => {
                 tracing::warn!("Engine warning [{}]: {}", code, message);
             }
+            EngineEvent::ReplaceRange { .. } | EngineEvent::InsertAnnotation { .. } => {
+                // Apply the same bounded correction to the authoritative buffer
+                // (transcript_buffer → paste/history) that the overlay already
+                // received, so phase-1 layered patches don't diverge between the
+                // two sinks. Only re-render when the buffer actually changed.
+                let rendered = {
+                    let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
+                    if state.apply_layered_patch(event) {
+                        Some(match self.delta_render_mode {
+                            DeltaRenderMode::SessionRendered => state.rendered_text(),
+                            DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                };
+                if let Some(rendered) = rendered {
+                    self.send_cmd(EmitterCmd::SetTargetText(rendered));
+                }
+            }
+            EngineEvent::SessionFinalised { .. } => {}
         }
     }
 }
@@ -473,7 +548,9 @@ impl EventSink for PresentationEmitter {
 #[cfg(test)]
 mod tests {
     use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
-    use codescribe_core::pipeline::contracts::{EngineEvent, EventSink, TranscriptSegment};
+    use codescribe_core::pipeline::contracts::{
+        AnnotationKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
+    };
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
 
@@ -496,6 +573,54 @@ mod tests {
     }
 
     #[test]
+    fn replace_range_patches_committed_utterance_in_authoritative_buffer() {
+        // A phase-1 ReplaceRange fixing "wrold"→"world" must land in the
+        // committed (paste/history) buffer, not just the overlay.
+        let mut state = SessionTranscriptState::default();
+        state.finalize(1, "hello wrold", "hello wrold", 0.0, 1.0, Vec::new());
+        let event = EngineEvent::ReplaceRange {
+            utterance_id: 1,
+            start: 6,
+            end: 11,
+            text: "world".to_string(),
+            source: LayerSource::TailPatch,
+        };
+        assert!(state.apply_layered_patch(&event));
+        assert_eq!(state.rendered_text(), "hello world");
+    }
+
+    #[test]
+    fn insert_annotation_lands_in_committed_utterance() {
+        let mut state = SessionTranscriptState::default();
+        state.finalize(2, "yes", "yes", 0.0, 1.0, Vec::new());
+        let event = EngineEvent::InsertAnnotation {
+            utterance_id: 2,
+            position: 3,
+            text: " [pauza]".to_string(),
+            kind: AnnotationKind::HesitationPause,
+        };
+        assert!(state.apply_layered_patch(&event));
+        assert_eq!(state.rendered_text(), "yes [pauza]");
+    }
+
+    #[test]
+    fn patch_for_uncommitted_utterance_is_ignored() {
+        // Offsets reference an utterance the authoritative buffer has not
+        // committed yet — drop the patch instead of corrupting another one.
+        let mut state = SessionTranscriptState::default();
+        state.finalize(1, "hello", "hello", 0.0, 1.0, Vec::new());
+        let event = EngineEvent::ReplaceRange {
+            utterance_id: 99,
+            start: 0,
+            end: 1,
+            text: "X".to_string(),
+            source: LayerSource::Lexicon,
+        };
+        assert!(!state.apply_layered_patch(&event));
+        assert_eq!(state.rendered_text(), "hello");
+    }
+
+    #[test]
     fn session_state_correction_stays_local_to_active_tail() {
         let mut state = SessionTranscriptState::default();
         let _ = state.finalize(
@@ -507,7 +632,7 @@ mod tests {
             Vec::new(),
         );
         state.apply_preview("drugi parcjal");
-        state.apply_correction("drugi partial");
+        state.apply_correction("drugi parcjal", "drugi partial");
 
         assert_eq!(state.rendered_text(), "Pierwszy fragment drugi partial");
     }
@@ -568,6 +693,55 @@ mod tests {
         let mut state = SessionTranscriptState::default();
         state.apply_preview("   ");
         assert!(state.rendered_text().is_empty());
+    }
+
+    #[test]
+    fn correction_after_final_patches_committed_utterance_without_appending() {
+        let mut state = SessionTranscriptState::default();
+        state.apply_preview("raw words");
+        assert_eq!(
+            state.finalize(1, "raw words", "raw words", 0.0, 1.0, Vec::new()),
+            Some("raw words".to_string())
+        );
+
+        state.apply_correction("raw words", "corrected words");
+
+        assert_eq!(state.rendered_text(), "corrected words");
+        assert_eq!(state.committed().len(), 1);
+        assert_eq!(state.committed()[0].text, "corrected words");
+        assert!(state.active_preview.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivery_buffer_receives_one_utterance_when_correction_finishes_after_final() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "raw words".to_string(),
+        });
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "raw words".to_string(),
+            raw_text: "raw words".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::Correction {
+            rev: 2,
+            text: "corrected words".to_string(),
+            previous_text: "raw words".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        assert_eq!(transcript.lock().await.as_str(), "corrected words");
     }
 
     #[tokio::test]
@@ -797,5 +971,63 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(220)).await;
         let snapshot = transcript.lock().await.clone();
         assert_eq!(snapshot, "Ala ma kota");
+    }
+
+    #[tokio::test]
+    async fn correction_targets_penultimate_utterance_patches_instead_of_appending() {
+        // P3-03 over-correct + marbles fortify: late correction whose previous_text
+        // matches a non-tail (penultimate) committed utterance must patch it, not
+        // append via preview fallback. This closes the "korekta do przedostatniej
+        // wypowiedzi appenduje" gap.
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        // Commit two utterances.
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "Ala ma kota.".to_string(),
+            raw_text: "Ala ma kota.".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 2,
+            text: "A kot ma Ale.".to_string(),
+            raw_text: "A kot ma Ale.".to_string(),
+            start_ts: 0.0,
+            end_ts: 2.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+
+        // Late correction targets the *first* (penultimate at arrival) utterance.
+        emitter.on_event(&EngineEvent::Correction {
+            rev: 99,
+            text: "Ala ma psa.".to_string(),
+            previous_text: "Ala ma kota.".to_string(),
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        let snapshot = transcript.lock().await.clone();
+        assert!(
+            snapshot.contains("Ala ma psa."),
+            "penultimate correction must patch in place, got: {snapshot:?}"
+        );
+        assert!(
+            snapshot.contains("A kot ma Ale."),
+            "later utterance must remain untouched, got: {snapshot:?}"
+        );
+        // No duplication of the corrected text.
+        assert_eq!(snapshot.matches("Ala ma").count(), 1);
     }
 }

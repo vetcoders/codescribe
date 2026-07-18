@@ -76,6 +76,7 @@ unsafe fn apply_current_state(source: &str) {
         match level {
             ThermalLevel::Nominal | ThermalLevel::Fair => {
                 tracing::info!(?level, source, "macOS thermal pressure changed");
+                clear_thermal_tray_status_if_current();
             }
             ThermalLevel::Serious => {
                 tracing::warn!(
@@ -83,6 +84,7 @@ unsafe fn apply_current_state(source: &str) {
                     source,
                     "macOS thermal pressure serious; STT refine lane paused"
                 );
+                clear_thermal_tray_status_if_current();
             }
             ThermalLevel::Critical => {
                 tracing::error!(
@@ -90,9 +92,20 @@ unsafe fn apply_current_state(source: &str) {
                     source,
                     "macOS thermal pressure critical; STT commit/refine lanes paused"
                 );
-                let _ = crate::tray::update_tray_status(crate::tray::TrayStatus::Thermal);
+                crate::os::tray_status::update_tray_status(
+                    crate::os::tray_status::TrayStatus::Thermal,
+                );
             }
         }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn clear_thermal_tray_status_if_current() {
+    use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
+
+    if current_tray_status() == TrayStatus::Thermal {
+        update_tray_status(TrayStatus::Idle);
     }
 }
 
@@ -101,7 +114,7 @@ fn thermal_observer_class() -> *const Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
     *CLASS.get_or_init(|| {
         let superclass = Class::get("NSObject").expect("NSObject class missing");
-        let mut decl = ClassDecl::new("CodeScribeThermalObserver", superclass).expect("class decl");
+        let mut decl = ClassDecl::new("CodescribeThermalObserver", superclass).expect("class decl");
         unsafe {
             decl.add_method(
                 sel!(thermalStateDidChange:),
@@ -117,4 +130,42 @@ unsafe fn ns_string(value: &str) -> *mut Object {
     let c_str = CString::new(value).expect("NSString input cannot contain null byte");
     let cls = Class::get("NSString").expect("NSString class missing");
     msg_send![cls, stringWithUTF8String: c_str.as_ptr()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
+
+    #[test]
+    fn install_thermal_probe_publishes_a_level_and_is_idempotent() {
+        // On macOS this genuinely registers the NSProcessInfo thermal observer
+        // and reads the live thermal state into the scheduler-visible atomic
+        // (core/stt/scheduler.rs consumes current_process_thermal_level). A
+        // second call must be a guarded no-op and must not panic. This proves
+        // the probe installs cleanly now that CodescribeHotkeys::start wires it
+        // at runtime bootstrap (previously the fn had zero callers).
+        install_thermal_probe();
+        let first = current_thermal_level();
+        install_thermal_probe();
+        let second = current_thermal_level();
+        assert_eq!(
+            first, second,
+            "thermal level must be stable across idempotent probe installs"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn thermal_recovery_clears_only_thermal_tray_status() {
+        update_tray_status(TrayStatus::Thermal);
+        clear_thermal_tray_status_if_current();
+        assert_eq!(current_tray_status(), TrayStatus::Idle);
+
+        update_tray_status(TrayStatus::Listening);
+        clear_thermal_tray_status_if_current();
+        assert_eq!(current_tray_status(), TrayStatus::Listening);
+
+        update_tray_status(TrayStatus::Idle);
+    }
 }
