@@ -59,6 +59,7 @@ final class AgentChatCancellationTests: XCTestCase {
 
         func isAvailable() -> Bool { true }
         func availabilityDetail() -> String? { nil }
+        func generateThreadTitle(_ text: String) async throws -> String? { nil }
 
         func streamReply(
             _ text: String,

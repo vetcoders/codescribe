@@ -26,6 +26,10 @@ final class RealChatEngine: AgentChatEngine {
             : availability.detail
     }
 
+    func generateThreadTitle(_ text: String) async throws -> String? {
+        try await agent.generateThreadTitle(text: text)
+    }
+
     func streamReply(
         _ text: String,
         threadId: String,

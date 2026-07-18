@@ -31,6 +31,9 @@ protocol AgentChatEngine: AnyObject {
     /// `nil` when a send can proceed. Names the missing lane/endpoint/key so
     /// the chat renders honest guidance instead of a generic "add an API key".
     func availabilityDetail() -> String?
+    /// Generate one isolated title from the raw first textual turn. This is a
+    /// sibling request to the assistive stream and carries no conversation state.
+    func generateThreadTitle(_ text: String) async throws -> String?
     /// Streams a real assistant reply. Callbacks fire on the main actor as tokens
     /// arrive; returns the final assembled text.
     ///
@@ -244,6 +247,10 @@ protocol ChatThreadsProviding: AnyObject {
     /// Rename a persisted thread; the core marks the title user-custom so
     /// auto-titling won't overwrite it. Returns `false` on failure / no such thread.
     func renameThread(backendId: String, title: String) -> Bool
+    /// Persist a generated title without overriding a user-custom title.
+    /// Returns `false` while the first turn has not created the thread on disk,
+    /// when the user already owns the title, or on persistence failure.
+    func setGeneratedTitle(backendId: String, title: String) -> Bool
     /// Export a persisted thread to a Markdown file under
     /// `~/.codescribe/transcriptions/YYYY-MM-DD/`. Returns the absolute path of the
     /// written file, or `nil` on failure. `assistantOnly` keeps only assistant turns.
@@ -391,6 +398,26 @@ final class AgentChatStore: ObservableObject {
 
     private var inFlightSends: [UUID: InFlightSend] = [:]
 
+    /// Bookkeeping for the one title request allowed on a first textual turn.
+    /// MainActor serialization makes the stream/title completion race explicit:
+    /// whichever result lands first updates this state, and the stream-side
+    /// settlement flushes at most one queued write before refreshing the rail.
+    private struct FirstTurnTitleState {
+        let backendThreadID: String
+        let generationID: UUID
+        let originalTitle: String
+        var streamCompleted = false
+        var generationFinished = false
+        var pendingGeneratedTitle: String?
+        var pendingCustomTitle: String?
+    }
+
+    private var firstTurnTitleStates: [UUID: FirstTurnTitleState] = [:]
+    private var titleGenerationTasks: [UUID: Task<Void, Never>] = [:]
+    /// Local authority marker used to reject a late generated result even when
+    /// the first disk persist and a manual rename interleave.
+    private var customTitleThreadIDs: Set<UUID> = []
+
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
          threads: [ChatThread]? = nil,
@@ -503,7 +530,14 @@ final class AgentChatStore: ObservableObject {
         guard !trimmed.isEmpty, trimmed != thread.title,
               let ti = threads.firstIndex(where: { $0.id == thread.id }) else { return }
         if let backendId = thread.backendId {
-            guard threadsProvider?.renameThread(backendId: backendId, title: trimmed) == true else { return }
+            if threadsProvider?.renameThread(backendId: backendId, title: trimmed) != true {
+                guard queueCustomTitle(trimmed, for: thread.id, backendThreadID: backendId) else { return }
+            }
+        }
+        customTitleThreadIDs.insert(thread.id)
+        if var state = firstTurnTitleStates[thread.id] {
+            state.pendingGeneratedTitle = nil
+            firstTurnTitleStates[thread.id] = state
         }
         threads[ti].title = trimmed
     }
@@ -527,9 +561,19 @@ final class AgentChatStore: ObservableObject {
 
     func delete(_ thread: ChatThread) {
         if let backendId = thread.backendId {
-            guard threadsProvider?.deleteThread(backendId: backendId) == true else { return }
+            let deleted = threadsProvider?.deleteThread(backendId: backendId) == true
+            // A freshly minted backend id does not exist on disk until the
+            // first stream returns. In that one known race, local delete still
+            // wins and the existing engine cancellation prevents persistence.
+            guard deleted || firstTurnTitleStates[thread.id] != nil else { return }
+            // The attachment sidecar is written before the first stream starts,
+            // so the missing-file race still has local metadata to remove.
             removePersistedAttachmentMetadata(for: backendId)
         }
+        titleGenerationTasks[thread.id]?.cancel()
+        titleGenerationTasks[thread.id] = nil
+        firstTurnTitleStates[thread.id] = nil
+        customTitleThreadIDs.remove(thread.id)
         // Cancel any in-flight reply for this thread so its post-stream refresh
         // can't re-list (and the caret/finalize can't mutate) a deleted thread.
         // Swift-task cancel first (so the awaiting send sees isCancelled and
@@ -641,8 +685,17 @@ final class AgentChatStore: ObservableObject {
             assistantMessageID: assistantID,
             phase: .thinking
         )
+        if userTurnIndex == 0, !text.isEmpty, engine != nil {
+            prepareFirstTurnTitle(for: threadID, backendThreadID: backendId)
+        }
         let sendTask = Task { @MainActor in
-            defer { releaseComposerTurn(turnID, in: threadID) }
+            var titleStreamSettled = false
+            defer {
+                if !titleStreamSettled {
+                    settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+                }
+                releaseComposerTurn(turnID, in: threadID)
+            }
             guard let engine else {
                 finish(assistantID, in: threadID,
                        text: "Engine not wired yet.")
@@ -651,8 +704,17 @@ final class AgentChatStore: ObservableObject {
             // Graceful unavailable path — the engine reports WHAT is missing
             // (lane, endpoint or key) so the reply is actionable, not generic.
             if let unavailableDetail = engine.availabilityDetail() {
+                finishTitleGenerationWithoutRequest(for: threadID)
                 finish(assistantID, in: threadID, text: unavailableDetail)
                 return
+            }
+            if userTurnIndex == 0, !text.isEmpty {
+                launchFirstTurnTitle(
+                    text,
+                    for: threadID,
+                    backendThreadID: backendId,
+                    engine: engine
+                )
             }
             let start = Date()
             do {
@@ -695,6 +757,8 @@ final class AgentChatStore: ObservableObject {
                                                before: assistantID, in: threadID)
                     }
                 )
+                settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+                titleStreamSettled = true
                 // The thread may have been deleted mid-stream; drop the late
                 // finalize + refresh so a cancelled send can't bring it back.
                 if Task.isCancelled { return }
@@ -716,6 +780,142 @@ final class AgentChatStore: ObservableObject {
             }
         }
         inFlightSends[threadID] = InFlightSend(id: turnID, task: sendTask)
+    }
+
+    /// Launch the title lane as an independent, unstructured MainActor task.
+    /// Awaiting the engine releases the actor, so this request runs concurrently
+    /// with `streamReply` without escaping non-Sendable engine/provider seams.
+    private func launchFirstTurnTitle(
+        _ text: String,
+        for threadID: UUID,
+        backendThreadID: String,
+        engine: AgentChatEngine
+    ) {
+        guard let state = firstTurnTitleStates[threadID],
+              state.backendThreadID == backendThreadID else { return }
+        let generationID = state.generationID
+        let task = Task { @MainActor [weak self] in
+            do {
+                let title = try await engine.generateThreadTitle(text)
+                guard !Task.isCancelled else { return }
+                self?.receiveGeneratedTitle(title, for: threadID, generationID: generationID)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.finishTitleGeneration(for: threadID, generationID: generationID)
+            }
+        }
+        titleGenerationTasks[threadID] = task
+    }
+
+    /// Establish the race authority synchronously inside `send()`. A rail action
+    /// performed immediately after `send()` returns can therefore queue a custom
+    /// write or discard title work even before the unstructured task is scheduled.
+    private func prepareFirstTurnTitle(for threadID: UUID, backendThreadID: String) {
+        guard threadsProvider != nil,
+              !customTitleThreadIDs.contains(threadID),
+              firstTurnTitleStates[threadID] == nil,
+              let originalTitle = threads.first(where: { $0.id == threadID })?.title else { return }
+        firstTurnTitleStates[threadID] = FirstTurnTitleState(
+            backendThreadID: backendThreadID,
+            generationID: UUID(),
+            originalTitle: originalTitle
+        )
+    }
+
+    private func finishTitleGenerationWithoutRequest(for threadID: UUID) {
+        guard var state = firstTurnTitleStates[threadID] else { return }
+        state.generationFinished = true
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    private func receiveGeneratedTitle(_ title: String?, for threadID: UUID, generationID: UUID) {
+        guard var state = firstTurnTitleStates[threadID], state.generationID == generationID else { return }
+        state.generationFinished = true
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty,
+              !customTitleThreadIDs.contains(threadID),
+              state.pendingCustomTitle == nil,
+              let ti = threads.firstIndex(where: { $0.id == threadID }) else {
+            firstTurnTitleStates[threadID] = state
+            cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+            return
+        }
+
+        threads[ti].title = trimmed
+        let persisted = threadsProvider?.setGeneratedTitle(
+            backendId: state.backendThreadID,
+            title: trimmed
+        ) == true
+        if !persisted {
+            if state.streamCompleted {
+                if threads[ti].title == trimmed { threads[ti].title = state.originalTitle }
+            } else {
+                state.pendingGeneratedTitle = trimmed
+            }
+        }
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    private func finishTitleGeneration(for threadID: UUID, generationID: UUID) {
+        guard var state = firstTurnTitleStates[threadID], state.generationID == generationID else { return }
+        state.generationFinished = true
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    /// Mark the Rust stream (and therefore its best-effort first persistence)
+    /// complete, flush a queued custom rename first, otherwise retry one queued
+    /// generated title exactly once. This runs before `refreshThreads`.
+    private func settleFirstTurnTitleAfterStream(for threadID: UUID, backendThreadID: String) {
+        guard var state = firstTurnTitleStates[threadID], state.backendThreadID == backendThreadID else { return }
+        guard !state.streamCompleted else { return }
+        state.streamCompleted = true
+
+        if let customTitle = state.pendingCustomTitle {
+            _ = threadsProvider?.renameThread(backendId: backendThreadID, title: customTitle)
+            state.pendingCustomTitle = nil
+            state.pendingGeneratedTitle = nil
+        } else if let generatedTitle = state.pendingGeneratedTitle {
+            let persisted = threadsProvider?.setGeneratedTitle(
+                backendId: backendThreadID,
+                title: generatedTitle
+            ) == true
+            state.pendingGeneratedTitle = nil
+            if !persisted,
+               !customTitleThreadIDs.contains(threadID),
+               let ti = threads.firstIndex(where: { $0.id == threadID }),
+               threads[ti].title == generatedTitle {
+                threads[ti].title = state.originalTitle
+            }
+        }
+
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    /// Queue a rename only for the active first-turn missing-file window.
+    /// One dictionary slot means repeated UI commits collapse to the latest
+    /// custom title, while generated persistence is discarded immediately.
+    private func queueCustomTitle(_ title: String, for threadID: UUID, backendThreadID: String) -> Bool {
+        guard var state = firstTurnTitleStates[threadID],
+              state.backendThreadID == backendThreadID,
+              !state.streamCompleted else { return false }
+        state.pendingCustomTitle = title
+        state.pendingGeneratedTitle = nil
+        firstTurnTitleStates[threadID] = state
+        return true
+    }
+
+    private func cleanUpFirstTurnTitleStateIfFinished(for threadID: UUID) {
+        guard let state = firstTurnTitleStates[threadID],
+              state.streamCompleted,
+              state.generationFinished,
+              state.pendingGeneratedTitle == nil,
+              state.pendingCustomTitle == nil else { return }
+        firstTurnTitleStates[threadID] = nil
+        titleGenerationTasks[threadID] = nil
     }
 
     /// Stop the selected Agent turn through its owning adapter. Voice is checked
@@ -1341,6 +1541,7 @@ final class AgentChatStore: ObservableObject {
 final class MockChatEngine: AgentChatEngine {
     func isAvailable() -> Bool { true }
     func availabilityDetail() -> String? { nil }
+    func generateThreadTitle(_ text: String) async throws -> String? { nil }
     func streamReply(
         _ text: String,
         threadId: String,

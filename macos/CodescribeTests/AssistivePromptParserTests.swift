@@ -186,6 +186,7 @@ private final class StubThreadsProvider: ChatThreadsProviding {
     func deleteThread(backendId: String) -> Bool { true }
     func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
     func renameThread(backendId: String, title: String) -> Bool { true }
+    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
     func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
     func generateThreadId() -> String { "t_generated" }
 }
