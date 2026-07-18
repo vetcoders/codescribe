@@ -122,13 +122,20 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
 ///
 /// `onTurnStarted` also asks AppDelegate for a passive reveal. AppDelegate owns
 /// focus policy: explicit opens activate, voice delivery never steals focus.
-final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable {
+final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling, @unchecked Sendable {
     private let store: AgentChatStore
     private let revealChat: @MainActor () -> Void
+    private let voiceTurns = CodescribeHotkeys()
 
+    @MainActor
     init(store: AgentChatStore, revealChat: @escaping @MainActor () -> Void) {
         self.store = store
         self.revealChat = revealChat
+        store.voiceTurnCanceller = self
+    }
+
+    func cancelVoiceTurn(threadId: String) -> Bool {
+        voiceTurns.cancelVoiceTurn(threadId: threadId)
     }
 
     func onTurnStarted(threadId: String, userText: String) {
@@ -170,5 +177,10 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable 
     }
     func onError(message: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceError(message) } }
+    }
+    func onCancelled(threadId: String) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.store.ingestVoiceCancelled(threadId: threadId) }
+        }
     }
 }

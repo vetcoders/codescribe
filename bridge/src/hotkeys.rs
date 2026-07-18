@@ -580,6 +580,14 @@ impl CodescribeHotkeys {
     pub fn is_active(&self) -> bool {
         hotkeys::is_global_hotkey_manager_active()
     }
+
+    /// Cancel the controller-owned voice-assistive Agent turn correlated by the
+    /// delivery thread id. This registry is independent of the controller's
+    /// long-held runtime mutex, so the synchronous Swift Stop action cannot block
+    /// behind provider or tool work.
+    pub fn cancel_voice_turn(&self, thread_id: String) -> bool {
+        codescribe::agent_delivery::cancel_agent_delivery_turn(&thread_id)
+    }
 }
 
 async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {

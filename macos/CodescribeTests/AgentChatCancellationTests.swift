@@ -97,6 +97,16 @@ final class AgentChatCancellationTests: XCTestCase {
         }
     }
 
+    private final class VoiceCancelSpy: VoiceTurnCancelling {
+        private(set) var threadIDs: [String] = []
+        var acknowledges = true
+
+        func cancelVoiceTurn(threadId: String) -> Bool {
+            threadIDs.append(threadId)
+            return acknowledges
+        }
+    }
+
     func testThinkingStopCancelsSwiftBeforeExactRustThreadAndIsIdempotent() async throws {
         let started = expectation(description: "first composer stream started")
         let engine = SpyEngine(firstStreamStarted: started)
@@ -184,11 +194,69 @@ final class AgentChatCancellationTests: XCTestCase {
         XCTAssertEqual(ComposerActionAccessibility.identifier, "agent-composer-primary-action")
     }
 
-    private func makeStore(engine: AgentChatEngine, backendID: String) -> AgentChatStore {
+    func testVoiceStopRoutesOnlyToVoiceAdapterPreservesPartialAndRecovers() throws {
+        // Construct directly rather than registering an XCTest expectation: the
+        // stronger routing assertion is that the composer engine records no
+        // events/calls, and registered-but-unwaited expectations fail XCTest.
+        let composerStarted = XCTestExpectation(description: "unused composer start")
+        let engine = SpyEngine(firstStreamStarted: composerStarted)
+        let voice = VoiceCancelSpy()
+        let store = makeStore(
+            engine: engine,
+            backendID: "voice-thread-42",
+            voiceTurnCanceller: voice
+        )
+
+        store.ingestVoiceTurn(threadId: "voice-thread-42", userText: "voice request")
+        store.ingestVoiceDelta("Partial voice answer")
+        store.ingestVoiceToolExecuting(name: "slow-side-effect", id: "voice-call-1")
+
+        XCTAssertEqual(store.selectedComposerTurnPhase, .streaming)
+        store.stopActiveTurn()
+        store.stopActiveTurn()
+
+        XCTAssertEqual(voice.threadIDs, ["voice-thread-42"])
+        XCTAssertTrue(engine.state.events.isEmpty, "voice Stop must not call composer cancellation")
+        XCTAssertEqual(store.voiceTurnPhase, .cancelling)
+
+        // A queued delta after Stop cannot repaint the cancelling bubble.
+        store.ingestVoiceDelta(" late")
+        store.ingestVoiceCancelled(threadId: "voice-thread-42")
+        store.ingestVoiceDone() // a duplicate successful terminal is ignored
+
+        let stopped = try XCTUnwrap(store.currentThread?.messages.last { $0.role == .assistant })
+        XCTAssertEqual(stopped.text, "Partial voice answer")
+        XCTAssertTrue(stopped.wasStopped)
+        XCTAssertFalse(stopped.isThinking)
+        XCTAssertFalse(stopped.isStreaming)
+        let stoppedTool = try XCTUnwrap(store.currentThread?.messages.last { $0.role == .tool })
+        XCTAssertEqual(stoppedTool.toolLines.first?.state, .cancelled)
+        XCTAssertEqual(stoppedTool.toolLines.first?.verb, "stopped")
+        XCTAssertNil(store.voiceTurnPhase)
+
+        store.ingestVoiceTurn(threadId: "voice-thread-42", userText: "try again")
+        store.ingestVoiceDelta("Recovered voice turn")
+        store.ingestVoiceDone()
+
+        let recovered = try XCTUnwrap(store.currentThread?.messages.last { $0.role == .assistant })
+        XCTAssertEqual(recovered.text, "Recovered voice turn")
+        XCTAssertFalse(recovered.wasStopped)
+        XCTAssertNil(store.voiceTurnPhase)
+    }
+
+    private func makeStore(
+        engine: AgentChatEngine,
+        backendID: String,
+        voiceTurnCanceller: VoiceTurnCancelling? = nil
+    ) -> AgentChatStore {
         var thread = ChatThread(title: "Cancellation", meta: "now")
         thread.backendId = backendID
         thread.messagesLoaded = true
-        return AgentChatStore(engine: engine, threads: [thread])
+        return AgentChatStore(
+            engine: engine,
+            threads: [thread],
+            voiceTurnCanceller: voiceTurnCanceller
+        )
     }
 
     private func waitUntil(

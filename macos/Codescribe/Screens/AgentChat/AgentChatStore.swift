@@ -56,6 +56,14 @@ protocol AgentChatEngine: AnyObject {
     func cancelReply(threadId: String) -> Bool
 }
 
+/// Source-specific adapter for hotkey/voice turns owned by the shared controller
+/// runtime. Kept separate from `AgentChatEngine`, whose registry owns composer
+/// sends, so the single Stop action cannot cancel through the wrong backend.
+protocol VoiceTurnCancelling: AnyObject {
+    @discardableResult
+    func cancelVoiceTurn(threadId: String) -> Bool
+}
+
 // MARK: - Models
 
 enum ComposerTurnPhase: Equatable {
@@ -358,8 +366,7 @@ final class AgentChatStore: ObservableObject {
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 
-    /// Exactly one composer send may own the visible Stop action. Voice turns
-    /// remain separately owned until W2-A adds parity through its runtime adapter.
+    /// Exactly one composer send may own the composer-side cancellation path.
     @Published private(set) var activeComposerTurn: ActiveComposerTurn?
 
     /// Active voice-assistive turn being streamed from the core runtime (hotkey /
@@ -370,6 +377,8 @@ final class AgentChatStore: ObservableObject {
     private var voiceTurnThreadID: UUID?
     private var voiceAssistantID: UUID?
     private var voiceTurnStartedAt: Date?
+    @Published private(set) var voiceTurnPhase: ComposerTurnPhase?
+    weak var voiceTurnCanceller: VoiceTurnCancelling?
 
     /// In-flight `send()` streaming tasks keyed by thread. Tracked so deleting a
     /// thread can cancel its running reply — otherwise the task's post-stream
@@ -384,9 +393,11 @@ final class AgentChatStore: ObservableObject {
 
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
-         threads: [ChatThread]? = nil) {
+         threads: [ChatThread]? = nil,
+         voiceTurnCanceller: VoiceTurnCancelling? = nil) {
         self.engine = engine
         self.threadsProvider = threadsProvider
+        self.voiceTurnCanceller = voiceTurnCanceller
 
         let seeded: [ChatThread]
         if let threads {
@@ -421,11 +432,17 @@ final class AgentChatStore: ObservableObject {
         currentThread?.messages.last { $0.role == .assistant }?.isStreaming ?? false
     }
 
-    /// Active composer phase for the selected thread only. A background thread's
-    /// turn never steals this thread's send affordance.
+    /// Active phase for the selected thread only. The composer keeps consuming
+    /// this established projection, while source-specific cancellation stays
+    /// behind the composer engine or voice adapter.
     var selectedComposerTurnPhase: ComposerTurnPhase? {
-        guard let turn = activeComposerTurn, turn.threadID == selectedThreadID else { return nil }
-        return turn.phase
+        if let turn = activeComposerTurn, turn.threadID == selectedThreadID {
+            return turn.phase
+        }
+        if voiceTurnThreadID == selectedThreadID {
+            return voiceTurnPhase
+        }
+        return nil
     }
 
     var isCancelling: Bool { selectedComposerTurnPhase == .cancelling }
@@ -587,13 +604,15 @@ final class AgentChatStore: ObservableObject {
     /// both. Drives the send button's enabled state.
     var canSend: Bool {
         activeComposerTurn == nil
+            && !(voiceTurnThreadID == selectedThreadID && voiceTurnPhase != nil)
             && (!draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty)
     }
 
     // MARK: Send (real single-shot FFI round-trip)
 
     func send() {
-        guard activeComposerTurn == nil else { return }
+        guard activeComposerTurn == nil,
+              !(voiceTurnThreadID == selectedThreadID && voiceTurnPhase != nil) else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = pendingAttachments
         let attachmentPaths = staged.map { $0.url.path }
@@ -699,10 +718,25 @@ final class AgentChatStore: ObservableObject {
         inFlightSends[threadID] = InFlightSend(id: turnID, task: sendTask)
     }
 
-    /// Stop the selected composer turn. Ordering is deliberate: cancel the
-    /// Swift waiter first, then call the explicit Rust registry path using the
-    /// exact backend thread id. A second click sees `.cancelling` and no-ops.
+    /// Stop the selected Agent turn through its owning adapter. Voice is checked
+    /// first because it has no Swift waiter and must never touch the composer
+    /// registry. Composer ordering remains deliberate: waiter first, Rust second.
     func stopActiveTurn() {
+        if let threadID = voiceTurnThreadID,
+           threadID == selectedThreadID,
+           let phase = voiceTurnPhase,
+           phase != .cancelling,
+           let backendId = threads.first(where: { $0.id == threadID })?.backendId {
+            voiceTurnPhase = .cancelling
+            if voiceTurnCanceller?.cancelVoiceTurn(threadId: backendId) != true {
+                // The runtime may have crossed its successful terminal just before
+                // the click. Keep accepting that terminal instead of stranding the
+                // local bubble in a false Cancelling state.
+                voiceTurnPhase = phase
+            }
+            return
+        }
+
         guard var turn = activeComposerTurn,
               turn.threadID == selectedThreadID,
               turn.phase != .cancelling else { return }
@@ -788,12 +822,15 @@ final class AgentChatStore: ObservableObject {
         voiceTurnThreadID = threadID
         voiceAssistantID = assistant.id
         voiceTurnStartedAt = Date()
+        voiceTurnPhase = .thinking
         append(assistant, to: threadID)
     }
 
     /// Append a streamed token to the active voice assistant bubble.
     func ingestVoiceDelta(_ delta: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         update(id, in: threadID) {
             $0.isThinking = false
             $0.isStreaming = true
@@ -806,35 +843,44 @@ final class AgentChatStore: ObservableObject {
 
     /// Append streamed model reasoning to the active voice assistant bubble.
     func ingestVoiceReasoning(_ delta: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         appendReasoning(delta, to: id, in: threadID)
     }
 
     /// Final assembled text for the turn. Only used as a fallback when the reply
     /// arrived without token deltas (otherwise the bubble already holds the text).
     func ingestVoiceTextDone(_ text: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         update(id, in: threadID) { if $0.text.isEmpty { $0.text = text } }
     }
 
     /// Surface a pending tool call for the active voice turn. The bridge's `id`
     /// is kept end-to-end so the matching result can update this row in place.
     func ingestVoiceToolExecuting(name: String, id callID: String) {
-        guard let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         recordToolStarted(name: name, callID: callID, before: assistantID, in: threadID)
     }
 
     /// Surface a completed tool call for the active voice turn (same rendering as
     /// the composer path's tool-activity row).
     func ingestVoiceToolResult(name: String, id callID: String, isError: Bool, reason: String) {
-        guard let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         recordToolResult(name: name, callID: callID, isError: isError, reason: reason, before: assistantID, in: threadID)
     }
 
     /// Finalize the active voice turn and pull disk truth (the core persisted the
     /// thread). No re-persist here — the store only mirrors what the core wrote.
     func ingestVoiceDone() {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
         finishPendingTools(before: id, in: threadID)
         update(id, in: threadID) {
             $0.isThinking = false
@@ -842,9 +888,7 @@ final class AgentChatStore: ObservableObject {
             $0.timestamp = self.now()
         }
         let backendId = threads.first(where: { $0.id == threadID })?.backendId
-        voiceTurnThreadID = nil
-        voiceAssistantID = nil
-        voiceTurnStartedAt = nil
+        clearVoiceTurnState()
         if let backendId { refreshThreads(selectingBackendId: backendId) }
     }
 
@@ -852,7 +896,8 @@ final class AgentChatStore: ObservableObject {
     /// error path may not emit a separate `Done`, so clear the turn state here; a
     /// late `Done` then no-ops against the cleared state.
     func ingestVoiceError(_ message: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
         finishPendingTools(before: id, in: threadID)
         update(id, in: threadID) {
             $0.isThinking = false
@@ -860,9 +905,27 @@ final class AgentChatStore: ObservableObject {
             $0.text += ($0.text.isEmpty ? "" : "\n") + "[error] " + message
             $0.timestamp = self.now()
         }
-        voiceTurnThreadID = nil
-        voiceAssistantID = nil
-        voiceTurnStartedAt = nil
+        clearVoiceTurnState()
+    }
+
+    /// Settle the single keyed cancellation terminal. Partial text remains, an
+    /// empty response becomes a quiet Stopped marker, and running tools become
+    /// stopped without refreshing disk truth (the core intentionally did not
+    /// persist this turn as successful).
+    func ingestVoiceCancelled(threadId backendId: String) {
+        guard voiceTurnPhase == .cancelling,
+              let threadID = voiceTurnThreadID,
+              let id = voiceAssistantID,
+              threads.first(where: { $0.id == threadID })?.backendId == backendId else { return }
+        cancelPendingTools(before: id, in: threadID)
+        update(id, in: threadID) {
+            $0.isThinking = false
+            $0.isStreaming = false
+            $0.wasStopped = true
+            if $0.text.isEmpty { $0.text = "Stopped" }
+            $0.timestamp = self.now()
+        }
+        clearVoiceTurnState()
     }
 
     // MARK: Demo stream (reproduces the mock's mid-stream last turn)
@@ -960,6 +1023,13 @@ final class AgentChatStore: ObservableObject {
             inFlightSends[turn.threadID] = nil
         }
         activeComposerTurn = nil
+    }
+
+    private func clearVoiceTurnState() {
+        voiceTurnThreadID = nil
+        voiceAssistantID = nil
+        voiceTurnStartedAt = nil
+        voiceTurnPhase = nil
     }
 
     // MARK: Mutation helpers

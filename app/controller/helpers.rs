@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
-use crate::agent_delivery::AgentDeliveryEvent;
+use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
@@ -86,6 +86,15 @@ struct AgentRuntime {
     session: AgentSession,
     ui_rx: mpsc::Receiver<AgentUiEvent>,
     thread_store_id: String,
+    /// Cancellation restores local history immediately; the next request must
+    /// also clear any provider-owned response chain before replaying that history.
+    reset_chain_on_next_send: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentSendOutcome {
+    Completed,
+    Cancelled,
 }
 
 #[derive(Default)]
@@ -277,6 +286,7 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
         session,
         ui_rx,
         thread_store_id: ThreadStore::generate_id(),
+        reset_chain_on_next_send: false,
     })
 }
 
@@ -739,7 +749,27 @@ async fn run_agent_send_path(
     runtime_generation: u64,
     text: String,
     stream_options: StreamOptions,
-) -> Result<()> {
+) -> Result<AgentSendOutcome> {
+    run_agent_send_path_with_persist(
+        runtime_state,
+        runtime_generation,
+        text,
+        stream_options,
+        persist_runtime_thread,
+    )
+    .await
+}
+
+async fn run_agent_send_path_with_persist<P>(
+    runtime_state: &mut AgentRuntimeState,
+    runtime_generation: u64,
+    text: String,
+    mut stream_options: StreamOptions,
+    persist_runtime: P,
+) -> Result<AgentSendOutcome>
+where
+    P: FnOnce(&AgentRuntime) -> Result<()>,
+{
     let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime(runtime_generation)
     {
         Ok(state) => state,
@@ -750,12 +780,23 @@ async fn run_agent_send_path(
     };
     let _ = recovered_from_degraded;
 
+    if runtime.reset_chain_on_next_send {
+        stream_options.reset_chain = true;
+        runtime.reset_chain_on_next_send = false;
+    }
+
     let send_result = {
         // Correlation id for the SwiftUI store (disjoint from its per-thread
         // UUID). Captured before the mutable session/ui_rx split so the borrow of
         // `runtime.thread_store_id` does not overlap the mutable field borrows.
         let thread_store_id = runtime.thread_store_id.clone();
-        let (session, ui_rx) = (&mut runtime.session, &mut runtime.ui_rx);
+        let messages_before_turn = runtime.session.messages().to_vec();
+        let mut cancellation = register_agent_delivery_turn(&thread_store_id);
+        let (session, ui_rx, reset_chain_on_next_send) = (
+            &mut runtime.session,
+            &mut runtime.ui_rx,
+            &mut runtime.reset_chain_on_next_send,
+        );
         let (user_text, image_attachments, dropped_images) =
             build_image_attachments_from_text(&text);
         // Open the turn on the SwiftUI chat before streaming: the listener inserts
@@ -763,7 +804,7 @@ async fn run_agent_send_path(
         // deltas below. `user_text` is the attachment-marker-stripped transcript,
         // so the bubble shows the spoken text, not the internal attachment block.
         crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::TurnStarted {
-            thread_id: thread_store_id,
+            thread_id: thread_store_id.clone(),
             user_text: user_text.clone(),
         });
         if !image_attachments.is_empty() {
@@ -779,38 +820,91 @@ async fn run_agent_send_path(
                 dropped_images.join(", ")
             );
         }
-        let send_future = session.send(user_text, image_attachments, &stream_options);
-        tokio::pin!(send_future);
+        enum SendCompletion {
+            Finished(Result<()>),
+            Cancelled,
+        }
 
-        let result = loop {
-            tokio::select! {
-                result = &mut send_future => break result,
-                maybe_event = ui_rx.recv() => {
-                    match maybe_event {
-                        Some(event) => apply_agent_ui_event(event).await,
-                        None => break Err(anyhow::anyhow!("Agent UI event channel closed")),
+        // Scope the pinned send future tightly: cancellation must drop its
+        // mutable session borrow before we can restore the pre-turn snapshot.
+        let completion = {
+            let send_future = session.send(user_text, image_attachments, &stream_options);
+            tokio::pin!(send_future);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => break SendCompletion::Cancelled,
+                    result = &mut send_future => break SendCompletion::Finished(result),
+                    maybe_event = ui_rx.recv() => {
+                        match maybe_event {
+                            Some(event) => {
+                                if matches!(event, AgentUiEvent::Done | AgentUiEvent::Error(_)) {
+                                    let _ = cancellation.finish();
+                                }
+                                apply_agent_ui_event(event).await;
+                            }
+                            None => break SendCompletion::Finished(Err(anyhow::anyhow!("Agent UI event channel closed"))),
+                        }
                     }
                 }
             }
         };
 
-        while let Ok(event) = ui_rx.try_recv() {
-            apply_agent_ui_event(event).await;
+        match completion {
+            SendCompletion::Cancelled => {
+                // Dropping `send_future` at this branch aborts provider polling or
+                // an in-flight tool at its current await. Restore the exact local
+                // history snapshot, reset the provider chain on the next turn,
+                // discard queued late UI events, then emit one keyed terminal.
+                session.restore_messages(messages_before_turn);
+                *reset_chain_on_next_send = true;
+                while ui_rx.try_recv().is_ok() {}
+                let _ = cancellation.finish();
+                crate::agent_delivery::publish_agent_delivery_event(
+                    AgentDeliveryEvent::Cancelled {
+                        thread_id: thread_store_id,
+                    },
+                );
+                return Ok(AgentSendOutcome::Cancelled);
+            }
+            SendCompletion::Finished(result) => {
+                // Close the registry entry under the same mutex used by the
+                // Swift-callable cancel path. If Stop won after `send()` became
+                // ready but before this branch ran, cancellation still owns the
+                // terminal and queued Done/tool events must not leak through.
+                if cancellation.finish() {
+                    session.restore_messages(messages_before_turn);
+                    *reset_chain_on_next_send = true;
+                    while ui_rx.try_recv().is_ok() {}
+                    crate::agent_delivery::publish_agent_delivery_event(
+                        AgentDeliveryEvent::Cancelled {
+                            thread_id: thread_store_id,
+                        },
+                    );
+                    return Ok(AgentSendOutcome::Cancelled);
+                }
+                while let Ok(event) = ui_rx.try_recv() {
+                    if matches!(event, AgentUiEvent::Done | AgentUiEvent::Error(_)) {
+                        let _ = cancellation.finish();
+                    }
+                    apply_agent_ui_event(event).await;
+                }
+                let _ = cancellation.finish();
+                result
+            }
         }
-
-        result
     };
 
     match send_result {
         Ok(()) => {
-            if let Err(error) = persist_runtime_thread(runtime) {
+            if let Err(error) = persist_runtime(runtime) {
                 warn!("Failed to persist agent thread: {}", error);
             }
-            Ok(())
+            Ok(AgentSendOutcome::Completed)
         }
         Err(error) => {
             if !agent_send_error_allows_legacy_fallback(&error) {
-                return Ok(());
+                return Ok(AgentSendOutcome::Completed);
             }
             // P1.7: distinguish a transient provider blip (conversation still
             // valid -> keep messages, reset chain) from a hard failure (drop the
@@ -884,18 +978,24 @@ async fn run_agent_send_with_fallback(
         run_agent_send_path(&mut guard, runtime_generation, text.clone(), stream_options).await
     };
 
-    if let Err(error) = agent_result {
-        warn!("Agent fallback triggered: reason={}", error);
-        warn!(
-            "Agent runtime failed, switching this response to legacy fallback: {}",
-            error
-        );
-        debug!("Legacy fallback input length: {}", text.len());
-        let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
-        if let Some(assistant_text) = fallback_assistant_text
-            && let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text)
-        {
-            warn!("Failed to persist legacy assistive fallback thread: {error}");
+    match agent_result {
+        Ok(AgentSendOutcome::Completed) => {}
+        Ok(AgentSendOutcome::Cancelled) => {
+            info!("Voice-assistive Agent turn cancelled; skipping fallback and persistence");
+        }
+        Err(error) => {
+            warn!("Agent fallback triggered: reason={}", error);
+            warn!(
+                "Agent runtime failed, switching this response to legacy fallback: {}",
+                error
+            );
+            debug!("Legacy fallback input length: {}", text.len());
+            let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
+            if let Some(assistant_text) = fallback_assistant_text
+                && let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text)
+            {
+                warn!("Failed to persist legacy assistive fallback thread: {error}");
+            }
         }
     }
 }
@@ -1050,8 +1150,9 @@ impl EventSink for SessionTelemetrySink {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use codescribe_core::agent::{AgentEvent, AgentProvider, ToolDefinition};
-    use std::sync::atomic::AtomicUsize;
+    use codescribe_core::agent::{AgentEvent, AgentProvider, ToolDefinition, ToolResultContent};
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     // ── Collapsible Tool Evidence: friendly tool-name mapping ───────────────
 
@@ -1247,6 +1348,7 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            reset_chain_on_next_send: false,
         }
     }
 
@@ -1518,6 +1620,7 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            reset_chain_on_next_send: false,
         }
     }
 
@@ -1829,5 +1932,269 @@ mod tests {
             }
         }
         assert_eq!(found.as_deref(), Some(marker));
+    }
+
+    struct ScriptedControllerProvider {
+        scripts: Arc<StdMutex<VecDeque<Vec<AgentEvent>>>>,
+        reset_chain_flags: Arc<StdMutex<Vec<bool>>>,
+    }
+
+    #[async_trait]
+    impl AgentProvider for ScriptedControllerProvider {
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            options: &StreamOptions,
+        ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+            self.reset_chain_flags
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(options.reset_chain);
+            let events = self
+                .scripts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front()
+                .context("scripted controller provider exhausted")?;
+            let (tx, rx) = mpsc::channel(events.len().max(1));
+            tokio::spawn(async move {
+                for event in events {
+                    if tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(rx)
+        }
+
+        fn build_tool_result(
+            &self,
+            call_id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call_id.to_string(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.to_string(),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "scripted-controller-provider"
+        }
+    }
+
+    async fn wait_for_flag(flag: &AtomicBool) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !flag.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test flag should be set before timeout");
+    }
+
+    #[tokio::test]
+    async fn voice_cancel_drops_slow_tool_restores_history_skips_persist_and_recovers() {
+        use crate::agent_delivery::{
+            AgentDeliveryEvent, cancel_agent_delivery_turn, subscribe_agent_delivery,
+        };
+
+        let thread_id = "controller_voice_cancel_recovery";
+        let tool_started = Arc::new(AtomicBool::new(false));
+        let side_effect = Arc::new(AtomicBool::new(false));
+        let reset_chain_flags = Arc::new(StdMutex::new(Vec::new()));
+        let scripts = Arc::new(StdMutex::new(VecDeque::from([
+            vec![
+                AgentEvent::TextDelta("partial".to_string()),
+                AgentEvent::ToolCallReady {
+                    id: "slow-call".to_string(),
+                    name: "slow_side_effect".to_string(),
+                    arguments: json!({}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("cancelled-response".to_string()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("recovered".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("recovered-response".to_string()),
+                    clean: true,
+                },
+            ],
+        ])));
+
+        let mut tools = ToolRegistry::new();
+        let tool_started_for_handler = Arc::clone(&tool_started);
+        let side_effect_for_handler = Arc::clone(&side_effect);
+        tools
+            .register(
+                ToolDefinition {
+                    name: "slow_side_effect".to_string(),
+                    description: "delayed observable side effect".to_string(),
+                    input_schema: json!({"type": "object", "properties": {}}),
+                },
+                Box::new(move |_input| {
+                    let tool_started = Arc::clone(&tool_started_for_handler);
+                    let side_effect = Arc::clone(&side_effect_for_handler);
+                    Box::pin(async move {
+                        tool_started.store(true, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        side_effect.store(true, Ordering::SeqCst);
+                        vec![ToolResultContent::Text("side effect fired".to_string())]
+                    })
+                }),
+            )
+            .expect("slow tool should register");
+
+        let (ui_tx, ui_rx) = mpsc::channel(32);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedControllerProvider {
+                scripts: Arc::clone(&scripts),
+                reset_chain_flags: Arc::clone(&reset_chain_flags),
+            }),
+            Arc::new(tools),
+            ui_tx,
+        );
+        session.restore_messages(vec![Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text("prior successful turn".to_string())],
+        )]);
+        let mut state = AgentRuntimeState {
+            runtime: Some(AgentRuntime {
+                session,
+                ui_rx,
+                thread_store_id: thread_id.to_string(),
+                reset_chain_on_next_send: false,
+            }),
+            runtime_generation: 77,
+            runtime_degraded: false,
+        };
+        let persist_count = Arc::new(AtomicUsize::new(0));
+        let first_persist_count = Arc::clone(&persist_count);
+        let mut delivery = subscribe_agent_delivery();
+
+        let driven = tokio::spawn(async move {
+            let result = run_agent_send_path_with_persist(
+                &mut state,
+                77,
+                "cancel this".to_string(),
+                test_stream_options(),
+                move |_runtime| {
+                    first_persist_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await;
+            (state, result)
+        });
+
+        wait_for_flag(&tool_started).await;
+        assert!(
+            cancel_agent_delivery_turn(thread_id),
+            "registered voice turn should cancel without acquiring runtime state"
+        );
+        let (mut state, result) = driven.await.expect("controller task should not panic");
+        assert_eq!(
+            result.expect("cancel should be a normal outcome"),
+            AgentSendOutcome::Cancelled
+        );
+        assert_eq!(persist_count.load(Ordering::SeqCst), 0);
+
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+        assert!(
+            !side_effect.load(Ordering::SeqCst),
+            "dropping the slow tool future must prevent its later side effect"
+        );
+        let cancelled_runtime = state
+            .runtime
+            .as_ref()
+            .expect("runtime should survive cancel");
+        assert_eq!(cancelled_runtime.session.messages().len(), 1);
+        assert!(cancelled_runtime.reset_chain_on_next_send);
+        assert!(
+            !cancel_agent_delivery_turn(thread_id),
+            "cancelled turn must clean its registry token"
+        );
+
+        let mut cancelled_terminals = 0;
+        let mut successful_or_error_terminals = 0;
+        while let Ok(event) = delivery.try_recv() {
+            if matches!(
+                event,
+                AgentDeliveryEvent::Cancelled { thread_id: ref id } if id == thread_id
+            ) {
+                cancelled_terminals += 1;
+            } else if matches!(
+                event,
+                AgentDeliveryEvent::Done | AgentDeliveryEvent::Error(_)
+            ) {
+                successful_or_error_terminals += 1;
+            }
+        }
+        assert_eq!(
+            cancelled_terminals, 1,
+            "voice cancel emits one keyed terminal"
+        );
+        assert_eq!(
+            successful_or_error_terminals, 0,
+            "cancelled voice turn must not also emit Done or Error"
+        );
+
+        let second_persist_count = Arc::clone(&persist_count);
+        let outcome = run_agent_send_path_with_persist(
+            &mut state,
+            77,
+            "try again".to_string(),
+            test_stream_options(),
+            move |_runtime| {
+                second_persist_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .expect("next turn should succeed");
+        assert_eq!(outcome, AgentSendOutcome::Completed);
+        assert_eq!(persist_count.load(Ordering::SeqCst), 1);
+
+        let recovered_runtime = state.runtime.as_ref().expect("runtime should remain live");
+        assert_eq!(recovered_runtime.session.messages().len(), 3);
+        assert!(recovered_runtime.session.messages().iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text(text) if text == "recovered"))
+        }));
+        assert_eq!(
+            *reset_chain_flags
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            vec![false, true],
+            "the recovery turn must clear provider-owned chain state before replay"
+        );
+    }
+
+    fn test_stream_options() -> StreamOptions {
+        StreamOptions {
+            model: String::new(),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            reset_chain: false,
+        }
     }
 }
