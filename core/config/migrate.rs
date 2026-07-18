@@ -85,6 +85,12 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
     if let Some(v) = migrated_value(file_env, "AI_FORMATTING_ENABLED") {
         settings.ai_formatting_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }
+    if let Some(v) = migrated_value(file_env, "AUTO_PASTE_ENABLED") {
+        settings.auto_paste_enabled = Some(matches!(
+            v.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        ));
+    }
     if let Some(v) = migrated_value(file_env, "BEEP_ON_START") {
         settings.beep_on_start = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }
@@ -344,6 +350,24 @@ mod tests {
             assert_eq!(
                 after, before,
                 "migration changed formatting.txt for {input}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn auto_paste_env_migration_preserves_explicit_policy() {
+        for (input, expected) in [("0", false), ("1", true), ("false", false), ("true", true)] {
+            let _tmp = setup_isolated_data_dir();
+            let mut file_env = HashMap::new();
+            file_env.insert("AUTO_PASTE_ENABLED".to_string(), input.to_string());
+
+            migrate_if_needed(Some(&file_env));
+
+            assert_eq!(
+                UserSettings::load().auto_paste_enabled,
+                Some(expected),
+                "input={input}"
             );
         }
     }

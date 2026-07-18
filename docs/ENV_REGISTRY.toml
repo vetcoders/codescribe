@@ -207,6 +207,13 @@ reload = "hot"
 category = "ui"
 description = "Enable live non-assistive transcription overlay; when disabled the next capture uses a buffered no-overlay profile"
 
+[vars.AUTO_PASTE_ENABLED]
+default = "1"
+type = "bool"
+reload = "hot"
+category = "clipboard"
+description = "Automatically paste completed non-assistive dictation; no-speech, empty output, Notes save-only, assistive, and safety failures remain hard vetoes"
+
 [vars.TRAY_START_ASSISTIVE]
 default = "0"
 type = "bool"

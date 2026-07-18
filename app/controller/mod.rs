@@ -33,6 +33,7 @@ pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActio
 use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -41,6 +42,8 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+use chrono::{DateTime, Local};
 
 use crate::audio::streaming_recorder::StreamingRecorder;
 use crate::config::models::ModelManager;
@@ -84,6 +87,7 @@ const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(250);
 /// thread never constructs IPC events or timestamps and never accumulates a
 /// backlog when the bridge/UI is slower than CoreAudio.
 const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
+const AUTOMATIC_DELIVERY_HISTORY_CAPACITY: usize = 32;
 
 fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     if assistive {
@@ -221,6 +225,87 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
 
 fn non_empty_transcript(text: Option<String>) -> Option<String> {
     text.filter(|text| !text.trim().is_empty())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoPasteTrigger {
+    Hold,
+    DoubleLeftOption,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AutoPastePolicyContext {
+    trigger: AutoPasteTrigger,
+    persisted_enabled: bool,
+    overlay_enabled: bool,
+    assistive: bool,
+    no_speech: bool,
+    empty_output: bool,
+    notes_save_only: bool,
+    live_stream_session: bool,
+    commit_required: bool,
+}
+
+fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
+    // Trigger and presentation state deliberately do not fork policy. Keeping
+    // the explicit matrix here makes that parity reviewable and testable.
+    let persisted_policy = match (context.trigger, context.overlay_enabled) {
+        (AutoPasteTrigger::Hold, true | false)
+        | (AutoPasteTrigger::DoubleLeftOption, true | false) => context.persisted_enabled,
+    };
+
+    persisted_policy
+        && !context.assistive
+        && !context.no_speech
+        && !context.empty_output
+        && !context.notes_save_only
+        && !context.live_stream_session
+        && !context.commit_required
+}
+
+trait AutomaticDeliverySink: Send + Sync {
+    fn paste(&self, text: &str) -> Result<()>;
+}
+
+struct ClipboardDeliverySink;
+
+impl AutomaticDeliverySink for ClipboardDeliverySink {
+    fn paste(&self, text: &str) -> Result<()> {
+        clipboard::paste_text(text).context("Failed to paste text")
+    }
+}
+
+/// Controller-owned, bounded exactly-once fence. A small ring retains recent
+/// recording timestamps so late duplicate callbacks remain fenced without
+/// process-global or unbounded growth. A failed sink call remains retryable.
+struct AutomaticDeliveryOwner {
+    delivered_timestamps: Mutex<VecDeque<DateTime<Local>>>,
+    sink: Arc<dyn AutomaticDeliverySink>,
+}
+
+impl AutomaticDeliveryOwner {
+    fn new(sink: Arc<dyn AutomaticDeliverySink>) -> Self {
+        Self {
+            delivered_timestamps: Mutex::new(VecDeque::with_capacity(
+                AUTOMATIC_DELIVERY_HISTORY_CAPACITY,
+            )),
+            sink,
+        }
+    }
+
+    async fn deliver_once(&self, timestamp: DateTime<Local>, text: &str) -> Result<bool> {
+        let mut delivered = self.delivered_timestamps.lock().await;
+        if delivered.contains(&timestamp) {
+            return Ok(false);
+        }
+
+        self.sink.paste(text)?;
+        if delivered.len() == AUTOMATIC_DELIVERY_HISTORY_CAPACITY {
+            delivered.pop_front();
+        }
+        delivered.push_back(timestamp);
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -890,6 +975,9 @@ pub struct RecordingController {
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
 
+    /// One bounded automatic-delivery owner shared by visible/headless paths.
+    automatic_delivery: AutomaticDeliveryOwner,
+
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
 
@@ -1063,6 +1151,7 @@ impl RecordingController {
             hold_start_generation: Arc::new(AtomicU64::new(0)),
             start_transition_in_flight: Arc::new(AtomicBool::new(false)),
             serial_lock: Arc::new(Mutex::new(())),
+            automatic_delivery: AutomaticDeliveryOwner::new(Arc::new(ClipboardDeliverySink)),
             vad_triggered: Arc::new(AtomicBool::new(false)),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
             toggle_user_has_text: Arc::new(AtomicBool::new(false)),
@@ -3297,7 +3386,7 @@ impl RecordingController {
         // - AI chat? → Hold + Shift (Chat)
         // - AI on selection? → Hold + Cmd (Selection)
         let mut is_ai_noop = false;
-        let (formatted_text, output_kind, mut should_auto_paste) = if assistive {
+        let (formatted_text, output_kind) = if assistive {
             info!(
                 "Assistive mode ({:?}): augmenting transcript via AI",
                 effective_hold_mode
@@ -3358,7 +3447,6 @@ impl RecordingController {
             (
                 clean_text.clone(),
                 crate::state::history::TranscriptKind::AssistantInterpretation,
-                false,
             )
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
@@ -3368,14 +3456,12 @@ impl RecordingController {
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             } else {
                 info!("Raw mode (Ctrl): using post-processed transcript");
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             }
         } else if force_ai {
@@ -3406,13 +3492,12 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind, true)
+                (result.text, kind)
             } else if has_repetition {
                 info!("Formatting mode (Left Option): AI unavailable, cleaning repetitions");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             } else {
                 info!(
@@ -3421,7 +3506,6 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             }
         } else {
@@ -3454,14 +3538,13 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind, false)
+                (result.text, kind)
             } else if has_repetition {
                 // Toggle OFF with repetition: local cleanup only
                 info!("Raw mode (Toggle OFF): applying local repetition cleanup");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             } else {
                 // Toggle OFF: using post-processed transcript
@@ -3469,7 +3552,6 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             }
         };
@@ -3526,23 +3608,6 @@ impl RecordingController {
             );
         } else if !assistive {
             info!("COMMIT decision: not required by quality gate (mode={mode_label})");
-        }
-
-        if truth_no_speech_reason.is_some() || commit_trigger.is_some() {
-            should_auto_paste = false;
-        }
-        if live_stream_session {
-            should_auto_paste = false;
-        }
-        // Hands-off (non-assistive) is action-driven: the full transcript lands in the
-        // decision overlay and the user picks [Format] / [Copy] / [Agent]. No silent
-        // auto-paste — differentiation happens AFTER recording, not during. (ADR
-        // 2026-05-28 Faza 1: "Różnicowanie przez akcje, nie przez tryby nagrywania".)
-        if matches!(
-            transcript_source,
-            Some(RecordingTranscriptSource::ToggleSessionAdjudicated)
-        ) {
-            should_auto_paste = false;
         }
 
         let final_formatted_text = formatted_text.clone();
@@ -3617,11 +3682,6 @@ impl RecordingController {
                     warn!("Quick note save failed: {}", e);
                 }
             }
-
-            // Optional: make Quick Notes "save-only".
-            if config.quick_notes_save_only {
-                should_auto_paste = false;
-            }
         }
 
         // Save audio to transcriptions folder if enabled (pair with RAW for reports)
@@ -3637,22 +3697,26 @@ impl RecordingController {
             write_truth_sidecar_logged(&audio_saved_path, &truth_metadata);
         }
 
-        // Overlay disabled = no decision surface. The action-driven gates above
-        // (commit_trigger / toggle-adjudicated / live-stream) hand the transcript
-        // to the overlay; with no overlay it would just vanish. Deliver headless by
-        // pasting directly at the cursor — unless there is nothing to paste (no
-        // speech) or Notes Mode chose save-only.
-        let overlay_disabled = !config.transcription_overlay_enabled;
         let has_final_text = !final_formatted_text.trim().is_empty();
         let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
-        if overlay_disabled
-            && !assistive
-            && truth_no_speech_reason.is_none()
-            && has_final_text
-            && !notes_save_only
-        {
-            should_auto_paste = true;
-        }
+        let should_auto_paste = resolve_auto_paste_policy(AutoPastePolicyContext {
+            trigger: if force_ai {
+                AutoPasteTrigger::DoubleLeftOption
+            } else {
+                AutoPasteTrigger::Hold
+            },
+            persisted_enabled: config.auto_paste_enabled,
+            overlay_enabled: config.transcription_overlay_enabled,
+            assistive,
+            no_speech: truth_no_speech_reason.is_some(),
+            empty_output: !has_final_text,
+            notes_save_only,
+            // Live-stream preview and explicit quality/safety commit branches
+            // remain separate named vetoes. Toggle-adjudicated final delivery is
+            // no longer a veto.
+            live_stream_session,
+            commit_required: commit_trigger.is_some(),
+        });
 
         // Save final transcript (skip duplicate when RAW already stored and
         // unchanged) BEFORE the paste attempt. Paste can fail transiently (e.g.
@@ -3688,9 +3752,15 @@ impl RecordingController {
                 &mode_label,
                 Some(&truth_metadata),
             );
-            // Paste the text into the active application
-            clipboard::paste_text(&paste_text).context("Failed to paste text")?;
-            info!("Text pasted successfully");
+            if self
+                .automatic_delivery
+                .deliver_once(recording_timestamp, &paste_text)
+                .await?
+            {
+                info!("Text pasted successfully");
+            } else {
+                info!("Automatic delivery skipped: recording timestamp already delivered");
+            }
         } else {
             info!("Auto-paste skipped (mode={})", mode_label);
         }

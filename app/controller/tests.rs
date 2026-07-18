@@ -475,6 +475,122 @@ fn test_transcript_delivery_wrap_uses_truth_quality_placeholders() {
     );
 }
 
+#[test]
+fn auto_paste_policy_matrix() {
+    let triggers = [AutoPasteTrigger::Hold, AutoPasteTrigger::DoubleLeftOption];
+    for trigger in triggers {
+        for persisted_enabled in [false, true] {
+            for overlay_enabled in [false, true] {
+                let allowed = resolve_auto_paste_policy(AutoPastePolicyContext {
+                    trigger,
+                    persisted_enabled,
+                    overlay_enabled,
+                    assistive: false,
+                    no_speech: false,
+                    empty_output: false,
+                    notes_save_only: false,
+                    live_stream_session: false,
+                    commit_required: false,
+                });
+                assert_eq!(
+                    allowed, persisted_enabled,
+                    "trigger={trigger:?}, policy={persisted_enabled}, overlay={overlay_enabled}"
+                );
+            }
+        }
+    }
+
+    let vetoes = [
+        ("assistive", true, false, false, false, false, false),
+        ("no_speech", false, true, false, false, false, false),
+        ("empty_output", false, false, true, false, false, false),
+        ("notes_save_only", false, false, false, true, false, false),
+        (
+            "live_stream_session",
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+        ),
+        ("commit_required", false, false, false, false, false, true),
+    ];
+    for trigger in triggers {
+        for overlay_enabled in [false, true] {
+            for (
+                name,
+                assistive,
+                no_speech,
+                empty_output,
+                notes_save_only,
+                live_stream_session,
+                commit_required,
+            ) in vetoes
+            {
+                assert!(
+                    !resolve_auto_paste_policy(AutoPastePolicyContext {
+                        trigger,
+                        persisted_enabled: true,
+                        overlay_enabled,
+                        assistive,
+                        no_speech,
+                        empty_output,
+                        notes_save_only,
+                        live_stream_session,
+                        commit_required,
+                    }),
+                    "veto={name}, trigger={trigger:?}, overlay={overlay_enabled}"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct FakeAutomaticDeliverySink {
+    events: std::sync::Mutex<Vec<String>>,
+}
+
+impl AutomaticDeliverySink for FakeAutomaticDeliverySink {
+    fn paste(&self, text: &str) -> anyhow::Result<()> {
+        self.events
+            .lock()
+            .expect("fake delivery sink lock")
+            .push(text.to_string());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn automatic_delivery_is_once_per_recording_timestamp() {
+    let sink = Arc::new(FakeAutomaticDeliverySink::default());
+    let owner = AutomaticDeliveryOwner::new(sink.clone());
+    let timestamp_a = chrono::Local::now();
+    let timestamp_b = timestamp_a + chrono::Duration::milliseconds(1);
+
+    assert!(owner.deliver_once(timestamp_a, "visible A").await.unwrap());
+    assert!(!owner.deliver_once(timestamp_a, "headless A").await.unwrap());
+    assert!(
+        !owner
+            .deliver_once(timestamp_a, "duplicate final A")
+            .await
+            .unwrap()
+    );
+    assert!(owner.deliver_once(timestamp_b, "visible B").await.unwrap());
+    assert!(
+        !owner
+            .deliver_once(timestamp_a, "late duplicate A")
+            .await
+            .unwrap()
+    );
+
+    assert_eq!(
+        *sink.events.lock().expect("fake delivery events"),
+        ["visible A".to_string(), "visible B".to_string()]
+    );
+}
+
 fn test_transcript_pipeline_params(
     raw_text: &str,
     config: Config,
@@ -2519,11 +2635,8 @@ fn test_formatted_transcript_persists_before_paste() {
         .expect("final-transcript save block must be present");
     let paste_idx = source
         .get(save_idx..)
-        .and_then(|tail| {
-            tail.find("clipboard::paste_text(")
-                .map(|idx| save_idx + idx)
-        })
-        .expect("auto-paste call must be present");
+        .and_then(|tail| tail.find(".automatic_delivery").map(|idx| save_idx + idx))
+        .expect("automatic delivery owner call must be present");
     assert!(
         save_idx < paste_idx,
         "formatted transcript save must precede the paste attempt so a failed paste \

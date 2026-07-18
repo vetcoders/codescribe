@@ -255,6 +255,10 @@ impl Config {
             self.ai_formatting_enabled =
                 matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
         }
+        if let Ok(val) = Self::config_runtime_env_var("AUTO_PASTE_ENABLED") {
+            self.auto_paste_enabled =
+                matches!(val.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        }
         if let Ok(val) = Self::config_runtime_env_var("TRANSCRIPT_SEND_MODE")
             && let Ok(mode) = val.parse::<TranscriptSendMode>()
         {
@@ -487,6 +491,11 @@ impl Config {
             && let Some(v) = settings.ai_formatting_enabled
         {
             self.ai_formatting_enabled = v;
+        }
+        if Self::config_runtime_env_var("AUTO_PASTE_ENABLED").is_err()
+            && let Some(v) = settings.auto_paste_enabled
+        {
+            self.auto_paste_enabled = v;
         }
         if Self::config_runtime_env_var("CODESCRIBE_TRANSCRIPT_TAGGING").is_err()
             && let Some(v) = settings.transcript_tagging_enabled
@@ -773,6 +782,7 @@ impl Config {
                     }
                 }
                 "AI_FORMATTING_ENABLED"
+                | "AUTO_PASTE_ENABLED"
                 | "TRANSCRIPT_TAGGING_ENABLED"
                 | "BEEP_ON_START"
                 | "SHOW_DOCK_ICON"
@@ -917,6 +927,7 @@ impl Config {
                     }
                     // ── Bools ──
                     "AI_FORMATTING_ENABLED"
+                    | "AUTO_PASTE_ENABLED"
                     | "TRANSCRIPT_TAGGING_ENABLED"
                     | "BEEP_ON_START"
                     | "SHOW_DOCK_ICON"
@@ -936,6 +947,7 @@ impl Config {
                             "AI_FORMATTING_ENABLED" => {
                                 settings_ref.ai_formatting_enabled = Some(bv)
                             }
+                            "AUTO_PASTE_ENABLED" => settings_ref.auto_paste_enabled = Some(bv),
                             "BEEP_ON_START" => settings_ref.beep_on_start = Some(bv),
                             "SHOW_DOCK_ICON" => settings_ref.show_dock_icon = Some(bv),
                             "TRANSCRIPTION_OVERLAY_ENABLED" => {
@@ -1377,6 +1389,33 @@ mod tests {
             UserSettings::load().llm_model.as_deref(),
             Some("runtime-model")
         );
+    }
+
+    #[test]
+    #[serial]
+    fn auto_paste_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
+        let _tmp = setup_isolated_data_dir();
+        let _runtime = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let config = Config::default();
+
+        config
+            .save_to_env("AUTO_PASTE_ENABLED", "0")
+            .expect("save auto paste off");
+        assert_eq!(UserSettings::load().auto_paste_enabled, Some(false));
+        assert!(!Config::load_without_keychain().auto_paste_enabled);
+
+        config
+            .save_to_env_many(&[("AUTO_PASTE_ENABLED", "1")])
+            .expect("save auto paste on");
+        assert_eq!(UserSettings::load().auto_paste_enabled, Some(true));
+        assert!(Config::load_without_keychain().auto_paste_enabled);
+
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let env = Config::parse_env_file(&env_path).expect("parse optional env");
+            assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
+        }
+        assert!(std::env::var("AUTO_PASTE_ENABLED").is_err());
     }
 
     #[test]

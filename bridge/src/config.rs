@@ -338,6 +338,11 @@ pub struct CsConfigEntry {
 pub struct CsTrayToggles {
     pub show_dock_icon: bool,
     pub transcription_overlay_enabled: bool,
+    /// User-owned automatic delivery policy. Assistive and controller safety
+    /// vetoes can still prevent a paste for a particular recording.
+    pub auto_paste_enabled: bool,
+    /// Normalized automatic formatting policy: off, correction, smart, or max.
+    pub formatting_level: String,
     /// UI-initiated recording starts in the assistive lane when enabled.
     pub start_assistive: bool,
     /// Notes Mode: voice → daily note (no paste). Backed by the core
@@ -515,6 +520,36 @@ impl CodescribeConfig {
         }
     }
 
+    /// Persist Auto Paste and return the prompt-free post-write truth in one
+    /// result. Callers may re-read `tray_toggles()` after an error; no optimistic
+    /// bridge cache is retained.
+    pub fn set_auto_paste_enabled(&self, enabled: bool) -> Result<CsTrayToggles, CsError> {
+        let mut settings = UserSettings::load();
+        settings.auto_paste_enabled = Some(enabled);
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(self.tray_toggles())
+    }
+
+    /// Persist a normalized Auto Format policy and return prompt-free
+    /// post-write truth. Unknown policy IDs fail without changing disk state.
+    pub fn set_auto_format_level(&self, level: String) -> Result<CsTrayToggles, CsError> {
+        let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        let mut settings = UserSettings::load();
+        settings.formatting_level = Some(policy.as_str().to_string());
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(self.tray_toggles())
+    }
+
     /// Lightweight tray-only settings read. Unlike `load_settings`, this never
     /// populates the Keychain, so it never prompts just because the user opened
     /// the menu. It DOES honor the full tier stack (defaults < settings.json <
@@ -525,6 +560,11 @@ impl CodescribeConfig {
         CsTrayToggles {
             show_dock_icon: config.show_dock_icon,
             transcription_overlay_enabled: config.transcription_overlay_enabled,
+            auto_paste_enabled: config.auto_paste_enabled,
+            formatting_level: Config::formatting_policy()
+                .unwrap_or_default()
+                .as_str()
+                .to_string(),
             start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle
@@ -2138,6 +2178,48 @@ mod settings_snapshot_tests {
             Some("anthropic-messages")
         );
 
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn tray_toggles_roundtrip_auto_paste_and_format_truth_after_write_failure() {
+        let root = scratch("tray_delivery_truth");
+        std::fs::create_dir_all(&root).expect("create bridge scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _auto_paste = EnvGuard::remove("AUTO_PASTE_ENABLED");
+        let _formatting = EnvGuard::remove("FORMATTING_LEVEL");
+        let config = CodescribeConfig::new();
+
+        let after_paste = config
+            .set_auto_paste_enabled(false)
+            .expect("persist auto paste false");
+        assert!(!after_paste.auto_paste_enabled);
+        assert_eq!(after_paste.formatting_level, "correction");
+
+        let after_format = config
+            .set_auto_format_level("smart".to_string())
+            .expect("persist normalized format level");
+        assert!(!after_format.auto_paste_enabled);
+        assert_eq!(after_format.formatting_level, "smart");
+
+        // Block the atomic temp-file write while leaving settings.json readable.
+        // The write must fail and a fresh prompt-free snapshot must recover the
+        // last persisted truth rather than an optimistic requested value.
+        std::fs::create_dir_all(UserSettings::settings_path().with_extension("json.tmp"))
+            .expect("block atomic settings temp path");
+        assert!(config.set_auto_paste_enabled(true).is_err());
+        let reread = config.tray_toggles();
+        assert!(!reread.auto_paste_enabled);
+        assert_eq!(reread.formatting_level, "smart");
+
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let env = Config::parse_env_file(&env_path).expect("parse optional env");
+            assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
+            assert!(!env.contains_key("FORMATTING_LEVEL"));
+        }
         let _ = remove_path_without_following_symlinks(&root);
     }
 

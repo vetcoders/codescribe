@@ -75,6 +75,8 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_paste_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_tagging_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_tag_template: Option<String>,
@@ -217,6 +219,10 @@ struct InteractionV2 {
     send_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_enter_sends: Option<bool>,
+    /// User-owned automatic delivery policy shared by Hold and hands-free
+    /// dictation. Assistive and safety vetoes are enforced by the controller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_paste_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -401,6 +407,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOLD_EXCLUSIVE",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
+    "AUTO_PASTE_ENABLED",
     "TRANSCRIPT_TAGGING_ENABLED",
     "TRANSCRIPT_TAG_TEMPLATE",
     "FORMATTING_LEVEL",
@@ -471,6 +478,7 @@ impl UserSettings {
                 mode_bindings: Some(normalized_mode_bindings),
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
+                auto_paste_enabled: self.auto_paste_enabled,
             }),
             speech: Some(SpeechV2 {
                 language: self.whisper_language.clone(),
@@ -573,6 +581,10 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.formatting.as_ref())
                 .and_then(|f| f.enabled),
+            auto_paste_enabled: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.auto_paste_enabled),
             transcript_tagging_enabled: v2
                 .speech
                 .as_ref()
@@ -1004,6 +1016,7 @@ impl UserSettings {
         let before = self.clone();
         match key {
             "AI_FORMATTING_ENABLED" => self.ai_formatting_enabled = Some(value),
+            "AUTO_PASTE_ENABLED" => self.auto_paste_enabled = Some(value),
             "TRANSCRIPT_TAGGING_ENABLED" => self.transcript_tagging_enabled = Some(value),
             "BEEP_ON_START" => self.beep_on_start = Some(value),
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
@@ -1064,7 +1077,7 @@ impl UserSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::{FormattingPolicy, UserSettings};
+    use super::{FormattingPolicy, UserSettings, is_promoted_key};
     use crate::config::{ShortcutBinding, WorkMode};
     use serial_test::serial;
     use std::fs;
@@ -1236,6 +1249,48 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.show_dock_icon, Some(false));
+    }
+
+    #[test]
+    #[serial]
+    fn auto_paste_v1_v2_roundtrips_and_registry_contract_is_promoted_hot() {
+        let v1_dir = setup_isolated_data_dir();
+        let v1_path = UserSettings::settings_path();
+        fs::write(&v1_path, r#"{"auto_paste_enabled":false}"#).expect("write V1");
+        let v1 = UserSettings::load();
+        assert_eq!(v1.auto_paste_enabled, Some(false));
+        let migrated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&v1_path).expect("read migrated V1"))
+                .expect("parse migrated V1");
+        assert_eq!(
+            migrated
+                .pointer("/interaction/auto_paste_enabled")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        drop(v1_dir);
+
+        let _v2_dir = setup_isolated_data_dir();
+        let v2_path = UserSettings::settings_path();
+        fs::write(
+            &v2_path,
+            r#"{"schema_version":3,"interaction":{"auto_paste_enabled":true}}"#,
+        )
+        .expect("write V2");
+        let v2 = UserSettings::load();
+        assert_eq!(v2.auto_paste_enabled, Some(true));
+        v2.save().expect("round-trip V2");
+        assert!(is_promoted_key("AUTO_PASTE_ENABLED"));
+
+        let registry = include_str!("../../docs/ENV_REGISTRY.toml");
+        let section = registry
+            .split("[vars.AUTO_PASTE_ENABLED]")
+            .nth(1)
+            .and_then(|tail| tail.split("\n[vars.").next())
+            .expect("AUTO_PASTE_ENABLED registry section");
+        assert!(section.contains("default = \"1\""));
+        assert!(section.contains("type = \"bool\""));
+        assert!(section.contains("reload = \"hot\""));
     }
 
     #[test]
