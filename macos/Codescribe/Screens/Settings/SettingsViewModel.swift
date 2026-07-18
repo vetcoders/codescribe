@@ -38,6 +38,28 @@ enum SettingsSectionAvailability: Equatable {
     case hidden
 }
 
+enum FormattingPolicyOption: String, CaseIterable, Identifiable {
+    case off
+    case correction
+    case smart
+    case max
+
+    var id: String { rawValue }
+    var visibleName: String { rawValue.capitalized }
+
+    init?(storedValue: String?) {
+        switch storedValue {
+        case "off", "raw": self = .off
+        case "correction", "medium", nil: self = .correction
+        case "smart": self = .smart
+        case "max", "creative": self = .max
+        default: return nil
+        }
+    }
+
+    static let editablePrompts: [Self] = [.correction, .smart, .max]
+}
+
 // Every rail section declares its product truth explicitly.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case creator = "Creator"
@@ -614,9 +636,9 @@ final class SettingsViewModel: ObservableObject {
     func resetImpactDescription(includeKeys: Bool, includePrompts: Bool) -> String {
         var message = "Moves \(resetImpactSummary(resetPreview)) to Trash."
         if includePrompts {
-            message += " Your assistive.txt and formatting.txt base prompts will also move to Trash."
+            message += " Your assistive.txt and three formatting prompt files will also move to Trash."
         } else {
-            message += " Your assistive.txt and formatting.txt base prompts will be preserved."
+            message += " Your assistive.txt and three formatting prompt files will be preserved."
         }
         if includeKeys {
             message += " API keys will also be removed from Keychain and are not recoverable from Trash."
@@ -767,8 +789,9 @@ final class SettingsViewModel: ObservableObject {
     }
 
     var formattingDescription: String {
-        guard settings.aiFormattingEnabled else { return "off" }
-        return "on · \(settings.formattingLevel ?? "medium")"
+        guard settings.aiFormattingEnabled else { return "disabled · compatibility gate" }
+        return FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
+            ?? "invalid policy"
     }
 
     /// Any LLM/STT provider key present (GitHub token is shown separately).
@@ -794,8 +817,12 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func setFormattingLevel(_ level: String) {
-        settings.formattingLevel = level
-        persist("FORMATTING_LEVEL", level)
+        guard let policy = FormattingPolicyOption(storedValue: level) else {
+            lastError = "Unknown formatting policy: \(level)"
+            return
+        }
+        settings.formattingLevel = policy.rawValue
+        persist("FORMATTING_LEVEL", policy.rawValue)
     }
 
     // MARK: - User panel (local-first product truth)
@@ -1336,6 +1363,15 @@ final class SettingsViewModel: ObservableObject {
     func formattingPromptSnapshot() -> CsPromptSnapshot {
         engine?.formattingPromptSnapshot() ?? .sampleFormatting
     }
+    func formattingPromptSnapshot(level: FormattingPolicyOption) -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            return try engine.formattingPromptSnapshot(level: level.rawValue)
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
+    }
     func assistivePromptSnapshot() -> CsPromptSnapshot {
         engine?.assistivePromptSnapshot() ?? .sampleAssistive
     }
@@ -1348,10 +1384,18 @@ final class SettingsViewModel: ObservableObject {
 
     @discardableResult
     func saveFormattingPrompt(_ content: String) -> CsPromptSnapshot? {
+        saveFormattingPrompt(.correction, content: content)
+    }
+
+    @discardableResult
+    func saveFormattingPrompt(
+        _ level: FormattingPolicyOption,
+        content: String
+    ) -> CsPromptSnapshot? {
         guard let engine else { return nil }
         do {
-            try engine.setFormattingPrompt(content: content)
-            return engine.formattingPromptSnapshot()
+            try engine.setFormattingPrompt(level: level.rawValue, content: content)
+            return try engine.formattingPromptSnapshot(level: level.rawValue)
         } catch {
             lastError = String(describing: error)
             return nil
@@ -1372,10 +1416,17 @@ final class SettingsViewModel: ObservableObject {
 
     @discardableResult
     func restoreFormattingPromptToDefault() -> CsPromptSnapshot? {
+        restoreFormattingPromptToDefault(.correction)
+    }
+
+    @discardableResult
+    func restoreFormattingPromptToDefault(
+        _ level: FormattingPolicyOption
+    ) -> CsPromptSnapshot? {
         guard let engine else { return nil }
         do {
-            try engine.restoreFormattingPromptToDefault()
-            return engine.formattingPromptSnapshot()
+            try engine.restoreFormattingPromptToDefault(level: level.rawValue)
+            return try engine.formattingPromptSnapshot(level: level.rawValue)
         } catch {
             lastError = String(describing: error)
             return nil

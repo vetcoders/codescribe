@@ -711,7 +711,7 @@ default = "1"
 type = "bool"
 reload = "restart"
 category = "llm"
-description = "Enable AI formatting of transcripts"
+description = "Compatibility gate for AI formatting; FORMATTING_LEVEL=off still bypasses the formatting provider even when this is enabled"
 
 [vars.CODESCRIBE_TRANSCRIPT_TAGGING]
 default = "0"
@@ -742,11 +742,11 @@ category = "llm"
 description = "Max tokens for assistive LLM (0 = no limit)"
 
 [vars.FORMATTING_LEVEL]
-default = "medium"
+default = "correction"
 type = "string"
 reload = "hot"
 category = "llm"
-description = "AI formatting level: raw, medium, or creative"
+description = "Normalized formatting policy: off, correction, smart, or max; legacy aliases raw, medium, and creative migrate to off, correction, and max"
 
 [vars.LLM_FORMATTING_AUTH_MODE]
 default = "api-key"

@@ -21,6 +21,7 @@ use super::defaults::{
     default_assistive_model, default_assistive_provider, default_formatting_model,
     default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
+use super::settings::FormattingPolicy;
 use super::types::{Config, Language, OverlayPositionMode, TranscriptSendMode};
 
 static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
@@ -153,6 +154,16 @@ impl Config {
             return Err(VarError::NotPresent);
         }
         std::env::var(key)
+    }
+
+    /// Resolve the effective formatting policy from fresh runtime truth.
+    ///
+    /// Explicit process env wins. Values seeded internally during bootstrap are
+    /// ignored after bootstrap so a Settings write takes effect without restart.
+    pub fn formatting_policy() -> anyhow::Result<FormattingPolicy> {
+        let runtime = Self::config_runtime_env_var("FORMATTING_LEVEL").ok();
+        let settings = super::settings::UserSettings::load();
+        FormattingPolicy::resolve(runtime.as_deref(), settings.formatting_level.as_deref())
     }
 
     /// Inject optional .env values into the process environment without allowing
@@ -490,8 +501,10 @@ impl Config {
         if Self::config_runtime_env_var("FORMATTING_LEVEL").is_err()
             && let Some(ref v) = settings.formatting_level
         {
-            // FORMATTING_LEVEL is read from env at runtime (not a Config field).
-            Self::safe_set_env("FORMATTING_LEVEL", v);
+            match FormattingPolicy::parse(v) {
+                Ok(policy) => Self::safe_set_env("FORMATTING_LEVEL", policy.as_str()),
+                Err(error) => warn!("Ignoring invalid persisted formatting policy: {error}"),
+            }
         }
         // Sound
         if Self::config_runtime_env_var("BEEP_ON_START").is_err()
@@ -719,6 +732,12 @@ impl Config {
     /// This is a persistence write only. Process-env seeding is restricted to
     /// bootstrap loads; live readers must reload the config/settings snapshot.
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let normalized_formatting = (key == "FORMATTING_LEVEL")
+            .then(|| FormattingPolicy::parse(value))
+            .transpose()?
+            .map(|policy| policy.as_str().to_string());
+        let value = normalized_formatting.as_deref().unwrap_or(value);
+
         // API keys → Keychain
         if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
             super::keychain::save_key(key, value)?;
@@ -807,6 +826,12 @@ impl Config {
         let mut env_path: Option<PathBuf> = None;
 
         for (key, value) in entries {
+            if *key == "FORMATTING_LEVEL" {
+                FormattingPolicy::parse(value)?;
+            }
+        }
+
+        for (key, value) in entries {
             // API keys → Keychain
             if super::keychain::KEYCHAIN_ACCOUNTS.contains(key) {
                 super::keychain::save_key(key, value)?;
@@ -827,7 +852,8 @@ impl Config {
                         settings_ref.whisper_language = Some((*value).to_string())
                     }
                     "FORMATTING_LEVEL" => {
-                        settings_ref.formatting_level = Some((*value).to_string())
+                        settings_ref.formatting_level =
+                            Some(FormattingPolicy::parse(value)?.as_str().to_string())
                     }
                     "LOCAL_MODEL" => settings_ref.local_model = Some((*value).to_string()),
                     "STT_ENDPOINT" => settings_ref.stt_endpoint = Some((*value).to_string()),
@@ -1351,6 +1377,56 @@ mod tests {
             UserSettings::load().llm_model.as_deref(),
             Some("runtime-model")
         );
+    }
+
+    #[test]
+    #[serial]
+    fn formatting_policy_single_and_batch_writes_normalize_every_alias() {
+        let cases = [
+            ("off", "off"),
+            ("correction", "correction"),
+            ("smart", "smart"),
+            ("max", "max"),
+            ("raw", "off"),
+            ("medium", "correction"),
+            ("creative", "max"),
+        ];
+
+        for (input, normalized) in cases {
+            for batch in [false, true] {
+                let _tmp = setup_isolated_data_dir();
+                let config = Config::default();
+                if batch {
+                    config
+                        .save_to_env_many(&[("FORMATTING_LEVEL", input)])
+                        .expect("save policy batch");
+                } else {
+                    config
+                        .save_to_env("FORMATTING_LEVEL", input)
+                        .expect("save policy single");
+                }
+                assert_eq!(
+                    UserSettings::load().formatting_level.as_deref(),
+                    Some(normalized),
+                    "input={input}, batch={batch}"
+                );
+            }
+        }
+
+        for batch in [false, true] {
+            let _tmp = setup_isolated_data_dir();
+            let config = Config::default();
+            let result = if batch {
+                config.save_to_env_many(&[("FORMATTING_LEVEL", "aggressive")])
+            } else {
+                config.save_to_env("FORMATTING_LEVEL", "aggressive")
+            };
+            assert!(
+                result.is_err(),
+                "unknown policy was accepted, batch={batch}"
+            );
+            assert!(!UserSettings::settings_path().exists());
+        }
     }
 
     #[test]

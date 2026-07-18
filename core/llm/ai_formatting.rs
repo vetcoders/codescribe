@@ -27,7 +27,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
-use crate::config::Config;
+use crate::config::{Config, FormattingPolicy};
 
 use super::lane_truth;
 use super::provider::{LlmMode, ProviderKind, capability_policy};
@@ -900,6 +900,59 @@ pub async fn format_text_with_status_channels(
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
 ) -> AiFormatResult {
+    let policy = if assistive {
+        FormattingPolicy::Correction
+    } else {
+        match Config::formatting_policy() {
+            Ok(policy) => policy,
+            Err(error) => {
+                warn!("Rejected invalid formatting policy: {error}");
+                return AiFormatResult {
+                    text: text.to_string(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Failed,
+                };
+            }
+        }
+    };
+    format_text_with_status_channels_for_policy(
+        text,
+        language,
+        assistive,
+        policy,
+        on_assistant_delta,
+        on_reasoning_delta,
+    )
+    .await
+}
+
+/// Format through an explicitly selected normalized policy. This is the seam
+/// used by deliberate one-shot formatting actions; it never changes persisted
+/// Auto Format state.
+pub async fn format_text_with_status_for_policy(
+    text: &str,
+    language: Option<&str>,
+    policy: FormattingPolicy,
+) -> AiFormatResult {
+    format_text_with_status_channels_for_policy(text, language, false, policy, None, None).await
+}
+
+async fn format_text_with_status_channels_for_policy(
+    text: &str,
+    language: Option<&str>,
+    assistive: bool,
+    policy: FormattingPolicy,
+    on_assistant_delta: Option<AiStreamCallback>,
+    on_reasoning_delta: Option<AiReasoningCallback>,
+) -> AiFormatResult {
+    if !assistive && policy == FormattingPolicy::Off {
+        return AiFormatResult {
+            text: text.to_string(),
+            reasoning_text: None,
+            status: AiFormatStatus::Skipped,
+        };
+    }
+
     // Skip short non-assistive texts. The controller quality gate starts at 24 chars,
     // so formatting anything shorter would create an unguarded rewrite zone.
     if should_skip_ai_formatting(text, assistive) {
@@ -943,13 +996,15 @@ pub async fn format_text_with_status_channels(
                 let model = get_assistive_model().unwrap_or_else(|_| "unknown".into());
                 info!("Using assistive mode (model: {})", model);
             }
-            crate::config::prompts::get_assistive_prompt()
+            formatting_provider_system_prompt(true, policy)
+                .expect("assistive mode always owns a provider prompt")
         } else {
             if attempt == 0 {
                 let model = get_formatting_model().unwrap_or_else(|_| "unknown".into());
                 info!("Using formatting mode (model: {})", model);
             }
-            crate::config::prompts::get_formatting_prompt()
+            formatting_provider_system_prompt(false, policy)
+                .expect("Off policy bypasses before provider prompt selection")
         };
 
         // If retrying, wait and strengthen instructions
@@ -1178,6 +1233,20 @@ pub async fn format_text_with_status_channels(
         text: cleaned,
         reasoning_text: None,
         status: AiFormatStatus::Failed,
+    }
+}
+
+/// Exact system prompt handed to the provider for a normalized request.
+/// Exposed so delivery tests can observe the provider seam rather than merely
+/// asserting enum-to-enum mappings.
+pub fn formatting_provider_system_prompt(
+    assistive: bool,
+    policy: FormattingPolicy,
+) -> Option<String> {
+    if assistive {
+        Some(crate::config::prompts::get_assistive_prompt())
+    } else {
+        crate::config::prompts::get_formatting_prompt_for_policy(policy)
     }
 }
 

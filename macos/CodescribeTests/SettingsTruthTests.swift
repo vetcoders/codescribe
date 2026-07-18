@@ -107,6 +107,30 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(writes.map(\.value), ["auto", "pl", "en"])
     }
 
+    func testFormattingPolicyNamesAliasesAndWritesAreNormalized() {
+        XCTAssertEqual(
+            FormattingPolicyOption.allCases.map(\.visibleName),
+            ["Off", "Correction", "Smart", "Max"]
+        )
+        XCTAssertEqual(FormattingPolicyOption(storedValue: "raw"), .off)
+        XCTAssertEqual(FormattingPolicyOption(storedValue: "medium"), .correction)
+        XCTAssertEqual(FormattingPolicyOption(storedValue: "creative"), .max)
+        XCTAssertNil(FormattingPolicyOption(storedValue: "aggressive"))
+
+        var writes: [(String, String)] = []
+        let model = SettingsViewModel(engine: MockSettingsEngine { key, value in
+            writes.append((key, value))
+        })
+        for value in ["raw", "medium", "smart", "creative"] {
+            model.setFormattingLevel(value)
+        }
+        model.setFormattingLevel("aggressive")
+
+        XCTAssertEqual(writes.map(\.0), Array(repeating: "FORMATTING_LEVEL", count: 4))
+        XCTAssertEqual(writes.map(\.1), ["off", "correction", "smart", "max"])
+        XCTAssertNotNil(model.lastError)
+    }
+
     func testCreatorPanelRendersAtCompactAndLargeWidths() throws {
         for (name, width) in [("compact", 620.0), ("large", 900.0)] {
             let size = CGSize(width: width, height: 900)
@@ -136,6 +160,35 @@ final class SettingsTruthTests: XCTestCase {
             )
             try png.write(to: directory.appendingPathComponent("creator-language-\(name).png"))
         }
+    }
+
+    func testPromptPanelRendersAllFormattingOwners() throws {
+        let size = CGSize(width: 900, height: 1_900)
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+        let hostingView = NSHostingView(rootView: PromptPanel(model: model).frame(
+            width: size.width,
+            height: size.height,
+            alignment: .topLeading
+        ))
+        hostingView.frame = CGRect(origin: .zero, size: size)
+        hostingView.layoutSubtreeIfNeeded()
+
+        guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
+            return XCTFail("Could not allocate PromptPanel bitmap")
+        }
+        hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            return XCTFail("Could not encode PromptPanel PNG")
+        }
+        XCTAssertGreaterThan(png.count, 40_000)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codescribe-settings-captures", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        try png.write(to: directory.appendingPathComponent("prompt-owners.png"))
     }
 
     func testTaggingToggleWritesPromotedConfigKey() {
@@ -215,7 +268,7 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(
             model.resetImpactDescription(includeKeys: false, includePrompts: false),
             "Moves 5000 recordings from 42 days, 17 threads (512.0 MB) to Trash. "
-                + "Your assistive.txt and formatting.txt base prompts will be preserved. "
+                + "Your assistive.txt and three formatting prompt files will be preserved. "
                 + "Codescribe will relaunch as a fresh install."
         )
         XCTAssertTrue(resetConfirmationMatches("RESET"))
@@ -236,9 +289,27 @@ final class SettingsTruthTests: XCTestCase {
         )
         let model = SettingsViewModel(engine: engine)
 
-        XCTAssertNotNil(model.restoreFormattingPromptToDefault())
+        XCTAssertNotNil(model.restoreFormattingPromptToDefault(.correction))
+        XCTAssertNotNil(model.restoreFormattingPromptToDefault(.smart))
+        XCTAssertNotNil(model.restoreFormattingPromptToDefault(.max))
 
-        XCTAssertEqual(restored, ["formatting"])
+        XCTAssertEqual(restored, ["correction", "smart", "max"])
+    }
+
+    func testFormattingPromptSnapshotsExposeDistinctPathsAndProvenance() throws {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+        let snapshots = try FormattingPolicyOption.editablePrompts.map { level in
+            try XCTUnwrap(model.formattingPromptSnapshot(level: level))
+        }
+
+        XCTAssertEqual(
+            snapshots.map { URL(fileURLWithPath: $0.path).lastPathComponent },
+            ["formatting.txt", "formatting-smart.txt", "formatting-max.txt"]
+        )
+        XCTAssertEqual(
+            snapshots.map(\.source),
+            ["custom_file", "built_in_fallback", "built_in_fallback"]
+        )
     }
 
     func testFailedPromptSaveDoesNotClaimARefreshedSnapshot() {
@@ -270,7 +341,7 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(calls.map(\.prompts), [false, true])
         XCTAssertTrue(
             model.resetImpactDescription(includeKeys: false, includePrompts: true)
-                .contains("assistive.txt and formatting.txt base prompts will also move to Trash")
+                .contains("assistive.txt and three formatting prompt files will also move to Trash")
         )
     }
 

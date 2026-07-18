@@ -31,24 +31,23 @@ struct CreatorPanel: View {
             VStack(spacing: 8) {
                 LanguageIdentityRow(selection: languageBinding)
                 SettingsControlRow(title: "AI formatting",
-                                   subtitle: "Clean up transcripts with the LLM") {
+                                   subtitle: "Compatibility gate; Off below always bypasses the LLM") {
                     Toggle("", isOn: formattingEnabledBinding)
                         .toggleStyle(.switch)
                         .labelsHidden()
                         .tint(CSColor.terracotta)
                 }
-                if model.settings.aiFormattingEnabled {
-                    SettingsControlRow(title: "Formatting level",
-                                       subtitle: "How aggressively the LLM rewrites") {
-                        Picker("", selection: formattingLevelBinding) {
-                            Text("Raw").tag("raw")
-                            Text("Medium").tag("medium")
-                            Text("Creative").tag("creative")
+                SettingsControlRow(title: "Auto Format",
+                                   subtitle: "Correction only, balanced editing, or maximum polish") {
+                    Picker("", selection: formattingLevelBinding) {
+                        ForEach(FormattingPolicyOption.allCases) { policy in
+                            Text(policy.visibleName).tag(policy.rawValue)
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 220)
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 330)
+                    .disabled(!model.settings.aiFormattingEnabled)
                 }
             }
             .padding(.top, 11)
@@ -84,7 +83,10 @@ struct CreatorPanel: View {
     }
 
     private var formattingLevelBinding: Binding<String> {
-        Binding(get: { model.settings.formattingLevel ?? "medium" },
+        Binding(get: {
+            FormattingPolicyOption(storedValue: model.settings.formattingLevel)?.rawValue
+                ?? FormattingPolicyOption.correction.rawValue
+        },
                 set: { model.setFormattingLevel($0) })
     }
 }

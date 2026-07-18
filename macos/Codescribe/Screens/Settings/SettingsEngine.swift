@@ -12,7 +12,7 @@ import Foundation
 // Config-write contract (router env keys, sourced from core/config/loader.rs):
 //   WHISPER_LANGUAGE      "pl" | "en"
 //   AI_FORMATTING_ENABLED "1" | "0"
-//   FORMATTING_LEVEL      "raw" | "medium" | "creative"
+//   FORMATTING_LEVEL      "off" | "correction" | "smart" | "max"
 //   USE_LOCAL_STT         "1" | "0"
 //   LOCAL_MODEL / STT_ENDPOINT / LLM_MODEL / LLM_ENDPOINT / LLM_ASSISTIVE_* ...  free strings
 // Keychain accounts (CsKeyStatus, core/config/keychain.rs::KEYCHAIN_ACCOUNTS):
@@ -64,12 +64,15 @@ protocol SettingsEngine {
     func getFormattingPrompt() -> String
     func getAssistivePrompt() -> String
     func formattingPromptSnapshot() -> CsPromptSnapshot
+    func formattingPromptSnapshot(level: String) throws -> CsPromptSnapshot
     func assistivePromptSnapshot() -> CsPromptSnapshot
     func defaultFormattingPrompt() -> String
     func defaultAssistivePrompt() -> String
     func setFormattingPrompt(content: String) throws
+    func setFormattingPrompt(level: String, content: String) throws
     func setAssistivePrompt(content: String) throws
     func restoreFormattingPromptToDefault() throws
+    func restoreFormattingPromptToDefault(level: String) throws
     func restoreAssistivePromptToDefault() throws
 
     // Recoverable reset: preview live impact, move local data to Trash, and
@@ -147,17 +150,26 @@ final class RealSettingsEngine: SettingsEngine {
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
     func getAssistivePrompt() -> String { config.getAssistivePrompt() }
     func formattingPromptSnapshot() -> CsPromptSnapshot { config.formattingPromptSnapshot() }
+    func formattingPromptSnapshot(level: String) throws -> CsPromptSnapshot {
+        try config.formattingPromptSnapshotForLevel(level: level)
+    }
     func assistivePromptSnapshot() -> CsPromptSnapshot { config.assistivePromptSnapshot() }
     func defaultFormattingPrompt() -> String { config.defaultFormattingPrompt() }
     func defaultAssistivePrompt() -> String { config.defaultAssistivePrompt() }
     func setFormattingPrompt(content: String) throws {
         try config.setFormattingPrompt(content: content)
     }
+    func setFormattingPrompt(level: String, content: String) throws {
+        try config.setFormattingPromptForLevel(level: level, content: content)
+    }
     func setAssistivePrompt(content: String) throws {
         try config.setAssistivePrompt(content: content)
     }
     func restoreFormattingPromptToDefault() throws {
         try config.restoreFormattingPromptToDefault()
+    }
+    func restoreFormattingPromptToDefault(level: String) throws {
+        try config.restoreFormattingPromptForLevelToDefault(level: level)
     }
     func restoreAssistivePromptToDefault() throws {
         try config.restoreAssistivePromptToDefault()
@@ -295,17 +307,31 @@ struct MockSettingsEngine: SettingsEngine {
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
     func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
     func formattingPromptSnapshot() -> CsPromptSnapshot { formattingSnapshot }
+    func formattingPromptSnapshot(level: String) throws -> CsPromptSnapshot {
+        switch level {
+        case "correction": return formattingSnapshot
+        case "smart": return .sampleFormattingSmart
+        case "max": return .sampleFormattingMax
+        default: throw NSError(domain: "FormattingPolicy", code: 1)
+        }
+    }
     func assistivePromptSnapshot() -> CsPromptSnapshot { assistiveSnapshot }
     func defaultFormattingPrompt() -> String { CsSettings.samplePrompt }
     func defaultAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
     func setFormattingPrompt(content: String) throws {
         try promptSaveObserver?("formatting", content)
     }
+    func setFormattingPrompt(level: String, content: String) throws {
+        try promptSaveObserver?(level, content)
+    }
     func setAssistivePrompt(content: String) throws {
         try promptSaveObserver?("assistive", content)
     }
     func restoreFormattingPromptToDefault() throws {
         try promptRestoreObserver?("formatting")
+    }
+    func restoreFormattingPromptToDefault(level: String) throws {
+        try promptRestoreObserver?(level)
     }
     func restoreAssistivePromptToDefault() throws {
         try promptRestoreObserver?("assistive")
@@ -346,6 +372,20 @@ extension CsPromptSnapshot {
         content: CsSettings.samplePrompt,
         path: "~/.codescribe/prompts/formatting.txt",
         source: "custom_file",
+        readError: nil
+    )
+
+    static let sampleFormattingSmart = CsPromptSnapshot(
+        content: "Smart formatting preview prompt.",
+        path: "~/.codescribe/prompts/formatting-smart.txt",
+        source: "built_in_fallback",
+        readError: nil
+    )
+
+    static let sampleFormattingMax = CsPromptSnapshot(
+        content: "Max formatting preview prompt.",
+        path: "~/.codescribe/prompts/formatting-max.txt",
+        source: "built_in_fallback",
         readError: nil
     )
 
@@ -424,7 +464,7 @@ extension CsSettings {
         llmAssistiveEndpoint: "https://api.openai.com/v1/responses",
         llmAssistiveModel: "gpt-4o",
         llmAssistiveProvider: "openai-responses",
-        formattingLevel: "medium",
+        formattingLevel: "correction",
         whisperModel: "whisper-large-v3-turbo",
         layeredTranscription: nil,
         agentWorkspaceRoots: ["~/Git"],

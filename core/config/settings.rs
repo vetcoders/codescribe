@@ -9,6 +9,52 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
+/// Canonical formatting policy shared by persistence, runtime selection, and UI.
+///
+/// Legacy values are accepted only at this boundary and are normalized before
+/// any new write. Unknown values are errors; they are never promoted to a more
+/// aggressive policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FormattingPolicy {
+    Off,
+    #[default]
+    Correction,
+    Smart,
+    Max,
+}
+
+impl FormattingPolicy {
+    pub const ALL: [Self; 4] = [Self::Off, Self::Correction, Self::Smart, Self::Max];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Correction => "correction",
+            Self::Smart => "smart",
+            Self::Max => "max",
+        }
+    }
+
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim() {
+            "off" | "raw" => Ok(Self::Off),
+            "correction" | "medium" => Ok(Self::Correction),
+            "smart" => Ok(Self::Smart),
+            "max" | "creative" => Ok(Self::Max),
+            value => anyhow::bail!(
+                "unknown FORMATTING_LEVEL {value:?}; expected off, correction, smart, or max"
+            ),
+        }
+    }
+
+    pub fn resolve(runtime: Option<&str>, persisted: Option<&str>) -> anyhow::Result<Self> {
+        runtime
+            .or(persisted)
+            .map(Self::parse)
+            .unwrap_or_else(|| Ok(Self::default()))
+    }
+}
+
 /// Regular-user settings (JSON, GUI-managed).
 /// All fields are Option — None means "use default or .env override".
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -444,7 +490,11 @@ impl UserSettings {
                     enabled: self.ai_formatting_enabled,
                     transcript_tagging_enabled: self.transcript_tagging_enabled,
                     transcript_tag_template: self.transcript_tag_template.clone(),
-                    level: self.formatting_level.clone(),
+                    level: self
+                        .formatting_level
+                        .as_deref()
+                        .and_then(|value| FormattingPolicy::parse(value).ok())
+                        .map(|policy| policy.as_str().to_string()),
                     llm_endpoint: self.llm_formatting_endpoint.clone(),
                     llm_model: self.llm_formatting_model.clone(),
                 }),
@@ -547,7 +597,9 @@ impl UserSettings {
                 .speech
                 .as_ref()
                 .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.level.clone()),
+                .and_then(|f| f.level.as_deref())
+                .and_then(|value| FormattingPolicy::parse(value).ok())
+                .map(|policy| policy.as_str().to_string()),
             llm_endpoint: v2.speech.as_ref().and_then(|s| s.llm_endpoint.clone()),
             llm_model: v2.speech.as_ref().and_then(|s| s.llm_model.clone()),
             llm_assistive_endpoint: v2
@@ -677,6 +729,14 @@ impl UserSettings {
         {
             anyhow::bail!("ui.chat_zoom must be within [0.75, 2.0]")
         }
+        if let Some(level) = v2
+            .speech
+            .as_ref()
+            .and_then(|speech| speech.formatting.as_ref())
+            .and_then(|formatting| formatting.level.as_deref())
+        {
+            FormattingPolicy::parse(level)?;
+        }
         Ok(())
     }
 
@@ -784,6 +844,9 @@ impl UserSettings {
         let dir = Self::settings_dir();
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
+        if let Some(level) = self.formatting_level.as_deref() {
+            FormattingPolicy::parse(level)?;
+        }
         let v2 = self.to_v2();
         Self::validate_v2(&v2)?;
         let json = serde_json::to_string_pretty(&v2)?;
@@ -896,7 +959,13 @@ impl UserSettings {
                 let trimmed = value.trim();
                 self.openai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
             }
-            "FORMATTING_LEVEL" => self.formatting_level = Some(value.to_owned()),
+            "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
+                Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),
+                Err(error) => {
+                    warn!("Rejected formatting policy write: {error}");
+                    return;
+                }
+            },
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
             "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
@@ -995,7 +1064,7 @@ impl UserSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::UserSettings;
+    use super::{FormattingPolicy, UserSettings};
     use crate::config::{ShortcutBinding, WorkMode};
     use serial_test::serial;
     use std::fs;
@@ -1081,6 +1150,79 @@ mod tests {
                 .is_some_and(|bindings| !bindings.is_empty()),
             "mode bindings must be persisted as canonical hotkey contract"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn formatting_policy_v1_v2_alias_matrix_normalizes_and_rejects_unknowns() {
+        let cases = [
+            ("off", FormattingPolicy::Off, "off"),
+            ("correction", FormattingPolicy::Correction, "correction"),
+            ("smart", FormattingPolicy::Smart, "smart"),
+            ("max", FormattingPolicy::Max, "max"),
+            ("raw", FormattingPolicy::Off, "off"),
+            ("medium", FormattingPolicy::Correction, "correction"),
+            ("creative", FormattingPolicy::Max, "max"),
+        ];
+
+        for (input, policy, normalized) in cases {
+            assert_eq!(
+                FormattingPolicy::parse(input).expect("known policy"),
+                policy
+            );
+
+            let v1_dir = setup_isolated_data_dir();
+            let v1_path = UserSettings::settings_path();
+            fs::write(&v1_path, format!(r#"{{"formatting_level":"{input}"}}"#)).expect("write V1");
+            let v1 = UserSettings::load();
+            assert_eq!(v1.formatting_level.as_deref(), Some(normalized));
+            let v1_json: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&v1_path).expect("read migrated V1"))
+                    .expect("parse migrated V1");
+            assert_eq!(
+                v1_json
+                    .pointer("/speech/formatting/level")
+                    .and_then(|v| v.as_str()),
+                Some(normalized)
+            );
+            drop(v1_dir);
+
+            let v2_dir = setup_isolated_data_dir();
+            let v2_path = UserSettings::settings_path();
+            fs::write(
+                &v2_path,
+                format!(
+                    r#"{{"schema_version":3,"speech":{{"formatting":{{"level":"{input}"}}}}}}"#
+                ),
+            )
+            .expect("write V2");
+            let v2 = UserSettings::load();
+            assert_eq!(v2.formatting_level.as_deref(), Some(normalized));
+            v2.save().expect("rewrite normalized V2");
+            let v2_json: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&v2_path).expect("read rewritten V2"))
+                    .expect("parse rewritten V2");
+            assert_eq!(
+                v2_json
+                    .pointer("/speech/formatting/level")
+                    .and_then(|v| v.as_str()),
+                Some(normalized)
+            );
+            drop(v2_dir);
+        }
+
+        for unknown in ["", "basic", "aggressive", "SMART", "maximum"] {
+            assert!(
+                FormattingPolicy::parse(unknown).is_err(),
+                "accepted {unknown:?}"
+            );
+        }
+
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("FORMATTING_LEVEL", "aggressive");
+        assert_eq!(settings.formatting_level, None);
+        assert!(!UserSettings::settings_path().exists());
     }
 
     #[test]

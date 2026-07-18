@@ -17,8 +17,8 @@ use std::sync::{Mutex, Once, OnceLock};
 use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::{
-    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, PromptKind, PromptSnapshot,
-    PromptWriteReason, UserSettings, prompt_snapshot, prompts, reset_to_defaults,
+    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, FormattingPolicy, PromptKind,
+    PromptSnapshot, PromptWriteReason, UserSettings, prompt_snapshot, prompts, reset_to_defaults,
     restore_prompt_to_default, write_prompt, write_prompt_bytes,
 };
 use codescribe_core::llm::account_auth;
@@ -157,6 +157,15 @@ impl From<PromptSnapshot> for CsPromptSnapshot {
             read_error: snapshot.read_error,
         }
     }
+}
+
+fn formatting_prompt_kind(level: &str) -> Result<PromptKind, CsError> {
+    let policy = FormattingPolicy::parse(level).map_err(|error| CsError::Config {
+        msg: error.to_string(),
+    })?;
+    PromptKind::for_formatting_policy(policy).ok_or_else(|| CsError::Config {
+        msg: "Off has no formatting prompt; choose correction, smart, or max".to_string(),
+    })
 }
 
 /// Presence-only view of the Keychain-backed API keys. Booleans only — the
@@ -459,11 +468,9 @@ impl CodescribeConfig {
                 settings.llm_assistive_provider.clone(),
                 &env_file,
             ),
-            formatting_level: effective_settings_string(
-                "FORMATTING_LEVEL",
-                settings.formatting_level.clone(),
-                &env_file,
-            ),
+            formatting_level: Config::formatting_policy()
+                .ok()
+                .map(|policy| policy.as_str().to_string()),
             whisper_model: effective_settings_string(
                 "WHISPER_MODEL",
                 settings.whisper_model.clone(),
@@ -868,6 +875,14 @@ impl CodescribeConfig {
         prompt_snapshot(PromptKind::Formatting).into()
     }
 
+    /// Content plus provenance/path for one explicit formatting policy prompt.
+    pub fn formatting_prompt_snapshot_for_level(
+        &self,
+        level: String,
+    ) -> Result<CsPromptSnapshot, CsError> {
+        Ok(prompt_snapshot(formatting_prompt_kind(&level)?).into())
+    }
+
     /// Content plus provenance/path for the assistive prompt editor.
     pub fn assistive_prompt_snapshot(&self) -> CsPromptSnapshot {
         prompt_snapshot(PromptKind::Assistive).into()
@@ -877,6 +892,20 @@ impl CodescribeConfig {
     pub fn set_formatting_prompt(&self, content: String) -> Result<(), CsError> {
         write_prompt(
             PromptKind::Formatting,
+            &content,
+            PromptWriteReason::SettingsSave,
+        )
+        .map_err(CsError::from)
+    }
+
+    /// Save one explicit formatting policy prompt through the shared owner.
+    pub fn set_formatting_prompt_for_level(
+        &self,
+        level: String,
+        content: String,
+    ) -> Result<(), CsError> {
+        write_prompt(
+            formatting_prompt_kind(&level)?,
             &content,
             PromptWriteReason::SettingsSave,
         )
@@ -896,6 +925,14 @@ impl CodescribeConfig {
     /// Restore only the formatting base prompt after explicit UI confirmation.
     pub fn restore_formatting_prompt_to_default(&self) -> Result<(), CsError> {
         restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)
+    }
+
+    /// Restore one explicit formatting policy prompt after UI confirmation.
+    pub fn restore_formatting_prompt_for_level_to_default(
+        &self,
+        level: String,
+    ) -> Result<(), CsError> {
+        restore_prompt_to_default(formatting_prompt_kind(&level)?).map_err(CsError::from)
     }
 
     /// Restore only the assistive base prompt after explicit UI confirmation.
@@ -1129,7 +1166,7 @@ struct PreservedPrompt {
 
 fn capture_base_prompts() -> std::io::Result<Vec<PreservedPrompt>> {
     let mut preserved = Vec::new();
-    for kind in [PromptKind::Formatting, PromptKind::Assistive] {
+    for kind in PromptKind::USER_OWNED {
         let path = prompts::prompts_dir().join(kind.filename());
         match fs::read(path) {
             Ok(bytes) => preserved.push(PreservedPrompt { kind, bytes }),
@@ -1823,6 +1860,14 @@ mod reset_tests {
             &root.join("prompts/formatting.txt"),
             b"sacred formatting bytes\n",
         );
+        write(
+            &root.join("prompts/formatting-smart.txt"),
+            b"sacred smart bytes\n",
+        );
+        write(
+            &root.join("prompts/formatting-max.txt"),
+            b"sacred max bytes\n",
+        );
         let root_canon = root.canonicalize().expect("canonical reset root");
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
 
@@ -1857,6 +1902,14 @@ mod reset_tests {
         assert_eq!(
             std::fs::read(root.join("prompts/formatting.txt")).expect("read restored formatting"),
             b"sacred formatting bytes\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("prompts/formatting-smart.txt")).expect("read restored smart"),
+            b"sacred smart bytes\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("prompts/formatting-max.txt")).expect("read restored max"),
+            b"sacred max bytes\n"
         );
         assert!(destination.join("codescribe-data/settings.json").is_file());
         assert!(

@@ -36,14 +36,16 @@ pub use types::{
     Config, ModeBinding, OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
-pub use settings::UserSettings;
+pub use settings::{FormattingPolicy, UserSettings};
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
 pub use prompts::{
-    DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptSource,
-    PromptWriteReason, get_assistive_prompt, get_assistive_prompt_path, get_formatting_prompt,
-    get_formatting_prompt_path, open_prompt_file, open_prompts_folder, prompt_snapshot,
+    DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, DEFAULT_MAX_FORMATTING_PROMPT,
+    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptSource, PromptWriteReason,
+    get_assistive_prompt, get_assistive_prompt_path, get_formatting_prompt,
+    get_formatting_prompt_for_policy, get_formatting_prompt_path,
+    get_formatting_prompt_path_for_policy, open_prompt_file, open_prompts_folder, prompt_snapshot,
     reset_to_defaults, restore_prompt_to_default, write_prompt, write_prompt_bytes,
 };
 

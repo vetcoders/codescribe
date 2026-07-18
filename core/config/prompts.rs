@@ -40,6 +40,22 @@ Examples:
 → "Najpierw zrób to, potem tamto, a na końcu jeszcze coś."
 "#;
 
+pub const DEFAULT_SMART_FORMATTING_PROMPT: &str = r#"You are a SMART TRANSCRIPTION EDITOR. Turn dictated speech into clear, natural written text while preserving every factual claim and the speaker's intent.
+
+You may:
+- correct punctuation, capitalization, grammar, and obvious speech-recognition artifacts;
+- remove filler words, false starts, and accidental repetitions when meaning is unchanged;
+- reorganize sentences and paragraphs for clarity;
+- use lists when the speaker clearly enumerates items.
+
+You must not invent facts, translate, answer the speaker, add commentary, or change the requested tone. Preserve names, numbers, commands, and uncertainty. Return only the edited text."#;
+
+pub const DEFAULT_MAX_FORMATTING_PROMPT: &str = r#"You are a MAXIMUM-FIDELITY PROSE EDITOR for voice transcription. Produce polished, publication-ready writing that expresses the speaker's complete intent.
+
+You may restructure sentences and paragraphs, remove verbal scaffolding, resolve obvious local ambiguity from context, and choose concise professional wording. Preserve all facts, names, numbers, constraints, opinions, uncertainty, and the original language.
+
+Never invent information, answer the content, translate, soften or intensify claims, or omit meaningful detail. If the source is fragmentary, polish only what is supported. Return only the rewritten text."#;
+
 pub const DEFAULT_ASSISTIVE_PROMPT: &str = r#"You are a text assistant running inside Codescribe.
 
 ASSISTIVE TEXT EDITING BEHAVIOR
@@ -104,13 +120,38 @@ SELECTED_TEXT:
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     Formatting,
+    FormattingSmart,
+    FormattingMax,
     Assistive,
 }
 
 impl PromptKind {
+    pub const FORMATTING: [Self; 3] =
+        [Self::Formatting, Self::FormattingSmart, Self::FormattingMax];
+
+    pub const USER_OWNED: [Self; 4] = [
+        Self::Formatting,
+        Self::FormattingSmart,
+        Self::FormattingMax,
+        Self::Assistive,
+    ];
+
+    pub const fn for_formatting_policy(
+        policy: crate::config::settings::FormattingPolicy,
+    ) -> Option<Self> {
+        match policy {
+            crate::config::settings::FormattingPolicy::Off => None,
+            crate::config::settings::FormattingPolicy::Correction => Some(Self::Formatting),
+            crate::config::settings::FormattingPolicy::Smart => Some(Self::FormattingSmart),
+            crate::config::settings::FormattingPolicy::Max => Some(Self::FormattingMax),
+        }
+    }
+
     pub const fn filename(self) -> &'static str {
         match self {
             Self::Formatting => "formatting.txt",
+            Self::FormattingSmart => "formatting-smart.txt",
+            Self::FormattingMax => "formatting-max.txt",
             Self::Assistive => "assistive.txt",
         }
     }
@@ -118,6 +159,8 @@ impl PromptKind {
     pub const fn default_content(self) -> &'static str {
         match self {
             Self::Formatting => DEFAULT_FORMATTING_PROMPT,
+            Self::FormattingSmart => DEFAULT_SMART_FORMATTING_PROMPT,
+            Self::FormattingMax => DEFAULT_MAX_FORMATTING_PROMPT,
             Self::Assistive => DEFAULT_ASSISTIVE_PROMPT,
         }
     }
@@ -238,12 +281,22 @@ fn load_optional(filename: &str) -> Option<String> {
 }
 
 pub fn get_formatting_prompt() -> String {
-    let mut base = prompt_snapshot(PromptKind::Formatting).content;
+    get_formatting_prompt_for_policy(crate::config::settings::FormattingPolicy::Correction)
+        .expect("Correction always owns a formatting prompt")
+}
+
+/// Resolve the exact provider system prompt for an explicit normalized policy.
+/// Off returns `None`, making bypass observable before any provider call.
+pub fn get_formatting_prompt_for_policy(
+    policy: crate::config::settings::FormattingPolicy,
+) -> Option<String> {
+    let kind = PromptKind::for_formatting_policy(policy)?;
+    let mut base = prompt_snapshot(kind).content;
     if let Some(tuning) = load_optional("formatting_tuning.txt") {
         base.push_str("\n\n");
         base.push_str(&tuning);
     }
-    base
+    Some(base)
 }
 
 pub fn get_assistive_prompt() -> String {
@@ -257,6 +310,12 @@ pub fn get_assistive_prompt() -> String {
 
 pub fn get_formatting_prompt_path() -> PathBuf {
     prompts_dir().join("formatting.txt")
+}
+
+pub fn get_formatting_prompt_path_for_policy(
+    policy: crate::config::settings::FormattingPolicy,
+) -> Option<PathBuf> {
+    PromptKind::for_formatting_policy(policy).map(|kind| prompts_dir().join(kind.filename()))
 }
 
 pub fn get_assistive_prompt_path() -> PathBuf {
@@ -303,16 +362,9 @@ pub fn restore_prompt_to_default(kind: PromptKind) -> std::io::Result<()> {
 }
 
 pub fn reset_to_defaults() -> std::io::Result<()> {
-    write_prompt(
-        PromptKind::Formatting,
-        DEFAULT_FORMATTING_PROMPT,
-        PromptWriteReason::LegacyReset,
-    )?;
-    write_prompt(
-        PromptKind::Assistive,
-        DEFAULT_ASSISTIVE_PROMPT,
-        PromptWriteReason::LegacyReset,
-    )?;
+    for kind in PromptKind::USER_OWNED {
+        write_prompt(kind, kind.default_content(), PromptWriteReason::LegacyReset)?;
+    }
     Ok(())
 }
 
@@ -532,7 +584,103 @@ mod tests {
 
         // Paths should end with expected filenames
         assert!(formatting_path.ends_with("formatting.txt"));
+        assert!(
+            get_formatting_prompt_path_for_policy(crate::config::settings::FormattingPolicy::Smart)
+                .expect("Smart path")
+                .ends_with("formatting-smart.txt")
+        );
+        assert!(
+            get_formatting_prompt_path_for_policy(crate::config::settings::FormattingPolicy::Max)
+                .expect("Max path")
+                .ends_with("formatting-max.txt")
+        );
         assert!(assistive_path.ends_with("assistive.txt"));
+    }
+
+    #[test]
+    #[serial]
+    fn all_formatting_prompts_share_exact_byte_read_write_failure_and_reset_contract() {
+        let sandbox = TempDir::new().expect("prompt sandbox");
+        let _env = EnvGuard::set(sandbox.path());
+
+        for (index, kind) in PromptKind::FORMATTING.into_iter().enumerate() {
+            let path = prompts_dir().join(kind.filename());
+            let missing = prompt_snapshot(kind);
+            assert_eq!(missing.content, kind.default_content());
+            assert_eq!(missing.source, PromptSource::BuiltInFallback);
+            assert!(!path.exists(), "reads must not create {}", kind.filename());
+
+            let original = format!("custom-{index}\nexact bytes: \0 tail\n").into_bytes();
+            fs::create_dir_all(path.parent().expect("prompt parent")).expect("create prompt dir");
+            fs::write(&path, &original).expect("seed custom prompt");
+            let original_digest = sha256_hex(&original);
+
+            let custom = prompt_snapshot(kind);
+            assert_eq!(custom.content.as_bytes(), original);
+            assert_eq!(custom.source, PromptSource::CustomFile);
+            assert_eq!(
+                sha256_hex(&fs::read(&path).expect("read custom")),
+                original_digest
+            );
+
+            let failure = write_prompt_at_with_rename(
+                &path,
+                kind,
+                b"must not land",
+                PromptWriteReason::SettingsSave,
+                |_, _| Err(std::io::Error::other("injected rename failure")),
+            )
+            .expect_err("injected failure must surface");
+            assert!(failure.to_string().contains("injected rename failure"));
+            assert_eq!(fs::read(&path).expect("read after failure"), original);
+
+            write_prompt(kind, "replacement", PromptWriteReason::SettingsSave)
+                .expect("atomic replacement");
+            assert_eq!(fs::read(&path).expect("read replacement"), b"replacement");
+
+            let backup_dir = path.parent().expect("prompt parent").join("backups");
+            let has_exact_backup = fs::read_dir(&backup_dir)
+                .expect("read prompt backups")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(kind.filename())
+                })
+                .any(|entry| matches!(fs::read(entry.path()), Ok(bytes) if bytes == original));
+            assert!(
+                has_exact_backup,
+                "missing exact backup for {}",
+                kind.filename()
+            );
+
+            restore_prompt_to_default(kind).expect("restore built-in default");
+            assert_eq!(
+                fs::read(&path).expect("read restored default"),
+                kind.default_content().as_bytes()
+            );
+
+            let audit = fs::read_to_string(prompts_dir().join("prompt-audit.jsonl"))
+                .expect("read prompt audit");
+            assert!(audit.contains(kind.filename()));
+            assert!(audit.contains("\"reason\":\"settings_save\""));
+            assert!(audit.contains("\"reason\":\"restore_default\""));
+            assert!(audit.contains("\"status\":\"failed\""));
+            assert!(audit.contains("\"status\":\"completed\""));
+
+            fs::remove_file(&path).expect("simulate reset moving prompt away");
+            write_prompt_bytes(kind, &original, PromptWriteReason::AppResetPreservation)
+                .expect("restore exact reset bytes");
+            assert_eq!(
+                fs::read(&path).expect("read reset-restored prompt"),
+                original
+            );
+            assert_eq!(
+                sha256_hex(&fs::read(&path).expect("digest restored")),
+                original_digest
+            );
+        }
     }
 
     #[test]

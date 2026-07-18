@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Prompt editor: edits the two BASE prompt files the core uses — the formatting
-// prompt (`formatting.txt`) and the assistive prompt (`assistive.txt`). Each is
+// Prompt editor: edits the three user-owned formatting prompts and the assistive
+// prompt. Each is
 // loaded with source/path provenance, edited in a TextEditor, and saved back
 // through the core's atomic writer. Restore is explicit and per prompt.
 //
@@ -12,8 +12,12 @@ struct PromptPanel: View {
     @ObservedObject var model: SettingsViewModel
 
     @State private var formatting: String = ""
+    @State private var formattingSmart: String = ""
+    @State private var formattingMax: String = ""
     @State private var assistive: String = ""
     @State private var formattingSnapshot: CsPromptSnapshot?
+    @State private var formattingSmartSnapshot: CsPromptSnapshot?
+    @State private var formattingMaxSnapshot: CsPromptSnapshot?
     @State private var assistiveSnapshot: CsPromptSnapshot?
 
     var body: some View {
@@ -32,24 +36,64 @@ struct PromptPanel: View {
                 .padding(.top, 8)
 
             PromptEditor(
-                title: "Formatting prompt",
-                subtitle: "Rewrites raw transcripts (formatting.txt)",
+                title: "Correction prompt",
+                subtitle: "Correction only AI formatting (formatting.txt)",
                 text: $formatting,
                 snapshot: formattingSnapshot,
                 onSave: {
-                    guard let updated = model.saveFormattingPrompt(formatting) else { return false }
+                    guard let updated = model.saveFormattingPrompt(.correction, content: formatting) else { return false }
                     formatting = updated.content
                     formattingSnapshot = updated
                     return true
                 },
                 onRestore: {
-                    guard let updated = model.restoreFormattingPromptToDefault() else { return false }
+                    guard let updated = model.restoreFormattingPromptToDefault(.correction) else { return false }
                     formatting = updated.content
                     formattingSnapshot = updated
                     return true
                 }
             )
             .padding(.top, 22)
+
+            PromptEditor(
+                title: "Smart prompt",
+                subtitle: "Balanced transcript editing (formatting-smart.txt)",
+                text: $formattingSmart,
+                snapshot: formattingSmartSnapshot,
+                onSave: {
+                    guard let updated = model.saveFormattingPrompt(.smart, content: formattingSmart) else { return false }
+                    formattingSmart = updated.content
+                    formattingSmartSnapshot = updated
+                    return true
+                },
+                onRestore: {
+                    guard let updated = model.restoreFormattingPromptToDefault(.smart) else { return false }
+                    formattingSmart = updated.content
+                    formattingSmartSnapshot = updated
+                    return true
+                }
+            )
+            .padding(.top, 18)
+
+            PromptEditor(
+                title: "Max prompt",
+                subtitle: "Maximum supported prose polish (formatting-max.txt)",
+                text: $formattingMax,
+                snapshot: formattingMaxSnapshot,
+                onSave: {
+                    guard let updated = model.saveFormattingPrompt(.max, content: formattingMax) else { return false }
+                    formattingMax = updated.content
+                    formattingMaxSnapshot = updated
+                    return true
+                },
+                onRestore: {
+                    guard let updated = model.restoreFormattingPromptToDefault(.max) else { return false }
+                    formattingMax = updated.content
+                    formattingMaxSnapshot = updated
+                    return true
+                }
+            )
+            .padding(.top, 18)
 
             PromptEditor(
                 title: "Assistive prompt",
@@ -74,12 +118,20 @@ struct PromptPanel: View {
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
         .onAppear {
-            guard formattingSnapshot == nil, assistiveSnapshot == nil else { return }
-            let formattingLoaded = model.formattingPromptSnapshot()
+            guard formattingSnapshot == nil, formattingSmartSnapshot == nil,
+                  formattingMaxSnapshot == nil, assistiveSnapshot == nil else { return }
+            let formattingLoaded = model.formattingPromptSnapshot(level: .correction)
+                ?? model.formattingPromptSnapshot()
+            let smartLoaded = model.formattingPromptSnapshot(level: .smart)
+            let maxLoaded = model.formattingPromptSnapshot(level: .max)
             let assistiveLoaded = model.assistivePromptSnapshot()
             formatting = formattingLoaded.content
+            formattingSmart = smartLoaded?.content ?? ""
+            formattingMax = maxLoaded?.content ?? ""
             assistive = assistiveLoaded.content
             formattingSnapshot = formattingLoaded
+            formattingSmartSnapshot = smartLoaded
+            formattingMaxSnapshot = maxLoaded
             assistiveSnapshot = assistiveLoaded
         }
     }
