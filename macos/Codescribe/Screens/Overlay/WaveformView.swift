@@ -26,13 +26,17 @@ final class AudioLevelMeter {
     /// callers fall back to the ambient animation.
     private(set) var gain: Double?
 
-    /// Map one linear RMS block onto display gain: dB scale (speech lives
-    /// around −40…−15 dBFS), fast attack / slow release so peaks land instantly
-    /// and the decay reads naturally instead of flickering per block.
+    /// Map one linear RMS block onto display gain: dB scale (speech at a normal
+    /// mic distance lives around −45…−25 dBFS), fast attack / slow release so
+    /// peaks land instantly and the decay reads naturally instead of flickering
+    /// per block. The window is deliberately tight and the response curve
+    /// perceptual (pow 0.7): ordinary speech must visibly move the bars, not
+    /// hover just above the rest scale.
     func push(rms: Float) {
         guard rms.isFinite, rms >= 0 else { return }
         let db = 20 * log10(max(Double(rms), 1e-6))
-        let target = min(max((db + 50) / 40, 0), 1)
+        let linear = min(max((db + 55) / 30, 0), 1)
+        let target = pow(linear, 0.7)
         let current = gain ?? 0
         let smoothing = target > current ? 0.6 : 0.15
         gain = current + (target - current) * smoothing
