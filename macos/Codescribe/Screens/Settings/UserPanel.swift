@@ -5,7 +5,7 @@ import SwiftUI
 struct UserPanel: View {
     @ObservedObject var model: SettingsViewModel
 
-    private static let docsURL = URL(string: "https://github.com/VetCoders/CodeScribe/tree/develop/docs")!
+    private static let docsURL = URL(string: "https://github.com/vetcoders/codescribe/tree/develop/docs")!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
