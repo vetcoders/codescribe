@@ -3,6 +3,15 @@ import XCTest
 
 @MainActor
 final class TrayViewModelTests: XCTestCase {
+    /// The tray's Auto Format row cycles the full wheel: Off → Correction →
+    /// Smart → Max → back to Off. One canonical order, no dead ends.
+    func testAutoFormatLevelCyclesFullWheel() {
+        XCTAssertEqual(FormattingPolicyOption.off.next, .correction)
+        XCTAssertEqual(FormattingPolicyOption.correction.next, .smart)
+        XCTAssertEqual(FormattingPolicyOption.smart.next, .max)
+        XCTAssertEqual(FormattingPolicyOption.max.next, .off)
+    }
+
     func testRefreshStatusReadsEntirePersistedTraySnapshot() {
         let engine = TrackingTrayEngine(
             showDockIcon: true,

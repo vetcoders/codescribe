@@ -58,6 +58,13 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
 
     static let editablePrompts: [Self] = [.correction, .smart, .max]
+
+    /// Next level in the tray's cycling control: Off → Correction → Smart → Max → Off.
+    var next: Self {
+        let all = Self.allCases
+        let index = all.firstIndex(of: self) ?? all.startIndex
+        return all[(index + 1) % all.count]
+    }
 }
 
 // Every rail section declares its product truth explicitly.

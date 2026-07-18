@@ -190,74 +190,29 @@ struct TrayMenuView: View {
         }
     }
 
-    /// A native switch keeps Auto Paste keyboard-focusable and gives VoiceOver
-    /// the actual persisted on/off value without relying on decorative keycaps.
+    /// Auto Paste shares the exact baseline row (icon + trailing On/Off keycap)
+    /// with Show Dock Icon and Transcription Overlay — one visual grammar for
+    /// every quick toggle. TrayRow keeps the locked palette and geometry.
     private var autoPasteToggle: some View {
-        HStack(spacing: 11) {
-            CSIconView(icon: .send, size: 13, color: CSColor.textBodyAlt)
-                .frame(width: 18)
-            Text("Auto Paste")
-                .font(CSFont.ui(13, .medium))
-                .foregroundStyle(CSColor.textBodyAlt)
-            Spacer(minLength: 8)
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: { viewModel.autoPasteEnabled },
-                    set: { viewModel.setAutoPasteEnabled($0) }
-                )
-            )
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .accessibilityLabel("Auto Paste")
-            .accessibilityValue(viewModel.autoPasteEnabled ? "On" : "Off")
-            .accessibilityHint("Automatically insert completed dictation")
+        toggleRow(icon: .send, title: "Auto Paste", isOn: viewModel.autoPasteEnabled) {
+            viewModel.setAutoPasteEnabled($0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
     }
 
-    /// Four explicit normalized states in a compact native menu. A segmented
-    /// row would force the 300pt popover to abbreviate Correction; the menu keeps
-    /// every label legible while remaining keyboard and VoiceOver reachable.
+    /// Auto Format is a cycling row in the same baseline grammar: each click
+    /// advances Off → Correction → Smart → Max → Off. The current level sits in
+    /// the trailing keycap slot, so nothing opens over the 300pt popover.
     private var autoFormatMenu: some View {
-        HStack(spacing: 11) {
-            CSIconView(icon: .edit, size: 13, color: CSColor.textBodyAlt)
-                .frame(width: 18)
-            Text("Auto Format")
-                .font(CSFont.ui(13, .medium))
-                .foregroundStyle(CSColor.textBodyAlt)
-            Spacer(minLength: 8)
-            Menu {
-                ForEach(FormattingPolicyOption.allCases) { level in
-                    Button {
-                        viewModel.setAutoFormatLevel(level)
-                    } label: {
-                        if level == viewModel.autoFormatLevel {
-                            Label(level.visibleName, systemImage: "checkmark")
-                        } else {
-                            Text(level.visibleName)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Text(viewModel.autoFormatLevel.visibleName)
-                        .font(CSFont.mono(10, .medium))
-                        .foregroundStyle(CSColor.oliveLight)
-                    CSIconView(icon: .chevronUpDown, size: 11, color: CSColor.textFaint)
-                }
-                .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+        TrayRow(
+            icon: .edit,
+            title: "Auto Format",
+            shortcut: viewModel.autoFormatLevel.visibleName,
+            shortcutColor: viewModel.autoFormatLevel == .off
+                ? CSColor.textFaintAlt : CSColor.oliveLight
+        ) { viewModel.setAutoFormatLevel(viewModel.autoFormatLevel.next) }
             .accessibilityLabel("Auto Format")
             .accessibilityValue(viewModel.autoFormatLevel.visibleName)
-            .accessibilityHint("Choose automatic formatting level")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+            .accessibilityHint("Cycle automatic formatting level")
     }
 
     /// A checkbox-style row reusing `TrayRow`, with the on/off state shown as the
