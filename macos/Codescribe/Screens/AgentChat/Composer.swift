@@ -130,6 +130,39 @@ struct Composer: View {
         .background(hostWindowReader)
         .onAppear(perform: installPasteMonitor)
         .onDisappear(perform: removePasteMonitor)
+        .task(id: store.composerFocusRequest) {
+            guard store.composerFocusRequest > 0 else { return }
+            // The first summon can create the window and request focus in the
+            // same run-loop turn. Yield once so the native field editor exists.
+            await Task.yield()
+            focusNativeComposer()
+        }
+    }
+
+    /// W1-B moved the composer onto a native `NSTextView`. Keep the SwiftUI
+    /// focus binding in sync, then explicitly make that view first responder so
+    /// a newly-created Agent window and an already-visible window behave alike.
+    @MainActor
+    private func focusNativeComposer() {
+        fieldFocused = true
+        let window = hostWindow
+        DispatchQueue.main.async {
+            guard let textView = Self.nativeComposer(in: window?.contentView) else { return }
+            window?.makeFirstResponder(textView)
+        }
+    }
+
+    @MainActor
+    private static func nativeComposer(in view: NSView?) -> NSTextView? {
+        guard let view else { return nil }
+        if let textView = view as? NSTextView,
+           textView.accessibilityIdentifier() == "agent-composer-text" {
+            return textView
+        }
+        for child in view.subviews {
+            if let textView = nativeComposer(in: child) { return textView }
+        }
+        return nil
     }
 
     // MARK: Voice-note mic

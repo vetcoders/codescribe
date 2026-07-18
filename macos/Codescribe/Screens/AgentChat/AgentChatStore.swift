@@ -251,6 +251,9 @@ final class AgentChatStore: ObservableObject {
     @Published var threads: [ChatThread]
     @Published var selectedThreadID: UUID?
     @Published var draft: String = ""
+    /// Monotonic UI command consumed by the composer. It carries no text and
+    /// deliberately does not mutate the selected thread or staged attachments.
+    @Published private(set) var composerFocusRequest: UInt64 = 0
     @Published private(set) var dictationPreview: String = ""
 
     /// Images staged in the composer for the next message. Cleared when the
@@ -277,6 +280,10 @@ final class AgentChatStore: ObservableObject {
 
     /// Toggle the composer voice note (start ↔ stop-and-insert).
     func toggleDictation() { dictation?.toggle() }
+
+    func requestComposerFocus() {
+        composerFocusRequest &+= 1
+    }
 
     /// Set by the real adapter as the dictation session transitions. No-op-safe
     /// when no adapter is wired.

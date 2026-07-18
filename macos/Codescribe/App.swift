@@ -17,6 +17,43 @@ private let notesLog = Logger(
     category: "notes"
 )
 
+/// Testable seam for the no-payload Agent command. AppDelegate remains the
+/// sole window owner; this action only sequences fronting that window and
+/// requesting composer focus on the existing store.
+@MainActor
+final class AgentSummonAction {
+    private let store: AgentChatStore
+    private let showAgent: @MainActor () -> Void
+
+    init(store: AgentChatStore, showAgent: @escaping @MainActor () -> Void) {
+        self.store = store
+        self.showAgent = showAgent
+    }
+
+    func perform() {
+        showAgent()
+        store.requestComposerFocus()
+    }
+}
+
+/// UniFFI callbacks arrive off-main. This listener performs exactly one hop to
+/// the AppDelegate-owned action and carries no recording/model payload.
+final class AgentAppActionListener: CsAppActionListener, @unchecked Sendable {
+    private let summonAgent: @MainActor () -> Void
+
+    init(summonAgent: @escaping @MainActor () -> Void) {
+        self.summonAgent = summonAgent
+    }
+
+    func onShowAgent() {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.summonAgent()
+            }
+        }
+    }
+}
+
 @main
 struct CodescribeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -61,6 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // foreign callback the moment Swift drops its reference, which would silently
     // kill live voice-reply rendering. Held for the app's lifetime.
     private var voiceDeliveryListener: VoiceDeliveryListener?
+    private var appActionListener: AgentAppActionListener?
+    private lazy var agentSummonAction = AgentSummonAction(store: model.chat) { [weak self] in
+        self?.showAgent()
+    }
     private var statusItem: NSStatusItem!
     private var hasUnreadAgentUpdate = false
     // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
@@ -125,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wireTrayActions()
         installStatusItem()
         installTextScaleMonitor()
+        registerAppActions()
         startHotkeys()
         registerVoiceDelivery()
         prewarmRecordingController()
@@ -483,6 +525,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         voiceDeliveryListener = listener
         hotkeys.setAgentDeliveryListener(listener: listener)
+    }
+
+    private func registerAppActions() {
+        let action = agentSummonAction
+        let listener = AgentAppActionListener { [weak action] in
+            action?.perform()
+            appLogger.info("Agent summon command handled: window fronted and composer focus requested")
+        }
+        appActionListener = listener
+        hotkeys.setAppActionListener(listener: listener)
     }
 
     private func startHotkeys() {

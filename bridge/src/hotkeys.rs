@@ -28,6 +28,15 @@ use crate::{CsError, CsLanguage};
 
 type SharedController = Arc<Mutex<Option<Arc<RecordingController>>>>;
 type SharedListener = Arc<RwLock<Option<Arc<dyn CsTranscriptionListener>>>>;
+type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>;
+
+/// Foreign callback for UI-only global commands. These actions are deliberately
+/// separate from `CsTranscriptionListener`: they carry no audio or model payload
+/// and must never enter the recording controller path.
+#[uniffi::export(with_foreign)]
+pub trait CsAppActionListener: Send + Sync {
+    fn on_show_agent(&self);
+}
 
 fn shared_controller() -> SharedController {
     static CONTROLLER: OnceLock<SharedController> = OnceLock::new();
@@ -37,6 +46,37 @@ fn shared_controller() -> SharedController {
 fn shared_listener() -> SharedListener {
     static LISTENER: OnceLock<SharedListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
+}
+
+fn shared_app_action_listener() -> SharedAppActionListener {
+    static LISTENER: OnceLock<SharedAppActionListener> = OnceLock::new();
+    Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
+}
+
+fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
+    shared_app_action_listener()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(Arc::clone)
+}
+
+fn route_hotkey_event<F>(
+    event: HotkeyEvent,
+    app_action_listener: Option<Arc<dyn CsAppActionListener>>,
+    dispatch_recording: F,
+) where
+    F: FnOnce(HotkeyEvent),
+{
+    match event {
+        HotkeyEvent::ShowAgent => {
+            tracing::info!("Agent summon command: dispatching UI-only app action");
+            if let Some(listener) = app_action_listener {
+                listener.on_show_agent();
+            }
+        }
+        recording_event => dispatch_recording(recording_event),
+    }
 }
 
 fn ensure_controller(
@@ -339,16 +379,27 @@ impl CodescribeHotkeys {
                 let spawn_handle = handle.clone();
                 let controller_handle = handle.clone();
                 let controller_store = Arc::clone(&controller_store);
-                spawn_handle.spawn(async move {
-                    optimistically_show_overlay(&event).await;
-                    let controller = ensure_controller(&controller_store, controller_handle);
-                    let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
-                    compensate_orphaned_preparing(&controller).await;
-                    if let Err(error) = dispatch {
-                        tray_status::update_tray_status(TrayStatus::Error);
-                        eprintln!("Hotkey event error: {error}");
-                    }
-                });
+                route_hotkey_event(
+                    event,
+                    current_app_action_listener(),
+                    move |recording_event| {
+                        spawn_handle.spawn(async move {
+                            optimistically_show_overlay(&recording_event).await;
+                            let controller =
+                                ensure_controller(&controller_store, controller_handle);
+                            let dispatch = dispatch_recording_hotkey_event(
+                                recording_event,
+                                Arc::clone(&controller),
+                            )
+                            .await;
+                            compensate_orphaned_preparing(&controller).await;
+                            if let Err(error) = dispatch {
+                                tray_status::update_tray_status(TrayStatus::Error);
+                                eprintln!("Hotkey event error: {error}");
+                            }
+                        });
+                    },
+                );
             }
         });
 
@@ -375,6 +426,13 @@ impl CodescribeHotkeys {
     /// to the listener (UniFFI otherwise releases the foreign callback).
     pub fn set_agent_delivery_listener(&self, listener: Arc<dyn CsAgentDeliveryListener>) {
         set_delivery_listener(listener);
+    }
+
+    /// Register the Swift listener for no-payload application commands.
+    pub fn set_app_action_listener(&self, listener: Arc<dyn CsAppActionListener>) {
+        let store = shared_app_action_listener();
+        let mut guard = store.write().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(listener);
     }
 
     /// Prompt-free warmup for the shared recording controller.
@@ -527,18 +585,21 @@ impl CodescribeHotkeys {
 async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
     optimistically_show_overlay(&event).await;
     let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-    let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
+    let dispatch = dispatch_recording_hotkey_event(event, Arc::clone(&controller)).await;
     compensate_orphaned_preparing(&controller).await;
     dispatch.map_err(|error| CsError::Recording {
         msg: error.to_string(),
     })
 }
 
-async fn dispatch_hotkey_event(
+async fn dispatch_recording_hotkey_event(
     event: HotkeyEvent,
     controller: Arc<RecordingController>,
 ) -> anyhow::Result<()> {
     match event {
+        HotkeyEvent::ShowAgent => {
+            unreachable!("ShowAgent must be routed before recording dispatch")
+        }
         HotkeyEvent::Hold {
             action,
             mode,
@@ -662,7 +723,7 @@ mod dispatch_tests {
         tray_status::update_tray_status(TrayStatus::Idle);
 
         let controller = Arc::new(RecordingController::new_without_keychain());
-        dispatch_hotkey_event(
+        dispatch_recording_hotkey_event(
             HotkeyEvent::DoubleTapBlocked {
                 gesture: DoubleTapGesture::LeftOption,
                 reason: DoubleTapBlockReason::ModifierComboActive,
@@ -673,6 +734,51 @@ mod dispatch_tests {
         .expect("blocked double-tap dispatch should not fail");
 
         assert_eq!(tray_status::current_tray_status(), TrayStatus::Idle);
+    }
+}
+
+#[cfg(test)]
+mod app_action_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct CountingAppActionListener {
+        show_agent_calls: AtomicUsize,
+    }
+
+    impl CsAppActionListener for CountingAppActionListener {
+        fn on_show_agent(&self) {
+            self.show_agent_calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn show_agent_routes_without_recording_or_preparing_payload() {
+        PREPARING_PENDING.store(false, Ordering::SeqCst);
+        let listener = Arc::new(CountingAppActionListener {
+            show_agent_calls: AtomicUsize::new(0),
+        });
+        let recording_calls = Arc::new(AtomicUsize::new(0));
+        let recording_calls_for_route = Arc::clone(&recording_calls);
+
+        route_hotkey_event(HotkeyEvent::ShowAgent, Some(listener.clone()), move |_| {
+            recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 0);
+        assert!(!PREPARING_PENDING.load(Ordering::SeqCst));
+
+        let recording_calls_for_route = Arc::clone(&recording_calls);
+        route_hotkey_event(
+            HotkeyEvent::ToggleNormal,
+            Some(listener.clone()),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
     }
 }
 
