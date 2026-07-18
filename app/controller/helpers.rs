@@ -566,6 +566,7 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
             updated_at: now,
             title: "Codescribe Agent Chat".to_string(),
             title_is_custom: false,
+            title_is_generated: false,
             mode: "assistive".to_string(),
             tags: vec!["agent".to_string(), "overlay".to_string()],
             notes: Vec::new(),
@@ -577,7 +578,7 @@ fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
         });
 
     thread.updated_at = now;
-    if !thread.title_is_custom {
+    if thread.title_is_heuristic() {
         thread.title = derive_thread_title(runtime.session.messages());
     }
     thread.summary = derive_thread_summary(runtime.session.messages());
@@ -624,6 +625,7 @@ fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Res
         updated_at: now,
         title,
         title_is_custom: false,
+        title_is_generated: false,
         mode: "assistive".to_string(),
         tags: vec![
             "agent".to_string(),

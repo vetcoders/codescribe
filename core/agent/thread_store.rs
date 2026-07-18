@@ -29,6 +29,11 @@ pub struct Thread {
     /// (they default to auto-titled).
     #[serde(default)]
     pub title_is_custom: bool,
+    /// True when the title came from the isolated one-shot title provider.
+    /// Older thread JSON predates this ownership state and therefore migrates
+    /// safely into the heuristic state (`false/false`).
+    #[serde(default)]
+    pub title_is_generated: bool,
     pub mode: String,
     pub tags: Vec<String>,
     pub notes: Vec<ThreadNote>,
@@ -40,6 +45,12 @@ pub struct Thread {
 }
 
 impl Thread {
+    /// A title is heuristic only while neither durable owner has claimed it.
+    /// Both persistence paths use this predicate before deriving a slug.
+    pub fn title_is_heuristic(&self) -> bool {
+        !self.title_is_custom && !self.title_is_generated
+    }
+
     pub fn add_note(
         &mut self,
         text: impl Into<String>,
@@ -195,6 +206,30 @@ impl ThreadStore {
         let mut thread = self.load_thread(id)?;
         thread.title = trimmed.to_string();
         thread.title_is_custom = true;
+        thread.title_is_generated = false;
+        self.save_thread(&thread)?;
+        Ok(true)
+    }
+
+    /// Persist an AI-generated title without stealing ownership from a manual
+    /// rename. Returns `false` for a missing thread or a custom-owned title.
+    /// `updated_at` stays unchanged so title completion cannot reorder the rail.
+    pub fn set_generated_title(&self, id: &str, title: &str) -> Result<bool> {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            bail!("Generated thread title cannot be empty");
+        }
+        let path = self.thread_path(id)?;
+        if !path.exists() {
+            return Ok(false);
+        }
+        let mut thread = self.load_thread(id)?;
+        if thread.title_is_custom {
+            return Ok(false);
+        }
+        thread.title = trimmed.to_string();
+        thread.title_is_custom = false;
+        thread.title_is_generated = true;
         self.save_thread(&thread)?;
         Ok(true)
     }
@@ -546,6 +581,7 @@ mod tests {
             updated_at,
             title: "Parvo patient follow-up".to_string(),
             title_is_custom: false,
+            title_is_generated: false,
             mode: "assistive".to_string(),
             tags: vec!["urgent".to_string(), "canine".to_string()],
             notes: vec![ThreadNote {
@@ -742,6 +778,10 @@ mod tests {
             loaded.title_is_custom,
             "rename marks the title as user-custom"
         );
+        assert!(
+            !loaded.title_is_generated,
+            "manual rename clears generated ownership"
+        );
 
         let index = ThreadIndex::load_or_create(store.threads_dir())?;
         let summary = index
@@ -760,6 +800,90 @@ mod tests {
             !store.set_thread_title("t_2026-01-01_missing", "x")?,
             "renaming an absent thread returns false"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_thread_json_defaults_generated_ownership_to_false() -> Result<()> {
+        let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        let mut value = serde_json::to_value(&thread)?;
+        value
+            .as_object_mut()
+            .expect("thread serializes as an object")
+            .remove("title_is_generated");
+
+        let loaded: Thread = serde_json::from_value(value)?;
+        assert!(!loaded.title_is_generated);
+        assert!(loaded.title_is_heuristic());
+        Ok(())
+    }
+
+    #[test]
+    fn generated_and_custom_title_transitions_are_exclusive() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        let id = thread.id.clone();
+        let original_updated_at = thread.updated_at;
+        assert!(!thread.title_is_custom);
+        assert!(!thread.title_is_generated);
+        assert!(thread.title_is_heuristic());
+        store.save_thread(&thread)?;
+
+        assert!(store.set_generated_title(&id, "  Analiza wyników Łatki  ")?);
+        let generated = store.load_thread(&id)?;
+        assert_eq!(generated.title, "Analiza wyników Łatki");
+        assert!(!generated.title_is_custom);
+        assert!(generated.title_is_generated);
+        assert!(!generated.title_is_heuristic());
+        assert_eq!(generated.updated_at, original_updated_at);
+        let generated_index = ThreadIndex::load_or_create(store.threads_dir())?;
+        let generated_summary = generated_index
+            .data()
+            .threads
+            .iter()
+            .find(|value| value.id == id)
+            .expect("generated summary should exist");
+        assert_eq!(generated_summary.title, "Analiza wyników Łatki");
+
+        assert!(store.set_thread_title(&id, "Plan właściciela")?);
+        let custom = store.load_thread(&id)?;
+        assert_eq!(custom.title, "Plan właściciela");
+        assert!(custom.title_is_custom);
+        assert!(!custom.title_is_generated);
+        assert!(!custom.title_is_heuristic());
+        assert_eq!(custom.updated_at, original_updated_at);
+        Ok(())
+    }
+
+    #[test]
+    fn generated_title_rejects_blank_missing_and_custom_without_mutation() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        let id = thread.id.clone();
+        store.save_thread(&thread)?;
+
+        assert!(store.set_generated_title(&id, " \n\t ").is_err());
+        assert!(!store.set_generated_title("t_2026-01-01_missing", "Generated")?);
+
+        assert!(store.set_thread_title(&id, "Custom authority")?);
+        let before = store.load_thread(&id)?;
+        assert!(!store.set_generated_title(&id, "Generated overwrite")?);
+        let after = store.load_thread(&id)?;
+        assert_eq!(
+            after, before,
+            "custom content and ownership must be preserved"
+        );
+
+        let index = ThreadIndex::load_or_create(store.threads_dir())?;
+        let summary = index
+            .data()
+            .threads
+            .iter()
+            .find(|value| value.id == id)
+            .expect("summary should exist");
+        assert_eq!(summary.title, "Custom authority");
         Ok(())
     }
 

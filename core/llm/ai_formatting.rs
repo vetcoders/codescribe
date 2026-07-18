@@ -109,6 +109,12 @@ const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_AI_TCP_KEEPALIVE_MS: u64 = 30_000;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u32 = 8192;
+const THREAD_TITLE_TIMEOUT: Duration = Duration::from_secs(8);
+const THREAD_TITLE_MAX_TOKENS: u32 = 24;
+const THREAD_TITLE_MAX_CHARS: usize = 72;
+const THREAD_TITLE_PROMPT: &str = "Create a concise 3-6 word title for this conversation. \
+Use the user's language and a descriptive noun phrase. Return only the title on one line, \
+with no quotes, bullet, label, or decorative punctuation.";
 
 #[derive(Debug, Clone, Copy)]
 struct RetryPolicy {
@@ -290,6 +296,14 @@ enum EndpointFormat {
     AnthropicMessages,
 }
 
+#[derive(Debug, Clone)]
+struct ThreadTitleProvider {
+    format: EndpointFormat,
+    endpoint: String,
+    model: String,
+    api_key: Option<String>,
+}
+
 /// Resolve request format from explicit provider, preserving path-based Ollama
 /// compatibility only for the protected OpenAI/default lane.
 fn detect_format(endpoint: &str, provider: ProviderKind) -> EndpointFormat {
@@ -300,6 +314,278 @@ fn detect_format(endpoint: &str, provider: ProviderKind) -> EndpointFormat {
         }
         ProviderKind::OpenAiResponses => EndpointFormat::ResponsesApi,
     }
+}
+
+/// Generate one isolated title through the currently selected formatting lane.
+///
+/// This path deliberately does not call any formatting/assistive request helper:
+/// it sends exactly one bounded JSON request, passes only `text` as user input,
+/// and never reads or writes response-chain or Ollama memory state.
+pub async fn generate_thread_title(text: &str) -> Result<Option<String>> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let provider = resolve_thread_title_provider()?;
+    generate_thread_title_with_provider(text, &provider, THREAD_TITLE_TIMEOUT).await
+}
+
+fn resolve_thread_title_provider() -> Result<ThreadTitleProvider> {
+    let config = Config::load();
+    let provider = lane_truth::provider(LlmMode::Formatting);
+    let model = lane_truth::model_for_provider(LlmMode::Formatting, provider, &config);
+    let endpoint = match provider {
+        ProviderKind::OpenAiResponses => lane_truth::endpoint(LlmMode::Formatting, &config),
+        ProviderKind::AnthropicMessages => lane_truth::anthropic_messages_endpoint(),
+    };
+    let format = detect_format(&endpoint, provider);
+    let api_key = match format {
+        EndpointFormat::ResponsesApi => Some(get_formatting_api_key()?),
+        EndpointFormat::AnthropicMessages => Some(get_anthropic_api_key()?),
+        EndpointFormat::OllamaChat => None,
+    };
+
+    Ok(ThreadTitleProvider {
+        format,
+        endpoint,
+        model,
+        api_key,
+    })
+}
+
+async fn generate_thread_title_with_provider(
+    text: &str,
+    provider: &ThreadTitleProvider,
+    timeout: Duration,
+) -> Result<Option<String>> {
+    let raw = tokio::time::timeout(timeout, request_thread_title(text, provider))
+        .await
+        .context("Thread title request timed out after 8 seconds")??;
+    Ok(sanitize_thread_title(&raw))
+}
+
+async fn request_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
+    match provider.format {
+        EndpointFormat::ResponsesApi => request_responses_thread_title(text, provider).await,
+        EndpointFormat::AnthropicMessages => request_anthropic_thread_title(text, provider).await,
+        EndpointFormat::OllamaChat => request_ollama_thread_title(text, provider).await,
+    }
+}
+
+async fn request_responses_thread_title(
+    text: &str,
+    provider: &ThreadTitleProvider,
+) -> Result<String> {
+    let api_key = provider
+        .api_key
+        .as_deref()
+        .context("Formatting API key is required for thread titles")?;
+    let request = ResponsesRequest {
+        model: provider.model.clone(),
+        input: vec![InputItem {
+            role: "user",
+            content: vec![InputContent::Text {
+                text: text.to_string(),
+            }],
+        }],
+        previous_response_id: None,
+        instructions: Some(THREAD_TITLE_PROMPT.to_string()),
+        max_output_tokens: Some(THREAD_TITLE_MAX_TOKENS),
+        temperature: None,
+        stream: false,
+    };
+
+    let response = get_client()
+        .post(&provider.endpoint)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("x-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Thread title Responses request failed")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Thread title HTTP {status} - {body}");
+    }
+
+    let response: ResponsesResponse = response
+        .json()
+        .await
+        .context("Failed to parse thread title Responses response")?;
+    Ok(extract_output_channels(&response.output).assistant_text)
+}
+
+async fn request_anthropic_thread_title(
+    text: &str,
+    provider: &ThreadTitleProvider,
+) -> Result<String> {
+    let api_key = provider
+        .api_key
+        .as_deref()
+        .context("Anthropic API key is required for thread titles")?;
+    let endpoint = lane_truth::normalize_anthropic_messages_endpoint(&provider.endpoint);
+    let request = AnthropicMessagesRequest {
+        model: provider.model.clone(),
+        system: Some(THREAD_TITLE_PROMPT.to_string()),
+        messages: vec![AnthropicMessage {
+            role: "user",
+            content: vec![AnthropicContentBlock::Text {
+                text: text.to_string(),
+            }],
+        }],
+        max_tokens: THREAD_TITLE_MAX_TOKENS,
+        temperature: None,
+    };
+
+    let response = get_client()
+        .post(&endpoint)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Thread title Anthropic request failed")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Thread title Anthropic HTTP {status} - {body}");
+    }
+
+    let response: AnthropicMessagesResponse = response
+        .json()
+        .await
+        .context("Failed to parse thread title Anthropic response")?;
+    if matches!(response.stop_reason.as_deref(), Some("refusal")) {
+        anyhow::bail!(
+            "Anthropic refusal stop (id: {}): {}",
+            anthropic_response_id(&response),
+            anthropic_stop_detail(&response)
+        );
+    }
+    Ok(extract_anthropic_text(&response))
+}
+
+async fn request_ollama_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
+    let request = OllamaRequest {
+        model: provider.model.clone(),
+        messages: vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: THREAD_TITLE_PROMPT.to_string(),
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: text.to_string(),
+            },
+        ],
+        stream: false,
+        options: OllamaOptions {
+            temperature: 0.1,
+            num_predict: THREAD_TITLE_MAX_TOKENS,
+        },
+    };
+
+    let endpoint = normalize_ollama_chat_endpoint(&provider.endpoint);
+    let response = get_client()
+        .post(&endpoint)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Thread title Ollama request failed")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Thread title Ollama HTTP {status} - {body}");
+    }
+
+    let response: OllamaResponse = response
+        .json()
+        .await
+        .context("Failed to parse thread title Ollama response")?;
+    Ok(response
+        .message
+        .map(|message| message.content)
+        .or(response.response)
+        .unwrap_or_default())
+}
+
+fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
+    let mut base = endpoint.trim().trim_end_matches('/').to_string();
+    loop {
+        let previous_len = base.len();
+        for suffix in ["/v1/responses", "/api/chat", "/v1"] {
+            if base.ends_with(suffix) {
+                base.truncate(base.len() - suffix.len());
+                break;
+            }
+        }
+        if base.len() == previous_len {
+            break;
+        }
+    }
+    format!("{base}/api/chat")
+}
+
+fn sanitize_thread_title(raw: &str) -> Option<String> {
+    let mut title = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return None;
+    }
+
+    title = strip_title_bullet(&title).to_string();
+    title = strip_title_wrapping(&title).to_string();
+    title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return None;
+    }
+
+    let clipped = title
+        .chars()
+        .take(THREAD_TITLE_MAX_CHARS)
+        .collect::<String>();
+    (!clipped.trim().is_empty()).then_some(clipped)
+}
+
+fn strip_title_bullet(title: &str) -> &str {
+    let trimmed = title.trim();
+    for prefix in ["- ", "* ", "• ", "– ", "— "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.trim();
+        }
+    }
+
+    let digit_count = trimmed.chars().take_while(char::is_ascii_digit).count();
+    if digit_count > 0 {
+        let rest = &trimmed[digit_count..];
+        if let Some(rest) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            return rest.trim();
+        }
+    }
+    trimmed
+}
+
+fn strip_title_wrapping(title: &str) -> &str {
+    let trimmed = title.trim();
+    for (open, close) in [
+        ("**", "**"),
+        ("__", "__"),
+        ("\"", "\""),
+        ("'", "'"),
+        ("`", "`"),
+        ("“", "”"),
+        ("„", "”"),
+    ] {
+        if let Some(inner) = trimmed
+            .strip_prefix(open)
+            .and_then(|value| value.strip_suffix(close))
+        {
+            return inner.trim();
+        }
+    }
+    trimmed
 }
 
 /// Streaming is mandatory for chat/assistant UX consistency.
@@ -1791,6 +2077,238 @@ mod tests {
         fn set(&mut self, key: &'static str, value: &str) {
             self.guards.push(EnvGuard::set(key, value));
         }
+    }
+
+    fn title_provider(
+        format: EndpointFormat,
+        endpoint: String,
+        model: &str,
+        api_key: Option<&str>,
+    ) -> ThreadTitleProvider {
+        ThreadTitleProvider {
+            format,
+            endpoint,
+            model: model.to_string(),
+            api_key: api_key.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn thread_title_sanitizer_normalizes_noise_and_unicode_length() {
+        let cases = [
+            ("  **Plan   leczenia Łatki**\n", Some("Plan leczenia Łatki")),
+            ("•  Kontrola po zabiegu", Some("Kontrola po zabiegu")),
+            ("1. \"Wyniki badań krwi\"", Some("Wyniki badań krwi")),
+            ("\n\t ", None),
+            ("- ** **", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(sanitize_thread_title(raw).as_deref(), expected, "{raw:?}");
+        }
+
+        let long = "ą".repeat(80);
+        let clipped = sanitize_thread_title(&long).expect("non-empty title");
+        assert_eq!(clipped.chars().count(), THREAD_TITLE_MAX_CHARS);
+        assert_eq!(clipped, "ą".repeat(THREAD_TITLE_MAX_CHARS));
+    }
+
+    #[test]
+    fn thread_title_contract_has_fixed_timeout_and_token_cap() {
+        assert_eq!(THREAD_TITLE_TIMEOUT, Duration::from_secs(8));
+        assert_eq!(THREAD_TITLE_MAX_TOKENS, 24);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn responses_thread_title_is_one_shot_and_chain_stateless() {
+        use crate::state::conversation::{
+            AiMode, get_previous_response_id_for_mode, set_response_id_for_mode,
+        };
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_header("authorization", "Bearer title-key")
+            .match_header("x-api-key", "title-key")
+            .match_body(Matcher::Json(json!({
+                "model": "title-model",
+                "input": [{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Surowy\ntekst użytkownika"}]
+                }],
+                "instructions": THREAD_TITLE_PROMPT,
+                "max_output_tokens": THREAD_TITLE_MAX_TOKENS
+            })))
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "resp_title_should_not_be_stored",
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "Plan leczenia Łatki"}]
+                    }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        set_response_id_for_mode(AiMode::Formatting, "resp_existing_chain".to_string());
+        let before = get_previous_response_id_for_mode(AiMode::Formatting);
+        let provider = title_provider(
+            EndpointFormat::ResponsesApi,
+            format!("{}/v1/responses", server.url()),
+            "title-model",
+            Some("title-key"),
+        );
+        let title = generate_thread_title_with_provider(
+            "Surowy\ntekst użytkownika",
+            &provider,
+            THREAD_TITLE_TIMEOUT,
+        )
+        .await
+        .expect("Responses title request should succeed");
+
+        assert_eq!(title.as_deref(), Some("Plan leczenia Łatki"));
+        assert_eq!(
+            get_previous_response_id_for_mode(AiMode::Formatting),
+            before
+        );
+        mock.assert_async().await;
+        crate::state::conversation::reset_conversation_for_mode(AiMode::Formatting);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn anthropic_thread_title_uses_same_prompt_cap_and_raw_text() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("x-api-key", "anthropic-title-key")
+            .match_header("anthropic-version", ANTHROPIC_VERSION)
+            .match_body(Matcher::Json(json!({
+                "model": "claude-sonnet-4-6",
+                "system": THREAD_TITLE_PROMPT,
+                "messages": [{
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Raw\nAnthropic input"}]
+                }],
+                "max_tokens": THREAD_TITLE_MAX_TOKENS
+            })))
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "msg_title",
+                    "content": [{"type": "text", "text": "Anthropic title"}],
+                    "stop_reason": "end_turn"
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let provider = title_provider(
+            EndpointFormat::AnthropicMessages,
+            server.url(),
+            "claude-sonnet-4-6",
+            Some("anthropic-title-key"),
+        );
+
+        let title = generate_thread_title_with_provider(
+            "Raw\nAnthropic input",
+            &provider,
+            THREAD_TITLE_TIMEOUT,
+        )
+        .await
+        .expect("Anthropic title request should succeed");
+        assert_eq!(title.as_deref(), Some("Anthropic title"));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn ollama_thread_title_uses_same_prompt_cap_without_memory() {
+        reset_ollama_memory();
+        push_memory("user", "stale conversation memory");
+        push_memory("assistant", "stale answer");
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/chat")
+            .match_body(Matcher::Json(json!({
+                "model": "qwen-title",
+                "messages": [
+                    {"role": "system", "content": THREAD_TITLE_PROMPT},
+                    {"role": "user", "content": "Raw\nOllama input"}
+                ],
+                "stream": false,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": THREAD_TITLE_MAX_TOKENS
+                }
+            })))
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json!({"message": {"content": "Ollama title"}}).to_string())
+            .create_async()
+            .await;
+        let provider = title_provider(
+            EndpointFormat::OllamaChat,
+            format!("{}/api/chat/v1/responses", server.url()),
+            "qwen-title",
+            None,
+        );
+
+        let title = generate_thread_title_with_provider(
+            "Raw\nOllama input",
+            &provider,
+            THREAD_TITLE_TIMEOUT,
+        )
+        .await
+        .expect("Ollama title request should succeed");
+        assert_eq!(title.as_deref(), Some("Ollama title"));
+        assert_eq!(
+            snapshot_memory().len(),
+            2,
+            "title path must not mutate memory"
+        );
+        mock.assert_async().await;
+        reset_ollama_memory();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn thread_title_timeout_covers_response_body() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::Any)
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_chunked_body(|writer| {
+                std::thread::sleep(Duration::from_millis(300));
+                writer.write_all(br#"{"id":"late","output":[]}"#)
+            })
+            .create_async()
+            .await;
+        let provider = title_provider(
+            EndpointFormat::ResponsesApi,
+            format!("{}/v1/responses", server.url()),
+            "title-model",
+            Some("title-key"),
+        );
+
+        let error =
+            generate_thread_title_with_provider("Raw input", &provider, Duration::from_millis(100))
+                .await
+                .expect_err("slow response body must be covered by the whole-call timeout");
+        assert!(error.to_string().contains("timed out"));
+        mock.assert_async().await;
     }
 
     #[test]

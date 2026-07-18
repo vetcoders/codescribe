@@ -555,6 +555,7 @@ mod tests {
             updated_at,
             title: title.to_string(),
             title_is_custom: false,
+            title_is_generated: false,
             mode: mode.to_string(),
             tags: vec!["vet".to_string(), "urgent".to_string()],
             notes: Vec::new(),

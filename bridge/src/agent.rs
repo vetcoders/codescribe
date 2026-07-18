@@ -102,6 +102,13 @@ impl CodescribeAgent {
         }
     }
 
+    /// Generate an isolated one-shot title from raw first-turn text using the
+    /// formatting lane. The core call has its own 8-second timeout and never
+    /// participates in the assistive or formatting response chains.
+    pub async fn generate_thread_title(&self, text: String) -> Result<Option<String>, CsError> {
+        Ok(codescribe_core::llm::ai_formatting::generate_thread_title(&text).await?)
+    }
+
     /// Stream one agent reply for `text` on the conversation identified by
     /// `thread_id`, forwarding token/reasoning/tool events to `listener` as they
     /// arrive. Returns the final assembled assistant text.
@@ -538,6 +545,7 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
             updated_at: now,
             title: "Codescribe Agent Chat".to_string(),
             title_is_custom: false,
+            title_is_generated: false,
             mode: "assistive".to_string(),
             tags: vec!["agent".to_string(), "overlay".to_string()],
             notes: Vec::new(),
@@ -550,7 +558,7 @@ async fn persist_thread(thread_id: String, messages: Vec<Message>) {
 
         thread.updated_at = now;
         // Never clobber a title the user set by hand from the rail.
-        if !thread.title_is_custom {
+        if thread.title_is_heuristic() {
             thread.title = derive_thread_title(&messages);
         }
         thread.summary = derive_thread_summary(&messages);

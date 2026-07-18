@@ -299,6 +299,7 @@ mod tests {
             updated_at: Utc.with_ymd_and_hms(2026, 7, 2, 9, 30, 0).unwrap(),
             title: "auth-refactor".to_string(),
             title_is_custom: true,
+            title_is_generated: false,
             mode: "assistive".to_string(),
             tags: vec![],
             notes: vec![],

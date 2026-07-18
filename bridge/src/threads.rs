@@ -300,6 +300,13 @@ impl CodescribeThreads {
         Ok(store.set_thread_title(&id, &title)?)
     }
 
+    /// Persist a one-shot generated title. Manual renames retain absolute
+    /// authority; a missing or custom-owned thread returns `false` unchanged.
+    pub fn set_generated_title(&self, id: String, title: String) -> Result<bool, CsError> {
+        let store = ThreadStore::new()?;
+        Ok(store.set_generated_title(&id, &title)?)
+    }
+
     /// Generate a fresh, collision-resistant thread id. Wraps
     /// `ThreadStore::generate_id` (`thread_store.rs:191`).
     pub fn generate_thread_id(&self) -> String {
