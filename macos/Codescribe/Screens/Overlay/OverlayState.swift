@@ -232,6 +232,14 @@ final class OverlayState: ObservableObject {
     /// lexicon v2 and quality analytics get the real misheard text, not only
     /// the (possibly formatted) delivered. Cleared on reset like deliveredText.
     private var sttRawText: String = ""
+    /// Canonical provenance for the text currently shown in FINAL. Starts from
+    /// persisted Auto Format truth and is replaced only by a successful manual
+    /// format. Revert restores the previous level together with the exact bytes.
+    private var qualityFormattingLevel: FormattingPolicyOption = .off
+    /// One-step manual-format undo. A successful changed result replaces this
+    /// source; failures, empty results, and identical no-ops leave it untouched.
+    private var preFormatText: String?
+    private var preFormatLevel: FormattingPolicyOption?
     /// Once a session is finalized (mode `.formatted` / Idle), the transcript is
     /// FROZEN. Late streaming events (Preview/Correction/UtteranceFinal/VAD) that the
     /// engine may still emit during/after teardown are DROPPED instead of mutating
@@ -368,6 +376,10 @@ final class OverlayState: ObservableObject {
             && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var canRevert: Bool {
+        preFormatText != nil && !isFormatting
+    }
+
     var insertActionPresentation: OverlayInsertActionPresentation {
         OverlayInsertActionPresentation(targetAppName: pasteTargetAppName)
     }
@@ -432,6 +444,7 @@ final class OverlayState: ObservableObject {
               canFormat,
               OverlayActionPresentation.manualFormatLevels.contains(level) else { return }
         let source = formattedText
+        let sourceLevel = qualityFormattingLevel
         isFormatting = true
         // Format deliberately suspends passive dismissal. Its result stays until
         // another user activity explicitly starts a fresh countdown.
@@ -444,7 +457,15 @@ final class OverlayState: ObservableObject {
                     language: nil,
                     level: level
                 )
-                self.formattedText = formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source : formatted
+                let isUsableChange = !formatted
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty && formatted != source
+                if isUsableChange {
+                    self.preFormatText = source
+                    self.preFormatLevel = sourceLevel
+                    self.formattedText = formatted
+                    self.qualityFormattingLevel = level
+                }
                 self.formatFailureStatus = nil
                 self.mode = .formatted
                 self.cancelAutoHide()  // User acted (Format); do not auto-hide the result.
@@ -457,6 +478,21 @@ final class OverlayState: ObservableObject {
                 self.showToast("Couldn't format transcript")
             }
         }
+    }
+
+    /// Restore the exact source of the most recent successful changed format.
+    /// The slot is consumed once and this explicit user activity starts a fresh
+    /// terminal lifetime from the injected monotonic clock.
+    func revertFormat() {
+        guard !isFormatting, let source = preFormatText else { return }
+        let sourceLevel = preFormatLevel ?? .off
+        preFormatText = nil
+        preFormatLevel = nil
+        formattedText = source
+        qualityFormattingLevel = sourceLevel
+        formatFailureStatus = nil
+        mode = .formatted
+        restartAutoHideCountdown()
     }
 
     private func runStop() async {
@@ -620,10 +656,17 @@ final class OverlayState: ObservableObject {
         let rawForRecord = !sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? sttRawText
             : delivered
+        let formattingLevel = qualityFormattingLevel.rawValue
         Task.detached(priority: .utility) {
             // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
             // quality write is best-effort; never block UI action.
-            try? commitOverlayQualityRecord(rawText: rawForRecord, deliveredText: delivered, editedText: edited, action: action)
+            try? commitOverlayQualityRecord(
+                rawText: rawForRecord,
+                deliveredText: delivered,
+                editedText: edited,
+                action: action,
+                formattingLevel: formattingLevel
+            )
         }
     }
 
@@ -1028,6 +1071,7 @@ final class OverlayState: ObservableObject {
         } else {
             if formattedText != resolved { formattedText = resolved }
             if deliveredText.isEmpty { deliveredText = resolved }
+            qualityFormattingLevel = autoFormatLevel
             if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Best effort: if no STT raw from per-utterance finals yet, fall back to the
                 // resolved assembly (still the raw-streaming path, not AI formatted).
@@ -1064,6 +1108,9 @@ final class OverlayState: ObservableObject {
         authoritativeFinalText = nil
         deliveredText = ""
         sttRawText = ""
+        qualityFormattingLevel = .off
+        preFormatText = nil
+        preFormatLevel = nil
         formatFailureStatus = nil
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice

@@ -437,6 +437,18 @@ struct DictationOverlayView: View {
                     action: { state.pasteToPreviousApp() }
                 )
 
+                if state.canRevert {
+                    actionButton(
+                        title: "Revert",
+                        help: "Restore the transcript from before the last format",
+                        icon: "arrow.uturn.backward",
+                        tone: .neutral,
+                        iconOnly: iconOnly,
+                        action: { state.revertFormat() }
+                    )
+                    .accessibilityIdentifier("overlay-format-revert")
+                }
+
                 manualFormatMenu(iconOnly: iconOnly)
 
                 actionButton(

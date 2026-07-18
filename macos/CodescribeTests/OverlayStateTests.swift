@@ -323,6 +323,84 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.formattedText, "raw source transcript")
         XCTAssertEqual(state.formatFailureStatus, "raw — formatting failed")
         XCTAssertEqual(state.activeText, "raw source transcript")
+        XCTAssertFalse(state.canRevert)
+    }
+
+    func testSuccessfulFormatStoresOneExactSourceAndSecondSuccessReplacesIt() async {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        state.engine = engine
+        state.formattedText = "  source bytes stay exact  "
+        state.mode = .formatted
+
+        let firstCalled = expectation(description: "first format")
+        engine.formattedResult = .success("first formatted result")
+        engine.onFormat = { _ in firstCalled.fulfill() }
+        state.formatTranscript(level: .smart)
+        await fulfillment(of: [firstCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertTrue(state.canRevert)
+        XCTAssertEqual(state.formattedText, "first formatted result")
+
+        let secondCalled = expectation(description: "second format")
+        engine.formattedResult = .success("second formatted result")
+        engine.onFormat = { _ in secondCalled.fulfill() }
+        state.formatTranscript(level: .max)
+        await fulfillment(of: [secondCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(state.formattedText, "second formatted result")
+        state.revertFormat()
+        XCTAssertEqual(state.formattedText, "first formatted result")
+        XCTAssertFalse(state.canRevert, "Revert is a one-use slot, not a history stack")
+    }
+
+    func testEmptyAndIdenticalFormatResultsCreateNoRevert() async {
+        for result in ["   \n", "source transcript"] {
+            let state = OverlayState()
+            let engine = OverlayStateTestEngine()
+            let called = expectation(description: "format \(result.debugDescription)")
+            engine.formattedResult = .success(result)
+            engine.onFormat = { _ in called.fulfill() }
+            state.engine = engine
+            state.formattedText = "source transcript"
+            state.mode = .formatted
+
+            state.formatTranscript(level: .correction)
+            await fulfillment(of: [called], timeout: 1)
+            await Task.yield()
+
+            XCTAssertEqual(state.formattedText, "source transcript")
+            XCTAssertFalse(state.canRevert)
+        }
+    }
+
+    func testFailedSecondFormatKeepsPriorSuccessfulRevert() async {
+        let state = OverlayState()
+        let engine = OverlayStateTestEngine()
+        state.engine = engine
+        state.formattedText = "source transcript"
+        state.mode = .formatted
+
+        let successCalled = expectation(description: "successful format")
+        engine.formattedResult = .success("formatted transcript")
+        engine.onFormat = { _ in successCalled.fulfill() }
+        state.formatTranscript(level: .smart)
+        await fulfillment(of: [successCalled], timeout: 1)
+        await Task.yield()
+
+        let failureCalled = expectation(description: "failed second format")
+        engine.formattedResult = .failure(NSError(domain: "OverlayStateTests", code: 2))
+        engine.onFormat = { _ in failureCalled.fulfill() }
+        state.formatTranscript(level: .max)
+        await fulfillment(of: [failureCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(state.formattedText, "formatted transcript")
+        XCTAssertTrue(state.canRevert)
+        state.revertFormat()
+        XCTAssertEqual(state.formattedText, "source transcript")
     }
 
     func testManualFormatPassesEveryExplicitLevelAndKeepsAutoFormatOff() async {
@@ -521,6 +599,35 @@ final class OverlayStateTests: XCTestCase {
         clock.now = 100
         state.fireAutoHideNowForTests()
         XCTAssertEqual(closeCount, 0)
+    }
+
+    func testRevertRestoresExactTextAndStartsFreshFiveSecondDeadline() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "exact source bytes")
+        let engine = OverlayStateTestEngine()
+        let formatCalled = expectation(description: "format called")
+        engine.formattedResult = .success("formatted result")
+        engine.onFormat = { _ in formatCalled.fulfill() }
+        state.engine = engine
+        var closeCount = 0
+        state.onClose = { closeCount += 1 }
+        state.userEditedTranscript("  exact source bytes  ")
+
+        clock.now = 4
+        state.formatTranscript(level: .max)
+        await fulfillment(of: [formatCalled], timeout: 1)
+        await Task.yield()
+        clock.now = 100
+        state.revertFormat()
+
+        XCTAssertEqual(state.formattedText, "  exact source bytes  ")
+        XCTAssertFalse(state.canRevert)
+        clock.now = 104.9
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 0)
+        clock.now = 105
+        state.fireAutoHideNowForTests()
+        XCTAssertEqual(closeCount, 1)
     }
 
     func testCloseIsImmediateAndSendUsesImmediateHandoffPath() {
