@@ -147,6 +147,10 @@ final class AgentThreadTitleTests: XCTestCase {
         func generateThreadId() -> String { backendID }
     }
 
+    private final class VoiceCancelStub: VoiceTurnCancelling {
+        func cancelVoiceTurn(threadId: String) -> Bool { true }
+    }
+
     func testFirstTextTurnLaunchesExactlyOneIndependentTitleRequest() async throws {
         let engine = ControllableEngine()
         let provider = TitleThreadsProvider()
@@ -409,6 +413,235 @@ final class AgentThreadTitleTests: XCTestCase {
 
         XCTAssertEqual(store.currentThread?.title, "Heuristic slug")
         XCTAssertEqual(store.currentThread?.messages.last?.text, "Assistant survives")
+        XCTAssertTrue(provider.events.filter {
+            if case .generated = $0 { return true }
+            return false
+        }.isEmpty)
+    }
+
+    // MARK: - Voice parity (same coordinator; the core owns the conversational turn)
+
+    /// Byte-for-byte assistive wire skeleton (`build_assistive_input`, missing
+    /// selection variant) — proves the title request uses the PRESENTED spoken
+    /// instruction, never the wire prompt.
+    private func voiceWire(instruction: String) -> String {
+        "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\n\(instruction)\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
+    }
+
+    func testFirstVoiceExchangeLaunchesExactlyOneTitleRequestFromPresentedText() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+
+        store.ingestVoiceTurn(
+            threadId: provider.backendID,
+            userText: voiceWire(instruction: "Plan the voice rename race")
+        )
+        await waitUntil { engine.titleCalls.count == 1 }
+
+        XCTAssertEqual(engine.titleCalls, ["Plan the voice rename race"], "title must use presented text, not the wire skeleton")
+        XCTAssertTrue(engine.streamCalls.isEmpty, "voice title must never re-send the conversation")
+
+        store.ingestVoiceDelta("Assistant reply")
+        engine.completeTitle(.success(nil))
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        await waitUntil { provider.events.contains(.list) }
+
+        XCTAssertEqual(engine.titleCalls.count, 1)
+        XCTAssertTrue(engine.streamCalls.isEmpty)
+    }
+
+    func testSecondVoiceExchangeLaunchesNoAdditionalTitleRequest() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "first voice ask")
+        await waitUntil { engine.titleCalls.count == 1 }
+        engine.completeTitle(.success("Voice thread title"))
+        await waitUntil { provider.events.filter { $0 == .generated("Voice thread title") }.count == 1 }
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        await waitUntil { provider.persistedTitle == "Voice thread title" }
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "second voice ask")
+        store.ingestVoiceDelta("more")
+        store.ingestVoiceDone()
+        await Task.yield()
+
+        XCTAssertEqual(engine.titleCalls.count, 1, "later exchanges on the same backend thread launch no title request")
+        XCTAssertTrue(engine.streamCalls.isEmpty)
+    }
+
+    func testVoiceEarlyTitleQueuesAndFlushesAfterCorePersistenceOnDone() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice early title")
+        await waitUntil { engine.titleCalls.count == 1 }
+
+        engine.completeTitle(.success("Voice title state"))
+        await waitUntil { provider.events.filter { $0 == .generated("Voice title state") }.count == 1 }
+        XCTAssertEqual(store.currentThread?.title, "Voice title state")
+        XCTAssertFalse(provider.threadExists, "a queued title must not create the missing thread")
+
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        await waitUntil { provider.persistedTitle == "Voice title state" }
+
+        XCTAssertEqual(provider.events.filter { $0 == .generated("Voice title state") }.count, 2,
+                       "one immediate attempt plus one post-persistence retry")
+        let lastGenerated = provider.events.lastIndex(of: .generated("Voice title state"))
+        let refresh = provider.events.lastIndex(of: .list)
+        XCTAssertNotNil(lastGenerated)
+        XCTAssertNotNil(refresh)
+        XCTAssertLessThan(lastGenerated!, refresh!, "queued voice title must flush before the rail refresh")
+        XCTAssertEqual(store.currentThread?.title, "Voice title state")
+        XCTAssertEqual(store.currentThread?.backendId, provider.backendID, "selection stays on the same backend thread")
+    }
+
+    func testVoiceLateTitlePersistsDirectlyWithoutRetry() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice late title")
+        await waitUntil { engine.titleCalls.count == 1 }
+
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        engine.completeTitle(.success("Late voice title"))
+        await waitUntil { store.currentThread?.title == "Late voice title" }
+
+        XCTAssertEqual(provider.events.filter { $0 == .generated("Late voice title") }.count, 1)
+        XCTAssertEqual(provider.persistedTitle, "Late voice title")
+        XCTAssertEqual(store.currentThread?.backendId, provider.backendID)
+    }
+
+    func testVoiceNilBlankThrowAndPersistenceFailurePreserveFallbackTitle() async {
+        await assertVoiceGenerationFallback(.success(nil))
+        await assertVoiceGenerationFallback(.success("   \n"))
+        await assertVoiceGenerationFallback(.failure(FakeError.failed))
+
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        provider.forceGeneratedFailure = true
+        let store = makeStore(engine: engine, provider: provider)
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice persistence failure")
+        await waitUntil { engine.titleCalls.count == 1 }
+        engine.completeTitle(.success("Cannot persist"))
+        await waitUntil { provider.events.filter { $0 == .generated("Cannot persist") }.count == 1 }
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        await waitUntil { store.currentThread?.title == "Heuristic slug" }
+
+        XCTAssertEqual(provider.events.filter { $0 == .generated("Cannot persist") }.count, 2)
+        XCTAssertEqual(provider.persistedTitle, "Heuristic slug")
+    }
+
+    func testVoiceManualRenameBeforeCompletionWinsPermanently() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice rename before generation")
+        await waitUntil { engine.titleCalls.count == 1 }
+
+        store.rename(store.currentThread!, to: "My durable voice title")
+        XCTAssertEqual(store.currentThread?.title, "My durable voice title")
+
+        engine.completeTitle(.success("Generated loser"))
+        await Task.yield()
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        await waitUntil { provider.persistedTitle == "My durable voice title" }
+
+        XCTAssertEqual(store.currentThread?.title, "My durable voice title")
+        XCTAssertTrue(provider.events.filter { $0 == .generated("Generated loser") }.isEmpty)
+        XCTAssertTrue(provider.isCustom)
+    }
+
+    func testVoiceManualRenameAfterGeneratedTitleWinsPermanently() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice late generated then rename")
+        await waitUntil { engine.titleCalls.count == 1 }
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        engine.completeTitle(.success("Voice generated persisted"))
+        await waitUntil { store.currentThread?.title == "Voice generated persisted" }
+
+        store.rename(store.currentThread!, to: "User final voice title")
+
+        XCTAssertEqual(provider.persistedTitle, "User final voice title")
+        XCTAssertEqual(store.currentThread?.title, "User final voice title")
+    }
+
+    func testVoiceDeleteBeforeTitleCompletionDiscardsLateResultAndNeverRecreatesThread() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "delete this voice turn")
+        await waitUntil { engine.titleCalls.count == 1 }
+        let deletedID = store.currentThread!.id
+
+        store.delete(store.currentThread!)
+        engine.completeTitle(.success("Voice resurrected title"))
+        await Task.yield()
+        store.ingestVoiceDone()  // late terminal for the deleted turn must no-op
+        await Task.yield()
+
+        XCTAssertFalse(store.threads.contains { $0.id == deletedID })
+        XCTAssertFalse(provider.threadExists, "a deleted first voice turn must never come back to disk")
+        XCTAssertTrue(provider.events.filter { $0 == .generated("Voice resurrected title") }.isEmpty)
+        XCTAssertFalse(store.threads.contains { $0.title == "Voice resurrected title" })
+    }
+
+    func testVoiceStopBeforeTitleCompletionPreservesFallbackAndPersistsNothing() async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let canceller = VoiceCancelStub()  // the store holds it weakly
+        let store = AgentChatStore(
+            engine: engine,
+            threadsProvider: provider,
+            threads: [ChatThread(title: "Heuristic slug", meta: "now")],
+            voiceTurnCanceller: canceller
+        )
+        defer { _ = canceller }
+
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice cancel race")
+        store.ingestVoiceDelta("Partial voice answer")
+        await waitUntil { engine.titleCalls.count == 1 }
+
+        store.stopActiveTurn()
+        store.ingestVoiceCancelled(threadId: provider.backendID)
+        engine.completeTitle(.success("Cancelled winner"))
+        await waitUntil { provider.events.contains(.generated("Cancelled winner")) }
+
+        XCTAssertEqual(store.currentThread?.title, "voice cancel race",
+                       "late title on a cancelled turn cannot persist; the fallback heuristic returns")
+        XCTAssertFalse(provider.threadExists, "a cancelled voice turn must not create the thread")
+        XCTAssertEqual(store.currentThread?.messages.last?.wasStopped, true)
+        XCTAssertTrue(engine.streamCalls.isEmpty)
+    }
+
+    private func assertVoiceGenerationFallback(_ outcome: Result<String?, Error>) async {
+        let engine = ControllableEngine()
+        let provider = TitleThreadsProvider()
+        let store = makeStore(engine: engine, provider: provider)
+        store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice fallback title")
+        await waitUntil { engine.titleCalls.count == 1 }
+        engine.completeTitle(outcome)
+        provider.markFirstTurnPersisted()
+        store.ingestVoiceDone()
+        await waitUntil { store.currentThread?.title == "Heuristic slug" }
+
+        XCTAssertTrue(engine.streamCalls.isEmpty)
         XCTAssertTrue(provider.events.filter {
             if case .generated = $0 { return true }
             return false

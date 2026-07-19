@@ -398,10 +398,13 @@ final class AgentChatStore: ObservableObject {
 
     private var inFlightSends: [UUID: InFlightSend] = [:]
 
-    /// Bookkeeping for the one title request allowed on a first textual turn.
-    /// MainActor serialization makes the stream/title completion race explicit:
-    /// whichever result lands first updates this state, and the stream-side
-    /// settlement flushes at most one queued write before refreshing the rail.
+    /// Bookkeeping for the one title request allowed on a first textual turn,
+    /// regardless of source: the composer `send()` and the voice ingest path
+    /// (`ingestVoiceTurn` → `ingestVoiceDone`/`Error`/`Cancelled`) share this
+    /// coordinator. MainActor serialization makes the turn/title completion race
+    /// explicit: whichever result lands first updates this state, and the
+    /// turn-side settlement flushes at most one queued write before refreshing
+    /// the rail.
     private struct FirstTurnTitleState {
         let backendThreadID: String
         let generationID: UUID
@@ -784,7 +787,9 @@ final class AgentChatStore: ObservableObject {
 
     /// Launch the title lane as an independent, unstructured MainActor task.
     /// Awaiting the engine releases the actor, so this request runs concurrently
-    /// with `streamReply` without escaping non-Sendable engine/provider seams.
+    /// with the conversational turn (composer `streamReply` or the core-owned
+    /// voice stream) without escaping non-Sendable engine/provider seams. It is
+    /// a stateless sibling request — it never re-enters `send()`/`streamReply`.
     private func launchFirstTurnTitle(
         _ text: String,
         for threadID: UUID,
@@ -820,6 +825,26 @@ final class AgentChatStore: ObservableObject {
             generationID: UUID(),
             originalTitle: originalTitle
         )
+    }
+
+    /// Voice entry to the SAME first-turn coordinator `send()` uses. The core
+    /// runtime owns the conversational provider call and its persistence; this
+    /// launches only the stateless title sibling — never `send()`/`streamReply`
+    /// — so the exchange is not dispatched twice. `ingestVoiceDone` is the
+    /// stream-completed settle point (core persistence has finished by then).
+    private func launchVoiceFirstTurnTitle(
+        _ presentedText: String,
+        for threadID: UUID,
+        backendThreadID: String
+    ) {
+        guard !presentedText.isEmpty, let engine else { return }
+        prepareFirstTurnTitle(for: threadID, backendThreadID: backendThreadID)
+        guard firstTurnTitleStates[threadID] != nil else { return }
+        guard engine.availabilityDetail() == nil else {
+            finishTitleGenerationWithoutRequest(for: threadID)
+            return
+        }
+        launchFirstTurnTitle(presentedText, for: threadID, backendThreadID: backendThreadID, engine: engine)
     }
 
     private func finishTitleGenerationWithoutRequest(for threadID: UUID) {
@@ -972,8 +997,11 @@ final class AgentChatStore: ObservableObject {
     // These ingest the reply the CORE runtime is already streaming for a hotkey /
     // voice turn (via the bridge `CsAgentDeliveryListener`). They ONLY render:
     // insert bubbles and mutate them from deltas. They deliberately do not call
-    // `send()` / the engine — the core already made the provider call and persists
-    // the thread to disk. Doing otherwise would double-dispatch the turn.
+    // `send()` / `streamReply` — the core already made the provider call and
+    // persists the thread to disk. Doing otherwise would double-dispatch the
+    // turn. The single engine call allowed on this path is the stateless
+    // first-turn title sibling (`generateThreadTitle`), which carries no
+    // conversation state and never touches the thread's response chain.
 
     /// Open a voice turn: bind (or create) a thread for the core `backendId`,
     /// insert the You-bubble + an assistant placeholder, and select it so the live
@@ -990,6 +1018,12 @@ final class AgentChatStore: ObservableObject {
                 $0.isStreaming = false
                 $0.timestamp = self.now()
             }
+            // The stale turn ended without its own terminal event, so settle its
+            // title coordinator here — a queued generated title must not outlive
+            // the turn that owned it.
+            if let staleBackendID = threads.first(where: { $0.id == staleThreadID })?.backendId {
+                settleFirstTurnTitleAfterStream(for: staleThreadID, backendThreadID: staleBackendID)
+            }
         }
 
         // The core sends the WIRE prompt (assistive skeleton); the bubble shows
@@ -1000,6 +1034,7 @@ final class AgentChatStore: ObservableObject {
         )
 
         let threadID: UUID
+        var isFirstExchange = false
         if let existing = threads.first(where: { $0.backendId == backendId }) {
             threadID = existing.id
             loadMessagesIfNeeded(threadID)  // surface prior history before appending
@@ -1010,6 +1045,7 @@ final class AgentChatStore: ObservableObject {
             thread.messagesLoaded = true  // freshly bound to a core id → in sync
             threads.insert(thread, at: 0)
             threadID = thread.id
+            isFirstExchange = true
         }
         selectedThreadID = threadID
 
@@ -1024,6 +1060,9 @@ final class AgentChatStore: ObservableObject {
         voiceTurnStartedAt = Date()
         voiceTurnPhase = .thinking
         append(assistant, to: threadID)
+        if isFirstExchange {
+            launchVoiceFirstTurnTitle(userTurn.text, for: threadID, backendThreadID: backendId)
+        }
     }
 
     /// Append a streamed token to the active voice assistant bubble.
@@ -1078,6 +1117,9 @@ final class AgentChatStore: ObservableObject {
 
     /// Finalize the active voice turn and pull disk truth (the core persisted the
     /// thread). No re-persist here — the store only mirrors what the core wrote.
+    /// This is also the title coordinator's stream-completed settle point: core
+    /// persistence finished before this terminal, so a queued generated title
+    /// flushes exactly once here, before the rail refresh.
     func ingestVoiceDone() {
         guard voiceTurnPhase != .cancelling,
               let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
@@ -1088,6 +1130,9 @@ final class AgentChatStore: ObservableObject {
             $0.timestamp = self.now()
         }
         let backendId = threads.first(where: { $0.id == threadID })?.backendId
+        if let backendId {
+            settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+        }
         clearVoiceTurnState()
         if let backendId { refreshThreads(selectingBackendId: backendId) }
     }
@@ -1104,6 +1149,12 @@ final class AgentChatStore: ObservableObject {
             $0.isStreaming = false
             $0.text += ($0.text.isEmpty ? "" : "\n") + "[error] " + message
             $0.timestamp = self.now()
+        }
+        // A failed turn persisted nothing; settling lets the coordinator try a
+        // queued title once, fail against the missing thread, and restore the
+        // fallback title instead of leaving the queue open forever.
+        if let backendId = threads.first(where: { $0.id == threadID })?.backendId {
+            settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
         }
         clearVoiceTurnState()
     }
@@ -1125,6 +1176,10 @@ final class AgentChatStore: ObservableObject {
             if $0.text.isEmpty { $0.text = "Stopped" }
             $0.timestamp = self.now()
         }
+        // Mirror the composer's cancel path (its defer settles too): the core
+        // did not persist this turn, so a late generated title fails to persist
+        // and the fallback title survives.
+        settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
         clearVoiceTurnState()
     }
 
