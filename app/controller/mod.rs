@@ -69,7 +69,6 @@ use codescribe_core::pipeline::contracts::{
 
 use helpers::{
     SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    reset_agent_runtime_for_new_thread as reset_agent_runtime_for_new_thread_impl,
     reset_session_telemetry, send_assistive_with_agent_runtime, snapshot_session_telemetry,
 };
 use types::{
@@ -926,11 +925,6 @@ fn evaluate_quality_commit_trigger(
         return Some("high_correction_ratio");
     }
     None
-}
-
-/// Rotate runtime + thread identity and return generation once backend reset completes.
-pub async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
-    reset_agent_runtime_for_new_thread_impl().await
 }
 
 /// Recording controller managing state machine and lifecycle

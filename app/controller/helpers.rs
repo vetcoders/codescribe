@@ -6,14 +6,14 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ImageAttachment, StreamOptions, ThreadDeliveryGateway,
+    AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
     ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
     ToolRegistry,
 };
@@ -78,7 +78,6 @@ impl codescribe_core::pipeline::contracts::DeltaSink for RoutingDeltaSink {
 }
 
 const AGENT_UI_CHANNEL_CAPACITY: usize = 256;
-static AGENT_THREAD_GENERATION: AtomicU64 = AtomicU64::new(1);
 static AGENT_SEND_IN_FLIGHT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static SHARED_AGENT_RUNTIME_STATE: OnceLock<StdMutex<Option<Arc<TokioMutex<AgentRuntimeState>>>>> =
     OnceLock::new();
@@ -101,7 +100,10 @@ enum AgentSendOutcome {
 #[derive(Default)]
 struct AgentRuntimeState {
     runtime: Option<AgentRuntime>,
-    runtime_generation: u64,
+    /// Durable backend thread identity. Recorded when a runtime is installed and
+    /// retained across `runtime = None`, so a rebuilt runtime rejoins the same
+    /// thread (and its persisted history) instead of silently starting a new one.
+    thread_store_id: Option<String>,
     runtime_degraded: bool,
 }
 
@@ -130,25 +132,75 @@ pub(super) fn set_agent_send_in_flight_for_test(active: bool) {
 }
 
 impl AgentRuntimeState {
-    fn ensure_runtime(&mut self, runtime_generation: u64) -> Result<(&mut AgentRuntime, bool)> {
-        self.ensure_runtime_with(runtime_generation, initialize_agent_runtime)
+    fn ensure_runtime(&mut self) -> Result<(&mut AgentRuntime, bool)> {
+        self.ensure_runtime_with(initialize_agent_runtime, rehydrate_thread_messages)
     }
 
-    fn ensure_runtime_with<F>(
+    /// Install a runtime if none is live. Ordinary consecutive sends reuse the
+    /// existing runtime untouched — identity and history never rotate here.
+    ///
+    /// A rebuild after `runtime = None` (hard degrade) rejoins the durable
+    /// `thread_store_id` and rehydrates the last successfully persisted history
+    /// through `load_persisted_history`, so the next provider call replays the
+    /// prior conversation instead of silently starting a new thread. A failed
+    /// rehydration keeps the stable identity and surfaces explicit recovery
+    /// evidence; it never mints a fresh thread id.
+    fn ensure_runtime_with<Init, Load>(
         &mut self,
-        runtime_generation: u64,
-        initialize_runtime: F,
+        initialize_runtime: Init,
+        load_persisted_history: Load,
     ) -> Result<(&mut AgentRuntime, bool)>
     where
-        F: FnOnce() -> Result<AgentRuntime>,
+        Init: FnOnce() -> Result<AgentRuntime>,
+        Load: FnOnce(&str) -> Result<Option<Vec<Message>>>,
     {
         let mut recovered_from_degraded = false;
-        if self.runtime_generation != runtime_generation {
-            self.runtime = None;
-            self.runtime_generation = runtime_generation;
-        }
         if self.runtime.is_none() {
-            self.runtime = Some(initialize_runtime()?);
+            let mut runtime = initialize_runtime()?;
+            match self.thread_store_id.clone() {
+                Some(thread_store_id) => {
+                    runtime.thread_store_id = thread_store_id.clone();
+                    match load_persisted_history(&thread_store_id) {
+                        Ok(Some(messages)) if !messages.is_empty() => {
+                            let rehydrated_message_count = messages.len();
+                            // restore_messages also clears the provider chain, so
+                            // the next send full-replays the restored history.
+                            runtime.session.restore_messages(messages);
+                            info!(
+                                thread_store_id = %thread_store_id,
+                                recovery_class = "rehydrated",
+                                rehydrated_message_count,
+                                "Agent runtime rebuilt onto durable thread with persisted history"
+                            );
+                        }
+                        Ok(_) => {
+                            info!(
+                                thread_store_id = %thread_store_id,
+                                recovery_class = "rehydrate_empty",
+                                rehydrated_message_count = 0usize,
+                                "Agent runtime rebuilt onto durable thread; no persisted history to restore"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                thread_store_id = %thread_store_id,
+                                recovery_class = "rehydrate_failed",
+                                error = %error,
+                                "Agent runtime rebuilt onto durable thread but history rehydration failed; continuing with empty history on the same thread"
+                            );
+                        }
+                    }
+                }
+                None => {
+                    info!(
+                        thread_store_id = %runtime.thread_store_id,
+                        recovery_class = "fresh_thread",
+                        "Agent runtime installed with new durable thread identity"
+                    );
+                    self.thread_store_id = Some(runtime.thread_store_id.clone());
+                }
+            }
+            self.runtime = Some(runtime);
             if self.runtime_degraded {
                 self.runtime_degraded = false;
                 recovered_from_degraded = true;
@@ -162,10 +214,23 @@ impl AgentRuntimeState {
     }
 
     /// Hard degrade: the agent runtime is gone (provider unreachable / init
-    /// failed). Drops the whole runtime — conversation history is lost. Use only
-    /// when the runtime cannot be trusted to hold valid state.
-    fn mark_runtime_degraded(&mut self) -> bool {
+    /// failed). Drops the runtime — in-memory history is lost — but keeps the
+    /// durable `thread_store_id`, so the next `ensure_runtime` rebuild rejoins
+    /// the same backend thread and rehydrates its persisted history.
+    fn mark_runtime_degraded(&mut self, reason: &'static str) -> bool {
+        let dropped_message_count = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.session.messages().len())
+            .unwrap_or(0);
         self.runtime = None;
+        warn!(
+            thread_store_id = self.thread_store_id.as_deref().unwrap_or("<unassigned>"),
+            recovery_class = "hard_degrade",
+            reason,
+            dropped_message_count,
+            "Agent runtime hard-degraded; durable thread identity retained for rehydration"
+        );
         if self.runtime_degraded {
             false
         } else {
@@ -182,14 +247,23 @@ impl AgentRuntimeState {
     /// degraded so the caller can surface the banner exactly once.
     ///
     /// Falls back to a hard degrade only if no runtime exists to preserve.
-    fn mark_runtime_degraded_preserving_context(&mut self) -> bool {
+    fn mark_runtime_degraded_preserving_context(&mut self, reason: &'static str) -> bool {
         let Some(runtime) = self.runtime.as_mut() else {
-            return self.mark_runtime_degraded();
+            return self.mark_runtime_degraded(reason);
         };
         // restore_messages re-seeds the same history and clears the provider
         // thread id (chain), giving us "keep messages, reset chain" in one step.
         let preserved = runtime.session.messages().to_vec();
+        let preserved_message_count = preserved.len();
+        let thread_store_id = runtime.thread_store_id.clone();
         runtime.session.restore_messages(preserved);
+        warn!(
+            thread_store_id = %thread_store_id,
+            recovery_class = "soft_degrade",
+            reason,
+            preserved_message_count,
+            "Agent runtime soft-degraded; history preserved, provider chain reset"
+        );
         if self.runtime_degraded {
             false
         } else {
@@ -197,44 +271,6 @@ impl AgentRuntimeState {
             true
         }
     }
-
-    fn rotate_for_new_thread_with<Init, Persist, Delivery>(
-        &mut self,
-        runtime_generation: u64,
-        initialize_runtime: Init,
-        persist_runtime: Persist,
-    ) -> Result<bool>
-    where
-        Init: FnOnce() -> Result<AgentRuntime>,
-        Persist: FnOnce(&AgentRuntime) -> Result<Delivery>,
-    {
-        let previous_runtime = self
-            .runtime
-            .as_ref()
-            .filter(|runtime| !runtime.session.messages().is_empty());
-        let should_persist_previous = previous_runtime.is_some();
-        if let Some(runtime) = previous_runtime {
-            persist_runtime(runtime)?;
-        }
-
-        self.runtime_generation = runtime_generation;
-        match initialize_runtime() {
-            Ok(runtime) => {
-                self.runtime = Some(runtime);
-                self.runtime_degraded = false;
-                Ok(should_persist_previous)
-            }
-            Err(error) => {
-                self.runtime = None;
-                self.runtime_degraded = true;
-                Err(error).context("Failed to initialize Agent runtime for new thread")
-            }
-        }
-    }
-}
-
-fn current_agent_thread_generation() -> u64 {
-    AGENT_THREAD_GENERATION.load(Ordering::SeqCst)
 }
 
 fn shared_agent_runtime_state_slot() -> &'static StdMutex<Option<Arc<TokioMutex<AgentRuntimeState>>>>
@@ -250,28 +286,34 @@ fn shared_agent_runtime_state() -> Arc<TokioMutex<AgentRuntimeState>> {
         return Arc::clone(state);
     }
 
-    let runtime_state = Arc::new(TokioMutex::new(AgentRuntimeState {
-        runtime_generation: current_agent_thread_generation(),
-        ..AgentRuntimeState::default()
-    }));
+    let runtime_state = Arc::new(TokioMutex::new(AgentRuntimeState::default()));
     *guard = Some(Arc::clone(&runtime_state));
     runtime_state
 }
 
-pub(crate) fn request_new_agent_thread_boundary() -> u64 {
-    let generation = AGENT_THREAD_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    debug!("Agent runtime thread boundary rotated (generation={generation})");
-    generation
+/// Load the persisted messages of a durable thread from the canonical
+/// ThreadStore so a rebuilt runtime can rehydrate. `Ok(None)` means no artifact
+/// exists yet (the thread degraded before its first successful persist).
+fn rehydrate_thread_messages(thread_store_id: &str) -> Result<Option<Vec<Message>>> {
+    let store = ThreadStore::new().context("Failed to open ThreadStore for rehydration")?;
+    load_thread_messages_from(&store, thread_store_id)
 }
 
-pub(crate) async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
-    let generation = request_new_agent_thread_boundary();
-    let runtime_state = shared_agent_runtime_state();
-    let mut guard = runtime_state.lock().await;
-
-    guard
-        .rotate_for_new_thread_with(generation, initialize_agent_runtime, deliver_runtime_thread)
-        .map(|_| generation)
+fn load_thread_messages_from(
+    store: &ThreadStore,
+    thread_store_id: &str,
+) -> Result<Option<Vec<Message>>> {
+    if !store.thread_file_path(thread_store_id)?.exists() {
+        return Ok(None);
+    }
+    let thread = store.load_thread(thread_store_id)?;
+    Ok(Some(
+        thread
+            .messages
+            .iter()
+            .map(ThreadMessage::to_message)
+            .collect(),
+    ))
 }
 
 fn initialize_agent_runtime() -> Result<AgentRuntime> {
@@ -476,8 +518,24 @@ fn normalize_assistive_thread_text(text: &str) -> Option<String> {
 }
 
 fn deliver_runtime_thread(runtime: &AgentRuntime) -> Result<ThreadDeliveryReceipt> {
-    let now = Utc::now();
     let (provider, model) = lane_truth::assistive_identity(&Config::load());
+    ThreadDeliveryGateway::new()?.deliver(runtime_delivery_input(
+        runtime,
+        provider.as_str().to_string(),
+        model,
+        Utc::now(),
+    ))
+}
+
+/// Canonical mapping from live runtime state to a delivery input. Shared by the
+/// production gateway path and the continuity tests so both persist through the
+/// exact same shape.
+fn runtime_delivery_input(
+    runtime: &AgentRuntime,
+    provider: String,
+    model: String,
+    now: DateTime<Utc>,
+) -> ThreadDeliveryInput {
     let messages = runtime
         .session
         .messages()
@@ -491,16 +549,16 @@ fn deliver_runtime_thread(runtime: &AgentRuntime) -> Result<ThreadDeliveryReceip
         })
         .collect::<Vec<_>>();
 
-    ThreadDeliveryGateway::new()?.deliver(ThreadDeliveryInput {
+    ThreadDeliveryInput {
         backend_id: runtime.thread_store_id.clone(),
         messages,
-        provider: provider.as_str().to_string(),
+        provider,
         model,
         source: ThreadDeliverySource::VoiceAssistive,
         mode: "assistive".to_string(),
         tags: vec!["agent".to_string(), "overlay".to_string()],
         timestamp: now,
-    })
+    }
 }
 
 fn legacy_assistive_delivery_input(
@@ -680,23 +738,15 @@ fn file_label(path: &std::path::Path) -> String {
 
 async fn run_agent_send_path(
     runtime_state: &mut AgentRuntimeState,
-    runtime_generation: u64,
     text: String,
     stream_options: StreamOptions,
 ) -> Result<AgentSendOutcome> {
-    run_agent_send_path_with_persist(
-        runtime_state,
-        runtime_generation,
-        text,
-        stream_options,
-        deliver_runtime_thread,
-    )
-    .await
+    run_agent_send_path_with_persist(runtime_state, text, stream_options, deliver_runtime_thread)
+        .await
 }
 
 async fn run_agent_send_path_with_persist<P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
-    runtime_generation: u64,
     text: String,
     mut stream_options: StreamOptions,
     persist_runtime: P,
@@ -704,11 +754,10 @@ async fn run_agent_send_path_with_persist<P, Delivery>(
 where
     P: FnOnce(&AgentRuntime) -> Result<Delivery>,
 {
-    let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime(runtime_generation)
-    {
+    let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime() {
         Ok(state) => state,
         Err(error) => {
-            runtime_state.mark_runtime_degraded();
+            runtime_state.mark_runtime_degraded("runtime_init_failed");
             return Err(error).context("Agent runtime unavailable");
         }
     };
@@ -844,9 +893,9 @@ where
             // valid -> keep messages, reset chain) from a hard failure (drop the
             // runtime). Both still mark the UI degraded and fall back to legacy.
             if agent_send_error_is_transient(&error) {
-                runtime_state.mark_runtime_degraded_preserving_context();
+                runtime_state.mark_runtime_degraded_preserving_context("send_transient_failure");
             } else {
-                runtime_state.mark_runtime_degraded();
+                runtime_state.mark_runtime_degraded("send_hard_failure");
             }
             Err(error).context("AgentSession send failed")
         }
@@ -908,8 +957,7 @@ async fn run_agent_send_with_fallback(
     let stream_options = build_agent_stream_options(ai_assistive_max_tokens);
     let agent_result = {
         let mut guard = runtime_state.lock().await;
-        let runtime_generation = current_agent_thread_generation();
-        run_agent_send_path(&mut guard, runtime_generation, text.clone(), stream_options).await
+        run_agent_send_path(&mut guard, text.clone(), stream_options).await
     };
 
     match agent_result {
@@ -1319,26 +1367,6 @@ mod tests {
         }
     }
 
-    fn seed_runtime_with_user_message(runtime: &mut AgentRuntime) {
-        let options = StreamOptions {
-            model: String::new(),
-            system_prompt: None,
-            max_tokens: None,
-            temperature: None,
-            reset_chain: false,
-        };
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime should initialize");
-        rt.block_on(
-            runtime
-                .session
-                .send("hello".to_string(), Vec::new(), &options),
-        )
-        .expect("seed message should be recorded");
-    }
-
     #[test]
     fn test_session_telemetry_sink_tracks_no_speech_and_stats() {
         let shared = new_session_telemetry();
@@ -1402,101 +1430,65 @@ mod tests {
         assert!(snapshot.stats.is_none());
     }
 
+    /// The per-turn generation machinery is removed: ordinary consecutive
+    /// ensures reuse the live runtime as-is — no identity rotation, no history
+    /// reset, no rehydration attempt.
     #[test]
-    fn test_request_new_agent_thread_boundary_is_monotonic() {
-        let before = current_agent_thread_generation();
-        let next = request_new_agent_thread_boundary();
-        let now = current_agent_thread_generation();
-
-        assert!(next > before);
-        assert!(now >= next);
-    }
-
-    #[test]
-    fn test_runtime_generation_reuses_existing_runtime_when_unchanged() {
+    fn test_runtime_generation_machinery_removed_ordinary_ensures_reuse_runtime() {
         let mut runtime_state = AgentRuntimeState {
             runtime: Some(runtime_with_thread_id("thread_existing")),
-            runtime_generation: 41,
+            thread_store_id: Some("thread_existing".to_string()),
             runtime_degraded: false,
         };
         let init_calls = AtomicUsize::new(0);
 
-        let (runtime, recovered) = runtime_state
-            .ensure_runtime_with(41, || {
-                init_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(runtime_with_thread_id("thread_should_not_be_used"))
-            })
-            .expect("runtime should be reused for unchanged generation");
+        for _ in 0..2 {
+            let (runtime, recovered) = runtime_state
+                .ensure_runtime_with(
+                    || {
+                        init_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(runtime_with_thread_id("thread_should_not_be_used"))
+                    },
+                    |_| -> Result<Option<Vec<Message>>> {
+                        panic!("a live runtime must never trigger rehydration")
+                    },
+                )
+                .expect("live runtime should be reused on ordinary consecutive sends");
+            assert_eq!(runtime.thread_store_id, "thread_existing");
+            assert!(!recovered);
+        }
 
-        assert_eq!(runtime.thread_store_id, "thread_existing");
         assert_eq!(init_calls.load(Ordering::SeqCst), 0);
-        assert!(!recovered);
-        assert_eq!(runtime_state.runtime_generation, 41);
-    }
-
-    #[test]
-    fn test_runtime_generation_change_rotates_runtime_identity() {
-        let mut runtime_state = AgentRuntimeState {
-            runtime: Some(runtime_with_thread_id("thread_old")),
-            runtime_generation: 12,
-            runtime_degraded: false,
-        };
-        let init_calls = AtomicUsize::new(0);
-
-        let (runtime, recovered) = runtime_state
-            .ensure_runtime_with(13, || {
-                init_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(runtime_with_thread_id("thread_new"))
-            })
-            .expect("runtime should rotate after generation change");
-
-        assert_eq!(init_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(runtime.thread_store_id, "thread_new");
-        assert_eq!(runtime_state.runtime_generation, 13);
-        assert!(!recovered);
-    }
-
-    #[test]
-    fn test_new_thread_boundary_forces_fresh_runtime_identity() {
-        let mut runtime_state = AgentRuntimeState {
-            runtime: Some(runtime_with_thread_id("thread_before_boundary")),
-            runtime_generation: current_agent_thread_generation(),
-            runtime_degraded: false,
-        };
-        let new_generation = request_new_agent_thread_boundary();
-        let init_calls = AtomicUsize::new(0);
-
-        let (runtime, recovered) = runtime_state
-            .ensure_runtime_with(new_generation, || {
-                init_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(runtime_with_thread_id("thread_after_boundary"))
-            })
-            .expect("runtime should rotate after explicit boundary request");
-
-        assert_eq!(init_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(runtime.thread_store_id, "thread_after_boundary");
-        assert_eq!(runtime_state.runtime_generation, new_generation);
-        assert!(!recovered);
+        assert_eq!(
+            runtime_state.thread_store_id.as_deref(),
+            Some("thread_existing")
+        );
     }
 
     #[test]
     fn test_runtime_recovery_clears_degraded_flag_on_reinit() {
         let mut runtime_state = AgentRuntimeState {
             runtime: None,
-            runtime_generation: 7,
+            thread_store_id: Some("thread_stable".to_string()),
             runtime_degraded: true,
         };
         let init_calls = AtomicUsize::new(0);
 
         let (runtime, recovered) = runtime_state
-            .ensure_runtime_with(7, || {
-                init_calls.fetch_add(1, Ordering::SeqCst);
-                Ok(runtime_with_thread_id("thread_recovered"))
-            })
+            .ensure_runtime_with(
+                || {
+                    init_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(runtime_with_thread_id("thread_freshly_minted"))
+                },
+                |_| Ok(None),
+            )
             .expect("runtime should reinitialize after degraded state");
 
         assert_eq!(init_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(runtime.thread_store_id, "thread_recovered");
+        assert_eq!(
+            runtime.thread_store_id, "thread_stable",
+            "rebuild must rejoin the durable thread id, not the freshly minted one"
+        );
         assert!(recovered);
         assert!(!runtime_state.runtime_degraded);
     }
@@ -1610,7 +1602,7 @@ mod tests {
 
         let mut runtime_state = AgentRuntimeState {
             runtime: Some(runtime),
-            runtime_generation: 3,
+            thread_store_id: Some("thread_transient".to_string()),
             runtime_degraded: false,
         };
 
@@ -1621,7 +1613,8 @@ mod tests {
             "connection-reset error must classify as transient"
         );
 
-        let newly_degraded = runtime_state.mark_runtime_degraded_preserving_context();
+        let newly_degraded =
+            runtime_state.mark_runtime_degraded_preserving_context("test_transient_failure");
         assert!(newly_degraded, "first soft degrade transitions the flag");
 
         let runtime = runtime_state
@@ -1640,12 +1633,13 @@ mod tests {
         assert!(runtime_state.runtime_degraded);
     }
 
-    /// Counterpart: a hard (non-transient) failure drops the runtime entirely.
+    /// Counterpart: a hard (non-transient) failure drops the runtime entirely —
+    /// but never the durable thread identity.
     #[test]
     fn hard_degrade_drops_runtime_on_non_transient() {
         let mut runtime_state = AgentRuntimeState {
             runtime: Some(seed_completed_runtime("thread_hard")),
-            runtime_generation: 5,
+            thread_store_id: Some("thread_hard".to_string()),
             runtime_degraded: false,
         };
 
@@ -1655,12 +1649,17 @@ mod tests {
             "init failure must NOT classify as transient"
         );
 
-        runtime_state.mark_runtime_degraded();
+        runtime_state.mark_runtime_degraded("test_hard_failure");
         assert!(
             runtime_state.runtime.is_none(),
             "hard degrade must drop the runtime"
         );
         assert!(runtime_state.runtime_degraded);
+        assert_eq!(
+            runtime_state.thread_store_id.as_deref(),
+            Some("thread_hard"),
+            "durable thread identity must survive runtime = None"
+        );
     }
 
     #[test]
@@ -1687,84 +1686,6 @@ mod tests {
         let error = anyhow::anyhow!("Agent runtime unavailable");
 
         assert!(agent_send_error_allows_legacy_fallback(&error));
-    }
-
-    #[test]
-    fn test_rotate_for_new_thread_persists_previous_thread_with_messages() {
-        let mut old_runtime = runtime_with_thread_id("thread_old");
-        seed_runtime_with_user_message(&mut old_runtime);
-        let mut runtime_state = AgentRuntimeState {
-            runtime: Some(old_runtime),
-            runtime_generation: 21,
-            runtime_degraded: false,
-        };
-        let persist_calls = AtomicUsize::new(0);
-
-        let persisted = runtime_state
-            .rotate_for_new_thread_with(
-                22,
-                || Ok(runtime_with_thread_id("thread_new")),
-                |runtime| {
-                    persist_calls.fetch_add(1, Ordering::SeqCst);
-                    assert_eq!(runtime.thread_store_id, "thread_old");
-                    assert_eq!(runtime.session.messages().len(), 1);
-                    Ok(())
-                },
-            )
-            .expect("runtime rotation should succeed");
-
-        assert!(persisted);
-        assert_eq!(persist_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(runtime_state.runtime_generation, 22);
-        assert!(!runtime_state.runtime_degraded);
-        let runtime = runtime_state
-            .runtime
-            .expect("new runtime should be installed");
-        assert_eq!(runtime.thread_store_id, "thread_new");
-        assert!(runtime.session.messages().is_empty());
-    }
-
-    #[test]
-    fn test_rotate_for_new_thread_skips_persist_when_empty() {
-        let mut runtime_state = AgentRuntimeState {
-            runtime: Some(runtime_with_thread_id("thread_old")),
-            runtime_generation: 4,
-            runtime_degraded: false,
-        };
-        let persist_calls = AtomicUsize::new(0);
-
-        let persisted = runtime_state
-            .rotate_for_new_thread_with(
-                5,
-                || Ok(runtime_with_thread_id("thread_new")),
-                |_runtime| {
-                    persist_calls.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                },
-            )
-            .expect("runtime rotation should succeed");
-
-        assert!(!persisted);
-        assert_eq!(persist_calls.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn test_rotate_for_new_thread_marks_degraded_when_reinit_fails() {
-        let mut runtime_state = AgentRuntimeState {
-            runtime: Some(runtime_with_thread_id("thread_old")),
-            runtime_generation: 11,
-            runtime_degraded: false,
-        };
-        let result = runtime_state.rotate_for_new_thread_with(
-            12,
-            || Err(anyhow::anyhow!("boom")),
-            |_runtime| Ok(()),
-        );
-
-        assert!(result.is_err());
-        assert_eq!(runtime_state.runtime_generation, 12);
-        assert!(runtime_state.runtime_degraded);
-        assert!(runtime_state.runtime.is_none());
     }
 
     #[test]
@@ -1904,16 +1825,23 @@ mod tests {
     struct ScriptedControllerProvider {
         scripts: Arc<StdMutex<VecDeque<Vec<AgentEvent>>>>,
         reset_chain_flags: Arc<StdMutex<Vec<bool>>>,
+        /// Full provider-call inputs, recorded so continuity tests can prove the
+        /// second call replays prior history instead of just the new message.
+        seen_inputs: Arc<StdMutex<Vec<Vec<Message>>>>,
     }
 
     #[async_trait]
     impl AgentProvider for ScriptedControllerProvider {
         async fn stream(
             &self,
-            _messages: &[Message],
+            messages: &[Message],
             _tools: &[ToolDefinition],
             options: &StreamOptions,
         ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+            self.seen_inputs
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(messages.to_vec());
             self.reset_chain_flags
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -1973,12 +1901,19 @@ mod tests {
         .expect("test flag should be set before timeout");
     }
 
+    /// Serializes every test that drives `run_agent_send_path_with_persist`:
+    /// the send path publishes un-keyed `Done` terminals to the process-global
+    /// delivery broadcast, so concurrent send-path tests would leak terminals
+    /// into each other's subscriptions.
+    static SEND_PATH_BROADCAST_LOCK: TokioMutex<()> = TokioMutex::const_new(());
+
     #[tokio::test]
     async fn voice_cancel_drops_slow_tool_restores_history_skips_persist_and_recovers() {
         use crate::agent_delivery::{
             AgentDeliveryEvent, cancel_agent_delivery_turn, subscribe_agent_delivery,
         };
 
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
         let thread_id = "controller_voice_cancel_recovery";
         let tool_started = Arc::new(AtomicBool::new(false));
         let side_effect = Arc::new(AtomicBool::new(false));
@@ -2033,6 +1968,7 @@ mod tests {
             Box::new(ScriptedControllerProvider {
                 scripts: Arc::clone(&scripts),
                 reset_chain_flags: Arc::clone(&reset_chain_flags),
+                seen_inputs: Arc::new(StdMutex::new(Vec::new())),
             }),
             Arc::new(tools),
             ui_tx,
@@ -2048,7 +1984,7 @@ mod tests {
                 thread_store_id: thread_id.to_string(),
                 reset_chain_on_next_send: false,
             }),
-            runtime_generation: 77,
+            thread_store_id: Some(thread_id.to_string()),
             runtime_degraded: false,
         };
         let persist_count = Arc::new(AtomicUsize::new(0));
@@ -2058,7 +1994,6 @@ mod tests {
         let driven = tokio::spawn(async move {
             let result = run_agent_send_path_with_persist(
                 &mut state,
-                77,
                 "cancel this".to_string(),
                 test_stream_options(),
                 move |_runtime| {
@@ -2125,7 +2060,6 @@ mod tests {
         let second_persist_count = Arc::clone(&persist_count);
         let outcome = run_agent_send_path_with_persist(
             &mut state,
-            77,
             "try again".to_string(),
             test_stream_options(),
             move |_runtime| {
@@ -2163,5 +2097,412 @@ mod tests {
             temperature: None,
             reset_chain: false,
         }
+    }
+
+    // ── Voice runtime identity and history continuity (W1-A) ────────────────
+
+    fn scripted_runtime(
+        thread_store_id: &str,
+        scripts: Arc<StdMutex<VecDeque<Vec<AgentEvent>>>>,
+        seen_inputs: Arc<StdMutex<Vec<Vec<Message>>>>,
+    ) -> AgentRuntime {
+        let (ui_tx, ui_rx) = mpsc::channel(32);
+        let session = AgentSession::new(
+            Box::new(ScriptedControllerProvider {
+                scripts,
+                reset_chain_flags: Arc::new(StdMutex::new(Vec::new())),
+                seen_inputs,
+            }),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        AgentRuntime {
+            session,
+            ui_rx,
+            thread_store_id: thread_store_id.to_string(),
+            reset_chain_on_next_send: false,
+        }
+    }
+
+    fn completed_turn_script(assistant_text: &str, response_id: &str) -> Vec<AgentEvent> {
+        vec![
+            AgentEvent::TextDone(assistant_text.to_string()),
+            AgentEvent::ResponseDone {
+                response_id: Some(response_id.to_string()),
+                clean: true,
+            },
+        ]
+    }
+
+    fn assert_single_controller_thread_artifact(threads_dir: &std::path::Path) {
+        let thread_files = std::fs::read_dir(threads_dir)
+            .expect("threads dir should list")
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+                    && path.file_name().is_some_and(|name| name != "index.json")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            thread_files.len(),
+            1,
+            "one voice conversation must leave exactly one thread JSON artifact"
+        );
+        let index_json = std::fs::read_to_string(threads_dir.join("index.json"))
+            .expect("index.json should exist");
+        let index: serde_json::Value =
+            serde_json::from_str(&index_json).expect("index.json should parse");
+        assert_eq!(
+            index["threads"]
+                .as_array()
+                .expect("index should hold a threads array")
+                .len(),
+            1,
+            "one voice conversation must leave exactly one index row"
+        );
+    }
+
+    /// Two ordinary successful turns share one backend thread: same id, one
+    /// disk artifact, one index row, monotonically growing message count, and a
+    /// strictly newer `updated_at` on the second delivery.
+    #[tokio::test]
+    async fn voice_runtime_continuity() {
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
+        let threads_dir = tmp.path().join("threads");
+        let gateway =
+            ThreadDeliveryGateway::new_in(&threads_dir).expect("gateway should initialize");
+
+        let scripts = Arc::new(StdMutex::new(VecDeque::from([
+            completed_turn_script("first answer", "resp-first"),
+            completed_turn_script("second answer", "resp-second"),
+        ])));
+        let seen_inputs = Arc::new(StdMutex::new(Vec::new()));
+        let mut state = AgentRuntimeState {
+            runtime: Some(scripted_runtime(
+                "t_test_continuity",
+                Arc::clone(&scripts),
+                Arc::clone(&seen_inputs),
+            )),
+            thread_store_id: Some("t_test_continuity".to_string()),
+            runtime_degraded: false,
+        };
+
+        let mut receipts: Vec<ThreadDeliveryReceipt> = Vec::new();
+        for text in ["first question", "second question"] {
+            let outcome = run_agent_send_path_with_persist(
+                &mut state,
+                text.to_string(),
+                test_stream_options(),
+                |runtime| {
+                    let receipt = gateway.deliver(runtime_delivery_input(
+                        runtime,
+                        "test-provider".to_string(),
+                        "test-model".to_string(),
+                        Utc::now(),
+                    ))?;
+                    receipts.push(receipt);
+                    Ok(())
+                },
+            )
+            .await
+            .expect("ordinary turn should complete");
+            assert_eq!(outcome, AgentSendOutcome::Completed);
+        }
+
+        assert_eq!(receipts.len(), 2, "both turns must persist");
+        assert_eq!(receipts[0].backend_id, "t_test_continuity");
+        assert_eq!(
+            receipts[1].backend_id, "t_test_continuity",
+            "ordinary turns must never rotate thread identity"
+        );
+        assert!(receipts[0].created);
+        assert!(
+            !receipts[1].created,
+            "the second ordinary turn must upsert the same thread, not create a new one"
+        );
+        assert_eq!(receipts[0].message_count, 2);
+        assert_eq!(
+            receipts[1].message_count, 4,
+            "message count must grow monotonically across turns"
+        );
+        assert!(
+            receipts[1].updated_at > receipts[0].updated_at,
+            "the second delivery must carry a newer updated_at"
+        );
+
+        assert_eq!(state.thread_store_id.as_deref(), Some("t_test_continuity"));
+        let runtime = state.runtime.as_ref().expect("runtime should stay live");
+        assert_eq!(runtime.thread_store_id, "t_test_continuity");
+        assert_eq!(
+            runtime.session.messages().len(),
+            4,
+            "in-memory history must accumulate, never reset between ordinary turns"
+        );
+
+        assert_single_controller_thread_artifact(&threads_dir);
+    }
+
+    /// Hard degrade drops the runtime but not the durable identity: the rebuilt
+    /// runtime rejoins the same backend thread, restores the persisted history
+    /// before the next provider call, and the second call replays the first
+    /// exchange instead of starting over.
+    #[tokio::test]
+    async fn hard_degrade_rehydrates_same_thread() {
+        let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
+        let threads_dir = tmp.path().join("threads");
+        let gateway =
+            ThreadDeliveryGateway::new_in(&threads_dir).expect("gateway should initialize");
+        let store = ThreadStore::new_in(&threads_dir).expect("store should initialize");
+
+        let first_scripts = Arc::new(StdMutex::new(VecDeque::from([completed_turn_script(
+            "first answer",
+            "resp-first",
+        )])));
+        let mut state = AgentRuntimeState {
+            runtime: None,
+            thread_store_id: None,
+            runtime_degraded: false,
+        };
+        state
+            .ensure_runtime_with(
+                || {
+                    Ok(scripted_runtime(
+                        "t_test_stable",
+                        Arc::clone(&first_scripts),
+                        Arc::new(StdMutex::new(Vec::new())),
+                    ))
+                },
+                |_| Ok(None),
+            )
+            .expect("first install should succeed");
+        let id_before = state
+            .thread_store_id
+            .clone()
+            .expect("install must record the durable identity");
+        assert_eq!(id_before, "t_test_stable");
+
+        let outcome = run_agent_send_path_with_persist(
+            &mut state,
+            "first question".to_string(),
+            test_stream_options(),
+            |runtime| {
+                gateway.deliver(runtime_delivery_input(
+                    runtime,
+                    "test-provider".to_string(),
+                    "test-model".to_string(),
+                    Utc::now(),
+                ))
+            },
+        )
+        .await
+        .expect("first turn should complete");
+        assert_eq!(outcome, AgentSendOutcome::Completed);
+
+        state.mark_runtime_degraded("test_hard_failure");
+        assert!(state.runtime.is_none());
+        assert_eq!(
+            state.thread_store_id.as_deref(),
+            Some(id_before.as_str()),
+            "backend thread id must survive runtime = None"
+        );
+
+        let second_scripts = Arc::new(StdMutex::new(VecDeque::from([completed_turn_script(
+            "second answer",
+            "resp-second",
+        )])));
+        let second_inputs = Arc::new(StdMutex::new(Vec::new()));
+        {
+            let (runtime, recovered) = state
+                .ensure_runtime_with(
+                    || {
+                        Ok(scripted_runtime(
+                            "t_test_freshly_minted",
+                            Arc::clone(&second_scripts),
+                            Arc::clone(&second_inputs),
+                        ))
+                    },
+                    |thread_store_id| load_thread_messages_from(&store, thread_store_id),
+                )
+                .expect("recovery rebuild should succeed");
+            assert!(recovered);
+            assert_eq!(
+                runtime.thread_store_id, id_before,
+                "recovery must rejoin the durable thread id, never mint a new one"
+            );
+            assert_eq!(
+                runtime.session.messages().len(),
+                2,
+                "persisted history must be restored before the next provider call"
+            );
+        }
+
+        let outcome = run_agent_send_path_with_persist(
+            &mut state,
+            "second question".to_string(),
+            test_stream_options(),
+            |runtime| {
+                gateway.deliver(runtime_delivery_input(
+                    runtime,
+                    "test-provider".to_string(),
+                    "test-model".to_string(),
+                    Utc::now(),
+                ))
+            },
+        )
+        .await
+        .expect("recovered turn should complete");
+        assert_eq!(outcome, AgentSendOutcome::Completed);
+        assert_eq!(state.thread_store_id.as_deref(), Some(id_before.as_str()));
+
+        let inputs = second_inputs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(
+            inputs.len(),
+            1,
+            "the rebuilt provider should see exactly one call"
+        );
+        let second_call_input = &inputs[0];
+        assert!(
+            second_call_input.len() >= 3,
+            "second provider call must replay prior history plus the new user message, got {} message(s)",
+            second_call_input.len()
+        );
+        let replayed_text = second_call_input
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            replayed_text.contains("first question"),
+            "replayed input must contain the first user message"
+        );
+        assert!(
+            replayed_text.contains("first answer"),
+            "replayed input must contain the first assistant reply"
+        );
+        assert!(
+            replayed_text.contains("second question"),
+            "replayed input must contain the new user message"
+        );
+
+        let persisted = store
+            .load_thread(&id_before)
+            .expect("recovered thread should load from disk");
+        assert_eq!(
+            persisted.messages.len(),
+            4,
+            "the same thread file must accumulate both turns"
+        );
+        assert_single_controller_thread_artifact(&threads_dir);
+    }
+
+    /// A corrupt/missing ThreadStore artifact must never silently mint a new
+    /// thread: identity stays stable, history starts empty, and the lifecycle
+    /// logs carry explicit recovery evidence — ids, counts, and classes only,
+    /// never prompt/transcript content.
+    #[test]
+    fn rehydrate_failure_keeps_identity_and_logs_privacy_safe_recovery() {
+        struct SharedWriter(Arc<StdMutex<Vec<u8>>>);
+        impl std::io::Write for SharedWriter {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
+        let threads_dir = tmp.path().join("threads");
+        let store = ThreadStore::new_in(&threads_dir).expect("store should initialize");
+        let corrupt_path = store
+            .thread_file_path("t_test_corrupt")
+            .expect("thread path should build");
+        std::fs::write(&corrupt_path, b"{ this is not valid thread json")
+            .expect("corrupt artifact should write");
+
+        let sentinel = "TOP-SECRET-TRANSCRIPT-SENTINEL";
+        let mut state = AgentRuntimeState {
+            runtime: Some(runtime_with_thread_id("t_test_corrupt")),
+            thread_store_id: Some("t_test_corrupt".to_string()),
+            runtime_degraded: false,
+        };
+        state
+            .runtime
+            .as_mut()
+            .expect("runtime is installed")
+            .session
+            .restore_messages(vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Text(sentinel.to_string())],
+            )]);
+
+        let buffer: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let writer_buffer = Arc::clone(&buffer);
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || SharedWriter(Arc::clone(&writer_buffer)))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            state.mark_runtime_degraded("test_hard_failure");
+            let (runtime, recovered) = state
+                .ensure_runtime_with(
+                    || Ok(runtime_with_thread_id("t_test_should_be_overridden")),
+                    |thread_store_id| load_thread_messages_from(&store, thread_store_id),
+                )
+                .expect("rebuild should survive a corrupt artifact");
+            assert!(recovered);
+            assert_eq!(
+                runtime.thread_store_id, "t_test_corrupt",
+                "identity must stay stable even when rehydration fails"
+            );
+            assert!(
+                runtime.session.messages().is_empty(),
+                "failed rehydration continues with empty history on the same thread"
+            );
+        });
+        assert_eq!(state.thread_store_id.as_deref(), Some("t_test_corrupt"));
+
+        let logs = String::from_utf8(
+            buffer
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+        )
+        .expect("captured logs should be utf8");
+        assert!(
+            logs.contains("hard_degrade"),
+            "hard degrade must log its recovery class: {logs}"
+        );
+        assert!(
+            logs.contains("dropped_message_count=1"),
+            "hard degrade must log the dropped in-memory count: {logs}"
+        );
+        assert!(
+            logs.contains("rehydrate_failed"),
+            "failed rehydration must be explicit recovery evidence: {logs}"
+        );
+        assert!(
+            logs.contains("t_test_corrupt"),
+            "lifecycle logs must carry the thread id transition: {logs}"
+        );
+        assert!(
+            !logs.contains(sentinel),
+            "lifecycle logs must never contain prompt/transcript content"
+        );
     }
 }
