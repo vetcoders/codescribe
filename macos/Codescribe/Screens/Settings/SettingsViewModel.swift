@@ -67,18 +67,61 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
 }
 
-// Every rail section declares its product truth explicitly.
+/// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
+/// map exhaustively, so routing stays testable without rendering.
+enum SettingsPanelDestination: Equatable {
+    case creator
+    case shortcuts
+    case providers
+    case prompts
+    case dictation
+    case audio
+    case dictionary
+    case user
+}
+
+// Every rail section declares its product truth explicitly. The raw value is a
+// stable route id (focus targets, SwiftUI identity); `title` is the ONE owner of
+// the user-visible name — rail, eyebrows, help copy, and dictionary-supporting
+// copy all derive from it, so renaming a tab is a one-line change.
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case creator = "Creator"
-    case shortcuts = "Hotkeys"
-    case keys = "Providers"
-    case prompts = "Prompts"
-    case engine = "Engine"
-    case audio = "Audio"
-    case voiceLab = "Voice Lab"
-    case user = "User"
+    case creator
+    case shortcuts
+    case keys
+    case prompts
+    case engine
+    case audio
+    case voiceLab
+    case user
 
     var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .creator: return "Creator"
+        case .shortcuts: return "Hotkeys"
+        case .keys: return "Providers"
+        case .prompts: return "Prompts"
+        case .engine: return "Dictation"
+        case .audio: return "Audio"
+        case .voiceLab: return "Dictionary"
+        case .user: return "User"
+        }
+    }
+
+    var destination: SettingsPanelDestination {
+        switch self {
+        case .creator: return .creator
+        case .shortcuts: return .shortcuts
+        case .keys: return .providers
+        case .prompts: return .prompts
+        case .engine: return .dictation
+        case .audio: return .audio
+        case .voiceLab: return .dictionary
+        case .user: return .user
+        }
+    }
+
     var availability: SettingsSectionAvailability {
         switch self {
         case .creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user:
@@ -319,6 +362,83 @@ struct LLMLaneModel {
             }
             return "model discovery failed"
         }
+    }
+}
+
+// MARK: - Preview timing domain (Dictation-owned; model + panel both consume)
+
+enum PreviewTimingPreset: String, CaseIterable, Identifiable, Equatable {
+    case smooth = "Smooth"
+    case snappy = "Snappy"
+    case relaxed = "Relaxed"
+    case off = "Off"
+    case custom = "Custom"
+
+    var id: String { rawValue }
+}
+
+struct PreviewTimingValues: Equatable {
+    let bufferDelayMs: UInt64
+    let typingCps: Float
+    let emitWordsMax: UInt64
+    let interimSeconds: Float
+
+    // Source: operator-tested C5b values (2026-06-11). Smooth is the
+    // recommended default; Snappy/Relaxed retain the original values without
+    // the optional +/-20% retuning because all are inside current clamps.
+    static let smooth = PreviewTimingValues(
+        bufferDelayMs: 1038,
+        typingCps: 10.6,
+        emitWordsMax: 5,
+        interimSeconds: 8.0
+    )
+    static let snappy = PreviewTimingValues(
+        bufferDelayMs: 350,
+        typingCps: 28.0,
+        emitWordsMax: 3,
+        interimSeconds: 4.0
+    )
+    static let relaxed = PreviewTimingValues(
+        bufferDelayMs: 1500,
+        typingCps: 8.0,
+        emitWordsMax: 8,
+        interimSeconds: 8.0
+    )
+}
+
+struct PreviewTimingConfiguration: Equatable {
+    let overlayEnabled: Bool
+    let values: PreviewTimingValues
+}
+
+func presetValues(_ preset: PreviewTimingPreset) -> PreviewTimingValues? {
+    switch preset {
+    case .smooth: return .smooth
+    case .snappy: return .snappy
+    case .relaxed: return .relaxed
+    case .off, .custom: return nil
+    }
+}
+
+func detectPreset(_ configuration: PreviewTimingConfiguration) -> PreviewTimingPreset {
+    guard configuration.overlayEnabled else { return .off }
+    for preset in [PreviewTimingPreset.smooth, .snappy, .relaxed] {
+        guard let values = presetValues(preset) else { continue }
+        let current = configuration.values
+        let bufferClose = current.bufferDelayMs.absDiff(values.bufferDelayMs) <= 10
+        let cpsClose = abs(current.typingCps - values.typingCps) <= 0.15
+        let wordsMatch = current.emitWordsMax == values.emitWordsMax
+        let interimClose = abs(current.interimSeconds - values.interimSeconds) <= 0.15
+        if bufferClose, cpsClose, wordsMatch, interimClose {
+            return preset
+        }
+    }
+    return .custom
+}
+
+private extension UInt64 {
+    func absDiff(_ other: UInt64) -> UInt64 {
+        self >= other ? self - other : other - self
     }
 }
 

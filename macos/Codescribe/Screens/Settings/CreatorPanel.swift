@@ -109,7 +109,7 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
     }
 
     static let supportingCopy =
-        "Programming vocabulary and your Voice Lab dictionary enrich the selected language."
+        "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language."
 
     static let choices: [LanguageIdentityPresentation] = [
         .init(language: .auto, title: "Multilingual", isFineTuned: false),

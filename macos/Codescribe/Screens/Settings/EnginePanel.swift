@@ -1,13 +1,14 @@
 import SwiftUI
 
-// Engine panel: runtime truth + engine controls. The key/value runtime rows are
-// READ-ONLY (sourced from the live CsSettings snapshot, not hardcoded) and the
-// permission matrix reflects live status. "Engine controls" and "LLM lanes" are
-// editable: STT/layered controls plus per-lane provider, endpoint, and model
-// overrides, all persisted through the promoted-key config router.
+// Dictation panel: everything that shapes how speech becomes text. Read-only
+// runtime rows show the live STT truth (sourced from the CsSettings snapshot,
+// not hardcoded); the permission matrix reflects live status. Editable owners:
+// STT/layered engine controls, preview timing, and the hands-free silence
+// window — all persisted through the promoted-key config router.
 
 struct EnginePanel: View {
     @ObservedObject var model: SettingsViewModel
+    @State private var advancedTimingExpanded = false
 
     private let matrixOrder: [PermissionKind] = [
         .microphone, .accessibility, .inputMonitoring, .screenRecording
@@ -20,7 +21,7 @@ struct EnginePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                EyebrowLabel(text: "Settings · Engine")
+                EyebrowLabel(text: "Settings · \(SettingsSection.engine.title)")
                 Text("RUNTIME TRUTH · READ-ONLY ROWS")
                     .font(CSFont.mono(9, .medium))
                     .foregroundStyle(CSColor.textMutedAlt)
@@ -50,9 +51,14 @@ struct EnginePanel: View {
             engineControls
                 .padding(.top, 11)
 
-            SettingsSectionLabel("LLM lanes")
+            SettingsSectionLabel("Preview timing")
                 .padding(.top, 22)
-            LLMLanesSection(model: model)
+            previewTimingSection
+                .padding(.top, 11)
+
+            SettingsSectionLabel("Hands-free silence")
+                .padding(.top, 22)
+            silenceSection
                 .padding(.top, 11)
 
             SettingsSectionLabel("Permission matrix")
@@ -66,26 +72,17 @@ struct EnginePanel: View {
 
             HStack(spacing: 8) {
                 Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
-                Text("runtime rows reflect the live engine — changes apply on the next recording session or LLM request")
+                Text("runtime rows reflect the live engine — changes apply on the next recording session")
                     .font(CSFont.mono(11, .medium))
                     .foregroundStyle(CSColor.textFaint)
             }
             .padding(.top, 16)
-
-            WorkspaceRootsSection(model: model)
-                .padding(.top, 30)
-
-            AgentStatusSection(model: model)
-                .padding(.top, 30)
-
-            MCPServersSection(model: model)
-                .padding(.top, 26)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
     }
 
-    // MARK: Runtime key/value rows
+    // MARK: Runtime key/value rows (STT truth only — LLM truth lives in Providers)
 
     private var runtimeRows: some View {
         VStack(spacing: 0) {
@@ -97,22 +94,6 @@ struct EnginePanel: View {
             divider
             RuntimeRow(key: "Whisper language", value: model.whisperLanguageCode,
                        tint: true, mono: true, trailing: .none)
-            divider
-            RuntimeRow(key: "AI formatting", value: model.formattingDescription,
-                       tint: false, trailing: .none)
-            divider
-            ForEach(LLMLane.allCases) { lane in
-                let laneModel = model.llmLane(lane)
-                RuntimeRow(key: "\(lane.title) endpoint", value: laneModel.resolvedEndpoint,
-                           tint: false, mono: true, trailing: .none)
-                divider
-                RuntimeRow(key: "\(lane.title) model", value: laneModel.resolvedModel,
-                           tint: true, mono: true, trailing: .none)
-                divider
-            }
-            RuntimeRow(key: "API keys", value: model.apiKeysDescription,
-                       tint: true,
-                       trailing: model.apiKeysStored ? .text("secure", CSColor.oliveLight) : .text("missing", CSColor.amber))
         }
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(
@@ -172,429 +153,193 @@ struct EnginePanel: View {
             }
         }
     }
-}
 
-// MARK: - Editable LLM lanes
+    // MARK: Preview timing (overlay pacing — writes the existing promoted keys)
 
-/// Three request lanes sharing one visual grammar while preserving their distinct
-/// promoted config keys. Runtime rows above remain the effective read-only truth.
-private struct LLMLanesSection: View {
-    @ObservedObject var model: SettingsViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Set provider, endpoint, and model per request path. Leave an override empty to use the resolved fallback.")
-                .font(CSFont.ui(11.5))
-                .lineSpacing(2)
-                .foregroundStyle(CSColor.textMutedAlt)
-
-            ForEach(LLMLane.allCases) { lane in
-                LLMLaneEditor(model: model, lane: lane)
-                if lane != LLMLane.allCases.last {
-                    Rectangle()
-                        .fill(CSColor.hairline(0.05))
-                        .frame(height: 1)
+    private var previewTimingSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Preview timing preset", selection: presetBinding) {
+                ForEach(PreviewTimingPreset.allCases) { preset in
+                    Text(preset.rawValue).tag(preset)
                 }
             }
-        }
-    }
-}
+            .pickerStyle(.segmented)
+            .labelsHidden()
 
-private struct LLMLaneEditor: View {
-    @ObservedObject var model: SettingsViewModel
-    let lane: LLMLane
+            Text(previewSummary)
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.textFaint)
 
-    @State private var endpointDraft = ""
-    @State private var modelDraft = ""
-
-    private var laneModel: LLMLaneModel { model.llmLane(lane) }
-
-    private var providerLabel: String {
-        laneModel.provider?.displayName ?? laneModel.providerId
-    }
-
-    private var currentModelLabel: String {
-        laneModel.modelOptions.first { $0.id == laneModel.resolvedModel }?.displayName
-            ?? laneModel.resolvedModel
-    }
-
-    private var discoveryDotColor: Color {
-        if laneModel.manualModelReason != nil { return CSColor.textFaint }
-        switch laneModel.discovery.status {
-        case "fresh": return CSColor.olive
-        case "cached": return CSColor.amber
-        case "no_key", "loading": return CSColor.textFaint
-        default: return CSColor.terracotta
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(lane.title)
-                    .font(CSFont.ui(14.5, .bold))
-                    .foregroundStyle(CSColor.textHigh)
-                Text(lane.subtitle)
-                    .font(CSFont.ui(11.5))
-                    .foregroundStyle(CSColor.textMutedAlt)
-            }
-
-            if lane == .assistive {
-                SettingsControlRow(title: "Provider", subtitle: "Assistive requests only") {
-                    Menu {
-                        ForEach(model.providers, id: \.id) { provider in
-                            Button {
-                                model.setAssistiveProvider(provider.id)
-                            } label: {
-                                if provider.id == laneModel.providerId {
-                                    Label(provider.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(provider.displayName)
-                                }
-                            }
-                        }
-                    } label: {
-                        SettingsMenuLabel(text: providerLabel)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .accessibilityLabel("Assistive provider")
-                    .accessibilityValue(providerLabel)
-                }
-            }
-
-            SettingsControlRow(title: "Endpoint", subtitle: lane.endpointKey) {
-                HStack(spacing: 8) {
-                    overrideTextField(
-                        placeholder: laneModel.resolvedEndpoint,
-                        text: $endpointDraft,
-                        accessibilityLabel: "\(lane.title) LLM endpoint",
-                        onSubmit: saveEndpoint
+            DisclosureGroup(isExpanded: $advancedTimingExpanded) {
+                VStack(spacing: 8) {
+                    timingSlider(
+                        title: "Buffer delay",
+                        value: bufferDelayBinding,
+                        range: 0 ... 1500,
+                        step: 1,
+                        valueLabel: "\(model.previewTimingConfiguration.values.bufferDelayMs) ms"
                     )
-
-                    saveOverrideButton(
-                        draft: endpointDraft,
-                        accessibilityLabel: "Save \(lane.title) endpoint",
-                        action: saveEndpoint
+                    timingSlider(
+                        title: "Typing speed",
+                        value: typingCpsBinding,
+                        range: 5 ... 180,
+                        step: 0.1,
+                        valueLabel: String(
+                            format: "%.1f cps",
+                            model.previewTimingConfiguration.values.typingCps
+                        )
                     )
-
-                    resetOverrideButton(
-                        help: "Clear this endpoint override",
-                        accessibilityLabel: "Reset \(lane.title) endpoint"
-                    ) {
-                        endpointDraft = ""
-                        model.setLLMEndpoint("", for: lane)
-                    }
-                }
-                .frame(width: 380)
-            }
-
-            SettingsControlRow(title: "Model", subtitle: lane.modelKey) {
-                HStack(spacing: 8) {
-                    if laneModel.discovery.status == "loading"
-                        && laneModel.manualModelReason == nil
-                    {
-                        HStack(spacing: 7) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Discovering models…")
-                                .font(CSFont.mono(10.5, .medium))
-                                .foregroundStyle(CSColor.textFaint)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .accessibilityLabel("Discovering \(lane.title) models")
-                    } else if laneModel.usesDiscoveredPicker {
-                        Menu {
-                            ForEach(laneModel.modelOptions, id: \.id) { option in
-                                Button {
-                                    model.setLLMModel(option.id, for: lane)
-                                } label: {
-                                    if option.id == laneModel.resolvedModel {
-                                        Label(option.displayName, systemImage: "checkmark")
-                                    } else {
-                                        Text(option.displayName)
-                                    }
-                                }
-                            }
-                        } label: { SettingsMenuLabel(text: currentModelLabel) }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .accessibilityLabel("\(lane.title) model")
-                        .accessibilityValue(currentModelLabel)
-                    } else {
-                        overrideTextField(
-                            placeholder: laneModel.resolvedModel,
-                            text: $modelDraft,
-                            accessibilityLabel: "\(lane.title) model ID",
-                            onSubmit: saveModel
+                    timingSlider(
+                        title: "Words per tick",
+                        value: emitWordsBinding,
+                        range: 1 ... 10,
+                        step: 1,
+                        valueLabel: "\(model.previewTimingConfiguration.values.emitWordsMax)"
+                    )
+                    timingSlider(
+                        title: "Interim cadence",
+                        value: interimBinding,
+                        range: 1 ... 30,
+                        step: 0.1,
+                        valueLabel: String(
+                            format: "%.1f s",
+                            model.previewTimingConfiguration.values.interimSeconds
                         )
-
-                        saveOverrideButton(
-                            draft: modelDraft,
-                            accessibilityLabel: "Save \(lane.title) model",
-                            action: saveModel
-                        )
-                    }
-
-                    resetOverrideButton(
-                        help: "Clear this model override",
-                        accessibilityLabel: "Reset \(lane.title) model"
-                    ) {
-                        modelDraft = ""
-                        model.setLLMModel("", for: lane)
-                    }
+                    )
                 }
-                .frame(width: 380)
-            }
-
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(discoveryDotColor.opacity(0.85))
-                    .frame(width: 7, height: 7)
-                Text(laneModel.discoveryDescription)
-                    .font(CSFont.mono(10.5, .medium))
-                    .foregroundStyle(CSColor.textFaint)
-                    .lineLimit(2)
-            }
-            .padding(.leading, 2)
-        }
-    }
-
-    private func saveEndpoint() {
-        model.setLLMEndpoint(endpointDraft, for: lane)
-        endpointDraft = ""
-    }
-
-    private func saveModel() {
-        model.setLLMModel(modelDraft, for: lane)
-        modelDraft = ""
-    }
-
-    private func overrideTextField(
-        placeholder: String,
-        text: Binding<String>,
-        accessibilityLabel: String,
-        onSubmit: @escaping () -> Void
-    ) -> some View {
-        TextField(placeholder, text: text)
-            .textFieldStyle(.plain)
-            .font(CSFont.mono(11.5, .regular))
-            .foregroundStyle(CSColor.textBody)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .fill(CSColor.surfaceRaised(0.03))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-            )
-            .onSubmit(onSubmit)
-            .accessibilityLabel(accessibilityLabel)
-    }
-
-    private func saveOverrideButton(
-        draft: String,
-        accessibilityLabel: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button("Save", action: action)
-            .font(CSFont.ui(11.5, .semibold))
-            .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
-            .buttonStyle(.plain)
-            .disabled(draft.isEmpty)
-            .accessibilityLabel(accessibilityLabel)
-    }
-
-    private func resetOverrideButton(
-        help: String,
-        accessibilityLabel: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button("Reset", action: action)
-            .font(CSFont.ui(11.5, .semibold))
-            .foregroundStyle(CSColor.textMutedAlt)
-            .buttonStyle(.plain)
-            .help(help)
-            .accessibilityLabel(accessibilityLabel)
-    }
-}
-
-// MARK: - Agent workspace roots editor
-
-/// Editable list of workspace roots the agent's `list_projects` tool scans to
-/// resolve project names to absolute paths. Rows are edited locally and committed
-/// through `SettingsViewModel.setAgentWorkspaceRoots` (colon-joined ->
-/// `AGENT_WORKSPACE_ROOTS`). Each row shows a live "directory exists" indicator.
-struct WorkspaceRootsSection: View {
-    @ObservedObject var model: SettingsViewModel
-
-    @State private var rows: [String] = []
-    @State private var loaded = false
-
-    private var isDirty: Bool {
-        cleaned(rows) != cleaned(model.agentWorkspaceRoots)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            SettingsSectionLabel("Agent workspace roots")
-
-            Text("Directories the assistant scans to resolve a project name to a path (list_projects). One level deep; git checkouts only.")
-                .font(CSFont.ui(11.5))
-                .lineSpacing(2)
-                .foregroundStyle(CSColor.textMutedAlt)
-                .padding(.top, 8)
-
-            VStack(spacing: 8) {
-                ForEach(rows.indices, id: \.self) { index in
-                    rootRow(index: index)
-                }
-            }
-            .padding(.top, 12)
-
-            HStack(spacing: 10) {
-                Button {
-                    rows.append("")
-                } label: {
-                    Label("Add root", systemImage: "plus")
-                        .font(CSFont.ui(12, .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(CSColor.textBody)
-
-                Spacer()
-
-                Button {
-                    model.setAgentWorkspaceRoots(rows)
-                    syncFromModel()
-                } label: {
-                    Text("Save roots")
-                        .font(CSFont.ui(12, .semibold))
-                        .foregroundStyle(isDirty ? CSColor.textHigh : CSColor.textFaint)
-                }
-                .buttonStyle(.plain)
-                .disabled(!isDirty)
-            }
-            .padding(.top, 12)
-        }
-        .onAppear {
-            guard !loaded else { return }
-            loaded = true
-            syncFromModel()
-        }
-    }
-
-    private func rootRow(index: Int) -> some View {
-        HStack(spacing: 10) {
-            existsDot(for: rows[index])
-            TextField("~/Git", text: Binding(
-                get: { index < rows.count ? rows[index] : "" },
-                set: { if index < rows.count { rows[index] = $0 } }
-            ))
-            .textFieldStyle(.plain)
-            .font(CSFont.mono(12, .regular))
-            .foregroundStyle(CSColor.textBody)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button {
-                rows.remove(at: index)
+                .padding(.top, 10)
             } label: {
-                CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.textFaint)
+                Text("Advanced")
+                    .font(CSFont.ui(12.5, .semibold))
+                    .foregroundStyle(CSColor.textBody)
             }
-            .buttonStyle(.plain)
+            .tint(CSColor.terracottaLight)
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(CSColor.surfaceRaised(0.03))
+        .padding(15)
+        .background(card)
+        .overlay(cardBorder)
+    }
+
+    private var presetBinding: Binding<PreviewTimingPreset> {
+        Binding(
+            get: { model.previewTimingPreset },
+            set: { preset in
+                if preset == .custom {
+                    advancedTimingExpanded = true
+                } else {
+                    advancedTimingExpanded = false
+                    model.applyPreviewTimingPreset(preset)
+                }
+            }
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+    }
+
+    private var bufferDelayBinding: Binding<Double> {
+        Binding(
+            get: { Double(model.previewTimingConfiguration.values.bufferDelayMs) },
+            set: { model.setPreviewBufferDelayMs(UInt64($0.rounded())) }
         )
     }
 
-    /// Green when the (tilde-expanded) path is an existing directory, amber
-    /// otherwise — the tool will silently skip a root that does not resolve.
-    private func existsDot(for path: String) -> some View {
-        let trimmed = path.trimmingCharacters(in: .whitespaces)
-        let valid = Self.directoryExists(trimmed)
-        return Circle()
-            .fill(valid ? CSColor.oliveLight : CSColor.amber)
-            .frame(width: 7, height: 7)
+    private var typingCpsBinding: Binding<Double> {
+        Binding(
+            get: { Double(model.previewTimingConfiguration.values.typingCps) },
+            set: { model.setPreviewTypingCps(Float($0)) }
+        )
     }
 
-    private func syncFromModel() {
-        rows = model.agentWorkspaceRoots
-        if rows.isEmpty { rows = ["~/Git"] }
+    private var emitWordsBinding: Binding<Double> {
+        Binding(
+            get: { Double(model.previewTimingConfiguration.values.emitWordsMax) },
+            set: { model.setPreviewEmitWordsMax(UInt64($0.rounded())) }
+        )
     }
 
-    private func cleaned(_ input: [String]) -> [String] {
-        input
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+    private var interimBinding: Binding<Double> {
+        Binding(
+            get: { Double(model.previewTimingConfiguration.values.interimSeconds) },
+            set: { model.setPreviewInterimSeconds(Float($0)) }
+        )
     }
 
-    private static func directoryExists(_ path: String) -> Bool {
-        guard !path.isEmpty else { return false }
-        let expanded = (path as NSString).expandingTildeInPath
-        var isDir: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir)
-        return exists && isDir.boolValue
-    }
-}
-
-// MARK: - Runtime row
-
-private struct RuntimeRow: View {
-    enum Trailing {
-        case none
-        case dot(Color)
-        case text(String, Color)
-    }
-
-    let key: String
-    let value: String
-    var tint: Bool = false
-    var mono: Bool = false
-    var trailing: Trailing = .none
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text(key)
-                .font(CSFont.mono(12, .medium))
-                .foregroundStyle(CSColor.textMutedAlt)
-                .frame(width: 160, alignment: .leading)
-            Text(value)
-                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-                .foregroundStyle(mono ? CSColor.textBodyAlt : CSColor.textHigh)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            trailingView
+    private var previewSummary: String {
+        guard model.previewTimingConfiguration.overlayEnabled else {
+            return "Preview off · committed transcripts are unchanged"
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .background(tint ? CSColor.surfaceRaised(0.02) : Color.clear)
+        let values = model.previewTimingConfiguration.values
+        return String(
+            format: "%llu ms · %.1f cps · %llu words · %.1f s interim",
+            values.bufferDelayMs,
+            values.typingCps,
+            values.emitWordsMax,
+            values.interimSeconds
+        )
     }
 
-    @ViewBuilder
-    private var trailingView: some View {
-        switch trailing {
-        case .none:
-            EmptyView()
-        case .dot(let color):
-            Circle().fill(color).frame(width: 7, height: 7)
-        case .text(let label, let color):
-            Text(label)
-                .font(CSFont.mono(10, .semibold))
-                .foregroundStyle(color)
+    private func timingSlider(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        valueLabel: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(CSFont.ui(12, .medium))
+                    .foregroundStyle(CSColor.textMutedAlt)
+                Spacer(minLength: 0)
+                Text(valueLabel)
+                    .font(CSFont.mono(10.5, .semibold))
+                    .foregroundStyle(CSColor.textBody)
+            }
+            Slider(value: value, in: range, step: step)
+                .tint(CSColor.terracotta)
         }
+    }
+
+    // MARK: Hands-free silence (toggle-mode VAD window — TOGGLE_SILENCE_SEC)
+
+    private var silenceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Hands-free silence")
+                        .font(CSFont.ui(13, .semibold))
+                        .foregroundStyle(CSColor.textBody)
+                    Text("End a toggle-mode utterance after this much live VAD silence")
+                        .font(CSFont.ui(11.5))
+                        .foregroundStyle(CSColor.textMutedAlt)
+                }
+                Spacer(minLength: 12)
+                Text(String(format: "%.1f s", model.settings.toggleSilenceSec))
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.textBody)
+            }
+            Slider(value: silenceBinding, in: 0.5 ... 30, step: 0.5)
+                .tint(CSColor.terracotta)
+                .accessibilityLabel("Hands-free silence duration")
+                .accessibilityValue(String(format: "%.1f seconds", model.settings.toggleSilenceSec))
+        }
+        .padding(15)
+        .background(card)
+        .overlay(cardBorder)
+    }
+
+    private var silenceBinding: Binding<Double> {
+        Binding(
+            get: { Double(model.settings.toggleSilenceSec) },
+            set: { model.setToggleSilenceSeconds(Float($0)) }
+        )
+    }
+
+    private var card: some ShapeStyle {
+        CSColor.surfaceRaised(0.025)
+    }
+
+    private var cardBorder: some View {
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+            .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
     }
 }
 
@@ -634,56 +379,8 @@ private struct PermissionMatrixCell: View {
     }
 }
 
-// MARK: - Shared section label (mono, muted, wide tracking) — used by all panels.
-
-struct SettingsSectionLabel: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-    var body: some View {
-        Text(text.uppercased())
-            .font(CSFont.mono(12, .semibold))
-            .tracking(0.5)
-            .foregroundStyle(CSColor.textMuted)
-    }
-}
-
-struct SettingsMenuLabel: View {
-    let text: String
-    var mono: Bool = false
-    var chrome: Bool = false
-
-    var body: some View {
-        if chrome {
-            content
-                .padding(.horizontal, 11)
-                .padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .fill(CSColor.surfaceRaised(0.03))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-                )
-                .contentShape(Rectangle())
-        } else {
-            content
-        }
-    }
-
-    private var content: some View {
-        HStack(spacing: 6) {
-            Text(text)
-                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
-                .foregroundStyle(CSColor.textHigh)
-                .lineLimit(1)
-            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
-        }
-    }
-}
-
 #if DEBUG
-#Preview("Engine panel") {
+#Preview("Dictation panel") {
     ScrollView { EnginePanel(model: .preview(.engine)) }
         .frame(width: 720, height: 620)
         .background(SettingsView.windowGradient)

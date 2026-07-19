@@ -33,6 +33,223 @@ final class SettingsTruthTests: XCTestCase {
         }
     }
 
+    /// The full route map: stable id, one visible title owner, and the explicit
+    /// panel destination SettingsView's detail switch consumes. All eight rail
+    /// sections, including the consolidation cuts engine→Dictation,
+    /// voiceLab→Dictionary, keys→Providers.
+    func testSettingsSectionRoutesTitlesAndDestinationsOwnTheRail() {
+        let expectations: [(SettingsSection, String, String, SettingsPanelDestination)] = [
+            (.creator, "creator", "Creator", .creator),
+            (.shortcuts, "shortcuts", "Hotkeys", .shortcuts),
+            (.keys, "keys", "Providers", .providers),
+            (.prompts, "prompts", "Prompts", .prompts),
+            (.engine, "engine", "Dictation", .dictation),
+            (.audio, "audio", "Audio", .audio),
+            (.voiceLab, "voiceLab", "Dictionary", .dictionary),
+            (.user, "user", "User", .user),
+        ]
+
+        XCTAssertEqual(SettingsSection.allCases.count, expectations.count)
+        for (section, id, title, destination) in expectations {
+            XCTAssertEqual(section.rawValue, id)
+            XCTAssertEqual(section.id, id)
+            XCTAssertEqual(section.title, title)
+            XCTAssertEqual(section.destination, destination)
+        }
+        // No two sections may share a destination or a visible title.
+        XCTAssertEqual(
+            Set(SettingsSection.allCases.map(\.destination)).count,
+            SettingsSection.allCases.count
+        )
+        XCTAssertEqual(
+            Set(SettingsSection.allCases.map(\.title)).count,
+            SettingsSection.allCases.count
+        )
+    }
+
+    /// Dictation owns every transcription-behavior write and each control keeps
+    /// its exact promoted key/value contract after the IA move.
+    func testDictationControlsWriteExactPromotedKeysAndValues() {
+        var writes: [(key: String, value: String)] = []
+        let model = SettingsViewModel(engine: MockSettingsEngine { key, value in
+            writes.append((key, value))
+        })
+
+        model.setSttEngine("whisper")
+        model.setLayeredTranscription(true)
+        model.setLayeredTranscription(false)
+        model.setToggleSilenceSeconds(3.5)
+        model.setPreviewBufferDelayMs(1038)
+        model.setPreviewTypingCps(10.6)
+        model.setPreviewEmitWordsMax(5)
+        model.setPreviewInterimSeconds(8.0)
+
+        XCTAssertEqual(writes.map(\.key), [
+            "CODESCRIBE_STT_ENGINE",
+            "CODESCRIBE_LAYERED_TRANSCRIPTION",
+            "CODESCRIBE_LAYERED_TRANSCRIPTION",
+            "TOGGLE_SILENCE_SEC",
+            "CODESCRIBE_BUFFER_DELAY_MS",
+            "CODESCRIBE_TYPING_CPS",
+            "CODESCRIBE_EMIT_WORDS_MAX",
+            "CODESCRIBE_BUFFERED_INTERIM_SEC",
+        ])
+        XCTAssertEqual(writes.map(\.value), [
+            "whisper", "phase1", "off", "3.5", "1038", "10.6", "5", "8.0",
+        ])
+    }
+
+    func testSmoothPresetValuesMatchOperatorDefaultExactly() throws {
+        let smooth = try XCTUnwrap(presetValues(.smooth))
+
+        XCTAssertEqual(smooth.bufferDelayMs, 1038)
+        XCTAssertEqual(smooth.typingCps, 10.6, accuracy: 0.0001)
+        XCTAssertEqual(smooth.emitWordsMax, 5)
+        XCTAssertEqual(smooth.interimSeconds, 8.0, accuracy: 0.0001)
+    }
+
+    func testDetectPresetRecognizesAllFiveStatesWithTolerance() throws {
+        for preset in [PreviewTimingPreset.smooth, .snappy, .relaxed] {
+            let values = try XCTUnwrap(presetValues(preset))
+            XCTAssertEqual(
+                detectPreset(PreviewTimingConfiguration(overlayEnabled: true, values: values)),
+                preset
+            )
+        }
+
+        XCTAssertEqual(
+            detectPreset(
+                PreviewTimingConfiguration(overlayEnabled: false, values: PreviewTimingValues.smooth)
+            ),
+            .off
+        )
+
+        let withinTolerance = PreviewTimingValues(
+            bufferDelayMs: 1048,
+            typingCps: 10.74,
+            emitWordsMax: 5,
+            interimSeconds: 8.14
+        )
+        XCTAssertEqual(
+            detectPreset(
+                PreviewTimingConfiguration(overlayEnabled: true, values: withinTolerance)
+            ),
+            .smooth
+        )
+
+        let custom = PreviewTimingValues(
+            bufferDelayMs: 1100,
+            typingCps: 10.6,
+            emitWordsMax: 5,
+            interimSeconds: 8.0
+        )
+        XCTAssertEqual(
+            detectPreset(PreviewTimingConfiguration(overlayEnabled: true, values: custom)),
+            .custom
+        )
+    }
+
+    func testSmoothPresetUsesOneAtomicSettingsBatch() {
+        var batches: [[CsConfigEntry]] = []
+        let engine = MockSettingsEngine(updateConfigManyObserver: { entries in
+            batches.append(entries)
+        })
+        let model = SettingsViewModel(engine: engine)
+
+        model.applyPreviewTimingPreset(.smooth)
+
+        XCTAssertEqual(batches.count, 1)
+        let values = Dictionary(uniqueKeysWithValues: batches[0].map { ($0.key, $0.value) })
+        XCTAssertEqual(values["TRANSCRIPTION_OVERLAY_ENABLED"], "1")
+        XCTAssertEqual(values["CODESCRIBE_BUFFER_DELAY_MS"], "1038")
+        XCTAssertEqual(values["CODESCRIBE_TYPING_CPS"], "10.6")
+        XCTAssertEqual(values["CODESCRIBE_EMIT_WORDS_MAX"], "5")
+        XCTAssertEqual(values["CODESCRIBE_BUFFERED_INTERIM_SEC"], "8.0")
+
+        model.applyPreviewTimingPreset(.off)
+        XCTAssertEqual(batches.count, 2)
+        XCTAssertEqual(batches[1].map(\.key), ["TRANSCRIPTION_OVERLAY_ENABLED"])
+        XCTAssertEqual(batches[1].map(\.value), ["0"])
+    }
+
+    /// Providers owns the one lane-edit grammar. Every lane preserves its exact
+    /// endpoint/model keys, and whitespace/empty input keeps the reset semantics
+    /// (an empty write clears the JSON override).
+    func testProviderLaneEditorsPreserveExactKeysAndEmptyResetSemantics() {
+        var writes: [(key: String, value: String)] = []
+        let model = SettingsViewModel(engine: MockSettingsEngine { key, value in
+            writes.append((key, value))
+        })
+
+        let lanes: [(lane: LLMLane, endpointKey: String, modelKey: String)] = [
+            (.assistive, "LLM_ASSISTIVE_ENDPOINT", "LLM_ASSISTIVE_MODEL"),
+            (.formatting, "LLM_FORMATTING_ENDPOINT", "LLM_FORMATTING_MODEL"),
+            (.main, "LLM_ENDPOINT", "LLM_MODEL"),
+        ]
+
+        for expectation in lanes {
+            XCTAssertEqual(expectation.lane.endpointKey, expectation.endpointKey)
+            XCTAssertEqual(expectation.lane.modelKey, expectation.modelKey)
+
+            writes.removeAll()
+            model.setLLMEndpoint(" https://example.test/v1 ", for: expectation.lane)
+            model.setLLMModel("model-x", for: expectation.lane)
+            model.setLLMEndpoint("   ", for: expectation.lane)
+            model.setLLMModel("", for: expectation.lane)
+
+            XCTAssertEqual(writes.map(\.key), [
+                expectation.endpointKey,
+                expectation.modelKey,
+                expectation.endpointKey,
+                expectation.modelKey,
+            ])
+            XCTAssertEqual(
+                writes.map(\.value),
+                ["https://example.test/v1", "model-x", "", ""]
+            )
+        }
+    }
+
+    /// The four consolidated owners all render non-empty at the supported
+    /// compact content width using the current DS components.
+    func testFourOwnerPanelsRenderNonEmptyAtCompactWidth() throws {
+        let size = CGSize(width: 620, height: 1_600)
+        let panels: [(name: String, view: AnyView)] = [
+            ("dictation", AnyView(EnginePanel(model: SettingsViewModel.preview(.engine)))),
+            ("audio", AnyView(AudioPanel(model: SettingsViewModel.preview(.audio)))),
+            ("dictionary", AnyView(VoiceLabPanel(model: SettingsViewModel.preview(.voiceLab)))),
+            ("providers", AnyView(KeysPanel(model: SettingsViewModel.preview(.keys)))),
+        ]
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codescribe-settings-captures", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+
+        for panel in panels {
+            let hostingView = NSHostingView(rootView: panel.view.frame(
+                width: size.width,
+                height: size.height,
+                alignment: .topLeading
+            ))
+            hostingView.frame = CGRect(origin: .zero, size: size)
+            hostingView.layoutSubtreeIfNeeded()
+
+            guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
+                return XCTFail("Could not allocate \(panel.name) panel bitmap")
+            }
+            hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+                return XCTFail("Could not encode \(panel.name) panel PNG")
+            }
+            XCTAssertGreaterThan(png.count, 20_000, "\(panel.name) panel rendered (near-)empty")
+
+            try png.write(to: directory.appendingPathComponent("owner-\(panel.name)-compact.png"))
+        }
+    }
+
     func testHealthStateMatrix() {
         XCTAssertEqual(
             healthState(stt: true, keys: .available, agent: true),
@@ -83,9 +300,15 @@ final class SettingsTruthTests: XCTestCase {
         )
         XCTAssertEqual(choices[1].accessibilityValue(isSelected: true), "Selected")
         XCTAssertEqual(choices[2].accessibilityValue(isSelected: false), "Not selected")
+        // The dictionary name derives from the SettingsSection title owner, so a
+        // rail rename (e.g. Dictionary → Teacher) flows through automatically.
         XCTAssertEqual(
             LanguageIdentityPresentation.supportingCopy,
-            "Programming vocabulary and your Voice Lab dictionary enrich the selected language."
+            "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language."
+        )
+        XCTAssertEqual(
+            LanguageIdentityPresentation.supportingCopy,
+            "Programming vocabulary and your Dictionary entries enrich the selected language."
         )
         XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
     }

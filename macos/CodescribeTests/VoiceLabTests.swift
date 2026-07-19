@@ -1,58 +1,10 @@
 import XCTest
 @testable import Codescribe
 
+// Preview timing tests moved to SettingsTruthTests with the Dictation IA cut;
+// this file owns only the textual corrections + custom dictionary surface.
 @MainActor
 final class VoiceLabTests: XCTestCase {
-    func testSmoothPresetValuesMatchOperatorDefaultExactly() throws {
-        let smooth = try XCTUnwrap(presetValues(.smooth))
-
-        XCTAssertEqual(smooth.bufferDelayMs, 1038)
-        XCTAssertEqual(smooth.typingCps, 10.6, accuracy: 0.0001)
-        XCTAssertEqual(smooth.emitWordsMax, 5)
-        XCTAssertEqual(smooth.interimSeconds, 8.0, accuracy: 0.0001)
-    }
-
-    func testDetectPresetRecognizesAllFiveStatesWithTolerance() throws {
-        for preset in [PreviewTimingPreset.smooth, .snappy, .relaxed] {
-            let values = try XCTUnwrap(presetValues(preset))
-            XCTAssertEqual(
-                detectPreset(PreviewTimingConfiguration(overlayEnabled: true, values: values)),
-                preset
-            )
-        }
-
-        XCTAssertEqual(
-            detectPreset(
-                PreviewTimingConfiguration(overlayEnabled: false, values: PreviewTimingValues.smooth)
-            ),
-            .off
-        )
-
-        let withinTolerance = PreviewTimingValues(
-            bufferDelayMs: 1048,
-            typingCps: 10.74,
-            emitWordsMax: 5,
-            interimSeconds: 8.14
-        )
-        XCTAssertEqual(
-            detectPreset(
-                PreviewTimingConfiguration(overlayEnabled: true, values: withinTolerance)
-            ),
-            .smooth
-        )
-
-        let custom = PreviewTimingValues(
-            bufferDelayMs: 1100,
-            typingCps: 10.6,
-            emitWordsMax: 5,
-            interimSeconds: 8.0
-        )
-        XCTAssertEqual(
-            detectPreset(PreviewTimingConfiguration(overlayEnabled: true, values: custom)),
-            .custom
-        )
-    }
-
     func testVoiceLabMappingsPreserveLiveBridgeDataAndEmptyState() {
         XCTAssertTrue(qualityCorrectionRows([]).isEmpty)
         XCTAssertTrue(customLexiconRows([]).isEmpty)
@@ -204,23 +156,5 @@ final class VoiceLabTests: XCTestCase {
         XCTAssertNotNil(model.voiceLabEditErrors[original.id])
         XCTAssertNotNil(model.lastError)
         XCTAssertTrue(model.voiceLabEditPending.isEmpty)
-    }
-
-    func testSmoothPresetUsesOneAtomicSettingsBatch() {
-        var batches: [[CsConfigEntry]] = []
-        let engine = MockSettingsEngine(updateConfigManyObserver: { entries in
-            batches.append(entries)
-        })
-        let model = SettingsViewModel(engine: engine)
-
-        model.applyPreviewTimingPreset(.smooth)
-
-        XCTAssertEqual(batches.count, 1)
-        let values = Dictionary(uniqueKeysWithValues: batches[0].map { ($0.key, $0.value) })
-        XCTAssertEqual(values["TRANSCRIPTION_OVERLAY_ENABLED"], "1")
-        XCTAssertEqual(values["CODESCRIBE_BUFFER_DELAY_MS"], "1038")
-        XCTAssertEqual(values["CODESCRIBE_TYPING_CPS"], "10.6")
-        XCTAssertEqual(values["CODESCRIBE_EMIT_WORDS_MAX"], "5")
-        XCTAssertEqual(values["CODESCRIBE_BUFFERED_INTERIM_SEC"], "8.0")
     }
 }
