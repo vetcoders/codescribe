@@ -524,6 +524,7 @@ final class SettingsViewModel: ObservableObject {
     private let agentStatus: AgentStatusEngine?
     private let mcpAdmin: MCPAdminEngine?
     private let hotkeys: HotkeysEngine?
+    private let laneTruthProvider: (CsLlmLane) -> CsLaneTruthSnapshot
     private var modelDiscoveryGenerations: [String: Int] = [:]
     private var assistiveModelEditGeneration = 0
     private var pendingAssistiveModelSelection: (
@@ -537,7 +538,10 @@ final class SettingsViewModel: ObservableObject {
         agentStatus: AgentStatusEngine? = nil,
         mcpAdmin: MCPAdminEngine? = nil,
         hotkeys: HotkeysEngine? = nil,
-        buildInfo: AppBuildInfo = .current()
+        buildInfo: AppBuildInfo = .current(),
+        laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
+            laneTruthSnapshot(lane: lane)
+        }
     ) {
         self.engine = engine
         self.permissionProbe = permissionProbe
@@ -545,6 +549,7 @@ final class SettingsViewModel: ObservableObject {
         self.mcpAdmin = mcpAdmin
         self.hotkeys = hotkeys
         self.buildInfo = buildInfo
+        self.laneTruthProvider = laneTruthProvider
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -839,7 +844,7 @@ final class SettingsViewModel: ObservableObject {
 
     /// Effective lane state after provider/shared fallbacks.
     func llmLane(_ lane: LLMLane) -> LLMLaneModel {
-        let truth = laneTruthSnapshot(lane: lane.bridgeLane)
+        let truth = laneTruthProvider(lane.bridgeLane)
         let providerId = truth.providerId
         let configuredModel = settings[keyPath: lane.modelPath]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1582,7 +1587,20 @@ final class SettingsViewModel: ObservableObject {
             permissionProbe: MockPermissionProbe(.allGranted),
             agentStatus: MockAgentStatusEngine(),
             mcpAdmin: MockMCPAdminEngine(),
-            hotkeys: MockHotkeysEngine()
+            hotkeys: MockHotkeysEngine(),
+            laneTruthProvider: { lane in
+                CsLaneTruthSnapshot(
+                    lane: lane,
+                    providerId: "openai-responses",
+                    endpoint: "https://api.openai.com/v1/responses",
+                    model: "gpt-5.2",
+                    keyAccount: "LLM_ASSISTIVE_API_KEY",
+                    keyPresent: true,
+                    accountAuth: false,
+                    available: true,
+                    unavailableReason: nil
+                )
+            }
         )
         model.section = section
         model.reloadMcpServers()
