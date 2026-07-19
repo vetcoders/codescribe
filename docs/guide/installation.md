@@ -69,7 +69,7 @@ make version
 Expected output:
 
 ```
-v0.12.x
+v0.13.x
 ```
 
 Test transcription:

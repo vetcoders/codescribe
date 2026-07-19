@@ -5,7 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] - 2026-07-19
+
+> Voice→agent delivery stabilization (assistive history continuity, AI titles
+> for voice threads, one delivery gateway), overlay reform with reversible
+> formatting levels, the agent-surface wave (summon, stop, cancel), a Settings
+> information-architecture reorganization, and release hygiene.
+
+### Fixed — voice→agent delivery (night shift 2026-07-19)
+
+- **Assistive conversations no longer lose history between turns** (`e0f2a3a`) — the agent runtime used to drop its thread identity and in-memory history whenever it recovered from a degraded state, so the next voice turn silently started a brand-new session (`messages=1` on the wire) and the previous exchange was orphaned. Thread identity now lives above the runtime, and recovery rehydrates persisted history back into the session (explicit `rehydrated` / `rehydrate_empty` / `rehydrate_failed` logs) instead of minting a fresh thread.
+- **Voice threads now get AI-generated titles** (`75d986c`) — first-turn title generation used to fire only for composer-typed messages; dictated threads fell back to a raw text slug (visibly broken for prompts starting with boilerplate). The same out-of-band stateless title coordinator now serves both sources with identical race/cancellation semantics, and never re-sends the conversation itself.
+- **Thread rail bucketing symptom** ("today 23:59" listed under *Older*) resolved by the identity fix above — turns land in the thread the rail is watching, so `updated_at` refreshes correctly. The section calculator itself was verified correct and left untouched.
+
+### Changed — architecture and Settings IA
+
+- **One canonical thread-delivery gateway** (`a59c466`) — voice and composer persistence were two independent implementations (duplicate upsert/title/summary/timestamp logic in the app controller and the FFI bridge). They are now a single `ThreadDeliveryGateway` in core returning a measured delivery receipt; ~400 lines of duplicated logic removed, custom-vs-generated title semantics and cancellation behavior preserved under tests.
+- **Settings tabs reorganized around clear ownership** (`49f2bdc`) — **Dictation** (formerly Engine: STT engine, layered transcription, preview timing moved in from Voice Lab, hands-free silence moved in from Audio) · **Audio** (input hardware and sound feedback only) · **Dictionary** (formerly Voice Lab: the text lexicon — recent corrections and learned rules, no audio/timing settings) · **Providers** (LLM lanes, API keys, agent status, MCP, workspace roots). Settings keys on disk are unchanged — relocated controls read and write the same `settings.json` entries as before.
+
+### Added — overlay reform and agent surface (2026-07-18 wave)
+
+- **Formatting levels as runtime truth** (`ef50b28`) — Off → Correction → Smart → Max with per-level prompts editable in Settings → Prompts.
+- **Overlay controls** (`241c549`) — durable Auto Paste toggle, one-shot Format menu, and an explicit **To Agent** action in the transcription overlay.
+- **Reversible formatting** (`9552c13`) — one-slot exact-bytes **Revert** with a 5-second re-arm window; quality learning is evidence-only on Smart/Max.
+- **Tray parity** (`65bd4f4`, `0755522`) — Auto Paste and cycling Auto Format directly in the tray menu, reading and writing persisted settings truth.
+- **Agent summon** (`79f48cb`) — a global hotkey summons the idle agent window.
+- **Composer stop + safe voice cancel** (`21e6214`, `f743cf3`) — active agent responses can be stopped mid-stream; voice-assistive turns cancel without corrupting the session.
+- **First-turn AI thread titles, composer path** (`d7aba0e`, `4118784`) — stateless generation contract plus orchestration after the first exchange.
+- **Exactly-once auto-paste** (`b63809f`) — delivery hardened with fence-window duplicate suppression.
+- **Livelier waveform meter** (`662ad1f`) — tighter dB window (−55…−25 dBFS) with a perceptual response curve, so ordinary speech visibly moves the bars.
+- Astro site transplanted into the working branch; legacy landing retired (`b4bbfe5`).
 
 ### Added
 
@@ -14,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Public release hygiene** — release packaging, repository metadata, and public-facing docs are being aligned for a current `v0.12.x` public release.
+- **Public release hygiene** — release packaging, repository metadata, and public-facing docs aligned; `v0.12.3` shipped as a notarized DMG on GitHub Releases (2026-07-18) with the site install page pointing at `releases/latest`.
 - **Dual DMG release variants** — release automation now builds a standard notarized DMG with embedded Silero + embedder and runtime Whisper cache/download, plus a `_full` notarized DMG with Whisper embedded.
 - **Memory footprint** — idle RAM cut from ~5 GB (peak ~10 GB) to ~0.8 GB. The Whisper and MiniLM embedder models now unload from GPU/host memory after a period of inactivity and reload transparently on next use (`CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS`, `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS`, default 300s, 0 disables).
 
