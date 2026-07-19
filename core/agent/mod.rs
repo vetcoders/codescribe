@@ -3,6 +3,7 @@ pub mod event;
 pub mod provider;
 pub mod registry;
 pub mod session;
+pub mod thread_delivery;
 pub mod thread_export;
 pub mod thread_index;
 pub mod thread_store;
@@ -13,6 +14,9 @@ pub use event::{AgentEvent, AgentUiEvent};
 pub use provider::{AgentProvider, StreamOptions};
 pub use registry::{ToolDefinition, ToolFuture, ToolHandler, ToolRegistry, ToolResultContent};
 pub use session::{AgentSession, ImageAttachment};
+pub use thread_delivery::{
+    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
+};
 pub use thread_index::{ThreadFilter, ThreadIndex, ThreadIndexData, ThreadSummary};
 pub use thread_store::{Thread, ThreadMessage, ThreadNote, ThreadStore, TokenUsage};
 pub use types::{ContentBlock, ImageAsset, Message, Role};

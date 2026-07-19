@@ -13,12 +13,13 @@ use tracing::{debug, info, warn};
 use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
-    Thread, ThreadMessage, ThreadStore, ToolRegistry,
+    AgentSession, AgentUiEvent, ImageAttachment, StreamOptions, ThreadDeliveryGateway,
+    ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
+    ToolRegistry,
 };
 use codescribe_core::config::Config;
 use codescribe_core::llm::lane_truth;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::os::tray_status;
 
@@ -197,7 +198,7 @@ impl AgentRuntimeState {
         }
     }
 
-    fn rotate_for_new_thread_with<Init, Persist>(
+    fn rotate_for_new_thread_with<Init, Persist, Delivery>(
         &mut self,
         runtime_generation: u64,
         initialize_runtime: Init,
@@ -205,7 +206,7 @@ impl AgentRuntimeState {
     ) -> Result<bool>
     where
         Init: FnOnce() -> Result<AgentRuntime>,
-        Persist: FnOnce(&AgentRuntime) -> Result<()>,
+        Persist: FnOnce(&AgentRuntime) -> Result<Delivery>,
     {
         let previous_runtime = self
             .runtime
@@ -269,7 +270,7 @@ pub(crate) async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
     let mut guard = runtime_state.lock().await;
 
     guard
-        .rotate_for_new_thread_with(generation, initialize_agent_runtime, persist_runtime_thread)
+        .rotate_for_new_thread_with(generation, initialize_agent_runtime, deliver_runtime_thread)
         .map(|_| generation)
 }
 
@@ -465,63 +466,6 @@ async fn apply_agent_ui_event(event: AgentUiEvent) {
     }
 }
 
-fn extract_text_from_block(block: &ContentBlock, out: &mut Vec<String>) {
-    match block {
-        ContentBlock::Text(text) if !text.trim().is_empty() => {
-            out.push(text.to_string());
-        }
-        ContentBlock::ToolResult { content, .. } => {
-            for nested in content {
-                extract_text_from_block(nested, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn extract_text_from_message(message: &Message) -> Option<String> {
-    let mut out = Vec::new();
-    for block in &message.content {
-        extract_text_from_block(block, &mut out);
-    }
-    let text = out.join(" ");
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-fn derive_thread_title(messages: &[Message]) -> String {
-    let candidate = messages
-        .iter()
-        .find(|message| message.role == Role::User)
-        .and_then(extract_text_from_message)
-        .unwrap_or_else(|| "Codescribe Agent Chat".to_string());
-
-    let mut title = candidate.chars().take(72).collect::<String>();
-    if title.is_empty() {
-        title = "Codescribe Agent Chat".to_string();
-    }
-    title
-}
-
-fn derive_thread_summary(messages: &[Message]) -> Option<String> {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.role == Role::Assistant)
-        .and_then(extract_text_from_message)
-        .map(|text| {
-            let mut clipped = text.chars().take(240).collect::<String>();
-            if clipped.is_empty() {
-                clipped = "Assistant response".to_string();
-            }
-            clipped
-        })
-}
-
 fn normalize_assistive_thread_text(text: &str) -> Option<String> {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
@@ -531,119 +475,107 @@ fn normalize_assistive_thread_text(text: &str) -> Option<String> {
     }
 }
 
-fn legacy_assistive_thread_messages(
-    user_text: String,
-    assistant_text: String,
-    now: DateTime<Utc>,
-    metadata: Option<Value>,
-) -> Vec<ThreadMessage> {
-    vec![
-        ThreadMessage {
-            role: "user".to_string(),
-            content: vec![json!({"type":"text","text":user_text})],
-            timestamp: now,
-            metadata: metadata.clone(),
-        },
-        ThreadMessage {
-            role: "assistant".to_string(),
-            content: vec![json!({"type":"text","text":assistant_text})],
-            timestamp: now,
-            metadata,
-        },
-    ]
-}
-
-fn persist_runtime_thread(runtime: &AgentRuntime) -> Result<()> {
-    let store = ThreadStore::new().context("Failed to initialize ThreadStore")?;
+fn deliver_runtime_thread(runtime: &AgentRuntime) -> Result<ThreadDeliveryReceipt> {
     let now = Utc::now();
     let (provider, model) = lane_truth::assistive_identity(&Config::load());
-
-    let mut thread = store
-        .load_thread(&runtime.thread_store_id)
-        .unwrap_or_else(|_| Thread {
-            id: runtime.thread_store_id.clone(),
-            created_at: now,
-            updated_at: now,
-            title: "Codescribe Agent Chat".to_string(),
-            title_is_custom: false,
-            title_is_generated: false,
-            mode: "assistive".to_string(),
-            tags: vec!["agent".to_string(), "overlay".to_string()],
-            notes: Vec::new(),
-            messages: Vec::new(),
-            summary: None,
-            total_tokens: None,
-            provider: provider.as_str().to_string(),
-            model: model.clone(),
-        });
-
-    thread.updated_at = now;
-    if thread.title_is_heuristic() {
-        thread.title = derive_thread_title(runtime.session.messages());
-    }
-    thread.summary = derive_thread_summary(runtime.session.messages());
-    thread.messages = runtime
+    let messages = runtime
         .session
         .messages()
         .iter()
-        .map(ThreadMessage::from)
-        .collect();
-    thread.provider = provider.as_str().to_string();
-    thread.model = model;
+        .map(|message| {
+            let mut persisted = ThreadMessage::from(message);
+            if message.timestamp.is_none() {
+                persisted.timestamp = now;
+            }
+            persisted
+        })
+        .collect::<Vec<_>>();
 
-    store
-        .save_thread(&thread)
-        .context("Failed to persist agent thread to ThreadStore")?;
-    Ok(())
+    ThreadDeliveryGateway::new()?.deliver(ThreadDeliveryInput {
+        backend_id: runtime.thread_store_id.clone(),
+        messages,
+        provider: provider.as_str().to_string(),
+        model,
+        source: ThreadDeliverySource::VoiceAssistive,
+        mode: "assistive".to_string(),
+        tags: vec!["agent".to_string(), "overlay".to_string()],
+        timestamp: now,
+    })
 }
 
-fn persist_legacy_assistive_thread(user_text: &str, assistant_text: &str) -> Result<()> {
-    let Some(user_text) = normalize_assistive_thread_text(user_text) else {
-        return Ok(());
-    };
-    let Some(assistant_text) = normalize_assistive_thread_text(assistant_text) else {
-        return Ok(());
-    };
-
-    let store = ThreadStore::new().context("Failed to initialize ThreadStore")?;
-    let now = Utc::now();
-    let (_, model) = lane_truth::assistive_identity(&Config::load());
-
-    let mut title = user_text.chars().take(72).collect::<String>();
-    if title.is_empty() {
-        title = "Codescribe Agent Chat".to_string();
-    }
-    let mut summary = assistant_text.chars().take(240).collect::<String>();
-    if summary.is_empty() {
-        summary = "Assistant response".to_string();
-    }
+fn legacy_assistive_delivery_input(
+    user_text: &str,
+    assistant_text: &str,
+    backend_id: String,
+    now: DateTime<Utc>,
+    model: String,
+) -> Option<ThreadDeliveryInput> {
+    let user_text = normalize_assistive_thread_text(user_text)?;
+    let assistant_text = normalize_assistive_thread_text(assistant_text)?;
     let metadata = Some(json!({"source":"legacy-fallback"}));
 
-    let thread = Thread {
-        id: ThreadStore::generate_id(),
-        created_at: now,
-        updated_at: now,
-        title,
-        title_is_custom: false,
-        title_is_generated: false,
+    Some(ThreadDeliveryInput {
+        backend_id,
+        messages: vec![
+            ThreadMessage {
+                role: "user".to_string(),
+                content: vec![json!({"type":"text","text":user_text})],
+                timestamp: now,
+                metadata: metadata.clone(),
+            },
+            ThreadMessage {
+                role: "assistant".to_string(),
+                content: vec![json!({"type":"text","text":assistant_text})],
+                timestamp: now,
+                metadata,
+            },
+        ],
+        provider: "legacy-formatter".to_string(),
+        model,
+        source: ThreadDeliverySource::LegacyFallback,
         mode: "assistive".to_string(),
         tags: vec![
             "agent".to_string(),
             "overlay".to_string(),
             "fallback".to_string(),
         ],
-        notes: Vec::new(),
-        messages: legacy_assistive_thread_messages(user_text, assistant_text, now, metadata),
-        summary: Some(summary),
-        total_tokens: None,
-        provider: "legacy-formatter".to_string(),
-        model,
+        timestamp: now,
+    })
+}
+
+fn deliver_legacy_assistive_thread_with_gateway(
+    gateway: &ThreadDeliveryGateway,
+    user_text: &str,
+    assistant_text: &str,
+    backend_id: String,
+    now: DateTime<Utc>,
+    model: String,
+) -> Result<Option<ThreadDeliveryReceipt>> {
+    let Some(input) =
+        legacy_assistive_delivery_input(user_text, assistant_text, backend_id, now, model)
+    else {
+        return Ok(None);
     };
 
-    store
-        .save_thread(&thread)
-        .context("Failed to persist legacy assistive thread to ThreadStore")?;
-    Ok(())
+    gateway.deliver(input).map(Some)
+}
+
+fn deliver_legacy_assistive_thread(
+    user_text: &str,
+    assistant_text: &str,
+) -> Result<Option<ThreadDeliveryReceipt>> {
+    let gateway = ThreadDeliveryGateway::new()?;
+    let now = Utc::now();
+    let (_, model) = lane_truth::assistive_identity(&Config::load());
+
+    deliver_legacy_assistive_thread_with_gateway(
+        &gateway,
+        user_text,
+        assistant_text,
+        ThreadStore::generate_id(),
+        now,
+        model,
+    )
 }
 
 fn agent_send_error_allows_legacy_fallback(error: &anyhow::Error) -> bool {
@@ -757,12 +689,12 @@ async fn run_agent_send_path(
         runtime_generation,
         text,
         stream_options,
-        persist_runtime_thread,
+        deliver_runtime_thread,
     )
     .await
 }
 
-async fn run_agent_send_path_with_persist<P>(
+async fn run_agent_send_path_with_persist<P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     runtime_generation: u64,
     text: String,
@@ -770,7 +702,7 @@ async fn run_agent_send_path_with_persist<P>(
     persist_runtime: P,
 ) -> Result<AgentSendOutcome>
 where
-    P: FnOnce(&AgentRuntime) -> Result<()>,
+    P: FnOnce(&AgentRuntime) -> Result<Delivery>,
 {
     let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime(runtime_generation)
     {
@@ -993,10 +925,18 @@ async fn run_agent_send_with_fallback(
             );
             debug!("Legacy fallback input length: {}", text.len());
             let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
-            if let Some(assistant_text) = fallback_assistant_text
-                && let Err(error) = persist_legacy_assistive_thread(&text, &assistant_text)
-            {
-                warn!("Failed to persist legacy assistive fallback thread: {error}");
+            if let Some(assistant_text) = fallback_assistant_text {
+                match deliver_legacy_assistive_thread(&text, &assistant_text) {
+                    Ok(Some(receipt)) => debug!(
+                        backend_thread_id = %receipt.backend_id,
+                        message_count = receipt.message_count,
+                        "Legacy assistive fallback delivered"
+                    ),
+                    Ok(None) => {}
+                    Err(error) => {
+                        warn!("Failed to deliver legacy assistive fallback thread: {error}")
+                    }
+                }
             }
         }
     }
@@ -1152,7 +1092,9 @@ impl EventSink for SessionTelemetrySink {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use codescribe_core::agent::{AgentEvent, AgentProvider, ToolDefinition, ToolResultContent};
+    use codescribe_core::agent::{
+        AgentEvent, AgentProvider, ContentBlock, Message, Role, ToolDefinition, ToolResultContent,
+    };
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
@@ -1245,24 +1187,47 @@ mod tests {
     }
 
     #[test]
-    fn legacy_assistive_thread_messages_use_canonical_text_blocks() {
+    fn successful_legacy_fallback_delivers_explicit_metadata_and_receipt() {
+        let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
+        let threads_dir = tmp.path().join("threads");
+        let gateway =
+            ThreadDeliveryGateway::new_in(&threads_dir).expect("gateway should initialize");
         let now = Utc::now();
-        let metadata = Some(json!({"source":"legacy-fallback"}));
-        let messages = legacy_assistive_thread_messages(
-            "user prompt".to_string(),
-            "assistant reply".to_string(),
+        let receipt = deliver_legacy_assistive_thread_with_gateway(
+            &gateway,
+            "user prompt",
+            "assistant reply",
+            "t_2026-07-19_legacy-fallback".to_string(),
             now,
-            metadata.clone(),
-        );
+            "legacy-test-model".to_string(),
+        )
+        .expect("legacy fallback delivery should succeed")
+        .expect("non-empty fallback should produce a receipt");
 
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[0].content[0]["type"], "text");
-        assert_eq!(messages[0].content[0]["text"], "user prompt");
-        assert_eq!(messages[0].metadata, metadata);
-        assert_eq!(messages[1].role, "assistant");
-        assert_eq!(messages[1].content[0]["type"], "text");
-        assert_eq!(messages[1].content[0]["text"], "assistant reply");
+        assert!(receipt.created);
+        assert_eq!(receipt.message_count, 2);
+        assert_eq!(receipt.updated_at, now);
+        assert!(receipt.first_exchange);
+        assert!(receipt.title_eligible);
+
+        let store = ThreadStore::new_in(&threads_dir).expect("store should reopen");
+        let thread = store
+            .load_thread(&receipt.backend_id)
+            .expect("delivered fallback should load");
+        assert_eq!(thread.provider, "legacy-formatter");
+        assert_eq!(thread.model, "legacy-test-model");
+        assert!(thread.tags.iter().any(|tag| tag == "fallback"));
+        assert_eq!(thread.messages.len(), 2);
+        assert_eq!(thread.messages[0].role, "user");
+        assert_eq!(thread.messages[0].content[0]["type"], "text");
+        assert_eq!(thread.messages[0].content[0]["text"], "user prompt");
+        assert_eq!(
+            thread.messages[0].metadata,
+            Some(json!({"source":"legacy-fallback"}))
+        );
+        assert_eq!(thread.messages[1].role, "assistant");
+        assert_eq!(thread.messages[1].content[0]["type"], "text");
+        assert_eq!(thread.messages[1].content[0]["text"], "assistant reply");
     }
 
     #[test]
