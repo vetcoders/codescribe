@@ -942,7 +942,7 @@ mod tests {
             .expect("open custom lexicon for legacy extras fixture");
         writeln!(
             lexicon_file,
-            r#"{{"term":"VetCoders","extras":{{"mispronunciations":["wet coders"]}}}}"#
+            r#"{{"term":"Vetcoders","extras":{{"mispronunciations":["wet coders"]}}}}"#
         )
         .expect("append legacy extras fixture");
 
@@ -972,7 +972,7 @@ mod tests {
                 },
                 CustomLexiconEntry {
                     variant: "wet coders".into(),
-                    canonical: "VetCoders".into(),
+                    canonical: "Vetcoders".into(),
                 },
             ]
         );
