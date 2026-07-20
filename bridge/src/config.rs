@@ -486,12 +486,7 @@ impl CodescribeConfig {
                 settings.layered_transcription.clone(),
                 &env_file,
             ),
-            agent_workspace_roots: effective_env_list(
-                "AGENT_WORKSPACE_ROOTS",
-                settings.agent_workspace_roots.clone(),
-                &env_file,
-                DEFAULT_AGENT_WORKSPACE_ROOT,
-            ),
+            agent_workspace_roots: Config::effective_agent_workspace_roots(),
             buffer_delay_ms: effective_settings_parse(
                 "CODESCRIBE_BUFFER_DELAY_MS",
                 settings.buffer_delay_ms,
@@ -1587,10 +1582,6 @@ fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
     file.sync_data()
 }
 
-/// Built-in default workspace root when `AGENT_WORKSPACE_ROOTS` is unset. Kept in
-/// sync with the `list_projects` tool default (`app/agent/tools/workspace.rs`).
-const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
-
 fn load_config_env_file() -> HashMap<String, String> {
     let path = Config::env_path();
     if path.exists() {
@@ -1648,43 +1639,6 @@ where
     setting
         .or_else(|| file_env_string(key, env_file).and_then(|value| value.parse().ok()))
         .or_else(|| env_parse(key))
-}
-
-fn parse_roots(value: &str) -> Vec<String> {
-    value
-        .split(':')
-        .map(|segment| segment.trim().to_string())
-        .filter(|segment| !segment.is_empty())
-        .collect()
-}
-
-/// Colon-separated env var into a trimmed, non-empty `Vec<String>`. Falls back to
-/// a single-element `[default]` when the var is unset/empty, so the Settings UI
-/// always renders the effective root the agent tool will scan.
-fn effective_env_list(
-    key: &str,
-    setting: Option<Vec<String>>,
-    env_file: &HashMap<String, String>,
-    default: &str,
-) -> Vec<String> {
-    let roots = file_env_string(key, env_file)
-        .map(|value| parse_roots(&value))
-        .or_else(|| {
-            setting.map(|roots| {
-                roots
-                    .into_iter()
-                    .map(|segment| segment.trim().to_string())
-                    .filter(|segment| !segment.is_empty())
-                    .collect()
-            })
-        })
-        .or_else(|| std::env::var(key).ok().map(|value| parse_roots(&value)))
-        .unwrap_or_default();
-    if roots.is_empty() {
-        vec![default.to_string()]
-    } else {
-        roots
-    }
 }
 
 /// Non-empty env var as `Some(String)`, else `None`.
@@ -2293,6 +2247,52 @@ mod settings_snapshot_tests {
                 None => std::env::remove_var("LLM_MODEL"),
             }
         }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn workspace_roots_persist_across_fresh_config_instances() {
+        let root = scratch("workspace_roots");
+        std::fs::create_dir_all(&root).expect("create workspace-root scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _process_roots = EnvGuard::remove("AGENT_WORKSPACE_ROOTS");
+        let expected = vec![
+            "~/Git".to_string(),
+            "/Volumes/vc-workspace/vetcoders".to_string(),
+            "/Volumes/vc-workspace/Loctree".to_string(),
+            "/Volumes/vc-workspace/libraxisai".to_string(),
+        ];
+
+        CodescribeConfig::new()
+            .update_config("AGENT_WORKSPACE_ROOTS".to_string(), expected.join(":"))
+            .expect("persist workspace roots through bridge");
+
+        assert_eq!(
+            UserSettings::load().agent_workspace_roots,
+            Some(expected.clone()),
+            "the UI write must land in durable settings.json"
+        );
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let legacy = Config::parse_env_file(&env_path).expect("parse optional env file");
+            assert!(
+                !legacy.contains_key("AGENT_WORKSPACE_ROOTS"),
+                "promoted roots must not be rewritten to the reinstall-fragile .env store"
+            );
+        }
+
+        // A new bridge object has no in-memory carryover; it must reconstruct
+        // the exact list from settings.json and must not replace it with ~/Git.
+        let fresh = CodescribeConfig::new().load_settings();
+        assert_eq!(fresh.agent_workspace_roots, expected);
+        let second_fresh = CodescribeConfig::new().load_settings();
+        assert_eq!(
+            second_fresh.agent_workspace_roots,
+            fresh.agent_workspace_roots
+        );
+
         let _ = remove_path_without_following_symlinks(&root);
     }
 

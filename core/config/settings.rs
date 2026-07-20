@@ -55,6 +55,29 @@ impl FormattingPolicy {
     }
 }
 
+/// Built-in workspace root used only when no user-managed roots exist.
+pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
+
+/// Trim workspace-root entries and discard empty rows while preserving the
+/// operator's order. This is the canonical normalization boundary shared by
+/// persistence, the agent tools, and readiness.
+pub fn normalize_agent_workspace_roots<I, S>(roots: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    roots
+        .into_iter()
+        .map(|root| root.as_ref().trim().to_string())
+        .filter(|root| !root.is_empty())
+        .collect()
+}
+
+/// Parse the colon-joined UniFFI/env wire representation used by Settings.
+pub fn parse_agent_workspace_roots(value: &str) -> Vec<String> {
+    normalize_agent_workspace_roots(value.split(':'))
+}
+
 /// Regular-user settings (JSON, GUI-managed).
 /// All fields are Option — None means "use default or .env override".
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -177,10 +200,10 @@ pub struct UserSettings {
 
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
-    /// project name to an absolute path. Seeds `AGENT_WORKSPACE_ROOTS`
-    /// (colon-joined); `None`/absent means the built-in default (`~/Git`).
-    /// Env-managed (NOT promoted), same rationale as the F1 STT knobs: a manual
-    /// `~/.codescribe/.env` line keeps winning.
+    /// project name to an absolute path. The Settings UI sends the
+    /// `AGENT_WORKSPACE_ROOTS` wire key, but this field in durable
+    /// `settings.json` is the source of truth. `None`/absent means the built-in
+    /// default (`~/Git`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_workspace_roots: Option<Vec<String>>,
 }
@@ -443,6 +466,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
     "ONBOARDING_MODE",
+    "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
     "CODESCRIBE_TYPING_CPS",
@@ -993,14 +1017,7 @@ impl UserSettings {
                 self.layered_transcription = Some(value.to_owned())
             }
             "AGENT_WORKSPACE_ROOTS" => {
-                // Colon-separated on the wire (PATH-style); empty → None so the
-                // core falls back to the built-in default (`~/Git`).
-                let roots: Vec<String> = value
-                    .split(':')
-                    .map(str::trim)
-                    .filter(|segment| !segment.is_empty())
-                    .map(str::to_owned)
-                    .collect();
+                let roots = parse_agent_workspace_roots(value);
                 self.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
             }
             other => {

@@ -21,7 +21,10 @@ use super::defaults::{
     default_assistive_model, default_assistive_provider, default_formatting_model,
     default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
-use super::settings::FormattingPolicy;
+use super::settings::{
+    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, normalize_agent_workspace_roots,
+    parse_agent_workspace_roots,
+};
 use super::types::{Config, Language, OverlayPositionMode, TranscriptSendMode};
 
 static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
@@ -71,6 +74,7 @@ impl Config {
 
         // One-time import from legacy .env-only installs into settings.json.
         super::migrate::migrate_if_needed(file_env_vars.as_ref());
+        super::migrate::migrate_agent_workspace_roots_if_needed(file_env_vars.as_ref());
 
         // Optional .env remains available for env-managed / power-user keys, but
         // promoted settings are intentionally excluded so stale ~/.codescribe/.env
@@ -164,6 +168,41 @@ impl Config {
         let runtime = Self::config_runtime_env_var("FORMATTING_LEVEL").ok();
         let settings = super::settings::UserSettings::load();
         FormattingPolicy::resolve(runtime.as_deref(), settings.formatting_level.as_deref())
+    }
+
+    /// Resolve the roots selected in Settings from fresh persisted truth.
+    ///
+    /// `settings.json` is authoritative. A legacy `.env`/process value is used
+    /// only when the durable field is absent, so an old bootstrap value cannot
+    /// mask a live Settings write. The migration pass copies legacy `.env`
+    /// roots into `settings.json` before this resolver runs.
+    pub fn effective_agent_workspace_roots() -> Vec<String> {
+        let settings = super::settings::UserSettings::load();
+        let persisted =
+            normalize_agent_workspace_roots(settings.agent_workspace_roots.unwrap_or_default());
+        if !persisted.is_empty() {
+            return persisted;
+        }
+
+        let env_path = Self::env_path();
+        if env_path.exists()
+            && let Ok(vars) = Self::parse_env_file(&env_path)
+            && let Some(value) = vars.get("AGENT_WORKSPACE_ROOTS")
+        {
+            let roots = parse_agent_workspace_roots(value);
+            if !roots.is_empty() {
+                return roots;
+            }
+        }
+
+        if let Ok(value) = std::env::var("AGENT_WORKSPACE_ROOTS") {
+            let roots = parse_agent_workspace_roots(&value);
+            if !roots.is_empty() {
+                return roots;
+            }
+        }
+
+        vec![DEFAULT_AGENT_WORKSPACE_ROOT.to_string()]
     }
 
     /// Inject optional .env values into the process environment without allowing
@@ -723,8 +762,9 @@ impl Config {
         }
 
         // ── Agent workspace roots ──
-        // Colon-joined (PATH-style); the `list_projects` tool reads and splits it.
-        // Explicit process env / .env wins; settings.json only seeds when absent.
+        // Compatibility seed for older runtime readers. Agent tools no longer
+        // consume this mutable process snapshot; they re-read settings.json via
+        // `effective_agent_workspace_roots` on every call.
         if Self::config_runtime_env_var("AGENT_WORKSPACE_ROOTS").is_err()
             && let Some(ref roots) = settings.agent_workspace_roots
             && !roots.is_empty()
@@ -878,6 +918,10 @@ impl Config {
                     }
                     "SOUND_NAME" => settings_ref.sound_name = Some((*value).to_string()),
                     "WHISPER_MODEL" => settings_ref.whisper_model = Some((*value).to_string()),
+                    "AGENT_WORKSPACE_ROOTS" => {
+                        let roots = parse_agent_workspace_roots(value);
+                        settings_ref.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
+                    }
                     // ── u64 ──
                     "HOLD_START_DELAY_MS" => {
                         if let Ok(v) = value.parse::<u64>() {
