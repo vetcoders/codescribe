@@ -178,6 +178,7 @@ struct TrayMenuView: View {
             ) { viewModel.setOverlayEnabled($0) }
             autoPasteToggle
             autoFormatMenu
+            holdBadgeMenu
             toggleRow(icon: .notesMode, title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
                 viewModel.setNotesMode($0)
             }
@@ -213,6 +214,21 @@ struct TrayMenuView: View {
             .accessibilityLabel("Auto Format")
             .accessibilityValue(viewModel.autoFormatLevel.visibleName)
             .accessibilityHint("Cycle automatic formatting level")
+    }
+
+    /// Pointer Indicator follows the same rolling-row grammar as Auto Format:
+    /// Off → 4px → 8px → 12px → Off, with the current value in the keycap.
+    private var holdBadgeMenu: some View {
+        TrayRow(
+            icon: .record,
+            title: "Pointer Indicator",
+            shortcut: viewModel.holdBadgeOption.visibleName,
+            shortcutColor: viewModel.holdBadgeOption == .off
+                ? CSColor.textFaintAlt : CSColor.oliveLight
+        ) { viewModel.setHoldBadgeOption(viewModel.holdBadgeOption.next) }
+            .accessibilityLabel("Pointer Indicator")
+            .accessibilityValue(viewModel.holdBadgeOption.visibleName)
+            .accessibilityHint("Cycle pointer recording indicator size")
     }
 
     /// A checkbox-style row reusing `TrayRow`, with the on/off state shown as the

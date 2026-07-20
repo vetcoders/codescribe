@@ -13,6 +13,29 @@ final class TrayViewModelTests: XCTestCase {
         XCTAssertEqual(FormattingPolicyOption.max.next, .off)
     }
 
+    func testHoldBadgeRollingRowCyclesFiveObservedStatesBackToStart() {
+        let engine = TrackingTrayEngine(
+            showDockIcon: true,
+            overlayEnabled: true,
+            autoPasteEnabled: true,
+            autoFormatLevel: .correction,
+            notesMode: false,
+            startInAssistive: false,
+            holdBadgeOption: .off
+        )
+        let model = TrayViewModel(engine: engine)
+        model.refreshStatus()
+
+        var observed = [model.holdBadgeOption]
+        for _ in 0..<4 {
+            model.setHoldBadgeOption(model.holdBadgeOption.next)
+            observed.append(model.holdBadgeOption)
+        }
+
+        XCTAssertEqual(observed, [.off, .four, .eight, .twelve, .off])
+        XCTAssertEqual(engine.holdBadgeWrites, [.four, .eight, .twelve, .off])
+    }
+
     func testDisclosureChevronUsesOneRightGlyphRotatedDownWhenExpanded() {
         switch TrayDisclosureChevron.icon {
         case .chevronRight:
@@ -259,6 +282,7 @@ private final class TrackingTrayEngine: TrayEngine {
     var autoFormatLevel: FormattingPolicyOption
     var notesMode: Bool
     var startInAssistive: Bool
+    var holdBadgeOption: HoldBadgeOption
     var persistOverlayWrites = true
     var persistAutoPasteWrites = true
     var persistAutoFormatWrites = true
@@ -266,6 +290,7 @@ private final class TrackingTrayEngine: TrayEngine {
     private(set) var quickToggleWrites: [TrayQuickToggle] = []
     private(set) var autoPasteWrites: [Bool] = []
     private(set) var autoFormatWrites: [String] = []
+    private(set) var holdBadgeWrites: [HoldBadgeOption] = []
 
     init(
         showDockIcon: Bool,
@@ -273,7 +298,8 @@ private final class TrackingTrayEngine: TrayEngine {
         autoPasteEnabled: Bool,
         autoFormatLevel: FormattingPolicyOption,
         notesMode: Bool,
-        startInAssistive: Bool
+        startInAssistive: Bool,
+        holdBadgeOption: HoldBadgeOption = .twelve
     ) {
         self.showDockIcon = showDockIcon
         self.overlayEnabled = overlayEnabled
@@ -281,6 +307,7 @@ private final class TrackingTrayEngine: TrayEngine {
         self.autoFormatLevel = autoFormatLevel
         self.notesMode = notesMode
         self.startInAssistive = startInAssistive
+        self.holdBadgeOption = holdBadgeOption
     }
 
     func isAgentAvailable() -> Bool { agentAvailable }
@@ -294,7 +321,8 @@ private final class TrackingTrayEngine: TrayEngine {
         autoPasteEnabled: Bool,
         autoFormatLevel: FormattingPolicyOption,
         notesMode: Bool,
-        startInAssistive: Bool
+        startInAssistive: Bool,
+        holdBadgeOption: HoldBadgeOption
     )? {
         currentToggleReads += 1
         return (
@@ -303,7 +331,8 @@ private final class TrackingTrayEngine: TrayEngine {
             autoPasteEnabled,
             autoFormatLevel,
             notesMode,
-            startInAssistive
+            startInAssistive,
+            holdBadgeOption
         )
     }
 
@@ -331,6 +360,12 @@ private final class TrackingTrayEngine: TrayEngine {
         if persistAutoFormatWrites {
             autoFormatLevel = level
         }
+    }
+
+    func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
+        holdBadgeWrites.append(option)
+        holdBadgeOption = option
+        return true
     }
 
     func setNotesMode(_ enabled: Bool) -> Bool { notesMode = enabled; return true }

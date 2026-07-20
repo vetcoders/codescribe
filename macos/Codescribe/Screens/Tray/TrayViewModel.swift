@@ -21,6 +21,7 @@ final class TrayViewModel: ObservableObject {
     @Published var autoFormatLevel: FormattingPolicyOption = .correction
     @Published var notesModeEnabled: Bool = false
     @Published var startInAssistive: Bool = false
+    @Published var holdBadgeOption: HoldBadgeOption = .twelve
 
     // Disclosure state for the nested groups. Notes is expanded by default to
     // match the static mock; Diagnostics and History are collapsed.
@@ -98,6 +99,7 @@ final class TrayViewModel: ObservableObject {
             autoFormatLevel = toggles.autoFormatLevel
             notesModeEnabled = toggles.notesMode
             startInAssistive = toggles.startInAssistive
+            holdBadgeOption = toggles.holdBadgeOption
         }
         Task { [weak self] in
             guard let self else { return }
@@ -175,6 +177,18 @@ final class TrayViewModel: ObservableObject {
         }
         engine.setAutoFormatLevel(level)
         refreshStatus()
+    }
+
+    func setHoldBadgeOption(_ option: HoldBadgeOption) {
+        guard let engine else {
+            holdBadgeOption = option
+            return
+        }
+        if engine.setHoldBadgeOption(option) {
+            holdBadgeOption = option
+        } else {
+            refreshStatus()
+        }
     }
 
     /// Notes Mode: dictation → daily note (no paste). Distinct from normal

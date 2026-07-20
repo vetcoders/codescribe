@@ -53,13 +53,15 @@ protocol TrayEngine: AnyObject {
         autoPasteEnabled: Bool,
         autoFormatLevel: FormattingPolicyOption,
         notesMode: Bool,
-        startInAssistive: Bool
+        startInAssistive: Bool,
+        holdBadgeOption: HoldBadgeOption
     )?
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool)
     /// Persist user-owned delivery/formatting policy. Callers always re-read
     /// `currentToggles()` after these writes instead of assuming success.
     func setAutoPasteEnabled(_ enabled: Bool)
     func setAutoFormatLevel(_ level: FormattingPolicyOption)
+    func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool
     /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
     /// one atomic op. Returns whether the write persisted, so the UI never fakes
     /// success on a failed write.
@@ -88,6 +90,7 @@ final class MockTrayEngine: TrayEngine {
     var autoFormatLevel: FormattingPolicyOption
     var notesMode: Bool
     var startInAssistive: Bool
+    var holdBadgeOption: HoldBadgeOption
     var historyPath: String
     var transcriptText: String
 
@@ -99,6 +102,7 @@ final class MockTrayEngine: TrayEngine {
          autoFormatLevel: FormattingPolicyOption = .correction,
          notesMode: Bool = false,
          startInAssistive: Bool = false,
+         holdBadgeOption: HoldBadgeOption = .twelve,
          historyPath: String = "/tmp/codescribe/history/2026-06-28-1422.md",
          transcriptText: String = "Sample transcript.") {
         self.recording = recording
@@ -109,6 +113,7 @@ final class MockTrayEngine: TrayEngine {
         self.autoFormatLevel = autoFormatLevel
         self.notesMode = notesMode
         self.startInAssistive = startInAssistive
+        self.holdBadgeOption = holdBadgeOption
         self.historyPath = historyPath
         self.transcriptText = transcriptText
     }
@@ -125,7 +130,8 @@ final class MockTrayEngine: TrayEngine {
         autoPasteEnabled: Bool,
         autoFormatLevel: FormattingPolicyOption,
         notesMode: Bool,
-        startInAssistive: Bool
+        startInAssistive: Bool,
+        holdBadgeOption: HoldBadgeOption
     )? {
         (
             showDockIcon,
@@ -133,7 +139,8 @@ final class MockTrayEngine: TrayEngine {
             autoPasteEnabled,
             autoFormatLevel,
             notesMode,
-            startInAssistive
+            startInAssistive,
+            holdBadgeOption
         )
     }
 
@@ -146,6 +153,10 @@ final class MockTrayEngine: TrayEngine {
 
     func setAutoPasteEnabled(_ enabled: Bool) { autoPasteEnabled = enabled }
     func setAutoFormatLevel(_ level: FormattingPolicyOption) { autoFormatLevel = level }
+    func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
+        holdBadgeOption = option
+        return true
+    }
 
     func setNotesMode(_ enabled: Bool) -> Bool { notesMode = enabled; return true }
     func setStartInAssistive(_ enabled: Bool) -> Bool { startInAssistive = enabled; return true }
