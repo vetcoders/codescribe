@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Overlay Insert no longer pastes back into Codescribe itself** — the overlay
+  is a non-activating panel that can hold the caret (editable FINAL) while
+  another app stays frontmost, so the synthetic Cmd+V followed OUR key window
+  and the transcript landed in the overlay instead of the target (reported
+  live against alacritty). The Insert action now runs a caret-truth guard: when
+  a Codescribe text view is first responder, it degrades to copying the tagged
+  transcript (`<codescribe mode="dictation" ...>`) to the clipboard and says so
+  in a toast. A second, controller-side guard degrades the same way when the
+  paste target never took focus back (activation failure / Automation TCC
+  denial) instead of pasting blind, and the bridge now reports the honest
+  delivery outcome (`Pasted` / `CopiedToClipboard`) to the UI.
+
 ## [0.13.0] - 2026-07-19
 
 > Voice→agent delivery stabilization (assistive history continuity, AI titles

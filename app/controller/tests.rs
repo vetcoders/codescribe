@@ -424,6 +424,16 @@ fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
 }
 
 #[test]
+fn test_overlay_self_paste_guard_trips_only_on_codescribe_frontmost() {
+    assert!(overlay_paste_would_self_target(Some("Codescribe")));
+    assert!(overlay_paste_would_self_target(Some("  codescribe  ")));
+    assert!(overlay_paste_would_self_target(Some("CODESCRIBE")));
+    assert!(!overlay_paste_would_self_target(Some("Alacritty")));
+    assert!(!overlay_paste_would_self_target(Some("Terminal")));
+    assert!(!overlay_paste_would_self_target(None));
+}
+
+#[test]
 fn test_transcript_delivery_wrap_is_default_off() {
     let config = Config::default();
 

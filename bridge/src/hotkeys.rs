@@ -553,11 +553,28 @@ impl CodescribeHotkeys {
         }
     }
 
-    /// Paste edited overlay text back into the app that was frontmost before the overlay.
-    pub async fn paste_text(&self, text: String) -> Result<(), CsError> {
+    /// Paste edited overlay text back into the app that was frontmost before the
+    /// overlay. Returns the honest delivery outcome: `Pasted`, or
+    /// `CopiedToClipboard` when the controller's self-paste guard degraded the
+    /// action to a tagged clipboard copy.
+    pub async fn paste_text(&self, text: String) -> Result<CsPasteOutcome, CsError> {
         let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
         controller
             .paste_text_from_overlay(text)
+            .await
+            .map(CsPasteOutcome::from)
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+    }
+
+    /// Copy the tagged transcript to the clipboard without a synthetic paste.
+    /// Swift calls this when the caret already sits inside Codescribe, where a
+    /// synthetic Cmd+V would paste the transcript back into the overlay itself.
+    pub async fn copy_text_tagged(&self, text: String) -> Result<(), CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .copy_text_from_overlay(text)
             .await
             .map_err(|error| CsError::Recording {
                 msg: error.to_string(),
@@ -587,6 +604,28 @@ impl CodescribeHotkeys {
     /// behind provider or tool work.
     pub fn cancel_voice_turn(&self, thread_id: String) -> bool {
         codescribe::agent_delivery::cancel_agent_delivery_turn(&thread_id)
+    }
+}
+
+/// Honest outcome of the overlay Insert action, mirrored to Swift so the UI
+/// can tell the user when the self-paste guard degraded a paste to a tagged
+/// clipboard copy.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsPasteOutcome {
+    Pasted,
+    CopiedToClipboard,
+    Noop,
+}
+
+impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
+    fn from(value: codescribe::controller::OverlayPasteDelivery) -> Self {
+        match value {
+            codescribe::controller::OverlayPasteDelivery::Pasted => Self::Pasted,
+            codescribe::controller::OverlayPasteDelivery::CopiedToClipboard => {
+                Self::CopiedToClipboard
+            }
+            codescribe::controller::OverlayPasteDelivery::Noop => Self::Noop,
+        }
     }
 }
 

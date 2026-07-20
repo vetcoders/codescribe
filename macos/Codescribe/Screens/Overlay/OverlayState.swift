@@ -79,7 +79,8 @@ protocol DictationEngine: AnyObject {
         language: CsLanguage?,
         level: FormattingPolicyOption
     ) async throws -> String
-    func pasteText(text: String) async throws
+    func pasteText(text: String) async throws -> CsPasteOutcome
+    func copyTaggedTranscript(text: String) async throws
     func pasteTargetAppName() async -> String?
     func transcribeFile(path: String) async throws -> CsTranscription
 }
@@ -538,6 +539,17 @@ final class OverlayState: ObservableObject {
         // the cancel ensures timer is dead even if closure path changes.
     }
 
+    /// Caret-truth probe for the Insert self-paste guard. The overlay is a
+    /// non-activating panel that can become key WITHOUT the app being
+    /// frontmost (Spotlight-style), so a synthetic Cmd+V follows OUR key
+    /// window whenever a Codescribe text view holds the caret — the frontmost
+    /// app check on the Rust side cannot see that. Injectable so tests can
+    /// simulate both worlds.
+    var insertCaretInCodescribeProbe: () -> Bool = {
+        guard let keyWindow = NSApp.keyWindow else { return false }
+        return keyWindow.firstResponder is NSTextView
+    }
+
     func pasteToPreviousApp() {
         captureQualityIfEdited(action: "paste")
         // Do not let the previous deadline fire while the async delivery is in
@@ -547,7 +559,19 @@ final class OverlayState: ObservableObject {
         Task { @MainActor in
             defer { self.restartAutoHideCountdown() }
             do {
-                try await engine?.pasteText(text: text)
+                if self.insertCaretInCodescribeProbe() {
+                    // The caret sits inside Codescribe (e.g. the overlay's own
+                    // editable FINAL) — a synthetic Cmd+V would paste the
+                    // transcript right back into the overlay. Degrade to a
+                    // tagged clipboard copy and say so.
+                    try await engine?.copyTaggedTranscript(text: text)
+                    self.showToast("Caret is in Codescribe — copied with tags")
+                    return
+                }
+                let outcome = try await engine?.pasteText(text: text)
+                if outcome == .copiedToClipboard {
+                    self.showToast("Target app not focused — copied with tags")
+                }
             } catch {
                 self.errorMessage = "Couldn't paste transcript: \(error)"
                 self.showToast("Couldn't paste transcript")
@@ -1329,8 +1353,11 @@ final class ControllerDictationEngine: DictationEngine {
             level: level.rawValue
         )
     }
-    func pasteText(text: String) async throws {
+    func pasteText(text: String) async throws -> CsPasteOutcome {
         try await hotkeys.pasteText(text: text)
+    }
+    func copyTaggedTranscript(text: String) async throws {
+        try await hotkeys.copyTextTagged(text: text)
     }
     func pasteTargetAppName() async -> String? {
         await hotkeys.pasteTargetAppName()
@@ -1437,7 +1464,8 @@ final class MockDictationEngine: DictationEngine {
         language: CsLanguage?,
         level: FormattingPolicyOption
     ) async throws -> String { text }
-    func pasteText(text: String) async throws {}
+    func pasteText(text: String) async throws -> CsPasteOutcome { .pasted }
+    func copyTaggedTranscript(text: String) async throws {}
     func pasteTargetAppName() async -> String? { nil }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")

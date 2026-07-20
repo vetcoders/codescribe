@@ -5,6 +5,9 @@ import XCTest
 private final class OverlayStateTestEngine: DictationEngine {
     var pastedText: String?
     var pasteCallCount = 0
+    var pasteOutcome: CsPasteOutcome = .pasted
+    var copiedTaggedText: String?
+    var onCopyTagged: (() -> Void)?
     var formattedResult: Result<String, Error> = .success("")
     var formattedLevels: [FormattingPolicyOption] = []
     var onFormat: ((FormattingPolicyOption) -> Void)?
@@ -50,10 +53,15 @@ private final class OverlayStateTestEngine: DictationEngine {
         case .failure(let error): throw error
         }
     }
-    func pasteText(text: String) async throws {
+    func pasteText(text: String) async throws -> CsPasteOutcome {
         pastedText = text
         pasteCallCount += 1
         onPaste?()
+        return pasteOutcome
+    }
+    func copyTaggedTranscript(text: String) async throws {
+        copiedTaggedText = text
+        onCopyTagged?()
     }
     func pasteTargetAppName() async -> String? {
         onPasteTargetRead?()
@@ -562,6 +570,7 @@ final class OverlayStateTests: XCTestCase {
         var closeCount = 0
         state.engine = engine
         state.onClose = { closeCount += 1 }
+        state.insertCaretInCodescribeProbe = { false }
         state.userEditedTranscript("original delivered transcript here with user fix")
 
         clock.now = 4
@@ -577,6 +586,42 @@ final class OverlayStateTests: XCTestCase {
         clock.now = 9
         state.fireAutoHideNowForTests()
         XCTAssertEqual(closeCount, 1)
+    }
+
+    func testInsertDegradesToTaggedCopyWhenCaretIsInCodescribe() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "guarded transcript")
+        let engine = OverlayStateTestEngine()
+        let copyCalled = expectation(description: "tagged copy called")
+        engine.onCopyTagged = { copyCalled.fulfill() }
+        state.engine = engine
+        state.insertCaretInCodescribeProbe = { true }
+
+        state.pasteToPreviousApp()
+        await fulfillment(of: [copyCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(engine.copiedTaggedText, "guarded transcript")
+        XCTAssertNil(engine.pastedText, "guard must not fall through to synthetic paste")
+        XCTAssertEqual(state.toast, "Caret is in Codescribe — copied with tags")
+    }
+
+    func testInsertShowsCopiedToastWhenControllerGuardDegrades() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "belt and braces transcript")
+        let engine = OverlayStateTestEngine()
+        engine.pasteOutcome = .copiedToClipboard
+        let pasteCalled = expectation(description: "paste called")
+        engine.onPaste = { pasteCalled.fulfill() }
+        state.engine = engine
+        state.insertCaretInCodescribeProbe = { false }
+
+        state.pasteToPreviousApp()
+        await fulfillment(of: [pasteCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(engine.pastedText, "belt and braces transcript")
+        XCTAssertEqual(state.toast, "Target app not focused — copied with tags")
     }
 
     func testFormatCancelsAutoHideWithoutRearming() async {
