@@ -6,6 +6,7 @@ private final class OverlayStateTestEngine: DictationEngine {
     var pastedText: String?
     var pasteCallCount = 0
     var pasteOutcome: CsPasteOutcome = .pasted
+    var pasteFrontmostAppNameValue: String?
     var copiedTaggedText: String?
     var onCopyTagged: (() -> Void)?
     var formattedResult: Result<String, Error> = .success("")
@@ -56,11 +57,15 @@ private final class OverlayStateTestEngine: DictationEngine {
         case .failure(let error): throw error
         }
     }
-    func pasteText(text: String) async throws -> CsPasteOutcome {
+    func pasteText(text: String) async throws -> CsPasteResult {
         pastedText = text
         pasteCallCount += 1
         onPaste?()
-        return pasteOutcome
+        return CsPasteResult(
+            outcome: pasteOutcome,
+            targetAppName: pasteTargetAppNameValue,
+            frontmostAppName: pasteFrontmostAppNameValue
+        )
     }
     func copyTaggedTranscript(text: String) async throws {
         copiedTaggedText = text
@@ -602,6 +607,7 @@ final class OverlayStateTests: XCTestCase {
         let engine = OverlayStateTestEngine()
         let copyCalled = expectation(description: "tagged copy called")
         engine.onCopyTagged = { copyCalled.fulfill() }
+        engine.pasteTargetAppNameValue = "Pensieve"
         state.engine = engine
         state.insertCaretInCodescribeProbe = { true }
 
@@ -611,7 +617,11 @@ final class OverlayStateTests: XCTestCase {
 
         XCTAssertEqual(engine.copiedTaggedText, "guarded transcript")
         XCTAssertNil(engine.pastedText, "guard must not fall through to synthetic paste")
-        XCTAssertEqual(state.toast, "Caret is in Codescribe — copied with tags")
+        XCTAssertEqual(
+            state.toast,
+            "Copied — your cursor is in Codescribe, not Pensieve. "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        )
     }
 
     func testInsertShowsCopiedToastWhenControllerGuardDegrades() async {
@@ -619,6 +629,8 @@ final class OverlayStateTests: XCTestCase {
         let state = makeFinalizedState(clock: clock, text: "belt and braces transcript")
         let engine = OverlayStateTestEngine()
         engine.pasteOutcome = .copiedToClipboard
+        engine.pasteTargetAppNameValue = "Pensieve"
+        engine.pasteFrontmostAppNameValue = "Alacritty"
         let pasteCalled = expectation(description: "paste called")
         engine.onPaste = { pasteCalled.fulfill() }
         state.engine = engine
@@ -629,7 +641,34 @@ final class OverlayStateTests: XCTestCase {
         await Task.yield()
 
         XCTAssertEqual(engine.pastedText, "belt and braces transcript")
-        XCTAssertEqual(state.toast, "Target app not focused — copied with tags")
+        XCTAssertEqual(
+            state.toast,
+            "Copied — your cursor is in Alacritty, not Pensieve. "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        )
+    }
+
+    func testInsertShowsAccessibilityPermissionToastWhenEventPostingDenied() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "permission transcript")
+        let engine = OverlayStateTestEngine()
+        engine.pasteOutcome = .accessibilityPermissionNeeded
+        engine.pasteTargetAppNameValue = "Pensieve"
+        engine.pasteFrontmostAppNameValue = "Pensieve"
+        let pasteCalled = expectation(description: "permission fallback called")
+        engine.onPaste = { pasteCalled.fulfill() }
+        state.engine = engine
+        state.insertCaretInCodescribeProbe = { false }
+
+        state.pasteToPreviousApp()
+        await fulfillment(of: [pasteCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(engine.pastedText, "permission transcript")
+        XCTAssertEqual(
+            state.toast,
+            "Accessibility permission needed to insert — copied instead"
+        )
     }
 
     func testFormatCancelsAutoHideWithoutRearming() async {

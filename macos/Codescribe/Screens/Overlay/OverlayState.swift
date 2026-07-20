@@ -79,7 +79,7 @@ protocol DictationEngine: AnyObject {
         language: CsLanguage?,
         level: FormattingPolicyOption
     ) async throws -> String
-    func pasteText(text: String) async throws -> CsPasteOutcome
+    func pasteText(text: String) async throws -> CsPasteResult
     func copyTaggedTranscript(text: String) async throws
     func pasteTargetAppName() async -> String?
     func sendAssistiveTranscript(text: String) async throws -> Bool
@@ -568,19 +568,44 @@ final class OverlayState: ObservableObject {
                     // editable FINAL) — a synthetic Cmd+V would paste the
                     // transcript right back into the overlay. Degrade to a
                     // tagged clipboard copy and say so.
+                    let target = await engine?.pasteTargetAppName()
                     try await engine?.copyTaggedTranscript(text: text)
-                    self.showToast("Caret is in Codescribe — copied with tags")
+                    self.showToast(self.copiedInsertToast(
+                        frontmost: "Codescribe",
+                        target: target
+                    ))
                     return
                 }
-                let outcome = try await engine?.pasteText(text: text)
-                if outcome == .copiedToClipboard {
-                    self.showToast("Target app not focused — copied with tags")
+                let result = try await engine?.pasteText(text: text)
+                switch result?.outcome {
+                case .copiedToClipboard:
+                    self.showToast(self.copiedInsertToast(
+                        frontmost: result?.frontmostAppName,
+                        target: result?.targetAppName
+                    ))
+                case .accessibilityPermissionNeeded:
+                    self.showToast("Accessibility permission needed to insert — copied instead")
+                case .pasted, .noop, nil:
+                    break
                 }
             } catch {
                 self.errorMessage = "Couldn't paste transcript: \(error)"
                 self.showToast("Couldn't paste transcript")
             }
         }
+    }
+
+    private func copiedInsertToast(frontmost: String?, target: String?) -> String {
+        if let frontmost, let target {
+            return "Copied — your cursor is in \(frontmost), not \(target). "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        }
+        if let target {
+            return "Copied — focus couldn't be confirmed for \(target). "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        }
+        return "Copied — the target app was lost. "
+            + "Clipboard replaced; press Cmd+V where you want it."
     }
 
     /// Persist through C02's single config seam, then immediately replace local
@@ -1409,7 +1434,7 @@ final class ControllerDictationEngine: DictationEngine {
             level: level.rawValue
         )
     }
-    func pasteText(text: String) async throws -> CsPasteOutcome {
+    func pasteText(text: String) async throws -> CsPasteResult {
         try await hotkeys.pasteText(text: text)
     }
     func copyTaggedTranscript(text: String) async throws {
@@ -1523,7 +1548,9 @@ final class MockDictationEngine: DictationEngine {
         language: CsLanguage?,
         level: FormattingPolicyOption
     ) async throws -> String { text }
-    func pasteText(text: String) async throws -> CsPasteOutcome { .pasted }
+    func pasteText(text: String) async throws -> CsPasteResult {
+        CsPasteResult(outcome: .pasted, targetAppName: nil, frontmostAppName: nil)
+    }
     func copyTaggedTranscript(text: String) async throws {}
     func pasteTargetAppName() async -> String? { nil }
     func sendAssistiveTranscript(text: String) async throws -> Bool { true }
