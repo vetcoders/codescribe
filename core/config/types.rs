@@ -135,6 +135,48 @@ impl FromStr for ShortcutBinding {
     }
 }
 
+/// Global command chord used to deliver an armed transcript at the current
+/// caret. This is intentionally separate from the modifier-only work-mode
+/// bindings: it is a one-shot delivery command, not a recording gesture.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredInsertShortcut {
+    Disabled,
+    #[default]
+    CommandOptionV,
+    CommandShiftV,
+    CommandControlV,
+}
+
+impl DeferredInsertShortcut {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::CommandOptionV => "⌘⌥V",
+            Self::CommandShiftV => "⌘⇧V",
+            Self::CommandControlV => "⌘⌃V",
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+}
+
+impl FromStr for DeferredInsertShortcut {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self::Disabled),
+            "command_option_v" | "cmd_option_v" | "cmd_alt_v" => Ok(Self::CommandOptionV),
+            "command_shift_v" | "cmd_shift_v" => Ok(Self::CommandShiftV),
+            "command_control_v" | "cmd_control_v" | "cmd_ctrl_v" => Ok(Self::CommandControlV),
+            _ => Err(format!("Unknown DeferredInsertShortcut: {value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModeBinding {
     pub mode: WorkMode,
@@ -293,6 +335,10 @@ pub struct Config {
     /// Silence duration (seconds) before sending a toggle utterance
     #[serde(default = "default_toggle_silence_sec")]
     pub toggle_silence_sec: f32,
+
+    /// Global one-shot command for inserting the in-memory deferred transcript.
+    #[serde(default)]
+    pub deferred_insert_shortcut: DeferredInsertShortcut,
 
     // ===== Language =====
     /// Whisper language preference
@@ -479,6 +525,7 @@ impl Default for Config {
             hold_start_delay_ms: default_hold_start_delay_ms(),
             double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
+            deferred_insert_shortcut: DeferredInsertShortcut::default(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
             auto_paste_enabled: default_auto_paste_enabled(),
@@ -545,7 +592,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, ShortcutBinding};
+    use super::{Config, DeferredInsertShortcut, ShortcutBinding};
     use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
     #[test]
@@ -554,6 +601,29 @@ mod tests {
         assert!("fn".parse::<ShortcutBinding>().is_err());
         assert!("double_lalt".parse::<ShortcutBinding>().is_err());
         assert!("double_ralt".parse::<ShortcutBinding>().is_err());
+    }
+
+    #[test]
+    fn deferred_insert_shortcut_round_trips_and_defaults_to_command_option_v() {
+        assert_eq!(
+            Config::default().deferred_insert_shortcut,
+            DeferredInsertShortcut::CommandOptionV
+        );
+
+        let configured = Config {
+            deferred_insert_shortcut: DeferredInsertShortcut::CommandShiftV,
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&configured).expect("serialize config");
+        let decoded: Config = serde_json::from_str(&json).expect("deserialize config");
+        assert_eq!(
+            decoded.deferred_insert_shortcut,
+            DeferredInsertShortcut::CommandShiftV
+        );
+        assert_eq!(
+            "cmd_ctrl_v".parse(),
+            Ok(DeferredInsertShortcut::CommandControlV)
+        );
     }
 
     #[test]

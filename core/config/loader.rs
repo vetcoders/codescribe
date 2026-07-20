@@ -25,7 +25,9 @@ use super::settings::{
     DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, normalize_agent_workspace_roots,
     parse_agent_workspace_roots,
 };
-use super::types::{Config, Language, OverlayPositionMode, TranscriptSendMode};
+use super::types::{
+    Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
+};
 
 static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
 static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -295,6 +297,11 @@ impl Config {
             && let Ok(sec) = val.parse()
         {
             self.toggle_silence_sec = sec;
+        }
+        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
+            && let Ok(shortcut) = val.parse::<DeferredInsertShortcut>()
+        {
+            self.deferred_insert_shortcut = shortcut;
         }
 
         // Language
