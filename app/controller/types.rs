@@ -141,6 +141,8 @@ pub enum HotkeyAction {
 pub struct HotkeyInput {
     pub key_type: HotkeyType,
     pub action: HotkeyAction,
+    /// Session semantics/destination flag. It never selects a capture,
+    /// preview, or final-pass implementation.
     pub assistive: bool,
     pub hold_mode: crate::os::hotkeys::HoldMode,
     pub force_raw: bool,
@@ -294,6 +296,7 @@ pub fn read_truth_sidecar(path: &Path) -> Result<RecordingTruthMetadata> {
 pub struct TranscriptPipelineParams {
     pub raw_text: String,
     pub recording_timestamp: chrono::DateTime<chrono::Local>,
+    /// Delivery semantics carried through the canonical transcript pipeline.
     pub assistive: bool,
     pub hold_mode: crate::os::hotkeys::HoldMode,
     pub force_raw: bool,

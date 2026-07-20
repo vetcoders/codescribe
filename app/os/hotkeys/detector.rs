@@ -36,13 +36,9 @@ pub enum HotkeyEvent {
     /// Front the existing Agent window without starting recording or sending.
     ShowAgent,
     /// Hold gesture detected (press/release configured modifier combo)
-    Hold {
-        action: HoldAction,
-        mode: HoldMode,
-        force_ai: bool,
-    },
+    Hold { action: HoldAction, mode: HoldMode },
     /// Modifier change while hold is active (e.g., add/remove Shift/Cmd).
-    HoldUpdate { mode: HoldMode, force_ai: bool },
+    HoldUpdate { mode: HoldMode },
     /// Normal toggle gesture (double-tap left Option)
     ToggleNormal,
     /// Raw toggle gesture (double-tap Ctrl)
@@ -197,7 +193,6 @@ pub struct HotkeyDetector {
     hold_active: bool,
     hold_active_ts: Option<Instant>,
     hold_mode: HoldMode,
-    hold_force_ai: bool,
     hold_event_sent: bool,
     last_left_tap_ts: Option<Instant>,
     last_right_tap_ts: Option<Instant>,
@@ -216,7 +211,6 @@ impl Default for HotkeyDetector {
             hold_active: false,
             hold_active_ts: None,
             hold_mode: HoldMode::Raw,
-            hold_force_ai: false,
             hold_event_sent: false,
             last_left_tap_ts: None,
             last_right_tap_ts: None,
@@ -301,16 +295,13 @@ impl HotkeyDetector {
 
             if in_delay_window {
                 let mode = self.hold_mode;
-                let force_ai = self.hold_force_ai;
                 self.hold_active = false;
                 self.hold_active_ts = None;
-                self.hold_force_ai = false;
                 self.hold_event_sent = false;
                 self.key_pressed_during_modifier = true;
                 emitted = Some(HotkeyEvent::Hold {
                     action: HoldAction::Up,
                     mode,
-                    force_ai,
                 });
             }
         }
@@ -357,38 +348,20 @@ impl HotkeyDetector {
                 config.hold_exclusive,
             )
         };
-        let force_ai_now = if assistive_selection_combo_active {
-            false
-        } else {
-            compute_hold_force_ai(
-                modifiers.option,
-                modifiers.shift,
-                modifiers.cmd,
-                dictation_binding,
-            )
-        };
-
         let mut emitted = None;
         if combo_active && !self.hold_active {
             self.hold_active = true;
             self.hold_active_ts = Some(now);
             self.hold_mode = mode_now;
-            self.hold_force_ai = force_ai_now;
             self.hold_event_sent = true;
             emitted = Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: self.hold_mode,
-                force_ai: self.hold_force_ai,
             });
-        } else if combo_active
-            && self.hold_active
-            && (mode_now != self.hold_mode || force_ai_now != self.hold_force_ai)
-        {
+        } else if combo_active && self.hold_active && mode_now != self.hold_mode {
             self.hold_mode = mode_now;
-            self.hold_force_ai = force_ai_now;
             emitted = Some(HotkeyEvent::HoldUpdate {
                 mode: self.hold_mode,
-                force_ai: self.hold_force_ai,
             });
         } else if !combo_active && self.hold_active {
             self.hold_active = false;
@@ -396,11 +369,9 @@ impl HotkeyDetector {
                 emitted = Some(HotkeyEvent::Hold {
                     action: HoldAction::Up,
                     mode: self.hold_mode,
-                    force_ai: self.hold_force_ai,
                 });
             }
             self.hold_active_ts = None;
-            self.hold_force_ai = false;
         }
 
         if raw_toggle_enabled {
@@ -638,12 +609,12 @@ fn check_hold_combo(modifiers: HotkeyModifierSnapshot, dictation_binding: Shortc
 
 fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
     match binding {
-        ShortcutBinding::HoldFn
+        ShortcutBinding::Disabled
+        | ShortcutBinding::HoldFn
         | ShortcutBinding::HoldCtrl
         | ShortcutBinding::HoldCtrlAlt
         | ShortcutBinding::HoldCtrlShift
-        | ShortcutBinding::HoldCtrlCmd => Some(binding),
-        ShortcutBinding::Disabled
+        | ShortcutBinding::HoldCtrlCmd
         | ShortcutBinding::DoubleCtrl
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => None,
@@ -652,7 +623,7 @@ fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
 
 fn compute_hold_mode(
     shift: bool,
-    cmd: bool,
+    _cmd: bool,
     dictation_binding: ShortcutBinding,
     hold_exclusive: bool,
 ) -> HoldMode {
@@ -669,9 +640,7 @@ fn compute_hold_mode(
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => HoldMode::Raw,
         ShortcutBinding::HoldCtrlAlt => {
-            if cmd {
-                HoldMode::Selection
-            } else if shift {
+            if shift {
                 HoldMode::Chat
             } else {
                 HoldMode::Raw
@@ -680,24 +649,10 @@ fn compute_hold_mode(
         ShortcutBinding::HoldFn => {
             if shift {
                 HoldMode::Chat
-            } else if cmd {
-                HoldMode::Selection
             } else {
                 HoldMode::Raw
             }
         }
-    }
-}
-
-fn compute_hold_force_ai(
-    option: bool,
-    shift: bool,
-    cmd: bool,
-    dictation_binding: ShortcutBinding,
-) -> bool {
-    match dictation_binding {
-        ShortcutBinding::HoldCtrlAlt => option && !shift && !cmd,
-        _ => false,
     }
 }
 
@@ -811,7 +766,7 @@ mod tests {
         );
         assert_eq!(
             compute_hold_mode(false, true, ShortcutBinding::HoldFn, false),
-            HoldMode::Selection
+            HoldMode::Raw
         );
 
         // Ctrl-only ignores Shift/Cmd modifiers
@@ -831,7 +786,7 @@ mod tests {
         );
         assert_eq!(
             compute_hold_mode(false, true, ShortcutBinding::HoldCtrlAlt, false),
-            HoldMode::Selection
+            HoldMode::Raw
         );
         assert_eq!(
             compute_hold_mode(false, false, ShortcutBinding::HoldCtrlAlt, false),
@@ -883,7 +838,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
         assert_eq!(
@@ -898,7 +852,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
         assert!(!detector.is_combo_active());
@@ -1179,7 +1132,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
 
@@ -1195,7 +1147,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
 
@@ -1251,14 +1202,13 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: HoldMode::Raw,
-                force_ai: true,
             })
         );
         assert!(detector.is_combo_active());
     }
 
     #[test]
-    fn detector_routes_assistive_hold_binding_to_selection_mode() {
+    fn detector_releases_legacy_assistive_hold_binding() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
             ShortcutBinding::HoldFn,
@@ -1288,11 +1238,7 @@ mod tests {
                 },
                 config,
             ),
-            Some(HotkeyEvent::Hold {
-                action: HoldAction::Down,
-                mode: HoldMode::Selection,
-                force_ai: false,
-            })
+            None
         );
 
         assert_eq!(
@@ -1304,11 +1250,7 @@ mod tests {
                 },
                 config,
             ),
-            Some(HotkeyEvent::Hold {
-                action: HoldAction::Up,
-                mode: HoldMode::Selection,
-                force_ai: false,
-            })
+            None
         );
     }
 

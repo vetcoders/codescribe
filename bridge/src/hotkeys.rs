@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
+use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
@@ -292,6 +293,16 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
         // Arm the compensator BEFORE the direct call so the terminal guarantee
         // holds even if the dispatch that follows never transitions state.
         PREPARING_PENDING.store(true, Ordering::Release);
+        let indicator_mode = match event {
+            HotkeyEvent::ToggleAssistive
+            | HotkeyEvent::Hold {
+                mode: HoldMode::Chat | HoldMode::Selection,
+                ..
+            } => BadgeMode::Assistive,
+            HotkeyEvent::ToggleNormal | HotkeyEvent::ToggleRaw => BadgeMode::Toggle,
+            _ => BadgeMode::Hold,
+        };
+        tray_status::set_tray_indicator_mode(indicator_mode);
         tray_status::update_tray_status(TrayStatus::Starting);
         listener.on_recording_preparing();
     }
@@ -588,6 +599,18 @@ impl CodescribeHotkeys {
         normalize_paste_target_app_name(controller.paste_target_app_name().await)
     }
 
+    /// Deliver an assistive transcript from the editable overlay. The
+    /// controller attaches the trigger-time selection and accepts this once.
+    pub async fn send_assistive_transcript(&self, text: String) -> Result<bool, CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .deliver_pending_assistive_transcript(text)
+            .await
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+    }
+
     /// Stop the global hotkey listener if it is active.
     pub fn stop(&self) {
         hotkeys::shutdown_global_hotkey_manager();
@@ -647,11 +670,7 @@ async fn dispatch_recording_hotkey_event(
         HotkeyEvent::ShowAgent => {
             unreachable!("ShowAgent must be routed before recording dispatch")
         }
-        HotkeyEvent::Hold {
-            action,
-            mode,
-            force_ai,
-        } => {
+        HotkeyEvent::Hold { action, mode } => {
             let mapped_action = match action {
                 HoldAction::Down => HotkeyAction::Down,
                 HoldAction::Up => HotkeyAction::Up,
@@ -661,19 +680,19 @@ async fn dispatch_recording_hotkey_event(
                 action: mapped_action,
                 assistive: !matches!(mode, HoldMode::Raw),
                 hold_mode: mode,
-                force_raw: matches!(mode, HoldMode::Raw) && !force_ai,
-                force_ai,
+                force_raw: false,
+                force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
         }
-        HotkeyEvent::HoldUpdate { mode, force_ai } => {
+        HotkeyEvent::HoldUpdate { mode } => {
             let input = HotkeyInput {
                 key_type: HotkeyType::Hold,
                 action: HotkeyAction::Press,
                 assistive: !matches!(mode, HoldMode::Raw),
                 hold_mode: mode,
-                force_raw: matches!(mode, HoldMode::Raw) && !force_ai,
-                force_ai,
+                force_raw: false,
+                force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
         }
@@ -1064,6 +1083,21 @@ impl CodescribeHotkeys {
         mode: CsWorkMode,
         binding: CsShortcutBinding,
     ) -> Result<(), CsError> {
+        if mode == CsWorkMode::Assistive
+            && matches!(
+                binding,
+                CsShortcutBinding::HoldFn
+                    | CsShortcutBinding::HoldCtrl
+                    | CsShortcutBinding::HoldCtrlAlt
+                    | CsShortcutBinding::HoldCtrlShift
+                    | CsShortcutBinding::HoldCtrlCmd
+            )
+        {
+            return Err(CsError::Config {
+                msg: "Assistive hold uses the dictation hold plus Shift; a second hold binding is released"
+                    .to_string(),
+            });
+        }
         let mut settings = UserSettings::load();
         settings.set_mode_binding(mode.into(), binding.into());
         reload_hotkey_runtime_after_write();
