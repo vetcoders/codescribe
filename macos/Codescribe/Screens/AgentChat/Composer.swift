@@ -57,7 +57,7 @@ struct Composer: View {
                     CSIconView(
                         icon: .attach,
                         size: ComposerControlMetrics.glyphSize,
-                        color: store.pendingAttachments.isEmpty ? CSColor.textFaint : CSColor.terracottaLight
+                        color: store.pendingAttachments.isEmpty ? CSColor.textFaint : CSColor.chromeAccent
                     )
                     .frame(
                         width: ComposerControlMetrics.hitTargetSize,
@@ -85,13 +85,13 @@ struct Composer: View {
                             icon: primaryAction.icon,
                             size: ComposerControlMetrics.glyphSize,
                             weight: primaryAction.iconWeight,
-                            color: CSColor.terracotta
+                            color: CSColor.chromeAccent
                         )
                         if primaryAction == .stopping {
                             ProgressView()
                                 .controlSize(.small)
                                 .scaleEffect(0.5)
-                                .tint(CSColor.terracotta)
+                                .tint(CSColor.chromeAccent)
                         }
                     }
                     .frame(
@@ -113,7 +113,7 @@ struct Composer: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .strokeBorder(
-                        isDragging ? CSColor.terracotta : CSColor.hairline(0.09),
+                        isDragging ? CSColor.chromeAccent : CSColor.hairline(0.09),
                         lineWidth: isDragging ? 1.5 : 1
                     )
             )
@@ -309,7 +309,7 @@ struct Composer: View {
             HStack(spacing: 8) {
                 ForEach(store.pendingAttachments) { attachment in
                     HStack(spacing: 6) {
-                        CSIconView(icon: .photo, size: 11, color: CSColor.terracottaLight)
+                        CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
                         Text(attachment.name)
                             .font(CSFont.mono(10.5, .medium))
                             .foregroundStyle(CSColor.textBodyAlt)

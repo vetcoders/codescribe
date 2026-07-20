@@ -7,10 +7,10 @@ import AppKit
 enum ChatPalette {
     static let nameInactive = Color(hex: 0xC7CABF)   // inactive thread name / segmented body
     static let nameActive = Color(hex: 0xF0EEE7)     // active thread name / titles / you-bubble text
-    static let activeThreadSub = Color(hex: 0x9A7A6A) // "active · restored" subtitle
+    static var activeThreadSub: Color { CSColor.chromeAccent.opacity(0.78) }
     static let toolBody = Color(hex: 0x9AA093)        // tool-activity detail text
     static let thinking = Color(hex: 0x8A8D87)        // "thinking…" label
-    static let sendGlyph = Color(hex: 0x0A0A0A)       // ↑ glyph on terracotta button
+    static let sendGlyph = Color(hex: 0x0A0A0A)
 }
 
 enum ComposerMicVisualState: CaseIterable, Equatable {
@@ -91,7 +91,7 @@ struct BlinkCaret: View {
 
 /// Block-level markdown body for a chat turn: paragraphs, `#`–`###` headings,
 /// bullet / ordered lists, fenced ``` code blocks, plus inline **bold**,
-/// *italic*, `code` spans (olive + mono) and [links](url) (terracotta, open in
+/// *italic*, `code` spans (olive + mono) and [links](url) (system accent, open in
 /// the default browser via NSWorkspace). Block structure is parsed here; each
 /// block's inline text is handed to `AttributedString(markdown:)`, which falls
 /// back to the raw string on failure — so a bubble is never empty or crashes on
@@ -250,7 +250,7 @@ struct MarkdownText: View {
         } else {
             HStack(alignment: .top, spacing: 9) {
                 RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(CSColor.terracotta.opacity(0.55))
+                    .fill(CSColor.chromeAccent.opacity(0.55))
                     .frame(width: 2.5)
                 blocksView(MDBlock.parse(text))
                     .opacity(0.9)
@@ -385,7 +385,7 @@ struct MarkdownText: View {
     /// Inline markdown → styled `AttributedString`. Bold / italic ride the
     /// parser's `inlinePresentationIntent` (SwiftUI applies them over our base
     /// font); we override `code` runs to mono + olive and `link` runs to
-    /// terracotta. On parse failure returns the plain raw string so the caller
+    /// the system accent. On parse failure returns the plain raw string so the caller
     /// still shows something.
     static func inlineAttributed(_ text: String, fontSize: CGFloat,
                                  baseFont: Font, baseColor: Color) -> AttributedString {
@@ -421,9 +421,9 @@ struct MarkdownText: View {
             attr[range].foregroundColor = CSColor.oliveLight
             attr[range].backgroundColor = CSColor.surfaceRaised(0.10)
         }
-        // Links: terracotta + a subtle underline (Text has no cheap hover state).
+        // Links use the operator's system accent and a subtle underline.
         for range in linkRanges {
-            attr[range].foregroundColor = CSColor.terracotta
+            attr[range].foregroundColor = CSColor.chromeAccent
             attr[range].underlineStyle = .single
         }
         return attr

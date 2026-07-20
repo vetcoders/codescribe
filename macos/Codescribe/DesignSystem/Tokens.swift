@@ -1,11 +1,13 @@
+import AppKit
 import SwiftUI
 
 // codescribe design tokens — single source of truth for color.
 // Locked palette from the handoff (README-HANDOFF.md · Design Tokens).
-// Terracotta = the ONE brand accent (active / voice / primary).
+// Terracotta carries app-owned mode, state, and brand meaning.
+// Decorative controls use the operator's macOS accent instead.
 // Assistive violet = voice routed to the agent. Olive/green = healthy status.
 // Amber = reasoning/format meta.
-// NO macOS system-blue anywhere in the redesigned UI.
+// Never hardcode a replacement for the system accent: the operator owns it.
 
 extension Color {
     init(hex: UInt32, alpha: Double = 1.0) {
@@ -24,8 +26,8 @@ enum CSColor {
     static func surfaceRaised(_ a: Double = 0.03) -> Color { Color.white.opacity(a) } // .02–.04
     static func hairline(_ a: Double = 0.07) -> Color { Color.white.opacity(a) }      // .06–.09
 
-    // Brand accent — terracotta
-    static let terracotta = Color(hex: 0xD97757)          // primary / active / voice
+    // App semantics — these colors carry information and do not follow macOS accent.
+    static let terracotta = Color(hex: 0xD97757)          // dictation / processing / brand
     static let terracottaLight = Color(hex: 0xE9B79F)     // active labels (text on dark accent)
     static let terracottaDeep = Color(hex: 0xC98A6E)      // secondary voice accent
     static let terracottaTintBars = Color(hex: 0xE6A98F)  // every-5th waveform bar
@@ -34,12 +36,15 @@ enum CSColor {
     static let assistive = Color(hex: 0x9B72F2)
     static let assistiveLight = Color(hex: 0xC9B7FF)
 
-    // Session-mode semantics — shared by tray and overlay indicators.
-    static let modeRecording = terracotta
+    static let modeDictation = terracotta
     static let modeAgent = assistive
+    static let modeRecording = modeDictation
     static let modeProcessing = Color(hex: 0xF28C45)
     static let modeReady = oliveLight
     static let indicatorRecording = Color(hex: 0xFF3B30)
+
+    // UI chrome — selection, focus, and interactive controls follow macOS.
+    static var chromeAccent: Color { Color(nsColor: .controlAccentColor) }
 
     // Status — olive / green
     static let olive = Color(hex: 0x5F6B3E)               // healthy base

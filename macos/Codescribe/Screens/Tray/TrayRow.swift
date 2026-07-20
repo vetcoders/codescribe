@@ -7,13 +7,13 @@ import SwiftUI
 private enum TrayLocal {
     /// Submenu child + Quit label (#c7cabf) — slightly muted body text.
     static let subnote = Color(hex: 0xC7CABF)
-    /// "⌥⌥" keycap on the terracotta primary row (#9a7a6a) — muted terracotta.
-    static let primaryShortcut = Color(hex: 0x9A7A6A)
+    /// Primary-row keycap follows the operator's system accent.
+    static var primaryShortcut: Color { CSColor.chromeAccent.opacity(0.78) }
 }
 
 enum TrayRowStyle {
     case plain     // transparent; subtle hover highlight
-    case primary   // terracotta tint + border (the ONE primary action)
+    case primary   // system accent tint + border (the ONE primary action)
     case raised    // surface-raised tint (an expanded disclosure parent)
 }
 
@@ -45,14 +45,14 @@ struct TrayRow: View {
 
     private var fillColor: Color {
         switch style {
-        case .primary: return CSColor.terracotta.opacity(0.13)
+        case .primary: return CSColor.chromeAccent.opacity(0.13)
         case .raised:  return CSColor.surfaceRaised(0.04)
         case .plain:   return hovering ? CSColor.surfaceRaised(0.05) : .clear
         }
     }
 
     private var borderColor: Color {
-        style == .primary ? CSColor.terracotta.opacity(0.24) : .clear
+        style == .primary ? CSColor.chromeAccent.opacity(0.24) : .clear
     }
 
     var body: some View {

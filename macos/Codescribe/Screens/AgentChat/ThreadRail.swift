@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Left rail: wordmark, search field, THREADS list (active = terracotta tint),
+/// Left rail: wordmark, search field, THREADS list (active = system accent),
 /// and a dashed "+ New thread" footer.
 struct ThreadRail: View {
     @ObservedObject var store: AgentChatStore
@@ -234,7 +234,7 @@ private struct ThreadRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 7) {
                 if isActive {
-                    Circle().fill(CSColor.terracotta).frame(width: 6, height: 6)
+                    Circle().fill(CSColor.chromeAccent).frame(width: 6, height: 6)
                 }
                 if isEditing {
                     TextField("", text: $renameDraft)
@@ -279,10 +279,10 @@ private struct ThreadRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 11)
-        .background(isActive ? CSColor.terracotta.opacity(0.12) : .clear)
+        .background(isActive ? CSColor.chromeAccent.opacity(0.12) : .clear)
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(isActive ? CSColor.terracotta.opacity(0.28) : .clear, lineWidth: 1)
+                .strokeBorder(isActive ? CSColor.chromeAccent.opacity(0.28) : .clear, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contextMenu {
