@@ -25,6 +25,12 @@ CODESCRIBE_AUTO_CODESIGN_IDENTITY := $(if $(strip $(CODESCRIBE_APPLE_DEVELOPMENT
 # Example:
 #   CODESCRIBE_CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" make install-app
 CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODESCRIBE_AUTO_CODESIGN_IDENTITY),-)
+# Distribution artifacts (signed DMG + notarization) require Developer ID, not
+# the TCC-friendly Apple Development identity preferred above for local
+# installs. Recipes must pass this into build-dmg.sh explicitly — make vars are
+# not exported to recipe children, which is exactly how `make release-standard`
+# used to reach --sign with an empty identity.
+CODESCRIBE_DIST_CODESIGN_IDENTITY ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(CODESCRIBE_CODESIGN_IDENTITY))
 CODESCRIBE_APP_NAME ?= Codescribe
 CODESCRIBE_DISPLAY_NAME ?= Codescribe
 # SwiftUI app build profile for `make app` / `make app-bindings` (debug|release)
@@ -461,13 +467,13 @@ dmg:
 	@./scripts/build-dmg.sh
 
 dmg-signed:
-	@./scripts/build-dmg.sh --sign
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign
 
 # ensure-models runs first so the embedded-Whisper release build finds the model
 # in the HF cache. build.rs only warns on a missing model, so without this the
 # signed/notarized DMG could ship without embedded Whisper.
 release-standard: ensure-models
-	@./scripts/build-dmg.sh --sign --notarize
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize
 
 # Compatibility alias — the standard DMG now embeds Whisper by default, so it IS
 # the real user artifact. `_full` no longer denotes a separate "real" build.
