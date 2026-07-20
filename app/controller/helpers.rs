@@ -21,6 +21,7 @@ use codescribe_core::config::Config;
 use codescribe_core::llm::lane_truth;
 use serde_json::json;
 
+use crate::os::hold_badge::{BadgeMode, show_badge_for_mode};
 use crate::os::tray_status;
 
 /// Global flag for current session mode.
@@ -36,6 +37,18 @@ static IS_CONVERSATION_SESSION: AtomicBool = AtomicBool::new(false);
 pub fn set_assistive_session(is_assistive: bool) {
     IS_ASSISTIVE_SESSION.store(is_assistive, Ordering::SeqCst);
     tray_status::set_tray_assistive_session(is_assistive);
+}
+
+/// Publish one canonical recording-indicator state to every Rust-owned sink.
+/// Swift receives the same `BadgeMode` through the tray-status bridge, so the
+/// cursor badge, menu glyph, and overlay spectrometer cannot drift by inventing
+/// their own lane enums.
+pub fn publish_recording_indicator(mode: BadgeMode, show_cursor_badge: bool) {
+    IS_ASSISTIVE_SESSION.store(mode == BadgeMode::Assistive, Ordering::SeqCst);
+    tray_status::set_tray_indicator_mode(mode);
+    if show_cursor_badge {
+        show_badge_for_mode(mode);
+    }
 }
 
 /// Check if current session is assistive mode
@@ -56,8 +69,7 @@ pub fn is_conversation_session() -> bool {
 /// Route transcription delta to the active overlay.
 ///
 /// Contract:
-/// - Assistive sessions stream into Agent overlay chat bubbles.
-/// - Non-assistive sessions publish engine events over IPC/FFI for the Swift overlay.
+/// - Every dictation session publishes the same engine events over IPC/FFI.
 /// - `delta` must already follow `TranscriptDelta` backspace semantics.
 ///   This function must never receive full preview snapshots.
 pub fn route_transcription_delta(_delta: &str) {
@@ -67,7 +79,6 @@ pub fn route_transcription_delta(_delta: &str) {
 
 /// DeltaSink that routes deltas to the active UI overlay.
 ///
-/// Uses `is_assistive_session()` to decide: chat bubble vs transcription overlay.
 /// Plugs into `PresentationEmitter` → `BufferedEmitter` → delta chain.
 pub struct RoutingDeltaSink;
 

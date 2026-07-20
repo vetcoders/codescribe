@@ -15,7 +15,7 @@
 // ─────────────────────────────────────────────────────────────
 
 /// Badge display mode for different recording/processing states
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeMode {
     /// Hold mode (Ctrl): Red, solid - "trzymaj palec!"
     Hold,

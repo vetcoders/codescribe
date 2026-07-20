@@ -651,6 +651,81 @@ async fn final_transcript_text(events: &mut tokio::sync::broadcast::Receiver<Ipc
     }
 }
 
+#[tokio::test]
+#[serial]
+async fn assistive_pipeline_emits_same_final_overlay_event_and_preserves_trigger_context() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let original = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: Some("original selection".to_string()),
+    };
+    *controller.assistive_context.write().await = Some(original.clone());
+    let mut events = controller.subscribe_events();
+    let config = Config {
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let mut params = test_transcript_pipeline_params(
+        "unified final transcript",
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive transcript pipeline");
+
+    assert_eq!(
+        final_transcript_text(&mut events).await,
+        "unified final transcript"
+    );
+    *controller.assistive_context.write().await = Some(AssistiveContext {
+        frontmost_app: Some("Changed".to_string()),
+        selected_text: Some("later selection".to_string()),
+    });
+    assert_eq!(
+        controller.pending_assistive_context.read().await.as_ref(),
+        Some(&original),
+        "delivery must retain the trigger-time context, not recapture at send"
+    );
+}
+
+#[test]
+fn formatting_setting_is_orthogonal_to_hold_and_assistive_delivery() {
+    let config = Config {
+        ai_formatting_enabled: true,
+        ..Config::default()
+    };
+    assert!(session_auto_format_enabled(&config, false, false, false));
+    assert!(session_auto_format_enabled(&config, true, false, false));
+    assert!(!session_auto_format_enabled(&config, false, true, false));
+}
+
+#[test]
+#[serial]
+fn one_indicator_transition_updates_shared_rust_state_and_tray_snapshot() {
+    publish_recording_indicator(BadgeMode::Assistive, false);
+    assert!(is_assistive_session());
+    assert_eq!(
+        crate::os::tray_status::current_tray_status_snapshot().indicator_mode,
+        BadgeMode::Assistive
+    );
+
+    publish_recording_indicator(BadgeMode::Processing, false);
+    assert!(!is_assistive_session());
+    assert_eq!(
+        crate::os::tray_status::current_tray_status_snapshot().indicator_mode,
+        BadgeMode::Processing
+    );
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
