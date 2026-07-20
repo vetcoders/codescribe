@@ -1,0 +1,136 @@
+---
+import { asset } from '../lib/asset';
+
+// WEBSITE_SPEC §4.11 — the four macOS surfaces + captions (authoritative over
+// the reference render's older captions).
+const shots = [
+  {
+    file: 'shots/overlay-listening-transparent.webp',
+    w: 1205,
+    h: 842,
+    caption: 'Dictation overlay — listening · live waveform · local whisper',
+  },
+  {
+    file: 'shots/tray-transparent.webp',
+    w: 808,
+    h: 1646,
+    caption: 'Menu-bar tray — show agent, history, notes, diagnostics',
+  },
+  {
+    file: 'shots/shortcuts-transparent.webp',
+    w: 2100,
+    h: 1604,
+    caption: 'Shortcuts — one gesture per mode, applies live, no restart',
+  },
+  {
+    file: 'shots/keys-transparent.webp',
+    w: 2090,
+    h: 1610,
+    caption: 'Keys — stored in the macOS Keychain, write-only, never shown back',
+  },
+];
+---
+
+<section class="section macnative" data-screen-label="macOS native" aria-labelledby="macnative-title">
+  <div class="container">
+    <div class="head">
+      <p class="eyebrow eyebrow--plain">BUILT FOR macOS · APPLE SILICON</p>
+      <h2 id="macnative-title">A real native app. No web wrapper.</h2>
+      <p class="sub">
+        A menu-bar tray, a floating overlay, and a settings window that tells you
+        the truth — local-first STT, permissions, and runtime state at a glance.
+      </p>
+    </div>
+    <div class="grid">
+      {
+        shots.map((s) => (
+          <div class="cell">
+            <div class="frame">
+              <img
+                src={asset(s.file)}
+                width={s.w}
+                height={s.h}
+                loading="lazy"
+                decoding="async"
+                alt={s.caption}
+              />
+            </div>
+            <p class="caption">{s.caption}</p>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .macnative {
+    padding: 120px 24px;
+    background: radial-gradient(70% 100% at 50% 0%, rgba(95, 107, 62, 0.05), transparent 60%);
+  }
+  /* Keep literal "macOS" casing (spec §4.11); "BUILT FOR" / "APPLE SILICON"
+     are already written uppercase, so no visual regression. */
+  .eyebrow--plain { text-transform: none; }
+  .container { max-width: 1080px; }
+  .head {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  h2 {
+    font: 700 clamp(32px, 5vw, 50px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 14px;
+    color: var(--ink);
+  }
+  .sub {
+    font: 400 16px / 1.55 var(--font-display);
+    color: var(--muted-2);
+    max-width: 520px;
+    margin: 0 auto;
+  }
+  /* Uniform 2x2 with equal-height media boxes. auto-fit + minmax gave ragged
+     rows because the tray shot is portrait (808x1646) while the others are
+     landscape — the portrait stretched its row and left dead space. Now every
+     frame is the same fixed-height card and each transparent shot floats,
+     centered and complete, inside it (object-fit: contain). */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+  }
+  .frame {
+    border: 1px solid var(--stroke-2);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.45);
+    background: #0d0f13;
+    height: 420px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+  }
+  .frame img {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    display: block;
+  }
+  .caption {
+    font: 500 11px var(--font-mono);
+    color: var(--muted-3);
+    margin: 12px 0 0;
+  }
+  /* One-column stack below tablet; media height goes auto (capped) so the
+     portrait tray isn't letterboxed into a tall void. */
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; }
+    .frame { height: auto; }
+    .frame img { max-height: 70vw; }
+  }
+  @media (max-width: 480px) {
+    .macnative { padding: 84px 20px; }
+  }
+</style>
