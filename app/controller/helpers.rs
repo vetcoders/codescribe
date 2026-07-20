@@ -2163,6 +2163,81 @@ mod tests {
         );
     }
 
+    /// Preserve the real W2-A ThreadStore output when the verifier explicitly
+    /// provides an evidence directory. Normal test runs remain hermetic.
+    fn export_w2_delivery_artifacts(
+        threads_dir: &std::path::Path,
+        receipts: &[ThreadDeliveryReceipt],
+        persisted: &codescribe_core::agent::Thread,
+    ) {
+        let Some(artifact_dir) = std::env::var_os("CODESCRIBE_W2_ARTIFACT_DIR") else {
+            return;
+        };
+        assert_eq!(receipts.len(), 2, "W2 receipt requires exactly two turns");
+
+        let artifact_dir = std::path::PathBuf::from(artifact_dir);
+        std::fs::create_dir_all(&artifact_dir).expect("W2 artifact dir should initialize");
+        let thread_source = threads_dir.join(format!("{}.json", persisted.id));
+        let thread_target = artifact_dir.join(format!("thread-{}.json", persisted.id));
+        let index_target = artifact_dir.join("index.json");
+        std::fs::copy(&thread_source, &thread_target)
+            .expect("persisted W2 thread should copy to the evidence directory");
+        std::fs::copy(threads_dir.join("index.json"), &index_target)
+            .expect("persisted W2 index should copy to the evidence directory");
+
+        let index_json =
+            std::fs::read_to_string(&index_target).expect("copied W2 index should remain readable");
+        let index: serde_json::Value =
+            serde_json::from_str(&index_json).expect("copied W2 index should parse");
+        let index_rows = index["threads"]
+            .as_array()
+            .expect("W2 index should contain thread rows")
+            .len();
+        let receipt_path = artifact_dir.join("delivery-receipt.json");
+        let receipt_json = serde_json::json!({
+            "schema": "codescribe.w2-a.delivery.v1",
+            "verified_at": Utc::now(),
+            "backend_id": persisted.id,
+            "thread_file": thread_target,
+            "index_file": index_target,
+            "index_rows": index_rows,
+            "first": {
+                "backend_id": receipts[0].backend_id,
+                "created": receipts[0].created,
+                "message_count": receipts[0].message_count,
+                "updated_at": receipts[0].updated_at,
+                "first_exchange": receipts[0].first_exchange,
+                "title_eligible": receipts[0].title_eligible,
+            },
+            "second": {
+                "backend_id": receipts[1].backend_id,
+                "created": receipts[1].created,
+                "message_count": receipts[1].message_count,
+                "updated_at": receipts[1].updated_at,
+                "first_exchange": receipts[1].first_exchange,
+                "title_eligible": receipts[1].title_eligible,
+            },
+            "persisted": {
+                "message_count": persisted.messages.len(),
+                "updated_at": persisted.updated_at,
+                "title": persisted.title,
+                "title_is_custom": persisted.title_is_custom,
+                "title_is_generated": persisted.title_is_generated,
+            },
+        });
+        std::fs::write(
+            &receipt_path,
+            serde_json::to_vec_pretty(&receipt_json).expect("W2 receipt should serialize"),
+        )
+        .expect("W2 receipt should write");
+        println!(
+            "w2_delivery_artifacts receipt={} thread={} index={}",
+            receipt_path.display(),
+            thread_target.display(),
+            index_target.display()
+        );
+    }
+
     /// Two ordinary successful turns share one backend thread: same id, one
     /// disk artifact, one index row, monotonically growing message count, and a
     /// strictly newer `updated_at` on the second delivery.
@@ -2284,17 +2359,20 @@ mod tests {
             .expect("install must record the durable identity");
         assert_eq!(id_before, "t_test_stable");
 
+        let mut receipts = Vec::new();
         let outcome = run_agent_send_path_with_persist(
             &mut state,
             "first question".to_string(),
             test_stream_options(),
             |runtime| {
-                gateway.deliver(runtime_delivery_input(
+                let receipt = gateway.deliver(runtime_delivery_input(
                     runtime,
                     "test-provider".to_string(),
                     "test-model".to_string(),
                     Utc::now(),
-                ))
+                ))?;
+                receipts.push(receipt);
+                Ok(())
             },
         )
         .await
@@ -2344,18 +2422,27 @@ mod tests {
             "second question".to_string(),
             test_stream_options(),
             |runtime| {
-                gateway.deliver(runtime_delivery_input(
+                let receipt = gateway.deliver(runtime_delivery_input(
                     runtime,
                     "test-provider".to_string(),
                     "test-model".to_string(),
                     Utc::now(),
-                ))
+                ))?;
+                receipts.push(receipt);
+                Ok(())
             },
         )
         .await
         .expect("recovered turn should complete");
         assert_eq!(outcome, AgentSendOutcome::Completed);
         assert_eq!(state.thread_store_id.as_deref(), Some(id_before.as_str()));
+        assert_eq!(receipts.len(), 2, "both recovered turns must persist");
+        assert_eq!(receipts[0].backend_id, receipts[1].backend_id);
+        assert!(receipts[0].created);
+        assert!(!receipts[1].created);
+        assert_eq!(receipts[0].message_count, 2);
+        assert_eq!(receipts[1].message_count, 4);
+        assert!(receipts[1].updated_at > receipts[0].updated_at);
 
         let inputs = second_inputs
             .lock()
@@ -2402,6 +2489,7 @@ mod tests {
             "the same thread file must accumulate both turns"
         );
         assert_single_controller_thread_artifact(&threads_dir);
+        export_w2_delivery_artifacts(&threads_dir, &receipts, &persisted);
     }
 
     /// A corrupt/missing ThreadStore artifact must never silently mint a new
