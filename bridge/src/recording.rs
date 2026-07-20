@@ -247,6 +247,9 @@ pub trait CsTranscriptionListener: Send + Sync {
         text: String,
         kind: CsAnnotationKind,
     );
+    /// Insert a context-bucket marker at the global transcript character
+    /// position captured when the agent combo was pressed.
+    fn on_context_marker(&self, position: u64, marker: String);
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
     /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
     /// the SAME clean text that is pasted/delivered and written to history. Surfaces
@@ -809,6 +812,7 @@ mod tests {
             _kind: CsAnnotationKind,
         ) {
         }
+        fn on_context_marker(&self, _position: u64, _marker: String) {}
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}

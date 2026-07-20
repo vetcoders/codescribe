@@ -22,6 +22,7 @@
 //! keep a 400ms floor even if settings lower the generic hold delay. This prevents
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
+mod context_bucket;
 mod helpers;
 mod types;
 
@@ -57,6 +58,7 @@ use crate::os::selection::{
     capture_assistive_context_with_prior_frontmost, capture_frontmost_app_only,
     wait_for_frontmost_app,
 };
+use context_bucket::{ContextBucket, ContextMarker};
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
@@ -95,6 +97,27 @@ fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     } else {
         configured_ms
     }
+}
+
+fn capture_combo_context_with(
+    bucket: &mut ContextBucket,
+    position: usize,
+    provider: impl FnOnce() -> AssistiveContext,
+) -> Result<(AssistiveContext, Option<ContextMarker>)> {
+    let mut context = provider();
+    let marker = match context.selected_text.take() {
+        Some(selected_text) => bucket.add_selection(position, selected_text)?,
+        None => None,
+    };
+    Ok((context, marker))
+}
+
+fn assemble_assistive_delivery(
+    transcript: &str,
+    context: &AssistiveContext,
+    bucket: &ContextBucket,
+) -> String {
+    bucket.append_to_message(&build_assistive_input(transcript, context))
 }
 
 const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -1054,6 +1077,9 @@ pub struct RecordingController {
     /// either auto-sends the untouched final transcript or the user explicitly
     /// sends an edited transcript.
     pending_assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
+    /// Combo-collected selections for the active dictation. The bucket survives
+    /// recording cleanup and is consumed only at the agent-send seam.
+    context_bucket: Arc<Mutex<ContextBucket>>,
     /// App that was frontmost when the user initiated a hold session, before
     /// Codescribe badge/overlay UI can become frontmost.
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
@@ -1219,6 +1245,9 @@ impl RecordingController {
             toggle_assistant_has_text: Arc::new(AtomicBool::new(false)),
             assistive_context: Arc::new(RwLock::new(None)),
             pending_assistive_context: Arc::new(RwLock::new(None)),
+            context_bucket: Arc::new(Mutex::new(ContextBucket::for_codescribe_data_dir(
+                Config::config_dir(),
+            ))),
             pre_overlay_frontmost_app: Arc::new(RwLock::new(None)),
             last_segment_audio_offset: Arc::new(AtomicUsize::new(0)),
             // Conversation mode (lazy init)
@@ -1255,6 +1284,62 @@ impl RecordingController {
         publish_recording_indicator(mode, hold_indicator);
     }
 
+    async fn current_live_transcript_position(&self, state: State) -> usize {
+        if !matches!(state, State::RecHold | State::RecToggle) {
+            return 0;
+        }
+        let transcript_buffer = {
+            let recorder = self.recorder.lock().await;
+            recorder
+                .as_ref()
+                .map(StreamingRecorder::transcript_buffer_handle)
+        };
+        let Some(transcript_buffer) = transcript_buffer else {
+            return 0;
+        };
+        transcript_buffer.lock().await.chars().count()
+    }
+
+    async fn capture_assistive_combo_context(
+        &self,
+        state: State,
+        prior_frontmost_app: Option<String>,
+    ) -> AssistiveContext {
+        // Start selection capture first: focus/caret state may disappear as soon
+        // as the combo changes the UI. Snapshot the live transcript position
+        // concurrently while the OS capture is already in flight.
+        let capture_task = tokio::task::spawn_blocking(move || {
+            capture_assistive_context_with_prior_frontmost(prior_frontmost_app)
+        });
+        let position = self.current_live_transcript_position(state).await;
+        let captured = capture_task.await.unwrap_or_default();
+        let fallback = captured.clone();
+        let result = {
+            let mut bucket = self.context_bucket.lock().await;
+            capture_combo_context_with(&mut bucket, position, || captured)
+        };
+
+        match result {
+            Ok((context, Some(marker))) => {
+                let marker = format!("{{{}}}", marker.label);
+                let _ = self.event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::ContextMarker {
+                        position: u64::try_from(position).unwrap_or(u64::MAX),
+                        marker,
+                    },
+                });
+                context
+            }
+            Ok((context, None)) => context,
+            Err(error) => {
+                warn!("Context bucket capture failed; retaining legacy selection context: {error}");
+                fallback
+            }
+        }
+    }
+
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
@@ -1265,7 +1350,12 @@ impl RecordingController {
             return Ok(false);
         };
         let config = self.config.read().await.clone();
-        let input = build_assistive_input(&transcript, &context);
+        let input = {
+            let mut bucket = self.context_bucket.lock().await;
+            let input = assemble_assistive_delivery(&transcript, &context, &bucket);
+            bucket.clear();
+            input
+        };
         send_assistive_with_agent_runtime(
             input,
             config.whisper_language,
@@ -1734,6 +1824,13 @@ impl RecordingController {
             return Ok(());
         }
 
+        if current_state == State::Idle
+            && event.key_type == HotkeyType::Hold
+            && matches!(event.action, HotkeyAction::Down)
+        {
+            self.context_bucket.lock().await.clear();
+        }
+
         // Update mode flags from event (supports mid-hold mode changes via Press events).
         // A toggle press while already in RecToggle means "stop this session"; it must not
         // rewrite the active session identity with the key that happened to stop it.
@@ -1772,11 +1869,9 @@ impl RecordingController {
                             *self.force_ai_mode.write().await = false;
                             let prior_frontmost_app =
                                 self.pre_overlay_frontmost_app.read().await.clone();
-                            let ctx = tokio::task::spawn_blocking(move || {
-                                capture_assistive_context_with_prior_frontmost(prior_frontmost_app)
-                            })
-                            .await
-                            .unwrap_or_default();
+                            let ctx = self
+                                .capture_assistive_combo_context(current_state, prior_frontmost_app)
+                                .await;
                             *self.assistive_context.write().await = Some(ctx);
 
                             if matches!(current_state, State::RecHold | State::RecToggle) {
@@ -1792,11 +1887,9 @@ impl RecordingController {
                             *self.force_ai_mode.write().await = false;
                             let prior_frontmost_app =
                                 self.pre_overlay_frontmost_app.read().await.clone();
-                            let ctx = tokio::task::spawn_blocking(move || {
-                                capture_assistive_context_with_prior_frontmost(prior_frontmost_app)
-                            })
-                            .await
-                            .unwrap_or_default();
+                            let ctx = self
+                                .capture_assistive_combo_context(current_state, prior_frontmost_app)
+                                .await;
                             *self.assistive_context.write().await = Some(ctx);
 
                             if matches!(current_state, State::RecHold | State::RecToggle) {
@@ -2359,8 +2452,10 @@ impl RecordingController {
         *self.pending_assistive_context.write().await = None;
         let initial_hold_mode = *hold_mode.read().await;
         let trigger_context = if matches!(initial_hold_mode, HoldMode::Chat | HoldMode::Selection) {
-            tokio::task::spawn_blocking(capture_assistive_context)
+            self.assistive_context
+                .read()
                 .await
+                .clone()
                 .unwrap_or_default()
         } else {
             tokio::task::spawn_blocking(capture_frontmost_app_only)
@@ -2570,6 +2665,7 @@ impl RecordingController {
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
 
         *self.pending_assistive_context.write().await = None;
+        self.context_bucket.lock().await.clear();
         let trigger_context = if is_assistive {
             tokio::task::spawn_blocking(capture_assistive_context)
                 .await

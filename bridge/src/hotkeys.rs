@@ -196,6 +196,9 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             _ => {}
         },
         IpcEventPayload::FinalTranscript { text } => listener.on_final_transcript_ready(text),
+        IpcEventPayload::ContextMarker { position, marker } => {
+            listener.on_context_marker(position, marker);
+        }
         IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
@@ -1394,6 +1397,7 @@ mod preparing_compensation_tests {
         stopped: AtomicUsize,
         finalising: AtomicUsize,
         audio_levels: StdMutex<Vec<f32>>,
+        context_markers: StdMutex<Vec<(u64, String)>>,
     }
 
     impl RecordingLifecycleListener {
@@ -1411,6 +1415,12 @@ mod preparing_compensation_tests {
         }
         fn audio_levels(&self) -> Vec<f32> {
             self.audio_levels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
+        fn context_markers(&self) -> Vec<(u64, String)> {
+            self.context_markers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
@@ -1449,6 +1459,12 @@ mod preparing_compensation_tests {
             _text: String,
             _kind: CsAnnotationKind,
         ) {
+        }
+        fn on_context_marker(&self, position: u64, marker: String) {
+            self.context_markers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((position, marker));
         }
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
@@ -1494,6 +1510,22 @@ mod preparing_compensation_tests {
             Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
         );
         assert_eq!(listener.audio_levels(), vec![0.125]);
+    }
+
+    #[test]
+    fn context_marker_payload_forwards_position_and_label() {
+        let listener = Arc::new(RecordingLifecycleListener::default());
+        forward_event_to_listener(
+            IpcEventPayload::ContextMarker {
+                position: 7,
+                marker: "{selection_3}".to_string(),
+            },
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+        assert_eq!(
+            listener.context_markers(),
+            vec![(7, "{selection_3}".to_string())]
+        );
     }
 
     /// Paths 1 & 2 (quick hold-release cancel, start-failure reset): preparing was

@@ -751,6 +751,79 @@ async fn assistive_pipeline_emits_same_final_overlay_event_and_preserves_trigger
 }
 
 #[test]
+fn hold_combo_captures_selection_at_press_and_returns_exact_marker_position() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new(temp_dir.path().join("selections"), 1024);
+    let selected = std::sync::Arc::new(std::sync::Mutex::new("original selection".to_string()));
+    let provider_value = std::sync::Arc::clone(&selected);
+
+    let (context, marker) = capture_combo_context_with(&mut bucket, 13, move || AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: Some(provider_value.lock().expect("selection provider").clone()),
+    })
+    .expect("combo capture");
+    *selected.lock().expect("selection mutation") = "mutated later".to_string();
+
+    assert_eq!(
+        marker,
+        Some(ContextMarker {
+            position: 13,
+            label: "selection_1".to_string(),
+        })
+    );
+    assert_eq!(context.frontmost_app.as_deref(), Some("Notes"));
+    assert_eq!(
+        context.selected_text, None,
+        "bucket owns selection delivery"
+    );
+    let payload = bucket.append_to_message("voice {selection_1}");
+    assert!(payload.contains("original selection"));
+    assert!(!payload.contains("mutated later"));
+}
+
+#[test]
+fn assistive_delivery_assembly_has_marked_transcript_then_tagged_bucket() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new(temp_dir.path().join("selections"), 1024);
+    bucket
+        .add_selection(4, "selected body".to_string())
+        .expect("selection capture");
+    let context = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: None,
+    };
+
+    assert_eq!(
+        assemble_assistive_delivery("ask {selection_1} now", &context, &bucket),
+        "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nask {selection_1} now\n>\n\n\
+ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n\n\
+KONTEKST:\n- frontmost_app: Notes\n\n\
+<codescribe_context>\n\
+<selection_1>\nselected body\n</selection_1>\n\
+</codescribe_context>"
+    );
+}
+
+#[test]
+#[serial]
+fn combo_without_selection_leaves_bucket_empty_and_arm_truth_intact() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new(temp_dir.path().join("selections"), 1024);
+    let (context, marker) = capture_combo_context_with(&mut bucket, 0, || AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: None,
+    })
+    .expect("combo no-op");
+
+    publish_recording_indicator(BadgeMode::Assistive, false);
+    assert!(is_assistive_session(), "plain combo still arms agent mode");
+    assert_eq!(context.frontmost_app.as_deref(), Some("Notes"));
+    assert_eq!(marker, None);
+    assert!(bucket.is_empty());
+    publish_recording_indicator(BadgeMode::Hold, false);
+}
+
+#[test]
 fn formatting_setting_is_orthogonal_to_hold_and_assistive_delivery() {
     let config = Config {
         ai_formatting_enabled: true,
