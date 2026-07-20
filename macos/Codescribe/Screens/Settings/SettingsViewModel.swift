@@ -1,25 +1,227 @@
 import AppKit
 import SwiftUI
 
-// Rail sections. Creator · Keys · Prompts · Engine are interactive; Audio · Voice
-// Lab · User render but are inert (present-but-disabled), matching the mock.
-enum SettingsSection: String, CaseIterable, Identifiable {
-    case creator = "Creator"
-    case shortcuts = "Shortcuts"
-    case keys = "Keys"
-    case prompts = "Prompts"
-    case engine = "Engine"
-    case audio = "Audio"
-    case voiceLab = "Voice Lab"
-    case user = "User"
+let defaultTranscriptTagTemplate = "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>"
+let transcriptTagTemplatePlaceholders = ["{mode}", "{lang}", "{text}", "{conf}", "{flags}"]
+
+func transcriptTagTemplatePreview(
+    _ template: String,
+    mode: String = "dictation",
+    lang: String = "pl",
+    text: String = "…",
+    conf: String = "medium",
+    flags: String = "possible_hallucination_logprob"
+) -> String {
+    var rendered = template
+        .replacingOccurrences(of: "{mode}", with: mode)
+        .replacingOccurrences(of: "{lang}", with: lang)
+        .replacingOccurrences(of: "{conf}", with: conf)
+        .replacingOccurrences(of: "{flags}", with: flags)
+    if rendered.contains("{text}") {
+        return rendered.replacingOccurrences(of: "{text}", with: text)
+    }
+    if !rendered.isEmpty, !rendered.hasSuffix("\n") {
+        rendered.append("\n")
+    }
+    rendered.append(text)
+    return rendered
+}
+
+func transcriptTagTemplateAppendWarning(_ template: String) -> String? {
+    template.contains("{text}")
+        ? nil
+        : "Missing {text}; delivered transcript will be appended after the template."
+}
+
+enum SettingsSectionAvailability: Equatable {
+    case available
+    case hidden
+}
+
+enum FormattingPolicyOption: String, CaseIterable, Identifiable {
+    case off
+    case correction
+    case smart
+    case max
 
     var id: String { rawValue }
-    var isInteractive: Bool {
-        switch self {
-        case .creator, .shortcuts, .keys, .prompts, .engine: return true
-        case .audio, .voiceLab, .user: return false
+    var visibleName: String { rawValue.capitalized }
+
+    init?(storedValue: String?) {
+        switch storedValue {
+        case "off", "raw": self = .off
+        case "correction", "medium", nil: self = .correction
+        case "smart": self = .smart
+        case "max", "creative": self = .max
+        default: return nil
         }
     }
+
+    static let editablePrompts: [Self] = [.correction, .smart, .max]
+
+    /// Next level in the tray's cycling control: Off → Correction → Smart → Max → Off.
+    var next: Self {
+        let all = Self.allCases
+        let index = all.firstIndex(of: self) ?? all.startIndex
+        return all[(index + 1) % all.count]
+    }
+}
+
+/// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
+/// map exhaustively, so routing stays testable without rendering.
+enum SettingsPanelDestination: Equatable {
+    case creator
+    case shortcuts
+    case providers
+    case prompts
+    case dictation
+    case audio
+    case dictionary
+    case user
+}
+
+// Every rail section declares its product truth explicitly. The raw value is a
+// stable route id (focus targets, SwiftUI identity); `title` is the ONE owner of
+// the user-visible name — rail, eyebrows, help copy, and dictionary-supporting
+// copy all derive from it, so renaming a tab is a one-line change.
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case creator
+    case shortcuts
+    case keys
+    case prompts
+    case engine
+    case audio
+    case voiceLab
+    case user
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .creator: return "Creator"
+        case .shortcuts: return "Hotkeys"
+        case .keys: return "Providers"
+        case .prompts: return "Prompts"
+        case .engine: return "Dictation"
+        case .audio: return "Audio"
+        case .voiceLab: return "Dictionary"
+        case .user: return "User"
+        }
+    }
+
+    var destination: SettingsPanelDestination {
+        switch self {
+        case .creator: return .creator
+        case .shortcuts: return .shortcuts
+        case .keys: return .providers
+        case .prompts: return .prompts
+        case .engine: return .dictation
+        case .audio: return .audio
+        case .voiceLab: return .dictionary
+        case .user: return .user
+        }
+    }
+
+    var availability: SettingsSectionAvailability {
+        switch self {
+        case .creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user:
+            return .available
+        }
+    }
+
+    var isInteractive: Bool { availability == .available }
+}
+
+enum SettingsKeyState: Equatable {
+    case available
+    case missing
+    case unknown
+}
+
+enum SettingsHealthLevel: Equatable {
+    case healthy
+    case degraded
+    case offline
+    case unknown
+}
+
+struct SettingsHealthState: Equatable {
+    let level: SettingsHealthLevel
+    let message: String
+    let targetSection: SettingsSection?
+}
+
+/// Pure aggregate used by the rail footer and its XCTest matrix. Known failures
+/// beat unknown inputs so the footer never hides a concrete problem behind a
+/// muted "unknown" state.
+func healthState(
+    stt: Bool?,
+    keys: SettingsKeyState,
+    agent: Bool?
+) -> SettingsHealthState {
+    if stt == false {
+        return SettingsHealthState(
+            level: .offline,
+            message: "speech engine: unavailable",
+            targetSection: .engine
+        )
+    }
+    if keys == .missing {
+        return SettingsHealthState(
+            level: .degraded,
+            message: "assistive lane: no key",
+            targetSection: .keys
+        )
+    }
+    if agent == false {
+        return SettingsHealthState(
+            level: .offline,
+            message: "assistive lane: not ready",
+            targetSection: .engine
+        )
+    }
+    if stt == nil || keys == .unknown || agent == nil {
+        return SettingsHealthState(
+            level: .unknown,
+            message: "system health: unknown",
+            targetSection: .engine
+        )
+    }
+    return SettingsHealthState(
+        level: .healthy,
+        message: "systems ready",
+        targetSection: nil
+    )
+}
+
+struct AppBuildInfo: Equatable {
+    let version: String
+    let build: String
+    let commit: String
+    let builtAt: String
+
+    static func current(bundle: Bundle = .main) -> AppBuildInfo {
+        let info = bundle.infoDictionary ?? [:]
+        return AppBuildInfo(
+            version: info["CFBundleShortVersionString"] as? String ?? "unknown",
+            build: info["CFBundleVersion"] as? String ?? "unknown",
+            commit: info["CSBuildCommit"] as? String ?? "unknown",
+            builtAt: info["CSBuiltAt"] as? String ?? "unknown"
+        )
+    }
+}
+
+func resetConfirmationMatches(_ text: String) -> Bool {
+    text == "RESET"
+}
+
+func resetImpactSummary(_ preview: CsResetPreview) -> String {
+    let recordings = preview.audioFiles == 1 ? "recording" : "recordings"
+    let days = preview.transcriptDays == 1 ? "day" : "days"
+    let threads = preview.threads == 1 ? "thread" : "threads"
+    let megabytes = Double(preview.totalBytes) / 1_048_576.0
+    return "\(preview.audioFiles) \(recordings) from \(preview.transcriptDays) \(days), "
+        + "\(preview.threads) \(threads) (\(String(format: "%.1f", megabytes)) MB)"
 }
 
 /// One-shot deep-link target for the Settings window. A surface outside Settings
@@ -52,6 +254,14 @@ enum LLMLane: String, CaseIterable, Identifiable {
     case main
 
     var id: String { rawValue }
+
+    var bridgeLane: CsLlmLane {
+        switch self {
+        case .assistive: return .assistive
+        case .formatting: return .formatting
+        case .main: return .main
+        }
+    }
 
     var title: String {
         switch self {
@@ -155,6 +365,83 @@ struct LLMLaneModel {
     }
 }
 
+// MARK: - Preview timing domain (Dictation-owned; model + panel both consume)
+
+enum PreviewTimingPreset: String, CaseIterable, Identifiable, Equatable {
+    case smooth = "Smooth"
+    case snappy = "Snappy"
+    case relaxed = "Relaxed"
+    case off = "Off"
+    case custom = "Custom"
+
+    var id: String { rawValue }
+}
+
+struct PreviewTimingValues: Equatable {
+    let bufferDelayMs: UInt64
+    let typingCps: Float
+    let emitWordsMax: UInt64
+    let interimSeconds: Float
+
+    // Source: operator-tested C5b values (2026-06-11). Smooth is the
+    // recommended default; Snappy/Relaxed retain the original values without
+    // the optional +/-20% retuning because all are inside current clamps.
+    static let smooth = PreviewTimingValues(
+        bufferDelayMs: 1038,
+        typingCps: 10.6,
+        emitWordsMax: 5,
+        interimSeconds: 8.0
+    )
+    static let snappy = PreviewTimingValues(
+        bufferDelayMs: 350,
+        typingCps: 28.0,
+        emitWordsMax: 3,
+        interimSeconds: 4.0
+    )
+    static let relaxed = PreviewTimingValues(
+        bufferDelayMs: 1500,
+        typingCps: 8.0,
+        emitWordsMax: 8,
+        interimSeconds: 8.0
+    )
+}
+
+struct PreviewTimingConfiguration: Equatable {
+    let overlayEnabled: Bool
+    let values: PreviewTimingValues
+}
+
+func presetValues(_ preset: PreviewTimingPreset) -> PreviewTimingValues? {
+    switch preset {
+    case .smooth: return .smooth
+    case .snappy: return .snappy
+    case .relaxed: return .relaxed
+    case .off, .custom: return nil
+    }
+}
+
+func detectPreset(_ configuration: PreviewTimingConfiguration) -> PreviewTimingPreset {
+    guard configuration.overlayEnabled else { return .off }
+    for preset in [PreviewTimingPreset.smooth, .snappy, .relaxed] {
+        guard let values = presetValues(preset) else { continue }
+        let current = configuration.values
+        let bufferClose = current.bufferDelayMs.absDiff(values.bufferDelayMs) <= 10
+        let cpsClose = abs(current.typingCps - values.typingCps) <= 0.15
+        let wordsMatch = current.emitWordsMax == values.emitWordsMax
+        let interimClose = abs(current.interimSeconds - values.interimSeconds) <= 0.15
+        if bufferClose, cpsClose, wordsMatch, interimClose {
+            return preset
+        }
+    }
+    return .custom
+}
+
+private extension UInt64 {
+    func absDiff(_ other: UInt64) -> UInt64 {
+        self >= other ? self - other : other - self
+    }
+}
+
 /// Clears the app's preferences domain and relaunches a fresh instance. Used by
 /// the destructive "Reset app data" flow so restored window frames / SwiftUI scene
 /// state do not survive the wipe. The relaunch is deferred via a detached `open`
@@ -200,6 +487,14 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpTestPending: Set<String> = []
     @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
     @Published private(set) var keyProbePending: Set<String> = []
+    @Published private(set) var qualityRecords: [CsQualityRecord] = []
+    @Published private(set) var customLexiconEntries: [CsLexiconEntry] = []
+    @Published private(set) var voiceLabReadError: String?
+    @Published private(set) var voiceLabEditPending: Set<String> = []
+    @Published private(set) var voiceLabEditErrors: [String: String] = [:]
+    @Published private(set) var audioInput: CsAudioInputSnapshot
+    @Published private(set) var audioInputReadError: String?
+    @Published private(set) var resetPreview: CsResetPreview
     /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
     /// local callback server listening). Guards double-clicks.
     @Published private(set) var accountLoginPending: Set<String> = []
@@ -219,15 +514,17 @@ final class SettingsViewModel: ObservableObject {
     /// Conflicts for the CURRENT draft (recomputed on every edit).
     @Published private(set) var bindingConflicts: [CsHotkeyConflict] = []
 
-    /// Version label. No FFI surface exposes the running version, so this stays a
-    /// build-time constant (tracked gap).
-    let appVersion: String = "0.8.0"
+    /// Build provenance comes from the running app bundle. The build pipeline
+    /// writes all four fields in project.yml / scripts/build-app.sh.
+    let buildInfo: AppBuildInfo
+    var appVersion: String { buildInfo.version }
 
     private let engine: SettingsEngine?
     private let permissionProbe: PermissionProbing
     private let agentStatus: AgentStatusEngine?
     private let mcpAdmin: MCPAdminEngine?
     private let hotkeys: HotkeysEngine?
+    private let laneTruthProvider: (CsLlmLane) -> CsLaneTruthSnapshot
     private var modelDiscoveryGenerations: [String: Int] = [:]
     private var assistiveModelEditGeneration = 0
     private var pendingAssistiveModelSelection: (
@@ -240,13 +537,19 @@ final class SettingsViewModel: ObservableObject {
         permissionProbe: PermissionProbing = NativePermissionProbe(),
         agentStatus: AgentStatusEngine? = nil,
         mcpAdmin: MCPAdminEngine? = nil,
-        hotkeys: HotkeysEngine? = nil
+        hotkeys: HotkeysEngine? = nil,
+        buildInfo: AppBuildInfo = .current(),
+        laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
+            laneTruthSnapshot(lane: lane)
+        }
     ) {
         self.engine = engine
         self.permissionProbe = permissionProbe
         self.agentStatus = agentStatus
         self.mcpAdmin = mcpAdmin
         self.hotkeys = hotkeys
+        self.buildInfo = buildInfo
+        self.laneTruthProvider = laneTruthProvider
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -259,6 +562,10 @@ final class SettingsViewModel: ObservableObject {
         self.needsOnboarding = false
         self.agentReadiness = .sample
         self.mcpStatus = .sample
+        self.voiceLabReadError = nil
+        self.audioInput = .sample
+        self.audioInputReadError = nil
+        self.resetPreview = .sample
     }
 
     /// Re-read live state (permissions can change while the window is open).
@@ -275,6 +582,8 @@ final class SettingsViewModel: ObservableObject {
             configDir = engine.configDir()
             needsOnboarding = engine.shouldShowOnboarding()
             refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId, "openai-responses"])
+            refreshVoiceLab()
+            refreshAudioInput()
         }
         refreshAgentStatus()
         reloadMcpServers()
@@ -442,28 +751,58 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func select(_ target: SettingsSection) {
-        guard target.isInteractive else { return }
+        guard target.availability == .available else { return }
         section = target
         if target == .keys {
             refreshAssistiveModelDiscovery()
         }
     }
 
-    // MARK: - Reset app data (destructive privacy action)
+    // MARK: - Reset app data (recoverable destructive action)
 
-    /// Wipe all local app data through the Rust bridge, clear the app's
+    func refreshResetPreview() {
+        guard let engine else { return }
+        resetPreview = engine.resetPreview()
+    }
+
+    func resetImpactDescription(includeKeys: Bool, includePrompts: Bool) -> String {
+        var message = "Moves \(resetImpactSummary(resetPreview)) to Trash."
+        if includePrompts {
+            message += " Your assistive.txt and three formatting prompt files will also move to Trash."
+        } else {
+            message += " Your assistive.txt and three formatting prompt files will be preserved."
+        }
+        if includeKeys {
+            message += " API keys will also be removed from Keychain and are not recoverable from Trash."
+        }
+        return message + " Codescribe will relaunch as a fresh install."
+    }
+
+    /// Move all local app data to Trash through the Rust bridge, clear the app's
     /// UserDefaults domain, then relaunch so codescribe comes up fresh (first-run
     /// wizard from the top). `includeKeys` also removes the Keychain API keys.
     /// On failure the error surfaces in `lastError` and nothing is relaunched.
-    func resetAppData(includeKeys: Bool) {
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) {
         guard let engine else { return }
         do {
-            try engine.resetAppData(includeKeys: includeKeys)
+            try engine.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
         } catch {
             lastError = String(describing: error)
             return
         }
         AppRelaunch.clearDefaultsAndRelaunch()
+    }
+
+    func clearMcpConfiguration() {
+        guard let engine else { return }
+        do {
+            try engine.clearMcpConfiguration()
+            mcpTestResults = [:]
+            reloadMcpServers()
+            refreshAgentStatus()
+        } catch {
+            lastError = String(describing: error)
+        }
     }
 
     // MARK: - Engine-panel derived values (runtime truth)
@@ -487,34 +826,39 @@ final class SettingsViewModel: ObservableObject {
                              : (settings.sttEndpoint ?? "cloud default")
     }
 
+    private var assistiveKeyState: SettingsKeyState {
+        guard let provider = llmLane(.assistive).provider else { return .unknown }
+        let keyAvailable = provider.accountSignedIn
+            || provider.apiKeySet
+            || keyStatus.isSet(account: provider.apiKeyAccount)
+        return keyAvailable ? .available : .missing
+    }
+
+    var settingsHealth: SettingsHealthState {
+        healthState(
+            stt: sttHealthy,
+            keys: assistiveKeyState,
+            agent: agentReadiness.ready
+        )
+    }
+
     /// Effective lane state after provider/shared fallbacks.
     func llmLane(_ lane: LLMLane) -> LLMLaneModel {
-        let providerId = lane == .assistive
-            ? (settings.llmAssistiveProvider ?? "openai-responses")
-            : "openai-responses"
+        let truth = laneTruthProvider(lane.bridgeLane)
+        let providerId = truth.providerId
         let configuredModel = settings[keyPath: lane.modelPath]?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let sharedModel = settings[keyPath: LLMLane.main.modelPath]?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let resolvedEndpoint = lane == .assistive && providerId == "anthropic-messages"
-            ? "https://api.anthropic.com/v1/messages"
-            : resolvedOpenAIEndpoint(for: lane)
-        let resolvedModel = lane == .assistive && providerId == "anthropic-messages"
-            ? (configuredModel.hasPrefix("claude") ? configuredModel : "claude-opus-4-8")
-            : ([configuredModel, sharedModel].first {
-                !$0.isEmpty && !$0.hasPrefix("claude")
-            } ?? (lane == .assistive ? "gpt-5.5" : "gpt-4.1"))
         let discoveryProviderId = lane == .assistive ? providerId : "openai-responses"
 
         return LLMLaneModel(
             lane: lane,
             providerId: providerId,
             provider: providers.first { $0.id == providerId } ?? providers.first,
-            resolvedEndpoint: resolvedEndpoint,
+            resolvedEndpoint: truth.endpoint,
             configuredModel: configuredModel,
-            resolvedModel: resolvedModel,
+            resolvedModel: truth.model,
             discoveryEndpoint: lane == .assistive
-                ? resolvedEndpoint
+                ? truth.endpoint
                 : resolvedOpenAIEndpoint(for: .assistive),
             discovery: modelDiscoveries[discoveryProviderId]
                 ?? CsModelDiscovery.sample(for: discoveryProviderId)
@@ -577,8 +921,9 @@ final class SettingsViewModel: ObservableObject {
     }
 
     var formattingDescription: String {
-        guard settings.aiFormattingEnabled else { return "off" }
-        return "on · \(settings.formattingLevel ?? "medium")"
+        guard settings.aiFormattingEnabled else { return "disabled · compatibility gate" }
+        return FormattingPolicyOption(storedValue: settings.formattingLevel)?.visibleName
+            ?? "invalid policy"
     }
 
     /// Any LLM/STT provider key present (GitHub token is shown separately).
@@ -604,8 +949,199 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func setFormattingLevel(_ level: String) {
-        settings.formattingLevel = level
-        persist("FORMATTING_LEVEL", level)
+        guard let policy = FormattingPolicyOption(storedValue: level) else {
+            lastError = "Unknown formatting policy: \(level)"
+            return
+        }
+        settings.formattingLevel = policy.rawValue
+        persist("FORMATTING_LEVEL", policy.rawValue)
+    }
+
+    // MARK: - User panel (local-first product truth)
+
+    var transcriptsPath: String {
+        guard !configDir.isEmpty else { return "" }
+        return URL(fileURLWithPath: configDir).appendingPathComponent("transcriptions").path
+    }
+
+    var transcriptTagPreview: String {
+        transcriptTagTemplatePreview(settings.transcriptTagTemplate)
+    }
+
+    var transcriptTagTemplateWarning: String? {
+        transcriptTagTemplateAppendWarning(settings.transcriptTagTemplate)
+    }
+
+    func setTranscriptTaggingEnabled(_ enabled: Bool) {
+        settings.transcriptTaggingEnabled = enabled
+        persist("TRANSCRIPT_TAGGING_ENABLED", enabled ? "1" : "0")
+    }
+
+    func setTranscriptTagTemplate(_ template: String) {
+        settings.transcriptTagTemplate = template
+        persist("TRANSCRIPT_TAG_TEMPLATE", template)
+    }
+
+    func restoreDefaultTranscriptTagTemplate() {
+        setTranscriptTagTemplate(defaultTranscriptTagTemplate)
+    }
+
+    // MARK: - Audio (live hardware + existing settings contract)
+
+    func refreshAudioInput() {
+        guard let engine else { return }
+        do {
+            audioInput = try engine.loadAudioInputSnapshot()
+            audioInputReadError = nil
+        } catch {
+            audioInput = CsAudioInputSnapshot(
+                devices: [],
+                configuredDevice: settings.audioInputDevice,
+                runtimeDevice: nil,
+                configuredDeviceAvailable: false,
+                fallbackToDefault: false,
+                runtimeConfigurationMatches: false
+            )
+            audioInputReadError = String(describing: error)
+        }
+    }
+
+    func setAudioInputDevice(_ device: String) {
+        settings.audioInputDevice = device
+        persist("AUDIO_INPUT_DEVICE", device)
+        refreshAudioInput()
+    }
+
+    func resetAudioInputDevice() {
+        guard let engine else { return }
+        do {
+            try engine.resetAudioInputDevice()
+            settings = engine.loadSettings()
+            refreshAudioInput()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    func setToggleSilenceSeconds(_ seconds: Float) {
+        settings.toggleSilenceSec = seconds
+        persist("TOGGLE_SILENCE_SEC", String(format: "%.1f", seconds))
+    }
+
+    func setSoundFeedbackEnabled(_ enabled: Bool) {
+        settings.beepOnStart = enabled
+        persist("BEEP_ON_START", enabled ? "1" : "0")
+    }
+
+    func setSoundVolume(_ volume: Float) {
+        settings.soundVolume = volume
+        persist("SOUND_VOLUME", String(format: "%.2f", volume))
+    }
+
+    // MARK: - Voice Lab (live quality truth + preview timing)
+
+    func refreshVoiceLab() {
+        guard let engine else { return }
+        do {
+            qualityRecords = try engine.loadQualityRecentRecords(limit: 50)
+            customLexiconEntries = try engine.loadLexiconCustomEntries()
+            voiceLabReadError = nil
+        } catch {
+            qualityRecords = []
+            customLexiconEntries = []
+            voiceLabReadError = String(describing: error)
+        }
+    }
+
+    @discardableResult
+    func finalizeVoiceLabCorrection(id: String, canonical: String) -> Bool {
+        guard let engine else { return false }
+        let canonical = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !canonical.isEmpty, !voiceLabEditPending.contains(id) else { return false }
+
+        voiceLabEditPending.insert(id)
+        voiceLabEditErrors[id] = nil
+        defer { voiceLabEditPending.remove(id) }
+        do {
+            _ = try engine.finalizeVoiceLabCorrection(id: id, canonical: canonical)
+            refreshVoiceLab()
+            return voiceLabReadError == nil
+        } catch {
+            let message = String(describing: error)
+            voiceLabEditErrors[id] = message
+            lastError = message
+            return false
+        }
+    }
+
+    var previewTimingConfiguration: PreviewTimingConfiguration {
+        PreviewTimingConfiguration(
+            overlayEnabled: settings.transcriptionOverlayEnabled,
+            values: PreviewTimingValues(
+                bufferDelayMs: settings.bufferDelayMs ?? PreviewTimingValues.smooth.bufferDelayMs,
+                typingCps: settings.typingCps ?? PreviewTimingValues.smooth.typingCps,
+                emitWordsMax: settings.emitWordsMax ?? PreviewTimingValues.smooth.emitWordsMax,
+                interimSeconds: settings.bufferedInterimSec ?? PreviewTimingValues.smooth.interimSeconds
+            )
+        )
+    }
+
+    var previewTimingPreset: PreviewTimingPreset {
+        detectPreset(previewTimingConfiguration)
+    }
+
+    /// Preset writes go through the existing batch router: one settings.json
+    /// transaction for overlay state plus all four coupled timing values.
+    func applyPreviewTimingPreset(_ preset: PreviewTimingPreset) {
+        switch preset {
+        case .custom:
+            return
+        case .off:
+            persistMany([
+                CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "0"),
+            ])
+        case .smooth, .snappy, .relaxed:
+            guard let values = presetValues(preset) else { return }
+            persistMany([
+                CsConfigEntry(key: "TRANSCRIPTION_OVERLAY_ENABLED", value: "1"),
+                CsConfigEntry(
+                    key: "CODESCRIBE_BUFFER_DELAY_MS",
+                    value: String(values.bufferDelayMs)
+                ),
+                CsConfigEntry(
+                    key: "CODESCRIBE_TYPING_CPS",
+                    value: String(format: "%.1f", values.typingCps)
+                ),
+                CsConfigEntry(
+                    key: "CODESCRIBE_EMIT_WORDS_MAX",
+                    value: String(values.emitWordsMax)
+                ),
+                CsConfigEntry(
+                    key: "CODESCRIBE_BUFFERED_INTERIM_SEC",
+                    value: String(format: "%.1f", values.interimSeconds)
+                ),
+            ])
+        }
+    }
+
+    func setPreviewBufferDelayMs(_ value: UInt64) {
+        settings.bufferDelayMs = value
+        persist("CODESCRIBE_BUFFER_DELAY_MS", String(value))
+    }
+
+    func setPreviewTypingCps(_ value: Float) {
+        settings.typingCps = value
+        persist("CODESCRIBE_TYPING_CPS", String(format: "%.1f", value))
+    }
+
+    func setPreviewEmitWordsMax(_ value: UInt64) {
+        settings.emitWordsMax = value
+        persist("CODESCRIBE_EMIT_WORDS_MAX", String(value))
+    }
+
+    func setPreviewInterimSeconds(_ value: Float) {
+        settings.bufferedInterimSec = value
+        persist("CODESCRIBE_BUFFERED_INTERIM_SEC", String(format: "%.1f", value))
     }
 
     // MARK: - STT engine / layered transcription (Engine panel controls)
@@ -669,6 +1205,16 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    private func persistMany(_ entries: [CsConfigEntry]) {
+        guard let engine else { return }
+        do {
+            try engine.updateConfigMany(entries: entries)
+            settings = engine.loadSettings()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
     // MARK: - Keys (Keychain-backed; secrets never read back)
 
     /// Friendly labels for the canonical Keychain accounts.
@@ -692,8 +1238,8 @@ final class SettingsViewModel: ObservableObject {
         settings.llmAssistiveProvider = id
         persist("LLM_ASSISTIVE_PROVIDER", id)
         // The stored model belonged to the previous provider; keeping it would make
-        // the first send hit a model the new provider doesn't serve (e.g. gpt-5.5 on
-        // Anthropic). Clear it so the provider default applies immediately, then
+        // the first send hit a model the new provider doesn't serve. Clear it so
+        // the provider default applies immediately, then
         // allow only a fresh discovery to re-anchor it. Any manual model edit
         // cancels this pending auto-selection.
         setLLMModel("", for: .assistive)
@@ -944,8 +1490,23 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Prompts (editable BASE prompts)
 
-    func formattingPrompt() -> String { engine?.getFormattingPrompt() ?? CsSettings.samplePrompt }
-    func assistivePrompt() -> String { engine?.getAssistivePrompt() ?? CsSettings.sampleAssistivePrompt }
+    func formattingPrompt() -> String { formattingPromptSnapshot().content }
+    func assistivePrompt() -> String { assistivePromptSnapshot().content }
+    func formattingPromptSnapshot() -> CsPromptSnapshot {
+        engine?.formattingPromptSnapshot() ?? .sampleFormatting
+    }
+    func formattingPromptSnapshot(level: FormattingPolicyOption) -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            return try engine.formattingPromptSnapshot(level: level.rawValue)
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
+    }
+    func assistivePromptSnapshot() -> CsPromptSnapshot {
+        engine?.assistivePromptSnapshot() ?? .sampleAssistive
+    }
     func defaultFormattingPrompt() -> String {
         engine?.defaultFormattingPrompt() ?? CsSettings.samplePrompt
     }
@@ -953,19 +1514,67 @@ final class SettingsViewModel: ObservableObject {
         engine?.defaultAssistivePrompt() ?? CsSettings.sampleAssistivePrompt
     }
 
-    func saveFormattingPrompt(_ content: String) {
-        do { try engine?.setFormattingPrompt(content: content) }
-        catch { lastError = String(describing: error) }
+    @discardableResult
+    func saveFormattingPrompt(_ content: String) -> CsPromptSnapshot? {
+        saveFormattingPrompt(.correction, content: content)
     }
 
-    func saveAssistivePrompt(_ content: String) {
-        do { try engine?.setAssistivePrompt(content: content) }
-        catch { lastError = String(describing: error) }
+    @discardableResult
+    func saveFormattingPrompt(
+        _ level: FormattingPolicyOption,
+        content: String
+    ) -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.setFormattingPrompt(level: level.rawValue, content: content)
+            return try engine.formattingPromptSnapshot(level: level.rawValue)
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
     }
 
-    func resetPromptsToDefaults() {
-        do { try engine?.resetPromptsToDefaults() }
-        catch { lastError = String(describing: error) }
+    @discardableResult
+    func saveAssistivePrompt(_ content: String) -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.setAssistivePrompt(content: content)
+            return engine.assistivePromptSnapshot()
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func restoreFormattingPromptToDefault() -> CsPromptSnapshot? {
+        restoreFormattingPromptToDefault(.correction)
+    }
+
+    @discardableResult
+    func restoreFormattingPromptToDefault(
+        _ level: FormattingPolicyOption
+    ) -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.restoreFormattingPromptToDefault(level: level.rawValue)
+            return try engine.formattingPromptSnapshot(level: level.rawValue)
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func restoreAssistivePromptToDefault() -> CsPromptSnapshot? {
+        guard let engine else { return nil }
+        do {
+            try engine.restoreAssistivePromptToDefault()
+            return engine.assistivePromptSnapshot()
+        } catch {
+            lastError = String(describing: error)
+            return nil
+        }
     }
 
     // MARK: - Preview seed
@@ -978,7 +1587,20 @@ final class SettingsViewModel: ObservableObject {
             permissionProbe: MockPermissionProbe(.allGranted),
             agentStatus: MockAgentStatusEngine(),
             mcpAdmin: MockMCPAdminEngine(),
-            hotkeys: MockHotkeysEngine()
+            hotkeys: MockHotkeysEngine(),
+            laneTruthProvider: { lane in
+                CsLaneTruthSnapshot(
+                    lane: lane,
+                    providerId: "openai-responses",
+                    endpoint: "https://api.openai.com/v1/responses",
+                    model: "gpt-5.2",
+                    keyAccount: "LLM_ASSISTIVE_API_KEY",
+                    keyPresent: true,
+                    accountAuth: false,
+                    available: true,
+                    unavailableReason: nil
+                )
+            }
         )
         model.section = section
         model.reloadMcpServers()

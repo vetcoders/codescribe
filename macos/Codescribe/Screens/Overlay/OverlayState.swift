@@ -14,11 +14,11 @@ import AppKit
 //                   preserve visible text and append the corrected fragment.
 //   on_final      → completed VAD-bounded utterance → commit + clear preview.
 //   on_vad_active → speech start/stop → drives the WaveformView pulse.
+//   on_audio_level → capture RMS per block → real waveform amplitude (U22;
+//                   closes the old AMPLITUDE GAP — ambient eq is now only the
+//                   fallback when no live level arrives).
 //   on_no_speech → dedicated `.noSpeech` outcome body (Close only).
 //   on_error     → transient toast.
-//
-// AMPLITUDE GAP unchanged: the FFI exposes no audio-level callback, so the
-// waveform is ambient (synthetic eq) and merely gated on VAD activity.
 
 // MARK: - Engine seam (orchestrator injects the real adapter in App.swift)
 
@@ -72,8 +72,49 @@ protocol DictationEngine: AnyObject {
     func initModel() async throws
     func isModelLoaded() -> Bool
     func isFormattingAvailable() -> Bool
-    func formatText(text: String, language: CsLanguage?) async throws -> String
+    func currentOverlayPolicy() -> OverlayPolicySnapshot?
+    func setAutoPasteEnabled(_ enabled: Bool)
+    func formatText(
+        text: String,
+        language: CsLanguage?,
+        level: FormattingPolicyOption
+    ) async throws -> String
+    func pasteText(text: String) async throws -> CsPasteOutcome
+    func copyTaggedTranscript(text: String) async throws
+    func pasteTargetAppName() async -> String?
     func transcribeFile(path: String) async throws -> CsTranscription
+}
+
+struct OverlayPolicySnapshot: Equatable {
+    let autoPasteEnabled: Bool
+    let autoFormatLevel: FormattingPolicyOption
+}
+
+enum OverlayActionPresentation {
+    static let manualFormatLevels = FormattingPolicyOption.editablePrompts
+    static let formatTitle = "Format"
+    static let formatHelp = "Format transcript once as Correction, Smart, or Max"
+    static let sendTitle = "To Agent"
+    static let sendHelp = "Send transcript to the agent"
+}
+
+struct OverlayInsertActionPresentation: Equatable {
+    let targetAppName: String?
+    let title: String
+    let help: String
+
+    init(targetAppName: String?) {
+        let normalized = targetAppName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = normalized.flatMap { $0.isEmpty ? nil : $0 }
+        self.targetAppName = target
+        if let target {
+            title = "Insert → \(target)"
+            help = "Insert at the cursor in \(target)"
+        } else {
+            title = "Insert"
+            help = "Insert at the cursor in the previous app"
+        }
+    }
 }
 
 /// State machine mirrored from the mock: live dictation, the finalized
@@ -98,6 +139,12 @@ final class OverlayState: ObservableObject {
     @Published var committedUtterances: [String] = [] // accumulated finals, one item per utterance
     @Published var formattedText: String = ""  // finalized transcript after stop
     @Published var vadActive: Bool = false     // drives the WaveformView pulse
+    /// Live capture level for the waveform. NOT @Published on purpose — the
+    /// waveform's TimelineView reads it every frame; see `AudioLevelMeter`.
+    let levelMeter = AudioLevelMeter()
+    /// Distinguishes a measured microphone feed from the explicit ambient
+    /// fallback used by legacy/disconnected engines before any RMS arrives.
+    @Published private(set) var hasMeasuredAudioLevel = false
     @Published var audioReady: Bool = false    // recorder confirmed; STT/VAD may still be warming
     @Published var warmingUp: Bool = false     // true after user intent, before audio/VAD proves life
     /// Stop was requested and we are awaiting the final transcript. Distinct from
@@ -109,6 +156,17 @@ final class OverlayState: ObservableObject {
     @Published var toast: String?              // transient error notice
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
+    @Published var formatFailureStatus: String?
+    /// Prompt-free policy snapshot from C02's persisted settings owner. These
+    /// values are replaced only by a fresh engine read, never by optimistic UI.
+    @Published private(set) var autoPasteEnabled = true
+    @Published private(set) var autoFormatLevel: FormattingPolicyOption = .correction
+    /// Assistive sessions never expose delivery controls. The controller owns
+    /// that authoritative session gate and updates this presentation fence.
+    @Published private(set) var autoPasteControlAvailable = true
+    /// Destination name latched once at overlay session entry. The action row
+    /// reads this snapshot; it never polls the bridge during rendering.
+    @Published private(set) var pasteTargetAppName: String?
     /// Final pass phase (AI formatting / authoritative assembly after stop).
     /// Set on `applySessionFinalised`, cleared on controller finish or reset.
     /// Drives "final pass" status while the user still sees the live assembly.
@@ -175,6 +233,14 @@ final class OverlayState: ObservableObject {
     /// lexicon v2 and quality analytics get the real misheard text, not only
     /// the (possibly formatted) delivered. Cleared on reset like deliveredText.
     private var sttRawText: String = ""
+    /// Canonical provenance for the text currently shown in FINAL. Starts from
+    /// persisted Auto Format truth and is replaced only by a successful manual
+    /// format. Revert restores the previous level together with the exact bytes.
+    private var qualityFormattingLevel: FormattingPolicyOption = .off
+    /// One-step manual-format undo. A successful changed result replaces this
+    /// source; failures, empty results, and identical no-ops leave it untouched.
+    private var preFormatText: String?
+    private var preFormatLevel: FormattingPolicyOption?
     /// Once a session is finalized (mode `.formatted` / Idle), the transcript is
     /// FROZEN. Late streaming events (Preview/Correction/UtteranceFinal/VAD) that the
     /// engine may still emit during/after teardown are DROPPED instead of mutating
@@ -190,17 +256,21 @@ final class OverlayState: ObservableObject {
     /// started/activity/stopped/finish arrives within `warmupWatchdogNanos`, the
     /// overlay dismisses itself instead of hanging on "starting" forever.
     private var warmupWatchdogTask: Task<Void, Never>?
+    private var pasteTargetRefreshTask: Task<Void, Never>?
     private static let warmupWatchdogNanos: UInt64 = 4_000_000_000
 
-    // MARK: Auto-hide after passive final (no Copy/Send action)
+    // MARK: Activity-anchored auto-hide for terminal outcomes
     private var autoHideTask: Task<Void, Never>?
-    /// 12 seconds. Rationale: typical short dictation result is 1–3 sentences.
-    /// At normal reading speed + reaction to act (Copy/Send/Close) this gives
-    /// comfortable view time without the overlay remaining "król puszczy" after
-    /// the user has moved attention elsewhere. No user-facing knob (per spec).
-    private static let autoHideDelayNanos: UInt64 = 12_000_000_000
+    private var autoHideDeadline: TimeInterval?
+    private var isPointerHovering = false
+    private let nowProvider: () -> TimeInterval
+    /// Single source of truth for the operator-dictated terminal lifetime.
+    /// Five seconds is the comfortable end of the requested 3–5 second range.
+    static let autoHideDelaySeconds: TimeInterval = 5
 
-    init() {}
+    init(nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.nowProvider = nowProvider
+    }
 
     func attach() {
         engine?.setListener(listener)
@@ -215,7 +285,8 @@ final class OverlayState: ObservableObject {
         guard mode == .listening else { return "Idle" }
         if isFinalPass { return "final pass" }
         if transcribing { return "transcribing" }
-        return warmingUp ? "starting" : "recording"
+        if warmingUp { return "starting" }
+        return hasMeasuredAudioLevel ? "recording" : "recording · ambient"
     }
     var statusColor: Color {
         switch mode {
@@ -306,6 +377,25 @@ final class OverlayState: ObservableObject {
             && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var canRevert: Bool {
+        preFormatText != nil && !isFormatting
+    }
+
+    var insertActionPresentation: OverlayInsertActionPresentation {
+        OverlayInsertActionPresentation(targetAppName: pasteTargetAppName)
+    }
+
+    var autoPasteAccessibilityValue: String {
+        autoPasteEnabled ? "On" : "Off"
+    }
+
+    var manualFormatHelp: String {
+        let automatic = autoFormatLevel == .off
+            ? "Auto Format is Off."
+            : "Auto Format is \(autoFormatLevel.visibleName)."
+        return "\(automatic) \(OverlayActionPresentation.formatHelp)."
+    }
+
     // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)
 
     /// Start mic dictation. Gated on `micPermissionGranted()`; requests access
@@ -336,6 +426,7 @@ final class OverlayState: ObservableObject {
         resetTranscript()
         formattedText = ""
         isFormatting = false
+        formatFailureStatus = nil
         errorMessage = nil
         recording = true
         do {
@@ -349,22 +440,60 @@ final class OverlayState: ObservableObject {
         }
     }
 
-    func formatTranscript() {
-        guard let engine, canFormat else { return }
+    func formatTranscript(level: FormattingPolicyOption) {
+        guard let engine,
+              canFormat,
+              OverlayActionPresentation.manualFormatLevels.contains(level) else { return }
         let source = formattedText
+        let sourceLevel = qualityFormattingLevel
         isFormatting = true
+        // Format deliberately suspends passive dismissal. Its result stays until
+        // another user activity explicitly starts a fresh countdown.
+        cancelAutoHide()
         Task { @MainActor in
             defer { self.isFormatting = false }
             do {
-                let formatted = try await engine.formatText(text: source, language: nil)
-                self.formattedText = formatted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? source : formatted
+                let formatted = try await engine.formatText(
+                    text: source,
+                    language: nil,
+                    level: level
+                )
+                let isUsableChange = !formatted
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty && formatted != source
+                if isUsableChange {
+                    self.preFormatText = source
+                    self.preFormatLevel = sourceLevel
+                    self.formattedText = formatted
+                    self.qualityFormattingLevel = level
+                }
+                self.formatFailureStatus = nil
                 self.mode = .formatted
                 self.cancelAutoHide()  // User acted (Format); do not auto-hide the result.
             } catch {
+                self.formattedText = source
+                self.formatFailureStatus = "raw — formatting failed"
+                self.mode = .formatted
+                self.cancelAutoHide()
                 self.errorMessage = "Couldn't format transcript: \(error)"
                 self.showToast("Couldn't format transcript")
             }
         }
+    }
+
+    /// Restore the exact source of the most recent successful changed format.
+    /// The slot is consumed once and this explicit user activity starts a fresh
+    /// terminal lifetime from the injected monotonic clock.
+    func revertFormat() {
+        guard !isFormatting, let source = preFormatText else { return }
+        let sourceLevel = preFormatLevel ?? .off
+        preFormatText = nil
+        preFormatLevel = nil
+        formattedText = source
+        qualityFormattingLevel = sourceLevel
+        formatFailureStatus = nil
+        mode = .formatted
+        restartAutoHideCountdown()
     }
 
     private func runStop() async {
@@ -374,6 +503,7 @@ final class OverlayState: ObservableObject {
         // instead of leaving the recording UI up while the final pass runs.
         transcribing = true
         warmingUp = false
+        levelMeter.reset()
         do {
             // The controller bridge returns "" here; the authoritative transcript
             // is the id-ordered assembly of `UtteranceFinal` events (see liveText).
@@ -397,9 +527,7 @@ final class OverlayState: ObservableObject {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(activeText, forType: .string)
-        cancelAutoHide()
-        // Per contract: after Copy the overlay hides (user acted; no linger).
-        onClose?()
+        restartAutoHideCountdown()
     }
 
     func sendToAgent() {
@@ -411,6 +539,60 @@ final class OverlayState: ObservableObject {
         // the cancel ensures timer is dead even if closure path changes.
     }
 
+    /// Caret-truth probe for the Insert self-paste guard. The overlay is a
+    /// non-activating panel that can become key WITHOUT the app being
+    /// frontmost (Spotlight-style), so a synthetic Cmd+V follows OUR key
+    /// window whenever a Codescribe text view holds the caret — the frontmost
+    /// app check on the Rust side cannot see that. Injectable so tests can
+    /// simulate both worlds.
+    var insertCaretInCodescribeProbe: () -> Bool = {
+        guard let keyWindow = NSApp.keyWindow else { return false }
+        return keyWindow.firstResponder is NSTextView
+    }
+
+    func pasteToPreviousApp() {
+        captureQualityIfEdited(action: "paste")
+        // Do not let the previous deadline fire while the async delivery is in
+        // flight. A successful or failed attempt gets a fresh full countdown.
+        cancelAutoHide()
+        let text = activeText
+        Task { @MainActor in
+            defer { self.restartAutoHideCountdown() }
+            do {
+                if self.insertCaretInCodescribeProbe() {
+                    // The caret sits inside Codescribe (e.g. the overlay's own
+                    // editable FINAL) — a synthetic Cmd+V would paste the
+                    // transcript right back into the overlay. Degrade to a
+                    // tagged clipboard copy and say so.
+                    try await engine?.copyTaggedTranscript(text: text)
+                    self.showToast("Caret is in Codescribe — copied with tags")
+                    return
+                }
+                let outcome = try await engine?.pasteText(text: text)
+                if outcome == .copiedToClipboard {
+                    self.showToast("Target app not focused — copied with tags")
+                }
+            } catch {
+                self.errorMessage = "Couldn't paste transcript: \(error)"
+                self.showToast("Couldn't paste transcript")
+            }
+        }
+    }
+
+    /// Persist through C02's single config seam, then immediately replace local
+    /// state with a fresh disk-backed snapshot. A rejected write therefore snaps
+    /// back to durable truth instead of leaving an optimistic switch behind.
+    func setAutoPasteEnabled(_ enabled: Bool) {
+        guard autoPasteControlAvailable, let engine else { return }
+        engine.setAutoPasteEnabled(enabled)
+        refreshOverlayPolicyTruth()
+        restartAutoHideCountdown()
+    }
+
+    func setAutoPasteControlAvailable(_ available: Bool) {
+        autoPasteControlAvailable = available
+    }
+
     func close() {
         // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
         captureQualityIfEdited(action: "close")
@@ -418,6 +600,7 @@ final class OverlayState: ObservableObject {
         cancelAutoHide()
         mockRevealTask?.cancel()
         toastTask?.cancel()
+        pasteTargetRefreshTask?.cancel()
         if recording, let engine {
             recording = false
             Task { @MainActor in _ = try? await engine.stopRecording() }
@@ -428,6 +611,56 @@ final class OverlayState: ObservableObject {
         transcribing = false
         isFinalPass = false
         onClose?()
+    }
+
+    private func refreshPasteTargetAppName(reset: Bool) {
+        pasteTargetRefreshTask?.cancel()
+        if reset {
+            pasteTargetAppName = nil
+        }
+        guard let engine else { return }
+        pasteTargetRefreshTask = Task { @MainActor [weak self] in
+            let target = await engine.pasteTargetAppName()
+            guard !Task.isCancelled, let self else { return }
+            self.pasteTargetAppName = OverlayInsertActionPresentation(
+                targetAppName: target
+            ).targetAppName
+        }
+    }
+
+    private func refreshOverlayPolicyTruth() {
+        guard let truth = engine?.currentOverlayPolicy() else { return }
+        autoPasteEnabled = truth.autoPasteEnabled
+        autoFormatLevel = truth.autoFormatLevel
+    }
+
+    /// TextEditor writes through this seam so only actual user edits — never a
+    /// programmatic format/final update — re-anchor the terminal lifetime.
+    func userEditedTranscript(_ text: String) {
+        formattedText = text
+        restartAutoHideCountdown()
+    }
+
+    /// AppKit reports window motion separately from SwiftUI content events.
+    func userDraggedOverlay() {
+        restartAutoHideCountdown()
+    }
+
+    /// A live edge-drag resize is activity and therefore receives a fresh window.
+    func userResizedOverlay() {
+        restartAutoHideCountdown()
+    }
+
+    /// Hover pauses dismissal entirely; leaving starts a new full five seconds.
+    func setPointerHovering(_ hovering: Bool) {
+        guard hovering != isPointerHovering else { return }
+        isPointerHovering = hovering
+        guard isTerminalMode else { return }
+        if hovering {
+            cancelAutoHide()
+        } else {
+            restartAutoHideCountdown()
+        }
     }
 
     // MARK: P0-D quality loop (user edits on FINAL → record + lexicon candidate)
@@ -447,10 +680,17 @@ final class OverlayState: ObservableObject {
         let rawForRecord = !sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? sttRawText
             : delivered
+        let formattingLevel = qualityFormattingLevel.rawValue
         Task.detached(priority: .utility) {
             // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
             // quality write is best-effort; never block UI action.
-            try? commitOverlayQualityRecord(rawText: rawForRecord, deliveredText: delivered, editedText: edited, action: action)
+            try? commitOverlayQualityRecord(
+                rawText: rawForRecord,
+                deliveredText: delivered,
+                editedText: edited,
+                action: action,
+                formattingLevel: formattingLevel
+            )
         }
     }
 
@@ -464,6 +704,8 @@ final class OverlayState: ObservableObject {
         mode = .listening
         warmingUp = true
         audioReady = false
+        hasMeasuredAudioLevel = false
+        levelMeter.reset()
         if !recording {
             resetTranscript()
             formattedText = ""
@@ -471,6 +713,8 @@ final class OverlayState: ObservableObject {
             errorMessage = nil
         }
         recording = true
+        refreshOverlayPolicyTruth()
+        refreshPasteTargetAppName(reset: true)
         onRecordingPreparing?()
         armWarmupWatchdog()
     }
@@ -483,14 +727,19 @@ final class OverlayState: ObservableObject {
         warmingUp = false
         audioReady = true
         if !recording {
+            hasMeasuredAudioLevel = false
+            levelMeter.reset()
             if liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 resetTranscript()
             }
             formattedText = ""
             isFormatting = false
+            formatFailureStatus = nil
             errorMessage = nil
         }
         recording = true
+        refreshOverlayPolicyTruth()
+        refreshPasteTargetAppName(reset: false)
         onRecordingStarted?()
     }
 
@@ -514,6 +763,8 @@ final class OverlayState: ObservableObject {
         cancelWarmupWatchdog()
         warmingUp = false
         transcribing = true
+        levelMeter.reset()
+        hasMeasuredAudioLevel = false
     }
 
     // MARK: Warmup watchdog (orphaned "starting" overlay recovery)
@@ -549,22 +800,53 @@ final class OverlayState: ObservableObject {
         onClose?()
     }
 
-    private func armAutoHideIfNeeded() {
-        guard mode == .formatted, !finalized /* still visible */ else { return }
-        cancelAutoHide()
-        autoHideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: OverlayState.autoHideDelayNanos)
-            guard !Task.isCancelled else { return }
-            // Only auto-dismiss if still in passive formatted state (no action taken).
-            if let self = self, self.mode == .formatted {
-                self.onClose?()
-            }
+    private var isTerminalMode: Bool {
+        mode == .formatted || mode == .noSpeech || mode == .error
+    }
+
+    private func restartAutoHideCountdown() {
+        guard isTerminalMode, !isPointerHovering else {
+            cancelAutoHide()
+            return
         }
+        cancelAutoHide()
+        autoHideDeadline = nowProvider() + OverlayState.autoHideDelaySeconds
+        scheduleAutoHideWake(after: OverlayState.autoHideDelaySeconds)
+    }
+
+    private func scheduleAutoHideWake(after delay: TimeInterval) {
+        let nanoseconds = UInt64(max(0, delay) * 1_000_000_000)
+        autoHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            self?.evaluateAutoHideDeadline(rescheduleIfEarly: true)
+        }
+    }
+
+    private func evaluateAutoHideDeadline(rescheduleIfEarly: Bool) {
+        autoHideTask = nil
+        guard isTerminalMode, !isPointerHovering, let deadline = autoHideDeadline else { return }
+        let remaining = deadline - nowProvider()
+        if remaining > 0 {
+            if rescheduleIfEarly { scheduleAutoHideWake(after: remaining) }
+            return
+        }
+        autoHideDeadline = nil
+        onClose?()
+    }
+
+    /// Deterministic XCTest seam: tests inject a monotonic clock, advance it,
+    /// and evaluate the same deadline logic without wall-clock sleeps.
+    func fireAutoHideNowForTests() {
+        autoHideTask?.cancel()
+        autoHideTask = nil
+        evaluateAutoHideDeadline(rescheduleIfEarly: false)
     }
 
     private func cancelAutoHide() {
         autoHideTask?.cancel()
         autoHideTask = nil
+        autoHideDeadline = nil
     }
 
     private func abortRecordingSession(resetTranscript shouldResetTranscript: Bool = false) {
@@ -578,6 +860,8 @@ final class OverlayState: ObservableObject {
         audioReady = false
         vadActive = false
         isFinalPass = false
+        levelMeter.reset()
+        hasMeasuredAudioLevel = false
         if shouldResetTranscript {
             resetTranscript()
         }
@@ -606,6 +890,7 @@ final class OverlayState: ObservableObject {
         mode = .error
         finalized = true
         showToast(toast)
+        restartAutoHideCountdown()
     }
 
     // MARK: Listener-driven mutations (called on the main actor by DictationListener)
@@ -737,6 +1022,7 @@ final class OverlayState: ObservableObject {
            formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             noSpeechNotice = message
             mode = .noSpeech
+            restartAutoHideCountdown()
         } else if mode == .noSpeech {
             noSpeechNotice = message
         }
@@ -755,6 +1041,7 @@ final class OverlayState: ObservableObject {
         // reassign `@Published` state (each write re-invalidates the TextEditor).
         guard !clean.isEmpty, clean != authoritativeFinalText else { return }
         authoritativeFinalText = clean
+        formatFailureStatus = nil
         if mode == .formatted, formattedText != clean {
             formattedText = clean
         } else if mode == .noSpeech {
@@ -762,6 +1049,7 @@ final class OverlayState: ObservableObject {
             // time): recover it as the normal FINAL rather than losing it.
             formattedText = clean
             mode = .formatted
+            restartAutoHideCountdown()
         }
         if deliveredText.isEmpty, !clean.isEmpty {
             deliveredText = clean
@@ -784,6 +1072,8 @@ final class OverlayState: ObservableObject {
         transcribing = false
         vadActive = false
         audioReady = false
+        levelMeter.reset()
+        hasMeasuredAudioLevel = false
         let shouldShowNoSpeechOutcome =
             pendingNoSpeechMessage != nil && usableAuthoritativeFinalText == nil
         if shouldShowNoSpeechOutcome {
@@ -805,6 +1095,7 @@ final class OverlayState: ObservableObject {
         } else {
             if formattedText != resolved { formattedText = resolved }
             if deliveredText.isEmpty { deliveredText = resolved }
+            qualityFormattingLevel = autoFormatLevel
             if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Best effort: if no STT raw from per-utterance finals yet, fall back to the
                 // resolved assembly (still the raw-streaming path, not AI formatted).
@@ -824,12 +1115,8 @@ final class OverlayState: ObservableObject {
         // don't re-fire and churn @Published tray state.
         if !wasFinalized { onRecordingStopped?() }
 
-        // Arm passive auto-hide for the result view when user takes no action.
-        // 12s chosen: enough to read 2–4 sentence transcript + decide (Copy/Send/Close),
-        // short enough not to linger as "król puszczy". Constant (no Settings knob).
-        if mode == .formatted {
-            armAutoHideIfNeeded()
-        }
+        // Every terminal outcome gets the same activity-anchored lifetime.
+        restartAutoHideCountdown()
     }
 
     private var usableAuthoritativeFinalText: String? {
@@ -845,11 +1132,18 @@ final class OverlayState: ObservableObject {
         authoritativeFinalText = nil
         deliveredText = ""
         sttRawText = ""
+        qualityFormattingLevel = .off
+        preFormatText = nil
+        preFormatLevel = nil
+        formatFailureStatus = nil
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false
         transcribing = false
         isFinalPass = false
+        // A hidden panel may not emit a pointer-exit event. Never carry a paused
+        // hover latch into the next recording session.
+        isPointerHovering = false
         cancelAutoHide()
     }
 
@@ -919,6 +1213,20 @@ final class OverlayState: ObservableObject {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// `on_audio_level` — capture RMS per audio block. Only feeds the meter
+    /// during live capture: once the session is transcribing/finalised the
+    /// waveform is frozen or gone, and a late block must not wiggle it.
+    func applyAudioLevel(_ rms: Float) {
+        guard recording,
+              (warmingUp || audioReady || vadActive),
+              !finalized,
+              !transcribing,
+              !isFinalPass,
+              mode == .listening else { return }
+        levelMeter.push(rms: rms)
+        if levelMeter.gain != nil { hasMeasuredAudioLevel = true }
     }
 
     func applyVad(_ active: Bool) {
@@ -1001,6 +1309,7 @@ final class OverlayState: ObservableObject {
 /// one `RecordingController`, one event stream, one Swift overlay surface.
 final class ControllerDictationEngine: DictationEngine {
     private let hotkeys = CodescribeHotkeys()
+    private let config = CodescribeConfig()
 
     func setListener(_ listener: CsTranscriptionListener) {
         hotkeys.setListener(listener: listener)
@@ -1020,8 +1329,38 @@ final class ControllerDictationEngine: DictationEngine {
     func isFormattingAvailable() -> Bool {
         hotkeys.isFormattingAvailable()
     }
-    func formatText(text: String, language: CsLanguage?) async throws -> String {
-        try await hotkeys.formatText(text: text, language: language)
+    func currentOverlayPolicy() -> OverlayPolicySnapshot? {
+        let toggles = config.trayToggles()
+        guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
+            return nil
+        }
+        return OverlayPolicySnapshot(
+            autoPasteEnabled: toggles.autoPasteEnabled,
+            autoFormatLevel: formatLevel
+        )
+    }
+    func setAutoPasteEnabled(_ enabled: Bool) {
+        _ = try? config.setAutoPasteEnabled(enabled: enabled)
+    }
+    func formatText(
+        text: String,
+        language: CsLanguage?,
+        level: FormattingPolicyOption
+    ) async throws -> String {
+        try await hotkeys.formatTextForLevel(
+            text: text,
+            language: language,
+            level: level.rawValue
+        )
+    }
+    func pasteText(text: String) async throws -> CsPasteOutcome {
+        try await hotkeys.pasteText(text: text)
+    }
+    func copyTaggedTranscript(text: String) async throws {
+        try await hotkeys.copyTextTagged(text: text)
+    }
+    func pasteTargetAppName() async -> String? {
+        await hotkeys.pasteTargetAppName()
     }
     func transcribeFile(path: String) async throws -> CsTranscription {
         throw NSError(domain: "CodescribeRedesign", code: 1, userInfo: [
@@ -1086,6 +1425,9 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func onVadActive(active: Bool) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyVad(active) } }
     }
+    func onAudioLevel(rms: Float) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyAudioLevel(rms) } }
+    }
     func onNoSpeech(reason: String) {
         // Route the reason into the dedicated no-speech OUTCOME (a persistent
         // body + Close), not a transient toast that fades and leaves an empty
@@ -1113,7 +1455,18 @@ final class MockDictationEngine: DictationEngine {
     func initModel() async throws {}
     func isModelLoaded() -> Bool { true }
     func isFormattingAvailable() -> Bool { false }
-    func formatText(text: String, language: CsLanguage?) async throws -> String { text }
+    func currentOverlayPolicy() -> OverlayPolicySnapshot? {
+        OverlayPolicySnapshot(autoPasteEnabled: true, autoFormatLevel: .correction)
+    }
+    func setAutoPasteEnabled(_ enabled: Bool) {}
+    func formatText(
+        text: String,
+        language: CsLanguage?,
+        level: FormattingPolicyOption
+    ) async throws -> String { text }
+    func pasteText(text: String) async throws -> CsPasteOutcome { .pasted }
+    func copyTaggedTranscript(text: String) async throws {}
+    func pasteTargetAppName() async -> String? { nil }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }

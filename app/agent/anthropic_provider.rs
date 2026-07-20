@@ -360,9 +360,17 @@ fn tool_result_block(tool_use_id: &str, content: &[ContentBlock], is_error: bool
                 }
             }
             ContentBlock::Image { data, media_type } => {
-                if !data.is_empty() {
-                    inner.push(image_block(data, media_type));
+                // Parity with the message-level guard: tool-result images
+                // restored from history (`data_omitted`) carry no bytes; an
+                // empty base64 payload would make Anthropic reject the whole
+                // request, so skip them loudly instead.
+                if data.is_empty() {
+                    warn!(
+                        "Skipping tool-result image block with no bytes (likely restored from history)"
+                    );
+                    continue;
                 }
+                inner.push(image_block(data, media_type));
             }
             ContentBlock::ImageAsset(asset) => {
                 inner.push(image_asset_block(asset)?);
@@ -1084,6 +1092,65 @@ mod tests {
         let blocks = message_content_blocks(&message).unwrap();
         assert_eq!(blocks[0]["content"][0]["type"], "image");
         assert_eq!(blocks[0]["content"][0]["source"]["type"], "base64");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn tool_result_data_omitted_image_is_skipped_not_sent_as_empty_base64() {
+        // D8: a tool-result image restored from history (`data_omitted`) has no
+        // bytes. It must be dropped from the request — never serialized as an
+        // empty base64 source — and the tool_result must stay valid via the
+        // text fallback. Parity with the OpenAI provider's empty-image guard.
+        let message = Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "toolu_restored".to_string(),
+                content: vec![ContentBlock::Image {
+                    data: vec![],
+                    media_type: "image/png".to_string(),
+                }],
+                is_error: false,
+            }],
+        );
+        let blocks = message_content_blocks(&message).unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        let inner = blocks[0]["content"]
+            .as_array()
+            .expect("tool_result content");
+        assert_eq!(inner.len(), 1, "empty image is replaced by text fallback");
+        assert_eq!(inner[0]["type"], "text");
+        assert_eq!(inner[0]["text"], "Tool executed successfully");
+    }
+
+    #[test]
+    fn request_body_loads_image_asset_from_disk_at_request_time() {
+        // D8: an ImageAsset (screenshot pipeline, C9) rides through
+        // build_request_body as base64 read from disk at request time — the
+        // asset reference itself never reaches the wire.
+        let asset = AgentAssetStore::save_image(b"asset bytes on disk", "image/png")
+            .expect("image asset should save");
+        let path = asset.path.clone();
+        let messages = vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text("see screenshot".to_string()),
+                ContentBlock::ImageAsset(asset),
+            ],
+        )];
+
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None)
+            .expect("request body should build");
+
+        let content = body["messages"][0]["content"]
+            .as_array()
+            .expect("user content array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(
+            content[1]["source"]["data"].as_str().unwrap(),
+            BASE64.encode(b"asset bytes on disk")
+        );
         std::fs::remove_file(path).ok();
     }
 

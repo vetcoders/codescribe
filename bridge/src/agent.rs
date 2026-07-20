@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ContentBlock, ImageAttachment, Message, Role, StreamOptions,
-    Thread, ThreadMessage, ThreadStore, ToolRegistry,
+    AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
+    ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolRegistry,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::llm::lane_truth::assistive_identity;
@@ -100,6 +100,13 @@ impl CodescribeAgent {
                 detail,
             },
         }
+    }
+
+    /// Generate an isolated one-shot title from raw first-turn text using the
+    /// formatting lane. The core call has its own 8-second timeout and never
+    /// participates in the assistive or formatting response chains.
+    pub async fn generate_thread_title(&self, text: String) -> Result<Option<String>, CsError> {
+        Ok(codescribe_core::llm::ai_formatting::generate_thread_title(&text).await?)
     }
 
     /// Stream one agent reply for `text` on the conversation identified by
@@ -237,7 +244,7 @@ impl CodescribeAgent {
         // purpose: its partial messages are discarded, so the thread on disk
         // keeps the last completed-turn state (today's only cancel trigger is
         // thread deletion, where persisting would resurrect the thread).
-        persist_thread(thread_id, messages).await;
+        deliver_completed_thread(thread_id, messages).await;
         Ok(final_text)
     }
 }
@@ -509,209 +516,54 @@ fn attachment_label(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-/// Persist (create or update) the thread identified by `thread_id` from the
-/// session's final `messages`. Mirrors the live app's `persist_runtime_thread`
-/// (app/controller/helpers.rs): load-or-build a `Thread`, refresh title/summary/
-/// messages, and save. Runs the blocking fs work on a blocking pool thread and
-/// swallows any error — persistence is best-effort.
-async fn persist_thread(thread_id: String, messages: Vec<Message>) {
-    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let store = ThreadStore::new()?;
-
+/// Deliver the completed composer turn through core's single durable gateway.
+/// Blocking filesystem work stays off the async executor and remains
+/// best-effort because the reply has already reached the user.
+async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<_>> {
         // `now` is sourced from the freshest message timestamp the session
         // stamped (`Some(Utc::now())` per turn), avoiding a direct `chrono`
         // dependency in the bridge crate. With nothing to anchor the thread to,
         // skip the write.
         let Some(now) = messages.iter().rev().find_map(|message| message.timestamp) else {
-            return Ok(());
+            return Ok(None);
         };
 
-        // Reflect the resolved assistive lane (fresh settings, Keychain-free)
-        // so persisted thread metadata matches what the send actually used.
         let config = codescribe_core::config::Config::load();
         let (provider, model) = assistive_identity(&config);
-        let provider = provider.as_str().to_string();
+        let persisted_messages = messages
+            .iter()
+            .map(|message| {
+                let mut persisted = ThreadMessage::from(message);
+                if message.timestamp.is_none() {
+                    persisted.timestamp = now;
+                }
+                persisted
+            })
+            .collect::<Vec<_>>();
 
-        let mut thread = store.load_thread(&thread_id).unwrap_or_else(|_| Thread {
-            id: thread_id.clone(),
-            created_at: now,
-            updated_at: now,
-            title: "Codescribe Agent Chat".to_string(),
-            title_is_custom: false,
+        let receipt = ThreadDeliveryGateway::new()?.deliver(ThreadDeliveryInput {
+            backend_id: thread_id,
+            messages: persisted_messages,
+            provider: provider.as_str().to_string(),
+            model,
+            source: ThreadDeliverySource::Composer,
             mode: "assistive".to_string(),
             tags: vec!["agent".to_string(), "overlay".to_string()],
-            notes: Vec::new(),
-            messages: Vec::new(),
-            summary: None,
-            total_tokens: None,
-            provider: provider.clone(),
-            model: model.clone(),
-        });
-
-        thread.updated_at = now;
-        // Never clobber a title the user set by hand from the rail.
-        if !thread.title_is_custom {
-            thread.title = derive_thread_title(&messages);
-        }
-        thread.summary = derive_thread_summary(&messages);
-        thread.messages = messages.iter().map(ThreadMessage::from).collect();
-        thread.provider = provider;
-        thread.model = model;
-
-        store.save_thread(&thread)?;
-        Ok(())
+            timestamp: now,
+        })?;
+        Ok(Some(receipt))
     })
     .await;
 
-    if let Ok(Err(error)) = result {
-        // Bridge crate has no logging dep; stderr keeps the best-effort failure
-        // visible without taking the reply down.
-        eprintln!("Failed to persist agent thread (best-effort): {error}");
-    }
-}
-
-/// First user message, boilerplate-stripped and trimmed to a title-length slice.
-///
-/// Every agent conversation is seeded with a pasted instruction preamble
-/// ("INSTRUKCJA UŻYTKOWNIKA: JESTEŚ AGENTEM…"), so a naive first-line title makes
-/// every thread read identically. We first try the newline-preserving raw text
-/// and skip leading instruction/header lines; only if the whole message looks
-/// like boilerplate do we fall back to the collapsed full text.
-fn derive_thread_title(messages: &[Message]) -> String {
-    let first_user = messages.iter().find(|message| message.role == Role::User);
-
-    let candidate = first_user
-        .and_then(raw_text_from_message)
-        .and_then(|raw| strip_boilerplate_title(&raw))
-        .or_else(|| first_user.and_then(extract_text_from_message))
-        .unwrap_or_else(|| "Codescribe Agent Chat".to_string());
-
-    let mut title = candidate.chars().take(72).collect::<String>();
-    if title.trim().is_empty() {
-        title = "Codescribe Agent Chat".to_string();
-    }
-    title
-}
-
-/// Newline-preserving flatten of a message's textual content (unlike
-/// `extract_text_from_message`, which collapses all whitespace). Lets the title
-/// heuristic reason about the first "real" line.
-fn raw_text_from_message(message: &Message) -> Option<String> {
-    let mut out = Vec::new();
-    for block in &message.content {
-        extract_text_from_block(block, &mut out);
-    }
-    let text = out.join("\n");
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
-}
-
-/// Known leading-boilerplate line prefixes, matched case-insensitively against
-/// the trimmed line. Pasted agent preambles open with one of these.
-const BOILERPLATE_LINE_PREFIXES: &[&str] = &[
-    "instrukcja",
-    "instruction",
-    "jesteś agentem",
-    "jestes agentem",
-    "you are an agent",
-    "system prompt",
-    "system:",
-];
-
-/// Drop leading instruction/header lines and return the first meaningful line,
-/// whitespace-normalized. Returns `None` when every line looks like boilerplate
-/// (the caller then falls back to the collapsed full text).
-fn strip_boilerplate_title(raw: &str) -> Option<String> {
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || is_boilerplate_line(trimmed) {
-            continue;
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            eprintln!("Failed to deliver agent thread (best-effort): {error}");
         }
-        let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !normalized.is_empty() {
-            return Some(normalized);
+        Err(error) => {
+            eprintln!("Agent thread delivery task failed (best-effort): {error}");
         }
-    }
-    None
-}
-
-/// A line is boilerplate when it opens with a known preamble prefix or reads as
-/// an all-caps header (letters present, none lowercase — e.g.
-/// "INSTRUKCJA UŻYTKOWNIKA:").
-fn is_boilerplate_line(line: &str) -> bool {
-    let lower = line.to_lowercase();
-    if BOILERPLATE_LINE_PREFIXES
-        .iter()
-        .any(|prefix| lower.starts_with(prefix))
-    {
-        return true;
-    }
-    is_all_caps_header(line)
-}
-
-/// True when the line has alphabetic characters and none of them are lowercase.
-fn is_all_caps_header(line: &str) -> bool {
-    let mut has_alpha = false;
-    for ch in line.chars() {
-        if ch.is_alphabetic() {
-            has_alpha = true;
-            if ch.is_lowercase() {
-                return false;
-            }
-        }
-    }
-    has_alpha
-}
-
-/// Latest assistant message, trimmed to a summary-length slice. Replica of
-/// `derive_thread_summary` in app/controller/helpers.rs.
-fn derive_thread_summary(messages: &[Message]) -> Option<String> {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.role == Role::Assistant)
-        .and_then(extract_text_from_message)
-        .map(|text| {
-            let mut clipped = text.chars().take(240).collect::<String>();
-            if clipped.is_empty() {
-                clipped = "Assistant response".to_string();
-            }
-            clipped
-        })
-}
-
-/// Flatten a message's textual content into a single normalized string. Replica
-/// of `extract_text_from_message` in app/controller/helpers.rs.
-fn extract_text_from_message(message: &Message) -> Option<String> {
-    let mut out = Vec::new();
-    for block in &message.content {
-        extract_text_from_block(block, &mut out);
-    }
-    let text = out.join(" ");
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-/// Collect text from a content block (recursing into tool results). Replica of
-/// `extract_text_from_block` in app/controller/helpers.rs.
-fn extract_text_from_block(block: &ContentBlock, out: &mut Vec<String>) {
-    match block {
-        ContentBlock::Text(text) if !text.trim().is_empty() => {
-            out.push(text.to_string());
-        }
-        ContentBlock::ToolResult { content, .. } => {
-            for nested in content {
-                extract_text_from_block(nested, out);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -786,43 +638,15 @@ mod tests {
         assert!(msg.contains("Too many"), "explains the cap: {msg}");
     }
 
-    fn user_message(text: &str) -> Message {
-        Message {
-            role: Role::User,
-            content: vec![ContentBlock::Text(text.to_string())],
-            timestamp: None,
-        }
-    }
-
-    #[test]
-    fn title_skips_boilerplate_preamble() {
-        let text = "INSTRUKCJA UŻYTKOWNIKA: JESTEŚ AGENTEM\n\nNapraw hang na starcie sesji";
-        let title = derive_thread_title(&[user_message(text)]);
-        assert_eq!(title, "Napraw hang na starcie sesji");
-    }
-
-    #[test]
-    fn title_keeps_plain_first_line() {
-        let title = derive_thread_title(&[user_message("Fix the rate limiter double-fire")]);
-        assert_eq!(title, "Fix the rate limiter double-fire");
-    }
-
-    #[test]
-    fn title_falls_back_when_all_boilerplate() {
-        // Single merged line: prefix-flagged, so stripping yields nothing and we
-        // fall back to the collapsed full text (never worse than before).
-        let text = "INSTRUKCJA: zrób coś";
-        let title = derive_thread_title(&[user_message(text)]);
-        assert_eq!(title, "INSTRUKCJA: zrób coś");
-    }
-
     // ── Turn cancellation (2.15) ─────────────────────────────────────────
 
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Duration;
 
-    use codescribe_core::agent::{AgentEvent, AgentProvider, ToolDefinition, ToolResultContent};
+    use codescribe_core::agent::{
+        AgentEvent, AgentProvider, ContentBlock, Role, ToolDefinition, ToolResultContent,
+    };
 
     /// Provider that replays one scripted event batch per `stream` call —
     /// the same shape core's session tests use, local to the bridge so these
@@ -895,18 +719,24 @@ mod tests {
     #[derive(Default)]
     struct RecordingListener {
         tool_started: AtomicBool,
+        text_done_count: AtomicUsize,
+        done_count: AtomicUsize,
         error_count: AtomicUsize,
     }
 
     impl CsAgentListener for RecordingListener {
         fn on_text_delta(&self, _delta: String) {}
-        fn on_text_done(&self, _text: String) {}
+        fn on_text_done(&self, _text: String) {
+            self.text_done_count.fetch_add(1, Ordering::SeqCst);
+        }
         fn on_reasoning_delta(&self, _delta: String) {}
         fn on_tool_executing(&self, _name: String, _id: String) {
             self.tool_started.store(true, Ordering::SeqCst);
         }
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
-        fn on_done(&self) {}
+        fn on_done(&self) {
+            self.done_count.fetch_add(1, Ordering::SeqCst);
+        }
         fn on_error(&self, _message: String) {
             self.error_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -1085,6 +915,21 @@ mod tests {
         assert!(
             msg.contains("cancelled"),
             "cancel surfaces as a readable cancellation: {msg}"
+        );
+        assert_eq!(
+            listener.text_done_count.load(Ordering::SeqCst),
+            0,
+            "a cancelled turn must not emit a successful final text"
+        );
+        assert_eq!(
+            listener.done_count.load(Ordering::SeqCst),
+            0,
+            "a cancelled turn must not emit the successful Done terminal"
+        );
+        assert_eq!(
+            listener.error_count.load(Ordering::SeqCst),
+            0,
+            "cancellation is returned once through the async result, not double-signalled"
         );
 
         // Wait well past the tool's own delay: the side effect must never fire

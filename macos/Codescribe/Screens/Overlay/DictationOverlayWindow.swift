@@ -11,9 +11,20 @@ import AppKit
 
 /// Borderless, non-activating panel that can still become key so the overlay's
 /// buttons (Copy / Send to Agent / Close) receive clicks without stealing app focus.
-final class FloatingOverlayPanel: NSPanel {
+final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
+    var onUserMove: (() -> Void)?
+    var onUserResize: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    func windowDidMove(_ notification: Notification) {
+        onUserMove?()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        onUserResize?()
+    }
 }
 
 /// Content container for the overlay panel. Its sole job is to keep the SwiftUI
@@ -58,9 +69,12 @@ enum DictationOverlayWindow {
     /// AND for every programmatic `setFrame` via `clamp(_:to:)` (AppKit does not
     /// apply `minSize` to programmatic frames).
     /// Height raised 250 → 300 so the live-transcript body keeps its reserved floor
-    /// (`DictationOverlayView.bodyMinHeight` = waveform block + ~2–3 transcript
+    /// (`DictationOverlayView.bodyMinHeight` = waveform block + ~3 transcript
     /// lines) without the content column overflowing the window and squaring the
-    /// glass corners. Width floor (320) is unchanged.
+    /// glass corners. U22 kept 300 in lockstep: the action row slimmed by ~16pt
+    /// and `bodyMinHeight` grew 114 → 130 by the same amount, so the chrome +
+    /// body sum is unchanged (and the view now carries a terminal window-frame
+    /// clip as the structural backstop). Width floor (320) is unchanged.
     static let minSize = NSSize(width: 320, height: 300)
     /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
     /// operator spec: the resting state is a horizontal bar (waveform + a few
@@ -110,6 +124,9 @@ enum DictationOverlayWindow {
             backing: .buffered,
             defer: false
         )
+        panel.delegate = panel
+        panel.onUserMove = { [weak state] in state?.userDraggedOverlay() }
+        panel.onUserResize = { [weak state] in state?.userResizedOverlay() }
         panel.contentView = OverlayContentContainer(hosting: hosting)
 
         // User-resizable: borderless windows still honour edge-drag resize when

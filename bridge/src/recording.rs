@@ -17,6 +17,7 @@ use codescribe_core::pipeline::contracts::{
     AnnotationKind, EngineEvent, EventSink, FileTranscriptionOptions, LayerSource, LayerSummary,
 };
 use codescribe_core::stt::whisper;
+use cpal::traits::{DeviceTrait, HostTrait};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -29,6 +30,114 @@ pub struct CsTranscription {
     pub text: String,
     /// Detected (or requested) language code, e.g. `"pl"` / `"en"`.
     pub language: String,
+}
+
+/// Live audio-input resolution used by Settings. `runtime_device` is resolved
+/// from the same cpal host and matching policy as `Recorder::start`: a
+/// configured exact/substring match wins, otherwise the current system default
+/// is the honest fallback. It is intentionally a snapshot, not a second store.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsAudioInputSnapshot {
+    pub devices: Vec<String>,
+    pub configured_device: Option<String>,
+    pub runtime_device: Option<String>,
+    pub configured_device_available: bool,
+    pub fallback_to_default: bool,
+    /// False when settings.json and the recorder's process-env selector differ.
+    /// The UI must then show the current runtime device, not the saved wish.
+    pub runtime_configuration_matches: bool,
+}
+
+fn normalized_device_name(device: Option<&str>) -> Option<String> {
+    device
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+fn device_is_available(configured_device: Option<&str>, devices: &[String]) -> bool {
+    let Some(configured_device) = normalized_device_name(configured_device) else {
+        return true;
+    };
+    let configured_lower = configured_device.to_lowercase();
+    devices.iter().any(|device| {
+        *device == configured_device || device.to_lowercase().contains(&configured_lower)
+    })
+}
+
+fn resolve_audio_input_state(
+    configured_device: Option<&str>,
+    devices: &[String],
+    default_device: Option<&str>,
+) -> (Option<String>, bool, bool) {
+    let configured_device = configured_device
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    let Some(configured_device) = configured_device else {
+        return (default_device.map(str::to_owned), true, false);
+    };
+
+    let configured_lower = configured_device.to_lowercase();
+    if let Some(device) = devices.iter().find(|device| {
+        *device == configured_device || device.to_lowercase().contains(&configured_lower)
+    }) {
+        return (Some(device.clone()), true, false);
+    }
+
+    (default_device.map(str::to_owned), false, true)
+}
+
+/// Enumerate live input hardware and resolve the effective recorder device.
+/// Failures cross the bridge as one `CsError::Recording` concern; no device
+/// names are persisted here.
+#[uniffi::export]
+pub fn audio_input_snapshot() -> Result<CsAudioInputSnapshot, CsError> {
+    let configured_device = codescribe_core::config::UserSettings::load().audio_input_device;
+    // Recorder::start reads this process value directly. It is the actual
+    // selector for the current app lifetime, while `configured_device` is the
+    // freshly-persisted choice for the next launch.
+    let runtime_preference =
+        normalized_device_name(std::env::var("AUDIO_INPUT_DEVICE").ok().as_deref());
+    let host = cpal::default_host();
+    let default_device = host
+        .default_input_device()
+        .and_then(|device| device.description().ok())
+        .map(|description| description.to_string());
+
+    let mut devices: Vec<String> = host
+        .input_devices()
+        .map_err(|error| CsError::Recording {
+            msg: format!("failed to enumerate audio input devices: {error}"),
+        })?
+        .filter_map(|device| device.description().ok())
+        .map(|description| description.to_string())
+        .collect();
+
+    if let Some(ref default_device) = default_device
+        && !devices.contains(default_device)
+    {
+        devices.push(default_device.clone());
+    }
+    devices.sort_unstable_by_key(|name| name.to_lowercase());
+    devices.dedup();
+
+    let (runtime_device, _, fallback_to_default) = resolve_audio_input_state(
+        runtime_preference.as_deref(),
+        &devices,
+        default_device.as_deref(),
+    );
+    let configured_device_available = device_is_available(configured_device.as_deref(), &devices);
+    let runtime_configuration_matches =
+        normalized_device_name(configured_device.as_deref()) == runtime_preference;
+
+    Ok(CsAudioInputSnapshot {
+        devices,
+        configured_device,
+        runtime_device,
+        configured_device_available,
+        fallback_to_default,
+        runtime_configuration_matches,
+    })
 }
 
 /// Bridge-safe source for bounded transcript replacement events.
@@ -144,6 +253,11 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// fire it once per dictation stop so the overlay FINAL matches delivery/Copy.
     fn on_final_transcript_ready(&self, text: String);
     fn on_vad_active(&self, active: bool);
+    /// Live microphone input level: RMS of one captured audio block (linear,
+    /// 0..~1). Fires continuously (~40–50 Hz) while a controller dictation
+    /// session records, so the overlay waveform can track the real voice.
+    /// Surfaces without a level meter may leave it a no-op.
+    fn on_audio_level(&self, rms: f32);
     fn on_no_speech(&self, reason: String);
     fn on_error(&self, message: String);
 }
@@ -635,6 +749,33 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    #[test]
+    fn audio_input_resolution_reports_live_match_and_unavailable_fallback() {
+        let devices = vec![
+            "MacBook Pro Microphone".to_string(),
+            "USB Studio Mic".to_string(),
+        ];
+
+        assert_eq!(
+            resolve_audio_input_state(Some("Studio Mic"), &devices, Some("MacBook Pro Microphone"),),
+            (Some("USB Studio Mic".to_string()), true, false)
+        );
+        assert_eq!(
+            resolve_audio_input_state(
+                Some("Unplugged Mic"),
+                &devices,
+                Some("MacBook Pro Microphone"),
+            ),
+            (Some("MacBook Pro Microphone".to_string()), false, true)
+        );
+        assert_eq!(
+            resolve_audio_input_state(None, &devices, Some("MacBook Pro Microphone")),
+            (Some("MacBook Pro Microphone".to_string()), true, false)
+        );
+        assert!(device_is_available(Some("Studio Mic"), &devices));
+        assert!(!device_is_available(Some("Unplugged Mic"), &devices));
+    }
+
     /// Captures the payload of the single listener call we assert on.
     #[derive(Default)]
     struct CapturingListener {
@@ -671,6 +812,7 @@ mod tests {
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}
+        fn on_audio_level(&self, _rms: f32) {}
         fn on_no_speech(&self, _reason: String) {}
         fn on_error(&self, _message: String) {}
     }

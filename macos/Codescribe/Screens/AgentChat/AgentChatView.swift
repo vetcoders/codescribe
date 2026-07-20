@@ -42,7 +42,9 @@ private struct ThreadDetail: View {
             header
             titleBar
             if let thread = store.currentThread {
-                MessageList(messages: thread.messages)
+                MessageList(messages: thread.messages) { messageID in
+                    store.toggleRenderMode(messageID: messageID, in: thread.id)
+                }
             } else {
                 Spacer()
             }
@@ -119,8 +121,9 @@ private struct ThreadDetail: View {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
-    // Live status: Idle (olive) → Thinking (amber) → Streaming (terracotta).
+    // Live status: Idle → Thinking → Streaming → Stopping.
     private var status: (label: String, color: Color) {
+        if store.isCancelling { return ("Stopping", CSColor.textFaintAlt) }
         if store.isStreaming { return ("Streaming", CSColor.terracottaLight) }
         if store.isThinking { return ("Thinking", CSColor.amber) }
         return ("Idle", CSColor.oliveLight)

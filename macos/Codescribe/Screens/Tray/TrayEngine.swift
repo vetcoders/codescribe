@@ -13,7 +13,7 @@ enum TrayIntent {
     case openChat      // bring up the Agent Chat window
 }
 
-/// The two fast config toggles surfaced in the tray, mapped to the core's
+/// The legacy fast config toggles surfaced in the tray, mapped to the core's
 /// router env keys consumed by `CodescribeConfig.updateConfig(key:value:)`.
 enum TrayQuickToggle {
     case showDockIcon
@@ -50,10 +50,16 @@ protocol TrayEngine: AnyObject {
     func currentToggles() -> (
         showDockIcon: Bool,
         overlayEnabled: Bool,
+        autoPasteEnabled: Bool,
+        autoFormatLevel: FormattingPolicyOption,
         notesMode: Bool,
         startInAssistive: Bool
     )?
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool)
+    /// Persist user-owned delivery/formatting policy. Callers always re-read
+    /// `currentToggles()` after these writes instead of assuming success.
+    func setAutoPasteEnabled(_ enabled: Bool)
+    func setAutoFormatLevel(_ level: FormattingPolicyOption)
     /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
     /// one atomic op. Returns whether the write persisted, so the UI never fakes
     /// success on a failed write.
@@ -78,6 +84,8 @@ final class MockTrayEngine: TrayEngine {
     var agentAvailable: Bool
     var showDockIcon: Bool
     var overlayEnabled: Bool
+    var autoPasteEnabled: Bool
+    var autoFormatLevel: FormattingPolicyOption
     var notesMode: Bool
     var startInAssistive: Bool
     var historyPath: String
@@ -87,6 +95,8 @@ final class MockTrayEngine: TrayEngine {
          agentAvailable: Bool = true,
          showDockIcon: Bool = true,
          overlayEnabled: Bool = false,
+         autoPasteEnabled: Bool = true,
+         autoFormatLevel: FormattingPolicyOption = .correction,
          notesMode: Bool = false,
          startInAssistive: Bool = false,
          historyPath: String = "/tmp/codescribe/history/2026-06-28-1422.md",
@@ -95,6 +105,8 @@ final class MockTrayEngine: TrayEngine {
         self.agentAvailable = agentAvailable
         self.showDockIcon = showDockIcon
         self.overlayEnabled = overlayEnabled
+        self.autoPasteEnabled = autoPasteEnabled
+        self.autoFormatLevel = autoFormatLevel
         self.notesMode = notesMode
         self.startInAssistive = startInAssistive
         self.historyPath = historyPath
@@ -110,10 +122,19 @@ final class MockTrayEngine: TrayEngine {
     func currentToggles() -> (
         showDockIcon: Bool,
         overlayEnabled: Bool,
+        autoPasteEnabled: Bool,
+        autoFormatLevel: FormattingPolicyOption,
         notesMode: Bool,
         startInAssistive: Bool
     )? {
-        (showDockIcon, overlayEnabled, notesMode, startInAssistive)
+        (
+            showDockIcon,
+            overlayEnabled,
+            autoPasteEnabled,
+            autoFormatLevel,
+            notesMode,
+            startInAssistive
+        )
     }
 
     func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool) {
@@ -122,6 +143,9 @@ final class MockTrayEngine: TrayEngine {
         case .transcriptionOverlay: overlayEnabled = enabled
         }
     }
+
+    func setAutoPasteEnabled(_ enabled: Bool) { autoPasteEnabled = enabled }
+    func setAutoFormatLevel(_ level: FormattingPolicyOption) { autoFormatLevel = level }
 
     func setNotesMode(_ enabled: Bool) -> Bool { notesMode = enabled; return true }
     func setStartInAssistive(_ enabled: Bool) -> Bool { startInAssistive = enabled; return true }

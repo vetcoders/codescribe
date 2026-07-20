@@ -55,24 +55,36 @@ struct ThreadRail: View {
             .padding(.top, 6)
             .padding(.bottom, 4)
 
-            // Thread list
+            // Thread list — search-filtered first, then grouped by recency
             ScrollView {
                 LazyVStack(spacing: 4) {
-                    ForEach(filteredThreads) { thread in
-                        ThreadRow(
-                            thread: thread,
-                            isActive: thread.id == store.selectedThreadID,
-                            isEditing: editingThreadID == thread.id,
-                            renameDraft: $renameDraft,
-                            onToggleFavorite: { store.toggleFavorite(thread) },
-                            onRequestDelete: { deleteCandidate = thread },
-                            onBeginRename: { beginRename(thread) },
-                            onCommitRename: { commitRename(thread) },
-                            onCancelRename: { cancelRename(thread) }
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if editingThreadID != thread.id { store.select(thread.id) }
+                    ForEach(sectionedThreads, id: \.section) { group in
+                        HStack {
+                            Text(group.section.title)
+                                .font(CSFont.mono(9, .semibold))
+                                .tracking(0.8)
+                                .foregroundStyle(CSColor.textFaintAlt)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 2)
+                        .padding(.top, 8)
+                        .padding(.bottom, 2)
+                        ForEach(group.threads) { thread in
+                            ThreadRow(
+                                thread: thread,
+                                isActive: thread.id == store.selectedThreadID,
+                                isEditing: editingThreadID == thread.id,
+                                renameDraft: $renameDraft,
+                                onToggleFavorite: { store.toggleFavorite(thread) },
+                                onRequestDelete: { deleteCandidate = thread },
+                                onBeginRename: { beginRename(thread) },
+                                onCommitRename: { commitRename(thread) },
+                                onCancelRename: { cancelRename(thread) }
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if editingThreadID != thread.id { store.select(thread.id) }
+                            }
                         }
                     }
                 }
@@ -140,6 +152,21 @@ struct ThreadRail: View {
         guard !q.isEmpty else { return store.threads }
         if store.usesRealThreadSearch { return store.threads }
         return store.threads.filter { $0.title.lowercased().contains(q) }
+    }
+
+    /// Groups the (already search-filtered) threads into recency sections,
+    /// preserving the store's updated-desc order inside each group. Local-only
+    /// drafts carry no `updatedAt` and group under Today.
+    private var sectionedThreads: [(section: ThreadSection, threads: [ChatThread])] {
+        let now = Date()
+        var groups: [ThreadSection: [ChatThread]] = [:]
+        for thread in filteredThreads {
+            groups[ThreadSection.section(for: thread.updatedAt ?? now, now: now), default: []]
+                .append(thread)
+        }
+        return ThreadSection.allCases.compactMap { section in
+            groups[section].map { (section, $0) }
+        }
     }
 
     // MARK: Rename (inline edit)
@@ -244,6 +271,93 @@ private struct ThreadRow: View {
             Button("Delete Thread", role: .destructive) {
                 onRequestDelete()
             }
+        }
+    }
+}
+
+// MARK: - Recency sections (pure, unit-tested)
+
+/// Time buckets for the rail's section headers, ordered newest-first.
+enum ThreadSection: CaseIterable, Hashable {
+    case today, yesterday, thisWeek, older
+
+    var title: String {
+        switch self {
+        case .today: "Today"
+        case .yesterday: "Yesterday"
+        case .thisWeek: "This week"
+        case .older: "Older"
+        }
+    }
+
+    /// Buckets by whole calendar days between `updatedAt` and `now`:
+    /// 0 → today, 1 → yesterday, 2–6 → this week, 7+ → older. Future dates
+    /// (clock skew) clamp to today.
+    static func section(
+        for updatedAt: Date, now: Date, calendar: Calendar = .current
+    ) -> ThreadSection {
+        let days = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: updatedAt),
+            to: calendar.startOfDay(for: now)
+        ).day ?? 0
+        switch days {
+        case ..<1: return .today
+        case 1: return .yesterday
+        case 2...6: return .thisWeek
+        default: return .older
+        }
+    }
+}
+
+// MARK: - Row metadata formatter (pure, unit-tested)
+
+enum ThreadRailMeta {
+    /// "relative time · model · tokens", skipping whatever is missing — nils
+    /// never leave dangling separators. All inputs absent → empty string.
+    static func drawerSubtitle(
+        model: String?,
+        tokens: UInt64?,
+        updatedAt: Date?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        var parts: [String] = []
+        if let updatedAt {
+            parts.append(relativeTime(updatedAt, now: now, calendar: calendar))
+        }
+        if let model, !model.isEmpty {
+            // "openai/gpt-5" → "gpt-5"; plain names pass through.
+            parts.append(String(model.split(separator: "/").last ?? Substring(model)))
+        }
+        if let tokens, tokens > 0 {
+            parts.append(tokenLabel(tokens))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// "today HH:mm" / "yesterday" / "MMM d" — same shape the rail always used.
+    private static func relativeTime(_ date: Date, now: Date, calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        switch ThreadSection.section(for: date, now: now, calendar: calendar) {
+        case .today:
+            formatter.dateFormat = "'today' HH:mm"
+        case .yesterday:
+            return "yesterday"
+        case .thisWeek, .older:
+            formatter.dateFormat = "MMM d"
+        }
+        return formatter.string(from: date)
+    }
+
+    private static func tokenLabel(_ tokens: UInt64) -> String {
+        switch tokens {
+        case ..<1_000: "\(tokens) tok"
+        case ..<1_000_000: String(format: "%.1fk tok", Double(tokens) / 1_000)
+        default: String(format: "%.1fM tok", Double(tokens) / 1_000_000)
         }
     }
 }

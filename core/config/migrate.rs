@@ -4,7 +4,7 @@
 //! macOS Keychain. This is an import path, not an ongoing precedence rule.
 
 use super::keychain;
-use super::settings::UserSettings;
+use super::settings::{FormattingPolicy, UserSettings};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
@@ -50,7 +50,10 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
         settings.llm_assistive_model = Some(v);
     }
     if let Some(v) = migrated_value(file_env, "FORMATTING_LEVEL") {
-        settings.formatting_level = Some(v);
+        match FormattingPolicy::parse(&v) {
+            Ok(policy) => settings.formatting_level = Some(policy.as_str().to_string()),
+            Err(error) => tracing::warn!("Migration: ignored invalid formatting policy: {error}"),
+        }
     }
     // Promoted fields (previously .env only)
     if let Some(v) = migrated_value(file_env, "LLM_FORMATTING_ENDPOINT") {
@@ -81,6 +84,12 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
     // Migrate boolean settings
     if let Some(v) = migrated_value(file_env, "AI_FORMATTING_ENABLED") {
         settings.ai_formatting_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
+    }
+    if let Some(v) = migrated_value(file_env, "AUTO_PASTE_ENABLED") {
+        settings.auto_paste_enabled = Some(matches!(
+            v.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on" | "enabled"
+        ));
     }
     if let Some(v) = migrated_value(file_env, "BEEP_ON_START") {
         settings.beep_on_start = Some(v == "1" || v.eq_ignore_ascii_case("true"));
@@ -296,6 +305,71 @@ mod tests {
         );
 
         remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn formatting_policy_env_migration_normalizes_aliases_and_preserves_correction_digest() {
+        use sha2::{Digest, Sha256};
+
+        let cases = [
+            ("off", Some("off")),
+            ("correction", Some("correction")),
+            ("smart", Some("smart")),
+            ("max", Some("max")),
+            ("raw", Some("off")),
+            ("medium", Some("correction")),
+            ("creative", Some("max")),
+            ("aggressive", None),
+        ];
+
+        for (input, expected) in cases {
+            let _tmp = setup_isolated_data_dir();
+            let correction_path = crate::config::prompts::get_formatting_prompt_path();
+            std::fs::create_dir_all(correction_path.parent().expect("prompt parent"))
+                .expect("create prompt directory");
+            let original = b"existing correction bytes\n\0tail\n";
+            std::fs::write(&correction_path, original).expect("seed correction prompt");
+            let before = format!("{:x}", Sha256::digest(original));
+
+            let mut file_env = HashMap::new();
+            file_env.insert("FORMATTING_LEVEL".to_string(), input.to_string());
+            migrate_if_needed(Some(&file_env));
+
+            assert_eq!(UserSettings::load().formatting_level.as_deref(), expected);
+            for _probe in 0..3 {
+                let snapshot = crate::config::prompts::prompt_snapshot(
+                    crate::config::prompts::PromptKind::Formatting,
+                );
+                assert_eq!(snapshot.content.as_bytes(), original);
+            }
+            let after = format!(
+                "{:x}",
+                Sha256::digest(std::fs::read(&correction_path).expect("read correction prompt"))
+            );
+            assert_eq!(
+                after, before,
+                "migration changed formatting.txt for {input}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn auto_paste_env_migration_preserves_explicit_policy() {
+        for (input, expected) in [("0", false), ("1", true), ("false", false), ("true", true)] {
+            let _tmp = setup_isolated_data_dir();
+            let mut file_env = HashMap::new();
+            file_env.insert("AUTO_PASTE_ENABLED".to_string(), input.to_string());
+
+            migrate_if_needed(Some(&file_env));
+
+            assert_eq!(
+                UserSettings::load().auto_paste_enabled,
+                Some(expected),
+                "input={input}"
+            );
+        }
     }
 
     #[test]

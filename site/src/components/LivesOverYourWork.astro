@@ -1,0 +1,74 @@
+---
+import { asset } from '../lib/asset';
+---
+
+<section class="section lives" data-screen-label="Over your work" aria-labelledby="lives-title">
+  <div class="container">
+    <div class="head">
+      <p class="eyebrow">NOT A WINDOW YOU SWITCH TO</p>
+      <h2 id="lives-title">It lives over your work.</h2>
+      <p class="sub">
+        Summon the overlay with a hotkey on top of whatever app has focus — your
+        editor, the browser, TextEdit. Speak, and the result lands right where
+        you're working.
+      </p>
+    </div>
+    <div class="frame" data-reveal>
+      <img
+        src={asset('shots/overlay-final-transparent.webp')}
+        width="1330"
+        height="908"
+        loading="lazy"
+        decoding="async"
+        alt="codescribe dictation overlay — final transcript"
+      />
+    </div>
+    <div class="meta-row">
+      <span>· global hotkeys</span>
+      <span>· frontmost-app aware</span>
+      <span>· pastes into focus</span>
+      <span>· a real macOS overlay</span>
+    </div>
+  </div>
+</section>
+
+<style>
+  .lives {
+    padding: 120px 24px;
+    background: radial-gradient(70% 100% at 50% 0%, rgba(217, 119, 87, 0.07), transparent 60%);
+  }
+  .container { max-width: 1080px; }
+  .head {
+    text-align: center;
+    margin-bottom: 46px;
+  }
+  h2 {
+    font: 700 clamp(32px, 5vw, 50px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 14px;
+    color: var(--ink);
+  }
+  .sub {
+    font: 400 16px / 1.55 var(--font-display);
+    color: var(--muted-2);
+    max-width: 520px;
+    margin: 0 auto;
+  }
+  .frame {
+    border: 1px solid var(--stroke-2);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 40px 90px rgba(0, 0, 0, 0.6);
+    animation: floatIn 0.6s ease both;
+    max-width: 800px;
+    margin: 0 auto;
+  }
+  .frame img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  @media (max-width: 480px) {
+    .lives { padding: 72px 20px; }
+  }
+</style>

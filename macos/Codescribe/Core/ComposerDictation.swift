@@ -184,6 +184,7 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
         publishFinalPreview(text)
     }
     func onVadActive(active: Bool) {}
+    func onAudioLevel(rms: Float) {}
     func onNoSpeech(reason: String) {
         dictationLog.info("composer dictation: no speech (\(reason, privacy: .public))")
     }

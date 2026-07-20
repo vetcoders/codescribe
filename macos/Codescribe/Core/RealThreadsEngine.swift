@@ -69,32 +69,30 @@ final class RealThreadsEngine: ChatThreadsProviding {
         (try? threads.renameThread(id: backendId, title: title)) ?? false
     }
 
+    func setGeneratedTitle(backendId: String, title: String) -> Bool {
+        (try? threads.setGeneratedTitle(id: backendId, title: title)) ?? false
+    }
+
     func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? {
         try? threads.exportThreadMarkdown(id: backendId, assistantOnly: assistantOnly)
     }
 
     private static func thread(from summary: CsThreadSummary) -> ChatThread {
+        let updatedAt = Date(timeIntervalSince1970: Double(summary.updatedAtMs) / 1000.0)
         var thread = ChatThread(
             title: summary.title.isEmpty ? "Untitled" : summary.title,
-            meta: metaString(updatedAtMs: summary.updatedAtMs),
+            meta: ThreadRailMeta.drawerSubtitle(
+                model: summary.model,
+                tokens: summary.totalTokens,
+                updatedAt: updatedAt
+            ),
             isFavorite: summary.isFavorite
         )
         thread.backendId = summary.id
+        thread.updatedAt = updatedAt
+        thread.model = summary.model
+        thread.totalTokens = summary.totalTokens
         return thread
-    }
-
-    /// "today HH:mm" / "yesterday" / "MMM d" from an epoch-millis timestamp.
-    private static func metaString(updatedAtMs: Int64) -> String {
-        let date = Date(timeIntervalSince1970: Double(updatedAtMs) / 1000.0)
-        let formatter = DateFormatter()
-        if Calendar.current.isDateInToday(date) {
-            formatter.dateFormat = "'today' HH:mm"
-        } else if Calendar.current.isDateInYesterday(date) {
-            formatter.dateFormat = "'yesterday'"
-        } else {
-            formatter.dateFormat = "MMM d"
-        }
-        return formatter.string(from: date)
     }
 
     private static func toolActivityMessage(

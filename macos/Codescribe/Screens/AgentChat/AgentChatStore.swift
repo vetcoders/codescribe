@@ -13,9 +13,10 @@ private let attachLog = Logger(
 // This screen is backed by the real codescribe UniFFI bridge when constructed
 // from AppModel: `RealChatEngine` streams assistant deltas / tool events and
 // `RealThreadsEngine` reads persisted ThreadStore entries. The #Preview still
-// uses local mock data. Known remaining gaps: attachments are not wired, restored
-// structured tool/reasoning payloads are flattened by the thread adapter, and
-// composer shortcuts are still simplified.
+// uses local mock data. Attachments stage through the composer (picker, drag &
+// drop, ⌘V paste) into `pendingAttachments` and ride `send()` to the bridge.
+// Known remaining gap: restored structured tool/reasoning payloads are
+// flattened by the thread adapter.
 
 // MARK: - Engine seam (W2-01 injects the real adapter)
 
@@ -30,6 +31,9 @@ protocol AgentChatEngine: AnyObject {
     /// `nil` when a send can proceed. Names the missing lane/endpoint/key so
     /// the chat renders honest guidance instead of a generic "add an API key".
     func availabilityDetail() -> String?
+    /// Generate one isolated title from the raw first textual turn. This is a
+    /// sibling request to the assistive stream and carries no conversation state.
+    func generateThreadTitle(_ text: String) async throws -> String?
     /// Streams a real assistant reply. Callbacks fire on the main actor as tokens
     /// arrive; returns the final assembled text.
     ///
@@ -51,10 +55,36 @@ protocol AgentChatEngine: AnyObject {
     /// generated UniFFI bindings poll the Rust future to completion, so without
     /// this call the agent keeps executing tools (typing/clipboard/fs) after a
     /// "cancelled" turn.
-    func cancelReply(threadId: String)
+    @discardableResult
+    func cancelReply(threadId: String) -> Bool
+}
+
+/// Source-specific adapter for hotkey/voice turns owned by the shared controller
+/// runtime. Kept separate from `AgentChatEngine`, whose registry owns composer
+/// sends, so the single Stop action cannot cancel through the wrong backend.
+protocol VoiceTurnCancelling: AnyObject {
+    @discardableResult
+    func cancelVoiceTurn(threadId: String) -> Bool
 }
 
 // MARK: - Models
+
+enum ComposerTurnPhase: Equatable {
+    case thinking
+    case streaming
+    case cancelling
+}
+
+/// The single composer-originated turn owned by the Swift UI. The local thread
+/// id targets the bubble/task; the backend id is the exact Rust cancellation
+/// key. `id` prevents a draining cancelled task from clearing a newer send.
+struct ActiveComposerTurn: Equatable {
+    let id: UUID
+    let threadID: UUID
+    let backendThreadID: String
+    let assistantMessageID: UUID
+    var phase: ComposerTurnPhase
+}
 
 enum ChatRole {
     case you
@@ -62,10 +92,24 @@ enum ChatRole {
     case assistant
 }
 
+/// How an assistant bubble renders its body. `raw` (mono plain — exactly what
+/// streamed) is the DEFAULT per the operator's C2b decision: stream and settled
+/// turn look identical, rich markdown/highlight is per-bubble opt-in.
+enum MessageRenderMode: Equatable {
+    case raw
+    case rich
+
+    /// Pure toggle used by the meta-row raw↔rich button (XCTest-covered).
+    static func nextRenderMode(after mode: MessageRenderMode) -> MessageRenderMode {
+        mode == .raw ? .rich : .raw
+    }
+}
+
 enum ToolLineState: Hashable {
     case running
     case succeeded
     case failed
+    case cancelled
     case unknown
 }
 
@@ -110,6 +154,18 @@ struct ChatMessage: Identifiable {
     /// carries image blocks but not original file names.
     var attachments: [MessageAttachment] = []
 
+    // Assistive wire split (U17). For a voice-assistive user turn the engine
+    // sends a fixed prompt skeleton to the LLM; the bubble must show the spoken
+    // instruction, not the skeleton. `text` holds the display text; the fields
+    // below carry the rest of the wire truth (nil for composer/plain turns).
+    /// Full prompt as sent to the model ("Copy full prompt" / debug). Non-nil
+    /// only when `text` was rewritten from an assistive skeleton.
+    var wireText: String? = nil
+    /// ZAZNACZONY_TEKST captured with the turn, shown behind the context chip.
+    var contextSelection: String? = nil
+    /// Frontmost app from the KONTEKST section, shown behind the context chip.
+    var contextApp: String? = nil
+
     // Tool-activity turn
     var toolTitle: String = ""        // "What I checked · 2 tools"
     var toolLines: [ToolLine] = []
@@ -118,7 +174,9 @@ struct ChatMessage: Identifiable {
     var reasonedSeconds: Double? = nil
     var isThinking: Bool = false      // pre-reply "thinking…" state
     var isStreaming: Bool = false     // word-reveal in progress (shows caret)
+    var wasStopped: Bool = false      // cancelled terminal; partial text remains intact
     var reasoning: String = ""        // streamed model reasoning, rendered separately
+    var renderMode: MessageRenderMode = .raw  // raw default (C2b); rich = opt-in
 }
 
 /// An image the user staged in the composer but has not sent yet. Referenced by
@@ -164,12 +222,15 @@ struct MessageAttachment: Identifiable, Hashable {
 struct ChatThread: Identifiable {
     let id = UUID()
     var title: String
-    var meta: String        // mono subtitle, e.g. "active · restored" / "today · 18:40"
+    var meta: String        // mono subtitle, e.g. "active · restored" / "today 18:40 · gpt-5 · 1.2k tok"
     var isRestored: Bool = false
     var isFavorite: Bool = false
     var backendId: String? = nil      // codescribe ThreadStore id (nil = local-only, not yet persisted)
     var messagesLoaded: Bool = false  // lazy-load guard for persisted threads
     var messages: [ChatMessage] = []
+    var updatedAt: Date? = nil        // nil (local-only draft) groups under Today
+    var model: String? = nil
+    var totalTokens: UInt64? = nil
 }
 
 // MARK: - Threads provider (read-only access to persisted codescribe threads)
@@ -186,6 +247,10 @@ protocol ChatThreadsProviding: AnyObject {
     /// Rename a persisted thread; the core marks the title user-custom so
     /// auto-titling won't overwrite it. Returns `false` on failure / no such thread.
     func renameThread(backendId: String, title: String) -> Bool
+    /// Persist a generated title without overriding a user-custom title.
+    /// Returns `false` while the first turn has not created the thread on disk,
+    /// when the user already owns the title, or on persistence failure.
+    func setGeneratedTitle(backendId: String, title: String) -> Bool
     /// Export a persisted thread to a Markdown file under
     /// `~/.codescribe/transcriptions/YYYY-MM-DD/`. Returns the absolute path of the
     /// written file, or `nil` on failure. `assistantOnly` keeps only assistant turns.
@@ -221,6 +286,9 @@ final class AgentChatStore: ObservableObject {
     @Published var threads: [ChatThread]
     @Published var selectedThreadID: UUID?
     @Published var draft: String = ""
+    /// Monotonic UI command consumed by the composer. It carries no text and
+    /// deliberately does not mutate the selected thread or staged attachments.
+    @Published private(set) var composerFocusRequest: UInt64 = 0
     @Published private(set) var dictationPreview: String = ""
 
     /// Images staged in the composer for the next message. Cleared when the
@@ -247,6 +315,10 @@ final class AgentChatStore: ObservableObject {
 
     /// Toggle the composer voice note (start ↔ stop-and-insert).
     func toggleDictation() { dictation?.toggle() }
+
+    func requestComposerFocus() {
+        composerFocusRequest &+= 1
+    }
 
     /// Set by the real adapter as the dictation session transitions. No-op-safe
     /// when no adapter is wired.
@@ -301,6 +373,9 @@ final class AgentChatStore: ObservableObject {
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 
+    /// Exactly one composer send may own the composer-side cancellation path.
+    @Published private(set) var activeComposerTurn: ActiveComposerTurn?
+
     /// Active voice-assistive turn being streamed from the core runtime (hotkey /
     /// hands-off), NOT the composer. `nil` when no voice reply is in flight. The
     /// core owns the provider call + disk persistence for this turn; the store
@@ -309,18 +384,50 @@ final class AgentChatStore: ObservableObject {
     private var voiceTurnThreadID: UUID?
     private var voiceAssistantID: UUID?
     private var voiceTurnStartedAt: Date?
+    @Published private(set) var voiceTurnPhase: ComposerTurnPhase?
+    weak var voiceTurnCanceller: VoiceTurnCancelling?
 
     /// In-flight `send()` streaming tasks keyed by thread. Tracked so deleting a
     /// thread can cancel its running reply — otherwise the task's post-stream
     /// `refreshThreads` (plus the agent's best-effort re-persist) would resurrect
     /// the just-deleted thread.
-    private var inFlightSends: [UUID: Task<Void, Never>] = [:]
+    private struct InFlightSend {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+
+    private var inFlightSends: [UUID: InFlightSend] = [:]
+
+    /// Bookkeeping for the one title request allowed on a first textual turn,
+    /// regardless of source: the composer `send()` and the voice ingest path
+    /// (`ingestVoiceTurn` → `ingestVoiceDone`/`Error`/`Cancelled`) share this
+    /// coordinator. MainActor serialization makes the turn/title completion race
+    /// explicit: whichever result lands first updates this state, and the
+    /// turn-side settlement flushes at most one queued write before refreshing
+    /// the rail.
+    private struct FirstTurnTitleState {
+        let backendThreadID: String
+        let generationID: UUID
+        let originalTitle: String
+        var streamCompleted = false
+        var generationFinished = false
+        var pendingGeneratedTitle: String?
+        var pendingCustomTitle: String?
+    }
+
+    private var firstTurnTitleStates: [UUID: FirstTurnTitleState] = [:]
+    private var titleGenerationTasks: [UUID: Task<Void, Never>] = [:]
+    /// Local authority marker used to reject a late generated result even when
+    /// the first disk persist and a manual rename interleave.
+    private var customTitleThreadIDs: Set<UUID> = []
 
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
-         threads: [ChatThread]? = nil) {
+         threads: [ChatThread]? = nil,
+         voiceTurnCanceller: VoiceTurnCancelling? = nil) {
         self.engine = engine
         self.threadsProvider = threadsProvider
+        self.voiceTurnCanceller = voiceTurnCanceller
 
         let seeded: [ChatThread]
         if let threads {
@@ -354,6 +461,21 @@ final class AgentChatStore: ObservableObject {
     var isStreaming: Bool {
         currentThread?.messages.last { $0.role == .assistant }?.isStreaming ?? false
     }
+
+    /// Active phase for the selected thread only. The composer keeps consuming
+    /// this established projection, while source-specific cancellation stays
+    /// behind the composer engine or voice adapter.
+    var selectedComposerTurnPhase: ComposerTurnPhase? {
+        if let turn = activeComposerTurn, turn.threadID == selectedThreadID {
+            return turn.phase
+        }
+        if voiceTurnThreadID == selectedThreadID {
+            return voiceTurnPhase
+        }
+        return nil
+    }
+
+    var isCancelling: Bool { selectedComposerTurnPhase == .cancelling }
 
     // MARK: Thread ops
 
@@ -411,9 +533,25 @@ final class AgentChatStore: ObservableObject {
         guard !trimmed.isEmpty, trimmed != thread.title,
               let ti = threads.firstIndex(where: { $0.id == thread.id }) else { return }
         if let backendId = thread.backendId {
-            guard threadsProvider?.renameThread(backendId: backendId, title: trimmed) == true else { return }
+            if threadsProvider?.renameThread(backendId: backendId, title: trimmed) != true {
+                guard queueCustomTitle(trimmed, for: thread.id, backendThreadID: backendId) else { return }
+            }
+        }
+        customTitleThreadIDs.insert(thread.id)
+        if var state = firstTurnTitleStates[thread.id] {
+            state.pendingGeneratedTitle = nil
+            firstTurnTitleStates[thread.id] = state
         }
         threads[ti].title = trimmed
+    }
+
+    /// Flip one bubble between raw mono and rich markdown (meta-row toggle).
+    /// Per-message, in-memory only; deliberately does NOT touch the fields the
+    /// scroll signature reads, so a toggle never auto-scrolls the list.
+    func toggleRenderMode(messageID: UUID, in threadID: UUID) {
+        update(messageID, in: threadID) {
+            $0.renderMode = MessageRenderMode.nextRenderMode(after: $0.renderMode)
+        }
     }
 
     /// Export a thread to a Markdown transcript on disk, returning the file path
@@ -426,18 +564,31 @@ final class AgentChatStore: ObservableObject {
 
     func delete(_ thread: ChatThread) {
         if let backendId = thread.backendId {
-            guard threadsProvider?.deleteThread(backendId: backendId) == true else { return }
+            let deleted = threadsProvider?.deleteThread(backendId: backendId) == true
+            // A freshly minted backend id does not exist on disk until the
+            // first stream returns. In that one known race, local delete still
+            // wins and the existing engine cancellation prevents persistence.
+            guard deleted || firstTurnTitleStates[thread.id] != nil else { return }
+            // The attachment sidecar is written before the first stream starts,
+            // so the missing-file race still has local metadata to remove.
             removePersistedAttachmentMetadata(for: backendId)
         }
+        titleGenerationTasks[thread.id]?.cancel()
+        titleGenerationTasks[thread.id] = nil
+        firstTurnTitleStates[thread.id] = nil
+        customTitleThreadIDs.remove(thread.id)
         // Cancel any in-flight reply for this thread so its post-stream refresh
         // can't re-list (and the caret/finalize can't mutate) a deleted thread.
         // Swift-task cancel first (so the awaiting send sees isCancelled and
         // stays silent), then the engine-side cancel, which actually aborts the
         // Rust turn — stopping tool side effects, not just the UI updates.
-        inFlightSends[thread.id]?.cancel()
+        inFlightSends[thread.id]?.task.cancel()
         inFlightSends[thread.id] = nil
         if let backendId = thread.backendId {
-            engine?.cancelReply(threadId: backendId)
+            _ = engine?.cancelReply(threadId: backendId)
+        }
+        if activeComposerTurn?.threadID == thread.id {
+            activeComposerTurn = nil
         }
         threads.removeAll { $0.id == thread.id }
         if selectedThreadID == thread.id {
@@ -455,10 +606,13 @@ final class AgentChatStore: ObservableObject {
               let ti = threads.firstIndex(where: { $0.id == id }),
               let backendId = threads[ti].backendId,
               !threads[ti].messagesLoaded else { return }
+        // Persisted user turns carry the wire skeleton (disk keeps the LLM
+        // truth); rewrite them for display so restored threads render the
+        // spoken instruction, exactly like a live turn.
         threads[ti].messages = applyingPersistedAttachmentMetadata(
             to: provider.loadMessages(backendId: backendId),
             backendId: backendId
-        )
+        ).map(AssistivePromptParser.presented)
         threads[ti].messagesLoaded = true
     }
 
@@ -496,12 +650,16 @@ final class AgentChatStore: ObservableObject {
     /// True when there is something to send: text, at least one staged image, or
     /// both. Drives the send button's enabled state.
     var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty
+        activeComposerTurn == nil
+            && !(voiceTurnThreadID == selectedThreadID && voiceTurnPhase != nil)
+            && (!draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty)
     }
 
     // MARK: Send (real single-shot FFI round-trip)
 
     func send() {
+        guard activeComposerTurn == nil,
+              !(voiceTurnThreadID == selectedThreadID && voiceTurnPhase != nil) else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = pendingAttachments
         let attachmentPaths = staged.map { $0.url.path }
@@ -522,8 +680,25 @@ final class AgentChatStore: ObservableObject {
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
+        let turnID = UUID()
+        activeComposerTurn = ActiveComposerTurn(
+            id: turnID,
+            threadID: threadID,
+            backendThreadID: backendId,
+            assistantMessageID: assistantID,
+            phase: .thinking
+        )
+        if userTurnIndex == 0, !text.isEmpty, engine != nil {
+            prepareFirstTurnTitle(for: threadID, backendThreadID: backendId)
+        }
         let sendTask = Task { @MainActor in
-            defer { inFlightSends[threadID] = nil }
+            var titleStreamSettled = false
+            defer {
+                if !titleStreamSettled {
+                    settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+                }
+                releaseComposerTurn(turnID, in: threadID)
+            }
             guard let engine else {
                 finish(assistantID, in: threadID,
                        text: "Engine not wired yet.")
@@ -532,8 +707,17 @@ final class AgentChatStore: ObservableObject {
             // Graceful unavailable path — the engine reports WHAT is missing
             // (lane, endpoint or key) so the reply is actionable, not generic.
             if let unavailableDetail = engine.availabilityDetail() {
+                finishTitleGenerationWithoutRequest(for: threadID)
                 finish(assistantID, in: threadID, text: unavailableDetail)
                 return
+            }
+            if userTurnIndex == 0, !text.isEmpty {
+                launchFirstTurnTitle(
+                    text,
+                    for: threadID,
+                    backendThreadID: backendId,
+                    engine: engine
+                )
             }
             let start = Date()
             do {
@@ -543,6 +727,10 @@ final class AgentChatStore: ObservableObject {
                     threadId: backendId,
                     attachmentPaths: attachmentPaths,
                     onDelta: { [weak self] delta in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
+                        self?.setComposerPhase(.streaming, for: turnID)
                         self?.update(assistantID, in: threadID) {
                             $0.isThinking = false
                             $0.isStreaming = true
@@ -553,16 +741,27 @@ final class AgentChatStore: ObservableObject {
                         }
                     },
                     onReasoning: { [weak self] delta in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
                         self?.appendReasoning(delta, to: assistantID, in: threadID)
                     },
                     onToolExecuting: { [weak self] name, id in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
                         self?.recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
                     },
                     onToolResult: { [weak self] name, id, isError, reason in
+                        guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
+                            return
+                        }
                         self?.recordToolResult(name: name, callID: id, isError: isError, reason: reason,
                                                before: assistantID, in: threadID)
                     }
                 )
+                settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+                titleStreamSettled = true
                 // The thread may have been deleted mid-stream; drop the late
                 // finalize + refresh so a cancelled send can't bring it back.
                 if Task.isCancelled { return }
@@ -583,7 +782,214 @@ final class AgentChatStore: ObservableObject {
                        text: "Something went wrong: \(error.localizedDescription)")
             }
         }
-        inFlightSends[threadID] = sendTask
+        inFlightSends[threadID] = InFlightSend(id: turnID, task: sendTask)
+    }
+
+    /// Launch the title lane as an independent, unstructured MainActor task.
+    /// Awaiting the engine releases the actor, so this request runs concurrently
+    /// with the conversational turn (composer `streamReply` or the core-owned
+    /// voice stream) without escaping non-Sendable engine/provider seams. It is
+    /// a stateless sibling request — it never re-enters `send()`/`streamReply`.
+    private func launchFirstTurnTitle(
+        _ text: String,
+        for threadID: UUID,
+        backendThreadID: String,
+        engine: AgentChatEngine
+    ) {
+        guard let state = firstTurnTitleStates[threadID],
+              state.backendThreadID == backendThreadID else { return }
+        let generationID = state.generationID
+        let task = Task { @MainActor [weak self] in
+            do {
+                let title = try await engine.generateThreadTitle(text)
+                guard !Task.isCancelled else { return }
+                self?.receiveGeneratedTitle(title, for: threadID, generationID: generationID)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.finishTitleGeneration(for: threadID, generationID: generationID)
+            }
+        }
+        titleGenerationTasks[threadID] = task
+    }
+
+    /// Establish the race authority synchronously inside `send()`. A rail action
+    /// performed immediately after `send()` returns can therefore queue a custom
+    /// write or discard title work even before the unstructured task is scheduled.
+    private func prepareFirstTurnTitle(for threadID: UUID, backendThreadID: String) {
+        guard threadsProvider != nil,
+              !customTitleThreadIDs.contains(threadID),
+              firstTurnTitleStates[threadID] == nil,
+              let originalTitle = threads.first(where: { $0.id == threadID })?.title else { return }
+        firstTurnTitleStates[threadID] = FirstTurnTitleState(
+            backendThreadID: backendThreadID,
+            generationID: UUID(),
+            originalTitle: originalTitle
+        )
+    }
+
+    /// Voice entry to the SAME first-turn coordinator `send()` uses. The core
+    /// runtime owns the conversational provider call and its persistence; this
+    /// launches only the stateless title sibling — never `send()`/`streamReply`
+    /// — so the exchange is not dispatched twice. `ingestVoiceDone` is the
+    /// stream-completed settle point (core persistence has finished by then).
+    private func launchVoiceFirstTurnTitle(
+        _ presentedText: String,
+        for threadID: UUID,
+        backendThreadID: String
+    ) {
+        guard !presentedText.isEmpty, let engine else { return }
+        prepareFirstTurnTitle(for: threadID, backendThreadID: backendThreadID)
+        guard firstTurnTitleStates[threadID] != nil else { return }
+        guard engine.availabilityDetail() == nil else {
+            finishTitleGenerationWithoutRequest(for: threadID)
+            return
+        }
+        launchFirstTurnTitle(presentedText, for: threadID, backendThreadID: backendThreadID, engine: engine)
+    }
+
+    private func finishTitleGenerationWithoutRequest(for threadID: UUID) {
+        guard var state = firstTurnTitleStates[threadID] else { return }
+        state.generationFinished = true
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    private func receiveGeneratedTitle(_ title: String?, for threadID: UUID, generationID: UUID) {
+        guard var state = firstTurnTitleStates[threadID], state.generationID == generationID else { return }
+        state.generationFinished = true
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty,
+              !customTitleThreadIDs.contains(threadID),
+              state.pendingCustomTitle == nil,
+              let ti = threads.firstIndex(where: { $0.id == threadID }) else {
+            firstTurnTitleStates[threadID] = state
+            cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+            return
+        }
+
+        threads[ti].title = trimmed
+        let persisted = threadsProvider?.setGeneratedTitle(
+            backendId: state.backendThreadID,
+            title: trimmed
+        ) == true
+        if !persisted {
+            if state.streamCompleted {
+                if threads[ti].title == trimmed { threads[ti].title = state.originalTitle }
+            } else {
+                state.pendingGeneratedTitle = trimmed
+            }
+        }
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    private func finishTitleGeneration(for threadID: UUID, generationID: UUID) {
+        guard var state = firstTurnTitleStates[threadID], state.generationID == generationID else { return }
+        state.generationFinished = true
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    /// Mark the Rust stream (and therefore its best-effort first persistence)
+    /// complete, flush a queued custom rename first, otherwise retry one queued
+    /// generated title exactly once. This runs before `refreshThreads`.
+    private func settleFirstTurnTitleAfterStream(for threadID: UUID, backendThreadID: String) {
+        guard var state = firstTurnTitleStates[threadID], state.backendThreadID == backendThreadID else { return }
+        guard !state.streamCompleted else { return }
+        state.streamCompleted = true
+
+        if let customTitle = state.pendingCustomTitle {
+            _ = threadsProvider?.renameThread(backendId: backendThreadID, title: customTitle)
+            state.pendingCustomTitle = nil
+            state.pendingGeneratedTitle = nil
+        } else if let generatedTitle = state.pendingGeneratedTitle {
+            let persisted = threadsProvider?.setGeneratedTitle(
+                backendId: backendThreadID,
+                title: generatedTitle
+            ) == true
+            state.pendingGeneratedTitle = nil
+            if !persisted,
+               !customTitleThreadIDs.contains(threadID),
+               let ti = threads.firstIndex(where: { $0.id == threadID }),
+               threads[ti].title == generatedTitle {
+                threads[ti].title = state.originalTitle
+            }
+        }
+
+        firstTurnTitleStates[threadID] = state
+        cleanUpFirstTurnTitleStateIfFinished(for: threadID)
+    }
+
+    /// Queue a rename only for the active first-turn missing-file window.
+    /// One dictionary slot means repeated UI commits collapse to the latest
+    /// custom title, while generated persistence is discarded immediately.
+    private func queueCustomTitle(_ title: String, for threadID: UUID, backendThreadID: String) -> Bool {
+        guard var state = firstTurnTitleStates[threadID],
+              state.backendThreadID == backendThreadID,
+              !state.streamCompleted else { return false }
+        state.pendingCustomTitle = title
+        state.pendingGeneratedTitle = nil
+        firstTurnTitleStates[threadID] = state
+        return true
+    }
+
+    private func cleanUpFirstTurnTitleStateIfFinished(for threadID: UUID) {
+        guard let state = firstTurnTitleStates[threadID],
+              state.streamCompleted,
+              state.generationFinished,
+              state.pendingGeneratedTitle == nil,
+              state.pendingCustomTitle == nil else { return }
+        firstTurnTitleStates[threadID] = nil
+        titleGenerationTasks[threadID] = nil
+    }
+
+    /// Stop the selected Agent turn through its owning adapter. Voice is checked
+    /// first because it has no Swift waiter and must never touch the composer
+    /// registry. Composer ordering remains deliberate: waiter first, Rust second.
+    func stopActiveTurn() {
+        if let threadID = voiceTurnThreadID,
+           threadID == selectedThreadID,
+           let phase = voiceTurnPhase,
+           phase != .cancelling,
+           let backendId = threads.first(where: { $0.id == threadID })?.backendId {
+            voiceTurnPhase = .cancelling
+            if voiceTurnCanceller?.cancelVoiceTurn(threadId: backendId) != true {
+                // The runtime may have crossed its successful terminal just before
+                // the click. Keep accepting that terminal instead of stranding the
+                // local bubble in a false Cancelling state.
+                voiceTurnPhase = phase
+            }
+            return
+        }
+
+        guard var turn = activeComposerTurn,
+              turn.threadID == selectedThreadID,
+              turn.phase != .cancelling else { return }
+
+        turn.phase = .cancelling
+        activeComposerTurn = turn
+        inFlightSends[turn.threadID]?.task.cancel()
+        let firstAcknowledgement = engine?.cancelReply(threadId: turn.backendThreadID) ?? false
+
+        // A very fast Stop can beat Rust's registry setup while the provider and
+        // persisted history are still loading. Retry only that unacknowledged
+        // race; the UI click remains idempotent and every probe uses the same
+        // exact backend id. Settle after acknowledgement (or a bounded idle race).
+        Task { @MainActor [weak self] in
+            var acknowledged = firstAcknowledgement
+            var attempts = 0
+            while !acknowledged, attempts < 80 {
+                guard let self,
+                      self.activeComposerTurn?.id == turn.id,
+                      self.activeComposerTurn?.phase == .cancelling,
+                      let engine = self.engine else { break }
+                attempts += 1
+                try? await Task.sleep(for: .milliseconds(25))
+                acknowledged = engine.cancelReply(threadId: turn.backendThreadID)
+            }
+            await Task.yield()
+            self?.settleStoppedComposerTurn(turn)
+        }
     }
 
     // MARK: Voice-assistive delivery (core runtime → live render, no re-send)
@@ -591,8 +997,11 @@ final class AgentChatStore: ObservableObject {
     // These ingest the reply the CORE runtime is already streaming for a hotkey /
     // voice turn (via the bridge `CsAgentDeliveryListener`). They ONLY render:
     // insert bubbles and mutate them from deltas. They deliberately do not call
-    // `send()` / the engine — the core already made the provider call and persists
-    // the thread to disk. Doing otherwise would double-dispatch the turn.
+    // `send()` / `streamReply` — the core already made the provider call and
+    // persists the thread to disk. Doing otherwise would double-dispatch the
+    // turn. The single engine call allowed on this path is the stateless
+    // first-turn title sibling (`generateThreadTitle`), which carries no
+    // conversation state and never touches the thread's response chain.
 
     /// Open a voice turn: bind (or create) a thread for the core `backendId`,
     /// insert the You-bubble + an assistant placeholder, and select it so the live
@@ -609,35 +1018,58 @@ final class AgentChatStore: ObservableObject {
                 $0.isStreaming = false
                 $0.timestamp = self.now()
             }
+            // The stale turn ended without its own terminal event, so settle its
+            // title coordinator here — a queued generated title must not outlive
+            // the turn that owned it.
+            if let staleBackendID = threads.first(where: { $0.id == staleThreadID })?.backendId {
+                settleFirstTurnTitleAfterStream(for: staleThreadID, backendThreadID: staleBackendID)
+            }
         }
 
+        // The core sends the WIRE prompt (assistive skeleton); the bubble shows
+        // the spoken instruction. The wire + selection/app context ride along on
+        // the message for the context chip and "Copy full prompt".
+        let userTurn = AssistivePromptParser.presented(
+            ChatMessage(role: .you, timestamp: now(), text: userText)
+        )
+
         let threadID: UUID
+        var isFirstExchange = false
         if let existing = threads.first(where: { $0.backendId == backendId }) {
             threadID = existing.id
             loadMessagesIfNeeded(threadID)  // surface prior history before appending
         } else {
-            let title = userText.isEmpty ? "Voice chat" : String(userText.prefix(48))
+            let title = userTurn.text.isEmpty ? "Voice chat" : String(userTurn.text.prefix(48))
             var thread = ChatThread(title: title, meta: "now")
             thread.backendId = backendId
             thread.messagesLoaded = true  // freshly bound to a core id → in sync
             threads.insert(thread, at: 0)
             threadID = thread.id
+            isFirstExchange = true
         }
         selectedThreadID = threadID
 
-        if !userText.isEmpty {
-            append(ChatMessage(role: .you, timestamp: now(), text: userText), to: threadID)
+        // A skeleton turn can carry context with an empty instruction (e.g. a
+        // clipped dictation) — the bubble still renders for the chip.
+        if !userTurn.text.isEmpty || userTurn.wireText != nil {
+            append(userTurn, to: threadID)
         }
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         voiceTurnThreadID = threadID
         voiceAssistantID = assistant.id
         voiceTurnStartedAt = Date()
+        voiceTurnPhase = .thinking
         append(assistant, to: threadID)
+        if isFirstExchange {
+            launchVoiceFirstTurnTitle(userTurn.text, for: threadID, backendThreadID: backendId)
+        }
     }
 
     /// Append a streamed token to the active voice assistant bubble.
     func ingestVoiceDelta(_ delta: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         update(id, in: threadID) {
             $0.isThinking = false
             $0.isStreaming = true
@@ -650,35 +1082,47 @@ final class AgentChatStore: ObservableObject {
 
     /// Append streamed model reasoning to the active voice assistant bubble.
     func ingestVoiceReasoning(_ delta: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         appendReasoning(delta, to: id, in: threadID)
     }
 
     /// Final assembled text for the turn. Only used as a fallback when the reply
     /// arrived without token deltas (otherwise the bubble already holds the text).
     func ingestVoiceTextDone(_ text: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         update(id, in: threadID) { if $0.text.isEmpty { $0.text = text } }
     }
 
     /// Surface a pending tool call for the active voice turn. The bridge's `id`
     /// is kept end-to-end so the matching result can update this row in place.
     func ingestVoiceToolExecuting(name: String, id callID: String) {
-        guard let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         recordToolStarted(name: name, callID: callID, before: assistantID, in: threadID)
     }
 
     /// Surface a completed tool call for the active voice turn (same rendering as
     /// the composer path's tool-activity row).
     func ingestVoiceToolResult(name: String, id callID: String, isError: Bool, reason: String) {
-        guard let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let assistantID = voiceAssistantID else { return }
+        voiceTurnPhase = .streaming
         recordToolResult(name: name, callID: callID, isError: isError, reason: reason, before: assistantID, in: threadID)
     }
 
     /// Finalize the active voice turn and pull disk truth (the core persisted the
     /// thread). No re-persist here — the store only mirrors what the core wrote.
+    /// This is also the title coordinator's stream-completed settle point: core
+    /// persistence finished before this terminal, so a queued generated title
+    /// flushes exactly once here, before the rail refresh.
     func ingestVoiceDone() {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
         finishPendingTools(before: id, in: threadID)
         update(id, in: threadID) {
             $0.isThinking = false
@@ -686,9 +1130,10 @@ final class AgentChatStore: ObservableObject {
             $0.timestamp = self.now()
         }
         let backendId = threads.first(where: { $0.id == threadID })?.backendId
-        voiceTurnThreadID = nil
-        voiceAssistantID = nil
-        voiceTurnStartedAt = nil
+        if let backendId {
+            settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+        }
+        clearVoiceTurnState()
         if let backendId { refreshThreads(selectingBackendId: backendId) }
     }
 
@@ -696,7 +1141,8 @@ final class AgentChatStore: ObservableObject {
     /// error path may not emit a separate `Done`, so clear the turn state here; a
     /// late `Done` then no-ops against the cleared state.
     func ingestVoiceError(_ message: String) {
-        guard let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
+        guard voiceTurnPhase != .cancelling,
+              let threadID = voiceTurnThreadID, let id = voiceAssistantID else { return }
         finishPendingTools(before: id, in: threadID)
         update(id, in: threadID) {
             $0.isThinking = false
@@ -704,9 +1150,37 @@ final class AgentChatStore: ObservableObject {
             $0.text += ($0.text.isEmpty ? "" : "\n") + "[error] " + message
             $0.timestamp = self.now()
         }
-        voiceTurnThreadID = nil
-        voiceAssistantID = nil
-        voiceTurnStartedAt = nil
+        // A failed turn persisted nothing; settling lets the coordinator try a
+        // queued title once, fail against the missing thread, and restore the
+        // fallback title instead of leaving the queue open forever.
+        if let backendId = threads.first(where: { $0.id == threadID })?.backendId {
+            settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+        }
+        clearVoiceTurnState()
+    }
+
+    /// Settle the single keyed cancellation terminal. Partial text remains, an
+    /// empty response becomes a quiet Stopped marker, and running tools become
+    /// stopped without refreshing disk truth (the core intentionally did not
+    /// persist this turn as successful).
+    func ingestVoiceCancelled(threadId backendId: String) {
+        guard voiceTurnPhase == .cancelling,
+              let threadID = voiceTurnThreadID,
+              let id = voiceAssistantID,
+              threads.first(where: { $0.id == threadID })?.backendId == backendId else { return }
+        cancelPendingTools(before: id, in: threadID)
+        update(id, in: threadID) {
+            $0.isThinking = false
+            $0.isStreaming = false
+            $0.wasStopped = true
+            if $0.text.isEmpty { $0.text = "Stopped" }
+            $0.timestamp = self.now()
+        }
+        // Mirror the composer's cancel path (its defer settles too): the core
+        // did not persist this turn, so a late generated title fails to persist
+        // and the fallback title survives.
+        settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+        clearVoiceTurnState()
     }
 
     // MARK: Demo stream (reproduces the mock's mid-stream last turn)
@@ -763,6 +1237,54 @@ final class AgentChatStore: ObservableObject {
             $0.text = text
             $0.timestamp = self.now()
         }
+    }
+
+    private func acceptsComposerEvent(_ turnID: UUID, assistantID: UUID, in threadID: UUID) -> Bool {
+        guard let turn = activeComposerTurn else { return false }
+        return turn.id == turnID
+            && turn.threadID == threadID
+            && turn.assistantMessageID == assistantID
+            && turn.phase != .cancelling
+    }
+
+    private func setComposerPhase(_ phase: ComposerTurnPhase, for turnID: UUID) {
+        guard var turn = activeComposerTurn, turn.id == turnID, turn.phase != .cancelling else { return }
+        turn.phase = phase
+        activeComposerTurn = turn
+    }
+
+    private func releaseComposerTurn(_ turnID: UUID, in threadID: UUID) {
+        if inFlightSends[threadID]?.id == turnID {
+            inFlightSends[threadID] = nil
+        }
+        if activeComposerTurn?.id == turnID,
+           activeComposerTurn?.phase != .cancelling {
+            activeComposerTurn = nil
+        }
+    }
+
+    private func settleStoppedComposerTurn(_ turn: ActiveComposerTurn) {
+        guard activeComposerTurn?.id == turn.id,
+              activeComposerTurn?.phase == .cancelling else { return }
+        cancelPendingTools(before: turn.assistantMessageID, in: turn.threadID)
+        update(turn.assistantMessageID, in: turn.threadID) {
+            $0.isThinking = false
+            $0.isStreaming = false
+            $0.wasStopped = true
+            if $0.text.isEmpty { $0.text = "Stopped" }
+            $0.timestamp = self.now()
+        }
+        if inFlightSends[turn.threadID]?.id == turn.id {
+            inFlightSends[turn.threadID] = nil
+        }
+        activeComposerTurn = nil
+    }
+
+    private func clearVoiceTurnState() {
+        voiceTurnThreadID = nil
+        voiceAssistantID = nil
+        voiceTurnStartedAt = nil
+        voiceTurnPhase = nil
     }
 
     // MARK: Mutation helpers
@@ -929,6 +1451,20 @@ final class AgentChatStore: ObservableObject {
         if changed { updateToolTitle(threadIndex: ti, messageIndex: row) }
     }
 
+    private func cancelPendingTools(before assistantID: UUID, in threadID: UUID) {
+        guard let ti = threads.firstIndex(where: { $0.id == threadID }),
+              let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }),
+              let row = toolRowIndex(before: ai, inThreadAt: ti) else { return }
+        var changed = false
+        for index in threads[ti].messages[row].toolLines.indices
+            where threads[ti].messages[row].toolLines[index].state == .running {
+            threads[ti].messages[row].toolLines[index].state = .cancelled
+            threads[ti].messages[row].toolLines[index].verb = "stopped"
+            changed = true
+        }
+        if changed { updateToolTitle(threadIndex: ti, messageIndex: row) }
+    }
+
     private func appendReasoning(_ delta: String, to assistantID: UUID, in threadID: UUID) {
         guard !delta.isEmpty else { return }
         update(assistantID, in: threadID) {
@@ -950,9 +1486,13 @@ final class AgentChatStore: ObservableObject {
     private static func toolTitle(for lines: [ToolLine]) -> String {
         let count = lines.count
         let running = lines.filter { $0.state == .running }.count
+        let cancelled = lines.filter { $0.state == .cancelled }.count
         let noun = count == 1 ? "tool" : "tools"
         if running > 0 {
             return "What I checked · \(running) running · \(count) \(noun)"
+        }
+        if cancelled > 0 {
+            return "What I checked · \(cancelled) stopped · \(count) \(noun)"
         }
         return "What I checked · \(count) \(noun)"
     }
@@ -1037,12 +1577,15 @@ final class AgentChatStore: ObservableObject {
             ),
             ChatMessage(role: .you, timestamp: "18:41", text: "yes, and add the test"),
         ]
+        // updatedAt offsets keep the preview's recency sections honest with the
+        // hardcoded meta labels.
+        let day: TimeInterval = 86_400
         return [
             active,
-            ChatThread(title: "rate-limiter spec", meta: "today · 18:40"),
-            ChatThread(title: "release notes → PL", meta: "yesterday"),
-            ChatThread(title: "whisper warm-start idea", meta: "yesterday"),
-            ChatThread(title: "standup notes", meta: "Thu"),
+            ChatThread(title: "rate-limiter spec", meta: "today · 18:40", updatedAt: Date()),
+            ChatThread(title: "release notes → PL", meta: "yesterday", updatedAt: Date(timeIntervalSinceNow: -day)),
+            ChatThread(title: "whisper warm-start idea", meta: "yesterday", updatedAt: Date(timeIntervalSinceNow: -day)),
+            ChatThread(title: "standup notes", meta: "Thu", updatedAt: Date(timeIntervalSinceNow: -5 * day)),
         ]
     }
 }
@@ -1053,6 +1596,7 @@ final class AgentChatStore: ObservableObject {
 final class MockChatEngine: AgentChatEngine {
     func isAvailable() -> Bool { true }
     func availabilityDetail() -> String? { nil }
+    func generateThreadTitle(_ text: String) async throws -> String? { nil }
     func streamReply(
         _ text: String,
         threadId: String,
@@ -1078,6 +1622,6 @@ final class MockChatEngine: AgentChatEngine {
         return assembled
     }
 
-    func cancelReply(threadId: String) {}
+    func cancelReply(threadId: String) -> Bool { false }
 }
 #endif

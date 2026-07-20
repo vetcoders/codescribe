@@ -42,6 +42,10 @@ enum CSColor {
     // Reasoning — amber
     static let amber = Color(hex: 0xD6B24E)
 
+    // Destructive actions — reserved for explicit danger-zone controls
+    static let danger = Color(hex: 0xD84A4A)
+    static let dangerLight = Color(hex: 0xFFAAA5)
+
     // Text
     static let textHigh = Color(hex: 0xF4F2EC)            // headlines
     static let textBody = Color(hex: 0xE9E7E0)

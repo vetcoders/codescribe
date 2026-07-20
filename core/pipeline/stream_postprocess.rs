@@ -1250,6 +1250,98 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn overlay_correction_chain_teaches_custom_lexicon_for_next_transcript() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir for quality chain");
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp_dir.path().to_path_buf());
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let candidates =
+            crate::quality::overlay_quality::extract_lexicon_candidates("uni agentka", "Junie");
+        assert_eq!(candidates, vec![("uni agentka".into(), "Junie".into())]);
+
+        let quality_path = crate::quality::overlay_quality::commit_overlay_correction(
+            "uni agentka",
+            "uni agentka",
+            "Junie",
+            "overlay",
+            Some("whisper-test".into()),
+            Some("copy"),
+        )
+        .expect("commit overlay correction");
+        assert!(quality_path.starts_with(&temp_root));
+        assert!(quality_path.ends_with("corrections.jsonl"));
+
+        let written = std::fs::read_to_string(&quality_path).expect("read quality record");
+        let record: crate::quality::overlay_quality::QualityRecord =
+            serde_json::from_str(written.lines().last().expect("quality record line"))
+                .expect("parse quality record");
+        assert_eq!(record.raw_text, "uni agentka");
+        assert_eq!(record.delivered_text, "uni agentka");
+        assert_eq!(record.edited_text, "Junie");
+        let correction_id = record.logical_id();
+        assert_eq!(
+            record.meta.get("action").and_then(|v| v.as_str()),
+            Some("copy")
+        );
+
+        let custom_path = crate::config::Config::config_dir().join("lexicon.custom.jsonl");
+        let custom = std::fs::read_to_string(&custom_path).expect("read custom lexicon");
+        assert!(custom.contains(r#""term":"Junie""#));
+        assert!(custom.contains(r#""uni agentka""#));
+
+        let mut custom_rules = Vec::new();
+        let mut custom_canonicals = Vec::new();
+        let count = load_legacy_jsonl_with_terms(
+            &custom,
+            "custom",
+            &mut custom_rules,
+            Some(&mut custom_canonicals),
+        );
+        assert_eq!(count, 1);
+        assert_eq!(custom_canonicals, vec!["Junie".to_string()]);
+
+        let mut lexicon = Lexicon {
+            builtin_rules: Vec::new(),
+            custom_rules,
+            custom_path: custom_path.clone(),
+            custom_mtime: std::fs::metadata(&custom_path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok()),
+            protected_canonicals: Vec::new(),
+            custom_canonicals,
+        };
+        assert_eq!(lexicon.apply("uni agentka"), "Junie");
+        assert_eq!(
+            lexicon.apply("Następny transcript: uni agentka."),
+            "Następny transcript: Junie."
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let revision = crate::quality::overlay_quality::finalize_voice_lab_correction(
+            &correction_id,
+            "Junie Prime",
+        )
+        .expect("finalize Voice Lab correction");
+        assert_eq!(revision.revision, record.revision + 1);
+        assert_eq!(revision.edited_text, "Junie Prime");
+
+        lexicon.maybe_reload();
+        assert_eq!(lexicon.custom_rules.len(), 1);
+        assert_eq!(lexicon.apply("uni agentka"), "Junie Prime");
+        assert_eq!(
+            lexicon.apply("Następny transcript: uni agentka."),
+            "Następny transcript: Junie Prime."
+        );
+    }
+
+    #[test]
     fn test_custom_lexicon_skips_plain_word_regression_rules() {
         let json = r#"
 {"term":"zobacz","mispronunciations":["zobaczcie"]}

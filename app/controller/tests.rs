@@ -13,6 +13,18 @@ async fn test_initial_state() {
 }
 
 #[tokio::test]
+async fn test_paste_target_app_name_maps_latched_name_and_absence() {
+    let controller = RecordingController::new();
+    assert_eq!(controller.paste_target_app_name().await, None);
+
+    *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());
+    assert_eq!(
+        controller.paste_target_app_name().await.as_deref(),
+        Some("Ghostty")
+    );
+}
+
+#[tokio::test]
 async fn test_last_segment_audio_offset_initialized_to_zero() {
     // commit_segment relies on this starting at 0 — the first segment of a
     // toggle session clips from sample 0. start_toggle_recording then resets
@@ -412,6 +424,16 @@ fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
 }
 
 #[test]
+fn test_overlay_self_paste_guard_trips_only_on_codescribe_frontmost() {
+    assert!(overlay_paste_would_self_target(Some("Codescribe")));
+    assert!(overlay_paste_would_self_target(Some("  codescribe  ")));
+    assert!(overlay_paste_would_self_target(Some("CODESCRIBE")));
+    assert!(!overlay_paste_would_self_target(Some("Alacritty")));
+    assert!(!overlay_paste_would_self_target(Some("Terminal")));
+    assert!(!overlay_paste_would_self_target(None));
+}
+
+#[test]
 fn test_transcript_delivery_wrap_is_default_off() {
     let config = Config::default();
 
@@ -433,6 +455,149 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
     assert_eq!(
         maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
         "<codescribe mode=\"dictation\" lang=\"auto\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+#[test]
+fn test_transcript_delivery_wrap_uses_truth_quality_placeholders() {
+    let config = Config {
+        transcript_tagging_enabled: true,
+        transcript_tag_template: "<tag conf=\"{conf}\" flags=\"{flags}\">{text}</tag>".to_string(),
+        ..Config::default()
+    };
+    let metadata = RecordingTruthMetadata {
+        avg_logprob: Some(-1.45),
+        confidence_flags: vec![
+            TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
+            TranscriptionConfidenceFlag::UnverifiedStream,
+        ],
+        ..RecordingTruthMetadata::default()
+    };
+
+    assert_eq!(
+        maybe_wrap_transcript_for_delivery_with_quality(
+            "literal transcript",
+            &config,
+            "dictation",
+            Some(&metadata),
+        ),
+        "<tag conf=\"low\" flags=\"possible_hallucination_logprob,unverified_stream\">literal transcript</tag>"
+    );
+}
+
+#[test]
+fn auto_paste_policy_matrix() {
+    let triggers = [AutoPasteTrigger::Hold, AutoPasteTrigger::DoubleLeftOption];
+    for trigger in triggers {
+        for persisted_enabled in [false, true] {
+            for overlay_enabled in [false, true] {
+                let allowed = resolve_auto_paste_policy(AutoPastePolicyContext {
+                    trigger,
+                    persisted_enabled,
+                    overlay_enabled,
+                    assistive: false,
+                    no_speech: false,
+                    empty_output: false,
+                    notes_save_only: false,
+                    live_stream_session: false,
+                    commit_required: false,
+                });
+                assert_eq!(
+                    allowed, persisted_enabled,
+                    "trigger={trigger:?}, policy={persisted_enabled}, overlay={overlay_enabled}"
+                );
+            }
+        }
+    }
+
+    let vetoes = [
+        ("assistive", true, false, false, false, false, false),
+        ("no_speech", false, true, false, false, false, false),
+        ("empty_output", false, false, true, false, false, false),
+        ("notes_save_only", false, false, false, true, false, false),
+        (
+            "live_stream_session",
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+        ),
+        ("commit_required", false, false, false, false, false, true),
+    ];
+    for trigger in triggers {
+        for overlay_enabled in [false, true] {
+            for (
+                name,
+                assistive,
+                no_speech,
+                empty_output,
+                notes_save_only,
+                live_stream_session,
+                commit_required,
+            ) in vetoes
+            {
+                assert!(
+                    !resolve_auto_paste_policy(AutoPastePolicyContext {
+                        trigger,
+                        persisted_enabled: true,
+                        overlay_enabled,
+                        assistive,
+                        no_speech,
+                        empty_output,
+                        notes_save_only,
+                        live_stream_session,
+                        commit_required,
+                    }),
+                    "veto={name}, trigger={trigger:?}, overlay={overlay_enabled}"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct FakeAutomaticDeliverySink {
+    events: std::sync::Mutex<Vec<String>>,
+}
+
+impl AutomaticDeliverySink for FakeAutomaticDeliverySink {
+    fn paste(&self, text: &str) -> anyhow::Result<()> {
+        self.events
+            .lock()
+            .expect("fake delivery sink lock")
+            .push(text.to_string());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn automatic_delivery_is_once_per_recording_timestamp() {
+    let sink = Arc::new(FakeAutomaticDeliverySink::default());
+    let owner = AutomaticDeliveryOwner::new(sink.clone());
+    let timestamp_a = chrono::Local::now();
+    let timestamp_b = timestamp_a + chrono::Duration::milliseconds(1);
+
+    assert!(owner.deliver_once(timestamp_a, "visible A").await.unwrap());
+    assert!(!owner.deliver_once(timestamp_a, "headless A").await.unwrap());
+    assert!(
+        !owner
+            .deliver_once(timestamp_a, "duplicate final A")
+            .await
+            .unwrap()
+    );
+    assert!(owner.deliver_once(timestamp_b, "visible B").await.unwrap());
+    assert!(
+        !owner
+            .deliver_once(timestamp_a, "late duplicate A")
+            .await
+            .unwrap()
+    );
+
+    assert_eq!(
+        *sink.events.lock().expect("fake delivery events"),
+        ["visible A".to_string(), "visible B".to_string()]
     );
 }
 
@@ -493,11 +658,25 @@ struct EnvVarGuard {
 
 impl EnvVarGuard {
     fn set(key: &'static str, value: &std::path::Path) -> Self {
+        Self::set_value(key, value.to_string_lossy().as_ref())
+    }
+
+    fn set_value(key: &'static str, value: &str) -> Self {
         let previous = std::env::var(key).ok();
         // SAFETY: tests using this guard are serialized with `#[serial]`, so no
         // other thread touches the process environment concurrently.
         unsafe {
             std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: tests using this guard are serialized with `#[serial]`, so no
+        // other thread touches the process environment concurrently.
+        unsafe {
+            std::env::remove_var(key);
         }
         Self { key, previous }
     }
@@ -542,6 +721,56 @@ fn latest_truth_metadata(root: &std::path::Path) -> RecordingTruthMetadata {
             .trim_end_matches(".truth.json"),
     );
     read_truth_sidecar(&transcript_path).expect("read truth sidecar")
+}
+
+fn history_txt_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let transcriptions = root.join("transcriptions");
+    let mut paths = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path.extension().is_some_and(|ext| ext == "txt") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn history_audio_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let transcriptions = root.join("transcriptions");
+    let mut paths = Vec::new();
+    for day in std::fs::read_dir(&transcriptions).expect("transcriptions dir") {
+        let day = day.expect("day dir");
+        for entry in std::fs::read_dir(day.path()).expect("day entries") {
+            let path = entry.expect("history entry").path();
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| matches!(ext, "m4a" | "wav"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn disable_assistive_agent_credentials_for_test() -> Vec<EnvVarGuard> {
+    vec![
+        EnvVarGuard::set_value("CODESCRIBE_DISABLE_KEYCHAIN", "1"),
+        EnvVarGuard::set_value(
+            "LLM_ASSISTIVE_ENDPOINT",
+            "https://api.openai.com/v1/responses",
+        ),
+        EnvVarGuard::set_value("LLM_ASSISTIVE_PROVIDER", "openai"),
+        EnvVarGuard::unset("LLM_ASSISTIVE_API_KEY"),
+        EnvVarGuard::unset("LLM_ANTHROPIC_API_KEY"),
+        EnvVarGuard::unset("LLM_OPENAI_ACCOUNT_TOKENS"),
+    ]
 }
 
 #[tokio::test]
@@ -655,6 +884,130 @@ async fn test_toggle_adjudicated_explicit_raw_override_still_wins() {
         metadata.mode.as_deref(),
         Some("raw"),
         "explicit RAW hotkey override must still win over the Settings default"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_pipeline_persists_raw_voice_history() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _agent_guards = disable_assistive_agent_credentials_for_test();
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: true,
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+    let source_audio_path = temp_dir.path().join("assistive-source.wav");
+    std::fs::write(&source_audio_path, b"not a wav but copy fallback is enough")
+        .expect("write source audio");
+    let raw_voice = "Proszę sprawdzić dawkowanie leku bez szkieletu promptu.";
+    let mut params = test_transcript_pipeline_params(
+        raw_voice,
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+    params.raw_save_enabled = false;
+    params.audio_path = Some(ValidatedAudioPath::new(&source_audio_path).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds even when agent lane is unavailable");
+
+    let txt_files = history_txt_files(temp_dir.path());
+    assert_eq!(
+        txt_files.len(),
+        1,
+        "assistive should persist exactly one raw transcript"
+    );
+    let transcript_path = &txt_files[0];
+    assert!(
+        transcript_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("_raw.txt")),
+        "assistive transcript must be stored as Raw: {}",
+        transcript_path.display()
+    );
+    let saved = std::fs::read_to_string(transcript_path).expect("read transcript");
+    assert_eq!(saved, raw_voice);
+    assert!(!saved.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+
+    let metadata = read_truth_sidecar(transcript_path).expect("assistive truth sidecar");
+    assert_eq!(metadata.mode.as_deref(), Some("assistive"));
+
+    let audio_files = history_audio_files(temp_dir.path());
+    assert_eq!(
+        audio_files.len(),
+        1,
+        "dump_audio_logs should save one audio pair"
+    );
+    assert_eq!(
+        audio_files[0].file_stem(),
+        transcript_path.file_stem(),
+        "audio artifact should share the transcript stem"
+    );
+    let audio_metadata =
+        read_truth_sidecar(&audio_files[0]).expect("assistive audio truth sidecar");
+    assert_eq!(audio_metadata.mode.as_deref(), Some("assistive"));
+
+    let recent = crate::state::history::recent_entries(8);
+    let transcript_path = transcript_path
+        .canonicalize()
+        .expect("canonical transcript path");
+    assert!(
+        recent.iter().any(|entry| {
+            entry.path.canonicalize().ok().as_ref() == Some(&transcript_path)
+                && entry.kind == crate::state::history::TranscriptKind::Raw
+        }),
+        "Open history surface should list the Raw transcript artifact via recent_entries"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_assistive_raw_save_is_idempotent_when_early_gate_already_saved() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _agent_guards = disable_assistive_agent_credentials_for_test();
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        transcription_overlay_enabled: true,
+        ..Config::default()
+    };
+    let raw_voice = "Nie zapisuj drugi raz tego samego nagrania.";
+    let mut params = test_transcript_pipeline_params(
+        raw_voice,
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+    params.raw_save_enabled = true;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds");
+
+    let txt_files = history_txt_files(temp_dir.path());
+    assert_eq!(
+        txt_files.len(),
+        1,
+        "assistive path must not add a second final transcript"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&txt_files[0]).expect("read transcript"),
+        raw_voice
     );
 }
 
@@ -943,6 +1296,34 @@ fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_previ
     assert_eq!(verdict.fallback_class, None);
     assert!(verdict.confidence_flags.is_empty());
     assert_eq!(verdict.commit_trigger, None);
+    assert_eq!(verdict.display_status, "Final-pass local");
+}
+
+#[test]
+fn test_recon_final_pass_replaces_correct_live_preview_even_when_text_is_worse() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "podmieniony final pass",
+            82.0,
+            Some(-0.24),
+            false,
+        )),
+        "poprawny tekst z live preview".to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some("podmieniony final pass"));
+    assert_ne!(
+        verdict.raw_text.as_deref(),
+        Some("poprawny tekst z live preview")
+    );
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::LocalFinalPass)
+    );
     assert_eq!(verdict.display_status, "Final-pass local");
 }
 
@@ -2263,8 +2644,9 @@ fn test_formatted_transcript_persists_before_paste() {
         .find("let needs_final_save")
         .expect("final-transcript save block must be present");
     let paste_idx = source
-        .find("clipboard::paste_text(")
-        .expect("auto-paste call must be present");
+        .get(save_idx..)
+        .and_then(|tail| tail.find(".automatic_delivery").map(|idx| save_idx + idx))
+        .expect("automatic delivery owner call must be present");
     assert!(
         save_idx < paste_idx,
         "formatted transcript save must precede the paste attempt so a failed paste \

@@ -12,7 +12,7 @@ import Foundation
 // Config-write contract (router env keys, sourced from core/config/loader.rs):
 //   WHISPER_LANGUAGE      "pl" | "en"
 //   AI_FORMATTING_ENABLED "1" | "0"
-//   FORMATTING_LEVEL      "raw" | "medium" | "creative"
+//   FORMATTING_LEVEL      "off" | "correction" | "smart" | "max"
 //   USE_LOCAL_STT         "1" | "0"
 //   LOCAL_MODEL / STT_ENDPOINT / LLM_MODEL / LLM_ENDPOINT / LLM_ASSISTIVE_* ...  free strings
 // Keychain accounts (CsKeyStatus, core/config/keychain.rs::KEYCHAIN_ACCOUNTS):
@@ -34,6 +34,15 @@ protocol SettingsEngine {
     func updateConfig(key: String, value: String) throws
     func updateConfigMany(entries: [CsConfigEntry]) throws
 
+    // Live audio hardware truth + explicit unset for the preferred device.
+    func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
+    func resetAudioInputDevice() throws
+
+    // Voice Lab quality truth (JSONL stays behind the Rust bridge)
+    func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
+    func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord
+
     // Keychain-backed API keys — presence booleans only, secrets never read back
     func keyStatus() -> CsKeyStatus
     func keyAccounts() -> [String]
@@ -54,15 +63,23 @@ protocol SettingsEngine {
     // Editable BASE prompts
     func getFormattingPrompt() -> String
     func getAssistivePrompt() -> String
+    func formattingPromptSnapshot() -> CsPromptSnapshot
+    func formattingPromptSnapshot(level: String) throws -> CsPromptSnapshot
+    func assistivePromptSnapshot() -> CsPromptSnapshot
     func defaultFormattingPrompt() -> String
     func defaultAssistivePrompt() -> String
     func setFormattingPrompt(content: String) throws
+    func setFormattingPrompt(level: String, content: String) throws
     func setAssistivePrompt(content: String) throws
-    func resetPromptsToDefaults() throws
+    func restoreFormattingPromptToDefault() throws
+    func restoreFormattingPromptToDefault(level: String) throws
+    func restoreAssistivePromptToDefault() throws
 
-    // Destructive privacy action: wipe all local app data (config / logs /
-    // transcriptions + Application Support store), optionally the Keychain keys.
-    func resetAppData(includeKeys: Bool) throws
+    // Recoverable reset: preview live impact, move local data to Trash, and
+    // optionally remove Keychain keys. MCP-only clear is a separate concern.
+    func resetPreview() -> CsResetPreview
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) throws
+    func clearMcpConfiguration() throws
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -88,6 +105,21 @@ final class RealSettingsEngine: SettingsEngine {
     }
     func updateConfigMany(entries: [CsConfigEntry]) throws {
         try config.updateConfigMany(entries: entries)
+    }
+    func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot {
+        try audioInputSnapshot()
+    }
+    func resetAudioInputDevice() throws {
+        try config.resetAudioInputDevice()
+    }
+    func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
+        try qualityRecentRecords(limit: limit)
+    }
+    func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
+        try lexiconCustomEntries()
+    }
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord {
+        try qualityFinalizeCorrection(correctionId: id, canonical: canonical)
     }
 
     func keyStatus() -> CsKeyStatus { config.keyStatus() }
@@ -117,19 +149,37 @@ final class RealSettingsEngine: SettingsEngine {
 
     func getFormattingPrompt() -> String { config.getFormattingPrompt() }
     func getAssistivePrompt() -> String { config.getAssistivePrompt() }
+    func formattingPromptSnapshot() -> CsPromptSnapshot { config.formattingPromptSnapshot() }
+    func formattingPromptSnapshot(level: String) throws -> CsPromptSnapshot {
+        try config.formattingPromptSnapshotForLevel(level: level)
+    }
+    func assistivePromptSnapshot() -> CsPromptSnapshot { config.assistivePromptSnapshot() }
     func defaultFormattingPrompt() -> String { config.defaultFormattingPrompt() }
     func defaultAssistivePrompt() -> String { config.defaultAssistivePrompt() }
     func setFormattingPrompt(content: String) throws {
         try config.setFormattingPrompt(content: content)
     }
+    func setFormattingPrompt(level: String, content: String) throws {
+        try config.setFormattingPromptForLevel(level: level, content: content)
+    }
     func setAssistivePrompt(content: String) throws {
         try config.setAssistivePrompt(content: content)
     }
-    func resetPromptsToDefaults() throws { try config.resetPromptsToDefaults() }
-
-    func resetAppData(includeKeys: Bool) throws {
-        try config.resetAppData(includeKeys: includeKeys)
+    func restoreFormattingPromptToDefault() throws {
+        try config.restoreFormattingPromptToDefault()
     }
+    func restoreFormattingPromptToDefault(level: String) throws {
+        try config.restoreFormattingPromptForLevelToDefault(level: level)
+    }
+    func restoreAssistivePromptToDefault() throws {
+        try config.restoreAssistivePromptToDefault()
+    }
+
+    func resetPreview() -> CsResetPreview { config.resetPreview() }
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
+        try config.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
+    }
+    func clearMcpConfiguration() throws { try config.clearMcpConfiguration() }
 }
 
 // MARK: - Mock engine (previews)
@@ -143,6 +193,24 @@ struct MockSettingsEngine: SettingsEngine {
     var dir: String = "~/.codescribe"
     var onboarding: Bool = false
     var mode: String? = "agentic"
+    var qualityRecords: [CsQualityRecord] = []
+    var lexiconEntries: [CsLexiconEntry] = []
+    var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
+    var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
+    var audioSnapshot: CsAudioInputSnapshot = .sample
+    var resetPreviewValue: CsResetPreview = .sample
+    var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
+    var assistiveSnapshot: CsPromptSnapshot = .sampleAssistive
+    var promptSaveObserver: ((String, String) throws -> Void)?
+    var promptRestoreObserver: ((String) throws -> Void)?
+    var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
+    var clearMcpConfigurationObserver: (() throws -> Void)?
+    var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
+    var resetAudioInputDeviceObserver: (() throws -> Void)?
+    var voiceLabEditObserver: ((String, String) throws -> CsQualityRecord)?
+    // Keep the long-standing config observer last so existing trailing-closure
+    // call sites continue to bind to config writes, not Voice Lab edits.
+    var updateConfigObserver: ((String, String) throws -> Void)?
 
     func loadSettings() -> CsSettings { settings }
     func configDir() -> String { dir }
@@ -150,8 +218,40 @@ struct MockSettingsEngine: SettingsEngine {
     func onboardingMode() -> String? { mode }
     func setOnboardingMode(mode: String) throws {}
 
-    func updateConfig(key: String, value: String) throws {}
-    func updateConfigMany(entries: [CsConfigEntry]) throws {}
+    func updateConfig(key: String, value: String) throws {
+        try updateConfigObserver?(key, value)
+    }
+    func updateConfigMany(entries: [CsConfigEntry]) throws {
+        try updateConfigManyObserver?(entries)
+    }
+    func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot { audioSnapshot }
+    func resetAudioInputDevice() throws {
+        try resetAudioInputDeviceObserver?()
+    }
+    func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
+        let records = try qualityRecordsLoader?() ?? qualityRecords
+        return Array(records.prefix(Int(clamping: limit)))
+    }
+    func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
+        try lexiconEntriesLoader?() ?? lexiconEntries
+    }
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord {
+        if let voiceLabEditObserver {
+            return try voiceLabEditObserver(id, canonical)
+        }
+        guard let record = qualityRecords.first(where: { $0.id == id }) else {
+            throw NSError(domain: "VoiceLab", code: 404)
+        }
+        return CsQualityRecord(
+            id: record.id,
+            revision: record.revision + 1,
+            rawText: record.rawText,
+            variant: record.variant,
+            editedText: canonical,
+            action: "edit",
+            timestampMs: record.timestampMs
+        )
+    }
 
     func keyStatus() -> CsKeyStatus { status }
     func keyAccounts() -> [String] {
@@ -206,15 +306,96 @@ struct MockSettingsEngine: SettingsEngine {
 
     func getFormattingPrompt() -> String { CsSettings.samplePrompt }
     func getAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
+    func formattingPromptSnapshot() -> CsPromptSnapshot { formattingSnapshot }
+    func formattingPromptSnapshot(level: String) throws -> CsPromptSnapshot {
+        switch level {
+        case "correction": return formattingSnapshot
+        case "smart": return .sampleFormattingSmart
+        case "max": return .sampleFormattingMax
+        default: throw NSError(domain: "FormattingPolicy", code: 1)
+        }
+    }
+    func assistivePromptSnapshot() -> CsPromptSnapshot { assistiveSnapshot }
     func defaultFormattingPrompt() -> String { CsSettings.samplePrompt }
     func defaultAssistivePrompt() -> String { CsSettings.sampleAssistivePrompt }
-    func setFormattingPrompt(content: String) throws {}
-    func setAssistivePrompt(content: String) throws {}
-    func resetPromptsToDefaults() throws {}
-    func resetAppData(includeKeys: Bool) throws {}
+    func setFormattingPrompt(content: String) throws {
+        try promptSaveObserver?("formatting", content)
+    }
+    func setFormattingPrompt(level: String, content: String) throws {
+        try promptSaveObserver?(level, content)
+    }
+    func setAssistivePrompt(content: String) throws {
+        try promptSaveObserver?("assistive", content)
+    }
+    func restoreFormattingPromptToDefault() throws {
+        try promptRestoreObserver?("formatting")
+    }
+    func restoreFormattingPromptToDefault(level: String) throws {
+        try promptRestoreObserver?(level)
+    }
+    func restoreAssistivePromptToDefault() throws {
+        try promptRestoreObserver?("assistive")
+    }
+    func resetPreview() -> CsResetPreview { resetPreviewValue }
+    func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
+        try resetAppDataObserver?(includeKeys, includePrompts)
+    }
+    func clearMcpConfiguration() throws {
+        try clearMcpConfigurationObserver?()
+    }
 }
 
 // MARK: - Bridge value helpers
+
+extension CsAudioInputSnapshot {
+    static let sample = CsAudioInputSnapshot(
+        devices: ["MacBook Pro Microphone", "USB Studio Mic"],
+        configuredDevice: nil,
+        runtimeDevice: "MacBook Pro Microphone",
+        configuredDeviceAvailable: true,
+        fallbackToDefault: false,
+        runtimeConfigurationMatches: true
+    )
+}
+
+extension CsResetPreview {
+    static let sample = CsResetPreview(
+        audioFiles: 98,
+        transcriptDays: 6,
+        threads: 12,
+        totalBytes: 31_981_568
+    )
+}
+
+extension CsPromptSnapshot {
+    static let sampleFormatting = CsPromptSnapshot(
+        content: CsSettings.samplePrompt,
+        path: "~/.codescribe/prompts/formatting.txt",
+        source: "custom_file",
+        readError: nil
+    )
+
+    static let sampleFormattingSmart = CsPromptSnapshot(
+        content: "Smart formatting preview prompt.",
+        path: "~/.codescribe/prompts/formatting-smart.txt",
+        source: "built_in_fallback",
+        readError: nil
+    )
+
+    static let sampleFormattingMax = CsPromptSnapshot(
+        content: "Max formatting preview prompt.",
+        path: "~/.codescribe/prompts/formatting-max.txt",
+        source: "built_in_fallback",
+        readError: nil
+    )
+
+    static let sampleAssistive = CsPromptSnapshot(
+        content: CsSettings.sampleAssistivePrompt,
+        path: "~/.codescribe/prompts/assistive.txt",
+        source: "custom_file",
+        readError: nil
+    )
+}
 
 extension CsLanguage {
     /// Two-letter code shown in the UI and written to `WHISPER_LANGUAGE`.
@@ -247,7 +428,7 @@ extension CsSettings {
         aiFormattingEnabled: true,
         transcriptSendMode: "end_of_utterance",
         transcriptTaggingEnabled: false,
-        transcriptTagTemplate: "",
+        transcriptTagTemplate: "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>",
         aiMaxTokens: 1024,
         aiAssistiveMaxTokens: 2048,
         showTrayGlyph: true,
@@ -283,7 +464,7 @@ extension CsSettings {
         llmAssistiveEndpoint: "https://api.openai.com/v1/responses",
         llmAssistiveModel: "gpt-4o",
         llmAssistiveProvider: "openai-responses",
-        formattingLevel: "medium",
+        formattingLevel: "correction",
         whisperModel: "whisper-large-v3-turbo",
         layeredTranscription: nil,
         agentWorkspaceRoots: ["~/Git"],
@@ -377,14 +558,14 @@ extension CsModelDiscovery {
                 models: []
             )
         default:
+            let models = [CsSettings.sample.llmAssistiveModel, CsSettings.sample.llmFormattingModel]
+                .compactMap { $0 }
+                .map { CsModelOption(id: $0, displayName: $0) }
             return CsModelDiscovery(
                 providerId: "openai-responses",
                 status: "fresh",
                 message: nil,
-                models: [
-                    CsModelOption(id: "gpt-5.5", displayName: "gpt-5.5"),
-                    CsModelOption(id: "gpt-4.1", displayName: "gpt-4.1"),
-                ]
+                models: models
             )
         }
     }

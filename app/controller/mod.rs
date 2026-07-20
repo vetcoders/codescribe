@@ -33,14 +33,17 @@ pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActio
 use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+use chrono::{DateTime, Local};
 
 use crate::audio::streaming_recorder::StreamingRecorder;
 use crate::config::models::ModelManager;
@@ -48,10 +51,10 @@ use crate::config::{Config, UserSettings};
 use crate::os::clipboard;
 use crate::os::hotkeys::HoldMode;
 use crate::os::selection::{
-    AssistiveContext, build_assistive_input, capture_assistive_context,
+    AssistiveContext, activate_app_by_name, build_assistive_input, capture_assistive_context,
     capture_assistive_context_with_prior_frontmost, capture_frontmost_app_only,
     capture_frontmost_app_only_with_prior_frontmost, get_recent_assistive_context,
-    store_recent_assistive_context,
+    store_recent_assistive_context, wait_for_frontmost_app,
 };
 
 // Moshi conversation engine and audio output
@@ -66,7 +69,6 @@ use codescribe_core::pipeline::contracts::{
 
 use helpers::{
     SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    reset_agent_runtime_for_new_thread as reset_agent_runtime_for_new_thread_impl,
     reset_session_telemetry, send_assistive_with_agent_runtime, snapshot_session_telemetry,
 };
 use types::{
@@ -79,6 +81,12 @@ const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
 const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
+const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(250);
+/// At most one level sample may wait behind the controller worker. The capture
+/// thread never constructs IPC events or timestamps and never accumulates a
+/// backlog when the bridge/UI is slower than CoreAudio.
+const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
+const AUTOMATIC_DELIVERY_HISTORY_CAPACITY: usize = 32;
 
 fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     if assistive {
@@ -216,6 +224,87 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
 
 fn non_empty_transcript(text: Option<String>) -> Option<String> {
     text.filter(|text| !text.trim().is_empty())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoPasteTrigger {
+    Hold,
+    DoubleLeftOption,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AutoPastePolicyContext {
+    trigger: AutoPasteTrigger,
+    persisted_enabled: bool,
+    overlay_enabled: bool,
+    assistive: bool,
+    no_speech: bool,
+    empty_output: bool,
+    notes_save_only: bool,
+    live_stream_session: bool,
+    commit_required: bool,
+}
+
+fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
+    // Trigger and presentation state deliberately do not fork policy. Keeping
+    // the explicit matrix here makes that parity reviewable and testable.
+    let persisted_policy = match (context.trigger, context.overlay_enabled) {
+        (AutoPasteTrigger::Hold, true | false)
+        | (AutoPasteTrigger::DoubleLeftOption, true | false) => context.persisted_enabled,
+    };
+
+    persisted_policy
+        && !context.assistive
+        && !context.no_speech
+        && !context.empty_output
+        && !context.notes_save_only
+        && !context.live_stream_session
+        && !context.commit_required
+}
+
+trait AutomaticDeliverySink: Send + Sync {
+    fn paste(&self, text: &str) -> Result<()>;
+}
+
+struct ClipboardDeliverySink;
+
+impl AutomaticDeliverySink for ClipboardDeliverySink {
+    fn paste(&self, text: &str) -> Result<()> {
+        clipboard::paste_text(text).context("Failed to paste text")
+    }
+}
+
+/// Controller-owned, bounded exactly-once fence. A small ring retains recent
+/// recording timestamps so late duplicate callbacks remain fenced without
+/// process-global or unbounded growth. A failed sink call remains retryable.
+struct AutomaticDeliveryOwner {
+    delivered_timestamps: Mutex<VecDeque<DateTime<Local>>>,
+    sink: Arc<dyn AutomaticDeliverySink>,
+}
+
+impl AutomaticDeliveryOwner {
+    fn new(sink: Arc<dyn AutomaticDeliverySink>) -> Self {
+        Self {
+            delivered_timestamps: Mutex::new(VecDeque::with_capacity(
+                AUTOMATIC_DELIVERY_HISTORY_CAPACITY,
+            )),
+            sink,
+        }
+    }
+
+    async fn deliver_once(&self, timestamp: DateTime<Local>, text: &str) -> Result<bool> {
+        let mut delivered = self.delivered_timestamps.lock().await;
+        if delivered.contains(&timestamp) {
+            return Ok(false);
+        }
+
+        self.sink.paste(text)?;
+        if delivered.len() == AUTOMATIC_DELIVERY_HISTORY_CAPACITY {
+            delivered.pop_front();
+        }
+        delivered.push_back(timestamp);
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -582,17 +671,71 @@ fn recording_mode_label(
     }
 }
 
+fn truth_recording_mode_label(
+    assistive: bool,
+    hold_mode: HoldMode,
+    force_raw: bool,
+    force_ai: bool,
+) -> &'static str {
+    if assistive {
+        "assistive"
+    } else {
+        recording_mode_label(assistive, hold_mode, force_raw, force_ai)
+    }
+}
+
 fn maybe_wrap_transcript_for_delivery(text: &str, config: &Config, mode: &str) -> String {
+    maybe_wrap_transcript_for_delivery_with_quality(text, config, mode, None)
+}
+
+fn maybe_wrap_transcript_for_delivery_with_quality(
+    text: &str,
+    config: &Config,
+    mode: &str,
+    metadata: Option<&RecordingTruthMetadata>,
+) -> String {
     if !config.transcript_tagging_enabled {
         return text.to_string();
     }
 
-    codescribe_core::transcript_tagging::wrap_transcript(
+    let confidence_flags = metadata
+        .map(|metadata| {
+            metadata
+                .confidence_flags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    codescribe_core::transcript_tagging::wrap_transcript_with_quality(
         text,
         &config.transcript_tag_template,
         mode,
         config.whisper_language.as_str(),
+        metadata.and_then(|metadata| metadata.avg_logprob),
+        &confidence_flags,
     )
+}
+
+/// Outcome of the overlay Insert action's delivery attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPasteDelivery {
+    /// Synthetic Cmd+V was posted at the restored target's caret.
+    Pasted,
+    /// Focus never left Codescribe; tagged text was copied instead of pasted.
+    CopiedToClipboard,
+    /// Nothing to deliver (empty transcript).
+    Noop,
+}
+
+/// True when a synthetic Cmd+V would land in Codescribe itself instead of the
+/// intended target. `None` (signal unavailable) keeps the legacy best-effort
+/// paste: never break delivery on a missing probe.
+fn overlay_paste_would_self_target(frontmost_app: Option<&str>) -> bool {
+    frontmost_app
+        .map(|name| name.trim().eq_ignore_ascii_case("codescribe"))
+        .unwrap_or(false)
 }
 
 fn toggle_final_pass_enabled() -> bool {
@@ -804,11 +947,6 @@ fn evaluate_quality_commit_trigger(
     None
 }
 
-/// Rotate runtime + thread identity and return generation once backend reset completes.
-pub async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
-    reset_agent_runtime_for_new_thread_impl().await
-}
-
 /// Recording controller managing state machine and lifecycle
 pub struct RecordingController {
     /// Application configuration
@@ -850,6 +988,9 @@ pub struct RecordingController {
 
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
+
+    /// One bounded automatic-delivery owner shared by visible/headless paths.
+    automatic_delivery: AutomaticDeliveryOwner,
 
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
@@ -1024,6 +1165,7 @@ impl RecordingController {
             hold_start_generation: Arc::new(AtomicU64::new(0)),
             start_transition_in_flight: Arc::new(AtomicBool::new(false)),
             serial_lock: Arc::new(Mutex::new(())),
+            automatic_delivery: AutomaticDeliveryOwner::new(Arc::new(ClipboardDeliverySink)),
             vad_triggered: Arc::new(AtomicBool::new(false)),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
             toggle_user_has_text: Arc::new(AtomicBool::new(false)),
@@ -1102,6 +1244,64 @@ impl RecordingController {
         self.config.read().await.clone()
     }
 
+    /// App name latched before the current overlay session took focus.
+    ///
+    /// This is a read-only snapshot for UI copy. Delivery continues to read the
+    /// same field inside `paste_text_from_overlay`; exposing it does not alter the
+    /// focus restoration or clipboard path.
+    pub async fn paste_target_app_name(&self) -> Option<String> {
+        self.pre_overlay_frontmost_app.read().await.clone()
+    }
+
+    /// Paste user-edited overlay text through the same controller-owned delivery
+    /// path as automatic dictation delivery: restore the pre-overlay target app,
+    /// apply transcript tagging config, then synthesize Cmd+V via clipboard.
+    ///
+    /// Self-paste guard: when the frontmost app is still Codescribe after the
+    /// activation attempt (activation failed, Automation TCC denial, or no
+    /// latched target), a synthetic Cmd+V would land back in our own UI. The
+    /// tagged text is copied to the clipboard instead and `CopiedToClipboard`
+    /// reports the honest outcome to the UI.
+    pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteDelivery> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(OverlayPasteDelivery::Noop);
+        }
+
+        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
+        if let Some(app_name) = target_app.as_deref()
+            && activate_app_by_name(app_name)
+        {
+            let _ = wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
+        }
+
+        let config = self.config.read().await.clone();
+        let paste_text = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        let frontmost = crate::os::selection::current_frontmost_app_name();
+        if overlay_paste_would_self_target(frontmost.as_deref()) {
+            clipboard::set_clipboard(&paste_text)
+                .context("Failed to copy overlay text after self-paste guard")?;
+            return Ok(OverlayPasteDelivery::CopiedToClipboard);
+        }
+        clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
+        Ok(OverlayPasteDelivery::Pasted)
+    }
+
+    /// Copy the tagged transcript to the clipboard without any synthetic paste.
+    /// Degrade path for the overlay Insert action when the caret already sits
+    /// inside Codescribe (e.g. the overlay's editable FINAL), where a synthetic
+    /// Cmd+V would paste the transcript back into the overlay itself.
+    pub async fn copy_text_from_overlay(&self, text: String) -> Result<()> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let config = self.config.read().await.clone();
+        let tagged = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        clipboard::set_clipboard(&tagged).context("Failed to copy overlay text")?;
+        Ok(())
+    }
+
     /// Cancel any pending delayed hold-start task
     async fn cancel_pending_hold_start(&self) {
         let generation = self.hold_start_generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1120,6 +1320,7 @@ impl RecordingController {
         recorder.set_utterance_callback(None);
         recorder.set_utterance_silence_sec(None);
         recorder.set_event_sink(None);
+        recorder.set_level_callback(None);
     }
 
     async fn ensure_recorder_ready_for_start(
@@ -1313,12 +1514,44 @@ impl RecordingController {
         ))
     }
 
+    /// Feed the overlay's live level meter without doing allocation or timestamp
+    /// formatting on CoreAudio's capture thread. The callback only attempts a
+    /// bounded, non-blocking send; the controller worker constructs and
+    /// broadcasts the typed IPC event. When the worker is behind, the new sample
+    /// is dropped instead of growing a queue or delaying audio capture.
+    fn configure_level_broadcast(
+        recorder: &mut StreamingRecorder,
+        event_broadcast: broadcast::Sender<IpcEvent>,
+    ) {
+        let (level_tx, mut level_rx) = mpsc::channel::<f32>(AUDIO_LEVEL_QUEUE_CAPACITY);
+        recorder.set_level_callback(Some(Arc::new(move |rms| {
+            let _ = level_tx.try_send(rms);
+        })));
+
+        tokio::spawn(async move {
+            while let Some(rms) = level_rx.recv().await {
+                // Cleanup drops the callback sender. Do not drain a buffered
+                // sample after that boundary: it belongs to the closed session
+                // and must never animate a subsequently prepared overlay.
+                if level_rx.is_closed() {
+                    break;
+                }
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::AudioLevel { rms },
+                });
+            }
+        });
+    }
+
     fn configure_hold_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
     ) {
+        Self::configure_level_broadcast(recorder, event_broadcast.clone());
         recorder.set_event_sink(Some(Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,
@@ -1341,6 +1574,7 @@ impl RecordingController {
         // appends into the current chat user bubble, and VAD end commits that bubble to the
         // agent without stopping the recorder. Do not route assistive live preview deltas
         // into the same bubble, or previews and finals will duplicate.
+        Self::configure_level_broadcast(recorder, event_broadcast.clone());
         recorder.set_event_sink(Some(Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,
@@ -2951,7 +3185,8 @@ impl RecordingController {
                     truth_verdict.display_status.clone()
                 };
                 let mode_label =
-                    recording_mode_label(assistive, hold_mode, force_raw, force_ai).to_string();
+                    truth_recording_mode_label(assistive, hold_mode, force_raw, force_ai)
+                        .to_string();
                 let truth_metadata = RecordingTruthMetadata {
                     source: truth_verdict.transcript_source,
                     engine: truth_engine_label(truth_verdict.transcript_source),
@@ -3149,7 +3384,7 @@ impl RecordingController {
             postprocess_stats.lexicon_rewrites
         );
 
-        let raw_entry_path = if raw_save_enabled && !live_stream_session {
+        let raw_entry_path = if !live_stream_session && (raw_save_enabled || assistive) {
             let raw_entry = crate::state::history::save_entry_with_timestamp_and_slug(
                 &raw_text,
                 Some(recording_timestamp),
@@ -3192,7 +3427,7 @@ impl RecordingController {
         // - AI chat? → Hold + Shift (Chat)
         // - AI on selection? → Hold + Cmd (Selection)
         let mut is_ai_noop = false;
-        let (formatted_text, output_kind, mut should_auto_paste) = if assistive {
+        let (formatted_text, output_kind) = if assistive {
             info!(
                 "Assistive mode ({:?}): augmenting transcript via AI",
                 effective_hold_mode
@@ -3253,7 +3488,6 @@ impl RecordingController {
             (
                 clean_text.clone(),
                 crate::state::history::TranscriptKind::AssistantInterpretation,
-                false,
             )
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
@@ -3263,14 +3497,12 @@ impl RecordingController {
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             } else {
                 info!("Raw mode (Ctrl): using post-processed transcript");
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             }
         } else if force_ai {
@@ -3301,13 +3533,12 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind, true)
+                (result.text, kind)
             } else if has_repetition {
                 info!("Formatting mode (Left Option): AI unavailable, cleaning repetitions");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             } else {
                 info!(
@@ -3316,7 +3547,6 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             }
         } else {
@@ -3349,14 +3579,13 @@ impl RecordingController {
                         crate::state::history::TranscriptKind::Raw
                     }
                 };
-                (result.text, kind, false)
+                (result.text, kind)
             } else if has_repetition {
                 // Toggle OFF with repetition: local cleanup only
                 info!("Raw mode (Toggle OFF): applying local repetition cleanup");
                 (
                     crate::ai_formatting::remove_simple_repetitions(&clean_text),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             } else {
                 // Toggle OFF: using post-processed transcript
@@ -3364,13 +3593,15 @@ impl RecordingController {
                 (
                     clean_text.clone(),
                     crate::state::history::TranscriptKind::Raw,
-                    true,
                 )
             }
         };
 
         let mode_label =
             recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai).to_string();
+        let truth_mode_label =
+            truth_recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai)
+                .to_string();
         info!(
             "Final transcript ready ({} chars, mode={})",
             formatted_text.len(),
@@ -3420,23 +3651,6 @@ impl RecordingController {
             info!("COMMIT decision: not required by quality gate (mode={mode_label})");
         }
 
-        if truth_no_speech_reason.is_some() || commit_trigger.is_some() {
-            should_auto_paste = false;
-        }
-        if live_stream_session {
-            should_auto_paste = false;
-        }
-        // Hands-off (non-assistive) is action-driven: the full transcript lands in the
-        // decision overlay and the user picks [Format] / [Copy] / [Agent]. No silent
-        // auto-paste — differentiation happens AFTER recording, not during. (ADR
-        // 2026-05-28 Faza 1: "Różnicowanie przez akcje, nie przez tryby nagrywania".)
-        if matches!(
-            transcript_source,
-            Some(RecordingTranscriptSource::ToggleSessionAdjudicated)
-        ) {
-            should_auto_paste = false;
-        }
-
         let final_formatted_text = formatted_text.clone();
 
         // Surface the authoritative final transcript to external dictation surfaces
@@ -3459,7 +3673,7 @@ impl RecordingController {
         let truth_metadata = RecordingTruthMetadata {
             source: transcript_source,
             engine: truth_engine_label(transcript_source),
-            mode: Some(mode_label.clone()),
+            mode: Some(truth_mode_label.clone()),
             fallback_class: truth_fallback_class,
             fallback_used: truth_fallback_class.is_some()
                 || matches!(
@@ -3509,11 +3723,6 @@ impl RecordingController {
                     warn!("Quick note save failed: {}", e);
                 }
             }
-
-            // Optional: make Quick Notes "save-only".
-            if config.quick_notes_save_only {
-                should_auto_paste = false;
-            }
         }
 
         // Save audio to transcriptions folder if enabled (pair with RAW for reports)
@@ -3529,22 +3738,26 @@ impl RecordingController {
             write_truth_sidecar_logged(&audio_saved_path, &truth_metadata);
         }
 
-        // Overlay disabled = no decision surface. The action-driven gates above
-        // (commit_trigger / toggle-adjudicated / live-stream) hand the transcript
-        // to the overlay; with no overlay it would just vanish. Deliver headless by
-        // pasting directly at the cursor — unless there is nothing to paste (no
-        // speech) or Notes Mode chose save-only.
-        let overlay_disabled = !config.transcription_overlay_enabled;
         let has_final_text = !final_formatted_text.trim().is_empty();
         let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
-        if overlay_disabled
-            && !assistive
-            && truth_no_speech_reason.is_none()
-            && has_final_text
-            && !notes_save_only
-        {
-            should_auto_paste = true;
-        }
+        let should_auto_paste = resolve_auto_paste_policy(AutoPastePolicyContext {
+            trigger: if force_ai {
+                AutoPasteTrigger::DoubleLeftOption
+            } else {
+                AutoPasteTrigger::Hold
+            },
+            persisted_enabled: config.auto_paste_enabled,
+            overlay_enabled: config.transcription_overlay_enabled,
+            assistive,
+            no_speech: truth_no_speech_reason.is_some(),
+            empty_output: !has_final_text,
+            notes_save_only,
+            // Live-stream preview and explicit quality/safety commit branches
+            // remain separate named vetoes. Toggle-adjudicated final delivery is
+            // no longer a veto.
+            live_stream_session,
+            commit_required: commit_trigger.is_some(),
+        });
 
         // Save final transcript (skip duplicate when RAW already stored and
         // unchanged) BEFORE the paste attempt. Paste can fail transiently (e.g.
@@ -3567,10 +3780,6 @@ impl RecordingController {
             );
             info!("Transcript saved: {}", entry.path.display());
             write_truth_sidecar_logged(&entry.path, &truth_metadata);
-        } else if assistive {
-            info!(
-                "Assistive flow: skipping legacy final transcript save (ThreadStore is source of truth)"
-            );
         } else {
             info!("Final transcript matches RAW; skipping duplicate save");
         }
@@ -3578,11 +3787,21 @@ impl RecordingController {
         if cfg!(test) {
             info!("Skipping paste in tests (mode={})", mode_label);
         } else if should_auto_paste {
-            let paste_text =
-                maybe_wrap_transcript_for_delivery(&final_formatted_text, &config, &mode_label);
-            // Paste the text into the active application
-            clipboard::paste_text(&paste_text).context("Failed to paste text")?;
-            info!("Text pasted successfully");
+            let paste_text = maybe_wrap_transcript_for_delivery_with_quality(
+                &final_formatted_text,
+                &config,
+                &mode_label,
+                Some(&truth_metadata),
+            );
+            if self
+                .automatic_delivery
+                .deliver_once(recording_timestamp, &paste_text)
+                .await?
+            {
+                info!("Text pasted successfully");
+            } else {
+                info!("Automatic delivery skipped: recording timestamp already delivered");
+            }
         } else {
             info!("Auto-paste skipped (mode={})", mode_label);
         }
@@ -3600,7 +3819,7 @@ impl RecordingController {
                 &RecordingTruthMetadata {
                     source: Some(RecordingTranscriptSource::CloudPrimary),
                     engine: truth_engine_label(Some(RecordingTranscriptSource::CloudPrimary)),
-                    mode: Some(mode_label.clone()),
+                    mode: Some(truth_mode_label.clone()),
                     fallback_class: None,
                     fallback_used: false,
                     vad_speech_pct: None,
@@ -3618,7 +3837,7 @@ impl RecordingController {
         } else if let Some(handle) = cloud_handle {
             let slug_hint = raw_text.clone();
             let timestamp = recording_timestamp;
-            let mode_label = mode_label.clone();
+            let truth_mode_label = truth_mode_label.clone();
             tokio::spawn(async move {
                 match handle.await {
                     Ok(Ok(cloud_verdict)) => {
@@ -3636,7 +3855,7 @@ impl RecordingController {
                                 engine: truth_engine_label(Some(
                                     RecordingTranscriptSource::CloudPrimary,
                                 )),
-                                mode: Some(mode_label),
+                                mode: Some(truth_mode_label),
                                 fallback_class: None,
                                 fallback_used: false,
                                 vad_speech_pct: None,

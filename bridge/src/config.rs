@@ -8,14 +8,18 @@
 //! whether a key is present.
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
-use codescribe_core::config::prompts::{get_assistive_prompt_path, get_formatting_prompt_path};
 use codescribe_core::config::{
-    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, UserSettings, reset_to_defaults,
+    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, FormattingPolicy, PromptKind,
+    PromptSnapshot, PromptWriteReason, UserSettings, prompt_snapshot, prompts, reset_to_defaults,
+    restore_prompt_to_default, write_prompt, write_prompt_bytes,
 };
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
@@ -26,6 +30,7 @@ use codescribe_core::llm::model_discovery::{
     ModelDiscoveryStatus, discover_models as discover_provider_models,
 };
 use codescribe_core::llm::provider::{ALL_PROVIDERS, ProviderKind};
+use directories::BaseDirs;
 
 use crate::{CsError, CsLanguage};
 
@@ -122,6 +127,47 @@ pub struct CsSettings {
     pub backend_max_upload_mb: Option<u64>,
 }
 
+/// Live, non-secret impact summary shown before a full local-data reset.
+/// Counts come from the same two runtime roots that the reset moves to Trash.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+pub struct CsResetPreview {
+    pub audio_files: u64,
+    pub transcript_days: u64,
+    pub threads: u64,
+    pub total_bytes: u64,
+}
+
+/// UI-safe view of one base prompt. Content is included because this surface is
+/// the prompt editor itself; audit records never include it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct CsPromptSnapshot {
+    pub content: String,
+    pub path: String,
+    /// `custom_file`, `built_in_fallback`, or `read_error`.
+    pub source: String,
+    pub read_error: Option<String>,
+}
+
+impl From<PromptSnapshot> for CsPromptSnapshot {
+    fn from(snapshot: PromptSnapshot) -> Self {
+        Self {
+            content: snapshot.content,
+            path: snapshot.path.to_string_lossy().into_owned(),
+            source: snapshot.source.as_str().to_string(),
+            read_error: snapshot.read_error,
+        }
+    }
+}
+
+fn formatting_prompt_kind(level: &str) -> Result<PromptKind, CsError> {
+    let policy = FormattingPolicy::parse(level).map_err(|error| CsError::Config {
+        msg: error.to_string(),
+    })?;
+    PromptKind::for_formatting_policy(policy).ok_or_else(|| CsError::Config {
+        msg: "Off has no formatting prompt; choose correction, smart, or max".to_string(),
+    })
+}
+
 /// Presence-only view of the Keychain-backed API keys. Booleans only — the
 /// secret values themselves never cross FFI. A key counts as "set" when its
 /// account env var or Keychain account is present and non-empty.
@@ -206,6 +252,65 @@ pub struct CsProviderOption {
     pub models: Vec<CsModelOption>,
 }
 
+/// Stable lane identity used by the secret-free lane truth FFI snapshot.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsLlmLane {
+    Main,
+    Formatting,
+    Assistive,
+}
+
+impl From<CsLlmLane> for lane_truth::LaneTruthLane {
+    fn from(value: CsLlmLane) -> Self {
+        match value {
+            CsLlmLane::Main => Self::Main,
+            CsLlmLane::Formatting => Self::Formatting,
+            CsLlmLane::Assistive => Self::Assistive,
+        }
+    }
+}
+
+/// Complete canonical truth for one LLM lane. Credentials never cross the
+/// bridge: only the owning account name and presence/auth booleans are exposed.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsLaneTruthSnapshot {
+    pub lane: CsLlmLane,
+    pub provider_id: String,
+    pub endpoint: String,
+    pub model: String,
+    pub key_account: String,
+    pub key_present: bool,
+    pub account_auth: bool,
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+impl From<lane_truth::LaneTruthSnapshot> for CsLaneTruthSnapshot {
+    fn from(value: lane_truth::LaneTruthSnapshot) -> Self {
+        Self {
+            lane: match value.lane {
+                lane_truth::LaneTruthLane::Main => CsLlmLane::Main,
+                lane_truth::LaneTruthLane::Formatting => CsLlmLane::Formatting,
+                lane_truth::LaneTruthLane::Assistive => CsLlmLane::Assistive,
+            },
+            provider_id: value.provider_id,
+            endpoint: value.endpoint,
+            model: value.model,
+            key_account: value.key_account,
+            key_present: value.key_present,
+            account_auth: value.account_auth,
+            available: value.available,
+            unavailable_reason: value.unavailable_reason,
+        }
+    }
+}
+
+/// Project the live Rust lane truth through UniFFI without exposing secrets.
+#[uniffi::export]
+pub fn lane_truth_snapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot {
+    lane_truth::lane_truth_snapshot(lane.into(), &Config::load()).into()
+}
+
 /// Result of starting the provider-account login flow. `auth_url` is present
 /// when the local callback server is listening and the UI should open a browser.
 #[derive(uniffi::Record)]
@@ -233,6 +338,11 @@ pub struct CsConfigEntry {
 pub struct CsTrayToggles {
     pub show_dock_icon: bool,
     pub transcription_overlay_enabled: bool,
+    /// User-owned automatic delivery policy. Assistive and controller safety
+    /// vetoes can still prevent a paste for a particular recording.
+    pub auto_paste_enabled: bool,
+    /// Normalized automatic formatting policy: off, correction, smart, or max.
+    pub formatting_level: String,
     /// UI-initiated recording starts in the assistive lane when enabled.
     pub start_assistive: bool,
     /// Notes Mode: voice → daily note (no paste). Backed by the core
@@ -246,11 +356,36 @@ pub struct CsTrayToggles {
 #[derive(uniffi::Object)]
 pub struct CodescribeConfig {}
 
+/// Seed the recorder's legacy process-env input selector exactly once, while
+/// the macOS app is still constructing its bridge handles and before hotkey or
+/// recording worker threads start. Persisted settings remain the source of
+/// truth; an explicit launch-time process override keeps precedence.
+fn bootstrap_audio_input_runtime() {
+    static AUDIO_INPUT_BOOTSTRAP: Once = Once::new();
+    AUDIO_INPUT_BOOTSTRAP.call_once(|| {
+        if cfg!(test) || std::env::var_os("AUDIO_INPUT_DEVICE").is_some() {
+            return;
+        }
+        let Some(device) = Config::load_without_keychain()
+            .audio_input_device
+            .filter(|device| !device.trim().is_empty())
+        else {
+            return;
+        };
+
+        // SAFETY: `CodescribeConfig` is an AppDelegate-owned bridge property,
+        // constructed before `CodescribeHotkeys.start()` spawns runtime workers.
+        // The Once guard prevents later Settings-scene handles from mutating it.
+        unsafe { std::env::set_var("AUDIO_INPUT_DEVICE", device) };
+    });
+}
+
 #[uniffi::export]
 impl CodescribeConfig {
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
+        bootstrap_audio_input_runtime();
         Self {}
     }
 
@@ -285,7 +420,10 @@ impl CodescribeConfig {
             beep_on_start: config.beep_on_start,
             sound_name: config.sound_name.clone(),
             sound_volume: config.sound_volume,
-            audio_input_device: config.audio_input_device.clone(),
+            // This is the saved user choice, not the process-env selector held
+            // by the already-running recorder. AudioPanel gets that live truth
+            // separately from `CsAudioInputSnapshot`.
+            audio_input_device: setting_string(settings.audio_input_device.clone()),
             history_enabled: config.history_enabled,
             quick_notes_enabled: config.quick_notes_enabled,
             quick_notes_save_only: config.quick_notes_save_only,
@@ -335,11 +473,9 @@ impl CodescribeConfig {
                 settings.llm_assistive_provider.clone(),
                 &env_file,
             ),
-            formatting_level: effective_settings_string(
-                "FORMATTING_LEVEL",
-                settings.formatting_level.clone(),
-                &env_file,
-            ),
+            formatting_level: Config::formatting_policy()
+                .ok()
+                .map(|policy| policy.as_str().to_string()),
             whisper_model: effective_settings_string(
                 "WHISPER_MODEL",
                 settings.whisper_model.clone(),
@@ -384,6 +520,36 @@ impl CodescribeConfig {
         }
     }
 
+    /// Persist Auto Paste and return the prompt-free post-write truth in one
+    /// result. Callers may re-read `tray_toggles()` after an error; no optimistic
+    /// bridge cache is retained.
+    pub fn set_auto_paste_enabled(&self, enabled: bool) -> Result<CsTrayToggles, CsError> {
+        let mut settings = UserSettings::load();
+        settings.auto_paste_enabled = Some(enabled);
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(self.tray_toggles())
+    }
+
+    /// Persist a normalized Auto Format policy and return prompt-free
+    /// post-write truth. Unknown policy IDs fail without changing disk state.
+    pub fn set_auto_format_level(&self, level: String) -> Result<CsTrayToggles, CsError> {
+        let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        let mut settings = UserSettings::load();
+        settings.formatting_level = Some(policy.as_str().to_string());
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(self.tray_toggles())
+    }
+
     /// Lightweight tray-only settings read. Unlike `load_settings`, this never
     /// populates the Keychain, so it never prompts just because the user opened
     /// the menu. It DOES honor the full tier stack (defaults < settings.json <
@@ -394,6 +560,11 @@ impl CodescribeConfig {
         CsTrayToggles {
             show_dock_icon: config.show_dock_icon,
             transcription_overlay_enabled: config.transcription_overlay_enabled,
+            auto_paste_enabled: config.auto_paste_enabled,
+            formatting_level: Config::formatting_policy()
+                .unwrap_or_default()
+                .as_str()
+                .to_string(),
             start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle
@@ -412,6 +583,21 @@ impl CodescribeConfig {
             .map_err(|error| CsError::Config {
                 msg: error.to_string(),
             })?;
+        reload_hotkey_runtime();
+        crate::hotkeys::refresh_live_controller_config();
+        Ok(())
+    }
+
+    /// Clear the persisted input-device preference so the recorder falls back
+    /// to the live system default. This is an actual `None` in settings.json,
+    /// never `Some("")`; an explicit power-user env override still wins by the
+    /// existing three-tier contract.
+    pub fn reset_audio_input_device(&self) -> Result<(), CsError> {
+        let mut settings = UserSettings::load();
+        settings.audio_input_device = None;
+        settings.save().map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
         reload_hotkey_runtime();
         crate::hotkeys::refresh_live_controller_config();
         Ok(())
@@ -714,31 +900,84 @@ impl CodescribeConfig {
     /// the appended `*_tuning.txt`). Falls back to the built-in default when the
     /// file does not exist yet.
     pub fn get_formatting_prompt(&self) -> String {
-        read_prompt_or_default(
-            &get_formatting_prompt_path().to_string_lossy(),
-            DEFAULT_FORMATTING_PROMPT,
-        )
+        prompt_snapshot(PromptKind::Formatting).content
     }
 
     /// Current BASE assistive prompt (the editable `assistive.txt`, WITHOUT the
     /// appended `*_tuning.txt`). Falls back to the built-in default when the file
     /// does not exist yet.
     pub fn get_assistive_prompt(&self) -> String {
-        read_prompt_or_default(
-            &get_assistive_prompt_path().to_string_lossy(),
-            DEFAULT_ASSISTIVE_PROMPT,
-        )
+        prompt_snapshot(PromptKind::Assistive).content
     }
 
-    /// Overwrite the BASE formatting prompt file. The core has no setter, so we
-    /// write `formatting.txt` directly (creating the prompts dir if needed).
+    /// Content plus provenance/path for the formatting prompt editor.
+    pub fn formatting_prompt_snapshot(&self) -> CsPromptSnapshot {
+        prompt_snapshot(PromptKind::Formatting).into()
+    }
+
+    /// Content plus provenance/path for one explicit formatting policy prompt.
+    pub fn formatting_prompt_snapshot_for_level(
+        &self,
+        level: String,
+    ) -> Result<CsPromptSnapshot, CsError> {
+        Ok(prompt_snapshot(formatting_prompt_kind(&level)?).into())
+    }
+
+    /// Content plus provenance/path for the assistive prompt editor.
+    pub fn assistive_prompt_snapshot(&self) -> CsPromptSnapshot {
+        prompt_snapshot(PromptKind::Assistive).into()
+    }
+
+    /// Save the BASE formatting prompt through the core's atomic writer.
     pub fn set_formatting_prompt(&self, content: String) -> Result<(), CsError> {
-        write_prompt(&get_formatting_prompt_path(), &content)
+        write_prompt(
+            PromptKind::Formatting,
+            &content,
+            PromptWriteReason::SettingsSave,
+        )
+        .map_err(CsError::from)
+    }
+
+    /// Save one explicit formatting policy prompt through the shared owner.
+    pub fn set_formatting_prompt_for_level(
+        &self,
+        level: String,
+        content: String,
+    ) -> Result<(), CsError> {
+        write_prompt(
+            formatting_prompt_kind(&level)?,
+            &content,
+            PromptWriteReason::SettingsSave,
+        )
+        .map_err(CsError::from)
     }
 
     /// Overwrite the BASE assistive prompt file (`assistive.txt`).
     pub fn set_assistive_prompt(&self, content: String) -> Result<(), CsError> {
-        write_prompt(&get_assistive_prompt_path(), &content)
+        write_prompt(
+            PromptKind::Assistive,
+            &content,
+            PromptWriteReason::SettingsSave,
+        )
+        .map_err(CsError::from)
+    }
+
+    /// Restore only the formatting base prompt after explicit UI confirmation.
+    pub fn restore_formatting_prompt_to_default(&self) -> Result<(), CsError> {
+        restore_prompt_to_default(PromptKind::Formatting).map_err(CsError::from)
+    }
+
+    /// Restore one explicit formatting policy prompt after UI confirmation.
+    pub fn restore_formatting_prompt_for_level_to_default(
+        &self,
+        level: String,
+    ) -> Result<(), CsError> {
+        restore_prompt_to_default(formatting_prompt_kind(&level)?).map_err(CsError::from)
+    }
+
+    /// Restore only the assistive base prompt after explicit UI confirmation.
+    pub fn restore_assistive_prompt_to_default(&self) -> Result<(), CsError> {
+        restore_prompt_to_default(PromptKind::Assistive).map_err(CsError::from)
     }
 
     /// Reset both BASE prompt files to their built-in defaults
@@ -800,33 +1039,142 @@ impl CodescribeConfig {
             })
     }
 
-    /// Wipe all local codescribe data for a privacy "Reset app data" action.
+    /// Count the live reset impact without mutating disk or Keychain state.
+    pub fn reset_preview(&self) -> CsResetPreview {
+        reset_preview_for_dirs(&app_data_dirs())
+    }
+
+    /// Move only `mcp.json` to Trash. This intentionally does not touch any
+    /// other config, transcripts, threads, logs, preferences, or Keychain keys.
+    pub fn clear_mcp_configuration(&self) -> Result<(), CsError> {
+        let trash = codescribe_trash_dir()?;
+        clear_mcp_configuration_to(&Config::config_dir().join("mcp.json"), &trash)
+            .map(|_| ())
+            .map_err(|error| CsError::Config {
+                msg: format!("failed to move MCP configuration to Trash: {error}"),
+            })
+    }
+
+    /// Move all local codescribe data to a recoverable folder in the user's
+    /// Trash, append an external audit entry, and optionally remove Keychain
+    /// keys. The two data roots come from the runtime path helpers, so
+    /// `CODESCRIBE_DATA_DIR` overrides remain authoritative, including when the
+    /// source lives on another volume.
     ///
-    /// Removes the two app-owned data trees — the config / logs / transcription
-    /// directory (`~/.codescribe`) and the Application Support store
-    /// (`~/Library/Application Support/Codescribe`, i.e. settings.json + thread
-    /// history) — sourced from the same runtime path helpers the app reads, so a
-    /// `CODESCRIBE_DATA_DIR` override is honored and no `~` is ever hardcoded.
-    ///
-    /// When `include_keys` is true, also removes every Keychain-backed API key
-    /// (`KEYCHAIN_ACCOUNTS`). Deleting the data trees clears the `setup_done` sentinel, so the next launch replays the
-    /// first-run wizard. TCC / permission grants are deliberately NOT touched —
-    /// those are the user's to manage in System Settings.
-    ///
-    /// UserDefaults (window frames / SwiftUI scene restoration) is a CFPreferences
-    /// domain with no core helper; the Swift caller clears it before relaunch.
-    pub fn reset_app_data(&self, include_keys: bool) -> Result<(), CsError> {
-        for dir in app_data_dirs() {
-            remove_dir_all_tolerant(&dir).map_err(|error| CsError::Config {
-                msg: format!("failed to remove {}: {error}", dir.display()),
+    /// Same-volume moves use an atomic rename. Cross-volume moves copy the full
+    /// tree first, sync copied files, and only then remove the source without
+    /// following symlinks. UserDefaults are cleared by the Swift caller before
+    /// relaunch; TCC grants remain untouched.
+    pub fn reset_app_data(&self, include_keys: bool, include_prompts: bool) -> Result<(), CsError> {
+        let dirs = app_data_dirs();
+        let preview = reset_preview_for_dirs(&dirs);
+        let preserved_prompts = if include_prompts {
+            Vec::new()
+        } else {
+            capture_base_prompts().map_err(|error| CsError::Config {
+                msg: format!("failed to preserve base prompts before reset: {error}"),
+            })?
+        };
+        let now = Utc::now();
+        let trash_root = codescribe_trash_dir()?;
+        let audit_path = reset_audit_path()?;
+        let reset_destination =
+            create_reset_destination(&trash_root, &now).map_err(|error| CsError::Config {
+                msg: format!("failed to prepare Trash destination: {error}"),
             })?;
+        append_reset_audit(&ResetAuditEvent {
+            audit_path: &audit_path,
+            timestamp: &now,
+            status: "started",
+            source_paths: &dirs,
+            moved_paths: &[],
+            trash_path: &reset_destination,
+            preview: &preview,
+            include_keys,
+            include_prompts,
+            preserved_prompt_files: preserved_prompts.len(),
+        })
+        .map_err(|error| CsError::Config {
+            msg: format!("failed to append reset audit log: {error}"),
+        })?;
+
+        let moved_paths =
+            match move_reset_dirs_to_destination(&dirs, &reset_destination, &trash_root) {
+                Ok(moved_paths) => moved_paths,
+                Err(error) => {
+                    let _ = append_reset_audit(&ResetAuditEvent {
+                        audit_path: &audit_path,
+                        timestamp: &now,
+                        status: "move_failed",
+                        source_paths: &dirs,
+                        moved_paths: &[],
+                        trash_path: &reset_destination,
+                        preview: &preview,
+                        include_keys,
+                        include_prompts,
+                        preserved_prompt_files: preserved_prompts.len(),
+                    });
+                    return Err(CsError::Config {
+                        msg: format!("failed to move app data to Trash: {error}"),
+                    });
+                }
+            };
+
+        if let Err(error) = restore_base_prompts(&preserved_prompts) {
+            let _ = append_reset_audit(&ResetAuditEvent {
+                audit_path: &audit_path,
+                timestamp: &now,
+                status: "data_moved_prompt_restore_failed",
+                source_paths: &dirs,
+                moved_paths: &moved_paths,
+                trash_path: &reset_destination,
+                preview: &preview,
+                include_keys,
+                include_prompts,
+                preserved_prompt_files: preserved_prompts.len(),
+            });
+            return Err(CsError::Config {
+                msg: format!("app data moved to Trash but base prompt restoration failed: {error}"),
+            });
         }
-        if include_keys {
+
+        let key_error = if include_keys {
+            let mut failure = None;
             for account in KEYCHAIN_ACCOUNTS {
-                delete_key(account).map_err(|error| CsError::Config {
-                    msg: format!("failed to remove keychain key {account}: {error}"),
-                })?;
+                if let Err(error) = delete_key(account) {
+                    failure = Some(CsError::Config {
+                        msg: format!("failed to remove keychain key {account}: {error}"),
+                    });
+                    break;
+                }
             }
+            failure
+        } else {
+            None
+        };
+
+        append_reset_audit(&ResetAuditEvent {
+            audit_path: &audit_path,
+            timestamp: &now,
+            status: if key_error.is_some() {
+                "data_moved_keychain_failed"
+            } else {
+                "completed"
+            },
+            source_paths: &dirs,
+            moved_paths: &moved_paths,
+            trash_path: &reset_destination,
+            preview: &preview,
+            include_keys,
+            include_prompts,
+            preserved_prompt_files: preserved_prompts.len(),
+        })
+        .map_err(|error| CsError::Config {
+            msg: format!("failed to append reset audit log: {error}"),
+        })?;
+
+        if let Some(error) = key_error {
+            return Err(error);
         }
         Ok(())
     }
@@ -850,29 +1198,393 @@ fn reload_hotkey_runtime() {
     codescribe::os::hotkeys::apply_hotkey_config(&Config::load_without_keychain());
 }
 
-/// App-owned data directories a full "Reset app data" wipes: the config / logs /
-/// transcription tree first, then the Application Support store. Both come from
-/// the runtime path helpers (honoring `CODESCRIBE_DATA_DIR`); when an override
-/// collapses them onto one path the duplicate is dropped so we never remove twice.
-fn app_data_dirs() -> Vec<std::path::PathBuf> {
+#[derive(Debug)]
+struct PreservedPrompt {
+    kind: PromptKind,
+    bytes: Vec<u8>,
+}
+
+fn capture_base_prompts() -> std::io::Result<Vec<PreservedPrompt>> {
+    let mut preserved = Vec::new();
+    for kind in PromptKind::USER_OWNED {
+        let path = prompts::prompts_dir().join(kind.filename());
+        match fs::read(path) {
+            Ok(bytes) => preserved.push(PreservedPrompt { kind, bytes }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(preserved)
+}
+
+fn restore_base_prompts(prompts: &[PreservedPrompt]) -> std::io::Result<()> {
+    for prompt in prompts {
+        write_prompt_bytes(
+            prompt.kind,
+            &prompt.bytes,
+            PromptWriteReason::AppResetPreservation,
+        )?;
+    }
+    Ok(())
+}
+
+/// App-owned data directories a full reset moves to Trash: config / logs /
+/// transcriptions first, then the Application Support store. Both come from the
+/// runtime helpers; an override that collapses them onto one path is deduplicated.
+fn app_data_dirs() -> Vec<PathBuf> {
     let config_dir = Config::config_dir();
     let settings_dir = codescribe_core::config::UserSettings::settings_dir();
-    if settings_dir == config_dir {
-        vec![config_dir]
-    } else {
-        vec![config_dir, settings_dir]
+    let mut selected: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for candidate in [config_dir, settings_dir] {
+        let identity = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        if selected
+            .iter()
+            .any(|(_, existing)| identity == *existing || identity.starts_with(existing))
+        {
+            continue;
+        }
+        selected.retain(|(_, existing)| !existing.starts_with(&identity));
+        selected.push((candidate, identity));
+    }
+    selected.into_iter().map(|(path, _)| path).collect()
+}
+
+fn codescribe_trash_dir() -> Result<PathBuf, CsError> {
+    BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(".Trash"))
+        .ok_or_else(|| CsError::Config {
+            msg: "could not resolve the user's Trash directory".to_string(),
+        })
+}
+
+fn reset_audit_path() -> Result<PathBuf, CsError> {
+    BaseDirs::new()
+        .map(|dirs| {
+            dirs.home_dir()
+                .join("Library/Logs/Codescribe/reset-audit.log")
+        })
+        .ok_or_else(|| CsError::Config {
+            msg: "could not resolve the Codescribe audit log directory".to_string(),
+        })
+}
+
+fn reset_preview_for_dirs(dirs: &[PathBuf]) -> CsResetPreview {
+    let mut preview = CsResetPreview::default();
+    for root in dirs {
+        preview.total_bytes = preview.total_bytes.saturating_add(path_size(root));
+
+        let transcriptions = root.join("transcriptions");
+        let (audio_files, transcript_days) = transcription_counts(&transcriptions);
+        preview.audio_files = preview.audio_files.saturating_add(audio_files);
+        preview.transcript_days = preview.transcript_days.saturating_add(transcript_days);
+
+        if preview.threads == 0 {
+            preview.threads = thread_index_count(&root.join("threads/index.json"));
+        }
+    }
+    preview
+}
+
+fn path_size(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.file_type().is_symlink() {
+        return 0;
+    }
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| path_size(&entry.path()))
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn transcription_counts(path: &Path) -> (u64, u64) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return (0, 0);
+    };
+    let mut audio_files = 0_u64;
+    let mut days = 0_u64;
+    for entry in entries.filter_map(Result::ok) {
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            let (day_audio, day_files) = count_transcription_tree(&entry_path);
+            audio_files = audio_files.saturating_add(day_audio);
+            if day_files > 0 {
+                days = days.saturating_add(1);
+            }
+        } else if is_audio_file(&entry_path) {
+            audio_files = audio_files.saturating_add(1);
+        }
+    }
+    (audio_files, days)
+}
+
+fn count_transcription_tree(path: &Path) -> (u64, u64) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return (0, 0);
+    };
+    let mut audio = 0_u64;
+    let mut files = 0_u64;
+    for entry in entries.filter_map(Result::ok) {
+        let entry_path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&entry_path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            let (nested_audio, nested_files) = count_transcription_tree(&entry_path);
+            audio = audio.saturating_add(nested_audio);
+            files = files.saturating_add(nested_files);
+        } else if metadata.is_file() {
+            files = files.saturating_add(1);
+            if is_audio_file(&entry_path) {
+                audio = audio.saturating_add(1);
+            }
+        }
+    }
+    (audio, files)
+}
+
+fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "wav" | "m4a" | "mp3" | "aac" | "caf" | "flac"
+            )
+        })
+}
+
+fn thread_index_count(path: &Path) -> u64 {
+    let Ok(bytes) = fs::read(path) else {
+        return 0;
+    };
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("threads")?
+                .as_array()
+                .map(|threads| threads.len())
+        })
+        .map_or(0, |count| count as u64)
+}
+
+fn timestamp_slug(now: &DateTime<Utc>) -> String {
+    now.format("%Y-%m-%dT%H-%M-%S%.3fZ").to_string()
+}
+
+fn unique_destination(root: &Path, stem: &str, extension: Option<&str>) -> PathBuf {
+    for suffix in 0_u32..=10_000 {
+        let numbered = if suffix == 0 {
+            stem.to_string()
+        } else {
+            format!("{stem}-{suffix}")
+        };
+        let candidate = match extension {
+            Some(extension) => root.join(format!("{numbered}.{extension}")),
+            None => root.join(numbered),
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    root.join(format!("{stem}-{}", std::process::id()))
+}
+
+fn validate_reset_source(source: &Path, trash_root: &Path) -> std::io::Result<()> {
+    let source = source.canonicalize()?;
+    let trash = trash_root.canonicalize()?;
+    let home = BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+    let audit_log = reset_audit_path().ok();
+    if source.parent().is_none()
+        || home.as_deref().is_some_and(|home| source == home)
+        || trash.starts_with(&source)
+        || audit_log
+            .as_deref()
+            .is_some_and(|audit_log| audit_log.starts_with(&source))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing unsafe reset source {}", source.display()),
+        ));
+    }
+    Ok(())
+}
+
+fn create_reset_destination(trash_root: &Path, now: &DateTime<Utc>) -> std::io::Result<PathBuf> {
+    fs::create_dir_all(trash_root)?;
+    let reset_destination = unique_destination(
+        trash_root,
+        &format!("codescribe-reset-{}", timestamp_slug(now)),
+        None,
+    );
+    fs::create_dir(&reset_destination)?;
+    Ok(reset_destination)
+}
+
+fn move_reset_dirs_to_destination(
+    dirs: &[PathBuf],
+    reset_destination: &Path,
+    trash_root: &Path,
+) -> std::io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut moved_paths = Vec::new();
+    for (index, source) in dirs.iter().filter(|source| source.exists()).enumerate() {
+        validate_reset_source(source, trash_root)?;
+        let label = if index == 0 {
+            "codescribe-data".to_string()
+        } else {
+            format!("application-support-{index}")
+        };
+        let destination = reset_destination.join(label);
+        move_path_recoverably(source, &destination)?;
+        moved_paths.push((source.clone(), destination));
+    }
+    Ok(moved_paths)
+}
+
+/// Prefer same-volume rename. If the source is on another volume, create and
+/// sync the complete destination before removing the source tree.
+fn move_path_recoverably(source: &Path, destination: &Path) -> std::io::Result<()> {
+    move_path_recoverably_with(source, destination, |source, destination| {
+        fs::rename(source, destination)
+    })
+}
+
+fn move_path_recoverably_with<F>(
+    source: &Path,
+    destination: &Path,
+    rename: F,
+) -> std::io::Result<()>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    match rename(source, destination) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            if let Err(copy_error) = copy_path_without_following_symlinks(source, destination) {
+                return Err(std::io::Error::new(
+                    copy_error.kind(),
+                    format!("rename failed ({rename_error}); fallback copy failed ({copy_error})"),
+                ));
+            }
+            remove_path_without_following_symlinks(source)
+        }
     }
 }
 
-/// `remove_dir_all` that treats an already-absent directory as success: a reset
-/// must not fail just because a tree (e.g. an Application Support store that was
-/// never created) does not exist yet.
-fn remove_dir_all_tolerant(dir: &std::path::Path) -> std::io::Result<()> {
-    match fs::remove_dir_all(dir) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+fn copy_path_without_following_symlinks(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(source)?;
+        // The destination is an app-created child of ~/.Trash, and this call
+        // recreates the link itself without following or writing through its
+        // target. Preserving the link is required for a recoverable reset.
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+        std::os::unix::fs::symlink(target, destination)?;
+        return Ok(());
     }
+    if metadata.is_dir() {
+        fs::create_dir(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_path_without_following_symlinks(
+                &entry.path(),
+                &destination.join(entry.file_name()),
+            )?;
+        }
+        return Ok(());
+    }
+    fs::copy(source, destination)?;
+    OpenOptions::new().read(true).open(destination)?.sync_all()
+}
+
+fn remove_path_without_following_symlinks(path: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        for entry in fs::read_dir(path)? {
+            remove_path_without_following_symlinks(&entry?.path())?;
+        }
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn clear_mcp_configuration_to(
+    mcp_path: &Path,
+    trash_root: &Path,
+) -> std::io::Result<Option<PathBuf>> {
+    if !mcp_path.exists() {
+        return Ok(None);
+    }
+    fs::create_dir_all(trash_root)?;
+    let now = Utc::now();
+    let destination = unique_destination(
+        trash_root,
+        &format!("codescribe-mcp-{}", timestamp_slug(&now)),
+        Some("json"),
+    );
+    move_path_recoverably(mcp_path, &destination)?;
+    Ok(Some(destination))
+}
+
+struct ResetAuditEvent<'a> {
+    audit_path: &'a Path,
+    timestamp: &'a DateTime<Utc>,
+    status: &'a str,
+    source_paths: &'a [PathBuf],
+    moved_paths: &'a [(PathBuf, PathBuf)],
+    trash_path: &'a Path,
+    preview: &'a CsResetPreview,
+    include_keys: bool,
+    include_prompts: bool,
+    preserved_prompt_files: usize,
+}
+
+fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
+    if let Some(parent) = event.audit_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let entry = serde_json::json!({
+        "timestamp": event.timestamp.to_rfc3339_opts(SecondsFormat::Millis, true),
+        "action": "reset_app_data",
+        "status": event.status,
+        "source_paths": event.source_paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>(),
+        "moved_paths": event.moved_paths.iter().map(|(source, destination)| serde_json::json!({
+            "source": source.to_string_lossy(),
+            "destination": destination.to_string_lossy(),
+        })).collect::<Vec<_>>(),
+        "trash_path": event.trash_path.to_string_lossy(),
+        "audio_files": event.preview.audio_files,
+        "transcript_days": event.preview.transcript_days,
+        "threads": event.preview.threads,
+        "total_bytes": event.preview.total_bytes,
+        "include_keys": event.include_keys,
+        "include_prompts": event.include_prompts,
+        "preserved_prompt_files": event.preserved_prompt_files,
+    });
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(event.audit_path)?;
+    writeln!(file, "{entry}")?;
+    file.sync_data()
 }
 
 /// Built-in default workspace root when `AGENT_WORKSPACE_ROOTS` is unset. Kept in
@@ -1095,29 +1807,22 @@ fn ensure_known_account(account: &str) -> Result<(), CsError> {
     }
 }
 
-/// Read a BASE prompt file, falling back to the supplied default when it is
-/// missing or unreadable.
-fn read_prompt_or_default(path: &str, default: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|_| default.to_string())
-}
-
-/// Write a BASE prompt file, creating its parent directory first.
-fn write_prompt(path: &std::path::Path, content: &str) -> Result<(), CsError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod reset_tests {
-    use super::{app_data_dirs, remove_dir_all_tolerant};
+    use super::{
+        CsResetPreview, ResetAuditEvent, app_data_dirs, append_reset_audit, capture_base_prompts,
+        clear_mcp_configuration_to, create_reset_destination, move_path_recoverably_with,
+        move_reset_dirs_to_destination, remove_path_without_following_symlinks,
+        reset_preview_for_dirs, restore_base_prompts,
+    };
+    use chrono::{DateTime, Utc};
     use serial_test::serial;
+    use std::ffi::{OsStr, OsString};
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Unique scratch directory under the OS temp dir (never the real home).
-    fn scratch(tag: &str) -> std::path::PathBuf {
+    fn scratch(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -1125,26 +1830,89 @@ mod reset_tests {
         std::env::temp_dir().join(format!("cs_reset_{}_{tag}_{nanos}", std::process::id()))
     }
 
-    /// The reset scope must follow the `CODESCRIBE_DATA_DIR` override and wipe
-    /// exactly that tree — never anything outside it — and a repeat wipe of an
-    /// already-gone tree must succeed (idempotent). `#[serial]`: mutates the global
-    /// `CODESCRIBE_DATA_DIR` env var read by the core path helpers.
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: reset tests that mutate process env are serialized.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: restores the serialized test's prior process environment.
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn write(path: &Path, bytes: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture parent");
+        }
+        std::fs::write(path, bytes).expect("write fixture");
+    }
+
+    fn fixed_timestamp() -> DateTime<Utc> {
+        "2026-07-16T16:15:00Z"
+            .parse()
+            .expect("valid fixed reset timestamp")
+    }
+
+    /// The reset scope follows `CODESCRIBE_DATA_DIR`, previews live counts, and
+    /// moves the complete source into a recoverable Trash destination.
     #[test]
     #[serial]
-    fn reset_scope_follows_data_dir_and_is_idempotent() {
-        let root = scratch("scope");
-        std::fs::create_dir_all(root.join("transcriptions")).unwrap();
-        std::fs::write(root.join("settings.json"), b"{}").unwrap();
-        std::fs::write(root.join("transcriptions/a.txt"), b"hi").unwrap();
-        let root_canon = root.canonicalize().unwrap();
-
-        let previous = std::env::var("CODESCRIBE_DATA_DIR").ok();
-        // SAFETY: single-threaded test body, serialized via `#[serial]`.
-        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &root) };
+    fn reset_scope_follows_data_dir_and_moves_live_data_to_trash() {
+        let sandbox = scratch("scope");
+        let root = sandbox.join("source");
+        let trash = sandbox.join("trash");
+        let audit = sandbox.join("logs/reset-audit.log");
+        write(
+            &root.join("transcriptions/2026-07-15/one.m4a"),
+            b"audio-one",
+        );
+        write(&root.join("transcriptions/2026-07-15/one.txt"), b"hello");
+        write(
+            &root.join("transcriptions/2026-07-16/two.wav"),
+            b"audio-two",
+        );
+        write(
+            &root.join("threads/index.json"),
+            br#"{"version":3,"threads":[{"id":"one"},{"id":"two"}]}"#,
+        );
+        write(&root.join("settings.json"), b"{}");
+        write(
+            &root.join("prompts/assistive.txt"),
+            b"sacred assistive bytes\n",
+        );
+        write(
+            &root.join("prompts/formatting.txt"),
+            b"sacred formatting bytes\n",
+        );
+        write(
+            &root.join("prompts/formatting-smart.txt"),
+            b"sacred smart bytes\n",
+        );
+        write(
+            &root.join("prompts/formatting-max.txt"),
+            b"sacred max bytes\n",
+        );
+        let root_canon = root.canonicalize().expect("canonical reset root");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
 
         let dirs = app_data_dirs();
         assert!(!dirs.is_empty(), "reset must target at least one dir");
-        // Every target resolves to the override root — nothing escapes it.
         for dir in &dirs {
             let resolved = dir.canonicalize().unwrap_or_else(|_| dir.clone());
             assert_eq!(
@@ -1153,29 +1921,202 @@ mod reset_tests {
             );
         }
 
-        for dir in &dirs {
-            remove_dir_all_tolerant(dir).unwrap();
-        }
-        assert!(!root_canon.exists(), "data tree survived reset");
+        let preview = reset_preview_for_dirs(&dirs);
+        assert_eq!(preview.audio_files, 2);
+        assert_eq!(preview.transcript_days, 2);
+        assert_eq!(preview.threads, 2);
+        assert!(preview.total_bytes >= 25);
 
-        // Idempotent: wiping an absent tree is a no-op, not an error.
-        for dir in &dirs {
-            remove_dir_all_tolerant(dir).unwrap();
-        }
+        let timestamp = fixed_timestamp();
+        let destination =
+            create_reset_destination(&trash, &timestamp).expect("create test Trash destination");
+        let preserved_prompts = capture_base_prompts().expect("capture sacred prompts");
+        let moved_paths = move_reset_dirs_to_destination(&dirs, &destination, &trash)
+            .expect("move reset scope to test Trash");
+        restore_base_prompts(&preserved_prompts).expect("restore sacred prompts");
+        assert!(!root.join("settings.json").exists());
+        assert_eq!(
+            std::fs::read(root.join("prompts/assistive.txt")).expect("read restored assistive"),
+            b"sacred assistive bytes\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("prompts/formatting.txt")).expect("read restored formatting"),
+            b"sacred formatting bytes\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("prompts/formatting-smart.txt")).expect("read restored smart"),
+            b"sacred smart bytes\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("prompts/formatting-max.txt")).expect("read restored max"),
+            b"sacred max bytes\n"
+        );
+        assert!(destination.join("codescribe-data/settings.json").is_file());
+        assert!(
+            destination
+                .join("codescribe-data/transcriptions/2026-07-15/one.m4a")
+                .is_file()
+        );
 
-        // SAFETY: restore prior env, same serialized single-thread context.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("CODESCRIBE_DATA_DIR", value),
-                None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
-            }
-        }
+        append_reset_audit(&ResetAuditEvent {
+            audit_path: &audit,
+            timestamp: &timestamp,
+            status: "completed",
+            source_paths: &dirs,
+            moved_paths: &moved_paths,
+            trash_path: &destination,
+            preview: &preview,
+            include_keys: false,
+            include_prompts: false,
+            preserved_prompt_files: preserved_prompts.len(),
+        })
+        .expect("append reset audit");
+        let line = std::fs::read_to_string(&audit).expect("read reset audit");
+        let entry: serde_json::Value = serde_json::from_str(line.trim()).expect("parse audit JSON");
+        assert_eq!(entry["timestamp"], "2026-07-16T16:15:00.000Z");
+        assert_eq!(entry["action"], "reset_app_data");
+        assert_eq!(entry["status"], "completed");
+        assert_eq!(entry["audio_files"], 2);
+        assert_eq!(entry["transcript_days"], 2);
+        assert_eq!(entry["threads"], 2);
+        assert_eq!(entry["include_keys"], false);
+        assert_eq!(entry["include_prompts"], false);
+        assert_eq!(entry["preserved_prompt_files"], 4);
+        assert_eq!(entry["trash_path"], destination.to_string_lossy().as_ref());
+        assert!(
+            entry["source_paths"]
+                .as_array()
+                .is_some_and(|paths| paths.len() == 1)
+        );
+        assert_eq!(
+            entry["moved_paths"][0]["source"],
+            root_canon.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            entry["moved_paths"][0]["destination"],
+            destination
+                .join("codescribe-data")
+                .to_string_lossy()
+                .as_ref()
+        );
+
+        remove_path_without_following_symlinks(&sandbox).expect("clean reset fixture");
+    }
+
+    #[test]
+    fn reset_audit_log_is_append_only_and_keeps_each_entry() {
+        let sandbox = scratch("audit");
+        let audit = sandbox.join("reset-audit.log");
+        let timestamp = fixed_timestamp();
+        let preview = CsResetPreview {
+            audio_files: 7,
+            transcript_days: 3,
+            threads: 4,
+            total_bytes: 42,
+        };
+        let sources = vec![sandbox.join("source")];
+        let destination = sandbox.join("trash/reset");
+
+        append_reset_audit(&ResetAuditEvent {
+            audit_path: &audit,
+            timestamp: &timestamp,
+            status: "started",
+            source_paths: &sources,
+            moved_paths: &[],
+            trash_path: &destination,
+            preview: &preview,
+            include_keys: true,
+            include_prompts: false,
+            preserved_prompt_files: 2,
+        })
+        .expect("append first audit line");
+        let moved_paths = vec![(sources[0].clone(), destination.join("codescribe-data"))];
+        append_reset_audit(&ResetAuditEvent {
+            audit_path: &audit,
+            timestamp: &timestamp,
+            status: "completed",
+            source_paths: &sources,
+            moved_paths: &moved_paths,
+            trash_path: &destination,
+            preview: &preview,
+            include_keys: true,
+            include_prompts: false,
+            preserved_prompt_files: 2,
+        })
+        .expect("append second audit line");
+
+        let content = std::fs::read_to_string(&audit).expect("read append-only audit");
+        assert_eq!(content.lines().count(), 2);
+        assert!(
+            content
+                .lines()
+                .all(|line| line.contains("\"include_keys\":true"))
+        );
+        assert!(
+            content
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("\"status\":\"started\""))
+        );
+        assert!(
+            content
+                .lines()
+                .nth(1)
+                .is_some_and(|line| line.contains("\"status\":\"completed\""))
+        );
+        remove_path_without_following_symlinks(&sandbox).expect("clean audit fixture");
+    }
+
+    #[test]
+    fn reset_cross_volume_fallback_copies_before_source_removal() {
+        let sandbox = scratch("fallback");
+        let source = sandbox.join("source");
+        let destination = sandbox.join("destination");
+        write(&source.join("nested/audio.m4a"), b"recoverable-audio");
+
+        move_path_recoverably_with(&source, &destination, |_source, _destination| {
+            Err(std::io::Error::other("forced cross-volume rename failure"))
+        })
+        .expect("complete copy-and-remove fallback after rename failure");
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(destination.join("nested/audio.m4a")).expect("read copied audio"),
+            b"recoverable-audio"
+        );
+        assert!(destination.join("nested/audio.m4a").is_file());
+        remove_path_without_following_symlinks(&sandbox).expect("clean fallback fixture");
+    }
+
+    #[test]
+    fn reset_clear_mcp_configuration_moves_only_mcp_json() {
+        let sandbox = scratch("mcp");
+        let data = sandbox.join("data");
+        let trash = sandbox.join("trash");
+        let mcp = data.join("mcp.json");
+        let settings = data.join("settings.json");
+        write(&mcp, br#"{"mcpServers":{"loctree":{}}}"#);
+        write(&settings, br#"{"speech":{"language":"pl"}}"#);
+
+        let destination = clear_mcp_configuration_to(&mcp, &trash)
+            .expect("move MCP config to Trash")
+            .expect("existing MCP config destination");
+
+        assert!(!mcp.exists());
+        assert_eq!(
+            std::fs::read(&settings).expect("settings must survive MCP clear"),
+            br#"{"speech":{"language":"pl"}}"#
+        );
+        assert_eq!(
+            std::fs::read(destination).expect("read trashed MCP config"),
+            br#"{"mcpServers":{"loctree":{}}}"#
+        );
+        remove_path_without_following_symlinks(&sandbox).expect("clean MCP fixture");
     }
 }
 
 #[cfg(test)]
 mod settings_snapshot_tests {
-    use super::CodescribeConfig;
+    use super::{CodescribeConfig, remove_path_without_following_symlinks};
     use codescribe_core::config::{Config, UserSettings};
     use serial_test::serial;
     use std::ffi::{OsStr, OsString};
@@ -1237,7 +2178,85 @@ mod settings_snapshot_tests {
             Some("anthropic-messages")
         );
 
-        let _ = std::fs::remove_dir_all(root);
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn tray_toggles_roundtrip_auto_paste_and_format_truth_after_write_failure() {
+        let root = scratch("tray_delivery_truth");
+        std::fs::create_dir_all(&root).expect("create bridge scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _auto_paste = EnvGuard::remove("AUTO_PASTE_ENABLED");
+        let _formatting = EnvGuard::remove("FORMATTING_LEVEL");
+        let config = CodescribeConfig::new();
+
+        let after_paste = config
+            .set_auto_paste_enabled(false)
+            .expect("persist auto paste false");
+        assert!(!after_paste.auto_paste_enabled);
+        assert_eq!(after_paste.formatting_level, "correction");
+
+        let after_format = config
+            .set_auto_format_level("smart".to_string())
+            .expect("persist normalized format level");
+        assert!(!after_format.auto_paste_enabled);
+        assert_eq!(after_format.formatting_level, "smart");
+
+        // Block the atomic temp-file write while leaving settings.json readable.
+        // The write must fail and a fresh prompt-free snapshot must recover the
+        // last persisted truth rather than an optimistic requested value.
+        std::fs::create_dir_all(UserSettings::settings_path().with_extension("json.tmp"))
+            .expect("block atomic settings temp path");
+        assert!(config.set_auto_paste_enabled(true).is_err());
+        let reread = config.tray_toggles();
+        assert!(!reread.auto_paste_enabled);
+        assert_eq!(reread.formatting_level, "smart");
+
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let env = Config::parse_env_file(&env_path).expect("parse optional env");
+            assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
+            assert!(!env.contains_key("FORMATTING_LEVEL"));
+        }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn audio_input_reset_persists_absence_not_an_empty_override() {
+        let root = scratch("audio_input_reset");
+        std::fs::create_dir_all(&root).expect("create audio reset scratch dir");
+
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        // Mirror the already-running recorder: its process selector remains
+        // pinned until restart even after the saved preference is unset.
+        let _device = EnvGuard::set("AUDIO_INPUT_DEVICE", "USB Studio Mic");
+
+        let mut settings = UserSettings {
+            audio_input_device: Some("USB Studio Mic".to_string()),
+            ..Default::default()
+        };
+        settings.save().expect("seed audio device preference");
+
+        CodescribeConfig::new()
+            .reset_audio_input_device()
+            .expect("reset audio device through the bridge");
+
+        settings = UserSettings::load();
+        assert_eq!(settings.audio_input_device, None);
+        assert_eq!(
+            CodescribeConfig::new().load_settings().audio_input_device,
+            None
+        );
+        let persisted = std::fs::read_to_string(UserSettings::settings_path())
+            .expect("read settings after audio reset");
+        assert!(!persisted.contains("USB Studio Mic"));
+        assert!(!persisted.contains("\"input_device_id\": \"\""));
+
+        let _ = remove_path_without_following_symlinks(&root);
     }
 
     #[test]
@@ -1274,7 +2293,7 @@ mod settings_snapshot_tests {
                 None => std::env::remove_var("LLM_MODEL"),
             }
         }
-        let _ = std::fs::remove_dir_all(root);
+        let _ = remove_path_without_following_symlinks(&root);
     }
 
     struct EnvGuard {

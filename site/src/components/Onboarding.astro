@@ -1,0 +1,206 @@
+---
+import { asset } from '../lib/asset';
+
+// Onboarding section (wow-pass, operator-approved). A pure-CSS horizontal
+// scroll-snap rail of the six onboarding "moves". Screenshots live in
+// public/shots/ (intrinsic 1735×1556); rebuilt in the site's own language
+// rather than embedding the composite filmstrip poster.
+const steps = [
+  {
+    n: '01',
+    file: 'shots/onboarding1-transparent.webp',
+    title: 'Operating lane',
+    meta: 'Basic or Agentic',
+    alt: 'codescribe onboarding — step 1: operating lane, Basic or Agentic',
+  },
+  {
+    n: '02',
+    // onboarding3 is the "Screen Recording Access" screen (asset contents don't
+    // match the numeric filenames); captions keep the approved filmstrip order.
+    file: 'shots/onboarding3-transparent.webp',
+    title: 'Screen recording',
+    meta: 'permission · granted',
+    alt: 'codescribe onboarding — step 2: screen recording, permission granted',
+  },
+  {
+    n: '03',
+    // onboarding2 is the "Pick your dictation language" screen.
+    file: 'shots/onboarding2-transparent.webp',
+    title: 'Dictation language',
+    meta: 'auto-detect',
+    alt: 'codescribe onboarding — step 3: dictation language, auto-detect',
+  },
+  {
+    n: '04',
+    file: 'shots/onboarding4-transparent.webp',
+    title: 'AI provider',
+    meta: 'OpenAI · Keychain',
+    alt: 'codescribe onboarding — step 4: AI provider, OpenAI · Keychain',
+  },
+  {
+    n: '05',
+    file: 'shots/onboarding5-transparent.webp',
+    title: 'Trigger hotkeys',
+    meta: 'hold · toggle · hybrid',
+    alt: 'codescribe onboarding — step 5: trigger hotkeys, hold · toggle · hybrid',
+  },
+  {
+    n: '06',
+    file: 'shots/onboarding6-transparent.webp',
+    title: 'Agentic readiness',
+    meta: 'provider · tools · MCP',
+    alt: 'codescribe onboarding — step 6: agentic readiness, provider · tools · MCP',
+  },
+];
+---
+
+<section class="section onboarding" data-screen-label="Onboarding" aria-labelledby="onboarding-title">
+  <div class="container">
+    <div class="head">
+      <p class="eyebrow">SETUP · 12-STEP WIZARD, SIX MOVES</p>
+      <h2 id="onboarding-title">Onboarding in six moves.</h2>
+      <p class="sub">
+        First launch to a ready voice runtime — pick a lane, grant permissions,
+        set language, connect a provider, choose hotkeys, check readiness.
+      </p>
+    </div>
+
+    <div
+      class="rail"
+      tabindex="0"
+      role="group"
+      aria-label="Onboarding steps — scroll horizontally through the six moves"
+    >
+      {
+        steps.map((s) => (
+          <article class="card">
+            <div class="frame">
+              <img
+                src={asset(s.file)}
+                width={1735}
+                height={1556}
+                loading="lazy"
+                decoding="async"
+                alt={s.alt}
+              />
+            </div>
+            <div class="cap">
+              <span class="cap__num">{s.n}</span>
+              <span class="cap__title">{s.title}</span>
+              <span class="cap__meta">{s.meta}</span>
+            </div>
+          </article>
+        ))
+      }
+    </div>
+
+    <p class="tagline">— from first launch to a ready voice runtime —</p>
+  </div>
+</section>
+
+<style>
+  .onboarding {
+    padding: 120px 24px;
+    background: radial-gradient(70% 100% at 50% 0%, rgba(95, 107, 62, 0.06), transparent 60%);
+  }
+  .container { max-width: 1180px; }
+  .head {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  h2 {
+    font: 700 clamp(32px, 5vw, 50px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 14px;
+    color: var(--ink);
+  }
+  .sub {
+    font: 400 16px / 1.55 var(--font-display);
+    color: var(--muted-2);
+    max-width: 560px;
+    margin: 0 auto;
+  }
+
+  /* horizontal scroll-snap rail (pure CSS) */
+  .rail {
+    display: flex;
+    gap: 20px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-padding-left: 4px;
+    padding: 6px 4px 20px;
+    /* scrollbar (Firefox) */
+    scrollbar-width: thin;
+    scrollbar-color: var(--stroke-3) transparent;
+  }
+  .rail:focus-visible {
+    outline: 2px solid var(--terracotta);
+    outline-offset: 4px;
+    border-radius: 14px;
+  }
+  .rail::-webkit-scrollbar { height: 8px; }
+  .rail::-webkit-scrollbar-track { background: transparent; }
+  .rail::-webkit-scrollbar-thumb {
+    background: var(--stroke-3);
+    border-radius: 6px;
+  }
+  .rail::-webkit-scrollbar-thumb:hover { background: var(--muted-4); }
+
+  .card {
+    flex: 0 0 auto;
+    width: 420px;
+    max-width: 85vw;
+    scroll-snap-align: start;
+  }
+  .frame {
+    border: 1px solid var(--stroke-2);
+    border-radius: 15px;
+    overflow: hidden;
+    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.45);
+    background: #0d0f13;
+  }
+  .frame img {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .cap {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+  .cap__num {
+    font: 600 12px var(--font-mono);
+    color: var(--terracotta);
+    letter-spacing: 0.06em;
+    flex: none;
+  }
+  .cap__title {
+    font: 600 15px var(--font-display);
+    color: var(--ink-2);
+  }
+  .cap__meta {
+    margin-left: auto;
+    font: 500 11px var(--font-mono);
+    color: var(--olive-ink);
+    letter-spacing: 0.04em;
+  }
+
+  .tagline {
+    text-align: center;
+    font: 500 11px var(--font-mono);
+    color: var(--muted-4);
+    letter-spacing: 0.08em;
+    margin: 30px 0 0;
+  }
+
+  @media (max-width: 900px) {
+    .card { width: 85vw; }
+    .cap__meta { margin-left: 0; }
+  }
+  @media (max-width: 480px) {
+    .onboarding { padding: 84px 20px; }
+  }
+</style>

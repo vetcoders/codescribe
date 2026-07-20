@@ -85,6 +85,11 @@ deunicode = "1.6"
 cap-std = "3"
 security-framework = "3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# MCP stdio client: F_SETNOSIGPIPE on the child's stdin so a dead server's
+# pipe yields EPIPE instead of a process-fatal SIGPIPE in the Swift host.
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 mockito = "1"
