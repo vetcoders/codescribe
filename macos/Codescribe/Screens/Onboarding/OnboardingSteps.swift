@@ -58,7 +58,7 @@ private struct OnboardingStepHeader: View {
 }
 
 /// A single radio-style selectable card: title + optional subtitle, with a
-/// terracotta ring + filled dot when selected. Reused by the three choice steps.
+/// System-accent ring + filled dot when selected. Reused by the choice steps.
 struct OnboardingChoiceCard: View {
     let title: String
     let subtitle: String?
@@ -71,12 +71,12 @@ struct OnboardingChoiceCard: View {
                 ZStack {
                     Circle()
                         .strokeBorder(
-                            isSelected ? CSColor.terracotta.opacity(0.9) : CSColor.hairline(0.18),
+                            isSelected ? CSColor.chromeAccent.opacity(0.9) : CSColor.hairline(0.18),
                             lineWidth: 1.5
                         )
                         .frame(width: 16, height: 16)
                     if isSelected {
-                        Circle().fill(CSColor.terracotta).frame(width: 8, height: 8)
+                        Circle().fill(CSColor.chromeAccent).frame(width: 8, height: 8)
                     }
                 }
                 .padding(.top, 1)
@@ -98,7 +98,7 @@ struct OnboardingChoiceCard: View {
             .padding(.vertical, 13)
             .background(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(CSColor.terracotta.opacity(isSelected ? 0.07 : 0))
+                    .fill(CSColor.chromeAccent.opacity(isSelected ? 0.07 : 0))
                     .background(
                         RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .fill(CSColor.surfaceRaised(isSelected ? 0 : 0.03))
@@ -107,7 +107,7 @@ struct OnboardingChoiceCard: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .strokeBorder(
-                        isSelected ? CSColor.terracotta.opacity(0.28) : CSColor.hairline(0.08),
+                        isSelected ? CSColor.chromeAccent.opacity(0.28) : CSColor.hairline(0.08),
                         lineWidth: 1
                     )
             )

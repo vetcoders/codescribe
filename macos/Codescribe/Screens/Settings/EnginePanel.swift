@@ -149,7 +149,7 @@ struct EnginePanel: View {
                 Toggle("", isOn: layeredBinding)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .tint(CSColor.terracotta)
+                    .tint(CSColor.chromeAccent)
             }
         }
     }
@@ -213,7 +213,7 @@ struct EnginePanel: View {
                     .font(CSFont.ui(12.5, .semibold))
                     .foregroundStyle(CSColor.textBody)
             }
-            .tint(CSColor.terracottaLight)
+            .tint(CSColor.chromeAccent)
         }
         .padding(15)
         .background(card)
@@ -294,7 +294,7 @@ struct EnginePanel: View {
                     .foregroundStyle(CSColor.textBody)
             }
             Slider(value: value, in: range, step: step)
-                .tint(CSColor.terracotta)
+                .tint(CSColor.chromeAccent)
         }
     }
 
@@ -317,7 +317,7 @@ struct EnginePanel: View {
                     .foregroundStyle(CSColor.textBody)
             }
             Slider(value: silenceBinding, in: 0.5 ... 30, step: 0.5)
-                .tint(CSColor.terracotta)
+                .tint(CSColor.chromeAccent)
                 .accessibilityLabel("Hands-free silence duration")
                 .accessibilityValue(String(format: "%.1f seconds", model.settings.toggleSilenceSec))
         }
