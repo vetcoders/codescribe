@@ -5135,6 +5135,12 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
 
     func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind)
 
+    /**
+     * Insert a context-bucket marker at the global transcript character
+     * position captured when the agent combo was pressed.
+     */
+    func onContextMarker(position: UInt64, marker: String)
+
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary)
 
     /**
@@ -5303,6 +5309,19 @@ open func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String
         FfiConverterUInt64.lower(position),
         FfiConverterString.lower(text),
         FfiConverterTypeCsAnnotationKind_lower(kind),$0
+    )
+}
+}
+
+    /**
+     * Insert a context-bucket marker at the global transcript character
+     * position captured when the agent combo was pressed.
+     */
+open func onContextMarker(position: UInt64, marker: String)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_context_marker(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(position),
+        FfiConverterString.lower(marker),$0
     )
 }
 }
@@ -5611,6 +5630,32 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
                      position: try FfiConverterUInt64.lift(position),
                      text: try FfiConverterString.lift(text),
                      kind: try FfiConverterTypeCsAnnotationKind_lift(kind)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onContextMarker: { (
+            uniffiHandle: UInt64,
+            position: UInt64,
+            marker: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onContextMarker(
+                     position: try FfiConverterUInt64.lift(position),
+                     marker: try FfiConverterString.lift(marker)
                 )
             }
 
@@ -11280,22 +11325,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 39504) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 29162) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 11256) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final_transcript_ready() != 30284) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 36351) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 52362) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final_transcript_ready() != 22215) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 56436) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 51959) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 9799) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55568) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 58079) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 47902) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 40833) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 44268) {

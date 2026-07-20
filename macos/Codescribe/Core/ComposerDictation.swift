@@ -179,6 +179,7 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     }
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {}
     func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind) {}
+    func onContextMarker(position: UInt64, marker: String) {}
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {}
     func onFinalTranscriptReady(text: String) {
         publishFinalPreview(text)

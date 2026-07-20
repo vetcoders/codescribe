@@ -27,6 +27,12 @@ private struct OverlayTranscriptAnnotation: Equatable {
     var text: String
 }
 
+private struct OverlayContextMarker: Equatable {
+    var position: Int
+    var marker: String
+    var order: Int
+}
+
 private struct OverlayTranscriptSegment: Equatable {
     var utteranceId: UInt64?
     var text: String
@@ -222,6 +228,10 @@ final class OverlayState: ObservableObject {
     /// `finalizeTranscript` can pick the right notice when it resolves to empty.
     private var pendingNoSpeechMessage: String?
     private var committedSegments: [OverlayTranscriptSegment] = []
+    /// Global transcript markers captured by the agent combo. They remain
+    /// independent from per-utterance semantic annotations so the authoritative
+    /// final pass cannot erase context references.
+    @Published private var contextMarkers: [OverlayContextMarker] = []
     /// Authoritative post-stop transcript pushed by the Rust controller
     /// (`on_final_transcript_ready` → LocalFinalPass `final_formatted_text`) — the
     /// SAME text the delivery/paste and tray "Copy" use. When present it is the
@@ -346,10 +356,14 @@ final class OverlayState: ObservableObject {
     }
 
     /// committed finals + the current interim preview, space-joined.
-    var liveText: String {
+    private var rawLiveText: String {
         (committedUtterances + [preview])
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: " ")
+    }
+
+    var liveText: String {
+        insertingContextMarkers(into: rawLiveText)
     }
 
     /// Text shown in the listening body, in the SAME prominent slot that renders
@@ -1062,6 +1076,20 @@ final class OverlayState: ObservableObject {
         syncCommittedUtterances()
     }
 
+    func applyContextMarker(position: UInt64, marker: String) {
+        guard !finalized, let offset = Int(exactly: position) else { return }
+        let clean = marker.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        contextMarkers.append(
+            OverlayContextMarker(position: offset, marker: clean, order: contextMarkers.count)
+        )
+        if mode == .formatted {
+            let base = usableAuthoritativeFinalText ?? rawLiveText
+            let rendered = insertingContextMarkers(into: base)
+            if formattedText != rendered { formattedText = rendered }
+        }
+    }
+
     func applySessionFinalised() {
         guard !finalized else { return }
         markTranscriptActivity()
@@ -1114,17 +1142,18 @@ final class OverlayState: ObservableObject {
         guard !clean.isEmpty, clean != authoritativeFinalText else { return }
         authoritativeFinalText = clean
         formatFailureStatus = nil
-        if mode == .formatted, formattedText != clean {
-            formattedText = clean
+        let rendered = insertingContextMarkers(into: clean)
+        if mode == .formatted, formattedText != rendered {
+            formattedText = rendered
         } else if mode == .noSpeech {
             // Real text arrived after we finalised to no-speech (empty at the
             // time): recover it as the normal FINAL rather than losing it.
-            formattedText = clean
+            formattedText = rendered
             mode = .formatted
             restartAutoHideCountdown()
         }
         if deliveredText.isEmpty, !clean.isEmpty {
-            deliveredText = clean
+            deliveredText = rendered
         }
         if agentSessionArmed {
             agentFinalTranscriptAppeared = true
@@ -1156,8 +1185,9 @@ final class OverlayState: ObservableObject {
         } else {
             commitPreviewIfNeeded()
         }
-        let resolved = shouldShowNoSpeechOutcome ? "" : (usableAuthoritativeFinalText ?? liveText)
-        if resolved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let resolvedBase = shouldShowNoSpeechOutcome ? "" : (usableAuthoritativeFinalText ?? rawLiveText)
+        let resolved = insertingContextMarkers(into: resolvedBase)
+        if resolvedBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Nothing usable was captured — VAD silence, or all speech rejected by
             // the quality gate. Surface a dedicated no-speech outcome instead of a
             // blank editable FINAL (Copy/Format/Send acting on an empty string).
@@ -1174,7 +1204,7 @@ final class OverlayState: ObservableObject {
             if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Best effort: if no STT raw from per-utterance finals yet, fall back to the
                 // resolved assembly (still the raw-streaming path, not AI formatted).
-                sttRawText = resolved
+                sttRawText = resolvedBase
             }
             mode = .formatted
             if agentSessionArmed {
@@ -1207,6 +1237,7 @@ final class OverlayState: ObservableObject {
         preview = ""
         committedSegments = []
         committedUtterances = []
+        contextMarkers = []
         authoritativeFinalText = nil
         deliveredText = ""
         sttRawText = ""
@@ -1284,9 +1315,32 @@ final class OverlayState: ObservableObject {
             // the raw streaming assembly. Without it, fall back to the live assembly.
             // Dedupe the write — an identical reassignment still re-invalidates the
             // bound TextEditor and feeds the Idle render churn.
-            let resolved = usableAuthoritativeFinalText ?? liveText
+            let resolved = usableAuthoritativeFinalText
+                .map { insertingContextMarkers(into: $0) }
+                ?? liveText
             if formattedText != resolved { formattedText = resolved }
         }
+    }
+
+    private func insertingContextMarkers(into text: String) -> String {
+        guard !contextMarkers.isEmpty else { return text }
+        var rendered = text
+        let ordered = contextMarkers.sorted {
+            if $0.position == $1.position { return $0.order > $1.order }
+            return $0.position > $1.position
+        }
+        for item in ordered {
+            let offset = min(max(item.position, 0), rendered.count)
+            let index = rendered.index(rendered.startIndex, offsetBy: offset)
+            let needsLeadingSpace = index > rendered.startIndex
+                && !rendered[rendered.index(before: index)].isWhitespace
+            let needsTrailingSpace = index < rendered.endIndex && !rendered[index].isWhitespace
+            let insertion = (needsLeadingSpace ? " " : "")
+                + item.marker
+                + (needsTrailingSpace ? " " : "")
+            rendered.insert(contentsOf: insertion, at: index)
+        }
+        return rendered
     }
 
     private func normalized(_ text: String) -> String {
@@ -1497,6 +1551,13 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 self.state?.applyInsertAnnotation(utteranceId: utteranceId, position: position, text: text)
+            }
+        }
+    }
+    func onContextMarker(position: UInt64, marker: String) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.state?.applyContextMarker(position: position, marker: marker)
             }
         }
     }

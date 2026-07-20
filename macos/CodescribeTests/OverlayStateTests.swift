@@ -768,6 +768,39 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(engine.sentAssistiveTexts, ["untouched final"])
     }
 
+    func testContextMarkerLandsAtCapturedWordPositionAndSurvivesFinalPass() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyPreview("alpha beta")
+
+        state.applyContextMarker(position: 5, marker: "{selection_1}")
+        XCTAssertEqual(state.liveText, "alpha {selection_1} beta")
+
+        state.applyFinal(utteranceId: 1, "alpha beta")
+        state.applyFinalTranscript("alpha beta")
+        state.finishControllerRecording()
+        XCTAssertEqual(state.formattedText, "alpha {selection_1} beta")
+        XCTAssertEqual(state.activeText, "alpha {selection_1} beta")
+    }
+
+    func testContextMarkersAtSamePositionKeepCaptureOrder() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyPreview("alpha")
+
+        state.applyContextMarker(position: 5, marker: "{selection_1}")
+        state.applyContextMarker(position: 5, marker: "{selection_2}")
+        state.applyContextMarker(position: 5, marker: "{selection_3}")
+
+        XCTAssertEqual(
+            state.liveText,
+            "alpha {selection_1} {selection_2} {selection_3}"
+        )
+    }
+
     func testAnyAgentFinalEditPermanentlyVetoesAutoSendUntilButton() async {
         let clock = OverlayStateTestClock()
         let engine = OverlayStateTestEngine()
