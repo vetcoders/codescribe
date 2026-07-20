@@ -1683,10 +1683,13 @@ mod tests {
             UserSettings::load().llm_model.as_deref(),
             Some("batch-model")
         );
-        let env_vars = Config::parse_env_file(&Config::env_path()).expect("parse .env");
         assert_eq!(
-            env_vars.get("AGENT_WORKSPACE_ROOTS").map(String::as_str),
-            Some("/tmp/a:/tmp/b")
+            UserSettings::load().agent_workspace_roots,
+            Some(vec!["/tmp/a".to_string(), "/tmp/b".to_string()])
+        );
+        assert!(
+            !Config::env_path().exists(),
+            "a fully promoted settings batch must not create a legacy .env"
         );
     }
 
