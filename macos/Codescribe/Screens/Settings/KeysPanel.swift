@@ -297,7 +297,7 @@ private struct LLMLaneEditor: View {
     ) -> some View {
         Button("Save", action: action)
             .font(CSFont.ui(11.5, .semibold))
-            .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+            .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.chromeAccent)
             .buttonStyle(.plain)
             .disabled(draft.isEmpty)
             .accessibilityLabel(accessibilityLabel)
@@ -505,16 +505,16 @@ private struct KeyRow: View {
                 Button(action: save) {
                     Text("Save")
                         .font(CSFont.ui(12, .semibold))
-                        .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+                        .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.chromeAccent)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                                .fill(CSColor.terracotta.opacity(draft.isEmpty ? 0.06 : 0.14))
+                                .fill(CSColor.chromeAccent.opacity(draft.isEmpty ? 0.06 : 0.14))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                                .strokeBorder(CSColor.terracotta.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
+                                .strokeBorder(CSColor.chromeAccent.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
                         )
                 }
                 .buttonStyle(.plain)

@@ -91,7 +91,7 @@ struct VoiceLabPanel: View {
                     model.refreshVoiceLab()
                 }
                 .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.chromeAccent)
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
             }
@@ -142,7 +142,7 @@ struct VoiceLabPanel: View {
                             HStack(spacing: 7) {
                                 Text("→")
                                     .font(CSFont.mono(11, .semibold))
-                                    .foregroundStyle(CSColor.terracottaLight)
+                                    .foregroundStyle(CSColor.chromeAccent)
                                 Text(row.editedText)
                                     .font(CSFont.ui(13, .semibold))
                                     .foregroundStyle(CSColor.textBody)
@@ -208,7 +208,7 @@ struct VoiceLabPanel: View {
                             .textSelection(.enabled)
                         Text("→")
                             .font(CSFont.mono(11, .semibold))
-                            .foregroundStyle(CSColor.terracottaLight)
+                            .foregroundStyle(CSColor.chromeAccent)
                         Text(row.canonical)
                             .font(CSFont.mono(11.5, .semibold))
                             .foregroundStyle(CSColor.textBody)
