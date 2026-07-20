@@ -1,5 +1,5 @@
 use super::config::HotkeyRuntimeConfig;
-use crate::config::ShortcutBinding;
+use crate::config::{DeferredInsertShortcut, ShortcutBinding};
 use std::time::{Duration, Instant};
 
 // --- Constants ---
@@ -35,6 +35,8 @@ pub enum HoldMode {
 pub enum HotkeyEvent {
     /// Front the existing Agent window without starting recording or sending.
     ShowAgent,
+    /// Deliver the current in-memory deferred transcript at the active caret.
+    InsertHere,
     /// Hold gesture detected (press/release configured modifier combo)
     Hold { action: HoldAction, mode: HoldMode },
     /// Modifier change while hold is active (e.g., add/remove Shift/Cmd).
@@ -153,6 +155,7 @@ pub enum HotkeyPhysicalKey {
     RightControl,
     Fn,
     Space,
+    V,
     Other,
 }
 
@@ -203,6 +206,7 @@ pub struct HotkeyDetector {
     option_side: Option<bool>,
     key_pressed_during_modifier: bool,
     show_agent_space_down: bool,
+    insert_here_v_down: bool,
 }
 
 impl Default for HotkeyDetector {
@@ -221,6 +225,7 @@ impl Default for HotkeyDetector {
             option_side: None,
             key_pressed_during_modifier: false,
             show_agent_space_down: false,
+            insert_here_v_down: false,
         }
     }
 }
@@ -240,6 +245,9 @@ impl HotkeyDetector {
             HotkeyDetectorInput::KeyUp { key, modifiers } => {
                 if key == HotkeyPhysicalKey::Space {
                     self.show_agent_space_down = false;
+                }
+                if key == HotkeyPhysicalKey::V {
+                    self.insert_here_v_down = false;
                 }
                 if !modifiers.ctrl && !modifiers.option && !modifiers.cmd && !modifiers.fn_key {
                     self.key_pressed_during_modifier = false;
@@ -265,6 +273,16 @@ impl HotkeyDetector {
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
+        if key == HotkeyPhysicalKey::V
+            && deferred_insert_modifiers_match(config.deferred_insert_shortcut, modifiers)
+        {
+            if self.insert_here_v_down {
+                return None;
+            }
+            self.insert_here_v_down = true;
+            return Some(HotkeyEvent::InsertHere);
+        }
+
         if key == HotkeyPhysicalKey::Space
             && modifiers.cmd
             && modifiers.shift
@@ -516,6 +534,36 @@ impl HotkeyDetector {
     }
 }
 
+fn deferred_insert_modifiers_match(
+    shortcut: DeferredInsertShortcut,
+    modifiers: HotkeyModifierSnapshot,
+) -> bool {
+    match shortcut {
+        DeferredInsertShortcut::Disabled => false,
+        DeferredInsertShortcut::CommandOptionV => {
+            modifiers.cmd
+                && modifiers.option
+                && !modifiers.ctrl
+                && !modifiers.shift
+                && !modifiers.fn_key
+        }
+        DeferredInsertShortcut::CommandShiftV => {
+            modifiers.cmd
+                && modifiers.shift
+                && !modifiers.ctrl
+                && !modifiers.option
+                && !modifiers.fn_key
+        }
+        DeferredInsertShortcut::CommandControlV => {
+            modifiers.cmd
+                && modifiers.ctrl
+                && !modifiers.option
+                && !modifiers.shift
+                && !modifiers.fn_key
+        }
+    }
+}
+
 fn elapsed_between(now: Instant, previous: Instant) -> Duration {
     now.checked_duration_since(previous).unwrap_or_default()
 }
@@ -675,6 +723,7 @@ mod tests {
             hold_exclusive: false,
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 200,
+            deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
         }
     }
 
@@ -750,6 +799,81 @@ mod tests {
             ),
             Some(HotkeyEvent::ShowAgent),
             "a new physical Space press must emit exactly one new command"
+        );
+    }
+
+    #[test]
+    fn detector_deferred_insert_command_uses_configured_chord_once_per_press() {
+        let mut config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        config.deferred_insert_shortcut = DeferredInsertShortcut::CommandShiftV;
+        let mut detector = HotkeyDetector::default();
+        let base = Instant::now();
+        let command_shift = mods(false, false, true, true, false);
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base,
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::InsertHere)
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            None,
+            "key repeat must not deliver twice"
+        );
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::V,
+                modifiers: command_shift,
+            },
+            config,
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(2),
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::InsertHere)
+        );
+
+        config.deferred_insert_shortcut = DeferredInsertShortcut::Disabled;
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::V,
+                modifiers: command_shift,
+            },
+            config,
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(3),
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            None
         );
     }
 

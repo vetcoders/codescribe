@@ -1,5 +1,5 @@
-use crate::config::{Config, ShortcutBinding, UserSettings, WorkMode};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
+use crate::config::{Config, DeferredInsertShortcut, ShortcutBinding, UserSettings, WorkMode};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
 const BIND_DISABLED: u16 = 0;
 const BIND_HOLD_FN: u16 = 1;
@@ -121,6 +121,43 @@ pub fn get_hold_start_delay_ms() -> u64 {
 /// Atomic storage for double-tap interval (milliseconds)
 static DOUBLE_TAP_INTERVAL_MS: AtomicU64 = AtomicU64::new(200);
 
+const DEFERRED_INSERT_DISABLED: u8 = 0;
+const DEFERRED_INSERT_COMMAND_OPTION_V: u8 = 1;
+const DEFERRED_INSERT_COMMAND_SHIFT_V: u8 = 2;
+const DEFERRED_INSERT_COMMAND_CONTROL_V: u8 = 3;
+
+static DEFERRED_INSERT_SHORTCUT: AtomicU8 = AtomicU8::new(DEFERRED_INSERT_COMMAND_OPTION_V);
+
+fn encode_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) -> u8 {
+    match shortcut {
+        DeferredInsertShortcut::Disabled => DEFERRED_INSERT_DISABLED,
+        DeferredInsertShortcut::CommandOptionV => DEFERRED_INSERT_COMMAND_OPTION_V,
+        DeferredInsertShortcut::CommandShiftV => DEFERRED_INSERT_COMMAND_SHIFT_V,
+        DeferredInsertShortcut::CommandControlV => DEFERRED_INSERT_COMMAND_CONTROL_V,
+    }
+}
+
+fn decode_deferred_insert_shortcut(value: u8) -> DeferredInsertShortcut {
+    match value {
+        DEFERRED_INSERT_COMMAND_OPTION_V => DeferredInsertShortcut::CommandOptionV,
+        DEFERRED_INSERT_COMMAND_SHIFT_V => DeferredInsertShortcut::CommandShiftV,
+        DEFERRED_INSERT_COMMAND_CONTROL_V => DeferredInsertShortcut::CommandControlV,
+        _ => DeferredInsertShortcut::Disabled,
+    }
+}
+
+pub fn set_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) {
+    DEFERRED_INSERT_SHORTCUT.store(
+        encode_deferred_insert_shortcut(shortcut),
+        AtomicOrdering::SeqCst,
+    );
+    tracing::info!(label = shortcut.label(), "Deferred insert shortcut set");
+}
+
+pub fn get_deferred_insert_shortcut() -> DeferredInsertShortcut {
+    decode_deferred_insert_shortcut(DEFERRED_INSERT_SHORTCUT.load(AtomicOrdering::SeqCst))
+}
+
 /// Set the double-tap interval (ms). Clamped to safe bounds.
 pub fn set_double_tap_interval_ms(ms: u64) {
     let clamped = ms.clamp(100, 450);
@@ -139,6 +176,7 @@ pub struct HotkeyRuntimeConfig {
     pub hold_exclusive: bool,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
+    pub deferred_insert_shortcut: DeferredInsertShortcut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +207,7 @@ impl From<&Config> for HotkeyRuntimeConfig {
             hold_exclusive: config.hold_exclusive,
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
+            deferred_insert_shortcut: config.deferred_insert_shortcut,
         }
     }
 }
@@ -179,6 +218,7 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
         hold_exclusive: get_exclusive_mode(),
         hold_start_delay_ms: get_hold_start_delay_ms(),
         double_tap_interval_ms: get_double_tap_interval_ms(),
+        deferred_insert_shortcut: get_deferred_insert_shortcut(),
     }
 }
 
@@ -187,6 +227,7 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     set_exclusive_mode(config.hold_exclusive);
     set_hold_start_delay_ms(config.hold_start_delay_ms);
     set_double_tap_interval_ms(config.double_tap_interval_ms);
+    set_deferred_insert_shortcut(config.deferred_insert_shortcut);
 }
 
 pub fn apply_hotkey_config(config: &Config) {
@@ -244,6 +285,7 @@ mod tests {
             hold_exclusive: true,
             hold_start_delay_ms: 1234,
             double_tap_interval_ms: 260,
+            deferred_insert_shortcut: DeferredInsertShortcut::CommandShiftV,
         };
         apply_hotkey_runtime_config(runtime);
 
@@ -253,6 +295,10 @@ mod tests {
         assert_eq!(
             get_double_tap_interval_ms(),
             runtime.double_tap_interval_ms.clamp(100, 450)
+        );
+        assert_eq!(
+            get_deferred_insert_shortcut(),
+            runtime.deferred_insert_shortcut
         );
     }
 }
