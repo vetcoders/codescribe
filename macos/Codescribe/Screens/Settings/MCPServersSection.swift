@@ -9,6 +9,7 @@ import SwiftUI
 
 struct MCPServersSection: View {
     @ObservedObject var model: SettingsViewModel
+    @State private var confirmingClear = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -41,6 +42,26 @@ struct MCPServersSection: View {
                 model.addMcpServer(name: name, command: command, args: args)
             }
             .padding(.top, 12)
+
+            Button(role: .destructive) {
+                confirmingClear = true
+            } label: {
+                Text("Clear MCP configuration…")
+                    .font(CSFont.mono(10.5, .semibold))
+                    .foregroundStyle(CSColor.dangerLight)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 13)
+            .accessibilityHint("Moves only mcp.json to Trash after confirmation.")
+        }
+        .alert("Clear MCP configuration?", isPresented: $confirmingClear) {
+            Button("Cancel", role: .cancel) {}
+            Button("Move mcp.json to Trash", role: .destructive) {
+                model.clearMcpConfiguration()
+            }
+        } message: {
+            Text("Moves only ~/.codescribe/mcp.json to Trash. Recordings, transcripts, "
+                + "threads, preferences, and API keys stay untouched.")
         }
     }
 

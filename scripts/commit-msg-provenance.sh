@@ -1,5 +1,5 @@
 #!/bin/sh
-# Enforce VetCoders provenance tags on every local commit message.
+# Enforce Vetcoders provenance tags on every local commit message.
 #
 # Accepted first lines:
 #   [claude/vc-workflow] fix: example

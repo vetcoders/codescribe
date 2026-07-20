@@ -30,6 +30,7 @@ mod macos {
 
     // CGEventType values
     const K_CG_EVENT_KEY_DOWN: CGEventType = 10;
+    const K_CG_EVENT_KEY_UP: CGEventType = 11;
     const K_CG_EVENT_FLAGS_CHANGED: CGEventType = 12;
 
     // CGEventType "tap disabled" sentinels. CoreGraphics emits these (the two
@@ -58,6 +59,7 @@ mod macos {
     const K_VK_CONTROL: i64 = 59; // Left Control
     const K_VK_RIGHT_CONTROL: i64 = 62; // Right Control
     const K_VK_FUNCTION: i64 = 63; // Fn (Globe)
+    const K_VK_SPACE: i64 = 49;
 
     // CGEventTap constants
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
@@ -356,6 +358,7 @@ mod macos {
             K_VK_CONTROL => HotkeyPhysicalKey::LeftControl,
             K_VK_RIGHT_CONTROL => HotkeyPhysicalKey::RightControl,
             K_VK_FUNCTION => HotkeyPhysicalKey::Fn,
+            K_VK_SPACE => HotkeyPhysicalKey::Space,
             _ => HotkeyPhysicalKey::Other,
         }
     }
@@ -415,13 +418,36 @@ mod macos {
             return event;
         }
 
+        // SAFETY: `event` is the CGEventRef CoreGraphics passes to this tap
+        // callback; it is valid for the duration of the callback and these
+        // calls are read-only accessors that take no ownership.
         let flags = unsafe { CGEventGetFlags(event) };
         let modifiers = modifiers_from_flags(flags);
         let now = Instant::now();
         let runtime_config = get_hotkey_runtime_config();
 
         let input = match event_type {
-            K_CG_EVENT_KEY_DOWN => HotkeyDetectorInput::KeyDown { now, modifiers },
+            K_CG_EVENT_KEY_DOWN => {
+                // SAFETY: read-only field accessor on the callback-owned
+                // `event`; valid for the callback's duration (see above).
+                let keycode =
+                    unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
+                HotkeyDetectorInput::KeyDown {
+                    now,
+                    key: map_keycode(keycode),
+                    modifiers,
+                }
+            }
+            K_CG_EVENT_KEY_UP => {
+                // SAFETY: read-only field accessor on the callback-owned
+                // `event`; valid for the callback's duration (see above).
+                let keycode =
+                    unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
+                HotkeyDetectorInput::KeyUp {
+                    key: map_keycode(keycode),
+                    modifiers,
+                }
+            }
             K_CG_EVENT_FLAGS_CHANGED => {
                 let keycode =
                     unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
@@ -514,8 +540,9 @@ mod macos {
     ) -> Result<(), String> {
         let mut resources = EventTapResources::new(tx, control);
 
-        // Event mask: flags changed + key down (to detect Ctrl+K style combos)
-        let event_mask: u64 = (1 << K_CG_EVENT_FLAGS_CHANGED) | (1 << K_CG_EVENT_KEY_DOWN);
+        // Key-up resets one-shot command chords so key repeat cannot emit duplicates.
+        let event_mask: u64 =
+            (1 << K_CG_EVENT_FLAGS_CHANGED) | (1 << K_CG_EVENT_KEY_DOWN) | (1 << K_CG_EVENT_KEY_UP);
 
         // Create the event tap
         let tap = unsafe {
@@ -622,6 +649,7 @@ mod macos {
             assert!(is_tap_disabled_event(K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT));
 
             assert!(!is_tap_disabled_event(K_CG_EVENT_KEY_DOWN));
+            assert!(!is_tap_disabled_event(K_CG_EVENT_KEY_UP));
             assert!(!is_tap_disabled_event(K_CG_EVENT_FLAGS_CHANGED));
             assert!(!is_tap_disabled_event(10));
             assert!(!is_tap_disabled_event(12));

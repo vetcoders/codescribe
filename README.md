@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.12.2-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.13.0-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
@@ -61,7 +61,7 @@ flowchart TB
 
 > **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
 
-> **Status:** current source version is `0.12.2` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
+> **Status:** current source version is `0.13.0` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -79,18 +79,22 @@ Put your OpenAI API key in Settings. Codescribe stores it in macOS Keychain and 
 # Shared defaults
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-proj-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain, not in committed files.
 
 # Formatting mode / cleanup pass
 LLM_FORMATTING_ENDPOINT=https://api.openai.com/v1/responses
 LLM_FORMATTING_MODEL=gpt-4.1
-LLM_FORMATTING_API_KEY=sk-proj-xxx
+# Store LLM_FORMATTING_API_KEY in Settings / macOS Keychain.
 
 # Assistive mode / agent chat
 LLM_ASSISTIVE_ENDPOINT=https://api.openai.com/v1/responses
 LLM_ASSISTIVE_MODEL=gpt-5.5
-LLM_ASSISTIVE_API_KEY=sk-proj-xxx
+# Store LLM_ASSISTIVE_API_KEY in Settings / macOS Keychain.
 ```
+
+For the exact resolver used by formatting, assistive, and the agent provider —
+including precedence, reset/unset behavior, endpoint normalization, and
+key-optional local endpoints — see [`docs/lane-truth.md`](docs/lane-truth.md).
 
 > **Note:** All requests use `previous_response_id` for conversation chaining. Context persists across transcriptions.
 
@@ -167,7 +171,7 @@ Tagged builds publish DMGs through GitHub Releases:
 2. Download `Codescribe_<version>.dmg` for the standard build, or `Codescribe_<version>_full.dmg` for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
-> **Current truth:** source install is the guaranteed path inside this repo until a current `v0.12.x` GitHub Release exists. Public release DMGs must be Developer ID signed and notarized; the release workflow is wired to fail if the required Apple signing/notary secrets are missing.
+> **Current truth:** `v0.12.3` is published on GitHub Releases as a Developer ID signed, notarized and stapled DMG (`releases/latest/download/Codescribe.dmg`); source install remains the freshest path for unreleased work on this branch. The release workflow is wired to fail if the required Apple signing/notary secrets are missing.
 
 ### Build Options
 
@@ -284,7 +288,7 @@ AI_FORMATTING_ENABLED=1              # 1=format via LLM, 0=raw transcript
 # OpenAI Responses provider (shared defaults)
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-proj-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain.
 
 # Mode-specific overrides (optional)
 # LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=
@@ -450,4 +454,4 @@ date we make that version available. See [`LICENSE`](LICENSE) and
 
 ---
 
-**Made with (งಠ_ಠ)ง by the ⌜ Vetcoders ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026**
+**𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI**

@@ -112,7 +112,7 @@ TOGGLE_SILENCE_SEC=5.0
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-xxx
+# Store LLM_API_KEY in Settings / macOS Keychain.
 
 # Optional: Mode-specific OpenAI overrides
 LLM_FORMATTING_{ENDPOINT,MODEL,API_KEY}=...

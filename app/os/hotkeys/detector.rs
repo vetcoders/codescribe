@@ -33,6 +33,8 @@ pub enum HoldMode {
 /// Hotkey event emitted by the listener
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyEvent {
+    /// Front the existing Agent window without starting recording or sending.
+    ShowAgent,
     /// Hold gesture detected (press/release configured modifier combo)
     Hold {
         action: HoldAction,
@@ -154,6 +156,7 @@ pub enum HotkeyPhysicalKey {
     LeftControl,
     RightControl,
     Fn,
+    Space,
     Other,
 }
 
@@ -175,6 +178,11 @@ impl HotkeyPhysicalKey {
 pub enum HotkeyDetectorInput {
     KeyDown {
         now: Instant,
+        key: HotkeyPhysicalKey,
+        modifiers: HotkeyModifierSnapshot,
+    },
+    KeyUp {
+        key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
     },
     FlagsChanged {
@@ -199,6 +207,7 @@ pub struct HotkeyDetector {
     option_down: bool,
     option_side: Option<bool>,
     key_pressed_during_modifier: bool,
+    show_agent_space_down: bool,
 }
 
 impl Default for HotkeyDetector {
@@ -217,6 +226,7 @@ impl Default for HotkeyDetector {
             option_down: false,
             option_side: None,
             key_pressed_during_modifier: false,
+            show_agent_space_down: false,
         }
     }
 }
@@ -228,8 +238,19 @@ impl HotkeyDetector {
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
         match input {
-            HotkeyDetectorInput::KeyDown { now, modifiers } => {
-                self.handle_key_down(now, modifiers, config)
+            HotkeyDetectorInput::KeyDown {
+                now,
+                key,
+                modifiers,
+            } => self.handle_key_down(now, key, modifiers, config),
+            HotkeyDetectorInput::KeyUp { key, modifiers } => {
+                if key == HotkeyPhysicalKey::Space {
+                    self.show_agent_space_down = false;
+                }
+                if !modifiers.ctrl && !modifiers.option && !modifiers.cmd && !modifiers.fn_key {
+                    self.key_pressed_during_modifier = false;
+                }
+                None
             }
             HotkeyDetectorInput::FlagsChanged {
                 now,
@@ -246,9 +267,24 @@ impl HotkeyDetector {
     fn handle_key_down(
         &mut self,
         now: Instant,
+        key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
+        if key == HotkeyPhysicalKey::Space
+            && modifiers.cmd
+            && modifiers.shift
+            && !modifiers.ctrl
+            && !modifiers.option
+            && !modifiers.fn_key
+        {
+            if self.show_agent_space_down {
+                return None;
+            }
+            self.show_agent_space_down = true;
+            return Some(HotkeyEvent::ShowAgent);
+        }
+
         let dictation_binding = config.mode_bindings.dictation;
         let assistive_binding = config.mode_bindings.assistive;
         let mut emitted = None;
@@ -704,6 +740,65 @@ mod tests {
     }
 
     #[test]
+    fn detector_show_agent_command_table_emits_once_per_space_press() {
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+        let command_shift = mods(false, false, true, true, false);
+
+        let cases = [
+            (mods(false, false, false, true, false), None),
+            (mods(false, false, true, false, false), None),
+            (mods(true, false, true, true, false), None),
+            (command_shift, Some(HotkeyEvent::ShowAgent)),
+            // Auto-repeat is another key-down before key-up and must not summon twice.
+            (command_shift, None),
+        ];
+
+        let mut detector = HotkeyDetector::default();
+        for (index, (modifiers, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                detector.feed(
+                    HotkeyDetectorInput::KeyDown {
+                        now: base + Duration::from_millis(index as u64),
+                        key: HotkeyPhysicalKey::Space,
+                        modifiers,
+                    },
+                    config,
+                ),
+                expected,
+                "unexpected command detection at table row {index}"
+            );
+        }
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyUp {
+                    key: HotkeyPhysicalKey::Space,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(10),
+                    key: HotkeyPhysicalKey::Space,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::ShowAgent),
+            "a new physical Space press must emit exactly one new command"
+        );
+    }
+
+    #[test]
     fn compute_hold_mode_respects_modifiers() {
         // Fn base with Shift/Cmd modifiers
         assert_eq!(
@@ -1092,6 +1187,7 @@ mod tests {
             detector.feed(
                 HotkeyDetectorInput::KeyDown {
                     now: base + Duration::from_millis(200),
+                    key: HotkeyPhysicalKey::Other,
                     modifiers: mods(true, false, false, false, false),
                 },
                 config,
@@ -1264,6 +1360,7 @@ mod tests {
             detector.feed(
                 HotkeyDetectorInput::KeyDown {
                     now: base + Duration::from_millis(45),
+                    key: HotkeyPhysicalKey::Other,
                     modifiers: mods(false, true, false, false, false),
                 },
                 config,
@@ -1351,6 +1448,7 @@ mod tests {
             detector.feed(
                 HotkeyDetectorInput::KeyDown {
                     now: base + Duration::from_millis(10),
+                    key: HotkeyPhysicalKey::Other,
                     modifiers: mods(true, false, false, false, false),
                 },
                 config,

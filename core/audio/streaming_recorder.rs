@@ -23,6 +23,10 @@ pub struct StreamingRecorder {
     dropped_chunks: Arc<AtomicU64>,
     /// Sink used by `start_event_session`. Caller must configure it explicitly.
     event_sink: Option<Arc<dyn EventSink>>,
+    /// Per-block input level tap: receives the RMS of every captured audio
+    /// block (linear, 0..~1). Runs on the CoreAudio callback thread — keep it
+    /// cheap and non-blocking (a broadcast send, an atomic store).
+    level_callback: Option<Arc<dyn Fn(f32) + Send + Sync>>,
 }
 
 impl StreamingRecorder {
@@ -39,6 +43,7 @@ impl StreamingRecorder {
             utterance_silence_sec: None,
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
+            level_callback: None,
         })
     }
 
@@ -55,6 +60,7 @@ impl StreamingRecorder {
             utterance_silence_sec: None,
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
+            level_callback: None,
         })
     }
 
@@ -64,6 +70,13 @@ impl StreamingRecorder {
 
     pub fn set_utterance_silence_sec(&mut self, silence_sec: Option<f32>) {
         self.utterance_silence_sec = silence_sec;
+    }
+
+    /// Set the per-block input-level tap consumed by UI meters (overlay
+    /// waveform). Configure before `start_event_session`; cleared alongside the
+    /// other callbacks between sessions.
+    pub fn set_level_callback(&mut self, callback: Option<Arc<dyn Fn(f32) + Send + Sync>>) {
+        self.level_callback = callback;
     }
 
     /// Returns a cloned handle to the transcript buffer.
@@ -105,7 +118,11 @@ impl StreamingRecorder {
 
         // Setup callback to send audio data
         let dropped = Arc::clone(&self.dropped_chunks);
+        let level_callback = self.level_callback.clone();
         self.recorder.set_callback(Box::new(move |data| {
+            if let Some(ref level_cb) = level_callback {
+                level_cb(block_rms(data));
+            }
             if let Err(_e) = tx.try_send(data.to_vec()) {
                 let n = dropped.fetch_add(1, Ordering::Relaxed);
                 if n == 0 || (n + 1).is_multiple_of(50) {
@@ -239,6 +256,26 @@ impl StreamingRecorder {
     }
 }
 
+/// RMS of one captured audio block (linear, 0..~1 for full-scale input).
+/// Cheap enough for the CoreAudio callback thread (one pass + one sqrt).
+fn block_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    // Accumulate in f64 so a malformed/out-of-range f32 block cannot overflow
+    // the sum. Non-finite device samples are treated as silence; NaN/Inf must
+    // never cross the typed audio-level transport into Swift.
+    let sum_sq = samples.iter().fold(0.0_f64, |sum, sample| {
+        let sample = if sample.is_finite() {
+            f64::from(*sample)
+        } else {
+            0.0
+        };
+        sum + sample * sample
+    });
+    (sum_sq / samples.len() as f64).sqrt() as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +288,153 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tokio::time::Duration;
+
+    #[test]
+    fn block_rms_measures_signal_energy() {
+        assert_eq!(block_rms(&[]), 0.0, "empty block must read as silence");
+        assert_eq!(block_rms(&[0.0; 512]), 0.0, "digital silence is 0 RMS");
+        let full_scale = block_rms(&[1.0, -1.0, 1.0, -1.0]);
+        assert!(
+            (full_scale - 1.0).abs() < 1e-6,
+            "full-scale square wave must read ~1.0, got {full_scale}"
+        );
+        let half = block_rms(&[0.5, -0.5, 0.5, -0.5]);
+        assert!(
+            (half - 0.5).abs() < 1e-6,
+            "half-scale square wave must read ~0.5, got {half}"
+        );
+    }
+
+    #[test]
+    fn block_rms_orders_quiet_and_loud_finite_levels() {
+        let silence = block_rms(&[0.0; 512]);
+        let quiet = block_rms(&[0.01, -0.01, 0.01, -0.01]);
+        let loud = block_rms(&[0.8, -0.8, 0.8, -0.8]);
+
+        assert!(silence.is_finite() && quiet.is_finite() && loud.is_finite());
+        assert!(
+            silence < quiet && quiet < loud,
+            "expected monotonic energy, got silence={silence}, quiet={quiet}, loud={loud}"
+        );
+        assert_eq!(
+            block_rms(&[f32::NAN, f32::INFINITY, f32::NEG_INFINITY]),
+            0.0,
+            "non-finite capture samples must not poison the meter transport"
+        );
+    }
+
+    /// Delivery probe for the selected real input. During the nine-second run,
+    /// keep 0-3s silent, speak quietly during 3-6s, then loudly during 6-9s.
+    /// The test is ignored by default because it requires TCC microphone access
+    /// and a human-marked acoustic sequence.
+    #[tokio::test]
+    #[ignore = "requires selected microphone + TCC and silence/quiet/loud operator input"]
+    async fn real_input_rms_probe() {
+        if !env_bool("CODESCRIBE_E2E_MIC") {
+            eprintln!("Skipping real RMS probe (set CODESCRIBE_E2E_MIC=1 to enable)");
+            return;
+        }
+
+        let started = std::time::Instant::now();
+        let (level_tx, level_rx) = std::sync::mpsc::sync_channel::<(f32, f32)>(1024);
+        let mut recorder = Recorder::new().expect("Failed to initialize selected microphone");
+        recorder.set_callback(Box::new(move |samples| {
+            let _ = level_tx.try_send((started.elapsed().as_secs_f32(), block_rms(samples)));
+        }));
+
+        eprintln!("RMS probe: 0-3s SILENCE, 3-6s QUIET SPEECH, 6-9s LOUD SPEECH");
+        recorder
+            .start()
+            .await
+            .expect("Failed to start selected microphone");
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        let audio_path = recorder
+            .stop()
+            .await
+            .expect("Failed to stop selected microphone");
+        if let Some(path) = audio_path {
+            let _ = std::fs::remove_file(path);
+        }
+
+        let mut windows = [Vec::<f32>::new(), Vec::<f32>::new(), Vec::<f32>::new()];
+        for (elapsed, rms) in level_rx.try_iter() {
+            assert!(rms.is_finite(), "real input emitted non-finite RMS: {rms}");
+            let index = (elapsed / 3.0).floor() as usize;
+            if let Some(window) = windows.get_mut(index) {
+                window.push(rms);
+            }
+        }
+
+        let means = windows.map(|window| {
+            assert!(
+                !window.is_empty(),
+                "real input probe window captured no blocks"
+            );
+            window.iter().copied().sum::<f32>() / window.len() as f32
+        });
+        eprintln!(
+            "RMS probe means: silence={:.6}, quiet={:.6}, loud={:.6}",
+            means[0], means[1], means[2]
+        );
+        assert!(
+            means[0] < means[1] && means[1] < means[2],
+            "selected input did not produce ordered silence/quiet/loud energy: {means:?}"
+        );
+    }
+
+    /// Five-minute delivery probe for capture/backpressure stability. This runs
+    /// the production `StreamingRecorder` path against the selected input and
+    /// reports callback, engine-event, and dropped-chunk counters. It is opt-in
+    /// because it needs TCC microphone access and intentionally holds the real
+    /// audio device for the full acceptance interval.
+    #[tokio::test]
+    #[ignore = "requires selected microphone + TCC and a five-minute foreground run"]
+    async fn sustained_real_input_pressure_probe() {
+        if !env_bool("CODESCRIBE_E2E_MIC") {
+            eprintln!("Skipping sustained mic probe (set CODESCRIBE_E2E_MIC=1 to enable)");
+            return;
+        }
+
+        let duration_sec = env_f32("CODESCRIBE_E2E_SUSTAIN_SEC", 300.0).max(300.0);
+        let level_blocks = Arc::new(AtomicU64::new(0));
+        let non_finite_levels = Arc::new(AtomicU64::new(0));
+        let level_blocks_for_callback = Arc::clone(&level_blocks);
+        let non_finite_for_callback = Arc::clone(&non_finite_levels);
+        let sink = Arc::new(crate::pipeline::sinks::CollectorEventSink::new());
+        let mut recorder = StreamingRecorder::new().expect("Failed to initialize selected input");
+        recorder.set_level_callback(Some(Arc::new(move |rms| {
+            level_blocks_for_callback.fetch_add(1, Ordering::Relaxed);
+            if !rms.is_finite() {
+                non_finite_for_callback.fetch_add(1, Ordering::Relaxed);
+            }
+        })));
+        recorder.set_event_sink(Some(sink.clone()));
+
+        eprintln!("Sustained mic probe: recording selected input for {duration_sec:.0}s");
+        recorder
+            .start_event_session(None)
+            .await
+            .expect("Failed to start streaming recorder");
+        tokio::time::sleep(Duration::from_secs_f32(duration_sec)).await;
+        let (_transcript, audio_path) = recorder
+            .stop()
+            .await
+            .expect("Failed to stop streaming recorder");
+        if let Some(path) = audio_path {
+            let _ = std::fs::remove_file(path);
+        }
+
+        let levels = level_blocks.load(Ordering::Relaxed);
+        let invalid = non_finite_levels.load(Ordering::Relaxed);
+        let drops = recorder.dropped_chunks.load(Ordering::Relaxed);
+        let events = sink.events().len();
+        eprintln!(
+            "Sustained mic counters: level_blocks={levels}, non_finite={invalid}, dropped_chunks={drops}, engine_events={events}"
+        );
+        assert!(levels > 0, "selected input produced no capture callbacks");
+        assert_eq!(invalid, 0, "real input emitted non-finite RMS levels");
+        assert_eq!(drops, 0, "sustained recording dropped audio chunks");
+    }
 
     #[tokio::test]
     async fn start_event_session_requires_event_sink() {

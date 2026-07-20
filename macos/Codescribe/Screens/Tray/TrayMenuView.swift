@@ -176,6 +176,8 @@ struct TrayMenuView: View {
                 title: "Transcription Overlay",
                 isOn: viewModel.overlayEnabled
             ) { viewModel.setOverlayEnabled($0) }
+            autoPasteToggle
+            autoFormatMenu
             toggleRow(icon: .notesMode, title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
                 viewModel.setNotesMode($0)
             }
@@ -186,6 +188,31 @@ struct TrayMenuView: View {
                 onColor: CSColor.assistive
             ) { viewModel.setStartInAssistive($0) }
         }
+    }
+
+    /// Auto Paste shares the exact baseline row (icon + trailing On/Off keycap)
+    /// with Show Dock Icon and Transcription Overlay — one visual grammar for
+    /// every quick toggle. TrayRow keeps the locked palette and geometry.
+    private var autoPasteToggle: some View {
+        toggleRow(icon: .send, title: "Auto Paste", isOn: viewModel.autoPasteEnabled) {
+            viewModel.setAutoPasteEnabled($0)
+        }
+    }
+
+    /// Auto Format is a cycling row in the same baseline grammar: each click
+    /// advances Off → Correction → Smart → Max → Off. The current level sits in
+    /// the trailing keycap slot, so nothing opens over the 300pt popover.
+    private var autoFormatMenu: some View {
+        TrayRow(
+            icon: .edit,
+            title: "Auto Format",
+            shortcut: viewModel.autoFormatLevel.visibleName,
+            shortcutColor: viewModel.autoFormatLevel == .off
+                ? CSColor.textFaintAlt : CSColor.oliveLight
+        ) { viewModel.setAutoFormatLevel(viewModel.autoFormatLevel.next) }
+            .accessibilityLabel("Auto Format")
+            .accessibilityValue(viewModel.autoFormatLevel.visibleName)
+            .accessibilityHint("Cycle automatic formatting level")
     }
 
     /// A checkbox-style row reusing `TrayRow`, with the on/off state shown as the

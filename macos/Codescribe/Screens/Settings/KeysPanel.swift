@@ -1,35 +1,40 @@
 import Foundation
 import SwiftUI
 
-// Keys panel: write-only API-key management. Secrets are entered through a
-// SecureField and pushed to the core's Keychain via `setApiKey`; the trash button
-// clears via `clearApiKey`. Presence is rendered from `CsKeyStatus` booleans —
-// a secret is NEVER read back across the FFI.
+// Providers panel: the one owner of external-AI integrations. Read-only runtime
+// rows show the resolved LLM truth per lane; the lane editors below are the ONE
+// edit path for provider, endpoint, and model overrides (promoted config keys).
+// API keys are write-only — secrets go to the Keychain via `setApiKey` and are
+// NEVER read back across the FFI; presence renders from `CsKeyStatus` booleans.
+// Workspace roots, Agent status, and MCP servers complete the agent substrate.
 
 struct KeysPanel: View {
     @ObservedObject var model: SettingsViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            EyebrowLabel(text: "Settings · Keys")
-            Text("API keys.")
+            EyebrowLabel(text: "Settings · \(SettingsSection.keys.title)")
+            Text("Who answers your requests.")
                 .font(CSFont.ui(26, .bold))
                 .tracking(-0.5)
                 .foregroundStyle(CSColor.textHigh)
                 .padding(.top, 6)
 
-            Text("Stored in the macOS Keychain. Keys are write-only here — codescribe never displays a stored secret.")
+            Text("LLM providers, request lanes, API keys, and the agent substrate — every external integration lives here.")
                 .font(CSFont.ui(12.5))
                 .lineSpacing(2)
                 .foregroundStyle(CSColor.textMutedAlt)
                 .padding(.top, 8)
 
-            SettingsSectionLabel("Agent provider")
+            runtimeRows
+                .padding(.top, 20)
+
+            SettingsSectionLabel("LLM lanes")
                 .padding(.top, 22)
-            AgentProviderSelector(model: model)
+            LLMLanesSection(model: model)
                 .padding(.top, 11)
 
-            SettingsSectionLabel("Providers")
+            SettingsSectionLabel("API keys")
                 .padding(.top, 22)
             VStack(spacing: 8) {
                 ForEach(model.keyAccounts, id: \.self) { account in
@@ -63,90 +68,225 @@ struct KeysPanel: View {
                     .foregroundStyle(CSColor.textFaint)
             }
             .padding(.top, 16)
+
+            WorkspaceRootsSection(model: model)
+                .padding(.top, 30)
+
+            AgentStatusSection(model: model)
+                .padding(.top, 30)
+
+            MCPServersSection(model: model)
+                .padding(.top, 26)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
     }
+
+    // MARK: Runtime key/value rows (resolved LLM truth — read-only)
+
+    private var runtimeRows: some View {
+        VStack(spacing: 0) {
+            RuntimeRow(key: "AI formatting", value: model.formattingDescription,
+                       tint: true, trailing: .none)
+            divider
+            ForEach(LLMLane.allCases) { lane in
+                let laneModel = model.llmLane(lane)
+                RuntimeRow(key: "\(lane.title) endpoint", value: laneModel.resolvedEndpoint,
+                           tint: false, mono: true, trailing: .none)
+                divider
+                RuntimeRow(key: "\(lane.title) model", value: laneModel.resolvedModel,
+                           tint: true, mono: true, trailing: .none)
+                divider
+            }
+            RuntimeRow(key: "API keys", value: model.apiKeysDescription,
+                       tint: false,
+                       trailing: model.apiKeysStored ? .text("secure", CSColor.oliveLight) : .text("missing", CSColor.amber))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        )
+    }
+
+    private var divider: some View {
+        Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    }
 }
 
-// MARK: - Agent provider / model selector
+// MARK: - Editable LLM lanes (the one provider/model edit grammar)
 
-// Picks the assistive/agent-lane provider + model. The chosen provider maps to
-// one of the API-key rows below; the dot reflects whether that key is present.
-private struct AgentProviderSelector: View {
+/// Three request lanes sharing one visual grammar while preserving their distinct
+/// promoted config keys. Runtime rows above remain the effective read-only truth.
+struct LLMLanesSection: View {
     @ObservedObject var model: SettingsViewModel
 
-    private var laneModel: LLMLaneModel { model.llmLane(.assistive) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Set provider, endpoint, and model per request path. Leave an override empty to use the resolved fallback.")
+                .font(CSFont.ui(11.5))
+                .lineSpacing(2)
+                .foregroundStyle(CSColor.textMutedAlt)
+
+            ForEach(LLMLane.allCases) { lane in
+                LLMLaneEditor(model: model, lane: lane)
+                if lane != LLMLane.allCases.last {
+                    Rectangle()
+                        .fill(CSColor.hairline(0.05))
+                        .frame(height: 1)
+                }
+            }
+        }
+    }
+}
+
+private struct LLMLaneEditor: View {
+    @ObservedObject var model: SettingsViewModel
+    let lane: LLMLane
+
+    @State private var endpointDraft = ""
+    @State private var modelDraft = ""
+
+    private var laneModel: LLMLaneModel { model.llmLane(lane) }
+
+    private var providerLabel: String {
+        laneModel.provider?.displayName ?? laneModel.providerId
+    }
+
+    private var currentModelLabel: String {
+        laneModel.modelOptions.first { $0.id == laneModel.resolvedModel }?.displayName
+            ?? laneModel.resolvedModel
+    }
 
     private var discoveryDotColor: Color {
+        if laneModel.manualModelReason != nil { return CSColor.textFaint }
         switch laneModel.discovery.status {
         case "fresh": return CSColor.olive
         case "cached": return CSColor.amber
-        case "no_key": return CSColor.textFaint
+        case "no_key", "loading": return CSColor.textFaint
         default: return CSColor.terracotta
         }
     }
 
-    private var currentModelLabel: String {
-        let id = laneModel.configuredModel
-        if id.isEmpty {
-            return laneModel.modelOptions.isEmpty ? "No discovered models" : "Choose a model"
-        }
-        return laneModel.modelOptions.first { $0.id == id }?.displayName ?? id
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SelectorRow(label: "Provider") {
-                Menu {
-                    ForEach(model.providers, id: \.id) { provider in
-                        Button {
-                            model.setAssistiveProvider(provider.id)
-                        } label: {
-                            if provider.id == laneModel.providerId {
-                                Label(provider.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(provider.displayName)
-                            }
-                        }
-                    }
-                } label: {
-                    SettingsMenuLabel(text: laneModel.provider?.displayName ?? laneModel.providerId, chrome: true)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(lane.title)
+                    .font(CSFont.ui(14.5, .bold))
+                    .foregroundStyle(CSColor.textHigh)
+                Text(lane.subtitle)
+                    .font(CSFont.ui(11.5))
+                    .foregroundStyle(CSColor.textMutedAlt)
             }
 
-            SelectorRow(label: "Model") {
-                Menu {
-                    ForEach(laneModel.modelOptions, id: \.id) { option in
-                        Button {
-                            model.setLLMModel(option.id, for: .assistive)
-                        } label: {
-                            if option.id == laneModel.configuredModel {
-                                Label(option.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(option.displayName)
+            if lane == .assistive {
+                SettingsControlRow(title: "Provider", subtitle: "Assistive requests only") {
+                    Menu {
+                        ForEach(model.providers, id: \.id) { provider in
+                            Button {
+                                model.setAssistiveProvider(provider.id)
+                            } label: {
+                                if provider.id == laneModel.providerId {
+                                    Label(provider.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(provider.displayName)
+                                }
                             }
                         }
+                    } label: {
+                        SettingsMenuLabel(text: providerLabel)
                     }
-                } label: {
-                    SettingsMenuLabel(text: currentModelLabel, mono: true, chrome: true)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .accessibilityLabel("Assistive provider")
+                    .accessibilityValue(providerLabel)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .disabled(laneModel.modelOptions.isEmpty)
             }
 
-            if let selected = laneModel.provider {
+            SettingsControlRow(title: "Endpoint", subtitle: lane.endpointKey) {
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill((selected.apiKeySet ? CSColor.olive : CSColor.terracotta).opacity(0.85))
-                        .frame(width: 7, height: 7)
-                    Text("uses \(SettingsViewModel.keyLabel(for: selected.apiKeyAccount)) — \(selected.apiKeySet ? "set" : "not set") below")
-                        .font(CSFont.mono(11, .medium))
-                        .foregroundStyle(CSColor.textFaint)
+                    overrideTextField(
+                        placeholder: laneModel.resolvedEndpoint,
+                        text: $endpointDraft,
+                        accessibilityLabel: "\(lane.title) LLM endpoint",
+                        onSubmit: saveEndpoint
+                    )
+
+                    saveOverrideButton(
+                        draft: endpointDraft,
+                        accessibilityLabel: "Save \(lane.title) endpoint",
+                        action: saveEndpoint
+                    )
+
+                    resetOverrideButton(
+                        help: "Clear this endpoint override",
+                        accessibilityLabel: "Reset \(lane.title) endpoint"
+                    ) {
+                        endpointDraft = ""
+                        model.setLLMEndpoint("", for: lane)
+                    }
                 }
+                .frame(width: 380)
+            }
+
+            SettingsControlRow(title: "Model", subtitle: lane.modelKey) {
+                HStack(spacing: 8) {
+                    if laneModel.discovery.status == "loading"
+                        && laneModel.manualModelReason == nil
+                    {
+                        HStack(spacing: 7) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Discovering models…")
+                                .font(CSFont.mono(10.5, .medium))
+                                .foregroundStyle(CSColor.textFaint)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .accessibilityLabel("Discovering \(lane.title) models")
+                    } else if laneModel.usesDiscoveredPicker {
+                        Menu {
+                            ForEach(laneModel.modelOptions, id: \.id) { option in
+                                Button {
+                                    model.setLLMModel(option.id, for: lane)
+                                } label: {
+                                    if option.id == laneModel.resolvedModel {
+                                        Label(option.displayName, systemImage: "checkmark")
+                                    } else {
+                                        Text(option.displayName)
+                                    }
+                                }
+                            }
+                        } label: { SettingsMenuLabel(text: currentModelLabel) }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .accessibilityLabel("\(lane.title) model")
+                        .accessibilityValue(currentModelLabel)
+                    } else {
+                        overrideTextField(
+                            placeholder: laneModel.resolvedModel,
+                            text: $modelDraft,
+                            accessibilityLabel: "\(lane.title) model ID",
+                            onSubmit: saveModel
+                        )
+
+                        saveOverrideButton(
+                            draft: modelDraft,
+                            accessibilityLabel: "Save \(lane.title) model",
+                            action: saveModel
+                        )
+                    }
+
+                    resetOverrideButton(
+                        help: "Clear this model override",
+                        accessibilityLabel: "Reset \(lane.title) model"
+                    ) {
+                        modelDraft = ""
+                        model.setLLMModel("", for: lane)
+                    }
+                }
+                .frame(width: 380)
             }
 
             HStack(spacing: 8) {
@@ -154,37 +294,198 @@ private struct AgentProviderSelector: View {
                     .fill(discoveryDotColor.opacity(0.85))
                     .frame(width: 7, height: 7)
                 Text(laneModel.discoveryDescription)
-                    .font(CSFont.mono(11, .medium))
+                    .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(CSColor.textFaint)
                     .lineLimit(2)
             }
+            .padding(.leading, 2)
         }
-        .padding(.horizontal, 15)
-        .padding(.vertical, 13)
-        .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(CSColor.surfaceRaised(0.03))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-        )
+    }
+
+    private func saveEndpoint() {
+        model.setLLMEndpoint(endpointDraft, for: lane)
+        endpointDraft = ""
+    }
+
+    private func saveModel() {
+        model.setLLMModel(modelDraft, for: lane)
+        modelDraft = ""
+    }
+
+    private func overrideTextField(
+        placeholder: String,
+        text: Binding<String>,
+        accessibilityLabel: String,
+        onSubmit: @escaping () -> Void
+    ) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(CSFont.mono(11.5, .regular))
+            .foregroundStyle(CSColor.textBody)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                    .fill(CSColor.surfaceRaised(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+            )
+            .onSubmit(onSubmit)
+            .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func saveOverrideButton(
+        draft: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button("Save", action: action)
+            .font(CSFont.ui(11.5, .semibold))
+            .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+            .buttonStyle(.plain)
+            .disabled(draft.isEmpty)
+            .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func resetOverrideButton(
+        help: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button("Reset", action: action)
+            .font(CSFont.ui(11.5, .semibold))
+            .foregroundStyle(CSColor.textMutedAlt)
+            .buttonStyle(.plain)
+            .help(help)
+            .accessibilityLabel(accessibilityLabel)
     }
 }
 
-private struct SelectorRow<Content: View>: View {
-    let label: String
-    @ViewBuilder let content: () -> Content
+// MARK: - Agent workspace roots editor
+
+/// Editable list of workspace roots the agent's `list_projects` tool scans to
+/// resolve project names to absolute paths. Rows are edited locally and committed
+/// through `SettingsViewModel.setAgentWorkspaceRoots` (colon-joined ->
+/// `AGENT_WORKSPACE_ROOTS`). Each row shows a live "directory exists" indicator.
+struct WorkspaceRootsSection: View {
+    @ObservedObject var model: SettingsViewModel
+
+    @State private var rows: [String] = []
+    @State private var loaded = false
+
+    private var isDirty: Bool {
+        cleaned(rows) != cleaned(model.agentWorkspaceRoots)
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text(label)
-                .font(CSFont.mono(12, .medium))
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsSectionLabel("Agent workspace roots")
+
+            Text("Directories the assistant scans to resolve a project name to a path (list_projects). One level deep; git checkouts only.")
+                .font(CSFont.ui(11.5))
+                .lineSpacing(2)
                 .foregroundStyle(CSColor.textMutedAlt)
-                .frame(width: 80, alignment: .leading)
-            content()
-            Spacer(minLength: 0)
+                .padding(.top, 8)
+
+            VStack(spacing: 8) {
+                ForEach(rows.indices, id: \.self) { index in
+                    rootRow(index: index)
+                }
+            }
+            .padding(.top, 12)
+
+            HStack(spacing: 10) {
+                Button {
+                    rows.append("")
+                } label: {
+                    Label("Add root", systemImage: "plus")
+                        .font(CSFont.ui(12, .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(CSColor.textBody)
+
+                Spacer()
+
+                Button {
+                    model.setAgentWorkspaceRoots(rows)
+                    syncFromModel()
+                } label: {
+                    Text("Save roots")
+                        .font(CSFont.ui(12, .semibold))
+                        .foregroundStyle(isDirty ? CSColor.textHigh : CSColor.textFaint)
+                }
+                .buttonStyle(.plain)
+                .disabled(!isDirty)
+            }
+            .padding(.top, 12)
         }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            syncFromModel()
+        }
+    }
+
+    private func rootRow(index: Int) -> some View {
+        HStack(spacing: 10) {
+            existsDot(for: rows[index])
+            TextField("~/Git", text: Binding(
+                get: { index < rows.count ? rows[index] : "" },
+                set: { if index < rows.count { rows[index] = $0 } }
+            ))
+            .textFieldStyle(.plain)
+            .font(CSFont.mono(12, .regular))
+            .foregroundStyle(CSColor.textBody)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                rows.remove(at: index)
+            } label: {
+                CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.textFaint)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+        )
+    }
+
+    /// Green when the (tilde-expanded) path is an existing directory, amber
+    /// otherwise — the tool will silently skip a root that does not resolve.
+    private func existsDot(for path: String) -> some View {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        let valid = Self.directoryExists(trimmed)
+        return Circle()
+            .fill(valid ? CSColor.oliveLight : CSColor.amber)
+            .frame(width: 7, height: 7)
+    }
+
+    private func syncFromModel() {
+        rows = model.agentWorkspaceRoots
+        if rows.isEmpty { rows = ["~/Git"] }
+    }
+
+    private func cleaned(_ input: [String]) -> [String] {
+        input
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private static func directoryExists(_ path: String) -> Bool {
+        guard !path.isEmpty else { return false }
+        let expanded = (path as NSString).expandingTildeInPath
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir)
+        return exists && isDir.boolValue
     }
 }
 
@@ -543,7 +844,7 @@ private struct AccountActionButton: View {
 }
 
 #if DEBUG
-#Preview("Keys panel") {
+#Preview("Providers panel") {
     ScrollView { KeysPanel(model: .preview(.keys)) }
         .frame(width: 720, height: 620)
         .background(SettingsView.windowGradient)

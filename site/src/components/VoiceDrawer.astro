@@ -1,0 +1,66 @@
+---
+import { asset } from '../lib/asset';
+// NOTE (WEBSITE_SPEC §5, flagged): this reuses the agent-threads shot until a
+// dedicated Voice Drawer capture exists. Swap the src + width/height 1:1 when
+// the real capture lands; alt text is already Voice-Drawer specific.
+---
+
+<section class="section drawer" data-screen-label="Drawer" aria-labelledby="drawer-title">
+  <div class="container">
+    <div class="head">
+      <p class="eyebrow">WORKING HISTORY</p>
+      <h2 id="drawer-title">Your voice doesn't disappear.</h2>
+    </div>
+    <div class="frame">
+      <img
+        src={asset('shots/agent-threads-transparent.webp')}
+        width="2259"
+        height="1435"
+        loading="lazy"
+        decoding="async"
+        alt="codescribe threads / voice history rail with restore"
+      />
+    </div>
+    <div class="meta-row">
+      <span>· Today / This week / Older</span>
+      <span>· search</span>
+      <span>· favorite</span>
+      <span>· restore / copy / edit</span>
+      <span>· export markdown</span>
+    </div>
+  </div>
+</section>
+
+<style>
+  .drawer { padding: 120px 24px; }
+  .container { max-width: 1000px; }
+  .head {
+    text-align: center;
+    margin-bottom: 50px;
+  }
+  h2 {
+    font: 700 clamp(32px, 5vw, 50px) / 1 var(--font-display);
+    letter-spacing: -0.03em;
+    margin: 16px 0 0;
+    color: var(--ink);
+  }
+  .frame {
+    border: 1px solid var(--stroke-2);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5);
+    max-width: 860px;
+    margin: 0 auto;
+    max-height: 560px;
+  }
+  .frame img {
+    width: 100%;
+    height: auto;
+    display: block;
+    object-fit: cover;
+    object-position: top;
+  }
+  @media (max-width: 480px) {
+    .drawer { padding: 84px 20px; }
+  }
+</style>

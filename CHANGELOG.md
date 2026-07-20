@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Overlay Insert no longer pastes back into Codescribe itself** — the overlay
+  is a non-activating panel that can hold the caret (editable FINAL) while
+  another app stays frontmost, so the synthetic Cmd+V followed OUR key window
+  and the transcript landed in the overlay instead of the target (reported
+  live against alacritty). The Insert action now runs a caret-truth guard: when
+  a Codescribe text view is first responder, it degrades to copying the tagged
+  transcript (`<codescribe mode="dictation" ...>`) to the clipboard and says so
+  in a toast. A second, controller-side guard degrades the same way when the
+  paste target never took focus back (activation failure / Automation TCC
+  denial) instead of pasting blind, and the bridge now reports the honest
+  delivery outcome (`Pasted` / `CopiedToClipboard`) to the UI.
+
+## [0.13.0] - 2026-07-19
+
+> Voice→agent delivery stabilization (assistive history continuity, AI titles
+> for voice threads, one delivery gateway), overlay reform with reversible
+> formatting levels, the agent-surface wave (summon, stop, cancel), a Settings
+> information-architecture reorganization, and release hygiene.
+
+### Fixed — voice→agent delivery (night shift 2026-07-19)
+
+- **Assistive conversations no longer lose history between turns** (`e0f2a3a`) — the agent runtime used to drop its thread identity and in-memory history whenever it recovered from a degraded state, so the next voice turn silently started a brand-new session (`messages=1` on the wire) and the previous exchange was orphaned. Thread identity now lives above the runtime, and recovery rehydrates persisted history back into the session (explicit `rehydrated` / `rehydrate_empty` / `rehydrate_failed` logs) instead of minting a fresh thread.
+- **Voice threads now get AI-generated titles** (`75d986c`) — first-turn title generation used to fire only for composer-typed messages; dictated threads fell back to a raw text slug (visibly broken for prompts starting with boilerplate). The same out-of-band stateless title coordinator now serves both sources with identical race/cancellation semantics, and never re-sends the conversation itself.
+- **Thread rail bucketing symptom** ("today 23:59" listed under _Older_) resolved by the identity fix above — turns land in the thread the rail is watching, so `updated_at` refreshes correctly. The section calculator itself was verified correct and left untouched.
+
+### Changed — architecture and Settings IA
+
+- **One canonical thread-delivery gateway** (`a59c466`) — voice and composer persistence were two independent implementations (duplicate upsert/title/summary/timestamp logic in the app controller and the FFI bridge). They are now a single `ThreadDeliveryGateway` in core returning a measured delivery receipt; ~400 lines of duplicated logic removed, custom-vs-generated title semantics and cancellation behavior preserved under tests.
+- **Settings tabs reorganized around clear ownership** (`49f2bdc`) — **Dictation** (formerly Engine: STT engine, layered transcription, preview timing moved in from Voice Lab, hands-free silence moved in from Audio) · **Audio** (input hardware and sound feedback only) · **Dictionary** (formerly Voice Lab: the text lexicon — recent corrections and learned rules, no audio/timing settings) · **Providers** (LLM lanes, API keys, agent status, MCP, workspace roots). Settings keys on disk are unchanged — relocated controls read and write the same `settings.json` entries as before.
+
+### Added — overlay reform and agent surface (2026-07-18 wave)
+
+- **Formatting levels as runtime truth** (`ef50b28`) — Off → Correction → Smart → Max with per-level prompts editable in Settings → Prompts.
+- **Overlay controls** (`241c549`) — durable Auto Paste toggle, one-shot Format menu, and an explicit **To Agent** action in the transcription overlay.
+- **Reversible formatting** (`9552c13`) — one-slot exact-bytes **Revert** with a 5-second re-arm window; quality learning is evidence-only on Smart/Max.
+- **Tray parity** (`65bd4f4`, `0755522`) — Auto Paste and cycling Auto Format directly in the tray menu, reading and writing persisted settings truth.
+- **Agent summon** (`79f48cb`) — a global hotkey summons the idle agent window.
+- **Composer stop + safe voice cancel** (`21e6214`, `f743cf3`) — active agent responses can be stopped mid-stream; voice-assistive turns cancel without corrupting the session.
+- **First-turn AI thread titles, composer path** (`d7aba0e`, `4118784`) — stateless generation contract plus orchestration after the first exchange.
+- **Exactly-once auto-paste** (`b63809f`) — delivery hardened with fence-window duplicate suppression.
+- **Livelier waveform meter** (`662ad1f`) — tighter dB window (−55…−25 dBFS) with a perceptual response curve, so ordinary speech visibly moves the bars.
+- Astro site transplanted into the working branch; legacy landing retired (`b4bbfe5`).
+
 ### Added
 
 - **API key liveness probe in Settings → Keys** (PR #50) — per-key **Test** button runs a background probe and shows a result chip (`Key OK` / `Invalid key` / `No credits (check billing)` / `Network error` / `Not set` / `Unsupported`). LLM keys are probed with a minimal generation request rather than an auth-only endpoint, so exhausted billing (`insufficient_quota`) is distinguished from an invalid key.
@@ -14,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Public release hygiene** — release packaging, repository metadata, and public-facing docs are being aligned for a current `v0.12.x` public release.
+- **Public release hygiene** — release packaging, repository metadata, and public-facing docs aligned; `v0.12.3` shipped as a notarized DMG on GitHub Releases (2026-07-18) with the site install page pointing at `releases/latest`.
 - **Dual DMG release variants** — release automation now builds a standard notarized DMG with embedded Silero + embedder and runtime Whisper cache/download, plus a `_full` notarized DMG with Whisper embedded.
 - **Memory footprint** — idle RAM cut from ~5 GB (peak ~10 GB) to ~0.8 GB. The Whisper and MiniLM embedder models now unload from GPU/host memory after a period of inactivity and reload transparently on next use (`CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS`, `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS`, default 300s, 0 disables).
 
@@ -25,6 +70,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP setup deep-link did nothing** (PR #54) — the onboarding "Set up MCP servers" action now opens Settings via the SwiftUI `openSettings` environment action instead of a dead AppKit `showSettingsWindow:` selector that has no responder in this accessory (LSUIElement) app.
 - **Silero VAD reload leak** — the Silero ONNX session is now compiled once and shared process-wide instead of being rebuilt per recording (which leaked native ORT memory over long sessions).
 - **Allocator retention** — freed transient buffers are returned to the OS after each recording (`malloc_zone_pressure_relief` on macOS) instead of inflating the resident footprint across a session.
+
+## [0.12.3] - 2026-07-16
+
+> Audit-close patch line for lane-truth configuration, Settings parity, and the assistive/chat render contract.
+
+### Added
+
+- **U1 canonical lane-truth snapshot** (`860e490`) — `LaneTruthSnapshot` is exposed over UniFFI as the single source of provider/endpoint/model/credential truth; the duplicate Swift-side resolver (hardcoded model ids) was removed.
+- **U3 Composer Cmd+V** (`fb9f2ff`, `31a64c3`) — pasting into the agent composer now stages Finder images, screenshots, and text as attachments (pure `pasteDisposition` routing, window/focus-scoped NSEvent monitor).
+- **U4 Settings truth surface** (`bbfb72f`) — the rail no longer renders inert fake buttons, the footer computes `healthy/degraded/offline/unknown` from live signals (with a jump to the failing section), and User became a real local-first panel.
+- **U5 chat stream cost cut + Latest pill** (`d2b73e1`) — per-delta-tick Markdown re-parse eliminated (measured 4555 µs → 0.1 µs per tick on a 20k stream), scroll signature 137 µs → 2.3 µs, plus a floating "↓ Latest" pill and a per-bubble raw↔rich toggle. Streaming and final bubbles share the same **raw-default** render policy (C2b).
+- **U7 Voice Lab on the quality loop** (`2f7f920`) — live recent overlay corrections and custom-lexicon entries (read via new bridge surfaces, never raw file reads from Swift) plus preview-timing presets (Smooth 1038/10.6/5/8.0 as recommended default, Snappy, Relaxed, Off, Custom with tolerant detection).
+- **U8 Audio panel** (`1d6c386`) — live input-device enumeration with honest runtime resolution (saved wish vs. live device shown explicitly), silence/feedback controls mapped only to keys the runtime consumes, dedicated unset-based reset; the rail has no `comingSoon` placeholders left.
+- **D4 ThreadRail sections and metadata** (`0709f4b`) — Today/Yesterday/This week/Older grouping (search filters first, then grouping) and a nil-safe `relative time · model · tokens` meta line; the thread index gained the needed fields additively via a versioned rebuild.
+- **D6 overlay Paste + failure marker** (`c207ac9`) — the formatted overlay gained a [Paste] action that delivers the user-edited text to the previous app through the single controller delivery path (tagging included), and formatting failures set a discrete state marker while copy/paste/send keep clean text.
+- **U12 recoverable reset safety** (`5ea8502`) — full app-data reset moved to **User → Danger zone**, requires typing `RESET`, previews the affected recordings/threads/bytes, moves data to **Trash**, and writes an external append-only audit log. MCP recovery is now a separate **Clear MCP configuration…** action that moves only `mcp.json` to Trash.
+
+### Changed
+
+- **U2 optional-override mutation contract** (`43e50ad`) — single and batch settings writes share one `apply_optional_override` helper, so batch saves can no longer persist `Some("")` and silently blank promoted lane keys; reset means unset.
+- **U10 lane-truth documentation rebuilt** (`2df8493`) — `docs/lane-truth.md` (lanes, precedence, key-optional locals, reset=unset, endpoint normalization, probe vs. agent-gate diagnostics), `docs/ENV_REGISTRY.toml` lane coverage, secret-safe examples across docs, and this 0.12.3 changelog entry.
+- **U16 env templates = registry truth** (`7666d94`) — `.env.example` and `.env.debug.example` now mirror `docs/ENV_REGISTRY.toml` exactly (183 keys, commented, grouped, `<your-key>` placeholders only); template-only ghost keys were removed and live keys missing from the registry were added.
+- **U13 Settings rail labels + layout** (`6a00398`, `5415e7e`) — rail labels now read **Hotkeys** and **Providers** (user-facing strings only; internal identifiers unchanged), and the navigation stack is flush-top instead of floating in unused vertical space.
+- **Overlay CloseDot** (`5415e7e`) — the orange wordmark dot is now a dedicated close control with a traffic-light hover state, the existing close path, and an accessible label; the shared decorative wordmark remains non-interactive elsewhere.
+
+### Fixed
+
+- **U14 MCP resilience — SIGPIPE root cause** (`a35a64b`) — a dead-at-exec MCP server could kill the whole app silently: writing `shutdown` to the dead child's stdin raised SIGPIPE, which is ignored in Rust binaries but fatal (and unreported by ReportCrash) inside the Swift-hosted dylib. Fixed with per-fd `F_SETNOSIGPIPE`, a `try_wait` guard before farewell writes, a dedicated 5 s `initialize` timeout, and parallel per-server discovery isolation; a falsification test reproduces the death (signal 13) without the fix.
+- **U15 tray toggle truth** (`c98201c`) — after writing `transcription_overlay_enabled`, the tray re-reads the bridge/settings source of truth so its On/Off label cannot remain on an optimistic stale value.
+- **U15 OpenAI restored-image guard** (`5f49f56`) — byte-less `tool_result` images now warn-skip instead of serializing an empty data URI or image reference.
+- **U11 model-discovery cancellation** (`66e123f`) — a new discovery generation now aborts the previous in-flight HTTP fetch per provider (proven by an `expect(0)` mock: the cancelled request never reaches the wire) and a stale generation can no longer overwrite the cache.
+- **D8 Anthropic image-asset parity** (`41c14de`) — tool-result images restored with `data_omitted` warn-skip instead of silently serializing (with a text fallback keeping the block valid); ImageAsset bytes load from disk at request time only, matching the OpenAI provider contract.
+- **U6 quality-chain proof** (`ad4b06d`, tests only) — a hermetic end-to-end test proves the operator promise at engine level: an overlay edit becomes a `QualityRecord`, a lexicon candidate, a custom-lexicon commit, and a corrected next transcript.
+- **D-01 hands-off toggle ADR annotation** — `HOTKEYS_CONTRACT.md` records that commit `37f137e` reverted the 2026-05-28 force-RAW toggle decision and restored Settings-driven default routing when no explicit hotkey override exists.
 
 ## [0.12.2] - 2026-06-22
 
@@ -422,7 +501,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI & types** – Type checking and CI improvements.
 - **Menu robustness** – Tray menu stability fixes.
 
-[unreleased]: https://github.com/vetcoders/codescribe/compare/v0.12.2...HEAD
+[unreleased]: https://github.com/vetcoders/codescribe/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/vetcoders/codescribe/compare/v0.12.3...v0.13.0
+[0.12.3]: https://github.com/vetcoders/codescribe/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/vetcoders/codescribe/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/vetcoders/codescribe/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/vetcoders/codescribe/compare/v0.11.2...v0.12.0

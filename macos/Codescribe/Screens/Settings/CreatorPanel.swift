@@ -29,36 +29,25 @@ struct CreatorPanel: View {
             SettingsSectionLabel("Voice & formatting")
                 .padding(.top, 24)
             VStack(spacing: 8) {
-                SettingsControlRow(title: "Whisper language",
-                                   subtitle: "Language used for speech-to-text") {
-                    Picker("", selection: languageBinding) {
-                        Text("Auto").tag(CsLanguage.auto)
-                        Text("Polish").tag(CsLanguage.polish)
-                        Text("English").tag(CsLanguage.english)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 220)
-                }
+                LanguageIdentityRow(selection: languageBinding)
                 SettingsControlRow(title: "AI formatting",
-                                   subtitle: "Clean up transcripts with the LLM") {
+                                   subtitle: "Compatibility gate; Off below always bypasses the LLM") {
                     Toggle("", isOn: formattingEnabledBinding)
                         .toggleStyle(.switch)
                         .labelsHidden()
                         .tint(CSColor.terracotta)
                 }
-                if model.settings.aiFormattingEnabled {
-                    SettingsControlRow(title: "Formatting level",
-                                       subtitle: "How aggressively the LLM rewrites") {
-                        Picker("", selection: formattingLevelBinding) {
-                            Text("Raw").tag("raw")
-                            Text("Medium").tag("medium")
-                            Text("Creative").tag("creative")
+                SettingsControlRow(title: "Auto Format",
+                                   subtitle: "Correction only, balanced editing, or maximum polish") {
+                    Picker("", selection: formattingLevelBinding) {
+                        ForEach(FormattingPolicyOption.allCases) { policy in
+                            Text(policy.visibleName).tag(policy.rawValue)
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 220)
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 330)
+                    .disabled(!model.settings.aiFormattingEnabled)
                 }
             }
             .padding(.top, 11)
@@ -94,8 +83,128 @@ struct CreatorPanel: View {
     }
 
     private var formattingLevelBinding: Binding<String> {
-        Binding(get: { model.settings.formattingLevel ?? "medium" },
+        Binding(get: {
+            FormattingPolicyOption(storedValue: model.settings.formattingLevel)?.rawValue
+                ?? FormattingPolicyOption.correction.rawValue
+        },
                 set: { model.setFormattingLevel($0) })
+    }
+}
+
+// MARK: - Language identity
+
+struct LanguageIdentityPresentation: Identifiable, Equatable {
+    let language: CsLanguage
+    let title: String
+    let isFineTuned: Bool
+
+    var id: String { language.shortCode }
+
+    var accessibilityLabel: String {
+        isFineTuned ? "\(title), Fine-tuned" : title
+    }
+
+    func accessibilityValue(isSelected: Bool) -> String {
+        isSelected ? "Selected" : "Not selected"
+    }
+
+    static let supportingCopy =
+        "Programming vocabulary and your \(SettingsSection.voiceLab.title) entries enrich the selected language."
+
+    static let choices: [LanguageIdentityPresentation] = [
+        .init(language: .auto, title: "Multilingual", isFineTuned: false),
+        .init(language: .polish, title: "Polish", isFineTuned: true),
+        .init(language: .english, title: "English", isFineTuned: true),
+    ]
+}
+
+private struct LanguageIdentityRow: View {
+    @Binding var selection: CsLanguage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Whisper language")
+                    .font(CSFont.ui(13.5, .semibold))
+                    .foregroundStyle(CSColor.textBody)
+                Text("Choose automatic detection or a language-specialized path")
+                    .font(CSFont.ui(11.5))
+                    .foregroundStyle(CSColor.textMutedAlt)
+            }
+
+            LanguageIdentityPicker(selection: $selection)
+
+            Text(LanguageIdentityPresentation.supportingCopy)
+                .font(CSFont.ui(10.5))
+                .foregroundStyle(CSColor.textMutedAlt)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.025))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        )
+    }
+}
+
+private struct LanguageIdentityPicker: View {
+    @Binding var selection: CsLanguage
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(LanguageIdentityPresentation.choices) { choice in
+                let isSelected = selection == choice.language
+                Button {
+                    selection = choice.language
+                } label: {
+                    VStack(spacing: 3) {
+                        Text(choice.title)
+                            .font(CSFont.ui(11.5, .semibold))
+                            .lineLimit(1)
+                        if choice.isFineTuned {
+                            Text("Fine-tuned")
+                                .font(CSFont.ui(8.5, .semibold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(
+                                    Capsule().fill(CSColor.terracotta.opacity(0.16))
+                                )
+                        } else {
+                            Text("Automatic detection")
+                                .font(CSFont.ui(8.5, .medium))
+                                .foregroundStyle(CSColor.textMutedAlt)
+                        }
+                    }
+                    .foregroundStyle(isSelected ? CSColor.textHigh : CSColor.textBody)
+                    .frame(maxWidth: .infinity, minHeight: 43)
+                    .padding(.horizontal, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(isSelected ? CSColor.terracotta.opacity(0.12) : Color.clear)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? CSColor.terracotta.opacity(0.5) : CSColor.hairline(0.07),
+                                lineWidth: 1
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(choice.accessibilityLabel)
+                .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            }
+        }
+        .frame(maxWidth: 460)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Whisper language")
     }
 }
 

@@ -7,6 +7,10 @@ use std::str::FromStr;
 
 use super::defaults::*;
 
+const fn default_auto_paste_enabled() -> bool {
+    true
+}
+
 /// First-class work modes used by the runtime and settings UI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -300,6 +304,12 @@ pub struct Config {
     #[serde(default)]
     pub ai_formatting_enabled: bool,
 
+    /// User-owned automatic paste policy for non-assistive dictation.
+    /// Assistive, empty/no-speech, Notes save-only, and safety branches remain
+    /// controller-owned vetoes even when this preference is enabled.
+    #[serde(default = "default_auto_paste_enabled")]
+    pub auto_paste_enabled: bool,
+
     /// Strategy for sending transcript (end-of-utterance vs streaming)
     #[serde(default)]
     pub transcript_send_mode: TranscriptSendMode,
@@ -471,6 +481,7 @@ impl Default for Config {
             toggle_silence_sec: default_toggle_silence_sec(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
+            auto_paste_enabled: default_auto_paste_enabled(),
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,
             transcript_tag_template: default_transcript_tag_template(),

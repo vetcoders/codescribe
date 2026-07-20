@@ -12,7 +12,9 @@ use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
-use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
+use codescribe_core::config::{
+    Config, FormattingPolicy, ModeBinding, ShortcutBinding, UserSettings, WorkMode,
+};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Handle;
@@ -26,6 +28,15 @@ use crate::{CsError, CsLanguage};
 
 type SharedController = Arc<Mutex<Option<Arc<RecordingController>>>>;
 type SharedListener = Arc<RwLock<Option<Arc<dyn CsTranscriptionListener>>>>;
+type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>;
+
+/// Foreign callback for UI-only global commands. These actions are deliberately
+/// separate from `CsTranscriptionListener`: they carry no audio or model payload
+/// and must never enter the recording controller path.
+#[uniffi::export(with_foreign)]
+pub trait CsAppActionListener: Send + Sync {
+    fn on_show_agent(&self);
+}
 
 fn shared_controller() -> SharedController {
     static CONTROLLER: OnceLock<SharedController> = OnceLock::new();
@@ -35,6 +46,37 @@ fn shared_controller() -> SharedController {
 fn shared_listener() -> SharedListener {
     static LISTENER: OnceLock<SharedListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
+}
+
+fn shared_app_action_listener() -> SharedAppActionListener {
+    static LISTENER: OnceLock<SharedAppActionListener> = OnceLock::new();
+    Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
+}
+
+fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
+    shared_app_action_listener()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(Arc::clone)
+}
+
+fn route_hotkey_event<F>(
+    event: HotkeyEvent,
+    app_action_listener: Option<Arc<dyn CsAppActionListener>>,
+    dispatch_recording: F,
+) where
+    F: FnOnce(HotkeyEvent),
+{
+    match event {
+        HotkeyEvent::ShowAgent => {
+            tracing::info!("Agent summon command: dispatching UI-only app action");
+            if let Some(listener) = app_action_listener {
+                listener.on_show_agent();
+            }
+        }
+        recording_event => dispatch_recording(recording_event),
+    }
 }
 
 fn ensure_controller(
@@ -55,6 +97,13 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map(Arc::clone)
+}
+
+fn normalize_paste_target_app_name(name: Option<String>) -> Option<String> {
+    name.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 /// Process-global tokio runtime handle, captured when the hotkey listener
@@ -146,6 +195,7 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             _ => {}
         },
         IpcEventPayload::FinalTranscript { text } => listener.on_final_transcript_ready(text),
+        IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
             EngineEventWire::VadEnd { .. } => listener.on_vad_active(false),
@@ -329,16 +379,27 @@ impl CodescribeHotkeys {
                 let spawn_handle = handle.clone();
                 let controller_handle = handle.clone();
                 let controller_store = Arc::clone(&controller_store);
-                spawn_handle.spawn(async move {
-                    optimistically_show_overlay(&event).await;
-                    let controller = ensure_controller(&controller_store, controller_handle);
-                    let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
-                    compensate_orphaned_preparing(&controller).await;
-                    if let Err(error) = dispatch {
-                        tray_status::update_tray_status(TrayStatus::Error);
-                        eprintln!("Hotkey event error: {error}");
-                    }
-                });
+                route_hotkey_event(
+                    event,
+                    current_app_action_listener(),
+                    move |recording_event| {
+                        spawn_handle.spawn(async move {
+                            optimistically_show_overlay(&recording_event).await;
+                            let controller =
+                                ensure_controller(&controller_store, controller_handle);
+                            let dispatch = dispatch_recording_hotkey_event(
+                                recording_event,
+                                Arc::clone(&controller),
+                            )
+                            .await;
+                            compensate_orphaned_preparing(&controller).await;
+                            if let Err(error) = dispatch {
+                                tray_status::update_tray_status(TrayStatus::Error);
+                                eprintln!("Hotkey event error: {error}");
+                            }
+                        });
+                    },
+                );
             }
         });
 
@@ -365,6 +426,13 @@ impl CodescribeHotkeys {
     /// to the listener (UniFFI otherwise releases the foreign callback).
     pub fn set_agent_delivery_listener(&self, listener: Arc<dyn CsAgentDeliveryListener>) {
         set_delivery_listener(listener);
+    }
+
+    /// Register the Swift listener for no-payload application commands.
+    pub fn set_app_action_listener(&self, listener: Arc<dyn CsAppActionListener>) {
+        let store = shared_app_action_listener();
+        let mut guard = store.write().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(listener);
     }
 
     /// Prompt-free warmup for the shared recording controller.
@@ -454,6 +522,72 @@ impl CodescribeHotkeys {
         }
     }
 
+    /// Format overlay text through an explicitly selected one-shot level
+    /// (`correction` / `smart` / `max`). Never reads or writes the persisted
+    /// Auto Format policy; `off` is rejected — a manual action must act.
+    pub async fn format_text_for_level(
+        &self,
+        text: String,
+        language: Option<CsLanguage>,
+        level: String,
+    ) -> Result<String, CsError> {
+        let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
+            msg: error.to_string(),
+        })?;
+        if policy == FormattingPolicy::Off {
+            return Err(CsError::Config {
+                msg: "manual format level cannot be 'off'".to_string(),
+            });
+        }
+        let language = language.map(|l| l.as_code().to_string());
+        let result = codescribe::ai_formatting::format_text_with_status_for_policy(
+            &text,
+            language.as_deref(),
+            policy,
+        )
+        .await;
+        if result.text.trim().is_empty() {
+            Ok(text)
+        } else {
+            Ok(result.text)
+        }
+    }
+
+    /// Paste edited overlay text back into the app that was frontmost before the
+    /// overlay. Returns the honest delivery outcome: `Pasted`, or
+    /// `CopiedToClipboard` when the controller's self-paste guard degraded the
+    /// action to a tagged clipboard copy.
+    pub async fn paste_text(&self, text: String) -> Result<CsPasteOutcome, CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .paste_text_from_overlay(text)
+            .await
+            .map(CsPasteOutcome::from)
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+    }
+
+    /// Copy the tagged transcript to the clipboard without a synthetic paste.
+    /// Swift calls this when the caret already sits inside Codescribe, where a
+    /// synthetic Cmd+V would paste the transcript back into the overlay itself.
+    pub async fn copy_text_tagged(&self, text: String) -> Result<(), CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .copy_text_from_overlay(text)
+            .await
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+    }
+
+    /// Name of the app latched for the current overlay session, if known.
+    /// Read-only: the paste path keeps owning target activation and delivery.
+    pub async fn paste_target_app_name(&self) -> Option<String> {
+        let controller = current_controller(&shared_controller())?;
+        normalize_paste_target_app_name(controller.paste_target_app_name().await)
+    }
+
     /// Stop the global hotkey listener if it is active.
     pub fn stop(&self) {
         hotkeys::shutdown_global_hotkey_manager();
@@ -463,23 +597,56 @@ impl CodescribeHotkeys {
     pub fn is_active(&self) -> bool {
         hotkeys::is_global_hotkey_manager_active()
     }
+
+    /// Cancel the controller-owned voice-assistive Agent turn correlated by the
+    /// delivery thread id. This registry is independent of the controller's
+    /// long-held runtime mutex, so the synchronous Swift Stop action cannot block
+    /// behind provider or tool work.
+    pub fn cancel_voice_turn(&self, thread_id: String) -> bool {
+        codescribe::agent_delivery::cancel_agent_delivery_turn(&thread_id)
+    }
+}
+
+/// Honest outcome of the overlay Insert action, mirrored to Swift so the UI
+/// can tell the user when the self-paste guard degraded a paste to a tagged
+/// clipboard copy.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsPasteOutcome {
+    Pasted,
+    CopiedToClipboard,
+    Noop,
+}
+
+impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
+    fn from(value: codescribe::controller::OverlayPasteDelivery) -> Self {
+        match value {
+            codescribe::controller::OverlayPasteDelivery::Pasted => Self::Pasted,
+            codescribe::controller::OverlayPasteDelivery::CopiedToClipboard => {
+                Self::CopiedToClipboard
+            }
+            codescribe::controller::OverlayPasteDelivery::Noop => Self::Noop,
+        }
+    }
 }
 
 async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
     optimistically_show_overlay(&event).await;
     let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-    let dispatch = dispatch_hotkey_event(event, Arc::clone(&controller)).await;
+    let dispatch = dispatch_recording_hotkey_event(event, Arc::clone(&controller)).await;
     compensate_orphaned_preparing(&controller).await;
     dispatch.map_err(|error| CsError::Recording {
         msg: error.to_string(),
     })
 }
 
-async fn dispatch_hotkey_event(
+async fn dispatch_recording_hotkey_event(
     event: HotkeyEvent,
     controller: Arc<RecordingController>,
 ) -> anyhow::Result<()> {
     match event {
+        HotkeyEvent::ShowAgent => {
+            unreachable!("ShowAgent must be routed before recording dispatch")
+        }
         HotkeyEvent::Hold {
             action,
             mode,
@@ -557,6 +724,42 @@ async fn dispatch_hotkey_event(
 }
 
 #[cfg(test)]
+mod format_level_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn format_text_for_level_rejects_unknown_level() {
+        let hotkeys = CodescribeHotkeys::default();
+        let result = hotkeys
+            .format_text_for_level("hello".to_string(), None, "mega".to_string())
+            .await;
+        assert!(matches!(result, Err(CsError::Config { .. })));
+    }
+
+    #[tokio::test]
+    async fn format_text_for_level_rejects_off() {
+        let hotkeys = CodescribeHotkeys::default();
+        let result = hotkeys
+            .format_text_for_level("hello".to_string(), None, "off".to_string())
+            .await;
+        assert!(matches!(result, Err(CsError::Config { .. })));
+    }
+
+    #[tokio::test]
+    async fn format_text_for_level_accepts_legacy_alias_shape() {
+        // Aliases normalize through the same FormattingPolicy owner as C01;
+        // "creative" must map to Max, not fail. No provider is configured in
+        // tests, so the formatter falls back to returning usable text without
+        // any network call.
+        let hotkeys = CodescribeHotkeys::default();
+        let result = hotkeys
+            .format_text_for_level("hi".to_string(), None, "creative".to_string())
+            .await;
+        assert!(result.is_ok());
+    }
+}
+
+#[cfg(test)]
 mod dispatch_tests {
     use super::*;
     use codescribe::os::hotkeys::{DoubleTapBlockReason, DoubleTapGesture};
@@ -567,7 +770,7 @@ mod dispatch_tests {
         tray_status::update_tray_status(TrayStatus::Idle);
 
         let controller = Arc::new(RecordingController::new_without_keychain());
-        dispatch_hotkey_event(
+        dispatch_recording_hotkey_event(
             HotkeyEvent::DoubleTapBlocked {
                 gesture: DoubleTapGesture::LeftOption,
                 reason: DoubleTapBlockReason::ModifierComboActive,
@@ -578,6 +781,51 @@ mod dispatch_tests {
         .expect("blocked double-tap dispatch should not fail");
 
         assert_eq!(tray_status::current_tray_status(), TrayStatus::Idle);
+    }
+}
+
+#[cfg(test)]
+mod app_action_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct CountingAppActionListener {
+        show_agent_calls: AtomicUsize,
+    }
+
+    impl CsAppActionListener for CountingAppActionListener {
+        fn on_show_agent(&self) {
+            self.show_agent_calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn show_agent_routes_without_recording_or_preparing_payload() {
+        PREPARING_PENDING.store(false, Ordering::SeqCst);
+        let listener = Arc::new(CountingAppActionListener {
+            show_agent_calls: AtomicUsize::new(0),
+        });
+        let recording_calls = Arc::new(AtomicUsize::new(0));
+        let recording_calls_for_route = Arc::clone(&recording_calls);
+
+        route_hotkey_event(HotkeyEvent::ShowAgent, Some(listener.clone()), move |_| {
+            recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 0);
+        assert!(!PREPARING_PENDING.load(Ordering::SeqCst));
+
+        let recording_calls_for_route = Arc::clone(&recording_calls);
+        route_hotkey_event(
+            HotkeyEvent::ToggleNormal,
+            Some(listener.clone()),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -1020,6 +1268,28 @@ mod mode_binding_tests {
     }
 }
 
+#[cfg(test)]
+mod paste_target_mapping_tests {
+    use super::normalize_paste_target_app_name;
+
+    #[test]
+    fn bridge_mapping_keeps_present_app_name() {
+        assert_eq!(
+            normalize_paste_target_app_name(Some("  Ghostty  ".to_string())).as_deref(),
+            Some("Ghostty")
+        );
+    }
+
+    #[test]
+    fn bridge_mapping_returns_absent_for_unknown_or_empty_name() {
+        assert_eq!(normalize_paste_target_app_name(None), None);
+        assert_eq!(
+            normalize_paste_target_app_name(Some("   ".to_string())),
+            None
+        );
+    }
+}
+
 // ===========================================================================
 // Orphaned optimistic-overlay compensation (CUT P0a)
 //
@@ -1037,6 +1307,7 @@ mod mode_binding_tests {
 mod preparing_compensation_tests {
     use super::*;
     use serial_test::serial;
+    use std::sync::Mutex as StdMutex;
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Mutex as AsyncMutex;
 
@@ -1051,6 +1322,7 @@ mod preparing_compensation_tests {
         started: AtomicUsize,
         stopped: AtomicUsize,
         finalising: AtomicUsize,
+        audio_levels: StdMutex<Vec<f32>>,
     }
 
     impl RecordingLifecycleListener {
@@ -1065,6 +1337,12 @@ mod preparing_compensation_tests {
         }
         fn finalising(&self) -> usize {
             self.finalising.load(Ordering::SeqCst)
+        }
+        fn audio_levels(&self) -> Vec<f32> {
+            self.audio_levels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
         }
     }
 
@@ -1104,6 +1382,12 @@ mod preparing_compensation_tests {
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}
+        fn on_audio_level(&self, rms: f32) {
+            self.audio_levels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(rms);
+        }
         fn on_no_speech(&self, _reason: String) {}
         fn on_error(&self, _message: String) {}
     }
@@ -1129,6 +1413,16 @@ mod preparing_compensation_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn recording_audio_level_payload_forwards_rms() {
+        let listener = Arc::new(RecordingLifecycleListener::default());
+        forward_event_to_listener(
+            IpcEventPayload::AudioLevel { rms: 0.125 },
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+        assert_eq!(listener.audio_levels(), vec![0.125]);
     }
 
     /// Paths 1 & 2 (quick hold-release cancel, start-failure reset): preparing was

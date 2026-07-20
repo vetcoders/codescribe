@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
 use codescribe_core::llm::lane_truth;
+#[cfg(test)]
 use codescribe_core::llm::provider::LlmMode;
+use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
 use tracing::{info, warn};
 
@@ -236,9 +239,16 @@ pub struct CoreReadiness {
 /// the count of native tools. Cheap — local config/secret reads plus building an
 /// in-memory registry (no server spawning, no network).
 pub fn probe_core_readiness() -> CoreReadiness {
-    probe_core_readiness_with_secret(lane_truth::secret)
+    let snapshot = lane_truth::lane_truth_snapshot(
+        lane_truth::LaneTruthLane::Assistive,
+        &codescribe_core::config::Config::load(),
+    );
+    let provider = ProviderKind::from_str(&snapshot.provider_id)
+        .expect("lane truth must emit a canonical provider id");
+    assemble_core_readiness(provider, snapshot.key_account, snapshot.key_present)
 }
 
+#[cfg(test)]
 fn probe_core_readiness_with_secret(
     resolve_secret: impl FnOnce(&str) -> Option<String>,
 ) -> CoreReadiness {
@@ -246,6 +256,14 @@ fn probe_core_readiness_with_secret(
     let key_env_key = provider.api_key_env_key().to_string();
     let key_set = resolve_secret(&key_env_key).is_some();
 
+    assemble_core_readiness(provider, key_env_key, key_set)
+}
+
+fn assemble_core_readiness(
+    provider: ProviderKind,
+    key_env_key: String,
+    key_set: bool,
+) -> CoreReadiness {
     let mut registry = ToolRegistry::new();
     super::register_native_tools(&mut registry);
     let native_tool_count = registry.definitions().len();
@@ -652,16 +670,31 @@ fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMc
             .context("Failed to create MCP discovery runtime")?;
 
         let (discovered, status) = runtime.block_on(async move {
+            // Probe every enabled server in PARALLEL and in ISOLATION: one dead
+            // or hung server costs at most its own initialize/request timeout
+            // and can never veto the other servers' tools — the session starts
+            // degraded (that server absent, WARN in the log), never dead.
+            let probes =
+                servers
+                    .into_iter()
+                    .map(|(server_name, server_config, enabled)| async move {
+                        if !enabled {
+                            return (server_name, server_config, None);
+                        }
+                        let client = McpClient::new(server_config.clone());
+                        let outcome = client.list_tools().await;
+                        (server_name, server_config, Some(outcome))
+                    });
+            let results = futures_util::future::join_all(probes).await;
+
             let mut discovered = Vec::new();
             let mut status: BTreeMap<String, ServerRuntime> = BTreeMap::new();
-            for (server_name, server_config, enabled) in servers {
-                if !enabled {
-                    status.insert(server_name, ServerRuntime::Disabled);
-                    continue;
-                }
-                let client = McpClient::new(server_config.clone());
-                match client.list_tools().await {
-                    Ok(tools) => {
+            for (server_name, server_config, outcome) in results {
+                match outcome {
+                    None => {
+                        status.insert(server_name, ServerRuntime::Disabled);
+                    }
+                    Some(Ok(tools)) => {
                         status.insert(server_name.clone(), ServerRuntime::Tools(tools.len()));
                         for tool in tools {
                             discovered.push(DiscoveredMcpTool {
@@ -671,7 +704,7 @@ fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMc
                             });
                         }
                     }
-                    Err(error) => {
+                    Some(Err(error)) => {
                         // Concrete root cause (spawn failure, command not found,
                         // parse error, timeout, …) — surfaced to logs AND the UI.
                         let reason = anyhow_root_cause(&error);
@@ -849,6 +882,60 @@ mod tests {
             output,
             vec![ToolResultContent::Text("echo: from app".to_string())]
         );
+    }
+
+    /// U14 mcp-resilience: a config mixing a dead-at-start server (the
+    /// 2026-07-16 incident shape), a hung-on-initialize server, and a healthy
+    /// one must start DEGRADED — the healthy server's tools register, the
+    /// broken ones are skipped with a per-server WARN, and nothing propagates
+    /// upward as an error (let alone a process exit).
+    #[test]
+    fn discovery_degrades_per_server_without_blocking_healthy_tools() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp.path().join("mcp.json");
+        let script = repo_root()
+            .join("tests")
+            .join("fixtures")
+            .join("mock_mcp.py");
+        let config = json!({
+            "mcpServers": {
+                "dead": {
+                    "command": "python3",
+                    "args": [script.clone(), "exit-before-initialize"],
+                    "enabled": true,
+                    "timeout_seconds": 5
+                },
+                "hung": {
+                    "command": "python3",
+                    "args": [script.clone(), "silent"],
+                    "enabled": true,
+                    "timeout_seconds": 1
+                },
+                "mock": {
+                    "command": "python3",
+                    "args": [script],
+                    "enabled": true,
+                    "timeout_seconds": 5
+                }
+            }
+        });
+        fs::write(
+            &config_path,
+            serde_json::to_string(&config).expect("config should serialize"),
+        )
+        .expect("config should be written");
+
+        let mut registry = ToolRegistry::new();
+        let registered = register_mcp_tools_from_config_path(&mut registry, &config_path)
+            .expect("degraded discovery must not surface as an error");
+
+        assert_eq!(registered, 1, "only the healthy server's tool registers");
+        let names = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["mcp__mock__echo".to_string()]);
     }
 
     #[test]

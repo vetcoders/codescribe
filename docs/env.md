@@ -302,7 +302,7 @@ USE_LOCAL_STT=1
 AI_FORMATTING_ENABLED=1
 LLM_ENDPOINT=https://api.openai.com/v1/responses
 LLM_MODEL=gpt-4.1
-LLM_API_KEY=sk-...
+# Store LLM_API_KEY in Settings / macOS Keychain.
 ```
 
 **3) Cloud‑only STT**
