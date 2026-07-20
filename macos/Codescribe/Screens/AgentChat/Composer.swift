@@ -12,7 +12,7 @@ private let attachLog = Logger(
 
 /// Bottom composer: the 📎 attach button (image picker), staged-attachment chips,
 /// the message field, the ripple mic (shares the dictation core later), and the
-/// terracotta send ↑ button. Below: the affordance row mirroring the mock's
+/// system-idiom send button. Below: the affordance row mirroring the mock's
 /// capability hints. Images stage through three converging paths — picker,
 /// drag & drop, and ⌘V paste — all landing in `store.addAttachments`.
 struct Composer: View {
@@ -56,8 +56,12 @@ struct Composer: View {
                 Button(action: pickAttachments) {
                     CSIconView(
                         icon: .attach,
-                        size: 15,
+                        size: ComposerControlMetrics.glyphSize,
                         color: store.pendingAttachments.isEmpty ? CSColor.textFaint : CSColor.terracottaLight
+                    )
+                    .frame(
+                        width: ComposerControlMetrics.hitTargetSize,
+                        height: ComposerControlMetrics.hitTargetSize
                     )
                 }
                 .buttonStyle(.plain)
@@ -79,20 +83,21 @@ struct Composer: View {
                     ZStack {
                         CSIconView(
                             icon: primaryAction.icon,
-                            size: 15,
+                            size: ComposerControlMetrics.glyphSize,
                             weight: primaryAction.iconWeight,
-                            color: ChatPalette.sendGlyph
+                            color: CSColor.terracotta
                         )
                         if primaryAction == .stopping {
                             ProgressView()
                                 .controlSize(.small)
                                 .scaleEffect(0.5)
-                                .tint(ChatPalette.sendGlyph)
+                                .tint(CSColor.terracotta)
                         }
                     }
-                        .frame(width: 32, height: 32)
-                        .background(CSColor.terracotta)
-                        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+                    .frame(
+                        width: ComposerControlMetrics.hitTargetSize,
+                        height: ComposerControlMetrics.hitTargetSize
+                    )
                 }
                 .buttonStyle(.plain)
                 .disabled(!primaryAction.isEnabled)
@@ -209,7 +214,10 @@ struct Composer: View {
     private var micButton: some View {
         Button(action: { store.toggleDictation() }) {
             micVisual
-                .frame(width: 22, height: 22)
+                .frame(
+                    width: ComposerControlMetrics.hitTargetSize,
+                    height: ComposerControlMetrics.hitTargetSize
+                )
                 .contentShape(Rectangle())
                 .opacity(micState == .blocked ? 0.35 : micState == .preparing ? 0.68 : 1)
         }
@@ -539,6 +547,11 @@ struct Composer: View {
         "· streaming",
         "· attach file / image",
     ]
+}
+
+enum ComposerControlMetrics {
+    static let glyphSize: CGFloat = 15
+    static let hitTargetSize: CGFloat = 22
 }
 
 enum ComposerActionAccessibility {

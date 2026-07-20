@@ -146,7 +146,7 @@ enum CSIcon {
         case .notesMode: return .phosphor(.note)
         case .history: return .phosphor(.clockCounterClockwise)
         case .search: return .phosphor(.magnifyingGlass)
-        case .send: return .phosphor(.arrowUp)
+        case .send: return .sf("arrow.up.circle.fill")
         case .refresh: return .phosphor(.arrowClockwise)
         case .attach: return .phosphor(.paperclip)
         case .shortcuts: return .phosphor(.keyboard)

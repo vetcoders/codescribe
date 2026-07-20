@@ -179,6 +179,14 @@ final class AgentChatCancellationTests: XCTestCase {
 
     func testComposerActionProjectsThinkingStreamingAndCancelling() {
         XCTAssertEqual(
+            ComposerActionVisualState.resolve(canSend: false, activePhase: nil),
+            .send(enabled: false)
+        )
+        XCTAssertEqual(
+            ComposerActionVisualState.resolve(canSend: true, activePhase: nil),
+            .send(enabled: true)
+        )
+        XCTAssertEqual(
             ComposerActionVisualState.resolve(canSend: false, activePhase: .thinking),
             .stop
         )
@@ -193,6 +201,16 @@ final class AgentChatCancellationTests: XCTestCase {
         XCTAssertFalse(ComposerActionVisualState.stopping.isEnabled)
         XCTAssertEqual(ComposerActionVisualState.stop.accessibilityLabel, "Stop response")
         XCTAssertEqual(ComposerActionAccessibility.identifier, "agent-composer-primary-action")
+    }
+
+    func testComposerSendUsesSystemCircleAndSharedControlGeometry() {
+        guard case .sf(let symbolName) = ComposerActionVisualState.send(enabled: true).icon.backend else {
+            return XCTFail("Composer send action must use an SF Symbol")
+        }
+
+        XCTAssertEqual(symbolName, "arrow.up.circle.fill")
+        XCTAssertEqual(ComposerControlMetrics.glyphSize, 15)
+        XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 22)
     }
 
     func testVoiceStopRoutesOnlyToVoiceAdapterPreservesPartialAndRecovers() throws {

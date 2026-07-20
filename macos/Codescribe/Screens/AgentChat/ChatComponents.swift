@@ -45,15 +45,21 @@ struct RippleMic: View {
             }
             Circle()
                 .fill(isActive ? CSColor.terracotta.opacity(0.18) : Color.clear)
-                .frame(width: 22, height: 22)
+                .frame(
+                    width: ComposerControlMetrics.hitTargetSize,
+                    height: ComposerControlMetrics.hitTargetSize
+                )
             CSIconView(
                 icon: state.icon,
-                size: 15,
+                size: ComposerControlMetrics.glyphSize,
                 weight: isActive ? .semibold : .regular,
                 color: isActive ? CSColor.terracottaLight : CSColor.textFaint
             )
         }
-        .frame(width: 22, height: 22)
+        .frame(
+            width: ComposerControlMetrics.hitTargetSize,
+            height: ComposerControlMetrics.hitTargetSize
+        )
     }
 }
 
