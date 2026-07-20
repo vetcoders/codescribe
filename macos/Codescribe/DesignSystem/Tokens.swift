@@ -34,6 +34,13 @@ enum CSColor {
     static let assistive = Color(hex: 0x9B72F2)
     static let assistiveLight = Color(hex: 0xC9B7FF)
 
+    // Session-mode semantics — shared by tray and overlay indicators.
+    static let modeRecording = terracotta
+    static let modeAgent = assistive
+    static let modeProcessing = Color(hex: 0xF28C45)
+    static let modeReady = oliveLight
+    static let indicatorRecording = Color(hex: 0xFF3B30)
+
     // Status — olive / green
     static let olive = Color(hex: 0x5F6B3E)               // healthy base
     static let oliveLight = Color(hex: 0x9DB178)          // idle / granted / success dot

@@ -21,6 +21,9 @@ private final class OverlayStateTestEngine: DictationEngine {
     var persistAutoPasteWrites = true
     var autoPasteWrites: [Bool] = []
     var policyReadCount = 0
+    var sentAssistiveTexts: [String] = []
+    var assistiveSendResult = true
+    var onAssistiveSend: (() -> Void)?
 
     func setListener(_ listener: CsTranscriptionListener) {}
     func startRecording(language: CsLanguage?) async throws {}
@@ -66,6 +69,11 @@ private final class OverlayStateTestEngine: DictationEngine {
     func pasteTargetAppName() async -> String? {
         onPasteTargetRead?()
         return pasteTargetAppNameValue
+    }
+    func sendAssistiveTranscript(text: String) async throws -> Bool {
+        sentAssistiveTexts.append(text)
+        onAssistiveSend?()
+        return assistiveSendResult
     }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
@@ -675,20 +683,75 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
-    func testCloseIsImmediateAndSendUsesImmediateHandoffPath() {
+    func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
         let clock = OverlayStateTestClock()
-        let state = makeFinalizedState(clock: clock)
+        let engine = OverlayStateTestEngine()
+        let state = OverlayState(nowProvider: { clock.now })
+        state.engine = engine
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "ready transcript")
+        state.finishControllerRecording()
         var closeCount = 0
         var sentText: String?
         state.onClose = { closeCount += 1 }
         state.onSendToAgent = { sentText = $0 }
+        let delivered = expectation(description: "agent button delivered")
+        engine.onAssistiveSend = { delivered.fulfill() }
 
         state.sendToAgent()
+        await fulfillment(of: [delivered], timeout: 1)
         XCTAssertEqual(sentText, "ready transcript")
-        XCTAssertEqual(closeCount, 0, "send delegates immediate hide to the handoff closure")
+        XCTAssertEqual(engine.sentAssistiveTexts, ["ready transcript"])
+        XCTAssertEqual(closeCount, 1)
 
         state.close()
-        XCTAssertEqual(closeCount, 1, "Close button and brand CloseDot share this action")
+        XCTAssertEqual(closeCount, 2, "Close button and brand CloseDot share this action")
+    }
+
+    func testUntouchedAgentFinalAutoSendsAtDeadline() async {
+        let clock = OverlayStateTestClock()
+        let engine = OverlayStateTestEngine()
+        let state = OverlayState(nowProvider: { clock.now })
+        state.engine = engine
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "untouched final")
+        state.finishControllerRecording()
+        let delivered = expectation(description: "untouched final delivered")
+        engine.onAssistiveSend = { delivered.fulfill() }
+
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        await fulfillment(of: [delivered], timeout: 1)
+        XCTAssertEqual(engine.sentAssistiveTexts, ["untouched final"])
+    }
+
+    func testAnyAgentFinalEditPermanentlyVetoesAutoSendUntilButton() async {
+        let clock = OverlayStateTestClock()
+        let engine = OverlayStateTestEngine()
+        let state = OverlayState(nowProvider: { clock.now })
+        state.engine = engine
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "original final")
+        state.finishControllerRecording()
+        state.userEditedTranscript("edited final")
+        state.userEditedTranscript("original final")
+
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        await Task.yield()
+        XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+
+        let delivered = expectation(description: "edited final delivered by button")
+        engine.onAssistiveSend = { delivered.fulfill() }
+        state.sendToAgent()
+        await fulfillment(of: [delivered], timeout: 1)
+        XCTAssertEqual(engine.sentAssistiveTexts, ["original final"])
     }
 
     func testNoSpeechAutoHidesAfterFiveSeconds() {
@@ -760,7 +823,7 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(controller.state.autoPasteControlAvailable)
     }
 
-    func testAgentModesNeverOrderOverlayFrontEvenWhenToggleIsOn() {
+    func testAgentModesAlwaysOrderOverlayFrontWhenToggleIsOn() {
         for mode in ["Chat", "Selection"] {
             var frontCount = 0
             let controller = OverlayController(
@@ -774,12 +837,12 @@ final class OverlayStateTests: XCTestCase {
             )
 
             controller.showForRecording()
-            XCTAssertEqual(frontCount, 0, "\(mode) uses the authoritative assistive gate")
+            XCTAssertEqual(frontCount, 1, "\(mode) shares the canonical overlay path")
             XCTAssertFalse(controller.state.autoPasteControlAvailable)
         }
     }
 
-    func testMidHoldAssistiveUpgradeImmediatelyHidesVisibleOverlay() {
+    func testMidHoldAssistiveUpgradeKeepsOverlayVisibleAndFlipsSemantics() {
         var frontCount = 0
         var outCount = 0
         let controller = OverlayController(
@@ -796,8 +859,9 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(frontCount, 1)
         XCTAssertEqual(outCount, 0)
 
-        controller.handleAssistiveStatusChange(true)
-        XCTAssertEqual(outCount, 1)
+        controller.handleIndicatorModeChange(.assistive)
+        XCTAssertEqual(outCount, 0)
+        XCTAssertEqual(controller.state.indicatorMode, .assistive)
         XCTAssertFalse(controller.state.autoPasteControlAvailable)
     }
 

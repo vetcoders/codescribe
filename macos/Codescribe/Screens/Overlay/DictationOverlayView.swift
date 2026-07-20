@@ -259,6 +259,7 @@ struct DictationOverlayView: View {
             WaveformView(
                 active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
                 transcribing: state.transcribing || state.isFinalPass,
+                indicatorMode: state.indicatorMode,
                 meter: state.levelMeter
             )
             .padding(.top, 4)

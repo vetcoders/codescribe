@@ -82,6 +82,7 @@ protocol DictationEngine: AnyObject {
     func pasteText(text: String) async throws -> CsPasteOutcome
     func copyTaggedTranscript(text: String) async throws
     func pasteTargetAppName() async -> String?
+    func sendAssistiveTranscript(text: String) async throws -> Bool
     func transcribeFile(path: String) async throws -> CsTranscription
 }
 
@@ -175,6 +176,7 @@ final class OverlayState: ObservableObject {
     /// session finalizes without usable text; refined by `on_no_speech`'s reason
     /// so VAD silence and quality-gate rejection read differently.
     @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
+    @Published private(set) var indicatorMode: CsIndicatorMode = .hold
 
     // MARK: Panel placement (persisted; the window orchestrator repositions live)
     /// Anchored placement: one of six screen anchors, applied on every show().
@@ -248,6 +250,10 @@ final class OverlayState: ObservableObject {
     /// (TextEditor re-layout) and spins the SwiftUI render graph at 100% CPU in Idle.
     /// The authoritative `FinalTranscript` is the only post-finalize update allowed.
     private var finalized = false
+    private var agentSessionArmed = false
+    private var agentFinalTranscriptAppeared = false
+    private var agentAutoSendCancelled = false
+    private var agentDeliveryStarted = false
     private var toastTask: Task<Void, Never>?
     private var mockRevealTask: Task<Void, Never>?
     /// Belt-and-suspenders guard against an orphaned optimistic "starting" overlay.
@@ -311,7 +317,8 @@ final class OverlayState: ObservableObject {
     }
     var tagColor: Color {
         switch mode {
-        case .listening: return CSColor.terracottaLight
+        case .listening:
+            return indicatorMode == .assistive ? CSColor.assistiveLight : CSColor.terracottaLight
         case .formatted: return CSColor.oliveLight
         case .noSpeech: return CSColor.textMuted
         case .error: return CSColor.terracotta
@@ -533,10 +540,7 @@ final class OverlayState: ObservableObject {
     func sendToAgent() {
         // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
         captureQualityIfEdited(action: "send")
-        cancelAutoHide()
-        onSendToAgent?(activeText)
-        // The onSendToAgent closure (wired in OverlayController) also hides;
-        // the cancel ensures timer is dead even if closure path changes.
+        deliverAgentTranscript()
     }
 
     /// Caret-truth probe for the Insert self-paste guard. The overlay is a
@@ -637,8 +641,21 @@ final class OverlayState: ObservableObject {
     /// TextEditor writes through this seam so only actual user edits — never a
     /// programmatic format/final update — re-anchor the terminal lifetime.
     func userEditedTranscript(_ text: String) {
+        if agentSessionArmed, agentFinalTranscriptAppeared, text != formattedText {
+            agentAutoSendCancelled = true
+        }
         formattedText = text
         restartAutoHideCountdown()
+    }
+
+    /// Consume the canonical Rust indicator mode. Agent arm is a one-shot
+    /// session latch; the accepted orange processing phase must not disarm it.
+    func applyIndicatorMode(_ mode: CsIndicatorMode) {
+        indicatorMode = mode
+        if mode == .assistive {
+            agentSessionArmed = true
+            autoPasteControlAvailable = false
+        }
     }
 
     /// AppKit reports window motion separately from SwiftUI content events.
@@ -699,6 +716,8 @@ final class OverlayState: ObservableObject {
     }
 
     func handleRecordingPreparing() {
+        agentSessionArmed = indicatorMode == .assistive
+        autoPasteControlAvailable = !agentSessionArmed
         finalized = false
         isFinalPass = false
         mode = .listening
@@ -832,6 +851,12 @@ final class OverlayState: ObservableObject {
             return
         }
         autoHideDeadline = nil
+        if agentSessionArmed, agentFinalTranscriptAppeared {
+            if !agentAutoSendCancelled {
+                deliverAgentTranscript()
+            }
+            return
+        }
         onClose?()
     }
 
@@ -847,6 +872,28 @@ final class OverlayState: ObservableObject {
         autoHideTask?.cancel()
         autoHideTask = nil
         autoHideDeadline = nil
+    }
+
+    private func deliverAgentTranscript() {
+        let text = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard agentSessionArmed, !agentDeliveryStarted, !text.isEmpty, let engine else { return }
+        agentDeliveryStarted = true
+        cancelAutoHide()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if try await engine.sendAssistiveTranscript(text: text) {
+                    onSendToAgent?(text)
+                    onClose?()
+                } else {
+                    agentDeliveryStarted = false
+                    showToast("Agent delivery is no longer available")
+                }
+            } catch {
+                agentDeliveryStarted = false
+                showToast("Couldn't send to Agent")
+            }
+        }
     }
 
     private func abortRecordingSession(resetTranscript shouldResetTranscript: Bool = false) {
@@ -1054,6 +1101,9 @@ final class OverlayState: ObservableObject {
         if deliveredText.isEmpty, !clean.isEmpty {
             deliveredText = clean
         }
+        if agentSessionArmed {
+            agentFinalTranscriptAppeared = true
+        }
         if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !clean.isEmpty {
             sttRawText = clean
         }
@@ -1102,6 +1152,9 @@ final class OverlayState: ObservableObject {
                 sttRawText = resolved
             }
             mode = .formatted
+            if agentSessionArmed {
+                agentFinalTranscriptAppeared = true
+            }
         }
         // FREEZE: from here, late streaming events are dropped (see the apply guards)
         // so nothing keeps mutating @Published state and re-rendering in Idle.
@@ -1139,6 +1192,9 @@ final class OverlayState: ObservableObject {
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false
+        agentFinalTranscriptAppeared = false
+        agentAutoSendCancelled = false
+        agentDeliveryStarted = false
         transcribing = false
         isFinalPass = false
         // A hidden panel may not emit a pointer-exit event. Never carry a paused
@@ -1362,6 +1418,9 @@ final class ControllerDictationEngine: DictationEngine {
     func pasteTargetAppName() async -> String? {
         await hotkeys.pasteTargetAppName()
     }
+    func sendAssistiveTranscript(text: String) async throws -> Bool {
+        try await hotkeys.sendAssistiveTranscript(text: text)
+    }
     func transcribeFile(path: String) async throws -> CsTranscription {
         throw NSError(domain: "CodescribeRedesign", code: 1, userInfo: [
             NSLocalizedDescriptionKey: "File transcription is not available through the hotkey controller."
@@ -1467,6 +1526,7 @@ final class MockDictationEngine: DictationEngine {
     func pasteText(text: String) async throws -> CsPasteOutcome { .pasted }
     func copyTaggedTranscript(text: String) async throws {}
     func pasteTargetAppName() async -> String? { nil }
+    func sendAssistiveTranscript(text: String) async throws -> Bool { true }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }
