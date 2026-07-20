@@ -418,6 +418,9 @@ mod macos {
             return event;
         }
 
+        // SAFETY: `event` is the CGEventRef CoreGraphics passes to this tap
+        // callback; it is valid for the duration of the callback and these
+        // calls are read-only accessors that take no ownership.
         let flags = unsafe { CGEventGetFlags(event) };
         let modifiers = modifiers_from_flags(flags);
         let now = Instant::now();
@@ -425,6 +428,8 @@ mod macos {
 
         let input = match event_type {
             K_CG_EVENT_KEY_DOWN => {
+                // SAFETY: read-only field accessor on the callback-owned
+                // `event`; valid for the callback's duration (see above).
                 let keycode =
                     unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
                 HotkeyDetectorInput::KeyDown {
@@ -434,6 +439,8 @@ mod macos {
                 }
             }
             K_CG_EVENT_KEY_UP => {
+                // SAFETY: read-only field accessor on the callback-owned
+                // `event`; valid for the callback's duration (see above).
                 let keycode =
                     unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) };
                 HotkeyDetectorInput::KeyUp {
