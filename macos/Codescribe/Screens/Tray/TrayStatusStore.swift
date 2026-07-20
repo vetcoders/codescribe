@@ -94,18 +94,20 @@ final class TrayStatusStore: ObservableObject {
     }
 
     var color: Color {
-        if status.assistive {
-            return CSColor.assistive
+        if status.indicatorMode == .assistive {
+            return CSColor.modeAgent
         }
         switch status.tone {
         case .neutral:
             return CSColor.oliveLight
         case .active:
-            return CSColor.terracotta
+            return status.indicatorMode == .processing
+                ? CSColor.modeProcessing
+                : CSColor.modeRecording
         case .success:
             return CSColor.oliveLight
         case .warning:
-            return CSColor.terracotta
+            return CSColor.modeProcessing
         case .critical:
             return CSColor.terracottaDeep
         }
@@ -145,8 +147,8 @@ final class TrayStatusStore: ObservableObject {
     /// the locked palette's ready tone), red = recording, orange = processing,
     /// purple = assistive — recording/processing/assistive hues mirror the
     /// caret hold-badge (`app/os/hold_badge.rs`) so the tray and the cursor
-    /// speak one language. Assistive wins over both live phases, so a mid-hold
-    /// arm flip recolors the dot the moment the feed flips. `nil` = no dot
+    /// speak one language. Processing is always orange, including agent
+    /// sessions. `nil` = no dot
     /// (starting — the app is not ready yet). Warning states (error / thermal /
     /// hotkey conflict) fall back to a system red / yellow attention dot — the
     /// tooltip and menu status row carry the specifics.
@@ -155,15 +157,13 @@ final class TrayStatusStore: ObservableObject {
         case .starting:
             return nil
         case .idle, .success:
-            return CSColor.oliveLight                      // ready — green
+            return CSColor.modeReady
         case .listening:
-            return status.assistive
-                ? Color(red: 0.6, green: 0.2, blue: 0.9)   // assistive — purple
-                : Color(red: 1.0, green: 0.0, blue: 0.0)   // recording — red
+            return status.indicatorMode == .assistive
+                ? CSColor.modeAgent
+                : CSColor.indicatorRecording
         case .processing:
-            return status.assistive
-                ? Color(red: 0.6, green: 0.2, blue: 0.9)   // assistive — purple
-                : Color(red: 1.0, green: 0.5, blue: 0.0)   // processing — orange
+            return CSColor.modeProcessing
         case .error:
             return .red
         case .thermal, .hotkeyConflict:
@@ -175,12 +175,14 @@ final class TrayStatusStore: ObservableObject {
     static func preview(
         kind: CsTrayStatusKind = .idle,
         tone: CsTrayStatusTone = .neutral,
+        indicatorMode: CsIndicatorMode = .hold,
         assistive: Bool = false,
         label: String = "Status: Idle"
     ) -> TrayStatusStore {
         TrayStatusStore(status: CsTrayStatusPayload(
             kind: kind,
             tone: tone,
+            indicatorMode: indicatorMode,
             assistive: assistive,
             tooltip: "Codescribe - \(label.replacingOccurrences(of: "Status: ", with: ""))",
             menuLabel: label,

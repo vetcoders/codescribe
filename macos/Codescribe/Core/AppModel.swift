@@ -100,22 +100,13 @@ final class OverlayController: ObservableObject {
             AppModel.shared.tray.isRecording = false
             AppModel.shared.tray.isStartingDictation = false
             AppModel.shared.chat.dictationBlocked = false
-            // Assistive sessions hand the transcript to the agent — the overlay's
-            // job ends at finalize. Fade here instead of waiting for
-            // on_turn_started, which lags by MCP registration + augmentation
-            // (5–6 s of a stale FINAL hanging over the chat).
-            if self.sessionWasAssistive, self.state.mode == .formatted {
-                self.hideForAgentHandoff()
-            }
         }
         state.onClose = { [weak self] in self?.hide() }
-        state.onSendToAgent = { [weak self, weak store] text in
-            guard let store, !text.isEmpty else { return }
-            // Reveal + focus the Agent window (same path as the tray's Open Chat
-            // intent) so the reply streams into a visible store, not a hidden one.
+        state.onSendToAgent = { [weak self] text in
+            guard !text.isEmpty else { return }
+            // Rust already persisted and dispatched the transcript with its
+            // trigger-time context. This callback only reveals the destination.
             AppModel.shared.tray.onIntent(.openChat)
-            store.draft = text
-            store.send()
             self?.hide()
         }
         state.onPlacementChanged = { [weak self] in self?.applyPlacement(animated: true) }
@@ -133,7 +124,7 @@ final class OverlayController: ObservableObject {
     /// hiding the overlay never suppresses the paste.
     func showForRecording() {
         refreshAssistiveLatch()
-        guard overlayEnabledProvider(), !sessionWasAssistive else {
+        guard overlayEnabledProvider() else {
             if panel != nil { hide() }
             return
         }
@@ -179,16 +170,18 @@ final class OverlayController: ObservableObject {
         state.finishControllerRecording()
     }
 
-    /// Called by the live TrayStatusStore listener. A mid-hold Fn → agent-mode
-    /// upgrade flips this while recording, so hide synchronously at the latch
-    /// transition instead of waiting for the stop/handoff safety net.
-    func handleAssistiveStatusChange(_ assistive: Bool) {
-        if assistive {
+    /// Called by the live TrayStatusStore listener. All indicator surfaces
+    /// consume the same Rust mode transition; agent arm never hides the overlay.
+    func handleIndicatorModeChange(_ mode: CsIndicatorMode) {
+        if mode == .assistive {
             sessionWasAssistive = true
         }
         state.setAutoPasteControlAvailable(!sessionWasAssistive)
-        guard assistive else { return }
-        if panel != nil { hide() }
+        state.applyIndicatorMode(mode)
+    }
+
+    func handleAssistiveStatusChange(_ assistive: Bool) {
+        handleIndicatorModeChange(assistive ? .assistive : .hold)
     }
 
     private func refreshAssistiveLatch() {

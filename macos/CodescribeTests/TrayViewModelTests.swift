@@ -68,24 +68,36 @@ final class TrayViewModelTests: XCTestCase {
         let recording = TrayStatusStore.preview(kind: .listening, tone: .active)
         try assertDotColor(
             recording,
-            equals: NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+            equals: NSColor(srgbRed: 1, green: 59.0 / 255.0, blue: 48.0 / 255.0, alpha: 1)
         )
 
         let processing = TrayStatusStore.preview(kind: .processing, tone: .active)
         try assertDotColor(
             processing,
-            equals: NSColor(srgbRed: 1, green: 0.5, blue: 0, alpha: 1)
+            equals: NSColor(srgbRed: 242.0 / 255.0, green: 140.0 / 255.0, blue: 69.0 / 255.0, alpha: 1)
         )
 
-        // The feed's assistive bit is the LIVE mid-hold arm flip. It wins over
-        // either live phase, recoloring the same dot immediately to agent purple.
-        for kind in [CsTrayStatusKind.listening, .processing] {
-            let agent = TrayStatusStore.preview(kind: kind, tone: .active, assistive: true)
-            try assertDotColor(
-                agent,
-                equals: NSColor(srgbRed: 0.6, green: 0.2, blue: 0.9, alpha: 1)
-            )
-        }
+        let agent = TrayStatusStore.preview(
+            kind: .listening,
+            tone: .active,
+            indicatorMode: .assistive,
+            assistive: true
+        )
+        try assertDotColor(
+            agent,
+            equals: NSColor(srgbRed: 155.0 / 255.0, green: 114.0 / 255.0, blue: 242.0 / 255.0, alpha: 1)
+        )
+
+        let agentProcessing = TrayStatusStore.preview(
+            kind: .processing,
+            tone: .active,
+            indicatorMode: .processing,
+            assistive: false
+        )
+        try assertDotColor(
+            agentProcessing,
+            equals: NSColor(srgbRed: 242.0 / 255.0, green: 140.0 / 255.0, blue: 69.0 / 255.0, alpha: 1)
+        )
     }
 
     func testRefreshStatusReadsEntirePersistedTraySnapshot() {
