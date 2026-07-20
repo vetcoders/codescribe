@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Assistive conversations no longer lose history between turns** (`e0f2a3a`) — the agent runtime used to drop its thread identity and in-memory history whenever it recovered from a degraded state, so the next voice turn silently started a brand-new session (`messages=1` on the wire) and the previous exchange was orphaned. Thread identity now lives above the runtime, and recovery rehydrates persisted history back into the session (explicit `rehydrated` / `rehydrate_empty` / `rehydrate_failed` logs) instead of minting a fresh thread.
 - **Voice threads now get AI-generated titles** (`75d986c`) — first-turn title generation used to fire only for composer-typed messages; dictated threads fell back to a raw text slug (visibly broken for prompts starting with boilerplate). The same out-of-band stateless title coordinator now serves both sources with identical race/cancellation semantics, and never re-sends the conversation itself.
-- **Thread rail bucketing symptom** ("today 23:59" listed under *Older*) resolved by the identity fix above — turns land in the thread the rail is watching, so `updated_at` refreshes correctly. The section calculator itself was verified correct and left untouched.
+- **Thread rail bucketing symptom** ("today 23:59" listed under _Older_) resolved by the identity fix above — turns land in the thread the rail is watching, so `updated_at` refreshes correctly. The section calculator itself was verified correct and left untouched.
 
 ### Changed — architecture and Settings IA
 
@@ -501,7 +501,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI & types** – Type checking and CI improvements.
 - **Menu robustness** – Tray menu stability fixes.
 
-[unreleased]: https://github.com/vetcoders/codescribe/compare/v0.12.2...HEAD
+[unreleased]: https://github.com/vetcoders/codescribe/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/vetcoders/codescribe/compare/v0.12.3...v0.13.0
+[0.12.3]: https://github.com/vetcoders/codescribe/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/vetcoders/codescribe/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/vetcoders/codescribe/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/vetcoders/codescribe/compare/v0.11.2...v0.12.0

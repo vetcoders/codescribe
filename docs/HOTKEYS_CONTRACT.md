@@ -423,15 +423,15 @@ Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
 ## File Locations
 
-| File                               | Purpose                              |
-| ---------------------------------- | ------------------------------------ |
-| `app/os/hotkeys/detector.rs`       | Pure speech/command event detection  |
-| `app/os/hotkeys/platform.rs`       | CGEventTap adapter and keycodes       |
-| `bridge/src/hotkeys.rs`            | Recording and app-action routing      |
-| `app/controller/mod.rs`            | State machine, event handling        |
-| `app/controller/types.rs`          | State enum                           |
-| `core/vad/config.rs`               | VAD configuration                    |
-| `core/audio/streaming_recorder.rs` | Silero VAD segmentation              |
+| File                               | Purpose                             |
+| ---------------------------------- | ----------------------------------- |
+| `app/os/hotkeys/detector.rs`       | Pure speech/command event detection |
+| `app/os/hotkeys/platform.rs`       | CGEventTap adapter and keycodes     |
+| `bridge/src/hotkeys.rs`            | Recording and app-action routing    |
+| `app/controller/mod.rs`            | State machine, event handling       |
+| `app/controller/types.rs`          | State enum                          |
+| `core/vad/config.rs`               | VAD configuration                   |
+| `core/audio/streaming_recorder.rs` | Silero VAD segmentation             |
 
 ---
 
