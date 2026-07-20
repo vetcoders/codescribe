@@ -16,6 +16,7 @@ use super::types::{ContentBlock, Message, Role};
 const THREADS_DIR_NAME: &str = "threads";
 const BLOBS_DIR_NAME: &str = "blobs";
 const THREAD_FILE_EXT: &str = "json";
+const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Thread {
@@ -153,6 +154,18 @@ impl ThreadStore {
     }
 
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
+        // ThreadStore is the durable title boundary. Source-specific delivery
+        // paths may hand us an assistive heredoc delimiter (`<<<`) as their
+        // heuristic title; normalize it from the first user message before
+        // either the thread JSON or its index projection can persist it.
+        let normalized = if thread.title_is_heuristic() && !title_is_meaningful(&thread.title) {
+            let mut normalized = thread.clone();
+            normalize_heuristic_title(&mut normalized);
+            Some(normalized)
+        } else {
+            None
+        };
+        let thread = normalized.as_ref().unwrap_or(thread);
         let path = self.thread_path(&thread.id)?;
         let json = serde_json::to_vec_pretty(thread).context("Failed to serialize thread JSON")?;
         atomic_write(&path, &json)?;
@@ -163,13 +176,62 @@ impl ThreadStore {
     }
 
     pub fn load_thread(&self, id: &str) -> Result<Thread> {
+        let mut thread = self.load_thread_raw(id)?;
+        if normalize_heuristic_title(&mut thread) {
+            // Lazy migration for pre-0.13.0 files. A read remains usable even
+            // on a read-only volume; the warning preserves the persistence
+            // failure while the caller still receives a safe in-memory title.
+            if let Err(error) = self.save_thread(&thread) {
+                warn!(thread_id = %id, %error, "Failed to persist healed thread title");
+            }
+        }
+        Ok(thread)
+    }
+
+    /// Heal legacy index rows whose heuristic title has no readable content.
+    /// Returns the number of thread JSON + index entries repaired. Re-running
+    /// is idempotent: once a row is healed it is no longer a candidate.
+    pub fn heal_degenerate_titles(&self) -> Result<usize> {
+        let index = ThreadIndex::load_or_create(&self.threads_dir)?;
+        let candidate_ids = index
+            .data()
+            .threads
+            .iter()
+            .filter(|summary| !title_is_meaningful(&summary.title))
+            .map(|summary| summary.id.clone())
+            .collect::<Vec<_>>();
+
+        let mut healed = 0;
+        for id in candidate_ids {
+            let result = (|| -> Result<bool> {
+                let mut thread = self.load_thread_raw(&id)?;
+                if !normalize_heuristic_title(&mut thread) {
+                    return Ok(false);
+                }
+                self.save_thread(&thread)?;
+                Ok(true)
+            })();
+            match result {
+                Ok(true) => healed += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    // One corrupt/stale row must not make the entire thread
+                    // rail disappear. Keep the row for the Swift fallback and
+                    // preserve a diagnostic for repair.
+                    warn!(thread_id = %id, %error, "Failed to heal legacy thread title");
+                }
+            }
+        }
+        Ok(healed)
+    }
+
+    fn load_thread_raw(&self, id: &str) -> Result<Thread> {
         let path = self.thread_path(id)?;
         let path = canonical_existing_child(&self.threads_dir, &path)?;
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read thread file: {}", path.display()))?;
-        let thread = serde_json::from_str::<Thread>(&raw)
-            .with_context(|| format!("Failed to parse thread file: {}", path.display()))?;
-        Ok(thread)
+        serde_json::from_str::<Thread>(&raw)
+            .with_context(|| format!("Failed to parse thread file: {}", path.display()))
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
@@ -196,8 +258,8 @@ impl ThreadStore {
     /// `updated_at` is left untouched so a rename does not reorder the rail.
     pub fn set_thread_title(&self, id: &str, title: &str) -> Result<bool> {
         let trimmed = title.trim();
-        if trimmed.is_empty() {
-            bail!("Thread title cannot be empty");
+        if !title_is_meaningful(trimmed) {
+            bail!("Thread title must contain readable text");
         }
         let path = self.thread_path(id)?;
         if !path.exists() {
@@ -216,8 +278,8 @@ impl ThreadStore {
     /// `updated_at` stays unchanged so title completion cannot reorder the rail.
     pub fn set_generated_title(&self, id: &str, title: &str) -> Result<bool> {
         let trimmed = title.trim();
-        if trimmed.is_empty() {
-            bail!("Generated thread title cannot be empty");
+        if !title_is_meaningful(trimmed) {
+            bail!("Generated thread title must contain readable text");
         }
         let path = self.thread_path(id)?;
         if !path.exists() {
@@ -299,6 +361,101 @@ impl ThreadStore {
         self.blobs_dir
             .join(format!("{}_{}.bin", stem, Utc::now().timestamp_millis()))
     }
+}
+
+/// A persisted title must carry at least one Unicode letter or number. This
+/// rejects punctuation-only transport markers such as `<<<` while preserving
+/// ordinary multilingual titles.
+pub fn title_is_meaningful(title: &str) -> bool {
+    let trimmed = title.trim();
+    !trimmed.starts_with("<<<") && trimmed.chars().any(char::is_alphanumeric)
+}
+
+fn normalize_heuristic_title(thread: &mut Thread) -> bool {
+    if !thread.title_is_heuristic() || title_is_meaningful(&thread.title) {
+        return false;
+    }
+    thread.title = derive_title_from_messages(&thread.messages);
+    true
+}
+
+fn derive_title_from_messages(messages: &[ThreadMessage]) -> String {
+    let Some(first_user) = messages
+        .iter()
+        .find(|message| message.role.eq_ignore_ascii_case("user"))
+    else {
+        return DEFAULT_THREAD_TITLE.to_string();
+    };
+
+    let mut chunks = Vec::new();
+    for value in &first_user.content {
+        collect_title_text(value, &mut chunks);
+    }
+    for chunk in chunks {
+        for line in chunk.lines() {
+            if let Some(title) = normalize_title_line(line) {
+                return title;
+            }
+        }
+    }
+    DEFAULT_THREAD_TITLE.to_string()
+}
+
+fn collect_title_text(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) if !text.trim().is_empty() => out.push(text.to_string()),
+        Value::Array(items) if !items.iter().all(Value::is_number) => {
+            for item in items {
+                collect_title_text(item, out);
+            }
+        }
+        Value::Object(map) => match map.get("type").and_then(Value::as_str) {
+            Some("text") | Some("input_text") | Some("output_text") | None => {
+                if let Some(text) = map.get("text").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.to_string());
+                }
+            }
+            Some("tool_result") => {
+                if let Some(content) = map.get("content") {
+                    collect_title_text(content, out);
+                }
+            }
+            Some(_) => {}
+        },
+        _ => {}
+    }
+}
+
+fn normalize_title_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !title_is_meaningful(trimmed) || is_assistive_wire_label(trimmed) {
+        return None;
+    }
+    let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped = normalized.chars().take(72).collect::<String>();
+    title_is_meaningful(&clipped).then_some(clipped)
+}
+
+fn is_assistive_wire_label(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    [
+        "instrukcja_użytkownika:",
+        "instrukcja użytkownika:",
+        "zaznaczony_tekst:",
+        "zaznaczony tekst:",
+        "kontekst_aplikacji:",
+        "kontekst aplikacji:",
+        "aplikacja:",
+        "okno:",
+        "system prompt",
+        "you are an agent",
+        "jesteś agentem",
+        "jestes agentem",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
 }
 
 fn app_data_dir() -> PathBuf {
@@ -632,6 +789,65 @@ mod tests {
     }
 
     #[test]
+    fn save_replaces_assistive_delimiter_title_before_json_and_index_persist() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.title = "<<<".to_string();
+        thread.messages[0].content = vec![json!({
+            "type": "input_text",
+            "text": "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nPrzygotuj plan wypisu pacjenta\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
+        })];
+
+        store.save_thread(&thread)?;
+
+        let persisted: Thread =
+            serde_json::from_str(&fs::read_to_string(store.thread_file_path(&thread.id)?)?)?;
+        assert_eq!(persisted.title, "Przygotuj plan wypisu pacjenta");
+        assert!(persisted.title_is_heuristic());
+
+        let index = ThreadIndex::load_or_create(store.threads_dir())?;
+        assert_eq!(index.data().threads[0].title, persisted.title);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_delimiter_fixture_heals_file_index_and_export_idempotently() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.messages[0].content = vec![json!({
+            "type": "text",
+            "text": "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nCompare insulin protocols\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
+        })];
+        store.save_thread(&thread)?;
+
+        // Emulate a pre-fix 0.13.0 artifact: both the source JSON and its
+        // denormalized index row carry the heredoc delimiter as title.
+        let thread_path = store.thread_file_path(&thread.id)?;
+        let mut thread_json: Value = serde_json::from_str(&fs::read_to_string(&thread_path)?)?;
+        thread_json["title"] = json!("<<<");
+        atomic_write(&thread_path, &serde_json::to_vec_pretty(&thread_json)?)?;
+
+        let index_path = store.threads_dir().join("index.json");
+        let mut index_json: Value = serde_json::from_str(&fs::read_to_string(&index_path)?)?;
+        index_json["threads"][0]["title"] = json!("<<<");
+        atomic_write(&index_path, &serde_json::to_vec_pretty(&index_json)?)?;
+
+        assert_eq!(store.heal_degenerate_titles()?, 1);
+        let healed = store.load_thread(&thread.id)?;
+        assert_eq!(healed.title, "Compare insulin protocols");
+        let healed_index = ThreadIndex::load_or_create(store.threads_dir())?;
+        assert_eq!(healed_index.data().threads[0].title, healed.title);
+
+        let markdown = crate::agent::thread_export::thread_to_markdown(&healed, false);
+        assert!(markdown.starts_with("# Compare insulin protocols"));
+        assert!(!markdown.contains("# <<<"));
+        assert_eq!(store.heal_degenerate_titles()?, 0);
+        Ok(())
+    }
+
+    #[test]
     fn legacy_openai_text_aliases_restore_as_plain_text() {
         let message = ThreadMessage {
             role: "assistant".to_string(),
@@ -865,6 +1081,9 @@ mod tests {
         store.save_thread(&thread)?;
 
         assert!(store.set_generated_title(&id, " \n\t ").is_err());
+        assert!(store.set_generated_title(&id, "<<<").is_err());
+        assert!(store.set_generated_title(&id, "<<< 2026-07-20").is_err());
+        assert!(store.set_thread_title(&id, "<<<").is_err());
         assert!(!store.set_generated_title("t_2026-01-01_missing", "Generated")?);
 
         assert!(store.set_thread_title(&id, "Custom authority")?);

@@ -151,7 +151,9 @@ struct ThreadRail: View {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return store.threads }
         if store.usesRealThreadSearch { return store.threads }
-        return store.threads.filter { $0.title.lowercased().contains(q) }
+        return store.threads.filter {
+            ThreadRowTitle.displayTitle(for: $0).lowercased().contains(q)
+        }
     }
 
     /// Groups the (already search-filtered) threads into recency sections,
@@ -173,7 +175,7 @@ struct ThreadRail: View {
 
     private func beginRename(_ thread: ChatThread) {
         guard editingThreadID != thread.id else { return }
-        renameDraft = thread.title
+        renameDraft = ThreadRowTitle.displayTitle(for: thread)
         editingThreadID = thread.id
     }
 
@@ -189,6 +191,29 @@ struct ThreadRail: View {
     private func cancelRename(_ thread: ChatThread) {
         guard editingThreadID == thread.id else { return }
         editingThreadID = nil
+    }
+}
+
+/// Pure row-view model: a transport placeholder can exist in a corrupt/stale
+/// input object, but it can never become visible text. Prefer the first user
+/// excerpt and fall back to a relative date label when messages are still lazy.
+enum ThreadRowTitle {
+    static func displayTitle(
+        for thread: ChatThread,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        if let title = ThreadTitlePolicy.normalized(thread.title) {
+            return title
+        }
+        if let excerpt = ThreadTitlePolicy.firstUserExcerpt(in: thread.messages) {
+            return excerpt
+        }
+        return ThreadRailMeta.fallbackTitle(
+            updatedAt: thread.updatedAt,
+            now: now,
+            calendar: calendar
+        )
     }
 }
 
@@ -226,7 +251,7 @@ private struct ThreadRow: View {
                             if !focused, isEditing { onCommitRename() }
                         }
                 } else {
-                    Text(thread.title)
+                    Text(ThreadRowTitle.displayTitle(for: thread))
                         .font(CSFont.ui(13, isActive ? .semibold : .medium))
                         .foregroundStyle(isActive ? ChatPalette.nameActive : ChatPalette.nameInactive)
                         .lineLimit(1)
@@ -313,6 +338,16 @@ enum ThreadSection: CaseIterable, Hashable {
 // MARK: - Row metadata formatter (pure, unit-tested)
 
 enum ThreadRailMeta {
+    static func fallbackTitle(
+        updatedAt: Date?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        guard let updatedAt else { return "Untitled thread" }
+        let relative = relativeTime(updatedAt, now: now, calendar: calendar)
+        return relative.prefix(1).uppercased() + relative.dropFirst()
+    }
+
     /// "relative time · model · tokens", skipping whatever is missing — nils
     /// never leave dangling separators. All inputs absent → empty string.
     static func drawerSubtitle(

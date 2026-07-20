@@ -399,6 +399,51 @@ final class AgentThreadTitleTests: XCTestCase {
         XCTAssertEqual(provider.events.filter { $0 == .generated("Cannot persist") }.count, 1)
     }
 
+    func testComposerAndAssistiveRejectDelimiterOnlyGeneratedTitles() async {
+        do {
+            let engine = ControllableEngine()
+            let provider = TitleThreadsProvider()
+            let store = makeStore(engine: engine, provider: provider)
+            store.draft = "keyboard title fallback"
+            store.send()
+            await waitUntil { engine.titleCalls.count == 1 && engine.streamCalls.count == 1 }
+
+            engine.completeTitle(.success("<<<"))
+            provider.markFirstTurnPersisted()
+            engine.completeStream(.success("Keyboard reply"))
+            await waitUntil { store.activeComposerTurn == nil }
+
+            XCTAssertEqual(store.currentThread?.title, "Heuristic slug")
+            XCTAssertTrue(provider.events.allSatisfy {
+                if case .generated = $0 { return false }
+                return true
+            })
+        }
+
+        do {
+            let engine = ControllableEngine()
+            let provider = TitleThreadsProvider()
+            let store = makeStore(engine: engine, provider: provider)
+            store.ingestVoiceTurn(
+                threadId: provider.backendID,
+                userText: voiceWire(instruction: "assistive title fallback")
+            )
+            await waitUntil { engine.titleCalls.count == 1 }
+
+            engine.completeTitle(.success("<<<"))
+            provider.markFirstTurnPersisted()
+            store.ingestVoiceDone()
+            await waitUntil { provider.events.contains(.list) }
+
+            XCTAssertEqual(store.currentThread?.title, "Heuristic slug")
+            XCTAssertTrue(provider.events.allSatisfy {
+                if case .generated = $0 { return false }
+                return true
+            })
+            XCTAssertTrue(engine.streamCalls.isEmpty)
+        }
+    }
+
     private func assertGenerationFallback(_ outcome: Result<String?, Error>) async {
         let engine = ControllableEngine()
         let provider = TitleThreadsProvider()

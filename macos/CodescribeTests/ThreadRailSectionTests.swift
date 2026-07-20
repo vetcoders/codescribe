@@ -169,4 +169,34 @@ final class ThreadRailSectionTests: XCTestCase {
             now: now, calendar: calendar)
         XCTAssertEqual(subtitle, "Jul 8")
     }
+
+    func testPlaceholderRowUsesPresentedFirstMessageExcerpt() {
+        let wire = "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nCompare insulin protocols\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
+        let thread = ChatThread(
+            title: "<<<",
+            meta: "today 11:45",
+            messages: [ChatMessage(role: .you, timestamp: "11:45", text: wire)],
+            updatedAt: date(2026, 7, 16, 11, 45)
+        )
+
+        let title = ThreadRowTitle.displayTitle(for: thread, now: now, calendar: calendar)
+
+        XCTAssertEqual(title, "Compare insulin protocols")
+        XCTAssertFalse(title.contains("<<<"))
+    }
+
+    func testPlaceholderRowWithoutLoadedMessagesUsesRelativeDateLabel() {
+        let thread = ChatThread(
+            title: "<<<",
+            meta: "today 11:45",
+            updatedAt: date(2026, 7, 16, 11, 45)
+        )
+
+        XCTAssertEqual(
+            ThreadRowTitle.displayTitle(for: thread, now: now, calendar: calendar),
+            "Today 11:45"
+        )
+        XCTAssertNil(ThreadTitlePolicy.normalized("<<<"))
+        XCTAssertNil(ThreadTitlePolicy.normalized("<<< 2026-07-20"))
+    }
 }

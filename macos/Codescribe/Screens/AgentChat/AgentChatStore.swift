@@ -233,6 +233,28 @@ struct ChatThread: Identifiable {
     var totalTokens: UInt64? = nil
 }
 
+/// Shared Swift-side title guard for coordinator results, manual renames, and
+/// rail fallbacks. The durable owner is ThreadStore; this policy prevents a
+/// provider failure or stale legacy row from flashing transport punctuation in
+/// the live model before disk truth refreshes.
+enum ThreadTitlePolicy {
+    static func normalized(_ value: String?, limit: Int = 72) -> String? {
+        guard let value else { return nil }
+        let collapsed = value
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+        guard !collapsed.hasPrefix("<<<"),
+              collapsed.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        return String(collapsed.prefix(limit))
+    }
+
+    static func firstUserExcerpt(in messages: [ChatMessage], limit: Int = 72) -> String? {
+        guard let message = messages.first(where: { $0.role == .you }) else { return nil }
+        let presented = AssistivePromptParser.presented(message)
+        return normalized(presented.text, limit: limit)
+    }
+}
+
 // MARK: - Threads provider (read-only access to persisted codescribe threads)
 
 /// Backs the thread rail / drawer with real persisted threads from the
@@ -529,8 +551,7 @@ final class AgentChatStore: ObservableObject {
     /// in memory only. No-ops on an empty or unchanged title. The chat header
     /// reads `currentThread.title`, so it updates reactively too.
     func rename(_ thread: ChatThread, to newTitle: String) {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != thread.title,
+        guard let trimmed = ThreadTitlePolicy.normalized(newTitle), trimmed != thread.title,
               let ti = threads.firstIndex(where: { $0.id == thread.id }) else { return }
         if let backendId = thread.backendId {
             if threadsProvider?.renameThread(backendId: backendId, title: trimmed) != true {
@@ -857,8 +878,7 @@ final class AgentChatStore: ObservableObject {
     private func receiveGeneratedTitle(_ title: String?, for threadID: UUID, generationID: UUID) {
         guard var state = firstTurnTitleStates[threadID], state.generationID == generationID else { return }
         state.generationFinished = true
-        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty,
+        guard let trimmed = ThreadTitlePolicy.normalized(title),
               !customTitleThreadIDs.contains(threadID),
               state.pendingCustomTitle == nil,
               let ti = threads.firstIndex(where: { $0.id == threadID }) else {
@@ -1039,7 +1059,7 @@ final class AgentChatStore: ObservableObject {
             threadID = existing.id
             loadMessagesIfNeeded(threadID)  // surface prior history before appending
         } else {
-            let title = userTurn.text.isEmpty ? "Voice chat" : String(userTurn.text.prefix(48))
+            let title = ThreadTitlePolicy.normalized(userTurn.text, limit: 48) ?? "Voice chat"
             var thread = ChatThread(title: title, meta: "now")
             thread.backendId = backendId
             thread.messagesLoaded = true  // freshly bound to a core id → in sync
