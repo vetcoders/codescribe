@@ -96,6 +96,21 @@ impl Config {
         // Apply user settings first (lowest priority after defaults)
         config.apply_user_settings(&user_settings);
 
+        // Hold-indicator controls remain existing power-user `.env` keys (no
+        // settings.json schema or migration). Re-read just these two values on
+        // every snapshot so Settings/tray writes hot-apply after process-env
+        // bootstrap; an explicit process env still wins in `load_from_env`.
+        if let Some(file_env) = file_env_vars.as_ref() {
+            if let Some(value) = file_env.get("HOLD_INDICATOR") {
+                config.hold_indicator = matches!(value.as_str(), "1" | "true" | "yes" | "on");
+            }
+            if let Some(value) = file_env.get("HOLD_BADGE_SIZE")
+                && let Ok(size) = value.parse()
+            {
+                config.hold_badge_size = size;
+            }
+        }
+
         // Override with environment variables (explicit runtime env + injected env-managed .env).
         config.load_from_env();
         config.apply_default_llm_runtime_env();
@@ -336,7 +351,7 @@ impl Config {
             self.tray_start_assistive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_INDICATOR") {
-            self.hold_indicator = val.parse().unwrap_or(true);
+            self.hold_indicator = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_SIZE")
             && let Ok(size) = val.parse()
@@ -1432,6 +1447,66 @@ mod tests {
         assert_eq!(
             UserSettings::load().llm_model.as_deref(),
             Some("runtime-model")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hold_indicator_ui_writes_existing_env_keys_without_settings_json_drift() {
+        let _tmp = setup_isolated_data_dir();
+        let _indicator = TestEnvGuard::unset("HOLD_INDICATOR");
+        let _size = TestEnvGuard::unset("HOLD_BADGE_SIZE");
+        let settings = UserSettings {
+            show_dock_icon: Some(true),
+            ..UserSettings::default()
+        };
+        settings.save().expect("seed settings json");
+        let settings_before = fs::read(UserSettings::settings_path()).expect("read settings json");
+        let config = Config::default();
+
+        config
+            .save_to_env("HOLD_BADGE_SIZE", "8")
+            .expect("save stored badge size");
+        config
+            .save_to_env("HOLD_INDICATOR", "0")
+            .expect("disable indicator");
+        let disabled = Config::parse_env_file(&Config::env_path()).expect("read env");
+        assert_eq!(
+            disabled.get("HOLD_INDICATOR").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            disabled.get("HOLD_BADGE_SIZE").map(String::as_str),
+            Some("8"),
+            "Off must preserve the stored badge size"
+        );
+        let disabled_config = Config::load_without_keychain();
+        assert!(!disabled_config.hold_indicator);
+        assert_eq!(disabled_config.hold_badge_size, 8);
+
+        for size in [4, 8, 12] {
+            let size = size.to_string();
+            config
+                .save_to_env_many(&[("HOLD_INDICATOR", "1"), ("HOLD_BADGE_SIZE", &size)])
+                .expect("save enabled badge size");
+            let persisted = Config::parse_env_file(&Config::env_path()).expect("read env");
+            assert_eq!(
+                persisted.get("HOLD_INDICATOR").map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                persisted.get("HOLD_BADGE_SIZE").map(String::as_str),
+                Some(size.as_str())
+            );
+            let live = Config::load_without_keychain();
+            assert!(live.hold_indicator);
+            assert_eq!(live.hold_badge_size.to_string(), size);
+        }
+
+        let settings_after = fs::read(UserSettings::settings_path()).expect("read settings json");
+        assert_eq!(
+            settings_before, settings_after,
+            "settings.json must not gain badge keys"
         );
     }
 

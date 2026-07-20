@@ -537,7 +537,7 @@ impl Config {
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);
 
         // Validate badge size
-        if self.hold_badge_size < 8 || self.hold_badge_size > 64 {
+        if ![4, 8, 12].contains(&self.hold_badge_size) {
             self.hold_badge_size = 12;
         }
     }
@@ -583,5 +583,26 @@ mod tests {
             !Config::default().stt_initial_prompt_enabled,
             "Whisper initial_prompt must stay opt-in after W2-F WER collapse"
         );
+    }
+
+    #[test]
+    fn hold_badge_sanitize_accepts_only_exposed_scale() {
+        for size in [4, 8, 12] {
+            let mut config = Config {
+                hold_badge_size: size,
+                ..Config::default()
+            };
+            config.sanitize();
+            assert_eq!(config.hold_badge_size, size);
+        }
+
+        for size in [0, 7, 16, 64] {
+            let mut config = Config {
+                hold_badge_size: size,
+                ..Config::default()
+            };
+            config.sanitize();
+            assert_eq!(config.hold_badge_size, 12);
+        }
     }
 }

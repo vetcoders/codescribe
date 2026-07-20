@@ -8815,6 +8815,14 @@ public struct CsTrayToggles: Equatable, Hashable {
      * `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
      */
     public var notesModeEnabled: Bool
+    /**
+     * Cursor-following recording indicator visibility.
+     */
+    public var holdIndicator: Bool
+    /**
+     * Base indicator diameter. Assistive mode keeps its existing multiplier.
+     */
+    public var holdBadgeSize: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -8832,13 +8840,21 @@ public struct CsTrayToggles: Equatable, Hashable {
         /**
          * Notes Mode: voice → daily note (no paste). Backed by the core
          * `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
-         */notesModeEnabled: Bool) {
+         */notesModeEnabled: Bool,
+        /**
+         * Cursor-following recording indicator visibility.
+         */holdIndicator: Bool,
+        /**
+         * Base indicator diameter. Assistive mode keeps its existing multiplier.
+         */holdBadgeSize: UInt32) {
         self.showDockIcon = showDockIcon
         self.transcriptionOverlayEnabled = transcriptionOverlayEnabled
         self.autoPasteEnabled = autoPasteEnabled
         self.formattingLevel = formattingLevel
         self.startAssistive = startAssistive
         self.notesModeEnabled = notesModeEnabled
+        self.holdIndicator = holdIndicator
+        self.holdBadgeSize = holdBadgeSize
     }
 
 
@@ -8860,7 +8876,9 @@ public struct FfiConverterTypeCsTrayToggles: FfiConverterRustBuffer {
                 autoPasteEnabled: FfiConverterBool.read(from: &buf),
                 formattingLevel: FfiConverterString.read(from: &buf),
                 startAssistive: FfiConverterBool.read(from: &buf),
-                notesModeEnabled: FfiConverterBool.read(from: &buf)
+                notesModeEnabled: FfiConverterBool.read(from: &buf),
+                holdIndicator: FfiConverterBool.read(from: &buf),
+                holdBadgeSize: FfiConverterUInt32.read(from: &buf)
         )
     }
 
@@ -8871,6 +8889,8 @@ public struct FfiConverterTypeCsTrayToggles: FfiConverterRustBuffer {
         FfiConverterString.write(value.formattingLevel, into: &buf)
         FfiConverterBool.write(value.startAssistive, into: &buf)
         FfiConverterBool.write(value.notesModeEnabled, into: &buf)
+        FfiConverterBool.write(value.holdIndicator, into: &buf)
+        FfiConverterUInt32.write(value.holdBadgeSize, into: &buf)
     }
 }
 

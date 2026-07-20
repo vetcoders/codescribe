@@ -348,6 +348,10 @@ pub struct CsTrayToggles {
     /// Notes Mode: voice → daily note (no paste). Backed by the core
     /// `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
     pub notes_mode_enabled: bool,
+    /// Cursor-following recording indicator visibility.
+    pub hold_indicator: bool,
+    /// Base indicator diameter. Assistive mode keeps its existing multiplier.
+    pub hold_badge_size: u32,
 }
 
 /// Thin handle to the codescribe config engine. Stateless: each method reloads
@@ -565,6 +569,8 @@ impl CodescribeConfig {
             // AND no paste). Reading just quick_notes_enabled could show the toggle
             // ON while dictation still pastes (save_only=false) — an edge desync.
             notes_mode_enabled: config.quick_notes_enabled && config.quick_notes_save_only,
+            hold_indicator: config.hold_indicator,
+            hold_badge_size: config.hold_badge_size,
         }
     }
 
