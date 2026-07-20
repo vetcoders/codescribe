@@ -2494,11 +2494,10 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
 
     /**
      * Paste edited overlay text back into the app that was frontmost before the
-     * overlay. Returns the honest delivery outcome: `Pasted`, or
-     * `CopiedToClipboard` when the controller's self-paste guard degraded the
-     * action to a tagged clipboard copy.
+     * overlay. The result includes delivery truth and the app names observed
+     * at the exact delivery boundary so Swift can explain every degradation.
      */
-    func pasteText(text: String) async throws  -> CsPasteOutcome
+    func pasteText(text: String) async throws  -> CsPasteResult
 
     /**
      * Prompt-free warmup for the shared recording controller.
@@ -2829,11 +2828,10 @@ open func pasteTargetAppName()async  -> String?  {
 
     /**
      * Paste edited overlay text back into the app that was frontmost before the
-     * overlay. Returns the honest delivery outcome: `Pasted`, or
-     * `CopiedToClipboard` when the controller's self-paste guard degraded the
-     * action to a tagged clipboard copy.
+     * overlay. The result includes delivery truth and the app names observed
+     * at the exact delivery boundary so Swift can explain every degradation.
      */
-open func pasteText(text: String)async throws  -> CsPasteOutcome  {
+open func pasteText(text: String)async throws  -> CsPasteResult  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
@@ -2845,7 +2843,7 @@ open func pasteText(text: String)async throws  -> CsPasteOutcome  {
             pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeCsPasteOutcome_lift,
+            liftFunc: FfiConverterTypeCsPasteResult_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -7518,6 +7516,62 @@ public func FfiConverterTypeCsModelOption_lower(_ value: CsModelOption) -> RustB
 }
 
 
+public struct CsPasteResult: Equatable, Hashable {
+    public var outcome: CsPasteOutcome
+    public var targetAppName: String?
+    public var frontmostAppName: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(outcome: CsPasteOutcome, targetAppName: String?, frontmostAppName: String?) {
+        self.outcome = outcome
+        self.targetAppName = targetAppName
+        self.frontmostAppName = frontmostAppName
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsPasteResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsPasteResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsPasteResult {
+        return
+            try CsPasteResult(
+                outcome: FfiConverterTypeCsPasteOutcome.read(from: &buf),
+                targetAppName: FfiConverterOptionString.read(from: &buf),
+                frontmostAppName: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsPasteResult, into buf: inout [UInt8]) {
+        FfiConverterTypeCsPasteOutcome.write(value.outcome, into: &buf)
+        FfiConverterOptionString.write(value.targetAppName, into: &buf)
+        FfiConverterOptionString.write(value.frontmostAppName, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPasteResult_lift(_ buf: RustBuffer) throws -> CsPasteResult {
+    return try FfiConverterTypeCsPasteResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPasteResult_lower(_ value: CsPasteResult) -> RustBuffer {
+    return FfiConverterTypeCsPasteResult.lower(value)
+}
+
+
 /**
  * UI-safe view of one base prompt. Content is included because this surface is
  * the prompt editor itself; audit records never include it.
@@ -9523,6 +9577,7 @@ public enum CsPasteOutcome: Equatable, Hashable {
 
     case pasted
     case copiedToClipboard
+    case accessibilityPermissionNeeded
     case noop
 
 
@@ -9547,7 +9602,9 @@ public struct FfiConverterTypeCsPasteOutcome: FfiConverterRustBuffer {
 
         case 2: return .copiedToClipboard
 
-        case 3: return .noop
+        case 3: return .accessibilityPermissionNeeded
+
+        case 4: return .noop
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -9565,8 +9622,12 @@ public struct FfiConverterTypeCsPasteOutcome: FfiConverterRustBuffer {
             writeInt(&buf, Int32(2))
 
 
-        case .noop:
+        case .accessibilityPermissionNeeded:
             writeInt(&buf, Int32(3))
+
+
+        case .noop:
+            writeInt(&buf, Int32(4))
 
         }
     }
@@ -11030,7 +11091,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_paste_target_app_name() != 18571) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_paste_text() != 8993) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_paste_text() != 10820) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_prewarm_recording() != 27979) {

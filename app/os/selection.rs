@@ -182,9 +182,59 @@ pub fn capture_frontmost_app_only_with_prior_frontmost(
     }
 }
 
+/// Activate a running app by localized name without sending Apple Events.
+#[cfg(target_os = "macos")]
+fn activate_running_app_by_name(app_name: &str) -> bool {
+    use objc::runtime::{Class, Object};
+    use objc::{msg_send, sel, sel_impl};
+
+    const ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
+
+    // SAFETY: sharedWorkspace/runningApplications return shared autoreleased
+    // AppKit objects. We only inspect them and synchronously activate a match.
+    unsafe {
+        let Some(workspace_class) = Class::get("NSWorkspace") else {
+            return false;
+        };
+        let workspace: *mut Object = msg_send![workspace_class, sharedWorkspace];
+        if workspace.is_null() {
+            return false;
+        }
+        let applications: *mut Object = msg_send![workspace, runningApplications];
+        if applications.is_null() {
+            return false;
+        }
+
+        let count: usize = msg_send![applications, count];
+        for index in 0..count {
+            let application: *mut Object = msg_send![applications, objectAtIndex: index];
+            if application.is_null() {
+                continue;
+            }
+            let localized_name: *mut Object = msg_send![application, localizedName];
+            if localized_name.is_null() {
+                continue;
+            }
+            let name_cstr: *const std::ffi::c_char = msg_send![localized_name, UTF8String];
+            if name_cstr.is_null() {
+                continue;
+            }
+            let running_name = std::ffi::CStr::from_ptr(name_cstr).to_string_lossy();
+            if running_name.trim().eq_ignore_ascii_case(app_name) {
+                let activated: bool =
+                    msg_send![application, activateWithOptions: ACTIVATE_IGNORING_OTHER_APPS];
+                return activated;
+            }
+        }
+    }
+
+    false
+}
+
 /// Best-effort app activation by localized app name.
 ///
-/// Used to recover focus before synthetic paste when frontmost temporarily flips to Codescribe.
+/// Native NSRunningApplication activation is primary because it avoids
+/// Automation TCC. osascript remains a compatibility fallback.
 #[cfg(target_os = "macos")]
 pub fn activate_app_by_name(app_name: &str) -> bool {
     use std::process::Command;
@@ -194,6 +244,19 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
         return false;
     }
 
+    if activate_running_app_by_name(app_name) {
+        debug!(
+            app_name,
+            "Activated paste target through NSRunningApplication"
+        );
+        return true;
+    }
+
+    warn!(
+        app_name,
+        "Native app activation did not land; trying osascript compatibility fallback"
+    );
+
     let escaped = app_name.replace('\\', "\\\\").replace('\"', "\\\"");
     let script = format!("tell application \"{}\" to activate", escaped);
 
@@ -202,12 +265,8 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             if out.status.success() {
                 true
             } else {
-                // A non-zero exit here is the signature of a silent Automation
-                // TCC denial (errAEEventNotPermitted, -1743) as well as a
-                // missing target app. Surface it at warn so the cause is not
-                // lost in debug noise.
                 warn!(
-                    "App activation failed for '{}': exit={:?} (possible Automation TCC denial)",
+                    "osascript activation fallback failed for '{}': exit={:?}",
                     app_name,
                     out.status.code()
                 );
@@ -215,7 +274,10 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             }
         }
         Err(e) => {
-            warn!("App activation failed for '{}': {}", app_name, e);
+            warn!(
+                "osascript activation fallback failed for '{}': {}",
+                app_name, e
+            );
             false
         }
     }

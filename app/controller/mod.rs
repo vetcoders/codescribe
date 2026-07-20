@@ -735,17 +735,49 @@ pub enum OverlayPasteDelivery {
     Pasted,
     /// Focus never left Codescribe; tagged text was copied instead of pasted.
     CopiedToClipboard,
+    /// Synthetic event posting is not trusted; tagged text was copied instead.
+    AccessibilityPermissionNeeded,
     /// Nothing to deliver (empty transcript).
     Noop,
 }
 
-/// True when a synthetic Cmd+V would land in Codescribe itself instead of the
-/// intended target. `None` (signal unavailable) keeps the legacy best-effort
-/// paste: never break delivery on a missing probe.
-fn overlay_paste_would_self_target(frontmost_app: Option<&str>) -> bool {
-    frontmost_app
-        .map(|name| name.trim().eq_ignore_ascii_case("codescribe"))
-        .unwrap_or(false)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayPasteResult {
+    pub delivery: OverlayPasteDelivery,
+    pub target_app_name: Option<String>,
+    pub frontmost_app_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayPasteDisposition {
+    Paste,
+    CopyTargetUnavailable,
+    CopyFrontmostUnavailable,
+    CopyTargetMismatch,
+    CopyAccessibilityDenied,
+}
+
+fn overlay_paste_disposition(
+    target_app: Option<&str>,
+    frontmost_app: Option<&str>,
+    can_post_events: bool,
+) -> OverlayPasteDisposition {
+    let Some(target) = target_app.map(str::trim).filter(|name| !name.is_empty()) else {
+        return OverlayPasteDisposition::CopyTargetUnavailable;
+    };
+    let Some(frontmost) = frontmost_app.map(str::trim).filter(|name| !name.is_empty()) else {
+        return OverlayPasteDisposition::CopyFrontmostUnavailable;
+    };
+    if frontmost.eq_ignore_ascii_case("codescribe") {
+        return OverlayPasteDisposition::CopyTargetMismatch;
+    }
+    if !frontmost.eq_ignore_ascii_case(target) {
+        return OverlayPasteDisposition::CopyTargetMismatch;
+    }
+    if !can_post_events {
+        return OverlayPasteDisposition::CopyAccessibilityDenied;
+    }
+    OverlayPasteDisposition::Paste
 }
 
 fn toggle_final_pass_enabled() -> bool {
@@ -1294,34 +1326,75 @@ impl RecordingController {
     /// path as automatic dictation delivery: restore the pre-overlay target app,
     /// apply transcript tagging config, then synthesize Cmd+V via clipboard.
     ///
-    /// Self-paste guard: when the frontmost app is still Codescribe after the
-    /// activation attempt (activation failed, Automation TCC denial, or no
-    /// latched target), a synthetic Cmd+V would land back in our own UI. The
-    /// tagged text is copied to the clipboard instead and `CopiedToClipboard`
-    /// reports the honest outcome to the UI.
-    pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteDelivery> {
+    /// Delivery is fail-closed: Cmd+V is posted only when the runtime frontmost
+    /// app exactly matches the latched target and Accessibility permits event
+    /// posting. Every unconfirmed case becomes a tagged clipboard copy.
+    pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Ok(OverlayPasteDelivery::Noop);
+            return Ok(OverlayPasteResult {
+                delivery: OverlayPasteDelivery::Noop,
+                target_app_name: None,
+                frontmost_app_name: None,
+            });
         }
 
         let target_app = self.pre_overlay_frontmost_app.read().await.clone();
-        if let Some(app_name) = target_app.as_deref()
-            && activate_app_by_name(app_name)
-        {
-            let _ = wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
+        if let Some(app_name) = target_app.as_deref() {
+            let activated = activate_app_by_name(app_name);
+            let focus_confirmed =
+                activated && wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
+            debug!(
+                app_name,
+                activated, focus_confirmed, "Overlay paste target activation"
+            );
         }
 
         let config = self.config.read().await.clone();
         let paste_text = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
         let frontmost = crate::os::selection::current_frontmost_app_name();
-        if overlay_paste_would_self_target(frontmost.as_deref()) {
-            clipboard::set_clipboard(&paste_text)
-                .context("Failed to copy overlay text after self-paste guard")?;
-            return Ok(OverlayPasteDelivery::CopiedToClipboard);
-        }
-        clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
-        Ok(OverlayPasteDelivery::Pasted)
+        let preflight = clipboard::synthetic_paste_preflight();
+        let disposition = overlay_paste_disposition(
+            target_app.as_deref(),
+            frontmost.as_deref(),
+            preflight.can_post_events(),
+        );
+
+        let delivery = match disposition {
+            OverlayPasteDisposition::Paste => {
+                clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
+                OverlayPasteDelivery::Pasted
+            }
+            OverlayPasteDisposition::CopyAccessibilityDenied => {
+                warn!(
+                    target_app = ?target_app,
+                    frontmost_app = ?frontmost,
+                    cg_post_event_access = preflight.cg_post_event_access,
+                    ax_trusted = preflight.ax_trusted,
+                    "Synthetic overlay paste blocked by Accessibility preflight; copied tagged transcript"
+                );
+                clipboard::set_clipboard(&paste_text)
+                    .context("Failed to copy overlay text after Accessibility denial")?;
+                OverlayPasteDelivery::AccessibilityPermissionNeeded
+            }
+            copy_disposition => {
+                warn!(
+                    ?copy_disposition,
+                    target_app = ?target_app,
+                    frontmost_app = ?frontmost,
+                    "Overlay paste target was not exactly confirmed; copied tagged transcript"
+                );
+                clipboard::set_clipboard(&paste_text)
+                    .context("Failed to copy overlay text after focus guard")?;
+                OverlayPasteDelivery::CopiedToClipboard
+            }
+        };
+
+        Ok(OverlayPasteResult {
+            delivery,
+            target_app_name: target_app,
+            frontmost_app_name: frontmost,
+        })
     }
 
     /// Copy the tagged transcript to the clipboard without any synthetic paste.

@@ -565,15 +565,14 @@ impl CodescribeHotkeys {
     }
 
     /// Paste edited overlay text back into the app that was frontmost before the
-    /// overlay. Returns the honest delivery outcome: `Pasted`, or
-    /// `CopiedToClipboard` when the controller's self-paste guard degraded the
-    /// action to a tagged clipboard copy.
-    pub async fn paste_text(&self, text: String) -> Result<CsPasteOutcome, CsError> {
+    /// overlay. The result includes delivery truth and the app names observed
+    /// at the exact delivery boundary so Swift can explain every degradation.
+    pub async fn paste_text(&self, text: String) -> Result<CsPasteResult, CsError> {
         let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
         controller
             .paste_text_from_overlay(text)
             .await
-            .map(CsPasteOutcome::from)
+            .map(CsPasteResult::from)
             .map_err(|error| CsError::Recording {
                 msg: error.to_string(),
             })
@@ -637,6 +636,7 @@ impl CodescribeHotkeys {
 pub enum CsPasteOutcome {
     Pasted,
     CopiedToClipboard,
+    AccessibilityPermissionNeeded,
     Noop,
 }
 
@@ -647,7 +647,27 @@ impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
             codescribe::controller::OverlayPasteDelivery::CopiedToClipboard => {
                 Self::CopiedToClipboard
             }
+            codescribe::controller::OverlayPasteDelivery::AccessibilityPermissionNeeded => {
+                Self::AccessibilityPermissionNeeded
+            }
             codescribe::controller::OverlayPasteDelivery::Noop => Self::Noop,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsPasteResult {
+    pub outcome: CsPasteOutcome,
+    pub target_app_name: Option<String>,
+    pub frontmost_app_name: Option<String>,
+}
+
+impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
+    fn from(value: codescribe::controller::OverlayPasteResult) -> Self {
+        Self {
+            outcome: value.delivery.into(),
+            target_app_name: value.target_app_name,
+            frontmost_app_name: value.frontmost_app_name,
         }
     }
 }
@@ -1304,7 +1324,8 @@ mod mode_binding_tests {
 
 #[cfg(test)]
 mod paste_target_mapping_tests {
-    use super::normalize_paste_target_app_name;
+    use super::{CsPasteOutcome, CsPasteResult, normalize_paste_target_app_name};
+    use codescribe::controller::{OverlayPasteDelivery, OverlayPasteResult};
 
     #[test]
     fn bridge_mapping_keeps_present_app_name() {
@@ -1321,6 +1342,22 @@ mod paste_target_mapping_tests {
             normalize_paste_target_app_name(Some("   ".to_string())),
             None
         );
+    }
+
+    #[test]
+    fn accessibility_denial_maps_with_delivery_app_truth() {
+        let result = CsPasteResult::from(OverlayPasteResult {
+            delivery: OverlayPasteDelivery::AccessibilityPermissionNeeded,
+            target_app_name: Some("Pensieve".to_string()),
+            frontmost_app_name: Some("Pensieve".to_string()),
+        });
+
+        assert_eq!(
+            result.outcome,
+            CsPasteOutcome::AccessibilityPermissionNeeded
+        );
+        assert_eq!(result.target_app_name.as_deref(), Some("Pensieve"));
+        assert_eq!(result.frontmost_app_name.as_deref(), Some("Pensieve"));
     }
 }
 

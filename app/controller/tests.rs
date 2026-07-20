@@ -424,13 +424,66 @@ fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
 }
 
 #[test]
-fn test_overlay_self_paste_guard_trips_only_on_codescribe_frontmost() {
-    assert!(overlay_paste_would_self_target(Some("Codescribe")));
-    assert!(overlay_paste_would_self_target(Some("  codescribe  ")));
-    assert!(overlay_paste_would_self_target(Some("CODESCRIBE")));
-    assert!(!overlay_paste_would_self_target(Some("Alacritty")));
-    assert!(!overlay_paste_would_self_target(Some("Terminal")));
-    assert!(!overlay_paste_would_self_target(None));
+fn test_overlay_paste_disposition_decision_table() {
+    let cases = [
+        (
+            Some("Pensieve"),
+            Some("  PENSIEVE  "),
+            true,
+            OverlayPasteDisposition::Paste,
+            "exact target, case-insensitive",
+        ),
+        (
+            Some("Pensieve"),
+            Some("Alacritty"),
+            true,
+            OverlayPasteDisposition::CopyTargetMismatch,
+            "third app",
+        ),
+        (
+            Some("Pensieve"),
+            Some("Codescribe"),
+            true,
+            OverlayPasteDisposition::CopyTargetMismatch,
+            "overlay app",
+        ),
+        (
+            Some("Codescribe"),
+            Some("Codescribe"),
+            true,
+            OverlayPasteDisposition::CopyTargetMismatch,
+            "overlay app is never a delivery target",
+        ),
+        (
+            None,
+            Some("Pensieve"),
+            true,
+            OverlayPasteDisposition::CopyTargetUnavailable,
+            "target lost",
+        ),
+        (
+            Some("Pensieve"),
+            None,
+            true,
+            OverlayPasteDisposition::CopyFrontmostUnavailable,
+            "focus unconfirmed",
+        ),
+        (
+            Some("Pensieve"),
+            Some("Pensieve"),
+            false,
+            OverlayPasteDisposition::CopyAccessibilityDenied,
+            "event posting denied",
+        ),
+    ];
+
+    for (target, frontmost, can_post_events, expected, label) in cases {
+        assert_eq!(
+            overlay_paste_disposition(target, frontmost, can_post_events),
+            expected,
+            "{label}"
+        );
+    }
 }
 
 #[test]

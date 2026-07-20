@@ -23,6 +23,7 @@ use anyhow::{Context, Result};
 use arboard::{Clipboard, ImageData};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -37,6 +38,50 @@ const KEYCODE_RIGHT_ARROW: CGKeyCode = 124;
 /// Delay in milliseconds before restoring the original clipboard content
 /// Can be overridden via RESTORE_CLIPBOARD_DELAY_MS environment variable
 const DEFAULT_RESTORE_DELAY_MS: u64 = 200;
+
+/// Serializes explicit clipboard replacements against delayed restores. A new
+/// write invalidates every older restore before that write can land.
+static CLIPBOARD_RESTORE_EPOCH: Mutex<u64> = Mutex::new(0);
+
+/// Permission truth required before posting a synthetic Cmd+V.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SyntheticPastePreflight {
+    pub cg_post_event_access: bool,
+    pub ax_trusted: bool,
+}
+
+impl SyntheticPastePreflight {
+    pub(crate) fn can_post_events(self) -> bool {
+        self.cg_post_event_access && self.ax_trusted
+    }
+}
+
+/// Check both macOS signals that govern synthetic keyboard event delivery.
+#[cfg(target_os = "macos")]
+pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightPostEventAccess() -> bool;
+        fn AXIsProcessTrusted() -> bool;
+    }
+
+    // SAFETY: both ApplicationServices functions are process-local, read-only
+    // permission probes with no pointer arguments or ownership transfer.
+    unsafe {
+        SyntheticPastePreflight {
+            cg_post_event_access: CGPreflightPostEventAccess(),
+            ax_trusted: AXIsProcessTrusted(),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
+    SyntheticPastePreflight {
+        cg_post_event_access: false,
+        ax_trusted: false,
+    }
+}
 
 /// Gets the clipboard restore delay from environment or uses default
 fn get_restore_delay() -> Duration {
@@ -149,19 +194,29 @@ impl ClipboardSnapshot {
 ///
 /// # Errors
 /// Returns error if clipboard operation fails
-pub fn set_clipboard(text: &str) -> Result<()> {
+fn set_clipboard_with_epoch(text: &str) -> Result<u64> {
     if text.is_empty() {
         warn!("Attempted to set clipboard with empty text");
-        return Ok(());
+        return Ok(*CLIPBOARD_RESTORE_EPOCH
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()));
     }
 
+    let mut restore_epoch = CLIPBOARD_RESTORE_EPOCH
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut clipboard = Clipboard::new().context("Failed to initialize clipboard")?;
     clipboard
         .set_text(text)
         .context("Failed to set clipboard text")?;
+    *restore_epoch = restore_epoch.wrapping_add(1);
 
     debug!("Clipboard set successfully ({} chars)", text.len());
-    Ok(())
+    Ok(*restore_epoch)
+}
+
+pub fn set_clipboard(text: &str) -> Result<()> {
+    set_clipboard_with_epoch(text).map(|_| ())
 }
 
 /// Gets the current clipboard content
@@ -278,6 +333,33 @@ fn simulate_right_arrow() -> Result<()> {
     Ok(())
 }
 
+fn schedule_clipboard_restore(
+    snapshot: ClipboardSnapshot,
+    paste_epoch: u64,
+    delay: Duration,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        thread::sleep(delay);
+        let restore_epoch = CLIPBOARD_RESTORE_EPOCH
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *restore_epoch != paste_epoch {
+            debug!(
+                paste_epoch,
+                current_epoch = *restore_epoch,
+                "Skipped stale clipboard restore after a newer clipboard replacement"
+            );
+            return;
+        }
+
+        if let Err(e) = snapshot.restore() {
+            warn!("Failed to restore clipboard snapshot: {}", e);
+        } else {
+            info!("Clipboard snapshot restored");
+        }
+    })
+}
+
 /// Smart paste with configurable clipboard restoration
 ///
 /// This is a more flexible version of paste_text that allows you to control
@@ -325,7 +407,8 @@ pub fn paste_text_smart(text: &str, restore: bool) -> Result<()> {
     };
 
     // 2. Set clipboard to new text
-    set_clipboard(text).context("Failed to set clipboard for paste")?;
+    let paste_epoch =
+        set_clipboard_with_epoch(text).context("Failed to set clipboard for paste")?;
     info!("Text successfully copied to clipboard");
 
     // 3. Simulate Cmd+V keypress using CGEvent (thread-safe)
@@ -342,14 +425,7 @@ pub fn paste_text_smart(text: &str, restore: bool) -> Result<()> {
     // 6. Optional: restore clipboard snapshot after delay
     if let Some(snapshot) = snapshot {
         let delay = get_restore_delay();
-        thread::spawn(move || {
-            thread::sleep(delay);
-            if let Err(e) = snapshot.restore() {
-                warn!("Failed to restore clipboard snapshot: {}", e);
-            } else {
-                info!("Clipboard snapshot restored");
-            }
-        });
+        schedule_clipboard_restore(snapshot, paste_epoch, delay);
     }
 
     Ok(())
@@ -496,6 +572,46 @@ mod tests {
             return;
         };
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    #[serial]
+    fn degrade_copy_cancels_pending_paste_restore() {
+        let _guard = ClipboardTestGuard::capture();
+        let Some(()) = skip_if_clipboard_unavailable(
+            set_clipboard("clipboard before paste"),
+            "set pre-paste clipboard",
+        ) else {
+            return;
+        };
+        let Some(snapshot) =
+            skip_if_clipboard_unavailable(ClipboardSnapshot::capture(), "capture pre-paste state")
+        else {
+            return;
+        };
+        let Some(paste_epoch) = skip_if_clipboard_unavailable(
+            set_clipboard_with_epoch("temporary paste payload"),
+            "schedule paste clipboard",
+        ) else {
+            return;
+        };
+
+        let restore = schedule_clipboard_restore(snapshot, paste_epoch, Duration::from_millis(25));
+        let Some(()) = skip_if_clipboard_unavailable(
+            set_clipboard("degraded tagged transcript"),
+            "replace clipboard with degraded transcript",
+        ) else {
+            let _ = restore.join();
+            return;
+        };
+        restore.join().expect("restore thread must finish");
+
+        let Some(current) =
+            skip_if_clipboard_unavailable(get_clipboard(), "read degraded clipboard")
+        else {
+            return;
+        };
+        assert_eq!(current, "degraded tagged transcript");
     }
 
     fn skip_if_clipboard_unavailable<T>(result: Result<T>, action: &str) -> Option<T> {
