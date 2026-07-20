@@ -86,6 +86,7 @@ protocol DictationEngine: AnyObject {
         level: FormattingPolicyOption
     ) async throws -> String
     func pasteText(text: String) async throws -> CsPasteResult
+    func deferText(text: String) async throws -> CsPasteResult
     func copyTaggedTranscript(text: String) async throws
     func pasteTargetAppName() async -> String?
     func sendAssistiveTranscript(text: String) async throws -> Bool
@@ -577,28 +578,36 @@ final class OverlayState: ObservableObject {
         Task { @MainActor in
             defer { self.restartAutoHideCountdown() }
             do {
+                let result: CsPasteResult?
                 if self.insertCaretInCodescribeProbe() {
                     // The caret sits inside Codescribe (e.g. the overlay's own
                     // editable FINAL) — a synthetic Cmd+V would paste the
-                    // transcript right back into the overlay. Degrade to a
-                    // tagged clipboard copy and say so.
-                    let target = await engine?.pasteTargetAppName()
-                    try await engine?.copyTaggedTranscript(text: text)
-                    self.showToast(self.copiedInsertToast(
-                        frontmost: "Codescribe",
-                        target: target
-                    ))
-                    return
+                    // transcript right back into the overlay. Arm the in-memory
+                    // Paste Here slot without touching the user's clipboard.
+                    result = try await engine?.deferText(text: text)
+                } else {
+                    result = try await engine?.pasteText(text: text)
                 }
-                let result = try await engine?.pasteText(text: text)
                 switch result?.outcome {
+                case .deferredInsertArmed:
+                    let target = result?.targetAppName ?? "the target app"
+                    let shortcut = result?.deferredInsertShortcut ?? "⌘⌥V"
+                    self.showToast(
+                        "Couldn't reach \(target) — put your cursor where you want the text "
+                            + "and press \(shortcut). Your clipboard is untouched."
+                    )
                 case .copiedToClipboard:
-                    self.showToast(self.copiedInsertToast(
+                    self.showToast(self.copiedInsertFallbackToast(
                         frontmost: result?.frontmostAppName,
-                        target: result?.targetAppName
+                        target: result?.targetAppName,
+                        failure: result?.deferredInsertFailure
                     ))
                 case .accessibilityPermissionNeeded:
-                    self.showToast("Accessibility permission needed to insert — copied instead")
+                    self.showToast(self.copiedInsertFallbackToast(
+                        frontmost: result?.frontmostAppName,
+                        target: result?.targetAppName,
+                        failure: result?.deferredInsertFailure
+                    ))
                 case .pasted, .noop, nil:
                     break
                 }
@@ -609,7 +618,15 @@ final class OverlayState: ObservableObject {
         }
     }
 
-    private func copiedInsertToast(frontmost: String?, target: String?) -> String {
+    private func copiedInsertFallbackToast(
+        frontmost: String?,
+        target: String?,
+        failure: String?
+    ) -> String {
+        if let failure {
+            return "\(failure) — copied with tags instead. "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        }
         if let frontmost, let target {
             return "Copied — your cursor is in \(frontmost), not \(target). "
                 + "Clipboard replaced; press Cmd+V where you want it."
@@ -1491,6 +1508,9 @@ final class ControllerDictationEngine: DictationEngine {
     func pasteText(text: String) async throws -> CsPasteResult {
         try await hotkeys.pasteText(text: text)
     }
+    func deferText(text: String) async throws -> CsPasteResult {
+        try await hotkeys.deferText(text: text)
+    }
     func copyTaggedTranscript(text: String) async throws {
         try await hotkeys.copyTextTagged(text: text)
     }
@@ -1610,7 +1630,22 @@ final class MockDictationEngine: DictationEngine {
         level: FormattingPolicyOption
     ) async throws -> String { text }
     func pasteText(text: String) async throws -> CsPasteResult {
-        CsPasteResult(outcome: .pasted, targetAppName: nil, frontmostAppName: nil)
+        CsPasteResult(
+            outcome: .pasted,
+            targetAppName: nil,
+            frontmostAppName: nil,
+            deferredInsertShortcut: nil,
+            deferredInsertFailure: nil
+        )
+    }
+    func deferText(text: String) async throws -> CsPasteResult {
+        CsPasteResult(
+            outcome: .deferredInsertArmed,
+            targetAppName: nil,
+            frontmostAppName: "Codescribe",
+            deferredInsertShortcut: "⌘⌥V",
+            deferredInsertFailure: nil
+        )
     }
     func copyTaggedTranscript(text: String) async throws {}
     func pasteTargetAppName() async -> String? { nil }

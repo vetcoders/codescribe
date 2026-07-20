@@ -2453,6 +2453,13 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func copyTextTagged(text: String) async throws
 
     /**
+     * Arm an edited overlay transcript directly when Swift knows the caret is
+     * still inside Codescribe. The controller owns tagging and the W1-A copy
+     * fallback when Paste Here registration is unavailable.
+     */
+    func deferText(text: String) async throws  -> CsPasteResult
+
+    /**
      * Format editable overlay text after recording stops.
      */
     func formatText(text: String, language: CsLanguage?) async throws  -> String
@@ -2702,6 +2709,28 @@ open func copyTextTagged(text: String)async throws   {
             completeFunc: ffi_codescribe_ffi_rust_future_complete_void,
             freeFunc: ffi_codescribe_ffi_rust_future_free_void,
             liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Arm an edited overlay transcript directly when Swift knows the caret is
+     * still inside Codescribe. The controller owns tagging and the W1-A copy
+     * fallback when Paste Here registration is unavailable.
+     */
+open func deferText(text: String)async throws  -> CsPasteResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_defer_text(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsPasteResult_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -7565,13 +7594,17 @@ public struct CsPasteResult: Equatable, Hashable {
     public var outcome: CsPasteOutcome
     public var targetAppName: String?
     public var frontmostAppName: String?
+    public var deferredInsertShortcut: String?
+    public var deferredInsertFailure: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(outcome: CsPasteOutcome, targetAppName: String?, frontmostAppName: String?) {
+    public init(outcome: CsPasteOutcome, targetAppName: String?, frontmostAppName: String?, deferredInsertShortcut: String?, deferredInsertFailure: String?) {
         self.outcome = outcome
         self.targetAppName = targetAppName
         self.frontmostAppName = frontmostAppName
+        self.deferredInsertShortcut = deferredInsertShortcut
+        self.deferredInsertFailure = deferredInsertFailure
     }
 
 
@@ -7590,7 +7623,9 @@ public struct FfiConverterTypeCsPasteResult: FfiConverterRustBuffer {
             try CsPasteResult(
                 outcome: FfiConverterTypeCsPasteOutcome.read(from: &buf),
                 targetAppName: FfiConverterOptionString.read(from: &buf),
-                frontmostAppName: FfiConverterOptionString.read(from: &buf)
+                frontmostAppName: FfiConverterOptionString.read(from: &buf),
+                deferredInsertShortcut: FfiConverterOptionString.read(from: &buf),
+                deferredInsertFailure: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -7598,6 +7633,8 @@ public struct FfiConverterTypeCsPasteResult: FfiConverterRustBuffer {
         FfiConverterTypeCsPasteOutcome.write(value.outcome, into: &buf)
         FfiConverterOptionString.write(value.targetAppName, into: &buf)
         FfiConverterOptionString.write(value.frontmostAppName, into: &buf)
+        FfiConverterOptionString.write(value.deferredInsertShortcut, into: &buf)
+        FfiConverterOptionString.write(value.deferredInsertFailure, into: &buf)
     }
 }
 
@@ -9623,6 +9660,7 @@ public enum CsPasteOutcome: Equatable, Hashable {
     case pasted
     case copiedToClipboard
     case accessibilityPermissionNeeded
+    case deferredInsertArmed
     case noop
 
 
@@ -9649,7 +9687,9 @@ public struct FfiConverterTypeCsPasteOutcome: FfiConverterRustBuffer {
 
         case 3: return .accessibilityPermissionNeeded
 
-        case 4: return .noop
+        case 4: return .deferredInsertArmed
+
+        case 5: return .noop
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -9671,8 +9711,12 @@ public struct FfiConverterTypeCsPasteOutcome: FfiConverterRustBuffer {
             writeInt(&buf, Int32(3))
 
 
-        case .noop:
+        case .deferredInsertArmed:
             writeInt(&buf, Int32(4))
+
+
+        case .noop:
+            writeInt(&buf, Int32(5))
 
         }
     }
@@ -11113,6 +11157,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_copy_text_tagged() != 1762) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_defer_text() != 26341) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_text() != 21736) {

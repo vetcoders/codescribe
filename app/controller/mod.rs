@@ -49,15 +49,16 @@ use chrono::{DateTime, Local};
 
 use crate::audio::streaming_recorder::StreamingRecorder;
 use crate::config::models::ModelManager;
-use crate::config::{Config, UserSettings};
+use crate::config::{Config, DeferredInsertShortcut, UserSettings};
 use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
-use crate::os::hotkeys::HoldMode;
+use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
     AssistiveContext, activate_app_by_name, build_assistive_input, capture_assistive_context,
     capture_assistive_context_with_prior_frontmost, capture_frontmost_app_only,
     wait_for_frontmost_app,
 };
+use crate::os::shortcut_registry;
 use context_bucket::{ContextBucket, ContextMarker};
 
 // Moshi conversation engine and audio output
@@ -760,6 +761,8 @@ pub enum OverlayPasteDelivery {
     CopiedToClipboard,
     /// Synthetic event posting is not trusted; tagged text was copied instead.
     AccessibilityPermissionNeeded,
+    /// Tagged text is armed in process memory for the global Paste Here command.
+    DeferredInsertArmed,
     /// Nothing to deliver (empty transcript).
     Noop,
 }
@@ -769,6 +772,39 @@ pub struct OverlayPasteResult {
     pub delivery: OverlayPasteDelivery,
     pub target_app_name: Option<String>,
     pub frontmost_app_name: Option<String>,
+    pub deferred_insert_shortcut: Option<String>,
+    pub deferred_insert_failure: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeferredInsertRegistration {
+    Available { shortcut_label: String },
+    Unavailable { reason: String },
+}
+
+fn deferred_insert_registration(
+    shortcut: DeferredInsertShortcut,
+    manager_active: bool,
+    collision: Option<&str>,
+) -> DeferredInsertRegistration {
+    if !shortcut.is_enabled() {
+        return DeferredInsertRegistration::Unavailable {
+            reason: "Paste Here shortcut is disabled".to_string(),
+        };
+    }
+    if !manager_active {
+        return DeferredInsertRegistration::Unavailable {
+            reason: "Paste Here hotkey registration failed".to_string(),
+        };
+    }
+    if let Some(reason) = collision {
+        return DeferredInsertRegistration::Unavailable {
+            reason: reason.to_string(),
+        };
+    }
+    DeferredInsertRegistration::Available {
+        shortcut_label: shortcut.label().to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1426,6 +1462,8 @@ impl RecordingController {
                 delivery: OverlayPasteDelivery::Noop,
                 target_app_name: None,
                 frontmost_app_name: None,
+                deferred_insert_shortcut: None,
+                deferred_insert_failure: None,
             });
         }
 
@@ -1450,6 +1488,8 @@ impl RecordingController {
             preflight.can_post_events(),
         );
 
+        let mut deferred_insert_shortcut = None;
+        let mut deferred_insert_failure = None;
         let delivery = match disposition {
             OverlayPasteDisposition::Paste => {
                 clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
@@ -1461,22 +1501,28 @@ impl RecordingController {
                     frontmost_app = ?frontmost,
                     cg_post_event_access = preflight.cg_post_event_access,
                     ax_trusted = preflight.ax_trusted,
-                    "Synthetic overlay paste blocked by Accessibility preflight; copied tagged transcript"
+                    "Synthetic overlay paste blocked by Accessibility preflight"
                 );
-                clipboard::set_clipboard(&paste_text)
-                    .context("Failed to copy overlay text after Accessibility denial")?;
-                OverlayPasteDelivery::AccessibilityPermissionNeeded
+                self.arm_or_copy_deferred_payload(
+                    paste_text,
+                    &config,
+                    &mut deferred_insert_shortcut,
+                    &mut deferred_insert_failure,
+                )?
             }
             copy_disposition => {
                 warn!(
                     ?copy_disposition,
                     target_app = ?target_app,
                     frontmost_app = ?frontmost,
-                    "Overlay paste target was not exactly confirmed; copied tagged transcript"
+                    "Overlay paste target was not exactly confirmed"
                 );
-                clipboard::set_clipboard(&paste_text)
-                    .context("Failed to copy overlay text after focus guard")?;
-                OverlayPasteDelivery::CopiedToClipboard
+                self.arm_or_copy_deferred_payload(
+                    paste_text,
+                    &config,
+                    &mut deferred_insert_shortcut,
+                    &mut deferred_insert_failure,
+                )?
             }
         };
 
@@ -1484,6 +1530,73 @@ impl RecordingController {
             delivery,
             target_app_name: target_app,
             frontmost_app_name: frontmost,
+            deferred_insert_shortcut,
+            deferred_insert_failure,
+        })
+    }
+
+    fn arm_or_copy_deferred_payload(
+        &self,
+        payload: String,
+        config: &Config,
+        shortcut_label: &mut Option<String>,
+        registration_failure: &mut Option<String>,
+    ) -> Result<OverlayPasteDelivery> {
+        let collision =
+            shortcut_registry::deferred_insert_shortcut_conflict(config.deferred_insert_shortcut);
+        match deferred_insert_registration(
+            config.deferred_insert_shortcut,
+            hotkeys::is_global_hotkey_manager_active(),
+            collision.as_deref(),
+        ) {
+            DeferredInsertRegistration::Available {
+                shortcut_label: label,
+            } => {
+                if !clipboard::arm_deferred_insert(payload) {
+                    return Ok(OverlayPasteDelivery::Noop);
+                }
+                *shortcut_label = Some(label);
+                Ok(OverlayPasteDelivery::DeferredInsertArmed)
+            }
+            DeferredInsertRegistration::Unavailable { reason } => {
+                clipboard::set_clipboard(&payload)
+                    .context("Failed to copy overlay text after Paste Here registration failure")?;
+                *registration_failure = Some(reason);
+                Ok(OverlayPasteDelivery::CopiedToClipboard)
+            }
+        }
+    }
+
+    /// Arm the edited overlay transcript without attempting target activation.
+    /// Used when the caret is known to still be inside Codescribe.
+    pub async fn defer_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(OverlayPasteResult {
+                delivery: OverlayPasteDelivery::Noop,
+                target_app_name: None,
+                frontmost_app_name: None,
+                deferred_insert_shortcut: None,
+                deferred_insert_failure: None,
+            });
+        }
+        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
+        let config = self.config.read().await.clone();
+        let payload = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        let mut deferred_insert_shortcut = None;
+        let mut deferred_insert_failure = None;
+        let delivery = self.arm_or_copy_deferred_payload(
+            payload,
+            &config,
+            &mut deferred_insert_shortcut,
+            &mut deferred_insert_failure,
+        )?;
+        Ok(OverlayPasteResult {
+            delivery,
+            target_app_name: target_app,
+            frontmost_app_name: Some("Codescribe".to_string()),
+            deferred_insert_shortcut,
+            deferred_insert_failure,
         })
     }
 

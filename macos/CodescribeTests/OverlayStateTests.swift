@@ -7,12 +7,17 @@ private final class OverlayStateTestEngine: DictationEngine {
     var pasteCallCount = 0
     var pasteOutcome: CsPasteOutcome = .pasted
     var pasteFrontmostAppNameValue: String?
+    var deferredText: String?
+    var deferOutcome: CsPasteOutcome = .deferredInsertArmed
+    var deferredInsertShortcutValue: String? = "⌘⌥V"
+    var deferredInsertFailureValue: String?
     var copiedTaggedText: String?
     var onCopyTagged: (() -> Void)?
     var formattedResult: Result<String, Error> = .success("")
     var formattedLevels: [FormattingPolicyOption] = []
     var onFormat: ((FormattingPolicyOption) -> Void)?
     var onPaste: (() -> Void)?
+    var onDefer: (() -> Void)?
     var pasteTargetAppNameValue: String?
     var onPasteTargetRead: (() -> Void)?
     var persistedPolicy = OverlayPolicySnapshot(
@@ -64,7 +69,20 @@ private final class OverlayStateTestEngine: DictationEngine {
         return CsPasteResult(
             outcome: pasteOutcome,
             targetAppName: pasteTargetAppNameValue,
-            frontmostAppName: pasteFrontmostAppNameValue
+            frontmostAppName: pasteFrontmostAppNameValue,
+            deferredInsertShortcut: deferredInsertShortcutValue,
+            deferredInsertFailure: deferredInsertFailureValue
+        )
+    }
+    func deferText(text: String) async throws -> CsPasteResult {
+        deferredText = text
+        onDefer?()
+        return CsPasteResult(
+            outcome: deferOutcome,
+            targetAppName: pasteTargetAppNameValue,
+            frontmostAppName: "Codescribe",
+            deferredInsertShortcut: deferredInsertShortcutValue,
+            deferredInsertFailure: deferredInsertFailureValue
         )
     }
     func copyTaggedTranscript(text: String) async throws {
@@ -601,25 +619,49 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
-    func testInsertDegradesToTaggedCopyWhenCaretIsInCodescribe() async {
+    func testInsertArmsDeferredSlotWithoutCopyWhenCaretIsInCodescribe() async {
         let clock = OverlayStateTestClock()
         let state = makeFinalizedState(clock: clock, text: "guarded transcript")
         let engine = OverlayStateTestEngine()
-        let copyCalled = expectation(description: "tagged copy called")
-        engine.onCopyTagged = { copyCalled.fulfill() }
+        let deferCalled = expectation(description: "deferred insert armed")
+        engine.onDefer = { deferCalled.fulfill() }
         engine.pasteTargetAppNameValue = "Pensieve"
         state.engine = engine
         state.insertCaretInCodescribeProbe = { true }
 
         state.pasteToPreviousApp()
-        await fulfillment(of: [copyCalled], timeout: 1)
+        await fulfillment(of: [deferCalled], timeout: 1)
         await Task.yield()
 
-        XCTAssertEqual(engine.copiedTaggedText, "guarded transcript")
+        XCTAssertEqual(engine.deferredText, "guarded transcript")
+        XCTAssertNil(engine.copiedTaggedText)
         XCTAssertNil(engine.pastedText, "guard must not fall through to synthetic paste")
         XCTAssertEqual(
             state.toast,
-            "Copied — your cursor is in Codescribe, not Pensieve. "
+            "Couldn't reach Pensieve — put your cursor where you want the text "
+                + "and press ⌘⌥V. Your clipboard is untouched."
+        )
+    }
+
+    func testInsertFallsBackToTaggedCopyWhenHotkeyRegistrationFails() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "fallback transcript")
+        let engine = OverlayStateTestEngine()
+        engine.deferOutcome = .copiedToClipboard
+        engine.deferredInsertFailureValue = "Paste Here hotkey registration failed"
+        engine.pasteTargetAppNameValue = "Pensieve"
+        let deferCalled = expectation(description: "deferred insert fallback")
+        engine.onDefer = { deferCalled.fulfill() }
+        state.engine = engine
+        state.insertCaretInCodescribeProbe = { true }
+
+        state.pasteToPreviousApp()
+        await fulfillment(of: [deferCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(
+            state.toast,
+            "Paste Here hotkey registration failed — copied with tags instead. "
                 + "Clipboard replaced; press Cmd+V where you want it."
         )
     }
@@ -629,6 +671,7 @@ final class OverlayStateTests: XCTestCase {
         let state = makeFinalizedState(clock: clock, text: "belt and braces transcript")
         let engine = OverlayStateTestEngine()
         engine.pasteOutcome = .copiedToClipboard
+        engine.deferredInsertShortcutValue = nil
         engine.pasteTargetAppNameValue = "Pensieve"
         engine.pasteFrontmostAppNameValue = "Alacritty"
         let pasteCalled = expectation(description: "paste called")
@@ -653,6 +696,7 @@ final class OverlayStateTests: XCTestCase {
         let state = makeFinalizedState(clock: clock, text: "permission transcript")
         let engine = OverlayStateTestEngine()
         engine.pasteOutcome = .accessibilityPermissionNeeded
+        engine.deferredInsertFailureValue = "Paste Here hotkey registration failed"
         engine.pasteTargetAppNameValue = "Pensieve"
         engine.pasteFrontmostAppNameValue = "Pensieve"
         let pasteCalled = expectation(description: "permission fallback called")
@@ -667,7 +711,8 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(engine.pastedText, "permission transcript")
         XCTAssertEqual(
             state.toast,
-            "Accessibility permission needed to insert — copied instead"
+            "Paste Here hotkey registration failed — copied with tags instead. "
+                + "Clipboard replaced; press Cmd+V where you want it."
         )
     }
 

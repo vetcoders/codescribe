@@ -13,6 +13,7 @@ use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
+use codescribe::os::{clipboard, notifications};
 use codescribe_core::config::{
     Config, FormattingPolicy, ModeBinding, ShortcutBinding, UserSettings, WorkMode,
 };
@@ -62,12 +63,14 @@ fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
         .map(Arc::clone)
 }
 
-fn route_hotkey_event<F>(
+fn route_hotkey_event<F, G>(
     event: HotkeyEvent,
     app_action_listener: Option<Arc<dyn CsAppActionListener>>,
     dispatch_recording: F,
+    dispatch_deferred_insert: G,
 ) where
     F: FnOnce(HotkeyEvent),
+    G: FnOnce(),
 {
     match event {
         HotkeyEvent::ShowAgent => {
@@ -76,7 +79,24 @@ fn route_hotkey_event<F>(
                 listener.on_show_agent();
             }
         }
+        HotkeyEvent::InsertHere => dispatch_deferred_insert(),
         recording_event => dispatch_recording(recording_event),
+    }
+}
+
+fn deliver_deferred_insert_and_notify() {
+    match clipboard::deliver_deferred_insert() {
+        Ok(clipboard::DeferredInsertDelivery::Delivered) => {
+            tracing::info!("Deferred transcript delivered and clipboard restore scheduled");
+        }
+        Ok(
+            clipboard::DeferredInsertDelivery::NothingToInsert
+            | clipboard::DeferredInsertDelivery::Expired,
+        ) => notifications::notify("Codescribe", "Nothing to insert"),
+        Err(error) => {
+            tracing::warn!(%error, "Deferred transcript delivery failed");
+            notifications::notify("Codescribe", "Couldn't insert the armed transcript");
+        }
     }
 }
 
@@ -413,6 +433,7 @@ impl CodescribeHotkeys {
                             }
                         });
                     },
+                    deliver_deferred_insert_and_notify,
                 );
             }
         });
@@ -581,6 +602,20 @@ impl CodescribeHotkeys {
             })
     }
 
+    /// Arm an edited overlay transcript directly when Swift knows the caret is
+    /// still inside Codescribe. The controller owns tagging and the W1-A copy
+    /// fallback when Paste Here registration is unavailable.
+    pub async fn defer_text(&self, text: String) -> Result<CsPasteResult, CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .defer_text_from_overlay(text)
+            .await
+            .map(CsPasteResult::from)
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+    }
+
     /// Copy the tagged transcript to the clipboard without a synthetic paste.
     /// Swift calls this when the caret already sits inside Codescribe, where a
     /// synthetic Cmd+V would paste the transcript back into the overlay itself.
@@ -640,6 +675,7 @@ pub enum CsPasteOutcome {
     Pasted,
     CopiedToClipboard,
     AccessibilityPermissionNeeded,
+    DeferredInsertArmed,
     Noop,
 }
 
@@ -653,6 +689,9 @@ impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
             codescribe::controller::OverlayPasteDelivery::AccessibilityPermissionNeeded => {
                 Self::AccessibilityPermissionNeeded
             }
+            codescribe::controller::OverlayPasteDelivery::DeferredInsertArmed => {
+                Self::DeferredInsertArmed
+            }
             codescribe::controller::OverlayPasteDelivery::Noop => Self::Noop,
         }
     }
@@ -663,6 +702,8 @@ pub struct CsPasteResult {
     pub outcome: CsPasteOutcome,
     pub target_app_name: Option<String>,
     pub frontmost_app_name: Option<String>,
+    pub deferred_insert_shortcut: Option<String>,
+    pub deferred_insert_failure: Option<String>,
 }
 
 impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
@@ -671,6 +712,8 @@ impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
             outcome: value.delivery.into(),
             target_app_name: value.target_app_name,
             frontmost_app_name: value.frontmost_app_name,
+            deferred_insert_shortcut: value.deferred_insert_shortcut,
+            deferred_insert_failure: value.deferred_insert_failure,
         }
     }
 }
@@ -690,8 +733,8 @@ async fn dispatch_recording_hotkey_event(
     controller: Arc<RecordingController>,
 ) -> anyhow::Result<()> {
     match event {
-        HotkeyEvent::ShowAgent => {
-            unreachable!("ShowAgent must be routed before recording dispatch")
+        HotkeyEvent::ShowAgent | HotkeyEvent::InsertHere => {
+            unreachable!("UI-only commands must be routed before recording dispatch")
         }
         HotkeyEvent::Hold { action, mode } => {
             let mapped_action = match action {
@@ -850,9 +893,14 @@ mod app_action_tests {
         let recording_calls = Arc::new(AtomicUsize::new(0));
         let recording_calls_for_route = Arc::clone(&recording_calls);
 
-        route_hotkey_event(HotkeyEvent::ShowAgent, Some(listener.clone()), move |_| {
-            recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
-        });
+        route_hotkey_event(
+            HotkeyEvent::ShowAgent,
+            Some(listener.clone()),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+            || panic!("show agent must not dispatch deferred insert"),
+        );
 
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 0);
@@ -865,9 +913,23 @@ mod app_action_tests {
             move |_| {
                 recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
+            || panic!("recording command must not dispatch deferred insert"),
         );
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
+
+        let deferred_calls = Arc::new(AtomicUsize::new(0));
+        let deferred_calls_for_route = Arc::clone(&deferred_calls);
+        route_hotkey_event(
+            HotkeyEvent::InsertHere,
+            Some(listener.clone()),
+            |_| panic!("deferred insert must not enter recording dispatch"),
+            move || {
+                deferred_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(deferred_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -1353,6 +1415,8 @@ mod paste_target_mapping_tests {
             delivery: OverlayPasteDelivery::AccessibilityPermissionNeeded,
             target_app_name: Some("Pensieve".to_string()),
             frontmost_app_name: Some("Pensieve".to_string()),
+            deferred_insert_shortcut: None,
+            deferred_insert_failure: None,
         });
 
         assert_eq!(

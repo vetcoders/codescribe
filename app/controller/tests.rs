@@ -512,6 +512,32 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
 }
 
 #[test]
+fn deferred_insert_registration_failure_preserves_copy_fallback() {
+    assert_eq!(
+        deferred_insert_registration(DeferredInsertShortcut::CommandOptionV, false, None,),
+        DeferredInsertRegistration::Unavailable {
+            reason: "Paste Here hotkey registration failed".to_string(),
+        }
+    );
+    assert_eq!(
+        deferred_insert_registration(
+            DeferredInsertShortcut::CommandOptionV,
+            true,
+            Some("⌘⌥V conflicts with macOS #99"),
+        ),
+        DeferredInsertRegistration::Unavailable {
+            reason: "⌘⌥V conflicts with macOS #99".to_string(),
+        }
+    );
+    assert_eq!(
+        deferred_insert_registration(DeferredInsertShortcut::CommandShiftV, true, None,),
+        DeferredInsertRegistration::Available {
+            shortcut_label: "⌘⇧V".to_string(),
+        }
+    );
+}
+
+#[test]
 fn test_transcript_delivery_wrap_uses_truth_quality_placeholders() {
     let config = Config {
         transcript_tagging_enabled: true,
