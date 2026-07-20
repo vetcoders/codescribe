@@ -725,6 +725,26 @@ mod tests {
     }
 
     #[test]
+    fn stored_tool_output_reference_is_the_only_body_sent_to_openai() {
+        let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_large".to_string(),
+                content: vec![ContentBlock::Text(reference.to_string())],
+                is_error: false,
+            }],
+        )];
+
+        let items = build_request_input_items(&messages, None)
+            .expect("stored tool reference should serialize");
+        let payload = serde_json::to_string(&items).expect("OpenAI payload JSON");
+
+        assert!(payload.contains(reference));
+        assert!(!payload.contains("monster inline body"));
+    }
+
+    #[test]
     fn build_request_input_items_uses_output_text_for_assistant_history() {
         let messages = vec![
             Message::new(Role::User, vec![ContentBlock::Text("question".to_string())]),

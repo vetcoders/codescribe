@@ -1009,6 +1009,26 @@ mod tests {
     }
 
     #[test]
+    fn stored_tool_output_reference_is_the_only_body_sent_to_anthropic() {
+        let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "toolu_large".to_string(),
+                content: vec![ContentBlock::Text(reference.to_string())],
+                is_error: false,
+            }],
+        )];
+
+        let items =
+            build_anthropic_messages(&messages).expect("stored tool reference should serialize");
+        let payload = serde_json::to_string(&items).expect("Anthropic payload JSON");
+
+        assert!(payload.contains(reference));
+        assert!(!payload.contains("monster inline body"));
+    }
+
+    #[test]
     fn image_block_uses_base64_source() {
         let block = image_block(b"png bytes", "image/png");
         assert_eq!(block["type"], "image");

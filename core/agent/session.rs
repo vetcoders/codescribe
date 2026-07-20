@@ -7,6 +7,7 @@ use chrono::Utc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info, warn};
 
+use super::tool_output::ToolOutputStore;
 use super::{
     AgentAssetStore, AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role,
     StreamOptions, ToolDefinition, ToolRegistry, ToolResultContent,
@@ -37,6 +38,7 @@ pub struct AgentSession {
     pub(crate) thread_id: Option<String>,
     pub(crate) max_iterations: usize,
     pub(crate) ui_tx: Sender<AgentUiEvent>,
+    tool_output_store: ToolOutputStore,
 }
 
 impl AgentSession {
@@ -52,6 +54,7 @@ impl AgentSession {
             thread_id: None,
             max_iterations: DEFAULT_MAX_ITERATIONS,
             ui_tx,
+            tool_output_store: ToolOutputStore::new(),
         }
     }
 
@@ -68,9 +71,18 @@ impl AgentSession {
         &self.messages
     }
 
-    pub fn restore_messages(&mut self, messages: Vec<Message>) {
+    pub fn restore_messages(&mut self, mut messages: Vec<Message>) {
+        if let Err(error) = self.tool_output_store.spill_messages(&mut messages) {
+            warn!(%error, "Failed to normalize rehydrated tool-output history");
+        }
         self.messages = messages;
         self.thread_id = None;
+    }
+
+    #[cfg(test)]
+    fn with_tool_output_store(mut self, tool_output_store: ToolOutputStore) -> Self {
+        self.tool_output_store = tool_output_store;
+        self
     }
 
     async fn stream_with_retry(
@@ -418,6 +430,15 @@ impl AgentSession {
                     }
                 }
 
+                if let Err(error) = self.tool_output_store.spill_content(&mut content_blocks) {
+                    warn!(
+                        tool = %tool_name,
+                        call_id = %call_id,
+                        %error,
+                        "Failed to persist oversized tool output; omitted it from context"
+                    );
+                }
+
                 let result_message =
                     self.provider
                         .build_tool_result(&call_id, content_blocks, is_error);
@@ -573,6 +594,7 @@ mod tests {
     use serde_json::json;
     use tokio::sync::mpsc;
 
+    use crate::agent::tool_output::ToolOutputStore;
     use crate::agent::{
         AgentEvent, AgentProvider, AgentSession, AgentUiEvent, ContentBlock, Message, Role,
         StreamOptions, ToolDefinition, ToolRegistry, ToolResultContent,
@@ -819,6 +841,44 @@ mod tests {
         session.restore_messages(restored.clone());
 
         assert_eq!(session.messages(), restored.as_slice());
+        assert_eq!(session.thread_id(), None);
+    }
+
+    #[test]
+    fn restore_messages_keeps_stored_tool_reference_without_reinflating() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("tool_outputs");
+        let reference = format!(
+            "[tool output stored: {}/tool-output-existing.txt (90000 bytes)]",
+            root.display()
+        );
+        let (ui_tx, _ui_rx) = mpsc::channel(4);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        )
+        .with_tool_output_store(ToolOutputStore::new_in(root.clone(), 1024));
+
+        session.restore_messages(vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_existing".to_string(),
+                content: vec![ContentBlock::Text(reference.clone())],
+                is_error: false,
+            }],
+        )]);
+
+        let restored = &session.messages()[0].content[0];
+        assert!(matches!(
+            restored,
+            ContentBlock::ToolResult { content, .. }
+                if content == &vec![ContentBlock::Text(reference)]
+        ));
+        assert!(
+            !root.exists(),
+            "rehydration must not rewrite stored references"
+        );
         assert_eq!(session.thread_id(), None);
     }
 
