@@ -1498,6 +1498,15 @@ mod tests {
                 persisted.get("HOLD_BADGE_SIZE").map(String::as_str),
                 Some(size.as_str())
             );
+            // Test builds intentionally allow repeated process-env bootstrap,
+            // unlike production's one-shot tracked bootstrap. Remove the prior
+            // injected snapshot so this reload exercises the newly persisted
+            // values instead of the test-only stale process copy.
+            // SAFETY: this test is serial and the guards above restore both keys.
+            unsafe {
+                std::env::remove_var("HOLD_INDICATOR");
+                std::env::remove_var("HOLD_BADGE_SIZE");
+            }
             let live = Config::load_without_keychain();
             assert!(live.hold_indicator);
             assert_eq!(live.hold_badge_size.to_string(), size);
