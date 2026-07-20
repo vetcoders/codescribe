@@ -205,6 +205,7 @@ struct MockSettingsEngine: SettingsEngine {
     var promptRestoreObserver: ((String) throws -> Void)?
     var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
     var clearMcpConfigurationObserver: (() throws -> Void)?
+    var settingsLoader: (() -> CsSettings)?
     var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
     var resetAudioInputDeviceObserver: (() throws -> Void)?
     var voiceLabEditObserver: ((String, String) throws -> CsQualityRecord)?
@@ -212,7 +213,7 @@ struct MockSettingsEngine: SettingsEngine {
     // call sites continue to bind to config writes, not Voice Lab edits.
     var updateConfigObserver: ((String, String) throws -> Void)?
 
-    func loadSettings() -> CsSettings { settings }
+    func loadSettings() -> CsSettings { settingsLoader?() ?? settings }
     func configDir() -> String { dir }
     func shouldShowOnboarding() -> Bool { onboarding }
     func onboardingMode() -> String? { mode }
@@ -435,7 +436,7 @@ extension CsSettings {
         showDockIcon: false,
         transcriptionOverlayEnabled: true,
         holdIndicator: true,
-        holdBadgeSize: 28,
+        holdBadgeSize: 12,
         holdBadgeOffsetX: 0,
         holdBadgeOffsetY: 0,
         overlayPositionMode: "snapped_top_right",

@@ -114,6 +114,46 @@ final class SettingsTruthTests: XCTestCase {
         )
     }
 
+    func testHoldBadgeControlRoundTripsAllPositionsAndOffPreservesSize() {
+        var persisted = CsSettings.sample
+        persisted.holdIndicator = true
+        persisted.holdBadgeSize = 8
+        var singleWrites: [(String, String)] = []
+        var batchWrites: [[CsConfigEntry]] = []
+        let engine = MockSettingsEngine(
+            settingsLoader: { persisted },
+            updateConfigManyObserver: { entries in
+                batchWrites.append(entries)
+                for entry in entries {
+                    if entry.key == "HOLD_INDICATOR" {
+                        persisted.holdIndicator = entry.value == "1"
+                    } else if entry.key == "HOLD_BADGE_SIZE", let size = UInt32(entry.value) {
+                        persisted.holdBadgeSize = size
+                    }
+                }
+            },
+            updateConfigObserver: { key, value in
+                singleWrites.append((key, value))
+                if key == "HOLD_INDICATOR" { persisted.holdIndicator = value == "1" }
+            }
+        )
+        let model = SettingsViewModel(engine: engine)
+        model.refresh()
+
+        model.setHoldBadgeOption(.off)
+        XCTAssertEqual(model.holdBadgeOption, .off)
+        XCTAssertEqual(model.settings.holdBadgeSize, 8, "Off must preserve the stored size")
+        XCTAssertEqual(singleWrites.map(\.0), ["HOLD_INDICATOR"])
+
+        for option in [HoldBadgeOption.four, .eight, .twelve] {
+            model.setHoldBadgeOption(option)
+            XCTAssertEqual(model.holdBadgeOption, option)
+        }
+        XCTAssertEqual(batchWrites.count, 3)
+        XCTAssertTrue(batchWrites.allSatisfy { $0.map(\.key) == ["HOLD_INDICATOR", "HOLD_BADGE_SIZE"] })
+        XCTAssertEqual(batchWrites.compactMap { $0.last?.value }, ["4", "8", "12"])
+    }
+
     /// Dictation owns every transcription-behavior write and each control keeps
     /// its exact promoted key/value contract after the IA move.
     func testDictationControlsWriteExactPromotedKeysAndValues() {

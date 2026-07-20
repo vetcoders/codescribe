@@ -193,6 +193,27 @@ struct ShortcutsPanel: View {
                 legendItem(color: CSColor.assistive, text: "Purple — voice goes to the agent")
                 legendItem(color: CSColor.amber, text: "Orange — processing after recording")
             }
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Pointer indicator")
+                        .font(CSFont.ui(12.5, .semibold))
+                        .foregroundStyle(CSColor.textBody)
+                    Text("Base size; Agent mode stays proportionally larger")
+                        .font(CSFont.ui(10.5, .medium))
+                        .foregroundStyle(CSColor.textMutedAlt)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Picker("Pointer indicator", selection: holdBadgeBinding) {
+                    ForEach(HoldBadgeOption.allCases) { option in
+                        Text(option.visibleName).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 230)
+            }
+            .padding(.top, 4)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -204,6 +225,13 @@ struct ShortcutsPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        )
+    }
+
+    private var holdBadgeBinding: Binding<HoldBadgeOption> {
+        Binding(
+            get: { model.holdBadgeOption },
+            set: { model.setHoldBadgeOption($0) }
         )
     }
 

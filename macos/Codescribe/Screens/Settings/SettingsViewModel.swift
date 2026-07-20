@@ -67,6 +67,45 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
+    case off
+    case four
+    case eight
+    case twelve
+
+    var id: String { visibleName }
+    var visibleName: String {
+        guard let size else { return "Off" }
+        return "\(size)px"
+    }
+    var size: UInt32? {
+        switch self {
+        case .off: return nil
+        case .four: return 4
+        case .eight: return 8
+        case .twelve: return 12
+        }
+    }
+
+    init(indicatorEnabled: Bool, size: UInt32) {
+        guard indicatorEnabled else {
+            self = .off
+            return
+        }
+        switch size {
+        case 4: self = .four
+        case 8: self = .eight
+        default: self = .twelve
+        }
+    }
+
+    var next: Self {
+        let all = Self.allCases
+        let index = all.firstIndex(of: self) ?? all.startIndex
+        return all[(index + 1) % all.count]
+    }
+}
+
 /// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
 /// map exhaustively, so routing stays testable without rendering.
 enum SettingsPanelDestination: Equatable {
@@ -1191,6 +1230,29 @@ final class SettingsViewModel: ObservableObject {
         let value = on ? "phase1" : "off"
         settings.layeredTranscription = value
         persist("CODESCRIBE_LAYERED_TRANSCRIPTION", value)
+    }
+
+    var holdBadgeOption: HoldBadgeOption {
+        HoldBadgeOption(
+            indicatorEnabled: settings.holdIndicator,
+            size: settings.holdBadgeSize
+        )
+    }
+
+    /// Off changes visibility only, preserving the stored size. A concrete size
+    /// enables the indicator and writes both existing keys atomically.
+    func setHoldBadgeOption(_ option: HoldBadgeOption) {
+        guard let size = option.size else {
+            settings.holdIndicator = false
+            persist("HOLD_INDICATOR", "0")
+            return
+        }
+        settings.holdIndicator = true
+        settings.holdBadgeSize = size
+        persistMany([
+            CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
+            CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
+        ])
     }
 
     // MARK: - Agent workspace roots (list_projects tool)
