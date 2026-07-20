@@ -26,7 +26,7 @@ final class SettingsTruthTests: XCTestCase {
 
     func testSectionAvailabilityKeepsPromisesHonest() {
         for section in [
-            SettingsSection.creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user,
+            SettingsSection.creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .user,
         ] {
             XCTAssertEqual(section.availability, .available)
             XCTAssertTrue(section.isInteractive)
@@ -34,14 +34,15 @@ final class SettingsTruthTests: XCTestCase {
     }
 
     /// The full route map: stable id, one visible title owner, and the explicit
-    /// panel destination SettingsView's detail switch consumes. All eight rail
-    /// sections, including the consolidation cuts engine→Dictation,
-    /// voiceLab→Dictionary, keys→Providers.
+    /// panel destination SettingsView's detail switch consumes. All nine rail
+    /// sections, including engine→Dictation, voiceLab→Dictionary,
+    /// keys→Providers, and the dedicated Agent destination.
     func testSettingsSectionRoutesTitlesAndDestinationsOwnTheRail() {
         let expectations: [(SettingsSection, String, String, SettingsPanelDestination)] = [
             (.creator, "creator", "Creator", .creator),
             (.shortcuts, "shortcuts", "Hotkeys", .shortcuts),
             (.keys, "keys", "Providers", .providers),
+            (.agent, "agent", "Agent", .agent),
             (.prompts, "prompts", "Prompts", .prompts),
             (.engine, "engine", "Dictation", .dictation),
             (.audio, "audio", "Audio", .audio),
@@ -64,6 +65,52 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(
             Set(SettingsSection.allCases.map(\.title)).count,
             SettingsSection.allCases.count
+        )
+    }
+
+    func testProvidersAndAgentOwnDisjointSettingsCapabilities() {
+        XCTAssertEqual(KeysPanel.ownedCapabilities, [.apiKeys])
+        XCTAssertEqual(
+            AgentPanel.ownedCapabilities,
+            [.llmLanes, .workspaceRoots, .agentStatus, .mcpServers]
+        )
+        XCTAssertTrue(KeysPanel.ownedCapabilities.isDisjoint(with: AgentPanel.ownedCapabilities))
+    }
+
+    func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
+        SettingsDeepLink.pendingSection = nil
+        defer { SettingsDeepLink.pendingSection = nil }
+
+        SettingsDeepLink.pendingSection = .keys
+        XCTAssertEqual(SettingsDeepLink.consume()?.destination, .providers)
+        XCTAssertNil(SettingsDeepLink.consume())
+
+        XCTAssertEqual(SettingsDeepLink.agentConfigurationSection, .agent)
+        SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
+        XCTAssertEqual(SettingsDeepLink.consume()?.destination, .agent)
+        XCTAssertNil(SettingsDeepLink.consume())
+    }
+
+    func testSettingsSplitConstructionDoesNotWriteConfigOrKeychain() {
+        var configWrites: [(String, String)] = []
+        let engine = MockSettingsEngine(
+            updateConfigObserver: { configWrites.append(($0, $1)) }
+        )
+        let model = SettingsViewModel(engine: engine)
+        let keychainSnapshot = model.keyAccounts.map {
+            "\($0):\(model.keyStatus.isSet(account: $0))"
+        }
+
+        model.select(.keys)
+        _ = KeysPanel(model: model)
+        model.select(.agent)
+        _ = AgentPanel(model: model)
+
+        XCTAssertTrue(configWrites.isEmpty, "the IA split must not write settings.json")
+        XCTAssertEqual(
+            model.keyAccounts.map { "\($0):\(model.keyStatus.isSet(account: $0))" },
+            keychainSnapshot,
+            "the IA split must preserve the complete Keychain presence snapshot"
         )
     }
 
@@ -172,10 +219,10 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(batches[1].map(\.value), ["0"])
     }
 
-    /// Providers owns the one lane-edit grammar. Every lane preserves its exact
+    /// Agent owns the one lane-edit grammar. Every lane preserves its exact
     /// endpoint/model keys, and whitespace/empty input keeps the reset semantics
     /// (an empty write clears the JSON override).
-    func testProviderLaneEditorsPreserveExactKeysAndEmptyResetSemantics() {
+    func testAgentLaneEditorsPreserveExactKeysAndEmptyResetSemantics() {
         var writes: [(key: String, value: String)] = []
         let model = SettingsViewModel(
             engine: MockSettingsEngine { key, value in
@@ -229,7 +276,7 @@ final class SettingsTruthTests: XCTestCase {
     /// injection path. Pixel rendering belongs in a UI/visual test: AppKit-backed
     /// controls (`Slider`, `Picker`, `Toggle`) can recurse in off-window
     /// `NSHostingView` / `ImageRenderer` layout on macOS 26.
-    func testFourOwnerPanelsConstructFromHermeticPreviews() {
+    func testFiveOwnerPanelsConstructFromHermeticPreviews() {
         func assertConcretePanel<Panel: View>(
             _ panel: Panel,
             model: SettingsViewModel,
@@ -265,7 +312,10 @@ final class SettingsTruthTests: XCTestCase {
 
         let providers = SettingsViewModel.preview(.keys)
         assertConcretePanel(KeysPanel(model: providers), model: providers, section: .keys, name: "providers")
-        let previewLane = providers.llmLane(.assistive)
+
+        let agent = SettingsViewModel.preview(.agent)
+        assertConcretePanel(AgentPanel(model: agent), model: agent, section: .agent, name: "agent")
+        let previewLane = agent.llmLane(.assistive)
         XCTAssertEqual(previewLane.providerId, "openai-responses")
         XCTAssertEqual(previewLane.resolvedEndpoint, "https://api.openai.com/v1/responses")
     }

@@ -217,14 +217,14 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     /// Arm the one-shot deep-link so the Settings window lands on the MCP surface
-    /// (Settings › Engine). The view owns the actual open via SwiftUI's
+    /// (Settings › Agent). The view owns the actual open via SwiftUI's
     /// `@Environment(\.openSettings)` — the only reliable path in this accessory /
     /// LSUIElement app, where the private `showSettingsWindow:` selector has no
     /// responder (matching TrayMenuView / AgentChatView). Call this immediately
     /// before `openSettings()`; the wizard stays open behind Settings so the user
     /// can wire a server and return to continue.
     func prepareMcpSettingsDeepLink() {
-        SettingsDeepLink.pendingSection = .engine
+        SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
     }
 
     /// Dismiss the MCP setup prompt for this session so onboarding proceeds without

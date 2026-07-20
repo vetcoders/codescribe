@@ -73,11 +73,22 @@ enum SettingsPanelDestination: Equatable {
     case creator
     case shortcuts
     case providers
+    case agent
     case prompts
     case dictation
     case audio
     case dictionary
     case user
+}
+
+/// Testable ownership contract for the two settings surfaces that used to be
+/// mixed together. This is UI metadata only; it never participates in storage.
+enum SettingsPanelCapability: Hashable {
+    case apiKeys
+    case llmLanes
+    case workspaceRoots
+    case agentStatus
+    case mcpServers
 }
 
 // Every rail section declares its product truth explicitly. The raw value is a
@@ -88,6 +99,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case creator
     case shortcuts
     case keys
+    case agent
     case prompts
     case engine
     case audio
@@ -101,6 +113,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .creator: return "Creator"
         case .shortcuts: return "Hotkeys"
         case .keys: return "Providers"
+        case .agent: return "Agent"
         case .prompts: return "Prompts"
         case .engine: return "Dictation"
         case .audio: return "Audio"
@@ -114,6 +127,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .creator: return .creator
         case .shortcuts: return .shortcuts
         case .keys: return .providers
+        case .agent: return .agent
         case .prompts: return .prompts
         case .engine: return .dictation
         case .audio: return .audio
@@ -124,7 +138,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var availability: SettingsSectionAvailability {
         switch self {
-        case .creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user:
+        case .creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .user:
             return .available
         }
     }
@@ -232,6 +246,7 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
 @MainActor
 enum SettingsDeepLink {
     static let pendingSectionDidChange = Notification.Name("codescribe.settingsDeepLink.pendingSectionDidChange")
+    static let agentConfigurationSection: SettingsSection = .agent
 
     static var pendingSection: SettingsSection? {
         didSet {
@@ -753,7 +768,7 @@ final class SettingsViewModel: ObservableObject {
     func select(_ target: SettingsSection) {
         guard target.availability == .available else { return }
         section = target
-        if target == .keys {
+        if target == .agent {
             refreshAssistiveModelDiscovery()
         }
     }
