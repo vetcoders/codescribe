@@ -23,6 +23,7 @@ struct AgentChatView: View {
             ThreadDetail(store: store)
         }
         .navigationSplitViewStyle(.balanced)
+        .csFocusPolicy()
         .background(CSColor.glassBase)
         .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
         .task { store.startDemoStreamIfNeeded() }

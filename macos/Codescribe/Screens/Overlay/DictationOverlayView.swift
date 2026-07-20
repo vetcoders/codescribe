@@ -61,6 +61,7 @@ struct DictationOverlayView: View {
                 footer
             }
         }
+        .csFocusPolicy()
         .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
         // Terminal corner clip (U22): GlassPanel paints its background from the
         // CONTENT column's size, not the window's. Whenever the column outgrows

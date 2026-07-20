@@ -20,6 +20,7 @@ struct SettingsView: View {
                 .frame(width: 212)
             detail
         }
+        .csFocusPolicy()
         .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(Self.windowGradient.ignoresSafeArea())
         .preferredColorScheme(.dark)
