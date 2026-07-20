@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Codescribe
 
@@ -10,6 +11,81 @@ final class TrayViewModelTests: XCTestCase {
         XCTAssertEqual(FormattingPolicyOption.correction.next, .smart)
         XCTAssertEqual(FormattingPolicyOption.smart.next, .max)
         XCTAssertEqual(FormattingPolicyOption.max.next, .off)
+    }
+
+    func testDisclosureChevronUsesOneRightGlyphRotatedDownWhenExpanded() {
+        switch TrayDisclosureChevron.icon {
+        case .chevronRight:
+            break
+        default:
+            XCTFail("Expandable tray rows must use the shared chevron.right glyph")
+        }
+        XCTAssertEqual(TrayDisclosureChevron.rotationDegrees(expanded: false), 0)
+        XCTAssertEqual(TrayDisclosureChevron.rotationDegrees(expanded: true), 90)
+    }
+
+    func testStatusDotCompositesInsideGlyphBottomRightCorner() throws {
+        let size = NSSize(width: 20, height: 20)
+        let bounds = NSRect(origin: .zero, size: size)
+        let dotRect = TrayStatusDotIcon.dotRect(in: bounds)
+
+        XCTAssertEqual(dotRect.maxX, bounds.maxX, accuracy: 0.001)
+        XCTAssertEqual(dotRect.minY, bounds.minY, accuracy: 0.001)
+        XCTAssertTrue(bounds.contains(dotRect))
+
+        let base = NSImage(size: size, flipped: false) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            return true
+        }
+        base.isTemplate = true
+        let dot = NSColor(srgbRed: 1, green: 0, blue: 1, alpha: 1)
+        let composite = TrayStatusDotIcon.composite(base: base, dot: dot)
+
+        XCTAssertEqual(composite.size, size)
+        XCTAssertFalse(composite.isTemplate)
+        let representation = try XCTUnwrap(composite.tiffRepresentation)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: representation))
+        let center = CGPoint(x: dotRect.midX, y: dotRect.midY)
+        // AppKit drawing uses a bottom-left origin; NSBitmapImageRep indexes
+        // the TIFF rows top-down, so mirror the y-coordinate for sampling.
+        let bitmapY = bitmap.pixelsHigh - 1 - Int(center.y)
+        let sampledColor = try XCTUnwrap(bitmap.colorAt(x: Int(center.x), y: bitmapY))
+        let sampled = try XCTUnwrap(sampledColor.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(sampled.redComponent, 0.9)
+        XCTAssertLessThan(sampled.greenComponent, 0.4)
+        XCTAssertGreaterThan(sampled.blueComponent, 0.9)
+        XCTAssertGreaterThan(sampled.alphaComponent, 0.95)
+    }
+
+    func testTrayStatusFeedMapsReadyRecordingProcessingAndAgentColorsOneToOne() throws {
+        let ready = TrayStatusStore.preview(kind: .idle, tone: .neutral)
+        try assertDotColor(
+            ready,
+            equals: NSColor(srgbRed: 157.0 / 255.0, green: 177.0 / 255.0, blue: 120.0 / 255.0, alpha: 1)
+        )
+
+        let recording = TrayStatusStore.preview(kind: .listening, tone: .active)
+        try assertDotColor(
+            recording,
+            equals: NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+        )
+
+        let processing = TrayStatusStore.preview(kind: .processing, tone: .active)
+        try assertDotColor(
+            processing,
+            equals: NSColor(srgbRed: 1, green: 0.5, blue: 0, alpha: 1)
+        )
+
+        // The feed's assistive bit is the LIVE mid-hold arm flip. It wins over
+        // either live phase, recoloring the same dot immediately to agent purple.
+        for kind in [CsTrayStatusKind.listening, .processing] {
+            let agent = TrayStatusStore.preview(kind: kind, tone: .active, assistive: true)
+            try assertDotColor(
+                agent,
+                equals: NSColor(srgbRed: 0.6, green: 0.2, blue: 0.9, alpha: 1)
+            )
+        }
     }
 
     func testRefreshStatusReadsEntirePersistedTraySnapshot() {
@@ -135,6 +211,30 @@ final class TrayViewModelTests: XCTestCase {
             FormattingPolicyOption.allCases.map(\.visibleName),
             ["Off", "Correction", "Smart", "Max"]
         )
+    }
+
+    private func assertDotColor(
+        _ store: TrayStatusStore,
+        equals expected: NSColor,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let color = try XCTUnwrap(store.menuBarDotColor, file: file, line: line)
+        let resolved = try XCTUnwrap(NSColor(color).usingColorSpace(.sRGB), file: file, line: line)
+        assertColor(resolved, equals: expected, file: file, line: line)
+    }
+
+    private func assertColor(
+        _ actual: NSColor,
+        equals expected: NSColor,
+        accuracy: CGFloat = 0.005,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(actual.redComponent, expected.redComponent, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.greenComponent, expected.greenComponent, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.blueComponent, expected.blueComponent, accuracy: accuracy, file: file, line: line)
+        XCTAssertEqual(actual.alphaComponent, expected.alphaComponent, accuracy: accuracy, file: file, line: line)
     }
 }
 

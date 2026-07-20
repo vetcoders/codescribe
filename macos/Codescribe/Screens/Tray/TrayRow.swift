@@ -17,6 +17,15 @@ enum TrayRowStyle {
     case raised    // surface-raised tint (an expanded disclosure parent)
 }
 
+/// The one disclosure idiom shared by every expandable tray row: a single
+/// glyph (`chevron.right`) pointing right when collapsed, rotated to point
+/// down when expanded — the standard macOS disclosure gesture.
+enum TrayDisclosureChevron {
+    static let icon: CSIcon = .chevronRight
+    static let animation = Animation.easeOut(duration: 0.18)
+    static func rotationDegrees(expanded: Bool) -> Double { expanded ? 90 : 0 }
+}
+
 /// A standard tray action row: icon · label · optional shortcut / chevron.
 struct TrayRow: View {
     let icon: CSIcon
@@ -26,7 +35,9 @@ struct TrayRow: View {
     var titleWeight: Font.Weight = .medium
     var shortcut: String? = nil
     var shortcutColor: Color = CSColor.textFaintAlt
-    var showChevron: Bool = false
+    /// Expansion state of the disclosure group this row heads; `nil` for plain
+    /// action rows without a chevron.
+    var disclosureExpanded: Bool? = nil
     var style: TrayRowStyle = .plain
     var action: () -> Void = {}
 
@@ -57,8 +68,11 @@ struct TrayRow: View {
                     .font(CSFont.mono(10, .medium))
                     .foregroundStyle(shortcutColor)
             }
-            if showChevron {
-                CSIconView(icon: .chevronRight, size: 11, color: CSColor.textFaint)
+            if let expanded = disclosureExpanded {
+                CSIconView(icon: TrayDisclosureChevron.icon, size: 11, color: CSColor.textFaint)
+                    .rotationEffect(
+                        .degrees(TrayDisclosureChevron.rotationDegrees(expanded: expanded))
+                    )
             }
         }
         .padding(.horizontal, 12)

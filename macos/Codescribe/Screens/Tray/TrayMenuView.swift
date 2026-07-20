@@ -139,10 +139,10 @@ struct TrayMenuView: View {
             TrayRow(
                 icon: .history,
                 title: "Open history",
-                showChevron: true,
+                disclosureExpanded: viewModel.historyExpanded,
                 style: viewModel.historyExpanded ? .raised : .plain
             ) {
-                withAnimation(.easeOut(duration: 0.18)) { viewModel.toggleHistory() }
+                withAnimation(TrayDisclosureChevron.animation) { viewModel.toggleHistory() }
             }
 
             if viewModel.historyExpanded {
@@ -257,10 +257,10 @@ struct TrayMenuView: View {
             TrayRow(
                 icon: .notes,
                 title: "Notes",
-                showChevron: true,
+                disclosureExpanded: viewModel.notesExpanded,
                 style: viewModel.notesExpanded ? .raised : .plain
             ) {
-                withAnimation(.easeOut(duration: 0.18)) { viewModel.notesExpanded.toggle() }
+                withAnimation(TrayDisclosureChevron.animation) { viewModel.notesExpanded.toggle() }
             }
 
             if viewModel.notesExpanded {
@@ -292,10 +292,12 @@ struct TrayMenuView: View {
             TrayRow(
                 icon: .diagnostics,
                 title: "Diagnostics",
-                showChevron: true,
+                disclosureExpanded: viewModel.diagnosticsExpanded,
                 style: viewModel.diagnosticsExpanded ? .raised : .plain
             ) {
-                withAnimation(.easeOut(duration: 0.18)) { viewModel.diagnosticsExpanded.toggle() }
+                withAnimation(TrayDisclosureChevron.animation) {
+                    viewModel.diagnosticsExpanded.toggle()
+                }
             }
 
             if viewModel.diagnosticsExpanded {

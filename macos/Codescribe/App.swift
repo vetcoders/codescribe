@@ -424,22 +424,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyStatusItemStatus() {
         guard let button = statusItem?.button else { return }
         // The glyph never changes with status — it is always the brand mark.
-        // Mode is conveyed by a colored dot beside it (recording / processing /
-        // assistive / warning); idle shows no dot.
-        button.image = statusItemImage()
-        button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
-        if let dot = trayStatus.menuBarDotColor {
-            button.imagePosition = .imageLeft
-            button.attributedTitle = NSAttributedString(
-                string: " ●",
-                attributes: [
-                    .foregroundColor: NSColor(dot),
-                    .font: NSFont.systemFont(ofSize: 9)
-                ]
+        // Mode is conveyed by the status dot composited into the glyph's
+        // bottom-right corner, 1:1 with the tray status feed: green ready /
+        // red recording / orange processing / purple assistive.
+        button.imagePosition = .imageOnly
+        button.title = ""
+        if let dot = trayStatus.menuBarDotColor, let base = statusItemImage() {
+            // The composite is a flattened, non-template image, so the
+            // unread-agent tint rides the glyph tint, not contentTintColor.
+            button.image = TrayStatusDotIcon.composite(
+                base: base,
+                dot: NSColor(dot),
+                glyphTint: hasUnreadAgentUpdate ? .systemYellow : nil
             )
+            button.contentTintColor = nil
         } else {
-            button.imagePosition = .imageOnly
-            button.title = ""
+            button.image = statusItemImage()
+            button.contentTintColor = hasUnreadAgentUpdate ? NSColor.systemYellow : nil
         }
         button.toolTip = hasUnreadAgentUpdate
             ? "\(trayStatus.status.tooltip) - agent reply ready"
@@ -448,9 +449,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func statusItemImage() -> NSImage? {
         // Brand mark from Assets.xcassets (template image → auto-tints for
-        // light/dark menu bars). Status is signaled by a colored dot beside
-        // this icon, never by swapping the glyph. A missing asset is a build
-        // bug to surface (empty item), not something to paper over.
+        // light/dark menu bars). Status is signaled by a colored dot composited
+        // into this icon's corner, never by swapping the glyph. A missing asset
+        // is a build bug to surface (empty item), not something to paper over.
         let image = NSImage(named: "MenuBarIcon")
         image?.isTemplate = true
         return image
