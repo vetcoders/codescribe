@@ -19,9 +19,6 @@ configured in Settings or `~/.codescribe/.env`.
 
 ```mermaid
 flowchart TB
-    classDef default fill:#fff,stroke:#333,stroke-width:1px;
-    classDef box fill:#fafafa,stroke:#666,stroke-width:1px,stroke-dasharray: 0;
-
     subgraph APP[Codescribe Runtime]
         direction LR
         TRAY[Tray + Hotkeys]
@@ -55,8 +52,6 @@ flowchart TB
     STT --> LLM
     QL -.-> STT
     CORE -.-> TOOLS
-
-    class APP,CORE,TOOLS box
 ```
 
 > **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
@@ -222,7 +217,7 @@ flowchart TD
     B -->|Hold Fn| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
-  D -->|live chunks| E[Whisper STT (streaming)]
+    D -->|live chunks| E["Whisper STT (streaming)"]
     D -->|Release / Toggle| F[Stop]
     F --> G[Finalize last chunk]
     G --> H{AI Enabled?}
@@ -231,8 +226,8 @@ flowchart TD
     I --> K[Paste to Active App]
     J --> K
 
-    E -.- E1[Metal GPU • runtime model]
-    I -.- I1[Responses API • previous_response_id]
+    E -.- E1["Metal GPU • runtime model"]
+    I -.- I1["Responses API • previous_response_id"]
 ```
 
 ### Transcription Pipeline

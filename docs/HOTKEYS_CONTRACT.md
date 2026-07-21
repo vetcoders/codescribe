@@ -231,9 +231,9 @@ flowchart LR
     T_Silero --> T_Config
     C_VAD --> C_Moshi
 
-    style H_VAD fill:#ffcccc
-    style T_VAD fill:#ccffcc
-    style C_VAD fill:#cce5ff
+    style H_VAD stroke:#c33,stroke-width:2px
+    style T_VAD stroke:#3a3,stroke-width:2px
+    style C_VAD stroke:#36c,stroke-width:2px
 ```
 
 | Mode             | VAD Segmentation | Reason                                                             |
