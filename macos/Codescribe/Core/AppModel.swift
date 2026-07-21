@@ -104,9 +104,11 @@ final class OverlayController: ObservableObject {
         state.onClose = { [weak self] in self?.hide() }
         state.onSendToAgent = { [weak self] text in
             guard !text.isEmpty else { return }
-            // Rust already persisted and dispatched the transcript with its
-            // trigger-time context. This callback only reveals the destination.
-            AppModel.shared.tray.onIntent(.openChat)
+            // Rust already persisted and streamed the turn. TurnStarted opened
+            // the chat passively; do NOT activate here (focus-steal at Done was
+            // the wave10 operator bug). Fallback is also passive in case the
+            // delivery listener missed TurnStarted.
+            AppModel.shared.tray.onIntent(.revealChat)
             self?.hide()
         }
         state.onPlacementChanged = { [weak self] in self?.applyPlacement(animated: true) }

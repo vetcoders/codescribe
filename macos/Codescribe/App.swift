@@ -157,6 +157,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch intent {
             case .openChat:
                 self.showAgent()
+            case .revealChat:
+                self.revealAgentForDelivery()
             }
         }
         model.tray.onDictationStartRequested = { [model] in
@@ -469,28 +471,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
+        // LSUIElement accessory: join the active Space so a passive
+        // `orderFrontRegardless` is actually visible during voice delivery.
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.center()
         agentWindow = window
         return window
     }
 
+    /// Show the agent chat window.
+    /// - Parameter activating: when true (tray/menu/summon), steal focus. When
+    ///   false (voice TurnStarted / end-of-turn fallback), order front without
+    ///   `NSApp.activate` so the user's frontmost app stays frontmost.
     private func showAgent(activating: Bool = true) {
         let window = ensureAgentWindow()
+        // Keep Space-join behavior even if the window was created earlier on an
+        // older build of this method before collectionBehavior was set.
+        window.collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenAuxiliary])
         if activating {
             hasUnreadAgentUpdate = false
             applyStatusItemStatus()
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
-        } else if !window.isVisible {
+            appLogger.info(
+                "w10a_agent_show activating=true isVisible=\(window.isVisible, privacy: .public)"
+            )
+        } else {
+            // Passive path: always re-order. Early-return on isVisible alone hid
+            // windows that were "visible" on another Space or occluded, so live
+            // voice turns never painted until the activating end-of-turn open.
             hasUnreadAgentUpdate = true
             applyStatusItemStatus()
             window.orderFrontRegardless()
+            appLogger.info(
+                "w10a_agent_show activating=false isVisible=\(window.isVisible, privacy: .public) isKey=\(window.isKeyWindow, privacy: .public)"
+            )
         }
     }
 
+    /// Passive reveal for voice→agent delivery. Must never call NSApp.activate.
+    /// Structured log line is the runtime receipt anchor: reveal_ts < done_ts.
     private func revealAgentForDelivery() {
-        if agentWindow?.isVisible == true { return }
+        appLogger.info("w10a_reveal_begin")
         showAgent(activating: false)
+        appLogger.info("w10a_reveal_done")
     }
 
     private func showTray() {

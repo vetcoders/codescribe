@@ -147,12 +147,16 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling,
             MainActor.assumeIsolated {
                 // The transcript is now the chat's You-bubble — the overlay's job
                 // is done, so it fades out instead of lingering over the reply.
+                // Order: hide overlay → passive reveal (no focus steal) → ingest
+                // so the You-bubble + streaming assistant render while the turn
+                // is still live. End-of-turn must not re-activate (W10-A).
                 AppModel.shared.overlay.hideForAgentHandoff()
                 self.revealChat()
                 self.store.ingestVoiceTurn(threadId: threadId, userText: userText)
             }
         }
     }
+
     func onTextDelta(delta: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDelta(delta) } }
     }
@@ -177,6 +181,7 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling,
         }
     }
     func onDone() {
+        // Terminal only — never open/activate the agent window here (W10-A).
         DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDone() } }
     }
     func onError(message: String) {

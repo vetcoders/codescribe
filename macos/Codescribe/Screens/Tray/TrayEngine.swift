@@ -10,7 +10,11 @@ import Foundation
 /// Navigation intents the tray emits. App.swift binds each one to the action
 /// that actually opens the relevant window / scene / panel.
 enum TrayIntent {
-    case openChat      // bring up the Agent Chat window
+    /// Bring up the Agent Chat window and activate the app (tray / menu / summon).
+    case openChat
+    /// Passive voice-delivery reveal: create/order the chat window without
+    /// stealing focus. Used at TurnStarted and as end-of-turn fallback only.
+    case revealChat
 }
 
 /// The legacy fast config toggles surfaced in the tray, mapped to the core's
