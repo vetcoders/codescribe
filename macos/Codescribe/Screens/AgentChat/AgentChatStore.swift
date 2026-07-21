@@ -241,7 +241,7 @@ struct ChatThread: Identifiable {
 enum ThreadTitlePolicy {
     static func normalized(_ value: String?, limit: Int = 72) -> String? {
         guard let value else { return nil }
-        let collapsed = value
+        let collapsed = strippingContextMarkers(from: value)
             .split(whereSeparator: \Character.isWhitespace)
             .joined(separator: " ")
         guard !collapsed.hasPrefix("<<<"),
@@ -253,6 +253,78 @@ enum ThreadTitlePolicy {
         guard let message = messages.first(where: { $0.role == .you }) else { return nil }
         let presented = AssistivePromptParser.presented(message)
         return normalized(presented.text, limit: limit)
+    }
+
+    /// Vowel inventory used to recognise word fragments left behind by a
+    /// mid-word context-marker capture. Mirrors `TITLE_FRAGMENT_VOWELS` in
+    /// `core/agent/thread_store.rs` (the durable owner of title derivation).
+    private static let fragmentVowels = Set("aeiouyąęóàáâäãåèéêëìíîïòôöõùúûü")
+
+    /// Remove `{selection_N}` / `{image_N}` context-bucket markers from a
+    /// title candidate. Mirror of the Rust `strip_context_markers`: the
+    /// overlay space-pads a marker even when the capture lands mid-word
+    /// ("mnie" -> "mn {selection_1} ie"), so after removal a letter run of
+    /// two or more characters without any vowel is treated as a split-word
+    /// fragment and glued back without a space; otherwise a single space
+    /// stays. Titles only — message bodies keep their markers untouched.
+    static func strippingContextMarkers(from text: String) -> String {
+        guard text.contains("{selection_") || text.contains("{image_") else { return text }
+        var chars = Array(text)
+        while let marker = contextMarkerRange(in: chars) {
+            var leftEnd = marker.lowerBound
+            while leftEnd > 0, chars[leftEnd - 1].isWhitespace { leftEnd -= 1 }
+            var rightStart = marker.upperBound
+            while rightStart < chars.count, chars[rightStart].isWhitespace { rightStart += 1 }
+            let keepSpace = leftEnd > 0
+                && rightStart < chars.count
+                && !gluesSplitWord(chars: chars, leftEnd: leftEnd, rightStart: rightStart)
+            chars.replaceSubrange(leftEnd..<rightStart, with: keepSpace ? [" "] : [])
+        }
+        return String(chars)
+    }
+
+    private static func contextMarkerRange(in chars: [Character]) -> Range<Int>? {
+        var open = 0
+        while open < chars.count {
+            defer { open += 1 }
+            guard chars[open] == "{" else { continue }
+            for label in ["selection_", "image_"] {
+                let labelChars = Array(label)
+                let digitsStart = open + 1 + labelChars.count
+                guard digitsStart <= chars.count,
+                      Array(chars[(open + 1)..<digitsStart]) == labelChars else { continue }
+                var close = digitsStart
+                while close < chars.count, chars[close].isASCII, chars[close].isNumber {
+                    close += 1
+                }
+                if close > digitsStart, close < chars.count, chars[close] == "}" {
+                    return open..<(close + 1)
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func gluesSplitWord(chars: [Character], leftEnd: Int, rightStart: Int) -> Bool {
+        var left: [Character] = []
+        var index = leftEnd - 1
+        while index >= 0, chars[index].isLetter {
+            left.append(chars[index])
+            index -= 1
+        }
+        var right: [Character] = []
+        index = rightStart
+        while index < chars.count, chars[index].isLetter {
+            right.append(chars[index])
+            index += 1
+        }
+        return fragmentLacksVowel(left) || fragmentLacksVowel(right)
+    }
+
+    private static func fragmentLacksVowel(_ fragment: [Character]) -> Bool {
+        fragment.count >= 2 && !fragment.contains { ch in
+            ch.lowercased().contains { fragmentVowels.contains($0) }
+        }
     }
 }
 

@@ -444,6 +444,46 @@ final class AgentThreadTitleTests: XCTestCase {
         }
     }
 
+    // MARK: - Title marker strip (bucket markers never reach a derived title)
+
+    func testNormalizedStripsContextMarkerAndRejoinsSplitWord() {
+        // Incident input, verbatim: the capture landed mid-word and the overlay
+        // space-padded the marker inside "mnie".
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized(
+                "Chciałbym Ci przedstawić taką jedną rzecz, która mn {selection_1} ie bardzo drażni..."
+            ),
+            "Chciałbym Ci przedstawić taką jedną rzecz, która mnie bardzo drażni..."
+        )
+    }
+
+    func testNormalizedStripsWordBoundaryMarkersWithSingleSpace() {
+        XCTAssertEqual(ThreadTitlePolicy.normalized("say {selection_1} then"), "say then")
+        XCTAssertEqual(ThreadTitlePolicy.normalized("look {image_1} here"), "look here")
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("stack {selection_1} {selection_2} them"),
+            "stack them"
+        )
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("{selection_1} leading and trailing {image_2}"),
+            "leading and trailing"
+        )
+        XCTAssertNil(ThreadTitlePolicy.normalized("{selection_1}"), "a marker-only line is not a title")
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("keep {selection_} literal"),
+            "keep {selection_} literal",
+            "index-less braces are not bucket markers"
+        )
+    }
+
+    func testNormalizedMarkerStripStillClipsAtLimit() {
+        let padding = String(repeating: "x", count: 100)
+        let title = ThreadTitlePolicy.normalized("mn {selection_1} ie \(padding)")
+        XCTAssertEqual(title?.count, 72)
+        XCTAssertEqual(title?.hasPrefix("mnie x"), true)
+        XCTAssertEqual(title?.contains("selection"), false)
+    }
+
     private func assertGenerationFallback(_ outcome: Result<String?, Error>) async {
         let engine = ControllableEngine()
         let provider = TitleThreadsProvider()

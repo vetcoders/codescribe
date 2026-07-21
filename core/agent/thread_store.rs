@@ -429,6 +429,8 @@ fn collect_title_text(value: &Value, out: &mut Vec<String>) {
 }
 
 fn normalize_title_line(line: &str) -> Option<String> {
+    let stripped = strip_context_markers(line);
+    let line = stripped.as_deref().unwrap_or(line);
     let trimmed = line.trim();
     if !title_is_meaningful(trimmed) || is_assistive_wire_label(trimmed) {
         return None;
@@ -436,6 +438,79 @@ fn normalize_title_line(line: &str) -> Option<String> {
     let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
     let clipped = normalized.chars().take(72).collect::<String>();
     title_is_meaningful(&clipped).then_some(clipped)
+}
+
+/// Vowel inventory used to recognise word fragments left behind by a mid-word
+/// context-marker capture. Covers PL/EN plus common Latin accents; `y` counts
+/// as a vowel so only consonant-only runs (never standalone words) glue.
+const TITLE_FRAGMENT_VOWELS: &str = "aeiouyąęóàáâäãåèéêëìíîïòôöõùúûü";
+
+/// Remove `{selection_N}` / `{image_N}` context-bucket markers from a title
+/// candidate. Returns `None` when the line has no marker (borrow fast path).
+///
+/// The overlay space-pads a marker even when the capture lands mid-word
+/// ("mnie" -> "mn {selection_1} ie" — intended capture behaviour), so plain
+/// removal would leave the fragments apart. A letter run of two or more
+/// characters without any vowel is not a standalone PL/EN word — treat it as
+/// a split-word fragment and glue without a space; otherwise keep a single
+/// space. Titles only: message bodies keep their markers untouched.
+fn strip_context_markers(line: &str) -> Option<String> {
+    find_context_marker(line)?;
+    let mut text = line.to_string();
+    while let Some((start, end)) = find_context_marker(&text) {
+        let left_end = text[..start].trim_end().len();
+        let right_start = text.len() - text[end..].trim_start().len();
+        let keep_space = left_end > 0
+            && right_start < text.len()
+            && !glues_split_word(&text[..left_end], &text[right_start..]);
+        let mut next = String::with_capacity(text.len());
+        next.push_str(&text[..left_end]);
+        if keep_space {
+            next.push(' ');
+        }
+        next.push_str(&text[right_start..]);
+        text = next;
+    }
+    Some(text)
+}
+
+/// Byte range of the first `{selection_N}` / `{image_N}` marker, if any.
+/// The marker grammar is pure ASCII (`context_bucket.rs` label contract),
+/// so the returned offsets always sit on `char` boundaries.
+fn find_context_marker(text: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    while let Some(rel) = text[from..].find('{') {
+        let open = from + rel;
+        let tail = &text[open + 1..];
+        for label in ["selection_", "image_"] {
+            if let Some(rest) = tail.strip_prefix(label) {
+                let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                if digits > 0 && rest[digits..].starts_with('}') {
+                    return Some((open, open + 1 + label.len() + digits + 1));
+                }
+            }
+        }
+        from = open + 1;
+    }
+    None
+}
+
+fn glues_split_word(left: &str, right: &str) -> bool {
+    let left_fragment: Vec<char> = left
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_alphabetic())
+        .collect();
+    let right_fragment: Vec<char> = right.chars().take_while(|ch| ch.is_alphabetic()).collect();
+    fragment_lacks_vowel(&left_fragment) || fragment_lacks_vowel(&right_fragment)
+}
+
+fn fragment_lacks_vowel(fragment: &[char]) -> bool {
+    fragment.len() >= 2
+        && !fragment.iter().any(|ch| {
+            ch.to_lowercase()
+                .any(|low| TITLE_FRAGMENT_VOWELS.contains(low))
+        })
 }
 
 fn is_assistive_wire_label(line: &str) -> bool {
@@ -869,6 +944,77 @@ mod tests {
         assert_eq!(persisted.title, "Przygotuj plan wypisu pacjenta");
         assert!(persisted.title_is_heuristic());
         Ok(())
+    }
+
+    #[test]
+    fn save_strips_context_bucket_marker_and_rejoins_split_word_in_title() -> Result<()> {
+        // Incident input, verbatim: a selection capture landed mid-word and the
+        // overlay space-padded the marker inside "mnie". The derived title must
+        // read like the user's sentence, not like wire.
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.title = "<<<".to_string();
+        let incident =
+            "Chciałbym Ci przedstawić taką jedną rzecz, która mn {selection_1} ie bardzo drażni...";
+        thread.messages[0].content = vec![json!({
+            "type": "input_text",
+            "text": incident
+        })];
+
+        store.save_thread(&thread)?;
+
+        let persisted: Thread =
+            serde_json::from_str(&fs::read_to_string(store.thread_file_path(&thread.id)?)?)?;
+        assert_eq!(
+            persisted.title,
+            "Chciałbym Ci przedstawić taką jedną rzecz, która mnie bardzo drażni..."
+        );
+        // Message bodies keep their markers untouched: strip is title-only.
+        assert_eq!(persisted.messages[0].content[0]["text"], incident);
+        Ok(())
+    }
+
+    #[test]
+    fn title_markers_at_word_boundaries_collapse_to_single_space() {
+        assert_eq!(
+            normalize_title_line("say {selection_1} then").as_deref(),
+            Some("say then")
+        );
+        assert_eq!(
+            normalize_title_line("look {image_1} here").as_deref(),
+            Some("look here")
+        );
+        assert_eq!(
+            normalize_title_line("stack {selection_1} {selection_2} them").as_deref(),
+            Some("stack them")
+        );
+        assert_eq!(
+            normalize_title_line("{selection_1} leading and trailing {image_2}").as_deref(),
+            Some("leading and trailing")
+        );
+        // Mid-word split glues back without a space.
+        assert_eq!(
+            normalize_title_line("która mn {selection_1} ie bardzo drażni").as_deref(),
+            Some("która mnie bardzo drażni")
+        );
+        // A marker-only line leaves no readable content behind.
+        assert_eq!(normalize_title_line("{selection_1}"), None);
+        // Index-less braces are not bucket markers — leave them alone.
+        assert_eq!(
+            normalize_title_line("keep {selection_} literal").as_deref(),
+            Some("keep {selection_} literal")
+        );
+    }
+
+    #[test]
+    fn title_marker_strip_still_clips_at_72_chars() {
+        let padding = "x".repeat(100);
+        let line = format!("mn {{selection_1}} ie {padding}");
+        let title = normalize_title_line(&line).expect("meaningful title");
+        assert_eq!(title.chars().count(), 72);
+        assert!(title.starts_with("mnie x"));
+        assert!(!title.contains("selection"));
     }
 
     #[test]
