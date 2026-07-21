@@ -1098,6 +1098,7 @@ mod tests {
 
     #[test]
     fn tool_result_carries_image_asset_as_base64() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
         let path = asset.path.clone();
@@ -1144,6 +1145,7 @@ mod tests {
 
     #[test]
     fn request_body_loads_image_asset_from_disk_at_request_time() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         // D8: an ImageAsset (screenshot pipeline, C9) rides through
         // build_request_body as base64 read from disk at request time — the
         // asset reference itself never reaches the wire.
@@ -1176,6 +1178,7 @@ mod tests {
 
     #[test]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.

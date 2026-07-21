@@ -785,6 +785,7 @@ mod tests {
 
     #[test]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -815,6 +816,7 @@ mod tests {
 
     #[test]
     fn tool_result_image_asset_adds_native_input_image_item() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
         let asset_id = asset.asset_id.clone();

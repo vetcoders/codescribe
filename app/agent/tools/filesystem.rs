@@ -170,6 +170,7 @@ mod tests {
     #[test]
     #[serial]
     fn sandbox_derives_roots_from_fresh_settings() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         let tmp = TempDir::new().expect("tempdir");
         let data = tmp.path().join("data");
         let root_a = tmp.path().join("workspace-a");
