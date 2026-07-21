@@ -21,7 +21,7 @@ use codescribe_core::config::Config;
 use codescribe_core::llm::lane_truth;
 use serde_json::json;
 
-use crate::os::hold_badge::{BadgeMode, show_badge_for_mode};
+use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
 use crate::os::tray_status;
 
 /// Global flag for current session mode.
@@ -47,7 +47,11 @@ pub fn publish_recording_indicator(mode: BadgeMode, show_cursor_badge: bool) {
     IS_ASSISTIVE_SESSION.store(mode == BadgeMode::Assistive, Ordering::SeqCst);
     tray_status::set_tray_indicator_mode(mode);
     if show_cursor_badge {
-        show_badge_for_mode(mode);
+        let persisted_size = Config::load_without_keychain().hold_badge_size;
+        show_hold_badge_with_config(HoldBadgeConfig::from_mode_with_base_diameter(
+            mode,
+            f64::from(persisted_size),
+        ));
     }
 }
 

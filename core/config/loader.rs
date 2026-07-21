@@ -1478,6 +1478,28 @@ mod tests {
 
     #[test]
     #[serial]
+    fn hold_arm_modifier_roundtrips_through_persistence_and_fresh_load() {
+        let _tmp = setup_isolated_data_dir();
+        let _modifier = TestEnvGuard::unset("HOLD_ARM_MODIFIER");
+        let config = Config::default();
+
+        for (stored, expected) in [
+            ("cmd", crate::config::HoldArmModifier::Cmd),
+            ("shift", crate::config::HoldArmModifier::Shift),
+        ] {
+            config
+                .save_to_env("HOLD_ARM_MODIFIER", stored)
+                .expect("persist arm modifier");
+            assert_eq!(
+                UserSettings::load().hold_arm_modifier.as_deref(),
+                Some(stored)
+            );
+            assert_eq!(Config::load_without_keychain().hold_arm_modifier, expected);
+        }
+    }
+
+    #[test]
+    #[serial]
     fn hold_indicator_ui_writes_existing_env_keys_without_settings_json_drift() {
         let _tmp = setup_isolated_data_dir();
         let _indicator = TestEnvGuard::unset("HOLD_INDICATOR");

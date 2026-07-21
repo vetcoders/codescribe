@@ -266,6 +266,8 @@ struct HoldV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     exclusive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    arm_modifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     start_delay_ms: Option<u64>,
 }
 
@@ -501,6 +503,7 @@ impl UserSettings {
                 }),
                 hold: Some(HoldV2 {
                     exclusive: self.hold_exclusive,
+                    arm_modifier: self.hold_arm_modifier.clone(),
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 mode_bindings: Some(normalized_mode_bindings),
@@ -585,9 +588,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|i| i.hold.as_ref())
                 .and_then(|h| h.exclusive),
-            // Flat settings field (env/promoted key); v2 document does not yet
-            // carry a nested hold_arm_modifier — load path fills from JSON/env.
-            hold_arm_modifier: None,
+            hold_arm_modifier: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.hold.as_ref())
+                .and_then(|h| h.arm_modifier.clone()),
             mode_bindings: v2
                 .interaction
                 .as_ref()

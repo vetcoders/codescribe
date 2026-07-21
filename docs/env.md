@@ -206,8 +206,8 @@ i runtime nie może znaleźć Whispera przez cache / config:
 ### UI / Overlay / Feedback
 
 - `SHOW_TRAY_GLYPH` (RESTART NEEDED)
-- `HOLD_INDICATOR` (RESTART NEEDED)
-- `HOLD_BADGE_SIZE` (RESTART NEEDED)
+- `HOLD_INDICATOR` (HOT — persisted immediately; next badge show, no live redraw)
+- `HOLD_BADGE_SIZE` (HOT — persisted immediately; next badge show, no live redraw)
 - `HOLD_BADGE_OFFSET_X` (RESTART NEEDED)
 - `HOLD_BADGE_OFFSET_Y` (RESTART NEEDED)
 - `OVERLAY_POSITION_MODE`, `OVERLAY_CUSTOM_X`, `OVERLAY_CUSTOM_Y` (RESTART NEEDED)
