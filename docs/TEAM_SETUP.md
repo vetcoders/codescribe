@@ -38,14 +38,14 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key                         | Action                         | AI Mode               |
-| --------------------------- | ------------------------------ | --------------------- |
-| Hold **Fn**                 | Record → paste raw transcript  | ALWAYS RAW (no AI)    |
-| Hold **Fn+Shift** (default arm) | Record → agent voice chat  | ALWAYS Assistive      |
-| Hold **Fn+Cmd** (arm alt)   | Same arm when Cmd is selected in Settings | ALWAYS Assistive |
-| Armed hold **with selection** | Selection transform lane     | Assistive (selection) |
-| Double-tap **Left Option**  | Hands‑free toggle (normal)     | Respects AI toggle    |
-| Double-tap **Right Option** | Hands‑free toggle (assistive)  | Assistive             |
+| Key                             | Action                                    | AI Mode               |
+| ------------------------------- | ----------------------------------------- | --------------------- |
+| Hold **Fn**                     | Record → paste raw transcript             | ALWAYS RAW (no AI)    |
+| Hold **Fn+Shift** (default arm) | Record → agent voice chat                 | ALWAYS Assistive      |
+| Hold **Fn+Cmd** (arm alt)       | Same arm when Cmd is selected in Settings | ALWAYS Assistive      |
+| Armed hold **with selection**   | Selection transform lane                  | Assistive (selection) |
+| Double-tap **Left Option**      | Hands‑free toggle (normal)                | Respects AI toggle    |
+| Double-tap **Right Option**     | Hands‑free toggle (assistive)             | Assistive             |
 
 ### Mode Behavior
 
