@@ -27,6 +27,20 @@ pub struct AssistiveContext {
     pub selected_text: Option<String>,
 }
 
+/// One atomic selection capture. Image bytes are retained before clipboard
+/// restoration so an image selected via synthetic Cmd+C cannot disappear.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapturedAssistiveContext {
+    pub context: AssistiveContext,
+    pub image_png: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CopiedSelectionPayload {
+    text: Option<String>,
+    image_png: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Clone)]
 struct TimedAssistiveContext {
     captured_at: std::time::Instant,
@@ -114,13 +128,21 @@ pub fn capture_assistive_context() -> AssistiveContext {
 pub fn capture_assistive_context_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
 ) -> AssistiveContext {
+    capture_assistive_context_with_image_with_prior_frontmost(prior_frontmost_app).context
+}
+
+/// Capture text and image selection as one clipboard transaction. The image is
+/// read before the user's previous clipboard snapshot is restored.
+pub fn capture_assistive_context_with_image_with_prior_frontmost(
+    prior_frontmost_app: Option<String>,
+) -> CapturedAssistiveContext {
     // Unit tests should not trigger osascript / clipboard / event simulation.
     if cfg!(test) {
-        return AssistiveContext::default();
+        return CapturedAssistiveContext::default();
     }
 
     if !env_flag("ASSISTIVE_CONTEXT_ENABLED", true) {
-        return AssistiveContext::default();
+        return CapturedAssistiveContext::default();
     }
 
     let max_chars = env_usize("ASSISTIVE_CONTEXT_MAX_CHARS", 20000);
@@ -132,18 +154,42 @@ pub fn capture_assistive_context_with_prior_frontmost(
     } else {
         None
     };
-    capture_assistive_context_from_parts(
-        current_frontmost_app,
-        prior_frontmost_app,
-        |frontmost_app, should_restore_prior_app| {
-            capture_selected_text_with_effective_frontmost(
-                max_chars,
-                copy_delay_ms,
+    let (frontmost_app, should_restore_prior_app) =
+        resolve_effective_frontmost_app(current_frontmost_app, prior_frontmost_app);
+    if frontmost_app.as_deref().is_some_and(is_codescribe_app) {
+        debug!("Assistive context: frontmost is Codescribe, skipping selection capture");
+        return CapturedAssistiveContext {
+            context: AssistiveContext {
                 frontmost_app,
-                should_restore_prior_app,
-            )
+                selected_text: None,
+            },
+            image_png: None,
+        };
+    }
+
+    let captured = capture_selected_content_with_effective_frontmost(
+        max_chars,
+        copy_delay_ms,
+        frontmost_app.as_deref(),
+        should_restore_prior_app,
+    );
+    debug!(
+        "Assistive context captured (app_present={}, selected_chars={}, image_present={})",
+        frontmost_app.is_some(),
+        captured
+            .text
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
+        captured.image_png.is_some()
+    );
+    CapturedAssistiveContext {
+        context: AssistiveContext {
+            frontmost_app,
+            selected_text: captured.text,
         },
-    )
+        image_png: captured.image_png,
+    }
 }
 
 /// Capture only the frontmost app name (no selection, no clipboard).
@@ -417,6 +463,7 @@ fn resolve_effective_frontmost_app(
     }
 }
 
+#[cfg(test)]
 fn capture_assistive_context_from_parts(
     current_frontmost_app: Option<String>,
     prior_frontmost_app: Option<String>,
@@ -465,12 +512,12 @@ fn copy_landed_by_change_count(prev: Option<i64>, post: Option<i64>) -> bool {
     }
 }
 
-fn capture_selected_text_with_effective_frontmost(
+fn capture_selected_content_with_effective_frontmost(
     max_chars: usize,
     copy_delay_ms: u64,
     frontmost_app: Option<&str>,
     should_restore_prior_app: bool,
-) -> Option<String> {
+) -> CopiedSelectionPayload {
     if should_restore_prior_app && let Some(app_name) = frontmost_app {
         if activate_app_by_name(app_name) {
             // Confirm focus actually landed on the target before capturing,
@@ -490,7 +537,7 @@ fn capture_selected_text_with_effective_frontmost(
         }
     }
 
-    selected_text_from_frontmost(max_chars, copy_delay_ms, frontmost_app)
+    selected_content_from_frontmost(max_chars, copy_delay_ms, frontmost_app)
 }
 
 /// Build the LLM input for assistive mode, including optional selection context.
@@ -566,17 +613,20 @@ fn frontmost_app_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn selected_text_from_frontmost(
+fn selected_content_from_frontmost(
     max_chars: usize,
     copy_delay_ms: u64,
     frontmost_app: Option<&str>,
-) -> Option<String> {
+) -> CopiedSelectionPayload {
     // Prefer Accessibility selection if available (doesn't depend on clipboard).
     //
     // Some apps report `AXSelectedTextRange.length == 0` even when `AXSelectedText` is non-empty,
     // so we do *not* early-return on length==0 before checking `AXSelectedText`.
     if let Some(selected) = crate::os::selection::get_selected_text(max_chars) {
-        return Some(selected);
+        return CopiedSelectionPayload {
+            text: Some(selected),
+            image_png: None,
+        };
     }
 
     // AX returned no selection. Fall back to a synthetic Cmd+C for ANY app — terminals
@@ -590,7 +640,7 @@ fn selected_text_from_frontmost(
             "Assistive context: AX gave no selection for {:?}; Cmd+C fallback disabled by env",
             frontmost_app
         );
-        return None;
+        return CopiedSelectionPayload::default();
     }
     // Only now (fallback path) pay for the system-wide AX length probe — it feeds
     // this diagnostic only, and the AX-selection early-return above skips it
@@ -613,7 +663,7 @@ fn selected_text_from_frontmost(
 
     if let Err(e) = clipboard::simulate_cmd_c() {
         warn!("Assistive context: failed to simulate Cmd+C: {}", e);
-        return None;
+        return CopiedSelectionPayload::default();
     }
 
     std::thread::sleep(Duration::from_millis(copy_delay_ms));
@@ -628,27 +678,28 @@ fn selected_text_from_frontmost(
         );
         // Nothing was copied, so the clipboard already holds prior content;
         // no restore needed.
-        return None;
+        return CopiedSelectionPayload::default();
     }
 
-    let mut copied = match clipboard::get_clipboard() {
-        Ok(t) => t,
-        Err(e) => {
-            debug!("Assistive context: clipboard read failed: {}", e);
-            String::new()
-        }
-    };
+    let mut captured = capture_copied_payload_and_restore(
+        || match clipboard::get_clipboard() {
+            Ok(text) => Some(text),
+            Err(error) => {
+                debug!("Assistive context: clipboard read failed: {}", error);
+                None
+            }
+        },
+        clipboard::get_image_png_best_effort,
+        || {
+            if let Some(snapshot) = snapshot
+                && let Err(error) = snapshot.restore()
+            {
+                debug!("Assistive context: clipboard restore failed: {}", error);
+            }
+        },
+    );
 
-    if let Some(snapshot) = snapshot
-        && let Err(e) = snapshot.restore()
-    {
-        debug!("Assistive context: clipboard restore failed: {}", e);
-    }
-
-    copied = copied.trim().to_string();
-    if copied.is_empty() {
-        return None;
-    }
+    let mut copied = captured.text.take().unwrap_or_default().trim().to_string();
 
     // changeCount is the authoritative detector. Only when it is unavailable do
     // we fall back to content comparison: if the clipboard text is unchanged,
@@ -661,7 +712,7 @@ fn selected_text_from_frontmost(
         debug!(
             "Assistive context: clipboard unchanged (changeCount unavailable); treating as no selection"
         );
-        return None;
+        copied.clear();
     }
 
     let copied_chars = copied.chars().count();
@@ -670,7 +721,21 @@ fn selected_text_from_frontmost(
         copied.push('…');
     }
 
-    Some(copied)
+    captured.text = (!copied.is_empty()).then_some(copied);
+    captured
+}
+
+fn capture_copied_payload_and_restore(
+    text_reader: impl FnOnce() -> Option<String>,
+    image_reader: impl FnOnce() -> Option<Vec<u8>>,
+    restore: impl FnOnce(),
+) -> CopiedSelectionPayload {
+    let captured = CopiedSelectionPayload {
+        text: text_reader(),
+        image_png: image_reader(),
+    };
+    restore();
+    captured
 }
 
 // ---------------------------------------------------------------------------
@@ -838,12 +903,12 @@ pub fn get_selected_text_length() -> Option<usize> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn selected_text_from_frontmost(
+fn selected_content_from_frontmost(
     _max_chars: usize,
     _copy_delay_ms: u64,
     _frontmost_app: Option<&str>,
-) -> Option<String> {
-    None
+) -> CopiedSelectionPayload {
+    CopiedSelectionPayload::default()
 }
 
 #[cfg(test)]
@@ -916,6 +981,24 @@ mod tests {
         assert!(copy_landed_by_change_count(None, Some(5)));
         assert!(copy_landed_by_change_count(Some(5), None));
         assert!(copy_landed_by_change_count(None, None));
+    }
+
+    #[test]
+    fn copied_image_is_retained_before_clipboard_restore() {
+        use std::cell::Cell;
+
+        let restored = Cell::new(false);
+        let captured = capture_copied_payload_and_restore(
+            || None,
+            || {
+                assert!(!restored.get(), "image must be read before restore");
+                Some(vec![1, 2, 3, 4])
+            },
+            || restored.set(true),
+        );
+
+        assert!(restored.get());
+        assert_eq!(captured.image_png, Some(vec![1, 2, 3, 4]));
     }
 
     #[test]

@@ -714,7 +714,9 @@ const MAX_AGENT_VISION_IMAGES: usize = 16;
 /// Returns `(cleaned_text, loaded_images, dropped_names)`. `dropped_names` lists
 /// images that could not be forwarded (missing/unreadable/too large) so the
 /// caller can surface a visible attachment error instead of silently continuing.
-fn build_image_attachments_from_text(text: &str) -> (String, Vec<ImageAttachment>, Vec<String>) {
+pub(super) fn build_image_attachments_from_text(
+    text: &str,
+) -> (String, Vec<ImageAttachment>, Vec<String>) {
     let (cleaned, mut paths) = codescribe_core::attachment::parse_image_attachment_block(text);
 
     if paths.is_empty() {

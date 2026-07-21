@@ -28,6 +28,31 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+/// Read the current pasteboard image and encode it as PNG.
+///
+/// This lives beside the clipboard snapshot/restore code so callers can read a
+/// synthetic Cmd+C result *before* restoring the user's previous clipboard.
+pub(crate) fn get_image_png_best_effort() -> Option<Vec<u8>> {
+    let mut clipboard = Clipboard::new().ok()?;
+    let image = clipboard.get_image().ok()?;
+    let width = u32::try_from(image.width).ok()?;
+    let height = u32::try_from(image.height).ok()?;
+    let rgba = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())?;
+    let mut png_data = Vec::new();
+    {
+        use image::ImageEncoder;
+        image::codecs::png::PngEncoder::new(&mut png_data)
+            .write_image(
+                rgba.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .ok()?;
+    }
+    (!png_data.is_empty()).then_some(png_data)
+}
+
 /// macOS virtual key code for 'V' key
 const KEYCODE_V: CGKeyCode = 9;
 /// macOS virtual key code for 'C' key

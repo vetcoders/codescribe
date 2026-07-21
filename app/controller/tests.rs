@@ -895,6 +895,57 @@ fn combo_without_selection_leaves_bucket_empty_and_arm_truth_intact() {
 }
 
 #[test]
+fn armed_image_capture_reaches_vision_attachment_assembly_and_degrades_oversize() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new(
+        temp_dir.path().join("selections"),
+        temp_dir.path().join("images"),
+        codescribe_core::attachment::MAX_VISION_IMAGE_BYTES as usize,
+    );
+    let png = b"\x89PNG\r\n\x1a\nselected-image".to_vec();
+    let (context, marker) = capture_combo_context_with_image(
+        &mut bucket,
+        0,
+        || AssistiveContext::default(),
+        || Some(png.clone()),
+    )
+    .expect("armed image capture");
+    assert!(
+        marker.is_none(),
+        "image capture does not fake a text marker"
+    );
+
+    let delivery = assemble_assistive_delivery_lane("what is in this image?", &context, &bucket);
+    let (cleaned, attachments, dropped) = build_image_attachments_from_text(&delivery.wire);
+    assert_eq!(cleaned.trim_end(), "what is in this image?");
+    assert_eq!(
+        attachments.len(),
+        1,
+        "stored marker must become vision input"
+    );
+    assert_eq!(attachments[0].media_type, "image/png");
+    assert!(dropped.is_empty());
+
+    let mut oversized_bucket = ContextBucket::new(
+        temp_dir.path().join("oversized-selections"),
+        temp_dir.path().join("oversized-images"),
+        codescribe_core::attachment::MAX_VISION_IMAGE_BYTES as usize,
+    );
+    let oversized = vec![0u8; codescribe_core::attachment::MAX_VISION_IMAGE_BYTES as usize + 1];
+    oversized_bucket
+        .add_image_png(&oversized)
+        .expect("oversized image persists as path reference");
+    let oversized_wire = oversized_bucket.append_to_message("inspect if possible");
+    let (cleaned, attachments, dropped) = build_image_attachments_from_text(&oversized_wire);
+    assert_eq!(cleaned.trim_end(), "inspect if possible");
+    assert!(
+        attachments.is_empty(),
+        "oversized image must not reach the model"
+    );
+    assert_eq!(dropped.len(), 1, "degrade must be explicit to the caller");
+}
+
+#[test]
 fn formatting_setting_is_orthogonal_to_hold_and_assistive_delivery() {
     let config = Config {
         ai_formatting_enabled: true,

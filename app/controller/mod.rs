@@ -55,7 +55,7 @@ use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
     AssistiveContext, activate_app_by_name, build_assistive_input, capture_assistive_context,
-    capture_assistive_context_with_prior_frontmost, capture_frontmost_app_only,
+    capture_assistive_context_with_image_with_prior_frontmost, capture_frontmost_app_only,
     wait_for_frontmost_app,
 };
 use crate::os::shortcut_registry;
@@ -71,6 +71,8 @@ use codescribe_core::pipeline::contracts::{
     TranscriptionVerdict,
 };
 
+#[cfg(test)]
+use helpers::build_image_attachments_from_text;
 use helpers::{
     SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
     reset_session_telemetry, send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
@@ -97,33 +99,6 @@ fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
         configured_ms.max(ASSISTIVE_HOLD_START_DELAY_FLOOR_MS)
     } else {
         configured_ms
-    }
-}
-
-fn read_clipboard_image_png_best_effort() -> Option<Vec<u8>> {
-    // Mirror the agent clipboard tool path: arboard RGBA → PNG bytes.
-    let mut clipboard = arboard::Clipboard::new().ok()?;
-    let image = clipboard.get_image().ok()?;
-    let width = u32::try_from(image.width).ok()?;
-    let height = u32::try_from(image.height).ok()?;
-    let rgba = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())?;
-    let mut png_data = Vec::new();
-    {
-        use image::ImageEncoder;
-        let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
-        encoder
-            .write_image(
-                rgba.as_raw(),
-                width,
-                height,
-                image::ExtendedColorType::Rgba8,
-            )
-            .ok()?;
-    }
-    if png_data.is_empty() {
-        None
-    } else {
-        Some(png_data)
     }
 }
 
@@ -1436,16 +1411,20 @@ impl RecordingController {
         // as the combo changes the UI. Snapshot the live transcript position
         // concurrently while the OS capture is already in flight.
         let capture_task = tokio::task::spawn_blocking(move || {
-            capture_assistive_context_with_prior_frontmost(prior_frontmost_app)
+            capture_assistive_context_with_image_with_prior_frontmost(prior_frontmost_app)
         });
         let position = self.current_live_transcript_position(state).await;
-        let captured = capture_task.await.unwrap_or_default();
+        let captured_payload = capture_task.await.unwrap_or_default();
+        let captured = captured_payload.context;
         let fallback = captured.clone();
-        // Image capture runs off the main hotkey path: best-effort PNG from
-        // arboard. Failures are silent (None) so selection-only arm stays intact.
-        let image_png = tokio::task::spawn_blocking(read_clipboard_image_png_best_effort)
-            .await
-            .unwrap_or(None);
+        // A selected image is retained before clipboard restoration. If Cmd+C
+        // produced no image, preserve the existing clipboard-image behavior.
+        let image_png = match captured_payload.image_png {
+            some @ Some(_) => some,
+            None => tokio::task::spawn_blocking(clipboard::get_image_png_best_effort)
+                .await
+                .unwrap_or(None),
+        };
         let result = {
             let mut bucket = self.context_bucket.lock().await;
             capture_combo_context_with_image(&mut bucket, position, || captured, || image_png)
