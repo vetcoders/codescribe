@@ -824,16 +824,43 @@ fn assistive_delivery_assembly_has_marked_transcript_then_tagged_bucket() {
         selected_text: None,
     };
 
-    // Selection in bucket → act-on-selection lane keeps skeleton.
+    // Selection in bucket → act-on-selection lane keeps skeleton, and the
+    // header tells the truth about where the selection travels.
     assert_eq!(
         assemble_assistive_delivery_lane("ask {selection_1} now", &context, &bucket).wire,
-        "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nask {selection_1} now\n>\n\n\
-ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n\n\
-KONTEKST:\n- frontmost_app: Notes\n\n\
+        "USER_INSTRUCTION:\n<<<\nask {selection_1} now\n>\n\n\
+SELECTED_TEXT: carried in <codescribe_context>.\n\n\
+CONTEXT:\n- frontmost_app: Notes\n\n\
 <codescribe_context>\n\
 <selection_1>\nselected body\n</selection_1>\n\
 </codescribe_context>"
     );
+}
+
+#[test]
+fn assistive_wire_header_never_denies_bucket_selections() {
+    // Incident t_2026-07-21_zcryie: three <selection_N> blocks under a header
+    // claiming "no selection available" made the model treat them as a leak.
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    for (position, text) in [(2, "alpha"), (9, "beta"), (16, "gamma")] {
+        bucket
+            .add_selection(position, text.to_string())
+            .expect("selection capture");
+    }
+    let context = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: None,
+    };
+
+    let wire = assemble_assistive_delivery_lane("compare all three", &context, &bucket).wire;
+
+    assert!(!wire.contains("no selection available"));
+    assert!(!wire.contains("brak dostępnego zaznaczenia"));
+    assert!(wire.contains("SELECTED_TEXT: carried in <codescribe_context>."));
+    for label in ["<selection_1>", "<selection_2>", "<selection_3>"] {
+        assert!(wire.contains(label), "missing {label} in wire: {wire}");
+    }
 }
 
 #[test]
@@ -848,6 +875,7 @@ fn voice_chat_lane_wire_is_spoken_text_without_skeleton() {
     assert_eq!(delivery.lane, AssistiveLane::VoiceChat);
     assert!(!delivery.lane.use_assistive_persona());
     assert_eq!(delivery.wire, "co to jest?");
+    assert!(!delivery.wire.contains("USER_INSTRUCTION"));
     assert!(!delivery.wire.contains("INSTRUKCJA_UŻYTKOWNIKA"));
     assert_eq!(delivery.raw_transcript, "co to jest?");
 }
@@ -866,7 +894,7 @@ fn act_on_selection_lane_uses_skeleton_and_assistive_persona() {
     let delivery = assemble_assistive_delivery_lane("make this bold", &context, &bucket);
     assert_eq!(delivery.lane, AssistiveLane::ActOnSelection);
     assert!(delivery.lane.use_assistive_persona());
-    assert!(delivery.wire.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+    assert!(delivery.wire.contains("USER_INSTRUCTION"));
     assert!(delivery.wire.contains("hello world"));
 }
 
@@ -1410,6 +1438,7 @@ async fn test_assistive_pipeline_persists_raw_voice_history() {
     );
     let saved = std::fs::read_to_string(transcript_path).expect("read transcript");
     assert_eq!(saved, raw_voice);
+    assert!(!saved.contains("USER_INSTRUCTION"));
     assert!(!saved.contains("INSTRUKCJA_UŻYTKOWNIKA"));
 
     let metadata = read_truth_sidecar(transcript_path).expect("assistive truth sidecar");

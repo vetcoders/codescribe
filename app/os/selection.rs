@@ -541,27 +541,45 @@ fn capture_selected_content_with_effective_frontmost(
 }
 
 /// Build the LLM input for assistive mode, including optional selection context.
-pub fn build_assistive_input(user_voice_text: &str, ctx: &AssistiveContext) -> String {
+///
+/// Skeleton labels are a canonical English machine protocol for the model
+/// (`USER_INSTRUCTION:` / `SELECTED_TEXT:` / `CONTEXT:`) — user content stays
+/// in the user's language. Legacy Polish labels remain recognized on the
+/// consuming side (thread titles, Swift presentation) for threads persisted
+/// before the rename.
+///
+/// `bucket_carries_selection` is the ContextBucket truth from the caller: when
+/// selections ride in `<codescribe_context>` tags appended after this skeleton,
+/// the header must say so instead of falsely declaring that no selection is
+/// available (incident t_2026-07-21_zcryie: the contradiction made the model
+/// treat correct selections as a leak).
+pub fn build_assistive_input(
+    user_voice_text: &str,
+    ctx: &AssistiveContext,
+    bucket_carries_selection: bool,
+) -> String {
     let instruction = user_voice_text.trim();
     let selected_text = ctx.selected_text.as_deref().unwrap_or("").trim();
     let frontmost_app = ctx.frontmost_app.as_deref().unwrap_or("").trim();
 
     let mut out = String::new();
 
-    out.push_str("INSTRUKCJA_UŻYTKOWNIKA:\n<<<\n");
+    out.push_str("USER_INSTRUCTION:\n<<<\n");
     out.push_str(instruction);
     out.push_str("\n>\n\n");
 
     if !selected_text.is_empty() {
-        out.push_str("ZAZNACZONY_TEKST:\n<<<\n");
+        out.push_str("SELECTED_TEXT:\n<<<\n");
         out.push_str(selected_text);
         out.push_str("\n>\n");
+    } else if bucket_carries_selection {
+        out.push_str("SELECTED_TEXT: carried in <codescribe_context>.\n");
     } else {
-        out.push_str("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n");
+        out.push_str("SELECTED_TEXT: no selection available.\n");
     }
 
     if !frontmost_app.is_empty() {
-        out.push_str("\nKONTEKST:\n- frontmost_app: ");
+        out.push_str("\nCONTEXT:\n- frontmost_app: ");
         out.push_str(frontmost_app);
         out.push('\n');
     }
@@ -941,8 +959,9 @@ mod tests {
 
         assert_eq!(ctx.frontmost_app.as_deref(), Some("Terminal"));
         assert_eq!(ctx.selected_text.as_deref(), Some("selected terminal text"));
-        let input = build_assistive_input("opisz zaznaczenie", &ctx);
+        let input = build_assistive_input("opisz zaznaczenie", &ctx, false);
         assert!(input.contains("selected terminal text"));
+        assert!(input.contains("SELECTED_TEXT:\n<<<\n"));
     }
 
     #[test]
@@ -952,13 +971,46 @@ mod tests {
             selected_text: None,
         };
 
-        let input = build_assistive_input("kontynuuj bez selekcji", &ctx);
+        let input = build_assistive_input("kontynuuj bez selekcji", &ctx, false);
 
-        assert!(input.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+        assert!(input.contains("USER_INSTRUCTION"));
         assert!(input.contains("kontynuuj bez selekcji"));
-        assert!(input.contains("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia."));
-        assert!(!input.contains("ZAZNACZONY_TEKST:\n<<<\n\n>"));
+        assert!(input.contains("SELECTED_TEXT: no selection available."));
+        assert!(!input.contains("SELECTED_TEXT:\n<<<\n\n>"));
         assert!(input.contains("frontmost_app: GitHub Desktop"));
+    }
+
+    #[test]
+    fn assistive_input_header_tells_truth_when_bucket_carries_selection() {
+        // Incident t_2026-07-21_zcryie: "no selection" header alongside
+        // <selection_N> blocks made the model treat the selections as a leak.
+        let ctx = AssistiveContext {
+            frontmost_app: Some("Notes".to_string()),
+            selected_text: None,
+        };
+
+        let input = build_assistive_input("summarize the selection", &ctx, true);
+
+        assert!(input.contains("SELECTED_TEXT: carried in <codescribe_context>."));
+        assert!(!input.contains("no selection available"));
+        assert!(!input.contains("brak dostępnego zaznaczenia"));
+    }
+
+    #[test]
+    fn assistive_input_live_selection_wins_over_bucket_flag() {
+        // Live selection path keeps its exact heredoc shape regardless of the
+        // bucket flag — only the label language changed.
+        let ctx = AssistiveContext {
+            frontmost_app: None,
+            selected_text: Some("live body".to_string()),
+        };
+
+        let input = build_assistive_input("edit this", &ctx, true);
+
+        assert_eq!(
+            input,
+            "USER_INSTRUCTION:\n<<<\nedit this\n>\n\nSELECTED_TEXT:\n<<<\nlive body\n>\n"
+        );
     }
 
     #[test]

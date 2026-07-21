@@ -172,11 +172,17 @@ fn assemble_assistive_delivery_lane(
     let wire = match lane {
         AssistiveLane::ActOnSelection => {
             // Skeleton + selection/context fields; bucket tags append after.
-            bucket.append_to_message(&build_assistive_input(transcript, context))
+            // The bucket truth flows into the header so the skeleton never
+            // claims "no selection" while <selection_N> tags ride below.
+            bucket.append_to_message(&build_assistive_input(
+                transcript,
+                context,
+                bucket.has_selection_items(),
+            ))
         }
         AssistiveLane::VoiceChat => {
             // Spoken text only (+ optional context tags / image markers).
-            // No INSTRUKCJA_UŻYTKOWNIKA skeleton.
+            // No USER_INSTRUCTION skeleton.
             bucket.append_to_message(transcript.trim())
         }
     };

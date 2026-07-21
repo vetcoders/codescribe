@@ -5,18 +5,21 @@ import Foundation
 // The voice-assistive send path wraps the user's spoken instruction in a fixed
 // skeleton before it reaches the LLM (`app/os/selection.rs::build_assistive_input`):
 //
-//   INSTRUKCJA_UŻYTKOWNIKA:
+//   USER_INSTRUCTION:
 //   <<<
 //   {spoken instruction}
 //   >
 //
-//   ZAZNACZONY_TEKST:            (or: `ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.`)
-//   <<<
+//   SELECTED_TEXT:               (or: `SELECTED_TEXT: no selection available.`
+//   <<<                           or: `SELECTED_TEXT: carried in <codescribe_context>.`)
 //   {selected text}
 //   >
 //
-//   KONTEKST:                    (optional)
+//   CONTEXT:                     (optional)
 //   - frontmost_app: {app}
+//
+// Threads persisted before the EN label rename carry the legacy Polish labels
+// (INSTRUKCJA_UŻYTKOWNIKA / ZAZNACZONY_TEKST / KONTEKST); both dialects parse.
 //
 // That skeleton is the WIRE truth — it stays exactly what the model receives and
 // what ThreadStore persists. The UI must never show it as the user's words: the
@@ -41,35 +44,67 @@ enum AssistivePromptParser {
     }
 
     // Exact skeleton markers from `build_assistive_input` — one source of truth
-    // on the Rust side, mirrored (not reinterpreted) here.
-    private static let header = "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\n"
-    private static let selectionHeredoc = "\n>\n\nZAZNACZONY_TEKST:\n<<<\n"
-    private static let selectionMissing = "\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
-    private static let contextPrefix = "\nKONTEKST:\n- frontmost_app: "
+    // on the Rust side, mirrored (not reinterpreted) here. Two dialects: the
+    // canonical English labels (current wires) and the legacy Polish labels
+    // (threads persisted before the rename) — both must keep parsing.
+    private struct Markers {
+        let header: String
+        let selectionHeredoc: String
+        /// Single-line variants that close the instruction heredoc without a
+        /// selection heredoc ("no selection" / "carried in codescribe_context").
+        let selectionAbsent: [String]
+        let contextPrefix: String
+    }
+
+    private static let english = Markers(
+        header: "USER_INSTRUCTION:\n<<<\n",
+        selectionHeredoc: "\n>\n\nSELECTED_TEXT:\n<<<\n",
+        selectionAbsent: [
+            "\n>\n\nSELECTED_TEXT: no selection available.\n",
+            "\n>\n\nSELECTED_TEXT: carried in <codescribe_context>.\n",
+        ],
+        contextPrefix: "\nCONTEXT:\n- frontmost_app: "
+    )
+
+    private static let legacyPolish = Markers(
+        header: "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\n",
+        selectionHeredoc: "\n>\n\nZAZNACZONY_TEKST:\n<<<\n",
+        selectionAbsent: ["\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"],
+        contextPrefix: "\nKONTEKST:\n- frontmost_app: "
+    )
+
     private static let heredocClose = "\n>\n"
 
     /// Parse a wire prompt into its parts. Returns `nil` when `wire` is not an
     /// assistive skeleton (the caller then renders the text as-is).
     static func parse(_ wire: String) -> Parts? {
-        guard wire.hasPrefix(header) else { return nil }
-        let body = String(wire.dropFirst(header.count))
+        for markers in [english, legacyPolish] where wire.hasPrefix(markers.header) {
+            return parse(wire: wire, markers: markers)
+        }
+        return nil
+    }
+
+    private static func parse(wire: String, markers: Markers) -> Parts? {
+        let body = String(wire.dropFirst(markers.header.count))
 
         // The instruction ends at the FIRST selection marker. The instruction is
         // spoken text, so it realistically never contains the heredoc skeleton;
         // taking the first occurrence keeps a pathological selection that embeds
         // the marker from stealing part of itself into the instruction.
-        let heredocRange = body.range(of: selectionHeredoc)
-        let missingRange = body.range(of: selectionMissing)
+        let heredocRange = body.range(of: markers.selectionHeredoc)
+        let missingRange = markers.selectionAbsent
+            .compactMap { body.range(of: $0) }
+            .min { $0.lowerBound < $1.lowerBound }
 
         switch (heredocRange, missingRange) {
         case let (.some(heredoc), .some(missing)):
             return heredoc.lowerBound < missing.lowerBound
-                ? parseWithSelection(body: body, marker: heredoc)
-                : parseWithoutSelection(body: body, marker: missing)
+                ? parseWithSelection(body: body, marker: heredoc, markers: markers)
+                : parseWithoutSelection(body: body, marker: missing, markers: markers)
         case let (.some(heredoc), nil):
-            return parseWithSelection(body: body, marker: heredoc)
+            return parseWithSelection(body: body, marker: heredoc, markers: markers)
         case let (nil, .some(missing)):
-            return parseWithoutSelection(body: body, marker: missing)
+            return parseWithoutSelection(body: body, marker: missing, markers: markers)
         case (nil, nil):
             return nil
         }
@@ -94,17 +129,17 @@ enum AssistivePromptParser {
 
     // MARK: - Variants
 
-    /// `ZAZNACZONY_TEKST:\n<<<\n{selection}\n>\n[\nKONTEKST…]`
+    /// `SELECTED_TEXT:\n<<<\n{selection}\n>\n[\nCONTEXT…]` (or legacy PL labels).
     private static func parseWithSelection(
-        body: String, marker: Range<String.Index>
+        body: String, marker: Range<String.Index>, markers: Markers
     ) -> Parts? {
         let instruction = String(body[..<marker.lowerBound])
         let rest = String(body[marker.upperBound...])
 
-        // The selection heredoc closes right before the (optional) KONTEKST
+        // The selection heredoc closes right before the (optional) CONTEXT
         // section or the end of the prompt. Search from the back so a selection
         // that itself contains `\n>\n` stays intact.
-        let contextSeam = heredocClose + contextPrefix
+        let contextSeam = heredocClose + markers.contextPrefix
         if let seam = rest.range(of: contextSeam, options: .backwards) {
             let selected = String(rest[..<seam.lowerBound])
             let app = trimmedContextValue(String(rest[seam.upperBound...]))
@@ -115,17 +150,18 @@ enum AssistivePromptParser {
         return Parts(instruction: instruction, selectedText: selected, frontmostApp: nil)
     }
 
-    /// `ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n[\nKONTEKST…]`
+    /// `SELECTED_TEXT: no selection available.\n[\nCONTEXT…]` (or the
+    /// carried-in-codescribe_context variant, or legacy PL labels).
     private static func parseWithoutSelection(
-        body: String, marker: Range<String.Index>
+        body: String, marker: Range<String.Index>, markers: Markers
     ) -> Parts? {
         let instruction = String(body[..<marker.lowerBound])
         let rest = String(body[marker.upperBound...])
         if rest.isEmpty {
             return Parts(instruction: instruction, selectedText: nil, frontmostApp: nil)
         }
-        guard rest.hasPrefix(contextPrefix) else { return nil }
-        let app = trimmedContextValue(String(rest.dropFirst(contextPrefix.count)))
+        guard rest.hasPrefix(markers.contextPrefix) else { return nil }
+        let app = trimmedContextValue(String(rest.dropFirst(markers.contextPrefix.count)))
         return Parts(instruction: instruction, selectedText: nil, frontmostApp: app)
     }
 

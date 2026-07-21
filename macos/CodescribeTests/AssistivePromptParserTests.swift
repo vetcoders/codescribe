@@ -10,6 +10,7 @@ final class AssistivePromptParserTests: XCTestCase {
 
     // MARK: - Wire builders (byte-for-byte mirror of build_assistive_input)
 
+    /// Legacy Polish dialect — threads persisted before the EN label rename.
     private func wire(
         instruction: String,
         selection: String? = nil,
@@ -23,6 +24,27 @@ final class AssistivePromptParserTests: XCTestCase {
         }
         if let app {
             out += "\nKONTEKST:\n- frontmost_app: \(app)\n"
+        }
+        return out
+    }
+
+    /// Canonical English dialect — current `build_assistive_input` output.
+    private func englishWire(
+        instruction: String,
+        selection: String? = nil,
+        selectionCarriedInContextTags: Bool = false,
+        app: String? = nil
+    ) -> String {
+        var out = "USER_INSTRUCTION:\n<<<\n\(instruction)\n>\n\n"
+        if let selection {
+            out += "SELECTED_TEXT:\n<<<\n\(selection)\n>\n"
+        } else if selectionCarriedInContextTags {
+            out += "SELECTED_TEXT: carried in <codescribe_context>.\n"
+        } else {
+            out += "SELECTED_TEXT: no selection available.\n"
+        }
+        if let app {
+            out += "\nCONTEXT:\n- frontmost_app: \(app)\n"
         }
         return out
     }
@@ -61,6 +83,35 @@ final class AssistivePromptParserTests: XCTestCase {
         XCTAssertEqual(parts?.instruction, "co słychać")
         XCTAssertNil(parts?.selectedText)
         XCTAssertNil(parts?.frontmostApp)
+    }
+
+    // MARK: - Canonical English dialect (current wires)
+
+    func testParsesEnglishSelectionAndContextVariant() {
+        let parts = AssistivePromptParser.parse(
+            englishWire(instruction: "popraw ten akapit", selection: "stary tekst", app: "Safari")
+        )
+        XCTAssertEqual(parts?.instruction, "popraw ten akapit")
+        XCTAssertEqual(parts?.selectedText, "stary tekst")
+        XCTAssertEqual(parts?.frontmostApp, "Safari")
+    }
+
+    func testParsesEnglishMissingSelectionVariants() {
+        let missing = AssistivePromptParser.parse(
+            englishWire(instruction: "summarize the day", app: "Ghostty")
+        )
+        XCTAssertEqual(missing?.instruction, "summarize the day")
+        XCTAssertNil(missing?.selectedText)
+        XCTAssertEqual(missing?.frontmostApp, "Ghostty")
+
+        // Bucket-carried selections live in <codescribe_context> tags appended
+        // after the skeleton; the header line itself parses like "missing".
+        let carried = AssistivePromptParser.parse(
+            englishWire(instruction: "compare all three", selectionCarriedInContextTags: true)
+        )
+        XCTAssertEqual(carried?.instruction, "compare all three")
+        XCTAssertNil(carried?.selectedText)
+        XCTAssertNil(carried?.frontmostApp)
     }
 
     // MARK: - Multiline payloads

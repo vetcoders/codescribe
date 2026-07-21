@@ -441,10 +441,18 @@ fn normalize_title_line(line: &str) -> Option<String> {
 fn is_assistive_wire_label(line: &str) -> bool {
     let lower = line.to_lowercase();
     [
+        // Canonical English skeleton labels (build_assistive_input).
+        "user_instruction:",
+        "user instruction:",
+        "selected_text:",
+        "selected text:",
+        "context:",
+        // Legacy Polish labels — threads persisted before the EN rename.
         "instrukcja_użytkownika:",
         "instrukcja użytkownika:",
         "zaznaczony_tekst:",
         "zaznaczony tekst:",
+        "kontekst:",
         "kontekst_aplikacji:",
         "kontekst aplikacji:",
         "aplikacja:",
@@ -808,6 +816,58 @@ mod tests {
 
         let index = ThreadIndex::load_or_create(store.threads_dir())?;
         assert_eq!(index.data().threads[0].title, persisted.title);
+        Ok(())
+    }
+
+    #[test]
+    fn assistive_wire_labels_are_skipped_in_both_label_languages() {
+        // Canonical EN labels (current wires) and legacy PL labels (threads
+        // already on disk) must BOTH stay out of derived titles.
+        for label in [
+            "USER_INSTRUCTION:",
+            "SELECTED_TEXT: no selection available.",
+            "SELECTED_TEXT: carried in <codescribe_context>.",
+            "CONTEXT:",
+            "INSTRUKCJA_UŻYTKOWNIKA:",
+            "ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.",
+            "KONTEKST:",
+        ] {
+            assert!(
+                is_assistive_wire_label(label),
+                "label must be skip-listed: {label}"
+            );
+            assert_eq!(
+                normalize_title_line(label),
+                None,
+                "label must never become a title: {label}"
+            );
+        }
+        assert!(!is_assistive_wire_label("Plan wypisu pacjenta"));
+        assert_eq!(
+            normalize_title_line("Plan wypisu pacjenta").as_deref(),
+            Some("Plan wypisu pacjenta")
+        );
+    }
+
+    #[test]
+    fn save_replaces_assistive_delimiter_title_for_english_wire() -> Result<()> {
+        // EN mirror of the PL fixture above: the canonical wire produced after
+        // the label rename must yield the instruction as the derived title.
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.title = "<<<".to_string();
+        thread.messages[0].content = vec![json!({
+            "type": "input_text",
+            "text": "USER_INSTRUCTION:\n<<<\nPrzygotuj plan wypisu pacjenta\n>\n\nSELECTED_TEXT: no selection available.\n"
+        })];
+
+        store.save_thread(&thread)?;
+
+        let persisted: Thread =
+            serde_json::from_str(&fs::read_to_string(store.thread_file_path(&thread.id)?)?)?;
+        assert_eq!(persisted.title, "Przygotuj plan wypisu pacjenta");
+        assert!(persisted.title_is_heuristic());
         Ok(())
     }
 
