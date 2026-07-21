@@ -283,6 +283,11 @@ impl Config {
         if let Ok(val) = Self::config_runtime_env_var("HOLD_EXCLUSIVE") {
             self.hold_exclusive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_ARM_MODIFIER")
+            && let Ok(arm) = val.parse()
+        {
+            self.hold_arm_modifier = arm;
+        }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_START_DELAY_MS")
             && let Ok(ms) = val.parse()
         {
@@ -546,6 +551,12 @@ impl Config {
             && let Some(v) = settings.hold_exclusive
         {
             self.hold_exclusive = v;
+        }
+        if Self::config_runtime_env_var("HOLD_ARM_MODIFIER").is_err()
+            && let Some(ref v) = settings.hold_arm_modifier
+            && let Ok(arm) = v.parse()
+        {
+            self.hold_arm_modifier = arm;
         }
         // AI
         if Self::config_runtime_env_var("AI_FORMATTING_ENABLED").is_err()
@@ -862,6 +873,9 @@ impl Config {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
+                "HOLD_ARM_MODIFIER" => {
+                    settings.set_string(key, value);
+                }
                 _ => {
                     settings.set_string(key, value);
                 }
@@ -943,6 +957,11 @@ impl Config {
                     "AGENT_WORKSPACE_ROOTS" => {
                         let roots = parse_agent_workspace_roots(value);
                         settings_ref.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
+                    }
+                    "HOLD_ARM_MODIFIER" => {
+                        if let Ok(arm) = value.parse::<crate::config::HoldArmModifier>() {
+                            settings_ref.hold_arm_modifier = Some(arm.as_str().to_string());
+                        }
                     }
                     // ── u64 ──
                     "HOLD_START_DELAY_MS" => {

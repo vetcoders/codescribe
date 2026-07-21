@@ -87,6 +87,9 @@ pub struct UserSettings {
     pub whisper_language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_exclusive: Option<bool>,
+    /// Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_arm_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -428,6 +431,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
     "HOLD_EXCLUSIVE",
+    "HOLD_ARM_MODIFIER",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
     "AUTO_PASTE_ENABLED",
@@ -581,6 +585,9 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|i| i.hold.as_ref())
                 .and_then(|h| h.exclusive),
+            // Flat settings field (env/promoted key); v2 document does not yet
+            // carry a nested hold_arm_modifier — load path fills from JSON/env.
+            hold_arm_modifier: None,
             mode_bindings: v2
                 .interaction
                 .as_ref()
@@ -1020,6 +1027,13 @@ impl UserSettings {
                 let roots = parse_agent_workspace_roots(value);
                 self.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
             }
+            "HOLD_ARM_MODIFIER" => match value.parse::<crate::config::HoldArmModifier>() {
+                Ok(arm) => self.hold_arm_modifier = Some(arm.as_str().to_string()),
+                Err(error) => {
+                    warn!("Rejected hold arm modifier write: {error}");
+                    return;
+                }
+            },
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;

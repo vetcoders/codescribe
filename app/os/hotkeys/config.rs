@@ -1,4 +1,6 @@
-use crate::config::{Config, DeferredInsertShortcut, ShortcutBinding, UserSettings, WorkMode};
+use crate::config::{
+    Config, DeferredInsertShortcut, HoldArmModifier, ShortcutBinding, UserSettings, WorkMode,
+};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
 const BIND_DISABLED: u16 = 0;
@@ -83,10 +85,37 @@ pub fn get_mode_hotkey_bindings() -> ModeHotkeyBindings {
 // When enabled, we ignore Shift/Cmd and keep hold mode as RAW.
 
 /// Atomic storage for exclusive mode (Shift/Cmd mode modifiers disabled)
-// Default FALSE so the documented Fn+Shift→Chat / Fn+Cmd→Selection modifiers work
-// out of the box (HOTKEYS_CONTRACT.md §"Mode modifiers"). Matches Config::default's
-// `hold_exclusive: false`. Exclusive (Fn-hold is raw-only) is opt-in via HOLD_EXCLUSIVE=1.
+// Default FALSE so the configured arm modifier (default Shift → Chat; Cmd alt)
+// works out of the box (HOTKEYS_CONTRACT.md §"Mode modifiers", W10-B). Matches
+// Config::default's `hold_exclusive: false`. Exclusive (Fn-hold is raw-only) is
+// opt-in via HOLD_EXCLUSIVE=1.
 static EXCLUSIVE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Atomic storage for assistive-arm modifier: 0 = Shift (default), 1 = Cmd.
+static HOLD_ARM_MODIFIER: AtomicU8 = AtomicU8::new(0);
+
+fn encode_hold_arm_modifier(arm: HoldArmModifier) -> u8 {
+    match arm {
+        HoldArmModifier::Shift => 0,
+        HoldArmModifier::Cmd => 1,
+    }
+}
+
+fn decode_hold_arm_modifier(value: u8) -> HoldArmModifier {
+    match value {
+        1 => HoldArmModifier::Cmd,
+        _ => HoldArmModifier::Shift,
+    }
+}
+
+pub fn set_hold_arm_modifier(arm: HoldArmModifier) {
+    HOLD_ARM_MODIFIER.store(encode_hold_arm_modifier(arm), AtomicOrdering::SeqCst);
+    tracing::info!("Hold arm modifier set to: {}", arm.as_str());
+}
+
+pub fn get_hold_arm_modifier() -> HoldArmModifier {
+    decode_hold_arm_modifier(HOLD_ARM_MODIFIER.load(AtomicOrdering::SeqCst))
+}
 
 /// Set exclusive mode (thread-safe)
 /// When true, Shift/Cmd modifiers are ignored for hold mode
@@ -174,6 +203,7 @@ pub fn get_double_tap_interval_ms() -> u64 {
 pub struct HotkeyRuntimeConfig {
     pub mode_bindings: ModeHotkeyBindings,
     pub hold_exclusive: bool,
+    pub hold_arm_modifier: HoldArmModifier,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
     pub deferred_insert_shortcut: DeferredInsertShortcut,
@@ -205,6 +235,7 @@ impl From<&Config> for HotkeyRuntimeConfig {
         Self {
             mode_bindings: ModeHotkeyBindings::load(),
             hold_exclusive: config.hold_exclusive,
+            hold_arm_modifier: config.hold_arm_modifier,
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
             deferred_insert_shortcut: config.deferred_insert_shortcut,
@@ -216,6 +247,7 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
     HotkeyRuntimeConfig {
         mode_bindings: get_mode_hotkey_bindings(),
         hold_exclusive: get_exclusive_mode(),
+        hold_arm_modifier: get_hold_arm_modifier(),
         hold_start_delay_ms: get_hold_start_delay_ms(),
         double_tap_interval_ms: get_double_tap_interval_ms(),
         deferred_insert_shortcut: get_deferred_insert_shortcut(),
@@ -225,6 +257,7 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
 pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     set_mode_hotkey_bindings(config.mode_bindings);
     set_exclusive_mode(config.hold_exclusive);
+    set_hold_arm_modifier(config.hold_arm_modifier);
     set_hold_start_delay_ms(config.hold_start_delay_ms);
     set_double_tap_interval_ms(config.double_tap_interval_ms);
     set_deferred_insert_shortcut(config.deferred_insert_shortcut);
@@ -283,6 +316,7 @@ mod tests {
                 assistive: ShortcutBinding::Disabled,
             },
             hold_exclusive: true,
+            hold_arm_modifier: HoldArmModifier::Cmd,
             hold_start_delay_ms: 1234,
             double_tap_interval_ms: 260,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandShiftV,
@@ -291,6 +325,7 @@ mod tests {
 
         assert_eq!(get_mode_hotkey_bindings(), runtime.mode_bindings);
         assert_eq!(get_exclusive_mode(), runtime.hold_exclusive);
+        assert_eq!(get_hold_arm_modifier(), HoldArmModifier::Cmd);
         assert_eq!(get_hold_start_delay_ms(), runtime.hold_start_delay_ms);
         assert_eq!(
             get_double_tap_interval_ms(),

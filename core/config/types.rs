@@ -313,6 +313,46 @@ impl FromStr for OverlayPositionMode {
     }
 }
 
+/// Modifier that arms assistive (Chat) on top of the dictation hold base.
+///
+/// Default is Shift (Fn+Shift). Cmd is a Settings-selectable alternative so
+/// HoldMode::Selection / Cmd is not a dead UI lie (W10-B).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldArmModifier {
+    #[default]
+    Shift,
+    Cmd,
+}
+
+impl HoldArmModifier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shift => "shift",
+            Self::Cmd => "cmd",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Shift => "Shift",
+            Self::Cmd => "Command",
+        }
+    }
+}
+
+impl FromStr for HoldArmModifier {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "shift" | "hold_shift" | "fn_shift" => Ok(Self::Shift),
+            "cmd" | "command" | "meta" | "hold_cmd" | "fn_cmd" => Ok(Self::Cmd),
+            other => Err(format!("Unknown HoldArmModifier: {other}")),
+        }
+    }
+}
+
 /// Codescribe configuration structure.
 ///
 /// This struct contains all configuration options for the app.
@@ -323,6 +363,10 @@ pub struct Config {
     /// Whether to ignore extra modifiers when hold key is pressed
     #[serde(default)]
     pub hold_exclusive: bool,
+
+    /// Modifier that arms assistive chat on the dictation hold base (Shift default, Cmd alt).
+    #[serde(default)]
+    pub hold_arm_modifier: HoldArmModifier,
 
     /// Delay in milliseconds before starting recording after holding key
     #[serde(default = "default_hold_start_delay_ms")]
@@ -522,6 +566,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
+            hold_arm_modifier: HoldArmModifier::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
             double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
@@ -628,8 +673,8 @@ mod tests {
 
     #[test]
     fn default_config_keeps_hold_modifiers_enabled() {
-        // hold_exclusive=true makes Fn-hold RAW-only and disables the documented
-        // Fn+Shift→Chat / Fn+Cmd→Selection modifiers (HOTKEYS_CONTRACT.md). The
+        // hold_exclusive=true makes Fn-hold RAW-only and disables the configured
+        // arm modifier (default Shift → Chat; Cmd alternative — W10-B). The
         // canonical default MUST stay false so those combos work out of the box;
         // exclusive is opt-in (HOLD_EXCLUSIVE=1). Guards the 2026-05-30 regression
         // where the runtime default / .env.example shipped exclusive ON.
@@ -637,6 +682,20 @@ mod tests {
             !Config::default().hold_exclusive,
             "Config default must keep hold modifiers enabled (hold_exclusive=false)"
         );
+        assert_eq!(
+            Config::default().hold_arm_modifier,
+            super::HoldArmModifier::Shift,
+            "default arm modifier is Shift"
+        );
+    }
+
+    #[test]
+    fn hold_arm_modifier_parses_shift_and_cmd() {
+        use super::HoldArmModifier;
+        assert_eq!("shift".parse(), Ok(HoldArmModifier::Shift));
+        assert_eq!("cmd".parse(), Ok(HoldArmModifier::Cmd));
+        assert_eq!("command".parse(), Ok(HoldArmModifier::Cmd));
+        assert!("nope".parse::<HoldArmModifier>().is_err());
     }
 
     #[test]

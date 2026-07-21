@@ -364,6 +364,7 @@ impl HotkeyDetector {
                 modifiers.cmd,
                 dictation_binding,
                 config.hold_exclusive,
+                config.hold_arm_modifier,
             )
         };
         let mut emitted = None;
@@ -671,13 +672,21 @@ fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
 
 fn compute_hold_mode(
     shift: bool,
-    _cmd: bool,
+    cmd: bool,
     dictation_binding: ShortcutBinding,
     hold_exclusive: bool,
+    arm_modifier: crate::config::HoldArmModifier,
 ) -> HoldMode {
     if hold_exclusive {
         return HoldMode::Raw;
     }
+
+    // W10-B: only the *configured* arm modifier arms Chat. The other must stay
+    // dead so Settings copy and detector agree (default Shift; Cmd alternative).
+    let arm_active = match arm_modifier {
+        crate::config::HoldArmModifier::Shift => shift,
+        crate::config::HoldArmModifier::Cmd => cmd,
+    };
 
     match dictation_binding {
         ShortcutBinding::Disabled
@@ -687,15 +696,8 @@ fn compute_hold_mode(
         | ShortcutBinding::DoubleCtrl
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => HoldMode::Raw,
-        ShortcutBinding::HoldCtrlAlt => {
-            if shift {
-                HoldMode::Chat
-            } else {
-                HoldMode::Raw
-            }
-        }
-        ShortcutBinding::HoldFn => {
-            if shift {
+        ShortcutBinding::HoldCtrlAlt | ShortcutBinding::HoldFn => {
+            if arm_active {
                 HoldMode::Chat
             } else {
                 HoldMode::Raw
@@ -721,6 +723,7 @@ mod tests {
                 assistive,
             },
             hold_exclusive: false,
+            hold_arm_modifier: crate::config::HoldArmModifier::Shift,
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 200,
             deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
@@ -879,63 +882,159 @@ mod tests {
 
     #[test]
     fn compute_hold_mode_respects_modifiers() {
-        // Fn base with Shift/Cmd modifiers
+        use crate::config::HoldArmModifier;
+        // Fn base + default Shift arm: Shift arms, Cmd does not.
         assert_eq!(
-            compute_hold_mode(false, false, ShortcutBinding::HoldFn, false),
+            compute_hold_mode(
+                false,
+                false,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldFn, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Chat
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldFn, false),
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Shift
+            ),
+            HoldMode::Raw
+        );
+
+        // Cmd-selected arm: Cmd arms, Shift does not.
+        assert_eq!(
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Cmd
+            ),
+            HoldMode::Chat
+        );
+        assert_eq!(
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Cmd
+            ),
             HoldMode::Raw
         );
 
         // Ctrl-only ignores Shift/Cmd modifiers
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldCtrl, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldCtrl,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldCtrl, false),
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldCtrl,
+                false,
+                HoldArmModifier::Cmd
+            ),
             HoldMode::Raw
         );
 
-        // Ctrl+Option allows modifiers
+        // Ctrl+Option allows the configured arm
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldCtrlAlt, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldCtrlAlt,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Chat
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldCtrlAlt, false),
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldCtrlAlt,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(false, false, ShortcutBinding::HoldCtrlAlt, false),
+            compute_hold_mode(
+                false,
+                false,
+                ShortcutBinding::HoldCtrlAlt,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
 
         // Ctrl+Shift/Cmd are fixed to raw
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldCtrlShift, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldCtrlShift,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldCtrlCmd, false),
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldCtrlCmd,
+                false,
+                HoldArmModifier::Cmd
+            ),
             HoldMode::Raw
         );
     }
 
     #[test]
     fn compute_hold_mode_exclusive_forces_raw() {
+        use crate::config::HoldArmModifier;
         assert_eq!(
-            compute_hold_mode(true, true, ShortcutBinding::HoldFn, true),
+            compute_hold_mode(
+                true,
+                true,
+                ShortcutBinding::HoldFn,
+                true,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(true, true, ShortcutBinding::HoldCtrlAlt, true),
+            compute_hold_mode(
+                true,
+                true,
+                ShortcutBinding::HoldCtrlAlt,
+                true,
+                HoldArmModifier::Cmd
+            ),
             HoldMode::Raw
         );
     }
