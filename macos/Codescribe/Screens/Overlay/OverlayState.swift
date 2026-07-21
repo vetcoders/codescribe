@@ -1349,9 +1349,17 @@ final class OverlayState: ObservableObject {
         for item in ordered {
             let offset = min(max(item.position, 0), rendered.count)
             let index = rendered.index(rendered.startIndex, offsetBy: offset)
-            let needsLeadingSpace = index > rendered.startIndex
-                && !rendered[rendered.index(before: index)].isWhitespace
-            let needsTrailingSpace = index < rendered.endIndex && !rendered[index].isWhitespace
+            let previous: Character? =
+                index > rendered.startIndex ? rendered[rendered.index(before: index)] : nil
+            let next: Character? = index < rendered.endIndex ? rendered[index] : nil
+            // A marker landing INSIDE a word ("mn|ie") stays unpadded, so the
+            // split is lossless downstream: title derivation strips the bare
+            // marker and the word reads whole again ("mnie"). Space padding is
+            // only for word-boundary insertions.
+            let splitsWord = (previous?.isLetter == true || previous?.isNumber == true)
+                && (next?.isLetter == true || next?.isNumber == true)
+            let needsLeadingSpace = !splitsWord && previous != nil && previous?.isWhitespace != true
+            let needsTrailingSpace = !splitsWord && next != nil && next?.isWhitespace != true
             let insertion = (needsLeadingSpace ? " " : "")
                 + item.marker
                 + (needsTrailingSpace ? " " : "")

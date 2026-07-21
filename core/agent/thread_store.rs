@@ -460,8 +460,13 @@ fn strip_context_markers(line: &str) -> Option<String> {
     while let Some((start, end)) = find_context_marker(&text) {
         let left_end = text[..start].trim_end().len();
         let right_start = text.len() - text[end..].trim_start().len();
+        // Unpadded marker (no whitespace on either side) is the overlay's
+        // lossless mid-word form ("mn{selection_1}ie") — glue unconditionally.
+        // The vowel heuristic below only serves legacy space-padded captures.
+        let no_gap = left_end == start && right_start == end;
         let keep_space = left_end > 0
             && right_start < text.len()
+            && !no_gap
             && !glues_split_word(&text[..left_end], &text[right_start..]);
         let mut next = String::with_capacity(text.len());
         next.push_str(&text[..left_end]);
@@ -902,6 +907,7 @@ mod tests {
             "USER_INSTRUCTION:",
             "SELECTED_TEXT: no selection available.",
             "SELECTED_TEXT: carried in <codescribe_context>.",
+            "SELECTED_TEXT: carried in <codescribe_context> (3 selections).",
             "CONTEXT:",
             "INSTRUKCJA_UŻYTKOWNIKA:",
             "ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.",
@@ -997,6 +1003,17 @@ mod tests {
         assert_eq!(
             normalize_title_line("która mn {selection_1} ie bardzo drażni").as_deref(),
             Some("która mnie bardzo drażni")
+        );
+        // Lossless unpadded mid-word form (overlay no longer pads inside words)
+        // — glues regardless of vowels, so even fragments the legacy heuristic
+        // could not join come back whole.
+        assert_eq!(
+            normalize_title_line("która mn{selection_1}ie bardzo drażni").as_deref(),
+            Some("która mnie bardzo drażni")
+        );
+        assert_eq!(
+            normalize_title_line("bard{selection_1}zo lubię pieguski").as_deref(),
+            Some("bardzo lubię pieguski")
         );
         // A marker-only line leaves no readable content behind.
         assert_eq!(normalize_title_line("{selection_1}"), None);

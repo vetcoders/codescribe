@@ -476,6 +476,19 @@ final class AgentThreadTitleTests: XCTestCase {
         )
     }
 
+    func testNormalizedGluesUnpaddedMidWordMarkersLosslessly() {
+        // The overlay inserts mid-word markers without padding, so adjacency
+        // itself signals the split — vowels no longer matter.
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("która mn{selection_1}ie bardzo drażni"),
+            "która mnie bardzo drażni"
+        )
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("bard{selection_1}zo lubię pieguski"),
+            "bardzo lubię pieguski"
+        )
+    }
+
     func testNormalizedMarkerStripStillClipsAtLimit() {
         let padding = String(repeating: "x", count: 100)
         let title = ThreadTitlePolicy.normalized("mn {selection_1} ie \(padding)")

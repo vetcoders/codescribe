@@ -275,8 +275,13 @@ enum ThreadTitlePolicy {
             while leftEnd > 0, chars[leftEnd - 1].isWhitespace { leftEnd -= 1 }
             var rightStart = marker.upperBound
             while rightStart < chars.count, chars[rightStart].isWhitespace { rightStart += 1 }
+            // Unpadded marker (no whitespace on either side) is the overlay's
+            // lossless mid-word form ("mn{selection_1}ie") — glue without the
+            // vowel heuristic; that heuristic only serves legacy padded texts.
+            let noGap = leftEnd == marker.lowerBound && rightStart == marker.upperBound
             let keepSpace = leftEnd > 0
                 && rightStart < chars.count
+                && !noGap
                 && !gluesSplitWord(chars: chars, leftEnd: leftEnd, rightStart: rightStart)
             chars.replaceSubrange(leftEnd..<rightStart, with: keepSpace ? [" "] : [])
         }

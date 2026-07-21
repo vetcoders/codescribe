@@ -830,6 +830,19 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.activeText, "alpha {selection_1} beta")
     }
 
+    func testContextMarkerInsideWordStaysUnpaddedForLosslessTitles() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyPreview("bardzo mnie drażni")
+
+        // Position 9 splits "mnie" between "mn" and "ie": no padding, so the
+        // split stays lossless for downstream title derivation.
+        state.applyContextMarker(position: 9, marker: "{selection_1}")
+        XCTAssertEqual(state.liveText, "bardzo mn{selection_1}ie drażni")
+    }
+
     func testContextMarkersAtSamePositionKeepCaptureOrder() {
         let state = OverlayState()
         state.handleRecordingPreparing()
