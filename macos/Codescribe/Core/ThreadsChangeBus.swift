@@ -11,11 +11,12 @@ import Foundation
 /// its threads provider. Strictly event-driven — this bus must never grow a
 /// polling producer.
 ///
-/// Known seam: assistive-lane turns that persist WITHOUT emitting
-/// `CsAgentDeliveryListener` events have no Swift-side publisher yet — the
-/// Rust-side publish is a separate wave. Until then, window activation
-/// (`NSWindow.didBecomeKeyNotification`, observed in `AgentChatStore`) covers
-/// discoverability on the next activation.
+/// Publishers cover the full `CsAgentDeliveryListener` lifecycle: `onDone`,
+/// `onError` and `onCancelled` (errored/cancelled turns persist their user
+/// half too). Known seam: turns that persist WITHOUT emitting any delivery
+/// event have no Swift-side publisher — the Rust-side publish is a separate
+/// wave. Until then, window activation (`NSWindow.didBecomeKeyNotification`,
+/// observed in `AgentChatStore`) covers discoverability on the next activation.
 enum ThreadsChangeBus {
     static let threadsDidChange = Notification.Name("codescribe.threads.threadsDidChange")
 

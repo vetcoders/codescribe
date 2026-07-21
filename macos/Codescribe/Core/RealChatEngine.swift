@@ -194,11 +194,23 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling,
         }
     }
     func onError(message: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceError(message) } }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceError(message)
+                // Errored turns still persisted the user message (and any
+                // partial reply) — the rail must learn about the thread even
+                // without a clean onDone.
+                ThreadsChangeBus.postThreadsChanged()
+            }
+        }
     }
     func onCancelled(threadId: String) {
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { self.store.ingestVoiceCancelled(threadId: threadId) }
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceCancelled(threadId: threadId)
+                // Cancelled turns persist their user half too — same rule.
+                ThreadsChangeBus.postThreadsChanged()
+            }
         }
     }
 }

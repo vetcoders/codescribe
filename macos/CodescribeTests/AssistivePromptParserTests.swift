@@ -114,6 +114,27 @@ final class AssistivePromptParserTests: XCTestCase {
         XCTAssertNil(carried?.frontmostApp)
     }
 
+    func testParsesCarriedSelectionVariantWithLiveCount() {
+        // The carried-line suffix carries an honest selection count, so the
+        // parser matches by prefix and consumes through the end of the line.
+        let parts = AssistivePromptParser.parse(
+            "USER_INSTRUCTION:\n<<<\npieguski przede wszystkim\n>\n\n"
+                + "SELECTED_TEXT: carried in <codescribe_context> (3 selections).\n"
+                + "\nCONTEXT:\n- frontmost_app: iTerm2\n"
+        )
+        XCTAssertEqual(parts?.instruction, "pieguski przede wszystkim")
+        XCTAssertNil(parts?.selectedText)
+        XCTAssertEqual(parts?.frontmostApp, "iTerm2")
+
+        let singular = AssistivePromptParser.parse(
+            "USER_INSTRUCTION:\n<<<\njedno zaznaczenie\n>\n\n"
+                + "SELECTED_TEXT: carried in <codescribe_context> (1 selection).\n"
+        )
+        XCTAssertEqual(singular?.instruction, "jedno zaznaczenie")
+        XCTAssertNil(singular?.selectedText)
+        XCTAssertNil(singular?.frontmostApp)
+    }
+
     // MARK: - Multiline payloads
 
     func testMultilineInstructionAndSelectionSurviveIntact() {
