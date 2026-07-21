@@ -48,6 +48,7 @@ final class TrayViewModel: ObservableObject {
     @Published private(set) var historyItems: [TrayTranscript] = []
 
     private let engine: TrayEngine?
+    private var holdBadgeObserver: NSObjectProtocol?
 
     // Navigation intents — bound by App.swift to the actual window/scene opens.
     var onIntent: (TrayIntent) -> Void = { _ in }
@@ -74,6 +75,22 @@ final class TrayViewModel: ObservableObject {
     init(engine: TrayEngine? = nil, isRecording: Bool = false) {
         self.engine = engine
         self.isRecording = isRecording
+        // K4: Settings writes arrive on the bus; reload tray badge display.
+        holdBadgeObserver = NotificationCenter.default.addObserver(
+            forName: ConfigChangeBus.holdBadgeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reloadHoldBadgeFromDisk()
+            }
+        }
+    }
+
+    deinit {
+        if let holdBadgeObserver {
+            NotificationCenter.default.removeObserver(holdBadgeObserver)
+        }
     }
 
     // MARK: - Navigation intents
@@ -179,16 +196,25 @@ final class TrayViewModel: ObservableObject {
         refreshStatus()
     }
 
+    /// K3: persists immediately; next badge show uses the new size.
+    /// K4: posts bus so Settings reflects the tray cycle without reopen.
     func setHoldBadgeOption(_ option: HoldBadgeOption) {
         guard let engine else {
             holdBadgeOption = option
+            ConfigChangeBus.postHoldBadgeChanged()
             return
         }
         if engine.setHoldBadgeOption(option) {
             holdBadgeOption = option
+            ConfigChangeBus.postHoldBadgeChanged()
         } else {
             refreshStatus()
         }
+    }
+
+    /// Peer-surface reload after Settings wrote HOLD_BADGE_SIZE / HOLD_INDICATOR.
+    func reloadHoldBadgeFromDisk() {
+        refreshStatus()
     }
 
     /// Notes Mode: dictation → daily note (no paste). Distinct from normal

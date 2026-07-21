@@ -4,6 +4,12 @@
 //! API) and falls back to the mouse cursor when no caret is available. Used to
 //! signal recording / processing / assistive states during dictation.
 //!
+//! ## K3 contract (W10-E)
+//! Size / visibility (`HOLD_BADGE_SIZE`, `HOLD_INDICATOR`) persist immediately
+//! when Settings or the tray writes them. A **visible** badge is **not** live-
+//! resized — the next `show_hold_badge` reads the config at request time (via
+//! the generation gate). Do not claim "restart required"; claim "next show".
+//!
 //! Resurrected as a self-contained `app/os` module (previously lived in the now
 //! excised `app/ui` AppKit layer). All AppKit/objc code is macOS-only; a no-op
 //! stub surface keeps non-macOS builds compiling.

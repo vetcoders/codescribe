@@ -4,6 +4,34 @@ import XCTest
 
 @MainActor
 final class TrayViewModelTests: XCTestCase {
+    func testHoldBadgeCyclePostsConfigBusForSettingsSync() {
+        let engine = TrackingTrayEngine(
+            showDockIcon: true,
+            overlayEnabled: true,
+            autoPasteEnabled: true,
+            autoFormatLevel: .correction,
+            notesMode: false,
+            startInAssistive: false,
+            holdBadgeOption: .eight
+        )
+        let model = TrayViewModel(engine: engine)
+        model.refreshStatus()
+        XCTAssertEqual(model.holdBadgeOption, .eight)
+
+        let exp = expectation(description: "hold badge bus fire")
+        let token = NotificationCenter.default.addObserver(
+            forName: ConfigChangeBus.holdBadgeDidChange,
+            object: nil,
+            queue: .main
+        ) { _ in exp.fulfill() }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        model.setHoldBadgeOption(.four)
+        wait(for: [exp], timeout: 1.0)
+        XCTAssertEqual(model.holdBadgeOption, .four)
+        XCTAssertEqual(engine.holdBadgeWrites.last, .four)
+    }
+
     /// The tray's Auto Format row cycles the full wheel: Off → Correction →
     /// Smart → Max → back to Off. One canonical order, no dead ends.
     func testAutoFormatLevelCyclesFullWheel() {

@@ -585,6 +585,7 @@ final class SettingsViewModel: ObservableObject {
         providerId: String,
         modelEditGeneration: Int
     )?
+    private var holdBadgeObserver: NSObjectProtocol?
 
     init(
         engine: SettingsEngine? = nil,
@@ -617,6 +618,16 @@ final class SettingsViewModel: ObservableObject {
         self.agentReadiness = .sample
         self.mcpStatus = .sample
         self.voiceLabReadError = nil
+        // K4: tray cycles arrive on the bus; reload Settings badge display.
+        holdBadgeObserver = NotificationCenter.default.addObserver(
+            forName: ConfigChangeBus.holdBadgeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reloadHoldBadgeFromDisk()
+            }
+        }
         self.audioInput = .sample
         self.audioInputReadError = nil
         self.resetPreview = .sample
@@ -1241,10 +1252,15 @@ final class SettingsViewModel: ObservableObject {
 
     /// Off changes visibility only, preserving the stored size. A concrete size
     /// enables the indicator and writes both existing keys atomically.
+    ///
+    /// K3 (W10-E): persists immediately; takes effect at the *next* badge show
+    /// (no live redraw of a visible caret badge).
+    /// K4: posts `ConfigChangeBus.holdBadgeDidChange` so the tray reflects it.
     func setHoldBadgeOption(_ option: HoldBadgeOption) {
         guard let size = option.size else {
             settings.holdIndicator = false
             persist("HOLD_INDICATOR", "0")
+            ConfigChangeBus.postHoldBadgeChanged()
             return
         }
         settings.holdIndicator = true
@@ -1253,6 +1269,27 @@ final class SettingsViewModel: ObservableObject {
             CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
             CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
         ])
+        ConfigChangeBus.postHoldBadgeChanged()
+    }
+
+    /// Reload badge fields from the engine after a peer surface (tray) wrote them.
+    func reloadHoldBadgeFromDisk() {
+        guard let engine else { return }
+        settings = engine.loadSettings()
+        objectWillChange.send()
+    }
+
+    /// Assistive-arm modifier on the hold base: `"shift"` (default) or `"cmd"`.
+    var holdArmModifier: String {
+        let raw = settings.holdArmModifier.lowercased()
+        return (raw == "cmd" || raw == "command") ? "cmd" : "shift"
+    }
+
+    func setHoldArmModifier(_ value: String) {
+        let normalized = (value.lowercased() == "cmd" || value.lowercased() == "command")
+            ? "cmd" : "shift"
+        settings.holdArmModifier = normalized
+        persist("HOLD_ARM_MODIFIER", normalized)
     }
 
     // MARK: - Agent workspace roots (list_projects tool)
