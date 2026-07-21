@@ -485,10 +485,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///   `NSApp.activate` so the user's frontmost app stays frontmost.
     private func showAgent(activating: Bool = true) {
         let window = ensureAgentWindow()
+        let revealIntent = AgentRevealPolicy.intent(activating: activating)
+        let shouldActivate = AgentRevealPolicy.shouldActivate(for: revealIntent)
         // Keep Space-join behavior even if the window was created earlier on an
         // older build of this method before collectionBehavior was set.
         window.collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenAuxiliary])
-        if activating {
+        if shouldActivate {
             hasUnreadAgentUpdate = false
             applyStatusItemStatus()
             NSApp.activate(ignoringOtherApps: true)
@@ -496,7 +498,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appLogger.info(
                 "w10a_agent_show activating=true isVisible=\(window.isVisible, privacy: .public)"
             )
-        } else {
+        } else if AgentRevealPolicy.shouldReorderEvenIfVisible(for: revealIntent) {
             // Passive path: always re-order. Early-return on isVisible alone hid
             // windows that were "visible" on another Space or occluded, so live
             // voice turns never painted until the activating end-of-turn open.

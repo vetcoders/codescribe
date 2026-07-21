@@ -197,7 +197,7 @@ struct ShortcutsPanel: View {
 
     /// Derived from the configured arm modifier — never hardcode Fn+Command.
     private var armGestureLabel: String {
-        model.holdArmModifier == "cmd" ? "Hold Fn+Command" : "Hold Fn+Shift"
+        ArmGestureCopy.label(for: model.holdArmModifier)
     }
 
     private func selectionAssistiveGesture(_ row: CsModeBinding) -> String {
@@ -403,6 +403,13 @@ struct ShortcutsPanel: View {
 
     private var divider: some View {
         Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    }
+}
+
+/// Single production owner for assistive-arm gesture copy in Settings.
+enum ArmGestureCopy {
+    static func label(for modifier: String) -> String {
+        modifier == "cmd" ? "Hold Fn+Command" : "Hold Fn+Shift"
     }
 }
 

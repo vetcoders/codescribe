@@ -34,6 +34,7 @@ final class FocusPolicyTests: XCTestCase {
     // MARK: - W10-A voice reveal policy
 
     func testVoiceDeliveryNeverActivates() {
+        XCTAssertEqual(AgentRevealPolicy.intent(activating: false), .voiceDelivery)
         XCTAssertFalse(
             AgentRevealPolicy.shouldActivate(for: .voiceDelivery),
             "TurnStarted / end-of-turn fallback must not steal focus"
@@ -45,6 +46,7 @@ final class FocusPolicyTests: XCTestCase {
     }
 
     func testExplicitOpenMayActivate() {
+        XCTAssertEqual(AgentRevealPolicy.intent(activating: true), .explicitOpen)
         XCTAssertTrue(AgentRevealPolicy.shouldActivate(for: .explicitOpen))
         XCTAssertTrue(AgentRevealPolicy.shouldReorderEvenIfVisible(for: .explicitOpen))
     }
@@ -66,14 +68,11 @@ final class FocusPolicyTests: XCTestCase {
     func testArmGestureLabelsDeriveFromHoldArmModifier() {
         // SettingsViewModel.holdArmModifier normalizes to shift|cmd; ShortcutsPanel
         // builds labels from that value (no hardcoded-only "Hold Fn+Command" path).
-        let shiftLabel = armGestureLabel(for: "shift")
-        let cmdLabel = armGestureLabel(for: "cmd")
+        let shiftLabel = ArmGestureCopy.label(for: "shift")
+        let cmdLabel = ArmGestureCopy.label(for: "cmd")
         XCTAssertEqual(shiftLabel, "Hold Fn+Shift")
         XCTAssertEqual(cmdLabel, "Hold Fn+Command")
         XCTAssertNotEqual(shiftLabel, cmdLabel)
     }
 
-    private func armGestureLabel(for modifier: String) -> String {
-        modifier == "cmd" ? "Hold Fn+Command" : "Hold Fn+Shift"
-    }
 }

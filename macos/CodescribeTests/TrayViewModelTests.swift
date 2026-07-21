@@ -32,6 +32,58 @@ final class TrayViewModelTests: XCTestCase {
         XCTAssertEqual(engine.holdBadgeWrites.last, .four)
     }
 
+    func testHoldBadgeChangesSynchronizeTrayAndSettingsInBothDirections() {
+        var persisted = CsSettings.sample
+        persisted.holdIndicator = true
+        persisted.holdBadgeSize = 8
+
+        let trayEngine = TrackingTrayEngine(
+            showDockIcon: true,
+            overlayEnabled: true,
+            autoPasteEnabled: true,
+            autoFormatLevel: .correction,
+            notesMode: false,
+            startInAssistive: false,
+            holdBadgeOption: .eight
+        )
+        trayEngine.holdBadgeReader = {
+            HoldBadgeOption(
+                indicatorEnabled: persisted.holdIndicator,
+                size: persisted.holdBadgeSize
+            )
+        }
+        trayEngine.holdBadgeWriteObserver = { option in
+            persisted.holdIndicator = option != .off
+            if let size = option.size { persisted.holdBadgeSize = size }
+        }
+
+        let settingsEngine = MockSettingsEngine(
+            settingsLoader: { persisted },
+            updateConfigManyObserver: { entries in
+                for entry in entries {
+                    if entry.key == "HOLD_INDICATOR" {
+                        persisted.holdIndicator = entry.value == "1"
+                    } else if entry.key == "HOLD_BADGE_SIZE", let size = UInt32(entry.value) {
+                        persisted.holdBadgeSize = size
+                    }
+                }
+            },
+            updateConfigObserver: { key, value in
+                if key == "HOLD_INDICATOR" { persisted.holdIndicator = value == "1" }
+            }
+        )
+        let tray = TrayViewModel(engine: trayEngine)
+        let settings = SettingsViewModel(engine: settingsEngine)
+        tray.refreshStatus()
+        settings.refresh()
+
+        tray.setHoldBadgeOption(.four)
+        XCTAssertEqual(settings.holdBadgeOption, .four, "tray write must refresh Settings")
+
+        settings.setHoldBadgeOption(.twelve)
+        XCTAssertEqual(tray.holdBadgeOption, .twelve, "Settings write must refresh tray")
+    }
+
     /// The tray's Auto Format row cycles the full wheel: Off → Correction →
     /// Smart → Max → back to Off. One canonical order, no dead ends.
     func testAutoFormatLevelCyclesFullWheel() {
@@ -319,6 +371,8 @@ private final class TrackingTrayEngine: TrayEngine {
     private(set) var autoPasteWrites: [Bool] = []
     private(set) var autoFormatWrites: [String] = []
     private(set) var holdBadgeWrites: [HoldBadgeOption] = []
+    var holdBadgeReader: (() -> HoldBadgeOption)?
+    var holdBadgeWriteObserver: ((HoldBadgeOption) -> Void)?
 
     init(
         showDockIcon: Bool,
@@ -360,7 +414,7 @@ private final class TrackingTrayEngine: TrayEngine {
             autoFormatLevel,
             notesMode,
             startInAssistive,
-            holdBadgeOption
+            holdBadgeReader?() ?? holdBadgeOption
         )
     }
 
@@ -393,6 +447,7 @@ private final class TrackingTrayEngine: TrayEngine {
     func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
         holdBadgeWrites.append(option)
         holdBadgeOption = option
+        holdBadgeWriteObserver?(option)
         return true
     }
 

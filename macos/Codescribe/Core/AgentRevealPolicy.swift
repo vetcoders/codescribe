@@ -15,6 +15,10 @@ enum AgentRevealIntent: Equatable {
 }
 
 enum AgentRevealPolicy {
+    static func intent(activating: Bool) -> AgentRevealIntent {
+        activating ? .explicitOpen : .voiceDelivery
+    }
+
     /// Whether `NSApp.activate(ignoringOtherApps:)` is allowed for this intent.
     static func shouldActivate(for intent: AgentRevealIntent) -> Bool {
         switch intent {

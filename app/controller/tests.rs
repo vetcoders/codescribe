@@ -903,13 +903,11 @@ fn armed_image_capture_reaches_vision_attachment_assembly_and_degrades_oversize(
         codescribe_core::attachment::MAX_VISION_IMAGE_BYTES as usize,
     );
     let png = b"\x89PNG\r\n\x1a\nselected-image".to_vec();
-    let (context, marker) = capture_combo_context_with_image(
-        &mut bucket,
-        0,
-        || AssistiveContext::default(),
-        || Some(png.clone()),
-    )
-    .expect("armed image capture");
+    let (context, marker) =
+        capture_combo_context_with_image(&mut bucket, 0, AssistiveContext::default, || {
+            Some(png.clone())
+        })
+        .expect("armed image capture");
     assert!(
         marker.is_none(),
         "image capture does not fake a text marker"
