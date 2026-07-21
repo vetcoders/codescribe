@@ -344,7 +344,10 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
     })
 }
 
-fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
+fn build_agent_stream_options(
+    ai_assistive_max_tokens: i32,
+    use_assistive_persona: bool,
+) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
@@ -353,7 +356,7 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
 
     StreamOptions {
         model,
-        system_prompt: Some(compose_agent_system_prompt()),
+        system_prompt: Some(compose_agent_system_prompt(use_assistive_persona)),
         max_tokens,
         temperature: None,
         // First-attempt default: preserve conversational chain. Session retry
@@ -362,16 +365,22 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
     }
 }
 
-/// Compose the agent system prompt: the base assistive prompt, the workspace
-/// section that pins the configured project roots and tells the model to resolve
-/// project names via `list_projects` instead of guessing filesystem paths, and
-/// the review-tool + connector doctrine that governs long-running MCP review
-/// calls and GitHub-connector fallback.
-fn compose_agent_system_prompt() -> String {
-    let base = crate::config::get_assistive_prompt();
+/// Compose the agent system prompt.
+///
+/// - `use_assistive_persona=true` (act-on-selection lane): base is `assistive.txt`.
+/// - `use_assistive_persona=false` (voice-chat lane, W10-D): agent persona only —
+///   workspace + doctrine, no "text assistant" identity.
+fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
     let workspace = crate::agent::tools::workspace::workspace_prompt_section();
     let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
-    format!("{base}\n\n{workspace}\n\n{doctrine}")
+    if use_assistive_persona {
+        let base = crate::config::get_assistive_prompt();
+        format!("{base}\n\n{workspace}\n\n{doctrine}")
+    } else {
+        format!(
+            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}"
+        )
+    }
 }
 
 /// Title-case a `snake_case` / `kebab-case` identifier into readable words.
@@ -493,6 +502,12 @@ fn agent_ui_event_to_delivery(event: &AgentUiEvent) -> AgentDeliveryEvent {
 /// to completion (the channel is bounded). Debug logging of tool activity stays;
 /// disk persistence still happens in `run_agent_send_path` after the drain.
 async fn apply_agent_ui_event(event: AgentUiEvent) {
+    if matches!(event, AgentUiEvent::Done) {
+        info!(
+            target: "codescribe::agent_delivery",
+            "w10a_turn_done"
+        );
+    }
     crate::agent_delivery::publish_agent_delivery_event(agent_ui_event_to_delivery(&event));
     match event {
         AgentUiEvent::TextDelta(_)
@@ -797,6 +812,14 @@ where
         // a You-bubble (user_text) + assistant placeholder, then fills it from the
         // deltas below. `user_text` is the attachment-marker-stripped transcript,
         // so the bubble shows the spoken text, not the internal attachment block.
+        // W10-A runtime receipt: log before publish so installed-app probes can
+        // prove reveal_ts < done_ts (Swift logs w10a_reveal_* on the same turn).
+        info!(
+            target: "codescribe::agent_delivery",
+            "w10a_turn_started thread_id={} user_chars={}",
+            thread_store_id,
+            user_text.chars().count()
+        );
         crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::TurnStarted {
             thread_id: thread_store_id.clone(),
             user_text: user_text.clone(),
@@ -963,9 +986,10 @@ async fn run_agent_send_with_fallback(
     text: String,
     whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
+    use_assistive_persona: bool,
 ) {
     let _send_guard = AgentSendInFlightGuard::new();
-    let stream_options = build_agent_stream_options(ai_assistive_max_tokens);
+    let stream_options = build_agent_stream_options(ai_assistive_max_tokens, use_assistive_persona);
     let agent_result = {
         let mut guard = runtime_state.lock().await;
         run_agent_send_path(&mut guard, text.clone(), stream_options).await
@@ -1001,10 +1025,11 @@ async fn run_agent_send_with_fallback(
     }
 }
 
-pub(crate) async fn send_assistive_with_agent_runtime(
+pub(crate) async fn send_assistive_with_agent_runtime_lane(
     text: String,
     whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
+    use_assistive_persona: bool,
 ) {
     let runtime_state = shared_agent_runtime_state();
     run_agent_send_with_fallback(
@@ -1012,6 +1037,7 @@ pub(crate) async fn send_assistive_with_agent_runtime(
         text,
         whisper_language,
         ai_assistive_max_tokens,
+        use_assistive_persona,
     )
     .await;
 }

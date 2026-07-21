@@ -779,14 +779,19 @@ async fn assistive_pipeline_emits_same_final_overlay_event_and_preserves_trigger
 #[test]
 fn hold_combo_captures_selection_at_press_and_returns_exact_marker_position() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut bucket = ContextBucket::new(temp_dir.path().join("selections"), 1024);
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
     let selected = std::sync::Arc::new(std::sync::Mutex::new("original selection".to_string()));
     let provider_value = std::sync::Arc::clone(&selected);
 
-    let (context, marker) = capture_combo_context_with(&mut bucket, 13, move || AssistiveContext {
-        frontmost_app: Some("Notes".to_string()),
-        selected_text: Some(provider_value.lock().expect("selection provider").clone()),
-    })
+    let (context, marker) = capture_combo_context_with_image(
+        &mut bucket,
+        13,
+        move || AssistiveContext {
+            frontmost_app: Some("Notes".to_string()),
+            selected_text: Some(provider_value.lock().expect("selection provider").clone()),
+        },
+        || None,
+    )
     .expect("combo capture");
     *selected.lock().expect("selection mutation") = "mutated later".to_string();
 
@@ -810,7 +815,7 @@ fn hold_combo_captures_selection_at_press_and_returns_exact_marker_position() {
 #[test]
 fn assistive_delivery_assembly_has_marked_transcript_then_tagged_bucket() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut bucket = ContextBucket::new(temp_dir.path().join("selections"), 1024);
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
     bucket
         .add_selection(4, "selected body".to_string())
         .expect("selection capture");
@@ -819,8 +824,9 @@ fn assistive_delivery_assembly_has_marked_transcript_then_tagged_bucket() {
         selected_text: None,
     };
 
+    // Selection in bucket → act-on-selection lane keeps skeleton.
     assert_eq!(
-        assemble_assistive_delivery("ask {selection_1} now", &context, &bucket),
+        assemble_assistive_delivery_lane("ask {selection_1} now", &context, &bucket).wire,
         "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nask {selection_1} now\n>\n\n\
 ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n\n\
 KONTEKST:\n- frontmost_app: Notes\n\n\
@@ -831,14 +837,53 @@ KONTEKST:\n- frontmost_app: Notes\n\n\
 }
 
 #[test]
+fn voice_chat_lane_wire_is_spoken_text_without_skeleton() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    let context = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: None,
+    };
+    let delivery = assemble_assistive_delivery_lane("co to jest?", &context, &bucket);
+    assert_eq!(delivery.lane, AssistiveLane::VoiceChat);
+    assert!(!delivery.lane.use_assistive_persona());
+    assert_eq!(delivery.wire, "co to jest?");
+    assert!(!delivery.wire.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+    assert_eq!(delivery.raw_transcript, "co to jest?");
+}
+
+#[test]
+fn act_on_selection_lane_uses_skeleton_and_assistive_persona() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    bucket
+        .add_selection(0, "hello world".to_string())
+        .expect("selection");
+    let context = AssistiveContext {
+        frontmost_app: None,
+        selected_text: None,
+    };
+    let delivery = assemble_assistive_delivery_lane("make this bold", &context, &bucket);
+    assert_eq!(delivery.lane, AssistiveLane::ActOnSelection);
+    assert!(delivery.lane.use_assistive_persona());
+    assert!(delivery.wire.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+    assert!(delivery.wire.contains("hello world"));
+}
+
+#[test]
 #[serial]
 fn combo_without_selection_leaves_bucket_empty_and_arm_truth_intact() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut bucket = ContextBucket::new(temp_dir.path().join("selections"), 1024);
-    let (context, marker) = capture_combo_context_with(&mut bucket, 0, || AssistiveContext {
-        frontmost_app: Some("Notes".to_string()),
-        selected_text: None,
-    })
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    let (context, marker) = capture_combo_context_with_image(
+        &mut bucket,
+        0,
+        || AssistiveContext {
+            frontmost_app: Some("Notes".to_string()),
+            selected_text: None,
+        },
+        || None,
+    )
     .expect("combo no-op");
 
     publish_recording_indicator(BadgeMode::Assistive, false);

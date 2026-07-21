@@ -73,7 +73,7 @@ use codescribe_core::pipeline::contracts::{
 
 use helpers::{
     SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    reset_session_telemetry, send_assistive_with_agent_runtime, snapshot_session_telemetry,
+    reset_session_telemetry, send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
 };
 use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
@@ -100,25 +100,116 @@ fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     }
 }
 
-fn capture_combo_context_with(
+fn read_clipboard_image_png_best_effort() -> Option<Vec<u8>> {
+    // Mirror the agent clipboard tool path: arboard RGBA → PNG bytes.
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    let image = clipboard.get_image().ok()?;
+    let width = u32::try_from(image.width).ok()?;
+    let height = u32::try_from(image.height).ok()?;
+    let rgba = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())?;
+    let mut png_data = Vec::new();
+    {
+        use image::ImageEncoder;
+        let encoder = image::codecs::png::PngEncoder::new(&mut png_data);
+        encoder
+            .write_image(
+                rgba.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .ok()?;
+    }
+    if png_data.is_empty() {
+        None
+    } else {
+        Some(png_data)
+    }
+}
+
+/// Combo capture with optional clipboard-image provider (W10-C).
+/// `image_provider` returns PNG bytes when the pasteboard holds an image.
+/// Tests pass `|| None` when only selection capture is under exercise.
+fn capture_combo_context_with_image(
     bucket: &mut ContextBucket,
     position: usize,
     provider: impl FnOnce() -> AssistiveContext,
+    image_provider: impl FnOnce() -> Option<Vec<u8>>,
 ) -> Result<(AssistiveContext, Option<ContextMarker>)> {
     let mut context = provider();
     let marker = match context.selected_text.take() {
         Some(selected_text) => bucket.add_selection(position, selected_text)?,
         None => None,
     };
+    if let Some(png) = image_provider() {
+        let _ = bucket.add_image_png(&png)?;
+    }
     Ok((context, marker))
 }
 
-fn assemble_assistive_delivery(
+/// Voice→agent prompt lane (W10-D).
+///
+/// - **VoiceChat**: clean assistive / armed hold without a selection transform.
+///   Wire is spoken text (+ context tags / image markers). No assistive skeleton,
+///   no `assistive.txt` persona.
+/// - **ActOnSelection**: armed with a selection targeting a transformation.
+///   Skeleton + `assistive.txt` persona remain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssistiveLane {
+    VoiceChat,
+    ActOnSelection,
+}
+
+impl AssistiveLane {
+    pub(crate) fn use_assistive_persona(self) -> bool {
+        matches!(self, Self::ActOnSelection)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AssistiveDelivery {
+    pub wire: String,
+    pub lane: AssistiveLane,
+    pub raw_transcript: String,
+}
+
+fn decide_assistive_lane(context: &AssistiveContext, bucket: &ContextBucket) -> AssistiveLane {
+    // Selection may live on the context (legacy) or already be in the bucket
+    // (capture_combo_context_with takes selected_text into the bucket).
+    let has_inline_selection = context
+        .selected_text
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty());
+    if has_inline_selection || bucket.has_selection_items() {
+        AssistiveLane::ActOnSelection
+    } else {
+        AssistiveLane::VoiceChat
+    }
+}
+
+fn assemble_assistive_delivery_lane(
     transcript: &str,
     context: &AssistiveContext,
     bucket: &ContextBucket,
-) -> String {
-    bucket.append_to_message(&build_assistive_input(transcript, context))
+) -> AssistiveDelivery {
+    let lane = decide_assistive_lane(context, bucket);
+    let raw_transcript = transcript.to_string();
+    let wire = match lane {
+        AssistiveLane::ActOnSelection => {
+            // Skeleton + selection/context fields; bucket tags append after.
+            bucket.append_to_message(&build_assistive_input(transcript, context))
+        }
+        AssistiveLane::VoiceChat => {
+            // Spoken text only (+ optional context tags / image markers).
+            // No INSTRUKCJA_UŻYTKOWNIKA skeleton.
+            bucket.append_to_message(transcript.trim())
+        }
+    };
+    AssistiveDelivery {
+        wire,
+        lane,
+        raw_transcript,
+    }
 }
 
 const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -1350,9 +1441,14 @@ impl RecordingController {
         let position = self.current_live_transcript_position(state).await;
         let captured = capture_task.await.unwrap_or_default();
         let fallback = captured.clone();
+        // Image capture runs off the main hotkey path: best-effort PNG from
+        // arboard. Failures are silent (None) so selection-only arm stays intact.
+        let image_png = tokio::task::spawn_blocking(read_clipboard_image_png_best_effort)
+            .await
+            .unwrap_or(None);
         let result = {
             let mut bucket = self.context_bucket.lock().await;
-            capture_combo_context_with(&mut bucket, position, || captured)
+            capture_combo_context_with_image(&mut bucket, position, || captured, || image_png)
         };
 
         match result {
@@ -1386,16 +1482,19 @@ impl RecordingController {
             return Ok(false);
         };
         let config = self.config.read().await.clone();
-        let input = {
+        let delivery = {
             let mut bucket = self.context_bucket.lock().await;
-            let input = assemble_assistive_delivery(&transcript, &context, &bucket);
+            let delivery = assemble_assistive_delivery_lane(&transcript, &context, &bucket);
             bucket.clear();
-            input
+            delivery
         };
-        send_assistive_with_agent_runtime(
-            input,
+        // Raw spoken transcript is already history-saved as Raw in the finalize
+        // pipeline (W10-D D4). Wire content is lane-truth for the agent turn.
+        send_assistive_with_agent_runtime_lane(
+            delivery.wire,
             config.whisper_language,
             config.ai_assistive_max_tokens,
+            delivery.lane.use_assistive_persona(),
         )
         .await;
         Ok(true)
