@@ -135,7 +135,7 @@ struct ShortcutsPanel: View {
         VStack(alignment: .leading, spacing: 7) {
             assistiveModeVariant(
                 title: "Voice chat",
-                gesture: "Hold Fn+Shift",
+                gesture: armGestureLabel,
                 description: "Talk to the agent."
             )
             assistiveModeVariant(
@@ -143,6 +143,20 @@ struct ShortcutsPanel: View {
                 gesture: selectionAssistiveGesture(row),
                 description: "Select text, then speak an instruction."
             )
+            // W10-B: customize arm modifier (default Shift; Cmd alternative).
+            HStack(spacing: 8) {
+                Text("Arm with")
+                    .font(CSFont.ui(11, .medium))
+                    .foregroundStyle(CSColor.textMuted)
+                Picker("Arm modifier", selection: armModifierBinding) {
+                    Text("Shift").tag("shift")
+                    Text("Command").tag("cmd")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 180)
+            }
+            .padding(.top, 2)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -181,8 +195,25 @@ struct ShortcutsPanel: View {
         }
     }
 
+    /// Derived from the configured arm modifier — never hardcode Fn+Command.
+    private var armGestureLabel: String {
+        model.holdArmModifier == "cmd" ? "Hold Fn+Command" : "Hold Fn+Shift"
+    }
+
     private func selectionAssistiveGesture(_ row: CsModeBinding) -> String {
-        row.binding == .disabled ? "Hold Fn+Command" : "\(row.bindingLabel) or Hold Fn+Command"
+        // Act-on-selection is the same arm gesture when a selection is present
+        // (W10-D lane). Copy must match the configured binding, not a dead Cmd.
+        if row.binding == .disabled {
+            return armGestureLabel
+        }
+        return "\(row.bindingLabel) or \(armGestureLabel)"
+    }
+
+    private var armModifierBinding: Binding<String> {
+        Binding(
+            get: { model.holdArmModifier },
+            set: { model.setHoldArmModifier($0) }
+        )
     }
 
     private var badgeLegend: some View {

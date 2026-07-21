@@ -422,6 +422,7 @@ extension CsSettings {
     /// Sample config matching the mock (Polish whisper, local STT final-verdict).
     static let sample = CsSettings(
         holdExclusive: true,
+        holdArmModifier: "shift",
         holdStartDelayMs: 250,
         doubleTapIntervalMs: 320,
         toggleSilenceSec: 1.5,

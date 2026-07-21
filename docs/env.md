@@ -30,13 +30,14 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 **Hotkeys / UI / zachowanie podstawowe**
 
 - mode bindings (`Dictation`, `Formatting`, `Assistive`) – konfigurowane w `settings.json` przez GUI
-- `HOLD_EXCLUSIVE` – domyślnie `0` (RESTART NEEDED) — `1` robi Fn-hold RAW-only i wyłącza modyfikatory Fn+Shift→Chat / Fn+Cmd→Selection
+- `HOLD_EXCLUSIVE` – domyślnie `0` (RESTART NEEDED) — `1` robi Fn-hold RAW-only i wyłącza arm modifier (domyślnie Shift→Chat; Cmd jako alternatywa w Settings)
+- `HOLD_ARM_MODIFIER` – domyślnie `shift` — `cmd` ustawia Command jako modifier armujący assistive (W10-B)
 - `HOLD_START_DELAY_MS` – domyślnie `800` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` – domyślnie `200` (RESTART NEEDED)
 - `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (RESTART NEEDED)
 - `SHOW_TRAY_GLYPH` – domyślnie `1` (RESTART NEEDED)
-- `HOLD_INDICATOR` – domyślnie `1` (RESTART NEEDED)
-- `HOLD_BADGE_SIZE` – domyślnie `8` (RESTART NEEDED)
+- `HOLD_INDICATOR` – domyślnie `1` (HOT — next badge show; K3 W10-E, no live redraw of visible badge)
+- `HOLD_BADGE_SIZE` – domyślnie `8` (HOT — next badge show; K3 W10-E)
 - `HOLD_BADGE_OFFSET_X` – domyślnie `10` (RESTART NEEDED)
 - `HOLD_BADGE_OFFSET_Y` – domyślnie `-10` (RESTART NEEDED)
 - `OVERLAY_POSITION_MODE` – domyślnie `snapped_top_right` (RESTART NEEDED)

@@ -418,8 +418,9 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 When `HOLD_EXCLUSIVE=false` (default), modifier variants work out of the box:
 
-- Fn+Shift can start voice chat
-- Fn+Command can act on the current selection
+- Fn+Shift can start voice chat (default arm modifier; configurable to Cmd in Settings)
+- Armed hold with a selection acts on the selection (same arm gesture — default Shift, optional Cmd)
+- The unconfigured arm modifier does not arm assistive (W10-B detector truth)
 
 Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 

@@ -46,6 +46,8 @@ use crate::{CsError, CsLanguage};
 pub struct CsSettings {
     // ── Hotkeys ──
     pub hold_exclusive: bool,
+    /// Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
+    pub hold_arm_modifier: String,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
     pub toggle_silence_sec: f32,
@@ -401,6 +403,7 @@ impl CodescribeConfig {
         let env_file = load_config_env_file();
         CsSettings {
             hold_exclusive: config.hold_exclusive,
+            hold_arm_modifier: config.hold_arm_modifier.as_str().to_string(),
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
             toggle_silence_sec: config.toggle_silence_sec,

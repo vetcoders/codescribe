@@ -8023,6 +8023,10 @@ public func FfiConverterTypeCsResetPreview_lower(_ value: CsResetPreview) -> Rus
  */
 public struct CsSettings: Equatable, Hashable {
     public var holdExclusive: Bool
+    /**
+     * Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
+     */
+    public var holdArmModifier: String
     public var holdStartDelayMs: UInt64
     public var doubleTapIntervalMs: UInt64
     public var toggleSilenceSec: Float
@@ -8106,7 +8110,10 @@ public struct CsSettings: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(holdExclusive: Bool, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+    public init(holdExclusive: Bool,
+        /**
+         * Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
+         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
         /**
          * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
@@ -8136,6 +8143,7 @@ public struct CsSettings: Equatable, Hashable {
          * back via `update_config` with the same key (env-managed, NOT promoted).
          */agentWorkspaceRoots: [String], bufferDelayMs: UInt64?, typingCps: Float?, emitWordsMax: UInt64?, bufferedInterimSec: Float?, backendMaxUploadMb: UInt64?) {
         self.holdExclusive = holdExclusive
+        self.holdArmModifier = holdArmModifier
         self.holdStartDelayMs = holdStartDelayMs
         self.doubleTapIntervalMs = doubleTapIntervalMs
         self.toggleSilenceSec = toggleSilenceSec
@@ -8205,6 +8213,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         return
             try CsSettings(
                 holdExclusive: FfiConverterBool.read(from: &buf),
+                holdArmModifier: FfiConverterString.read(from: &buf),
                 holdStartDelayMs: FfiConverterUInt64.read(from: &buf),
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
@@ -8262,6 +8271,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
 
     public static func write(_ value: CsSettings, into buf: inout [UInt8]) {
         FfiConverterBool.write(value.holdExclusive, into: &buf)
+        FfiConverterString.write(value.holdArmModifier, into: &buf)
         FfiConverterUInt64.write(value.holdStartDelayMs, into: &buf)
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)

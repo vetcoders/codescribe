@@ -79,7 +79,7 @@ flowchart TB
        │                            └──────────────┘      └──────────────┘
        │
   Fn hold → Raw mode (no AI)
-  Fn+Shift hold → Assistive mode (AI)
+  Fn+Shift hold → Assistive arm (default; Cmd selectable in Settings)
   Double Option → Toggle mode (respects AI setting)
 ```
 
@@ -188,9 +188,10 @@ State transitions:
 ```rust
 // app/controller/mod.rs - handle_hotkey_event()
 match (hotkey, flags) {
-    (Hold, no_shift)  => force_raw = true,   // Fn: always raw
-    (Hold, shift)     => assistive = true,   // Fn+Shift: chat
-    (Hold, cmd)       => selection = true,  // Fn+Cmd: selection mode
+    (Hold, no_arm)    => force_raw = true,   // Fn: always raw
+    (Hold, arm_mod)   => assistive = true,   // configured arm (Shift default / Cmd alt)
+    // Act-on-selection is a delivery lane when a selection is present (W10-D),
+    // not a separate dead Cmd chord.
     (Toggle, force_ai)=> force_ai = true,    // Left Option x2: force AI
     (Toggle, _)       => /* respects AI_FORMATTING_ENABLED */
 }
