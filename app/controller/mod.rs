@@ -69,7 +69,6 @@ use codescribe_core::pipeline::contracts::{
 
 use helpers::{
     SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    reset_agent_runtime_for_new_thread as reset_agent_runtime_for_new_thread_impl,
     reset_session_telemetry, send_assistive_with_agent_runtime, snapshot_session_telemetry,
 };
 use types::{
@@ -719,6 +718,26 @@ fn maybe_wrap_transcript_for_delivery_with_quality(
     )
 }
 
+/// Outcome of the overlay Insert action's delivery attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPasteDelivery {
+    /// Synthetic Cmd+V was posted at the restored target's caret.
+    Pasted,
+    /// Focus never left Codescribe; tagged text was copied instead of pasted.
+    CopiedToClipboard,
+    /// Nothing to deliver (empty transcript).
+    Noop,
+}
+
+/// True when a synthetic Cmd+V would land in Codescribe itself instead of the
+/// intended target. `None` (signal unavailable) keeps the legacy best-effort
+/// paste: never break delivery on a missing probe.
+fn overlay_paste_would_self_target(frontmost_app: Option<&str>) -> bool {
+    frontmost_app
+        .map(|name| name.trim().eq_ignore_ascii_case("codescribe"))
+        .unwrap_or(false)
+}
+
 fn toggle_final_pass_enabled() -> bool {
     std::env::var("CODESCRIBE_TOGGLE_FINAL_PASS")
         .ok()
@@ -926,11 +945,6 @@ fn evaluate_quality_commit_trigger(
         return Some("high_correction_ratio");
     }
     None
-}
-
-/// Rotate runtime + thread identity and return generation once backend reset completes.
-pub async fn reset_agent_runtime_for_new_thread() -> Result<u64> {
-    reset_agent_runtime_for_new_thread_impl().await
 }
 
 /// Recording controller managing state machine and lifecycle
@@ -1242,10 +1256,16 @@ impl RecordingController {
     /// Paste user-edited overlay text through the same controller-owned delivery
     /// path as automatic dictation delivery: restore the pre-overlay target app,
     /// apply transcript tagging config, then synthesize Cmd+V via clipboard.
-    pub async fn paste_text_from_overlay(&self, text: String) -> Result<()> {
+    ///
+    /// Self-paste guard: when the frontmost app is still Codescribe after the
+    /// activation attempt (activation failed, Automation TCC denial, or no
+    /// latched target), a synthetic Cmd+V would land back in our own UI. The
+    /// tagged text is copied to the clipboard instead and `CopiedToClipboard`
+    /// reports the honest outcome to the UI.
+    pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteDelivery> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Ok(());
+            return Ok(OverlayPasteDelivery::Noop);
         }
 
         let target_app = self.pre_overlay_frontmost_app.read().await.clone();
@@ -1257,7 +1277,28 @@ impl RecordingController {
 
         let config = self.config.read().await.clone();
         let paste_text = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        let frontmost = crate::os::selection::current_frontmost_app_name();
+        if overlay_paste_would_self_target(frontmost.as_deref()) {
+            clipboard::set_clipboard(&paste_text)
+                .context("Failed to copy overlay text after self-paste guard")?;
+            return Ok(OverlayPasteDelivery::CopiedToClipboard);
+        }
         clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
+        Ok(OverlayPasteDelivery::Pasted)
+    }
+
+    /// Copy the tagged transcript to the clipboard without any synthetic paste.
+    /// Degrade path for the overlay Insert action when the caret already sits
+    /// inside Codescribe (e.g. the overlay's editable FINAL), where a synthetic
+    /// Cmd+V would paste the transcript back into the overlay itself.
+    pub async fn copy_text_from_overlay(&self, text: String) -> Result<()> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let config = self.config.read().await.clone();
+        let tagged = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        clipboard::set_clipboard(&tagged).context("Failed to copy overlay text")?;
         Ok(())
     }
 

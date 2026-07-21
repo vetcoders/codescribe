@@ -13,21 +13,47 @@ enum ChatPalette {
     static let sendGlyph = Color(hex: 0x0A0A0A)       // ↑ glyph on terracotta button
 }
 
-/// Expanding terracotta ring + solid dot — the composer mic affordance. The
-/// expanding ring animates only while `isActive`; idle renders just the static
-/// dot so no `repeatForever` animation keeps the SwiftUI render loop alive.
+enum ComposerMicVisualState: CaseIterable, Equatable {
+    case idle
+    case preparing
+    case recording
+    case blocked
+
+    var accessibilityLabel: String {
+        switch self {
+        case .idle: return "Start voice input"
+        case .preparing: return "Preparing voice input"
+        case .recording: return "Stop voice input"
+        case .blocked: return "Microphone busy with shortcut dictation"
+        }
+    }
+
+    var isEnabled: Bool { self == .idle || self == .recording }
+    var icon: CSIcon { .mic }
+}
+
+/// Recognizable microphone glyph with an expanding recording ring. Motion is
+/// mounted only while active; purpose remains legible in every static state.
 struct RippleMic: View {
-    var isActive: Bool = false
+    let state: ComposerMicVisualState
+    private var isActive: Bool { state == .recording }
+
     var body: some View {
         ZStack {
             if isActive {
                 ExpandingRing()
             }
             Circle()
-                .fill(CSColor.terracotta)
-                .frame(width: 6, height: 6)
+                .fill(isActive ? CSColor.terracotta.opacity(0.18) : Color.clear)
+                .frame(width: 22, height: 22)
+            CSIconView(
+                icon: state.icon,
+                size: 15,
+                weight: isActive ? .semibold : .regular,
+                color: isActive ? CSColor.terracottaLight : CSColor.textFaint
+            )
         }
-        .frame(width: 12, height: 12)
+        .frame(width: 22, height: 22)
     }
 }
 
@@ -38,8 +64,8 @@ private struct ExpandingRing: View {
     var body: some View {
         Circle()
             .strokeBorder(CSColor.terracotta, lineWidth: 1)
-            .frame(width: 12, height: 12)
-            .scaleEffect(animate ? 2.7 : 0.5)
+            .frame(width: 18, height: 18)
+            .scaleEffect(animate ? 1.65 : 0.7)
             .opacity(animate ? 0 : 0.7)
             .onAppear { withAnimation(CSMotion.ripple) { animate = true } }
     }

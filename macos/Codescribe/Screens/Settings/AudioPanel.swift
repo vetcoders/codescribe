@@ -71,7 +71,7 @@ struct AudioPanel: View {
                         .tracking(-0.5)
                         .foregroundStyle(CSColor.textHigh)
                         .padding(.top, 6)
-                    Text("Device choice, hands-free silence, and feedback use the live recorder config.")
+                    Text("Device choice and sound feedback use the live recorder config.")
                         .font(CSFont.ui(12.5))
                         .lineSpacing(2)
                         .foregroundStyle(CSColor.textMutedAlt)
@@ -90,11 +90,6 @@ struct AudioPanel: View {
             SettingsSectionLabel("Input device")
                 .padding(.top, 24)
             inputDeviceSection
-                .padding(.top, 11)
-
-            SettingsSectionLabel("Voice detection")
-                .padding(.top, 24)
-            silenceSection
                 .padding(.top, 11)
 
             SettingsSectionLabel("Sound feedback")
@@ -173,32 +168,6 @@ struct AudioPanel: View {
         }
     }
 
-    private var silenceSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Hands-free silence")
-                        .font(CSFont.ui(13, .semibold))
-                        .foregroundStyle(CSColor.textBody)
-                    Text("End a toggle-mode utterance after this much live VAD silence")
-                        .font(CSFont.ui(11.5))
-                        .foregroundStyle(CSColor.textMutedAlt)
-                }
-                Spacer(minLength: 12)
-                Text(String(format: "%.1f s", model.settings.toggleSilenceSec))
-                    .font(CSFont.mono(11, .semibold))
-                    .foregroundStyle(CSColor.textBody)
-            }
-            Slider(value: silenceBinding, in: 0.5 ... 30, step: 0.5)
-                .tint(CSColor.terracotta)
-                .accessibilityLabel("Hands-free silence duration")
-                .accessibilityValue(String(format: "%.1f seconds", model.settings.toggleSilenceSec))
-        }
-        .padding(15)
-        .background(card)
-        .overlay(cardBorder)
-    }
-
     private var feedbackSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             SettingsControlRow(
@@ -255,13 +224,6 @@ struct AudioPanel: View {
                     model.setAudioInputDevice(choice)
                 }
             }
-        )
-    }
-
-    private var silenceBinding: Binding<Double> {
-        Binding(
-            get: { Double(model.settings.toggleSilenceSec) },
-            set: { model.setToggleSilenceSeconds(Float($0)) }
         )
     }
 

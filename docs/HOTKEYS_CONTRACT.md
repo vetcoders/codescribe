@@ -16,21 +16,36 @@ Canonical hotkey configuration is **mode-first**:
 - `Dictation`, `Formatting`, and `Assistive` each own one `ShortcutBinding`
 - bindings are persisted in `~/Library/Application Support/Codescribe/settings.json`
 - legacy `.env` hotkey keys such as `HOLD_MODS` / `TOGGLE_TRIGGER` are no longer part of the runtime contract
+- fixed application commands are a separate, non-configurable command plane and never become `WorkMode` bindings
+
+### Agent summon command (not a recording mode)
+
+`Command+Shift+Space` emits one `HotkeyEvent::ShowAgent` per physical Space
+press. The bridge delivers it to `CsAppActionListener`, which fronts the single
+existing Agent window and requests composer focus. This route does not construct
+or call `RecordingController`, publish `on_recording_preparing`, create a thread,
+send a payload, or change the Idle state. Key-up re-arms the chord so macOS key
+repeat cannot emit duplicate commands.
+
+This fixed MVP chord is intentionally outside the configurable
+`WorkMode -> ShortcutBinding` contract.
 
 ```mermaid
 flowchart TB
     subgraph Input["🎹 Input Layer"]
-        CGEventTap["CGEventTap<br/>(kCGEventFlagsChanged)"]
+        CGEventTap["CGEventTap<br/>(flags + key down/up)"]
     end
 
     subgraph Detection["🔍 Event Detection"]
         HoldGesture["check_hold_gesture()"]
         ToggleGesture["check_toggle_gesture()"]
+        CommandGesture["Command+Shift+Space"]
     end
 
     subgraph Events["📨 HotkeyInput"]
         HoldEvent["Hold { Down/Up, hold_mode }"]
         ToggleEvent["ToggleNormal / ToggleAssistive"]
+        ShowAgent["ShowAgent"]
     end
 
     subgraph Controller["🎛️ RecordingController"]
@@ -44,8 +59,11 @@ flowchart TB
 
     HoldGesture --> HoldEvent
     ToggleGesture --> ToggleEvent
+    CGEventTap --> CommandGesture
+    CommandGesture --> ShowAgent
     HoldEvent --> Handler
     ToggleEvent --> Handler
+    ShowAgent --> AppAction["CsAppActionListener<br/>showAgent + focus"]
 
     Handler --> StateMachine
 ```
@@ -213,9 +231,9 @@ flowchart LR
     T_Silero --> T_Config
     C_VAD --> C_Moshi
 
-    style H_VAD fill:#ffcccc
-    style T_VAD fill:#ccffcc
-    style C_VAD fill:#cce5ff
+    style H_VAD stroke:#c33,stroke-width:2px
+    style T_VAD stroke:#3a3,stroke-width:2px
+    style C_VAD stroke:#36c,stroke-width:2px
 ```
 
 | Mode             | VAD Segmentation | Reason                                                             |
@@ -336,7 +354,8 @@ Wire it manually if you need full‑duplex audio (mic → Moshi → speaker).
 ### CGEventTap (macOS)
 
 ```rust
-// We ONLY read CGEventFlags - no keyboard layout queries
+// Speech gestures read CGEventFlags. Fixed command chords additionally read
+// the layout-independent virtual keycode (Space = 49); no keyboard layout APIs.
 let flags = CGEventGetFlags(event);
 let ctrl = (flags & kCGEventFlagMaskControl) != 0;
 let alt = (flags & kCGEventFlagMaskAlternate) != 0;
@@ -404,13 +423,15 @@ Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
 ## File Locations
 
-| File                               | Purpose                              |
-| ---------------------------------- | ------------------------------------ |
-| `app/os/hotkeys.rs`                | CGEventTap listener, event detection |
-| `app/controller/mod.rs`            | State machine, event handling        |
-| `app/controller/types.rs`          | State enum                           |
-| `core/vad/config.rs`               | VAD configuration                    |
-| `core/audio/streaming_recorder.rs` | Silero VAD segmentation              |
+| File                               | Purpose                             |
+| ---------------------------------- | ----------------------------------- |
+| `app/os/hotkeys/detector.rs`       | Pure speech/command event detection |
+| `app/os/hotkeys/platform.rs`       | CGEventTap adapter and keycodes     |
+| `bridge/src/hotkeys.rs`            | Recording and app-action routing    |
+| `app/controller/mod.rs`            | State machine, event handling       |
+| `app/controller/types.rs`          | State enum                          |
+| `core/vad/config.rs`               | VAD configuration                   |
+| `core/audio/streaming_recorder.rs` | Silero VAD segmentation             |
 
 ---
 

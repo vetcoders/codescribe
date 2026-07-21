@@ -120,6 +120,9 @@ final class AudioPanelTests: XCTestCase {
         XCTAssertTrue(writes.isEmpty, "reset must not route an empty device string")
     }
 
+    // Hands-free silence (TOGGLE_SILENCE_SEC) is Dictation-owned; its write
+    // contract is asserted in SettingsTruthTests. Audio owns only hardware
+    // selection and sound feedback.
     func testAudioKnobsWriteOnlyLiveRuntimeConfigKeys() {
         var writes: [(String, String)] = []
         let model = SettingsViewModel(
@@ -129,13 +132,12 @@ final class AudioPanelTests: XCTestCase {
             permissionProbe: MockPermissionProbe(.allGranted)
         )
 
-        model.setToggleSilenceSeconds(3.5)
         model.setSoundFeedbackEnabled(false)
         model.setSoundVolume(0.4)
 
         XCTAssertEqual(writes.map(\.0), [
-            "TOGGLE_SILENCE_SEC", "BEEP_ON_START", "SOUND_VOLUME",
+            "BEEP_ON_START", "SOUND_VOLUME",
         ])
-        XCTAssertEqual(writes.map(\.1), ["3.5", "0", "0.40"])
+        XCTAssertEqual(writes.map(\.1), ["0", "0.40"])
     }
 }

@@ -105,15 +105,15 @@ Apple's first pass true.
 
 ```mermaid
 flowchart TD
-    A[CPAL input callback (audio thread)] -->|try_send f32 samples| B[mpsc channel]
-    B --> C[StreamingRecorder worker (tokio task)]
+    A["CPAL input callback (audio thread)"] -->|try_send f32 samples| B[mpsc channel]
+    B --> C["StreamingRecorder worker (tokio task)"]
     C -->|accumulate| D[chunk buffer]
     D -->|every ~15s with ~2s overlap| E[spawn_blocking]
-    E --> F[Whisper singleton engine (Metal)]
+    E --> F["Whisper singleton engine (Metal)"]
     F --> G[chunk text]
     G --> H[append_with_overlap_dedup]
     H --> I[transcript_buffer]
-    I --> J[controller stop(): finalize + paste / LLM]
+    I --> J["controller stop(): finalize + paste / LLM"]
 ```
 
 ## Where in the code

@@ -69,6 +69,10 @@ final class RealThreadsEngine: ChatThreadsProviding {
         (try? threads.renameThread(id: backendId, title: title)) ?? false
     }
 
+    func setGeneratedTitle(backendId: String, title: String) -> Bool {
+        (try? threads.setGeneratedTitle(id: backendId, title: title)) ?? false
+    }
+
     func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? {
         try? threads.exportThreadMarkdown(id: backendId, assistantOnly: assistantOnly)
     }

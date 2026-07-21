@@ -26,6 +26,10 @@ final class RealChatEngine: AgentChatEngine {
             : availability.detail
     }
 
+    func generateThreadTitle(_ text: String) async throws -> String? {
+        try await agent.generateThreadTitle(text: text)
+    }
+
     func streamReply(
         _ text: String,
         threadId: String,
@@ -59,11 +63,11 @@ final class RealChatEngine: AgentChatEngine {
         )
     }
 
-    func cancelReply(threadId: String) {
+    func cancelReply(threadId: String) -> Bool {
         // Swift Task cancellation never reaches the Rust future through the
         // generated UniFFI bindings (they poll to completion), so this explicit
         // bridge call is what actually aborts the in-flight turn.
-        _ = agent.cancelTurn(threadId: threadId)
+        agent.cancelTurn(threadId: threadId)
     }
 }
 
@@ -122,13 +126,20 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
 ///
 /// `onTurnStarted` also asks AppDelegate for a passive reveal. AppDelegate owns
 /// focus policy: explicit opens activate, voice delivery never steals focus.
-final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable {
+final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling, @unchecked Sendable {
     private let store: AgentChatStore
     private let revealChat: @MainActor () -> Void
+    private let voiceTurns = CodescribeHotkeys()
 
+    @MainActor
     init(store: AgentChatStore, revealChat: @escaping @MainActor () -> Void) {
         self.store = store
         self.revealChat = revealChat
+        store.voiceTurnCanceller = self
+    }
+
+    func cancelVoiceTurn(threadId: String) -> Bool {
+        voiceTurns.cancelVoiceTurn(threadId: threadId)
     }
 
     func onTurnStarted(threadId: String, userText: String) {
@@ -170,5 +181,10 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, @unchecked Sendable 
     }
     func onError(message: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceError(message) } }
+    }
+    func onCancelled(threadId: String) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.store.ingestVoiceCancelled(threadId: threadId) }
+        }
     }
 }

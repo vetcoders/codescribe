@@ -50,13 +50,13 @@ they extend, patch in place, and annotate.
 
 ```mermaid
 flowchart TB
-    subgraph CAPTURE[Capture (existing — unchanged)]
+    subgraph CAPTURE["Capture (existing — unchanged)"]
         MIC[🎤 Mic 48k mono] --> SR[StreamingRecorder<br/>tees full WAV always<br/>core/audio/streaming_recorder.rs]
         SR --> CHUNK[Chunker<br/>Silero-driven utterances<br/>core/audio/chunker.rs]
         SR --> WAV[(full WAV<br/>persisted on disk)]
     end
 
-    subgraph L0[Layer 0 — Apple Live (in overlay)]
+    subgraph L0["Layer 0 — Apple Live (in overlay)"]
         APPLE[SFSpeechAnalyzer<br/>core/stt/apple_stt/mod.rs]
         OVL[Overlay glass tafla<br/>app/ui/overlay/mod.rs<br/>after 1fbf42b: declutter shipped]
     end
@@ -72,11 +72,11 @@ flowchart TB
     end
 
     subgraph L3[Layer 3 — Silero Paralingual Monitor]
-        PAUSE[Pause detector → '…']
-        SOUND[Non-speech classifier<br/>'[śmiech]', '[wiertarka]', '[kasłnięcie]']
+        PAUSE["Pause detector → '…'"]
+        SOUND["Non-speech classifier<br/>'[śmiech]', '[wiertarka]', '[kasłnięcie]'"]
     end
 
-    subgraph L4[Layer 4 — Final BAM (session-end)]
+    subgraph L4["Layer 4 — Final BAM (session-end)"]
         BAM[Whole-session contextual pass<br/>NEW core/pipeline/final_bam.rs<br/>polish + organize within already-shown text]
     end
 
@@ -99,7 +99,7 @@ flowchart TB
     SOUND -- InsertAnnotation --> OVL
 
     WAV -. on stop .-> BAM
-    BAM -- ReplaceRange (within bounds) --> OVL
+    BAM -- "ReplaceRange (within bounds)" --> OVL
 ```
 
 ### Layer specifications

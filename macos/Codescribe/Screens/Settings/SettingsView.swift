@@ -41,18 +41,18 @@ struct SettingsView: View {
     private var detail: some View {
         ScrollView {
             Group {
-                switch model.section {
-                case .engine:
+                switch model.section.destination {
+                case .dictation:
                     EnginePanel(model: model)
                 case .shortcuts:
                     ShortcutsPanel(model: model)
-                case .keys:
+                case .providers:
                     KeysPanel(model: model)
                 case .prompts:
                     PromptPanel(model: model)
                 case .user:
                     UserPanel(model: model)
-                case .voiceLab:
+                case .dictionary:
                     VoiceLabPanel(model: model)
                 case .audio:
                     AudioPanel(model: model)
@@ -187,7 +187,7 @@ private struct SettingsRail: View {
             Circle()
                 .fill(visualState.showsActiveFill ? CSColor.terracotta : Self.inactiveDot)
                 .frame(width: 7, height: 7)
-            Text(item.rawValue)
+            Text(item.title)
                 .font(CSFont.ui(13, visualState.showsActiveFill ? .semibold : .medium))
                 .foregroundStyle(labelColor(item, isActive: visualState.showsActiveFill))
             Spacer(minLength: 0)
@@ -227,7 +227,7 @@ private struct SettingsRail: View {
             .focusable(true)
             .focused($focusedControl, equals: .footer)
             .focusEffectDisabled()
-            .help("Open \(target.rawValue) settings")
+            .help("Open \(target.title) settings")
         } else {
             footerContent(health, isKeyboardFocused: false)
         }
@@ -273,18 +273,114 @@ private extension SettingsHealthLevel {
     }
 }
 
+// MARK: - Shared Settings chrome (consumed by every panel)
+
+struct SettingsSectionLabel: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(text.uppercased())
+            .font(CSFont.mono(12, .semibold))
+            .tracking(0.5)
+            .foregroundStyle(CSColor.textMuted)
+    }
+}
+
+struct SettingsMenuLabel: View {
+    let text: String
+    var mono: Bool = false
+    var chrome: Bool = false
+
+    var body: some View {
+        if chrome {
+            content
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .fill(CSColor.surfaceRaised(0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textHigh)
+                .lineLimit(1)
+            CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.textFaint)
+        }
+    }
+}
+
+/// Read-only key/value row for runtime-truth blocks (Dictation and Providers).
+struct RuntimeRow: View {
+    enum Trailing {
+        case none
+        case dot(Color)
+        case text(String, Color)
+    }
+
+    let key: String
+    let value: String
+    var tint: Bool = false
+    var mono: Bool = false
+    var trailing: Trailing = .none
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(key)
+                .font(CSFont.mono(12, .medium))
+                .foregroundStyle(CSColor.textMutedAlt)
+                .frame(width: 160, alignment: .leading)
+            Text(value)
+                .font(mono ? CSFont.mono(12.5, .semibold) : CSFont.ui(12.5, .semibold))
+                .foregroundStyle(mono ? CSColor.textBodyAlt : CSColor.textHigh)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            trailingView
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(tint ? CSColor.surfaceRaised(0.02) : Color.clear)
+    }
+
+    @ViewBuilder
+    private var trailingView: some View {
+        switch trailing {
+        case .none:
+            EmptyView()
+        case .dot(let color):
+            Circle().fill(color).frame(width: 7, height: 7)
+        case .text(let label, let color):
+            Text(label)
+                .font(CSFont.mono(10, .semibold))
+                .foregroundStyle(color)
+        }
+    }
+}
+
 #if DEBUG
 #Preview("Settings — Creator") {
     SettingsView(model: SettingsViewModel.preview(.creator))
         .frame(width: 960, height: 620)
 }
 
-#Preview("Settings — Engine") {
+#Preview("Settings — Dictation") {
     SettingsView(model: SettingsViewModel.preview(.engine))
         .frame(width: 960, height: 620)
 }
 
-#Preview("Settings — Keys") {
+#Preview("Settings — Providers") {
     SettingsView(model: SettingsViewModel.preview(.keys))
         .frame(width: 960, height: 620)
 }

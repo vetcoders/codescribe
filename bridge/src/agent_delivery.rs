@@ -38,6 +38,7 @@ pub trait CsAgentDeliveryListener: Send + Sync {
     fn on_tool_result(&self, name: String, id: String, summary: String, is_error: bool);
     fn on_done(&self);
     fn on_error(&self, message: String);
+    fn on_cancelled(&self, thread_id: String);
 }
 
 type SharedDeliveryListener = Arc<RwLock<Option<Arc<dyn CsAgentDeliveryListener>>>>;
@@ -115,5 +116,65 @@ fn forward_delivery_event(event: AgentDeliveryEvent, listener: Arc<dyn CsAgentDe
         } => listener.on_tool_result(name, id, summary, is_error),
         AgentDeliveryEvent::Done => listener.on_done(),
         AgentDeliveryEvent::Error(message) => listener.on_error(message),
+        AgentDeliveryEvent::Cancelled { thread_id } => listener.on_cancelled(thread_id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct RecordingDeliveryListener {
+        done: AtomicUsize,
+        errors: AtomicUsize,
+        cancelled: AtomicUsize,
+        cancelled_thread: RwLock<Option<String>>,
+    }
+
+    impl CsAgentDeliveryListener for RecordingDeliveryListener {
+        fn on_turn_started(&self, _thread_id: String, _user_text: String) {}
+        fn on_text_delta(&self, _delta: String) {}
+        fn on_text_done(&self, _text: String) {}
+        fn on_reasoning_delta(&self, _delta: String) {}
+        fn on_tool_executing(&self, _name: String, _id: String) {}
+        fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
+        fn on_done(&self) {
+            self.done.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_error(&self, _message: String) {
+            self.errors.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_cancelled(&self, thread_id: String) {
+            self.cancelled.fetch_add(1, Ordering::SeqCst);
+            *self
+                .cancelled_thread
+                .write()
+                .unwrap_or_else(|error| error.into_inner()) = Some(thread_id);
+        }
+    }
+
+    #[test]
+    fn cancelled_is_one_distinct_terminal_with_exact_thread_id() {
+        let listener = Arc::new(RecordingDeliveryListener::default());
+        forward_delivery_event(
+            AgentDeliveryEvent::Cancelled {
+                thread_id: "voice-thread-42".to_string(),
+            },
+            Arc::clone(&listener) as Arc<dyn CsAgentDeliveryListener>,
+        );
+
+        assert_eq!(listener.cancelled.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.done.load(Ordering::SeqCst), 0);
+        assert_eq!(listener.errors.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            listener
+                .cancelled_thread
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_deref(),
+            Some("voice-thread-42")
+        );
     }
 }

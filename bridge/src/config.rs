@@ -1981,7 +1981,7 @@ mod reset_tests {
         assert_eq!(entry["threads"], 2);
         assert_eq!(entry["include_keys"], false);
         assert_eq!(entry["include_prompts"], false);
-        assert_eq!(entry["preserved_prompt_files"], 2);
+        assert_eq!(entry["preserved_prompt_files"], 4);
         assert_eq!(entry["trash_path"], destination.to_string_lossy().as_ref());
         assert!(
             entry["source_paths"]

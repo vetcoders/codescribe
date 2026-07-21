@@ -460,6 +460,12 @@ pub fn build_assistive_input(user_voice_text: &str, ctx: &AssistiveContext) -> S
     out
 }
 
+/// Runtime-truth frontmost app name for delivery guards (NSWorkspace fast
+/// path, no Automation TCC). `None` when the signal is unavailable.
+pub(crate) fn current_frontmost_app_name() -> Option<String> {
+    nsworkspace_frontmost_app_name()
+}
+
 #[cfg(target_os = "macos")]
 fn frontmost_app_name() -> Option<String> {
     use std::process::Command;

@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.12.2-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.13.0-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
@@ -19,9 +19,6 @@ configured in Settings or `~/.codescribe/.env`.
 
 ```mermaid
 flowchart TB
-    classDef default fill:#fff,stroke:#333,stroke-width:1px;
-    classDef box fill:#fafafa,stroke:#666,stroke-width:1px,stroke-dasharray: 0;
-
     subgraph APP[Codescribe Runtime]
         direction LR
         TRAY[Tray + Hotkeys]
@@ -55,13 +52,11 @@ flowchart TB
     STT --> LLM
     QL -.-> STT
     CORE -.-> TOOLS
-
-    class APP,CORE,TOOLS box
 ```
 
 > **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
 
-> **Status:** current source version is `0.12.2` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
+> **Status:** current source version is `0.13.0` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -171,7 +166,7 @@ Tagged builds publish DMGs through GitHub Releases:
 2. Download `Codescribe_<version>.dmg` for the standard build, or `Codescribe_<version>_full.dmg` for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
-> **Current truth:** source install is the guaranteed path inside this repo until a current `v0.12.x` GitHub Release exists. Public release DMGs must be Developer ID signed and notarized; the release workflow is wired to fail if the required Apple signing/notary secrets are missing.
+> **Current truth:** `v0.12.3` is published on GitHub Releases as a Developer ID signed, notarized and stapled DMG (`releases/latest/download/Codescribe.dmg`); source install remains the freshest path for unreleased work on this branch. The release workflow is wired to fail if the required Apple signing/notary secrets are missing.
 
 ### Build Options
 
@@ -222,7 +217,7 @@ flowchart TD
     B -->|Hold Fn| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
-  D -->|live chunks| E[Whisper STT (streaming)]
+    D -->|live chunks| E["Whisper STT (streaming)"]
     D -->|Release / Toggle| F[Stop]
     F --> G[Finalize last chunk]
     G --> H{AI Enabled?}
@@ -231,8 +226,8 @@ flowchart TD
     I --> K[Paste to Active App]
     J --> K
 
-    E -.- E1[Metal GPU • runtime model]
-    I -.- I1[Responses API • previous_response_id]
+    E -.- E1["Metal GPU • runtime model"]
+    I -.- I1["Responses API • previous_response_id"]
 ```
 
 ### Transcription Pipeline
@@ -454,4 +449,4 @@ date we make that version available. See [`LICENSE`](LICENSE) and
 
 ---
 
-**Made with (งಠ_ಠ)ง by the ⌜ Vetcoders ⌟ 𝖙𝖊𝖆𝖒 (c) 2024-2026**
+**𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI**

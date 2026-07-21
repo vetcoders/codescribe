@@ -94,11 +94,11 @@ flowchart TD
     CHECK -->|assistive| ASSIST
     CHECK -->|non-assistive| OVERLAY
 
-    style DROP fill:#fee,stroke:#c33
-    style CHUNK fill:#efe,stroke:#3a3
-    style EVENT fill:#eef,stroke:#33c
-    style OVERLAY fill:#ffe,stroke:#c93
-    style ASSIST fill:#ffe,stroke:#c93
+    style DROP stroke:#c33,stroke-width:2px
+    style CHUNK stroke:#3a3,stroke-width:2px
+    style EVENT stroke:#33c,stroke-width:2px
+    style OVERLAY stroke:#c93,stroke-width:2px
+    style ASSIST stroke:#c93,stroke-width:2px
 ```
 
 ---

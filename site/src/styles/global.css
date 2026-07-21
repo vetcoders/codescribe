@@ -4,45 +4,49 @@
    ============================================================ */
 :root {
   /* surfaces (dark) */
-  --bg: #090a0d;                          /* page */
-  --bg-soft: #0c0d11;                      /* code/prompt panels */
-  --bg-card: rgba(255, 255, 255, 0.02);    /* section cards */
-  --bg-chip: rgba(255, 255, 255, 0.025);   /* chips */
-  --hairline: #14161b;                     /* section top-borders */
-  --stroke: #1d2027;                       /* card borders */
-  --stroke-2: #20242a;                     /* image frames */
-  --stroke-3: #24272f;                     /* buttons/secondary */
+  --bg: #090a0d; /* page */
+  --bg-soft: #0c0d11; /* code/prompt panels */
+  --bg-card: rgba(255, 255, 255, 0.02); /* section cards */
+  --bg-chip: rgba(255, 255, 255, 0.025); /* chips */
+  --hairline: #14161b; /* section top-borders */
+  --stroke: #1d2027; /* card borders */
+  --stroke-2: #20242a; /* image frames */
+  --stroke-3: #24272f; /* buttons/secondary */
 
   /* brand */
-  --terracotta: #d97757;                   /* PRIMARY accent */
-  --terracotta-2: #c98a6e;                 /* selection-mode accent */
-  --terracotta-ink: #e9b79f;               /* terracotta text on dark */
-  --olive: #5f6b3e;                        /* secondary: healthy status, formatting */
-  --olive-ink: #9db178;                    /* olive text/status dots on dark */
-  --gold: #d6b24e;                         /* agent-chat mode accent */
+  --terracotta: #d97757; /* PRIMARY accent */
+  --terracotta-2: #c98a6e; /* selection-mode accent */
+  --terracotta-ink: #e9b79f; /* terracotta text on dark */
+  --olive: #5f6b3e; /* secondary: healthy status, formatting */
+  --olive-ink: #9db178; /* olive text/status dots on dark */
+  --gold: #d6b24e; /* agent-chat mode accent */
 
   /* text */
-  --ink: #f4f2ec;                          /* headings */
-  --ink-2: #e9e7e0;                        /* strong body */
-  --ink-3: #f0eee7;                        /* emphasis on cards */
-  --muted: #9a9d97;                        /* body */
-  --muted-2: #82857f;                      /* sub-body */
-  --muted-3: #808379;                      /* mono meta — AA (>=4.5) on dark bg */
-  --muted-4: #7c8076;                      /* faint mono — AA (>=4.5) on cards */
-  --eyebrow: #7f8c5e;                      /* olive eyebrow labels */
+  --ink: #f4f2ec; /* headings */
+  --ink-2: #e9e7e0; /* strong body */
+  --ink-3: #f0eee7; /* emphasis on cards */
+  --muted: #9a9d97; /* body */
+  --muted-2: #82857f; /* sub-body */
+  --muted-3: #808379; /* mono meta — AA (>=4.5) on dark bg */
+  --muted-4: #7c8076; /* faint mono — AA (>=4.5) on cards */
+  --eyebrow: #7f8c5e; /* olive eyebrow labels */
 
   /* additional shades used in the reference render */
-  --line-soft: #16181e;                    /* inner hairlines */
-  --scroll-hint: #82857f;                  /* faint hint / legal — AA on dark bg */
+  --line-soft: #16181e; /* inner hairlines */
+  --scroll-hint: #82857f; /* faint hint / legal — AA on dark bg */
 
   /* fonts */
-  --font-display: 'Space Grotesk', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+}
 
 body {
   margin: 0;
@@ -53,11 +57,17 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-::selection { background: rgba(217, 119, 87, 0.3); }
+::selection {
+  background: rgba(217, 119, 87, 0.3);
+}
 
-img { max-width: 100%; }
+img {
+  max-width: 100%;
+}
 
-a { color: inherit; }
+a {
+  color: inherit;
+}
 
 /* Visible focus rings for keyboard navigation (a11y) */
 a:focus-visible,
@@ -84,16 +94,70 @@ button:focus-visible {
 }
 
 /* ---------- ambient keyframes (WEBSITE_SPEC §6) ---------- */
-@keyframes breathe   { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.9; } }
-@keyframes floatIn   { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-@keyframes glowpulse { 0%, 100% { opacity: 0.55; box-shadow: 0 0 10px 0 rgba(217, 119, 87, 0.25); } 50% { opacity: 1; box-shadow: 0 0 22px 4px rgba(217, 119, 87, 0.42); } }
-@keyframes ripple    { 0% { transform: scale(0.5); opacity: 0.7; } 100% { transform: scale(2.7); opacity: 0; } }
-@keyframes softpulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
-@keyframes drift     { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+@keyframes floatIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes glowpulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    box-shadow: 0 0 10px 0 rgba(217, 119, 87, 0.25);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 22px 4px rgba(217, 119, 87, 0.42);
+  }
+}
+@keyframes ripple {
+  0% {
+    transform: scale(0.5);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.7);
+    opacity: 0;
+  }
+}
+@keyframes softpulse {
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes drift {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
 
 /* ---------- reduced motion: kill ambient loops, freeze islands ---------- */
 @media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
+  html {
+    scroll-behavior: auto;
+  }
   *,
   *::before,
   *::after {
@@ -103,7 +167,10 @@ button:focus-visible {
     transition-duration: 0.001ms !important;
   }
   /* floatIn reveals must end resolved, never stuck at opacity:0 */
-  [data-reveal] { opacity: 1 !important; transform: none !important; }
+  [data-reveal] {
+    opacity: 1 !important;
+    transform: none !important;
+  }
 }
 
 /* ---------- shared layout helpers ---------- */
@@ -111,7 +178,9 @@ button:focus-visible {
   border-top: 1px solid var(--hairline);
   position: relative;
 }
-.container { margin: 0 auto; }
+.container {
+  margin: 0 auto;
+}
 .eyebrow {
   /* explicit line-height keeps the label box font-size-based (not font-metric
      dependent), so it doesn't reflow when the web font swaps in (CLS). */

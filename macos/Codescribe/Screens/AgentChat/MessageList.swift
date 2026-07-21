@@ -402,14 +402,14 @@ private struct ToolLineRow: View {
     }
 
     private var isRunning: Bool { line.state == .running }
-    private var isUnknown: Bool { line.state == .unknown }
+    private var isQuiet: Bool { line.state == .unknown || line.state == .cancelled }
     private var rowColor: Color {
         switch line.state {
         case .running:
             return CSColor.amber
         case .failed:
             return CSColor.terracottaLight
-        case .unknown:
+        case .cancelled, .unknown:
             return CSColor.textFaintAlt
         case .succeeded:
             return CSColor.oliveLight
@@ -427,7 +427,7 @@ private struct ToolLineRow: View {
                         PulseDot()
                     }
                     (Text(line.verb).foregroundColor(rowColor)
-                        + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundColor(isUnknown ? CSColor.textFaintAlt : ChatPalette.toolBody))
+                        + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundColor(isQuiet ? CSColor.textFaintAlt : ChatPalette.toolBody))
                         .font(CSFont.mono(11.5, .medium))
                         .lineSpacing(4)
                         .textSelection(.enabled)
@@ -496,10 +496,12 @@ private struct ToolTurn: View {
                 .padding(.vertical, 11)
             } label: {
                 HStack(spacing: 8) {
+                    let hasRunning = message.toolLines.contains(where: { $0.state == .running })
+                    let hasCancelled = message.toolLines.contains(where: { $0.state == .cancelled })
                     CSIconView(
-                        icon: message.toolLines.contains(where: { $0.state == .running }) ? .more : .success,
+                        icon: hasRunning ? .more : hasCancelled ? .stop : .success,
                         size: 11,
-                        color: message.toolLines.contains(where: { $0.state == .running }) ? CSColor.amber : CSColor.oliveLight
+                        color: hasRunning ? CSColor.amber : hasCancelled ? CSColor.textFaintAlt : CSColor.oliveLight
                     )
                     Text(message.toolTitle)
                         .font(CSFont.mono(11, .semibold))
@@ -589,7 +591,11 @@ private struct AssistantTurn: View {
                     // and the settled turn render IDENTICALLY — no markdown re-parse
                     // per delta, no visual "bam" on finalize. Rich is per-bubble
                     // opt-in via the meta-row toggle.
-                    if !message.text.isEmpty || message.isStreaming {
+                    if message.wasStopped, message.text == "Stopped" {
+                        Text("Stopped")
+                            .font(CSFont.mono(11, .medium))
+                            .foregroundStyle(CSColor.textFaintAlt)
+                    } else if !message.text.isEmpty || message.isStreaming {
                         switch message.renderMode {
                         case .raw:
                             RawText(raw: message.text, showsCaret: message.isStreaming)

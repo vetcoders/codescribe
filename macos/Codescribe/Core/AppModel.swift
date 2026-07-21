@@ -183,8 +183,11 @@ final class OverlayController: ObservableObject {
     /// upgrade flips this while recording, so hide synchronously at the latch
     /// transition instead of waiting for the stop/handoff safety net.
     func handleAssistiveStatusChange(_ assistive: Bool) {
+        if assistive {
+            sessionWasAssistive = true
+        }
+        state.setAutoPasteControlAvailable(!sessionWasAssistive)
         guard assistive else { return }
-        sessionWasAssistive = true
         if panel != nil { hide() }
     }
 

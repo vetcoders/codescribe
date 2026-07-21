@@ -174,6 +174,7 @@ mod tests {
             updated_at,
             title: title.to_string(),
             title_is_custom: false,
+            title_is_generated: false,
             mode: "assistive".to_string(),
             tags: vec!["clinic".to_string()],
             notes: Vec::new(),

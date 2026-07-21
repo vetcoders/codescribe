@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::config::{Config, FormattingPolicy};
 
 static CUSTOM_LEXICON_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -42,6 +42,9 @@ pub struct QualityRecord {
     /// Model / engine id if known (e.g. whisper-large, or lane).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Canonical lowercase formatting provenance. Missing on legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatting_level: Option<String>,
     /// Raw STT text (best effort; overlay MVP may pass delivered here too).
     #[serde(default)]
     pub raw_text: String,
@@ -85,6 +88,7 @@ impl QualityRecord {
         edited_text: String,
         mode: &str,
         model: Option<String>,
+        formatting_level: Option<String>,
         action: Option<&str>,
     ) -> Self {
         let timestamp_ms = SystemTime::now()
@@ -102,6 +106,7 @@ impl QualityRecord {
             session_id: None,
             mode: mode.to_string(),
             model,
+            formatting_level,
             raw_text,
             delivered_text,
             edited_text,
@@ -466,33 +471,64 @@ pub fn commit_overlay_correction(
     model: Option<String>,
     action: Option<&str>,
 ) -> Result<PathBuf> {
+    commit_overlay_correction_with_level(
+        raw_text,
+        delivered_text,
+        edited_text,
+        mode,
+        model,
+        action,
+        Some(FormattingPolicy::Correction.as_str()),
+    )
+}
+
+/// Persist quality evidence with canonical level provenance. Candidate learning
+/// is deliberately narrower than evidence capture: only Correction keeps the
+/// existing custom-lexicon behavior; Off, Smart, and Max remain evidence-only.
+pub fn commit_overlay_correction_with_level(
+    raw_text: &str,
+    delivered_text: &str,
+    edited_text: &str,
+    mode: &str,
+    model: Option<String>,
+    action: Option<&str>,
+    formatting_level: Option<&str>,
+) -> Result<PathBuf> {
+    let formatting_level = formatting_level
+        .map(FormattingPolicy::parse)
+        .transpose()?
+        .map(|level| level.as_str().to_string());
     let record = QualityRecord::new(
         raw_text.to_string(),
         delivered_text.to_string(),
         edited_text.to_string(),
         mode,
         model,
+        formatting_level,
         action,
     );
     let qpath = save_quality_record(&record)?;
 
-    // Extract + append candidates (safe only).
-    for (variant, canonical) in extract_lexicon_candidates(delivered_text, edited_text) {
-        if is_sensible_lexicon_candidate(&variant, &canonical) {
-            // Best-effort; do not fail the whole commit on lexicon append.
-            if let Err(e) = upsert_correction_in_custom_lexicon(&variant, &canonical) {
-                tracing::warn!(
-                    "quality: failed to append lexicon candidate {} -> {}: {}",
-                    variant,
-                    canonical,
-                    e
-                );
-            } else {
-                tracing::info!(
-                    "quality: added lexicon candidate {} -> {}",
-                    variant,
-                    canonical
-                );
+    if record.formatting_level.as_deref() == Some(FormattingPolicy::Correction.as_str()) {
+        // Extract + append candidates (safe only). S4 word-level policy remains
+        // untouched; this gate only decides whether extraction may run at all.
+        for (variant, canonical) in extract_lexicon_candidates(delivered_text, edited_text) {
+            if is_sensible_lexicon_candidate(&variant, &canonical) {
+                // Best-effort; do not fail the whole commit on lexicon append.
+                if let Err(e) = upsert_correction_in_custom_lexicon(&variant, &canonical) {
+                    tracing::warn!(
+                        "quality: failed to append lexicon candidate {} -> {}: {}",
+                        variant,
+                        canonical,
+                        e
+                    );
+                } else {
+                    tracing::info!(
+                        "quality: added lexicon candidate {} -> {}",
+                        variant,
+                        canonical
+                    );
+                }
             }
         }
     }
@@ -906,7 +942,7 @@ mod tests {
             .expect("open custom lexicon for legacy extras fixture");
         writeln!(
             lexicon_file,
-            r#"{{"term":"VetCoders","extras":{{"mispronunciations":["wet coders"]}}}}"#
+            r#"{{"term":"Vetcoders","extras":{{"mispronunciations":["wet coders"]}}}}"#
         )
         .expect("append legacy extras fixture");
 
@@ -936,7 +972,7 @@ mod tests {
                 },
                 CustomLexiconEntry {
                     variant: "wet coders".into(),
-                    canonical: "VetCoders".into(),
+                    canonical: "Vetcoders".into(),
                 },
             ]
         );
@@ -949,9 +985,76 @@ mod tests {
         let second: QualityRecord = serde_json::from_str(legacy).expect("legacy record again");
 
         assert_eq!(first.revision, 0);
+        assert_eq!(first.formatting_level, None);
         assert!(first.correction_id.is_empty());
         assert!(first.logical_id().starts_with("legacy-"));
         assert_eq!(first.logical_id(), second.logical_id());
+    }
+
+    #[test]
+    fn formatting_level_roundtrips_canonically_and_old_rows_remain_compatible() {
+        for (input, canonical) in [
+            ("correction", "correction"),
+            ("smart", "smart"),
+            ("max", "max"),
+        ] {
+            let level = FormattingPolicy::parse(input)
+                .expect("known formatting level")
+                .as_str()
+                .to_string();
+            let record = QualityRecord::new(
+                "raw".into(),
+                "delivered".into(),
+                "edited".into(),
+                "overlay",
+                None,
+                Some(level),
+                Some("copy"),
+            );
+            let encoded = serde_json::to_string(&record).expect("serialize quality record");
+            let decoded: QualityRecord =
+                serde_json::from_str(&encoded).expect("deserialize quality record");
+
+            assert_eq!(decoded.formatting_level.as_deref(), Some(canonical));
+        }
+
+        let old = r#"{"timestamp_ms":7,"mode":"overlay","raw_text":"raw","delivered_text":"variant","edited_text":"canonical","meta":null}"#;
+        let decoded: QualityRecord = serde_json::from_str(old).expect("old row remains readable");
+        assert_eq!(decoded.formatting_level, None);
+    }
+
+    #[test]
+    #[serial]
+    fn level_aware_commit_records_every_level_but_only_correction_teaches_lexicon() {
+        let temp_dir = tempfile::tempdir().expect("temp quality root");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        for (level, delivered, edited) in [
+            ("correction", "corr variant", "Corr Canonical"),
+            ("smart", "smart variant", "Smart Canonical"),
+            ("max", "max variant", "Max Canonical"),
+            ("off", "raw variant", "Raw Canonical"),
+        ] {
+            commit_overlay_correction_with_level(
+                delivered,
+                delivered,
+                edited,
+                "overlay",
+                None,
+                Some("copy"),
+                Some(level),
+            )
+            .expect("quality evidence commit");
+        }
+
+        let records = recent_quality_records(10).expect("quality evidence rows");
+        let candidates = custom_lexicon_entries().expect("custom lexicon candidates");
+        assert_eq!(records.len(), 4, "every level appends quality evidence");
+        assert_eq!(candidates.len(), 1, "only Correction emits a candidate");
+        assert_eq!(candidates[0].variant, "corr variant");
+        assert_eq!(candidates[0].canonical, "Corr Canonical");
     }
 
     #[test]
