@@ -618,7 +618,11 @@ final class SettingsViewModel: ObservableObject {
         self.agentReadiness = .sample
         self.mcpStatus = .sample
         self.voiceLabReadError = nil
+        self.audioInput = .sample
+        self.audioInputReadError = nil
+        self.resetPreview = .sample
         // K4: tray cycles arrive on the bus; reload Settings badge display.
+        // Register after every stored property is initialized (Swift init order).
         holdBadgeObserver = NotificationCenter.default.addObserver(
             forName: ConfigChangeBus.holdBadgeDidChange,
             object: nil,
@@ -628,9 +632,6 @@ final class SettingsViewModel: ObservableObject {
                 self?.reloadHoldBadgeFromDisk()
             }
         }
-        self.audioInput = .sample
-        self.audioInputReadError = nil
-        self.resetPreview = .sample
     }
 
     /// Re-read live state (permissions can change while the window is open).
