@@ -829,7 +829,7 @@ fn assistive_delivery_assembly_has_marked_transcript_then_tagged_bucket() {
     assert_eq!(
         assemble_assistive_delivery_lane("ask {selection_1} now", &context, &bucket).wire,
         "USER_INSTRUCTION:\n<<<\nask {selection_1} now\n>\n\n\
-SELECTED_TEXT: carried in <codescribe_context>.\n\n\
+SELECTED_TEXT: carried in <codescribe_context> (1 selection).\n\n\
 CONTEXT:\n- frontmost_app: Notes\n\n\
 <codescribe_context>\n\
 <selection_1>\nselected body\n</selection_1>\n\
@@ -857,7 +857,7 @@ fn assistive_wire_header_never_denies_bucket_selections() {
 
     assert!(!wire.contains("no selection available"));
     assert!(!wire.contains("brak dostępnego zaznaczenia"));
-    assert!(wire.contains("SELECTED_TEXT: carried in <codescribe_context>."));
+    assert!(wire.contains("SELECTED_TEXT: carried in <codescribe_context> (3 selections)."));
     for label in ["<selection_1>", "<selection_2>", "<selection_3>"] {
         assert!(wire.contains(label), "missing {label} in wire: {wire}");
     }

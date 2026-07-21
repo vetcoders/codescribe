@@ -174,11 +174,7 @@ fn assemble_assistive_delivery_lane(
             // Skeleton + selection/context fields; bucket tags append after.
             // The bucket truth flows into the header so the skeleton never
             // claims "no selection" while <selection_N> tags ride below.
-            bucket.append_to_message(&build_assistive_input(
-                transcript,
-                context,
-                bucket.has_selection_items(),
-            ))
+            bucket.append_to_message(&build_assistive_input(transcript, context, bucket.len()))
         }
         AssistiveLane::VoiceChat => {
             // Spoken text only (+ optional context tags / image markers).
@@ -1503,7 +1499,11 @@ impl RecordingController {
         let delivery = {
             let mut bucket = self.context_bucket.lock().await;
             let delivery = assemble_assistive_delivery_lane(&transcript, &context, &bucket);
-            bucket.clear();
+            match bucket.archive_and_reset("assistive-delivery") {
+                Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+                Ok(None) => {}
+                Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+            }
             delivery
         };
         // Raw spoken transcript is already history-saved as Raw in the finalize
@@ -2058,7 +2058,18 @@ impl RecordingController {
             && event.key_type == HotkeyType::Hold
             && matches!(event.action, HotkeyAction::Down)
         {
-            self.context_bucket.lock().await.clear();
+            // Leftovers from a previous session are archived, never destroyed
+            // (operator law 2026-07-21: reproducible moment-of-truth in store).
+            match self
+                .context_bucket
+                .lock()
+                .await
+                .archive_and_reset("session-start-discard")
+            {
+                Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+                Ok(None) => {}
+                Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+            }
         }
 
         // Update mode flags from event (supports mid-hold mode changes via Press events).
@@ -2895,7 +2906,16 @@ impl RecordingController {
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
 
         *self.pending_assistive_context.write().await = None;
-        self.context_bucket.lock().await.clear();
+        match self
+            .context_bucket
+            .lock()
+            .await
+            .archive_and_reset("session-start-discard")
+        {
+            Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+            Ok(None) => {}
+            Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+        }
         let trigger_context = if is_assistive {
             tokio::task::spawn_blocking(capture_assistive_context)
                 .await
@@ -4059,14 +4079,18 @@ impl RecordingController {
         }
 
         // Paste lane consumes the ContextBucket exactly like assistive delivery
-        // does (assemble + clear under one lock — parity with
+        // does (assemble + archive under one lock — parity with
         // deliver_pending_assistive_transcript). Assistive sessions never take
         // this branch (`resolve_auto_paste_policy` vetoes them), so their bucket
         // stays intact for the overlay delivery lane.
         let paste_wire = if should_auto_paste {
             let mut bucket = self.context_bucket.lock().await;
             let wire = assemble_raw_paste_wire(&final_formatted_text, &bucket);
-            bucket.clear();
+            match bucket.archive_and_reset("paste-delivery") {
+                Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+                Ok(None) => {}
+                Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+            }
             wire
         } else {
             final_formatted_text.clone()

@@ -548,15 +548,15 @@ fn capture_selected_content_with_effective_frontmost(
 /// consuming side (thread titles, Swift presentation) for threads persisted
 /// before the rename.
 ///
-/// `bucket_carries_selection` is the ContextBucket truth from the caller: when
+/// `bucket_selection_count` is the ContextBucket truth from the caller: when
 /// selections ride in `<codescribe_context>` tags appended after this skeleton,
-/// the header must say so instead of falsely declaring that no selection is
-/// available (incident t_2026-07-21_zcryie: the contradiction made the model
-/// treat correct selections as a leak).
+/// the header must say so — with an honest count — instead of falsely declaring
+/// that no selection is available (incident t_2026-07-21_zcryie: the
+/// contradiction made the model treat correct selections as a leak).
 pub fn build_assistive_input(
     user_voice_text: &str,
     ctx: &AssistiveContext,
-    bucket_carries_selection: bool,
+    bucket_selection_count: usize,
 ) -> String {
     let instruction = user_voice_text.trim();
     let selected_text = ctx.selected_text.as_deref().unwrap_or("").trim();
@@ -572,8 +572,15 @@ pub fn build_assistive_input(
         out.push_str("SELECTED_TEXT:\n<<<\n");
         out.push_str(selected_text);
         out.push_str("\n>\n");
-    } else if bucket_carries_selection {
-        out.push_str("SELECTED_TEXT: carried in <codescribe_context>.\n");
+    } else if bucket_selection_count > 0 {
+        let noun = if bucket_selection_count == 1 {
+            "selection"
+        } else {
+            "selections"
+        };
+        out.push_str(&format!(
+            "SELECTED_TEXT: carried in <codescribe_context> ({bucket_selection_count} {noun}).\n"
+        ));
     } else {
         out.push_str("SELECTED_TEXT: no selection available.\n");
     }
@@ -959,7 +966,7 @@ mod tests {
 
         assert_eq!(ctx.frontmost_app.as_deref(), Some("Terminal"));
         assert_eq!(ctx.selected_text.as_deref(), Some("selected terminal text"));
-        let input = build_assistive_input("opisz zaznaczenie", &ctx, false);
+        let input = build_assistive_input("opisz zaznaczenie", &ctx, 0);
         assert!(input.contains("selected terminal text"));
         assert!(input.contains("SELECTED_TEXT:\n<<<\n"));
     }
@@ -971,7 +978,7 @@ mod tests {
             selected_text: None,
         };
 
-        let input = build_assistive_input("kontynuuj bez selekcji", &ctx, false);
+        let input = build_assistive_input("kontynuuj bez selekcji", &ctx, 0);
 
         assert!(input.contains("USER_INSTRUCTION"));
         assert!(input.contains("kontynuuj bez selekcji"));
@@ -989,9 +996,9 @@ mod tests {
             selected_text: None,
         };
 
-        let input = build_assistive_input("summarize the selection", &ctx, true);
+        let input = build_assistive_input("summarize the selection", &ctx, 3);
 
-        assert!(input.contains("SELECTED_TEXT: carried in <codescribe_context>."));
+        assert!(input.contains("SELECTED_TEXT: carried in <codescribe_context> (3 selections)."));
         assert!(!input.contains("no selection available"));
         assert!(!input.contains("brak dostępnego zaznaczenia"));
     }
@@ -1005,7 +1012,7 @@ mod tests {
             selected_text: Some("live body".to_string()),
         };
 
-        let input = build_assistive_input("edit this", &ctx, true);
+        let input = build_assistive_input("edit this", &ctx, 1);
 
         assert_eq!(
             input,

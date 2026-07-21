@@ -81,9 +81,89 @@ impl ContextBucket {
         Self::new(selections_dir, images_dir, inline_limit_bytes)
     }
 
-    pub(crate) fn clear(&mut self) {
+    /// Archive the bucket's current truth under `context/archive/<stamp>-<id>/`
+    /// and reset the in-memory state. Nothing is destroyed: inline selections
+    /// are written out as files next to a `manifest.json`; spilled selections
+    /// and images already live as durable files and are referenced by absolute
+    /// path. Returns the archive dir (`None` when the bucket was empty — no
+    /// empty archives). On write failure the in-memory items are KEPT and the
+    /// error is returned — context loss is never an acceptable failure mode.
+    pub(crate) fn archive_and_reset(&mut self, channel: &str) -> Result<Option<PathBuf>> {
+        if self.items.is_empty() && self.images.is_empty() {
+            return Ok(None);
+        }
+
+        let archive_root = self
+            .selections_dir
+            .parent()
+            .map(|parent| parent.join("archive"))
+            .unwrap_or_else(|| self.selections_dir.join("archive"));
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+        let short_id = Uuid::new_v4().simple().to_string();
+        let dir = archive_root.join(format!("{stamp}-{}", &short_id[..8]));
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("failed to create context archive dir {}", dir.display()))?;
+
+        let mut selections = Vec::with_capacity(self.items.len());
+        for item in &self.items {
+            match &item.payload {
+                SelectionPayload::Inline(text) => {
+                    let file_name = format!("{}.txt", item.label);
+                    let file = dir.join(&file_name);
+                    fs::write(&file, text.as_bytes()).with_context(|| {
+                        format!("failed to archive inline selection to {}", file.display())
+                    })?;
+                    selections.push(serde_json::json!({
+                        "label": item.label,
+                        "kind": "inline",
+                        "file": file_name,
+                    }));
+                }
+                SelectionPayload::Path(path) => {
+                    selections.push(serde_json::json!({
+                        "label": item.label,
+                        "kind": "spill",
+                        "path": path.to_string_lossy(),
+                    }));
+                }
+            }
+        }
+
+        let images: Vec<serde_json::Value> = self
+            .images
+            .iter()
+            .map(|image| {
+                let (path, oversized) = match &image.payload {
+                    ImagePayload::Path(p) => (p, false),
+                    ImagePayload::OversizedPath(p) => (p, true),
+                };
+                serde_json::json!({
+                    "label": image.label,
+                    "kind": "image",
+                    "path": path.to_string_lossy(),
+                    "oversized": oversized,
+                })
+            })
+            .collect();
+
+        let manifest = serde_json::json!({
+            "schema_version": "context_archive.v1",
+            "archived_at": chrono::Utc::now().to_rfc3339(),
+            "channel": channel,
+            "selections": selections,
+            "images": images,
+        });
+        let manifest_path = dir.join("manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest)
+                .context("failed to serialize archive manifest")?,
+        )
+        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+
         self.items.clear();
         self.images.clear();
+        Ok(Some(dir))
     }
 
     #[cfg(test)]
@@ -95,7 +175,8 @@ impl ContextBucket {
         !self.items.is_empty()
     }
 
-    #[cfg(test)]
+    /// Number of captured selections — feeds the wire header's honest
+    /// `carried in <codescribe_context> (N selections)` count.
     pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
@@ -349,5 +430,68 @@ mod tests {
         let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 1024);
         assert_eq!(bucket.add_image_png(&[]).expect("empty"), None);
         assert!(bucket.is_empty());
+    }
+
+    #[test]
+    fn archive_preserves_inline_and_spill_truth_then_resets() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 8);
+        bucket
+            .add_selection(3, "inline".to_string())
+            .expect("inline capture");
+        bucket
+            .add_selection(9, "definitely oversized selection".to_string())
+            .expect("spill capture");
+        bucket
+            .add_image_png(b"\x89PNG fake")
+            .expect("image capture");
+
+        let dir = bucket
+            .archive_and_reset("paste-delivery")
+            .expect("archive")
+            .expect("non-empty bucket archives");
+
+        assert!(bucket.is_empty(), "in-memory state resets after archive");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.join("manifest.json")).expect("manifest exists"),
+        )
+        .expect("manifest parses");
+        assert_eq!(manifest["schema_version"], "context_archive.v1");
+        assert_eq!(manifest["channel"], "paste-delivery");
+        assert_eq!(
+            manifest["selections"].as_array().expect("selections").len(),
+            2
+        );
+        assert_eq!(manifest["images"].as_array().expect("images").len(), 1);
+
+        // Inline body is reproducible from the archive itself.
+        assert_eq!(
+            fs::read_to_string(dir.join("selection_1.txt")).expect("archived inline body"),
+            "inline"
+        );
+        // Spilled body stays at its durable path, referenced by the manifest.
+        let spill_path = manifest["selections"][1]["path"]
+            .as_str()
+            .expect("spill path");
+        assert_eq!(
+            fs::read_to_string(spill_path).expect("spill body survives archive"),
+            "definitely oversized selection"
+        );
+    }
+
+    #[test]
+    fn archive_of_empty_bucket_creates_nothing() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut bucket = ContextBucket::new_selections_only(temp.path().join("selections"), 8);
+        assert_eq!(
+            bucket
+                .archive_and_reset("session-start-discard")
+                .expect("noop"),
+            None
+        );
+        assert!(
+            !temp.path().join("archive").exists(),
+            "no empty archive dirs"
+        );
     }
 }
