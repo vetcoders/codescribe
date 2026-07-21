@@ -182,7 +182,16 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling,
     }
     func onDone() {
         // Terminal only — never open/activate the agent window here (W10-A).
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDone() } }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceDone()
+                // Turn-completed persistence edge: broadcast so every observer
+                // of the persisted thread set re-reads disk truth (rail live
+                // refresh, wave S cut C) — not just the store this listener
+                // happens to drive.
+                ThreadsChangeBus.postThreadsChanged()
+            }
+        }
     }
     func onError(message: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceError(message) } }

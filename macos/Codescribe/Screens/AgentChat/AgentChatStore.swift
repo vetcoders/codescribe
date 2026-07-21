@@ -1,3 +1,4 @@
+import AppKit
 import OSLog
 import SwiftUI
 
@@ -443,6 +444,11 @@ final class AgentChatStore: ObservableObject {
     /// the first disk persist and a manual rename interleave.
     private var customTitleThreadIDs: Set<UUID> = []
 
+    /// NotificationCenter tokens for the event-driven rail refresh (wave S,
+    /// cut C): window activation + cross-surface `threadsDidChange`. Removed
+    /// on deinit; empty when no threads provider is wired (preview/mock).
+    private var externalThreadsObservers: [NSObjectProtocol] = []
+
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
          threads: [ChatThread]? = nil,
@@ -464,6 +470,13 @@ final class AgentChatStore: ObservableObject {
         self.threads = seeded
         self.selectedThreadID = seeded.first?.id
         if let first = seeded.first { loadMessagesIfNeeded(first.id) }
+        beginObservingExternalThreadChanges()
+    }
+
+    deinit {
+        for observer in externalThreadsObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     var currentThread: ChatThread? {
@@ -515,6 +528,49 @@ final class AgentChatStore: ObservableObject {
             selectingBackendId: currentThread?.backendId,
             keepLocalDrafts: true
         )
+    }
+
+    // MARK: External refresh (rail live refresh — wave S, cut C)
+
+    /// Wire the event-driven rail refresh. Two triggers, zero polling:
+    /// 1. `ThreadsChangeBus.threadsDidChange` — some surface finished a turn
+    ///    whose persistence this store did not perform itself.
+    /// 2. `NSWindow.didBecomeKeyNotification` — window activation. A thread
+    ///    saved by an overlay/assistive turn while the Agent window was
+    ///    inactive becomes discoverable on the next activation, no app restart
+    ///    (incident 2026-07-21: the reply persisted but the open window kept
+    ///    rendering the launch-time list).
+    /// Provider-gated: a preview/mock store has no disk truth to re-read.
+    private func beginObservingExternalThreadChanges() {
+        guard threadsProvider != nil else { return }
+        let handler: (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshThreadsFromExternalChange() }
+        }
+        externalThreadsObservers = [
+            NotificationCenter.default.addObserver(
+                forName: ThreadsChangeBus.threadsDidChange,
+                object: nil,
+                queue: .main,
+                using: handler
+            ),
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main,
+                using: handler
+            ),
+        ]
+    }
+
+    /// Re-read persisted threads after an external change signal. Deliberately
+    /// a no-op while a composer or voice turn is in flight: the turn's own
+    /// terminal already refreshes with the right selection, and a mid-stream
+    /// replace could drop a freshly minted thread that does not exist on disk
+    /// until its first stream completes.
+    func refreshThreadsFromExternalChange() {
+        guard threadsProvider != nil else { return }
+        guard activeComposerTurn == nil, voiceTurnPhase == nil else { return }
+        refreshThreads()
     }
 
     func searchThreads(_ query: String) {
