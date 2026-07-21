@@ -187,6 +187,39 @@ fn assemble_assistive_delivery_lane(
     }
 }
 
+/// Raw/format paste lane (channel 2): the finalized transcript pasted into the
+/// frontmost app consumes the `ContextBucket` exactly like the assistive lanes
+/// do — selections ride along as `<codescribe_context>` tags (inline under the
+/// byte limit, `PATH:` for oversized spills). Images never enter the text
+/// paste: the vision marker block is an agent contract, so the paste lane
+/// skips it. An empty (or images-only) bucket leaves the transcript
+/// byte-for-byte untouched.
+fn assemble_raw_paste_wire(transcript: &str, bucket: &ContextBucket) -> String {
+    if !bucket.has_selection_items() {
+        return transcript.to_string();
+    }
+    strip_trailing_image_marker_block(&bucket.append_to_message(transcript))
+}
+
+/// Drop the trailing vision-marker block appended by
+/// `ContextBucket::append_to_message` when images share the bucket with
+/// selections. Only a suffix that structurally matches the block (marker
+/// header followed exclusively by `- <path>` lines) is stripped, so selection
+/// payloads keep arbitrary content intact.
+fn strip_trailing_image_marker_block(wire: &str) -> String {
+    let header = format!(
+        "\n\n---\n{}\n",
+        codescribe_core::attachment::IMAGE_PATHS_MARKER
+    );
+    if let Some(idx) = wire.rfind(&header) {
+        let tail = &wire[idx + header.len()..];
+        if !tail.is_empty() && tail.lines().all(|line| line.starts_with("- ")) {
+            return wire[..idx].to_string();
+        }
+    }
+    wire.to_string()
+}
+
 const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
 const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
 
@@ -4019,11 +4052,25 @@ impl RecordingController {
             info!("Final transcript matches RAW; skipping duplicate save");
         }
 
+        // Paste lane consumes the ContextBucket exactly like assistive delivery
+        // does (assemble + clear under one lock — parity with
+        // deliver_pending_assistive_transcript). Assistive sessions never take
+        // this branch (`resolve_auto_paste_policy` vetoes them), so their bucket
+        // stays intact for the overlay delivery lane.
+        let paste_wire = if should_auto_paste {
+            let mut bucket = self.context_bucket.lock().await;
+            let wire = assemble_raw_paste_wire(&final_formatted_text, &bucket);
+            bucket.clear();
+            wire
+        } else {
+            final_formatted_text.clone()
+        };
+
         if cfg!(test) {
             info!("Skipping paste in tests (mode={})", mode_label);
         } else if should_auto_paste {
             let paste_text = maybe_wrap_transcript_for_delivery_with_quality(
-                &final_formatted_text,
+                &paste_wire,
                 &config,
                 &mode_label,
                 Some(&truth_metadata),

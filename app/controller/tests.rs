@@ -944,6 +944,158 @@ fn armed_image_capture_reaches_vision_attachment_assembly_and_degrades_oversize(
 }
 
 #[test]
+fn raw_paste_wire_carries_inline_and_spilled_selections() {
+    // Operator scenario: raw dictation with two captured selections, one of
+    // them oversized. The paste wire must inline the small one and spill the
+    // big one as a PATH reference — same contract as the assistive lanes.
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 32);
+    bucket
+        .add_selection(3, "small inline selection".to_string())
+        .expect("inline selection");
+    let oversized_body = "x".repeat(64);
+    bucket
+        .add_selection(9, oversized_body.clone())
+        .expect("oversized selection");
+
+    let wire = assemble_raw_paste_wire("dictated raw text", &bucket);
+
+    assert!(
+        wire.starts_with("dictated raw text\n\n<codescribe_context>\n"),
+        "wire must be transcript + context block: {wire}"
+    );
+    assert!(wire.contains("<selection_1>\nsmall inline selection\n</selection_1>"));
+    assert!(wire.contains("<selection_2>\nPATH: "));
+    assert!(
+        !wire.contains(&oversized_body),
+        "oversized selection must not be inlined"
+    );
+    let spill_path = wire
+        .lines()
+        .find_map(|line| line.strip_prefix("PATH: "))
+        .expect("spill path in wire");
+    assert_eq!(
+        std::fs::read_to_string(spill_path).expect("spilled selection body"),
+        oversized_body,
+        "spill file must carry the full selection"
+    );
+}
+
+#[test]
+fn raw_paste_wire_with_empty_bucket_is_byte_for_byte_transcript() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    // Trailing whitespace intentionally present: empty bucket must not even
+    // trim — output stays byte-for-byte identical to today's paste.
+    let transcript = "plain dictation with trailing newline \n";
+    assert_eq!(assemble_raw_paste_wire(transcript, &bucket), transcript);
+}
+
+#[test]
+fn raw_paste_wire_skips_bucket_images() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new(
+        temp_dir.path().join("selections"),
+        temp_dir.path().join("images"),
+        1024,
+    );
+    bucket
+        .add_image_png(b"\x89PNG\r\n\x1a\nfake-image")
+        .expect("image capture");
+
+    // Images-only bucket: text paste stays byte-for-byte the transcript.
+    assert_eq!(
+        assemble_raw_paste_wire("look at this", &bucket),
+        "look at this"
+    );
+
+    // Images + selection: selection tags ride along, vision marker does not.
+    bucket
+        .add_selection(0, "text selection".to_string())
+        .expect("selection capture");
+    let wire = assemble_raw_paste_wire("look at this", &bucket);
+    assert!(wire.contains("<selection_1>\ntext selection\n</selection_1>"));
+    assert!(
+        !wire.contains(codescribe_core::attachment::IMAGE_PATHS_MARKER),
+        "vision marker is an agent contract, never paste text: {wire}"
+    );
+    assert!(wire.ends_with("</codescribe_context>"));
+}
+
+#[tokio::test]
+#[serial]
+async fn raw_pipeline_finalize_consumes_bucket_like_assistive_delivery() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    controller
+        .context_bucket
+        .lock()
+        .await
+        .add_selection(0, "carry me into the paste".to_string())
+        .expect("selection capture");
+    assert!(controller.context_bucket.lock().await.has_selection_items());
+
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "raw dictation with a pending selection",
+            Config::default(),
+            true,
+            false,
+            Some(RecordingTranscriptSource::LocalFinalPass),
+        ))
+        .await
+        .expect("raw pipeline succeeds");
+
+    let bucket = controller.context_bucket.lock().await;
+    assert!(
+        !bucket.has_selection_items(),
+        "raw finalize must clear the bucket after delivery (parity with assistive)"
+    );
+    assert!(
+        bucket.is_empty(),
+        "images are consumed alongside selections"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn assistive_pipeline_leaves_bucket_for_overlay_delivery_lane() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    controller
+        .context_bucket
+        .lock()
+        .await
+        .add_selection(0, "assistive selection".to_string())
+        .expect("selection capture");
+    let config = Config {
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let mut params = test_transcript_pipeline_params(
+        "assistive dictation",
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds");
+
+    assert!(
+        controller.context_bucket.lock().await.has_selection_items(),
+        "assistive finalize must NOT steal the bucket — overlay delivery consumes it"
+    );
+}
+
+#[test]
 fn formatting_setting_is_orthogonal_to_hold_and_assistive_delivery() {
     let config = Config {
         ai_formatting_enabled: true,
