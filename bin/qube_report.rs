@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //!   cargo run --bin qube-report -- --date 2026-01-17 --limit 5
+//!   cargo run --bin qube-report -- --replay-corrections [--apply]
 
 use anyhow::Result;
 use clap::Parser;
@@ -9,6 +10,7 @@ use std::path::PathBuf;
 
 use codescribe::config::Config;
 use codescribe::qube_report::{LocalTranscriptionMode, MetricsReference, QualityReportConfig, run};
+use codescribe_core::quality::overlay_quality::replay_corrections_through_extractor;
 
 #[derive(Parser)]
 #[command(name = "qube-report")]
@@ -62,6 +64,20 @@ struct Args {
     /// Reference source for metrics (corpus .txt or cloud transcript)
     #[arg(long, value_enum, default_value = "corpus")]
     metrics_reference: ReferenceSourceArg,
+
+    /// Replay historical quality/corrections.jsonl through the current
+    /// word-level lexicon extractor (dry-run table by default).
+    #[arg(long, default_value_t = false)]
+    replay_corrections: bool,
+
+    /// Optional path to corrections.jsonl (default: $CODESCRIBE_DATA_DIR/quality/corrections.jsonl)
+    #[arg(long)]
+    corrections_path: Option<PathBuf>,
+
+    /// With --replay-corrections: upsert extracted pairs into lexicon.custom.jsonl
+    /// (backs up existing file to .bak-replay-<ts> first).
+    #[arg(long, default_value_t = false)]
+    apply: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -73,6 +89,31 @@ enum ReferenceSourceArg {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.replay_corrections {
+        let config_dir = Config::config_dir();
+        let path = args
+            .corrections_path
+            .unwrap_or_else(|| config_dir.join("quality").join("corrections.jsonl"));
+        let table = replay_corrections_through_extractor(&path, args.apply)?;
+        println!(
+            "line\tcorrection_id\tvariant\tcanonical\tapplied\t(source={})",
+            path.display()
+        );
+        for row in &table {
+            println!(
+                "{}\t{}\t{}\t{}\t{}",
+                row.line, row.correction_id, row.variant, row.canonical, row.applied
+            );
+        }
+        println!(
+            "replay: {} candidate pair(s){} from {}",
+            table.len(),
+            if args.apply { " applied" } else { " (dry-run)" },
+            path.display()
+        );
+        return Ok(());
+    }
 
     if args.no_embeddings {
         // SAFETY: this is a single-process CLI before any threads start.

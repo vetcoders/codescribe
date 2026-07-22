@@ -9,14 +9,14 @@
 //! Privacy: local disk only.
 
 use codescribe_core::quality::overlay_quality::{
-    CustomLexiconEntry, QualityRecord, commit_overlay_correction_with_level,
+    CustomLexiconEntry, QualityRecord, commit_overlay_correction_with_confidence,
     custom_lexicon_entries, finalize_voice_lab_correction, recent_quality_records,
 };
 
 use crate::CsError;
 
 /// UI-safe projection of a persisted overlay correction.
-#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
 pub struct CsQualityRecord {
     pub id: String,
     pub revision: u64,
@@ -25,6 +25,9 @@ pub struct CsQualityRecord {
     pub edited_text: String,
     pub action: String,
     pub timestamp_ms: u64,
+    pub avg_logprob: Option<f32>,
+    pub speech_pct: Option<f32>,
+    pub confidence_flags: Vec<String>,
 }
 
 impl From<QualityRecord> for CsQualityRecord {
@@ -43,6 +46,9 @@ impl From<QualityRecord> for CsQualityRecord {
             edited_text: record.edited_text,
             action,
             timestamp_ms: record.timestamp_ms,
+            avg_logprob: record.avg_logprob,
+            speech_pct: record.speech_pct,
+            confidence_flags: record.confidence_flags,
         }
     }
 }
@@ -66,6 +72,8 @@ pub fn quality_finalize_correction(
 pub struct CsLexiconEntry {
     pub variant: String,
     pub canonical: String,
+    /// `correction` | `manual` | `import` | `legacy`
+    pub source: String,
 }
 
 impl From<CustomLexiconEntry> for CsLexiconEntry {
@@ -73,21 +81,34 @@ impl From<CustomLexiconEntry> for CsLexiconEntry {
         Self {
             variant: entry.variant,
             canonical: entry.canonical,
+            source: entry.source,
         }
     }
 }
 
+/// Typed carrier for future per-token confidence (W11-C spike; unused by UI yet).
+/// Wire is present so W12 overlay "yellow words" can land without another bridge reshape.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsTokenConfidence {
+    pub token: String,
+    pub logprob: f32,
+}
+
 #[uniffi::export]
+#[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(
     raw_text: String,
     delivered_text: String,
     edited_text: String,
     action: String,
     formatting_level: String,
+    avg_logprob: Option<f32>,
+    speech_pct: Option<f32>,
+    confidence_flags: Vec<String>,
 ) -> Result<(), CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
     // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
-    commit_overlay_correction_with_level(
+    commit_overlay_correction_with_confidence(
         &raw_text,
         &delivered_text,
         &edited_text,
@@ -95,6 +116,9 @@ pub fn commit_overlay_quality_record(
         None,
         Some(&action),
         Some(&formatting_level),
+        avg_logprob,
+        speech_pct,
+        confidence_flags,
     )
     .map(|_path| ())
     .map_err(|e| CsError::Quality {
@@ -143,6 +167,9 @@ mod tests {
             raw_text: "raw".into(),
             delivered_text: "delivered".into(),
             edited_text: "edited".into(),
+            avg_logprob: Some(-0.5),
+            speech_pct: Some(0.8),
+            confidence_flags: vec!["low_logprob".into()],
             meta: serde_json::json!({ "action": "copy" }),
         };
 
@@ -156,6 +183,9 @@ mod tests {
                 edited_text: "edited".into(),
                 action: "copy".into(),
                 timestamp_ms: 42,
+                avg_logprob: Some(-0.5),
+                speech_pct: Some(0.8),
+                confidence_flags: vec!["low_logprob".into()],
             }
         );
     }
@@ -186,6 +216,9 @@ mod tests {
             "synthetic canonical".into(),
             "copy".into(),
             "creative".into(),
+            Some(-1.2),
+            Some(0.75),
+            vec!["test_flag".into()],
         );
         let records = recent_quality_records(10).expect("read committed quality record");
         let lexicon = custom_lexicon_entries().expect("read custom lexicon");
@@ -201,6 +234,9 @@ mod tests {
         result.expect("bridge commit");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].formatting_level.as_deref(), Some("max"));
+        assert_eq!(records[0].avg_logprob, Some(-1.2));
+        assert_eq!(records[0].speech_pct, Some(0.75));
+        assert_eq!(records[0].confidence_flags, vec!["test_flag".to_string()]);
         assert!(
             lexicon.is_empty(),
             "Max evidence must not teach the lexicon"
@@ -215,6 +251,9 @@ mod tests {
             "canonical".into(),
             "close".into(),
             "mystery".into(),
+            None,
+            None,
+            vec![],
         )
         .expect_err("unknown level must be rejected");
 
