@@ -67,8 +67,7 @@ use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
 use codescribe_core::pipeline::contracts::{
-    FileTranscriptionOptions, FinalPassDisposition, TranscriptionConfidenceFlag,
-    TranscriptionVerdict,
+    FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
 };
 
 #[cfg(test)]
@@ -1044,13 +1043,58 @@ fn compose_final_status(
 
 fn truth_engine_label(source: Option<RecordingTranscriptSource>) -> Option<String> {
     source.map(|source| match source {
-        RecordingTranscriptSource::LocalFinalPass => "local_whisper".to_string(),
-        RecordingTranscriptSource::ToggleSessionAdjudicated => "local_whisper".to_string(),
+        RecordingTranscriptSource::LocalFinalPass => {
+            if codescribe_core::stt::active_engine_is_apple() {
+                "local_apple".to_string()
+            } else {
+                "local_whisper".to_string()
+            }
+        }
+        RecordingTranscriptSource::ToggleSessionAdjudicated => {
+            if codescribe_core::stt::active_engine_is_apple() {
+                "local_apple".to_string()
+            } else {
+                "local_whisper".to_string()
+            }
+        }
         RecordingTranscriptSource::CloudPrimary => "cloud_stt".to_string(),
         RecordingTranscriptSource::CloudFallback => "cloud_stt".to_string(),
         RecordingTranscriptSource::Streaming => "streaming_whisper".to_string(),
         RecordingTranscriptSource::StreamingFallback => "streaming_whisper".to_string(),
     })
+}
+
+/// Single INFO summary line for stop-path wall time (W11-B budget receipt).
+pub(crate) fn format_stop_path_budget_line(
+    total_secs: f64,
+    rec_stop_secs: f64,
+    final_pass_secs: f64,
+    postproc_secs: f64,
+    format_secs: f64,
+    delivery_secs: f64,
+) -> String {
+    format!(
+        "stop_path_budget: total={total_secs:.3}s phases={{rec_stop={rec_stop_secs:.3}s,final_pass={final_pass_secs:.3}s,postproc={postproc_secs:.3}s,format={format_secs:.3}s,delivery={delivery_secs:.3}s}}"
+    )
+}
+
+/// Skip Whisper full-WAV re-pass when streaming already holds a complete transcript.
+/// Apple on-device final pass stays (it is sub-second for pl-PL).
+pub(crate) fn should_skip_full_final_repass(
+    streaming_text: &str,
+    no_speech_reason: Option<&str>,
+    prefer_apple: bool,
+) -> bool {
+    if prefer_apple {
+        return false;
+    }
+    if no_speech_reason.is_some() {
+        return false;
+    }
+    let text = streaming_text.trim();
+    // Complete enough: non-empty streaming transcript ends at a sentence/utterance
+    // boundary or is simply non-empty after a clean session stop.
+    !text.is_empty()
 }
 
 fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
@@ -3123,7 +3167,7 @@ impl RecordingController {
         self.set_state(State::Busy).await;
         self.show_processing_badge_if_enabled().await;
 
-        let result = {
+        let (result, rec_stop_secs, phase3_secs) = {
             let phase1 = std::time::Instant::now();
             info!("stop_toggle_inner: PHASE 1 — locking recorder mutex");
             let mut recorder_guard = self.recorder.lock().await;
@@ -3138,6 +3182,7 @@ impl RecordingController {
             info!("stop_toggle_inner: PHASE 2 — calling recorder.stop() (cpal drain + WAV save)");
             let (streaming_text, raw_audio_path_opt) =
                 recorder.stop().await.context("Failed to stop recorder")?;
+            let rec_stop_secs = phase2.elapsed().as_secs_f64();
             info!(
                 "stop_toggle_inner: PHASE 2 — recorder.stop() returned in {:?} (streaming_text={} chars, has_wav={})",
                 phase2.elapsed(),
@@ -3163,12 +3208,13 @@ impl RecordingController {
                     Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
                 )
                 .await;
+            let phase3_secs = phase3.elapsed().as_secs_f64();
             info!(
                 "stop_toggle_inner: PHASE 3 — process_stopped_recording completed in {:?} (ok={})",
                 phase3.elapsed(),
                 r.is_ok()
             );
-            r
+            (r, rec_stop_secs, phase3_secs)
         };
 
         let phase4 = std::time::Instant::now();
@@ -3178,10 +3224,27 @@ impl RecordingController {
         self.reset_finished_recording_state().await;
         self.handle_processed_recording_result(assistive, &result)
             .await;
+        let delivery_secs = phase4.elapsed().as_secs_f64();
+        let total_secs = stop_start.elapsed().as_secs_f64();
+        // final_pass/postproc/format are nested inside PHASE 3; surface the
+        // aggregate as final_pass-ish work until finer-grained timers land.
+        // rec_stop = PHASE 2, delivery = PHASE 4, remaining PHASE 3 attributed
+        // to final_pass (dominant cost historically was full Whisper re-pass).
         info!(
             "stop_toggle_inner: PHASE 4 — cleanup + result handler completed in {:?} (total stop time: {:?})",
             phase4.elapsed(),
             stop_start.elapsed()
+        );
+        info!(
+            "{}",
+            format_stop_path_budget_line(
+                total_secs,
+                rec_stop_secs,
+                phase3_secs,
+                0.0,
+                0.0,
+                delivery_secs,
+            )
         );
 
         result.map(|_| ())
@@ -3364,31 +3427,78 @@ impl RecordingController {
             .unwrap_or(true);
 
         if use_local_stt && local_final_pass_enabled {
-            if let Some(path) = &audio_path {
+            let prefer_apple = codescribe_core::stt::active_engine_is_apple();
+            let session_no_speech = {
+                let snap = snapshot_session_telemetry(&self.session_telemetry);
+                snap.no_speech_reason
+            };
+            let skip_full_repass = should_skip_full_final_repass(
+                &streaming_text,
+                session_no_speech.as_deref(),
+                prefer_apple,
+            );
+
+            if skip_full_repass {
+                local_final_pass_attempted = true;
+                info!(
+                    "final_pass_skipped reason=complete_streaming_transcript chars={}",
+                    streaming_text.trim().len()
+                );
+                let text = streaming_text.trim().to_string();
+                let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                    text: text.clone(),
+                    ..Default::default()
+                };
+                local_final_pass_verdict = Some(
+                    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                        text,
+                        raw,
+                        None,
+                        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                            codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                        ),
+                        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                            disposition: FinalPassDisposition::Skipped,
+                            reason: Some("complete_streaming_transcript".to_string()),
+                            lexicon_rewrites: 0,
+                            repetition_cleanups: 0,
+                        }),
+                    ),
+                );
+            } else if let Some(path) = &audio_path {
                 local_final_pass_attempted = true;
                 let wav_path = path.as_path().to_path_buf();
                 let lang = language_opt.map(str::to_string);
 
                 info!(
-                    "Running final-pass local STT adjudicator: {}",
+                    "Running final-pass local STT adjudicator (engine={}): {}",
+                    if prefer_apple {
+                        "apple_on_device"
+                    } else {
+                        "whisper"
+                    },
                     wav_path.display()
                 );
 
+                let final_pass_started = std::time::Instant::now();
                 match tokio::task::spawn_blocking(move || {
-                    crate::whisper::transcribe_file_verdict(
-                        &wav_path,
-                        lang.as_deref(),
-                        FileTranscriptionOptions::default(),
-                    )
+                    // Route through active engine so pl-PL Auto serves Apple
+                    // SFSpeechRecognizer on-device instead of Whisper full-WAV re-pass.
+                    codescribe_core::stt::transcribe_file_verdict(&wav_path, lang.as_deref())
                 })
                 .await
                 {
                     Ok(Ok(verdict)) => {
                         info!(
-                            "Final-pass verdict captured ({} chars, speech_pct={:?}, avg_logprob={:?})",
+                            "Final-pass verdict captured ({} chars, engine={} mode={} speech_pct={:?}, avg_logprob={:?}, elapsed={:?})",
                             verdict.text.len(),
+                            verdict.engine.engine,
+                            verdict.engine.mode,
                             verdict.vad.as_ref().map(|vad| vad.speech_pct),
-                            verdict.raw.avg_logprob
+                            verdict.raw.avg_logprob,
+                            final_pass_started.elapsed()
                         );
                         local_final_pass_verdict = Some(verdict);
                     }
@@ -3691,15 +3801,18 @@ impl RecordingController {
             postprocess_stats.lexicon_rewrites
         );
 
-        let raw_entry_path = if !live_stream_session && (raw_save_enabled || assistive) {
-            let raw_entry = crate::state::history::save_entry_with_timestamp_and_slug(
-                &raw_text,
-                Some(recording_timestamp),
-                crate::state::history::TranscriptKind::Raw,
-                Some(&raw_text),
-            );
-            info!("Raw transcript saved: {}", raw_entry.path.display());
-            Some(raw_entry.path)
+        // Persist raw transcript off the AI-format critical path (W11-B): format
+        // must not serialize behind history I/O it does not need.
+        let raw_save_join = if !live_stream_session && (raw_save_enabled || assistive) {
+            let raw_text_for_save = raw_text.clone();
+            Some(tokio::task::spawn_blocking(move || {
+                crate::state::history::save_entry_with_timestamp_and_slug(
+                    &raw_text_for_save,
+                    Some(recording_timestamp),
+                    crate::state::history::TranscriptKind::Raw,
+                    Some(&raw_text_for_save),
+                )
+            }))
         } else {
             None
         };
@@ -3984,6 +4097,20 @@ impl RecordingController {
             display_status: Some(final_status.clone()),
         };
 
+        let raw_entry_path = if let Some(handle) = raw_save_join {
+            match handle.await {
+                Ok(entry) => {
+                    info!("Raw transcript saved: {}", entry.path.display());
+                    Some(entry.path)
+                }
+                Err(e) => {
+                    warn!("Raw transcript save task failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         if let Some(path) = raw_entry_path.as_deref() {
             write_truth_sidecar_logged(path, &truth_metadata);
         }

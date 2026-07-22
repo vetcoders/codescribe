@@ -351,10 +351,50 @@ async fn test_hold_down_sets_force_raw_mode() {
 }
 
 #[test]
-fn test_truth_engine_label_maps_toggle_session_adjudicated_to_local_whisper() {
-    assert_eq!(
-        truth_engine_label(Some(RecordingTranscriptSource::ToggleSessionAdjudicated)).as_deref(),
-        Some("local_whisper")
+fn test_truth_engine_label_maps_toggle_session_adjudicated_to_local_engine() {
+    // On macOS 26+ with a resolvable Apple bridge, Auto selects Apple; otherwise Whisper.
+    let label = truth_engine_label(Some(RecordingTranscriptSource::ToggleSessionAdjudicated));
+    assert!(
+        matches!(
+            label.as_deref(),
+            Some("local_whisper") | Some("local_apple")
+        ),
+        "expected local_whisper or local_apple, got {label:?}"
+    );
+}
+
+#[test]
+fn test_stop_path_budget_line_format() {
+    let line = format_stop_path_budget_line(1.234, 0.5, 0.4, 0.1, 0.2, 0.034);
+    assert!(
+        line.starts_with("stop_path_budget: total=1.234s phases="),
+        "unexpected budget line: {line}"
+    );
+    assert!(line.contains("rec_stop=0.500s"));
+    assert!(line.contains("final_pass=0.400s"));
+    assert!(line.contains("postproc=0.100s"));
+    assert!(line.contains("format=0.200s"));
+    assert!(line.contains("delivery=0.034s"));
+}
+
+#[test]
+fn test_should_skip_full_final_repass_on_complete_streaming() {
+    assert!(should_skip_full_final_repass(
+        "To jest kompletny streaming transcript.",
+        None,
+        false
+    ));
+    assert!(
+        !should_skip_full_final_repass("  ", None, false),
+        "empty streaming must not skip"
+    );
+    assert!(
+        !should_skip_full_final_repass("tekst", Some("vad_no_speech"), false),
+        "no-speech sessions must not skip"
+    );
+    assert!(
+        !should_skip_full_final_repass("tekst", None, true),
+        "Apple lane keeps final-pass (sub-second on-device)"
     );
 }
 
