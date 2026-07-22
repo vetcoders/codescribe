@@ -67,6 +67,13 @@ impl DoubleTapGesture {
             Self::RightOption => "Double-tap Right Option",
         }
     }
+
+    pub fn reason_token(self) -> &'static str {
+        match self {
+            Self::LeftOption => "left_option",
+            Self::RightOption => "right_option",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +89,31 @@ impl DoubleTapBlockReason {
             Self::ModifierComboActive => "another modifier or hold gesture is active",
         }
     }
+
+    /// Stable token for log/Diagnostics lines (`blocked_double_tap reason=…`).
+    pub fn reason_token(self) -> &'static str {
+        match self {
+            Self::BindingDisabled => "binding_disabled",
+            Self::ModifierComboActive => "modifier_combo_active",
+        }
+    }
+}
+
+/// Stable INFO log line for a blocked double-tap (visibility only — no routing change).
+pub fn blocked_double_tap_diagnostic_line(
+    gesture: DoubleTapGesture,
+    reason: DoubleTapBlockReason,
+) -> String {
+    format!(
+        "blocked_double_tap gesture={} reason={}",
+        gesture.reason_token(),
+        reason.reason_token()
+    )
+}
+
+/// Stable INFO log line when an arm attempt is ignored (visibility only).
+pub fn arm_ignored_diagnostic_line(reason: &str) -> String {
+    format!("arm_ignored reason={reason}")
 }
 
 /// Modifier flags for hold gesture detection
@@ -207,6 +239,8 @@ pub struct HotkeyDetector {
     key_pressed_during_modifier: bool,
     show_agent_space_down: bool,
     insert_here_v_down: bool,
+    /// Edge-trigger for `arm_ignored` diagnostics (visibility only).
+    wrong_arm_logged: bool,
 }
 
 impl Default for HotkeyDetector {
@@ -226,6 +260,7 @@ impl Default for HotkeyDetector {
             key_pressed_during_modifier: false,
             show_agent_space_down: false,
             insert_here_v_down: false,
+            wrong_arm_logged: false,
         }
     }
 }
@@ -367,6 +402,21 @@ impl HotkeyDetector {
                 config.hold_arm_modifier,
             )
         };
+
+        // Visibility-only: rising edge when the non-configured arm modifier is
+        // pressed while hold base is active (valentino-class silent arm).
+        let base_for_arm = hold_base_pressed(modifiers, dictation_binding);
+        let wrong_arm = match config.hold_arm_modifier {
+            crate::config::HoldArmModifier::Shift => modifiers.cmd && !modifiers.shift,
+            crate::config::HoldArmModifier::Cmd => modifiers.shift && !modifiers.cmd,
+        };
+        if base_for_arm && wrong_arm && !self.wrong_arm_logged {
+            tracing::info!("{}", arm_ignored_diagnostic_line("wrong_arm_modifier"));
+            self.wrong_arm_logged = true;
+        } else if !wrong_arm {
+            self.wrong_arm_logged = false;
+        }
+
         let mut emitted = None;
         if combo_active && !self.hold_active {
             self.hold_active = true;
@@ -612,8 +662,13 @@ fn register_blocked_option_double_tap(
         (&mut detector.last_left_tap_ts, DoubleTapGesture::LeftOption)
     };
 
-    consume_double_tap(last_tap, now, interval_ms)
-        .then_some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
+    if consume_double_tap(last_tap, now, interval_ms) {
+        let line = blocked_double_tap_diagnostic_line(gesture, reason);
+        tracing::info!("{line}");
+        Some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
+    } else {
+        None
+    }
 }
 
 fn hold_base_pressed(
@@ -1270,6 +1325,36 @@ mod tests {
                 gesture: DoubleTapGesture::LeftOption,
                 reason: DoubleTapBlockReason::BindingDisabled,
             })
+        );
+    }
+
+    #[test]
+    fn blocked_double_tap_diagnostic_line_uses_stable_reason_tokens() {
+        assert_eq!(
+            blocked_double_tap_diagnostic_line(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::BindingDisabled,
+            ),
+            "blocked_double_tap gesture=left_option reason=binding_disabled"
+        );
+        assert_eq!(
+            blocked_double_tap_diagnostic_line(
+                DoubleTapGesture::RightOption,
+                DoubleTapBlockReason::ModifierComboActive,
+            ),
+            "blocked_double_tap gesture=right_option reason=modifier_combo_active"
+        );
+        assert_eq!(
+            arm_ignored_diagnostic_line("wrong_arm_modifier"),
+            "arm_ignored reason=wrong_arm_modifier"
+        );
+        assert_eq!(
+            DoubleTapBlockReason::BindingDisabled.reason_token(),
+            "binding_disabled"
+        );
+        assert_eq!(
+            DoubleTapBlockReason::ModifierComboActive.reason_token(),
+            "modifier_combo_active"
         );
     }
 

@@ -21,6 +21,7 @@ pub use config::{
 pub use detector::{
     DoubleTapBlockReason, DoubleTapGesture, HoldAction, HoldMode, HotkeyDetector,
     HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot, HotkeyPhysicalKey, ModifierFlags,
+    arm_ignored_diagnostic_line, blocked_double_tap_diagnostic_line,
 };
 pub use manager::{
     HotkeyManager, are_hotkeys_enabled, disable_hotkeys, enable_hotkeys,

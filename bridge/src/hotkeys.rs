@@ -796,12 +796,17 @@ async fn dispatch_recording_hotkey_event(
             controller.handle_hotkey_event(input).await?;
         }
         HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
+            // INFO line is the Diagnostics surface for valentino-class silence:
+            // blocked gestures must never vanish without a stable reason token.
+            let diagnostic =
+                codescribe::os::hotkeys::blocked_double_tap_diagnostic_line(gesture, reason);
+            tracing::info!("{diagnostic}");
             let body = format!(
                 "{} was detected, but {}.",
                 gesture.label(),
                 reason.message()
             );
-            eprintln!("Hotkey double-tap blocked: {body}");
+            tracing::info!("Hotkey double-tap blocked: {body}");
         }
     }
 
