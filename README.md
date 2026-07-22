@@ -163,7 +163,7 @@ make version
 Tagged builds publish DMGs through GitHub Releases:
 
 1. Open [Releases](https://github.com/vetcoders/codescribe/releases)
-2. Download `Codescribe_<version>.dmg` for the standard build, or `Codescribe_<version>_full.dmg` for the larger build with embedded Whisper.
+2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
 > **Current truth:** `v0.12.3` is published on GitHub Releases as a Developer ID signed, notarized and stapled DMG (`releases/latest/download/Codescribe.dmg`); source install remains the freshest path for unreleased work on this branch. The release workflow is wired to fail if the required Apple signing/notary secrets are missing.

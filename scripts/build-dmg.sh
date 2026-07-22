@@ -68,7 +68,11 @@ if [[ "$NO_EMBED" -eq 1 ]]; then
   EMBED_WHISPER=0
 fi
 
-DMG_NAME="Codescribe_${VERSION}${DMG_SUFFIX}.dmg"
+# Provenance slug: UTC build date + HEAD short SHA, so every DMG names the
+# exact commit it was cut from (matches the About window's BuildInfo line).
+BUILD_DATE="$(date -u +%Y%m%d)"
+HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short=9 HEAD 2>/dev/null || echo nogit)"
+DMG_NAME="Codescribe_${VERSION}-${BUILD_DATE}-${HEAD_SHA}${DMG_SUFFIX}.dmg"
 DMG_PATH="$ROOT_DIR/$DMG_NAME"
 
 BUILD_ENV=(env)
