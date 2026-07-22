@@ -105,6 +105,50 @@ może wymagać uprawnienia Screen Recording.
 - Dependabot na develop: 9 podatności (2 high, 4 moderate, 3 low) —
   przegląd i bounded fixy 2× high w pierwszej kolejności.
 
+## R5 — Emil Kurier: persona agenta (dopracowanie w toku)
+
+Emil to pełnokrwisty agent (11 native tools, sandbox rootów, 8 MCP, wątki),
+a jego prompt pisał go jak nieśmiałego korektora. Nowy `assistive.txt`
+(wdrożony operator-side 2026-07-22, do strojenia w `~/.codescribe/prompts/`):
+
+- **PERSONA/VOICE/CRAFT osobno** — osobowość ubiera kontrakt, nie zjada go;
+- **kurier wyników**: konkretny, szybki, z przymrużeniem oka; rejestr zamiast
+  hardcodowanych powiedzonek;
+- **dwa biegi**: DELIVERY (transform → czysty wynik, persona się chowa)
+  vs CONVERSATION/AGENT WORK (persona żyje, inicjatywa mile widziana);
+- **zna swój dom i zasięg**: sekcje YOUR APP / YOUR REACH — wie, że MA
+  dostęp do plików w rootach, searchowalnych wątków, MCP po imieniu
+  ("never claim you lack access when the reach covers it");
+- **jedna PERSONA, dwa CRAFT-y**: ten sam blok osobowości do `assistive.txt`
+  (ActOnSelection) i system promptu agent runtime — Emil jednym bytem.
+
+Po dostrojeniu operator-side: kanonizacja jak formatting
+(`core/prompts/assistive.txt` + `include_str!`).
+
+## R6 — Built-in plugins = switche sprzedażowe
+
+Jednostka dystrybucji: manifest `plugin.json` w formacie desktop-commander
+(`name/displayName/version/description/mcpServers{}/skills`). Codescribe
+czyta built-iny (shipped in-app, wersje przypięte) + `~/.codescribe/plugins/`.
+
+**Tiery (moat vs wygoda):**
+- **Moat (nasze, płatne switche):** loctree (strukturalna percepcja kodu),
+  aicx (pamięć między-agentowa), prview (PR review), vibecrafted (fleet
+  runtime), rust-memex. Nikt inny tego nie ma — to definiuje dev/pro/team.
+- **Wygoda (bundlowane, kurowane):** desktop-commander (MIT, third-party;
+  terminal/procesy/dokumenty), brave-search, curl. Podnoszą wartość bundle'a;
+  wartość = kuracja+integracja+wsparcie, nie tajność pakietu.
+
+**Mechanika:** Settings·Agent już ma per-server probe/status — dochodzi
+enable/disable per plugin + license gate na switch'ach moat. Lazy start
+(dzisiejszy model "configured (agent not started)") zostaje.
+
+**Bezpieczeństwo (nie negocjowane):** built-iny z przypiętymi wersjami
+(zero `@latest` w produkcie), checksum manifestu; user-added plugins za
+jawnym consent; desktop-commander (shell/procesy) musi być jawnie oznaczony
+jako full-access LUB spięty z prawdą rootów W2-B — decyzja przy briefie.
+Skills dir pluginu (`./skills/`) = faza 2.
+
 ## Zamknięte tą falą (referencja)
 
 Dual-channel dictation (bucket→paste, wire truth EN, rail live refresh,
