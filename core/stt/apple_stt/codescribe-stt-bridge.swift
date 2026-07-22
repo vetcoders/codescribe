@@ -1,13 +1,18 @@
 // codescribe-stt-bridge.swift
 //
-// SpeechAnalyzer bridge for Codescribe:
+// Apple on-device STT bridge for Codescribe:
 // - Reads one JSON request from stdin
 // - Emits one JSON response to stdout
+//
+// Backend selection (per locale):
+//   1. SpeechTranscriber (SpeechAnalyzer) when the locale is supported+installed
+//   2. SFSpeechRecognizer on-device when ST lacks the locale but SF supports it
+//   3. Honest error when neither can serve the locale
 //
 // Build example:
 //   swiftc -O -o codescribe-stt-bridge core/stt/apple_stt/codescribe-stt-bridge.swift
 //
-// Created by Vetcoders (c)2026
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
 
 import AVFoundation
 import Dispatch
@@ -35,6 +40,8 @@ struct BridgeResponse: Codable {
     let segments: [BridgeSegment]
     let localeSupported: Bool?
     let localeInstalled: Bool?
+    /// Selected Apple backend: `speech_transcriber` | `sf_speech_recognizer` | null
+    let backend: String?
     let error: String?
 }
 
@@ -58,6 +65,11 @@ enum BridgeError: Error, CustomStringConvertible {
     }
 }
 
+enum AppleSttBackend: String {
+    case speechTranscriber = "speech_transcriber"
+    case sfSpeechRecognizer = "sf_speech_recognizer"
+}
+
 Task {
     do {
         let request = try readRequest()
@@ -71,6 +83,7 @@ Task {
             segments: [],
             localeSupported: nil,
             localeInstalled: nil,
+            backend: nil,
             error: String(describing: error)
         )
         do {
@@ -123,8 +136,9 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
             status: "ok",
             text: transcription.text,
             segments: transcription.segments,
-            localeSupported: nil,
-            localeInstalled: nil,
+            localeSupported: true,
+            localeInstalled: true,
+            backend: transcription.backend.rawValue,
             error: nil
         )
     default:
@@ -132,26 +146,31 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
     }
 }
 
-private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeResponse {
-    let supported = await SpeechTranscriber.supportedLocales
-    var installed = await SpeechTranscriber.installedLocales
+// MARK: - Probe (ST → SFSpeech on-device)
 
-    guard let effectiveLocale = bestAvailableLocale(requested: locale, available: supported) else {
-        return BridgeResponse(
-            ok: true,
-            status: "ok",
-            text: "",
-            segments: [],
-            localeSupported: false,
-            localeInstalled: false,
-            error: nil
+private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeResponse {
+    // Prefer SpeechTranscriber when the locale is in its catalog.
+    let stSupported = await SpeechTranscriber.supportedLocales
+    if let effectiveLocale = bestAvailableLocale(requested: locale, available: stSupported) {
+        return try await probeSpeechTranscriber(
+            effectiveLocale: effectiveLocale,
+            allowDownload: allowDownload
         )
     }
+
+    // Fallback: SFSpeechRecognizer on-device for locales ST does not serve (e.g. pl-PL).
+    return probeSfSpeech(locale: locale)
+}
+
+private func probeSpeechTranscriber(
+    effectiveLocale: Locale,
+    allowDownload: Bool
+) async throws -> BridgeResponse {
+    var installed = await SpeechTranscriber.installedLocales
     let transcriber = makeTranscriber(locale: effectiveLocale)
-    let isSupported = true
     var isInstalled = containsLocale(installed, locale: effectiveLocale)
 
-    if isSupported && !isInstalled && allowDownload {
+    if !isInstalled && allowDownload {
         do {
             guard let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) else {
                 throw BridgeError.runtime("asset installation request unavailable")
@@ -165,8 +184,9 @@ private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeRe
                 status: "error",
                 text: "",
                 segments: [],
-                localeSupported: isSupported,
+                localeSupported: true,
                 localeInstalled: isInstalled,
+                backend: AppleSttBackend.speechTranscriber.rawValue,
                 error: "asset_install_failed: \(error)"
             )
         }
@@ -177,15 +197,48 @@ private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeRe
         status: "ok",
         text: "",
         segments: [],
-        localeSupported: isSupported,
+        localeSupported: true,
         localeInstalled: isInstalled,
+        backend: AppleSttBackend.speechTranscriber.rawValue,
         error: nil
     )
 }
 
+private func probeSfSpeech(locale: Locale) -> BridgeResponse {
+    guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+        return BridgeResponse(
+            ok: true,
+            status: "ok",
+            text: "",
+            segments: [],
+            localeSupported: false,
+            localeInstalled: false,
+            backend: nil,
+            error: nil
+        )
+    }
+
+    let onDevice = recognizer.supportsOnDeviceRecognition
+    // Serving path requires on-device recognition (product doctrine for offline Polish).
+    let supported = recognizer.isAvailable && onDevice
+    return BridgeResponse(
+        ok: true,
+        status: "ok",
+        text: "",
+        segments: [],
+        localeSupported: supported,
+        localeInstalled: onDevice,
+        backend: supported ? AppleSttBackend.sfSpeechRecognizer.rawValue : nil,
+        error: nil
+    )
+}
+
+// MARK: - Transcribe
+
 private struct TranscriptionPayload {
     let text: String
     let segments: [BridgeSegment]
+    let backend: AppleSttBackend
 }
 
 private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
@@ -194,10 +247,26 @@ private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
 
 private func transcribe(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
     let supportedLocales = await SpeechTranscriber.supportedLocales
-    guard let effectiveLocale = bestAvailableLocale(requested: locale, available: supportedLocales) else {
-        throw BridgeError.runtime("locale \(locale.identifier) is not supported")
+    if let effectiveLocale = bestAvailableLocale(requested: locale, available: supportedLocales) {
+        let payload = try await transcribeWithSpeechTranscriber(
+            audioPath: audioPath,
+            locale: effectiveLocale
+        )
+        return TranscriptionPayload(
+            text: payload.text,
+            segments: payload.segments,
+            backend: .speechTranscriber
+        )
     }
-    let transcriber = makeTranscriber(locale: effectiveLocale)
+
+    return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale)
+}
+
+private func transcribeWithSpeechTranscriber(
+    audioPath: String,
+    locale: Locale
+) async throws -> (text: String, segments: [BridgeSegment]) {
+    let transcriber = makeTranscriber(locale: locale)
     let analyzer = SpeechAnalyzer(modules: [transcriber])
     guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
         throw BridgeError.runtime("no compatible analyzer audio format available")
@@ -239,8 +308,66 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
     let fallback = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
     let text = combined.isEmpty ? fallback : combined
     let segments = normalizeSegments(finalSegments.isEmpty ? volatileSegments : finalSegments)
-    return TranscriptionPayload(text: text, segments: segments)
+    return (text, segments)
 }
+
+private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+    guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+        throw BridgeError.runtime(
+            "neither SpeechTranscriber nor SFSpeechRecognizer supports locale \(locale.identifier)"
+        )
+    }
+    guard recognizer.isAvailable else {
+        throw BridgeError.runtime("SFSpeechRecognizer is not available for locale \(locale.identifier)")
+    }
+    guard recognizer.supportsOnDeviceRecognition else {
+        throw BridgeError.runtime(
+            "SFSpeechRecognizer on-device recognition not supported for locale \(locale.identifier)"
+        )
+    }
+
+    let url = URL(fileURLWithPath: audioPath)
+    let request = SFSpeechURLRecognitionRequest(url: url)
+    request.requiresOnDeviceRecognition = true
+    request.shouldReportPartialResults = false
+
+    // Keep the recognizer alive for the task lifetime.
+    let retained = recognizer
+    return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
+        var settled = false
+        let task = retained.recognitionTask(with: request) { result, error in
+            if settled { return }
+            if let error {
+                settled = true
+                continuation.resume(throwing: BridgeError.runtime("sf_speech: \(error.localizedDescription)"))
+                return
+            }
+            guard let result, result.isFinal else { return }
+            settled = true
+            let text = result.bestTranscription.formattedString
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let segments = result.bestTranscription.segments.compactMap { segment -> BridgeSegment? in
+                let segText = segment.substring.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !segText.isEmpty else { return nil }
+                let start = segment.timestamp
+                let end = segment.timestamp + segment.duration
+                guard start.isFinite, end.isFinite, end >= start else { return nil }
+                return BridgeSegment(text: segText, startTs: start, endTs: end)
+            }
+            continuation.resume(
+                returning: TranscriptionPayload(
+                    text: text,
+                    segments: normalizeSegments(segments),
+                    backend: .sfSpeechRecognizer
+                )
+            )
+        }
+        // If the task is cancelled without callback, fail closed.
+        _ = task
+    }
+}
+
+// MARK: - Segment helpers
 
 private func segmentsFromAttributedText(_ attributedText: AttributedString) -> [BridgeSegment] {
     attributedText.runs.compactMap { run in
@@ -355,6 +482,8 @@ private func streamAudio(
         }
     }
 }
+
+// MARK: - Locale helpers
 
 private func bestAvailableLocale(requested: Locale, available: [Locale]) -> Locale? {
     let requestedNormalized = normalizedLocaleIdentifier(requested.identifier)

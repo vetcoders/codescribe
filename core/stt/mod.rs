@@ -199,6 +199,45 @@ pub fn init_active_engine() -> anyhow::Result<()> {
     }
 }
 
+/// File-level transcription verdict routed through the active STT engine.
+///
+/// Final-pass adjudication must call this (not Whisper alone) so pl-PL Auto
+/// serves Apple on-device (SFSpeechRecognizer) instead of a Whisper full-WAV
+/// re-pass. Whisper remains the fallback when Apple init/transcribe fails.
+pub fn transcribe_file_verdict(
+    path: &std::path::Path,
+    language: Option<&str>,
+) -> anyhow::Result<crate::pipeline::contracts::TranscriptionVerdict> {
+    use crate::pipeline::contracts::FileTranscriptionOptions;
+
+    match selected_engine() {
+        SttEngine::Onnx => {
+            // ONNX has no dedicated file-verdict path; use Candle Whisper for file final-pass.
+            whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
+        }
+        SttEngine::Apple => run_apple_or_whisper(
+            "transcribe_file_verdict",
+            || apple_stt::transcribe_file_verdict(path, language),
+            || {
+                whisper::transcribe_file_verdict(
+                    path,
+                    language,
+                    FileTranscriptionOptions::default(),
+                )
+            },
+        ),
+        SttEngine::Candle => {
+            whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
+        }
+    }
+}
+
+/// Whether the active router would prefer the Apple on-device lane for final pass.
+/// Exposed for controller skip/budget diagnostics and tests.
+pub fn active_engine_is_apple() -> bool {
+    matches!(selected_engine(), SttEngine::Apple)
+}
+
 /// Sample rate of the synthetic warmup buffer.
 const WARMUP_SAMPLE_RATE: u32 = 16_000;
 
