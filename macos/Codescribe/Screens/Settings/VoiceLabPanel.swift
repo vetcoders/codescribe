@@ -33,6 +33,7 @@ struct VoiceLabLexiconRow: Identifiable, Equatable {
     let id: Int
     let variant: String
     let canonical: String
+    let source: String
 }
 
 func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionRow] {
@@ -54,10 +55,27 @@ func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
         VoiceLabLexiconRow(
             id: index,
             variant: entry.variant,
-            canonical: entry.canonical
+            canonical: entry.canonical,
+            source: entry.source
         )
     }
 }
+
+/// Honest Dictionary headline: "your voice taught" only when ≥1 correction-sourced entry.
+func dictionaryHeadline(correctionSourcedCount: Int) -> String {
+    if correctionSourcedCount > 0 {
+        return "See what your voice taught."
+    }
+    return "Corrections recorded — teaching starts from your next short fix."
+}
+
+func dictionarySubtitle(correctionSourcedCount: Int, totalEntries: Int) -> String {
+    if correctionSourcedCount > 0 {
+        return "\(correctionSourcedCount) learned-from-voice · \(totalEntries) custom dictionary entries · live local quality loop."
+    }
+    return "Corrections and custom words come from the live local quality loop."
+}
+
 
 struct VoiceLabPanel: View {
     @ObservedObject var model: SettingsViewModel
@@ -71,17 +89,21 @@ struct VoiceLabPanel: View {
         customLexiconRows(model.customLexiconEntries)
     }
 
+    private var learnedFromVoiceCount: Int {
+        lexicon.filter { $0.source == "correction" }.count
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 0) {
                     EyebrowLabel(text: "Settings · \(SettingsSection.voiceLab.title)")
-                    Text("See what your voice taught.")
+                    Text(dictionaryHeadline(correctionSourcedCount: learnedFromVoiceCount))
                         .font(CSFont.ui(26, .bold))
                         .tracking(-0.5)
                         .foregroundStyle(CSColor.textHigh)
                         .padding(.top, 6)
-                    Text("Corrections and custom words come from the live local quality loop.")
+                    Text(dictionarySubtitle(correctionSourcedCount: learnedFromVoiceCount, totalEntries: lexicon.count))
                         .font(CSFont.ui(12.5))
                         .foregroundStyle(CSColor.textMutedAlt)
                         .padding(.top, 8)

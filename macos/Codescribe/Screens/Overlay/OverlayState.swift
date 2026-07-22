@@ -762,7 +762,10 @@ final class OverlayState: ObservableObject {
                 deliveredText: delivered,
                 editedText: edited,
                 action: action,
-                formattingLevel: formattingLevel
+                formattingLevel: formattingLevel,
+                avgLogprob: nil,
+                speechPct: nil,
+                confidenceFlags: []
             )
         }
     }

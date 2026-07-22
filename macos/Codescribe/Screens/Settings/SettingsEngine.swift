@@ -250,7 +250,10 @@ struct MockSettingsEngine: SettingsEngine {
             variant: record.variant,
             editedText: canonical,
             action: "edit",
-            timestampMs: record.timestampMs
+            timestampMs: record.timestampMs,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
     }
 

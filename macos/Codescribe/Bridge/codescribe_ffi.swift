@@ -7017,12 +7017,20 @@ public func FfiConverterTypeCsLayerSummary_lower(_ value: CsLayerSummary) -> Rus
 public struct CsLexiconEntry: Equatable, Hashable {
     public var variant: String
     public var canonical: String
+    /**
+     * `correction` | `manual` | `import` | `legacy`
+     */
+    public var source: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(variant: String, canonical: String) {
+    public init(variant: String, canonical: String,
+        /**
+         * `correction` | `manual` | `import` | `legacy`
+         */source: String) {
         self.variant = variant
         self.canonical = canonical
+        self.source = source
     }
 
 
@@ -7040,13 +7048,15 @@ public struct FfiConverterTypeCsLexiconEntry: FfiConverterRustBuffer {
         return
             try CsLexiconEntry(
                 variant: FfiConverterString.read(from: &buf),
-                canonical: FfiConverterString.read(from: &buf)
+                canonical: FfiConverterString.read(from: &buf),
+                source: FfiConverterString.read(from: &buf)
         )
     }
 
     public static func write(_ value: CsLexiconEntry, into buf: inout [UInt8]) {
         FfiConverterString.write(value.variant, into: &buf)
         FfiConverterString.write(value.canonical, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
     }
 }
 
@@ -7883,10 +7893,13 @@ public struct CsQualityRecord: Equatable, Hashable {
     public var editedText: String
     public var action: String
     public var timestampMs: UInt64
+    public var avgLogprob: Float?
+    public var speechPct: Float?
+    public var confidenceFlags: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, revision: UInt64, rawText: String, variant: String, editedText: String, action: String, timestampMs: UInt64) {
+    public init(id: String, revision: UInt64, rawText: String, variant: String, editedText: String, action: String, timestampMs: UInt64, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String]) {
         self.id = id
         self.revision = revision
         self.rawText = rawText
@@ -7894,6 +7907,9 @@ public struct CsQualityRecord: Equatable, Hashable {
         self.editedText = editedText
         self.action = action
         self.timestampMs = timestampMs
+        self.avgLogprob = avgLogprob
+        self.speechPct = speechPct
+        self.confidenceFlags = confidenceFlags
     }
 
 
@@ -7916,7 +7932,10 @@ public struct FfiConverterTypeCsQualityRecord: FfiConverterRustBuffer {
                 variant: FfiConverterString.read(from: &buf),
                 editedText: FfiConverterString.read(from: &buf),
                 action: FfiConverterString.read(from: &buf),
-                timestampMs: FfiConverterUInt64.read(from: &buf)
+                timestampMs: FfiConverterUInt64.read(from: &buf),
+                avgLogprob: FfiConverterOptionFloat.read(from: &buf),
+                speechPct: FfiConverterOptionFloat.read(from: &buf),
+                confidenceFlags: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
@@ -7928,6 +7947,9 @@ public struct FfiConverterTypeCsQualityRecord: FfiConverterRustBuffer {
         FfiConverterString.write(value.editedText, into: &buf)
         FfiConverterString.write(value.action, into: &buf)
         FfiConverterUInt64.write(value.timestampMs, into: &buf)
+        FfiConverterOptionFloat.write(value.avgLogprob, into: &buf)
+        FfiConverterOptionFloat.write(value.speechPct, into: &buf)
+        FfiConverterSequenceString.write(value.confidenceFlags, into: &buf)
     }
 }
 
@@ -8735,6 +8757,62 @@ public func FfiConverterTypeCsThreadSummary_lift(_ buf: RustBuffer) throws -> Cs
 #endif
 public func FfiConverterTypeCsThreadSummary_lower(_ value: CsThreadSummary) -> RustBuffer {
     return FfiConverterTypeCsThreadSummary.lower(value)
+}
+
+
+/**
+ * Typed carrier for future per-token confidence (W11-C spike; unused by UI yet).
+ * Wire is present so W12 overlay "yellow words" can land without another bridge reshape.
+ */
+public struct CsTokenConfidence: Equatable, Hashable {
+    public var token: String
+    public var logprob: Float
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(token: String, logprob: Float) {
+        self.token = token
+        self.logprob = logprob
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsTokenConfidence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsTokenConfidence: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsTokenConfidence {
+        return
+            try CsTokenConfidence(
+                token: FfiConverterString.read(from: &buf),
+                logprob: FfiConverterFloat.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsTokenConfidence, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.token, into: &buf)
+        FfiConverterFloat.write(value.logprob, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsTokenConfidence_lift(_ buf: RustBuffer) throws -> CsTokenConfidence {
+    return try FfiConverterTypeCsTokenConfidence.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsTokenConfidence_lower(_ value: CsTokenConfidence) -> RustBuffer {
+    return FfiConverterTypeCsTokenConfidence.lower(value)
 }
 
 
@@ -10864,13 +10942,16 @@ public func audioInputSnapshot()throws  -> CsAudioInputSnapshot  {
     )
 })
 }
-public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(
         FfiConverterString.lower(rawText),
         FfiConverterString.lower(deliveredText),
         FfiConverterString.lower(editedText),
         FfiConverterString.lower(action),
-        FfiConverterString.lower(formattingLevel),$0
+        FfiConverterString.lower(formattingLevel),
+        FfiConverterOptionFloat.lower(avgLogprob),
+        FfiConverterOptionFloat.lower(speechPct),
+        FfiConverterSequenceString.lower(confidenceFlags),$0
     )
 }
 }
@@ -10956,7 +11037,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 15139) {
+    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 47586) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_lane_truth_snapshot() != 3436) {

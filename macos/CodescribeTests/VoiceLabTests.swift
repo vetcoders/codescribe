@@ -17,7 +17,10 @@ final class VoiceLabTests: XCTestCase {
                 variant: "uni agentka",
                 editedText: "Junie",
                 action: "copy",
-                timestampMs: 42
+                timestampMs: 42,
+                avgLogprob: nil,
+                speechPct: nil,
+                confidenceFlags: []
             ),
         ])
         XCTAssertEqual(
@@ -36,11 +39,11 @@ final class VoiceLabTests: XCTestCase {
         )
 
         let lexicon = customLexiconRows([
-            CsLexiconEntry(variant: "luks tri", canonical: "Loctree"),
+            CsLexiconEntry(variant: "luks tri", canonical: "Loctree", source: "correction"),
         ])
         XCTAssertEqual(
             lexicon,
-            [VoiceLabLexiconRow(id: 0, variant: "luks tri", canonical: "Loctree")]
+            [VoiceLabLexiconRow(id: 0, variant: "luks tri", canonical: "Loctree", source: "correction")]
         )
     }
 
@@ -52,9 +55,12 @@ final class VoiceLabTests: XCTestCase {
             variant: "before",
             editedText: "after",
             action: "send",
-            timestampMs: 84
+            timestampMs: 84,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
-        let entry = CsLexiconEntry(variant: "before", canonical: "after")
+        let entry = CsLexiconEntry(variant: "before", canonical: "after", source: "correction")
         let engine = MockSettingsEngine(
             qualityRecords: [record],
             lexiconEntries: [entry]
@@ -97,7 +103,10 @@ final class VoiceLabTests: XCTestCase {
             variant: "uni agentka",
             editedText: "Junie",
             action: "copy",
-            timestampMs: 42
+            timestampMs: 42,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
         let revised = CsQualityRecord(
             id: "correction-1",
@@ -106,10 +115,13 @@ final class VoiceLabTests: XCTestCase {
             variant: "uni agentka",
             editedText: "Junie Prime",
             action: "edit",
-            timestampMs: 84
+            timestampMs: 84,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
         var records = [original]
-        var lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: "Junie")]
+        var lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: "Junie", source: "correction")]
         var calls: [(String, String)] = []
         let engine = MockSettingsEngine(
             qualityRecordsLoader: { records },
@@ -117,7 +129,7 @@ final class VoiceLabTests: XCTestCase {
             voiceLabEditObserver: { id, canonical in
                 calls.append((id, canonical))
                 records = [revised]
-                lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: canonical)]
+                lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: canonical, source: "correction")]
                 return revised
             }
         )
@@ -140,7 +152,10 @@ final class VoiceLabTests: XCTestCase {
             variant: "uni agentka",
             editedText: "Junie",
             action: "copy",
-            timestampMs: 42
+            timestampMs: 42,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
         let engine = MockSettingsEngine(
             qualityRecords: [original],
@@ -156,5 +171,24 @@ final class VoiceLabTests: XCTestCase {
         XCTAssertNotNil(model.voiceLabEditErrors[original.id])
         XCTAssertNotNil(model.lastError)
         XCTAssertTrue(model.voiceLabEditPending.isEmpty)
+    }
+
+    func testDictionaryHeadlineHonestyForCorrectionSource() {
+        XCTAssertEqual(
+            dictionaryHeadline(correctionSourcedCount: 0),
+            "Corrections recorded — teaching starts from your next short fix."
+        )
+        XCTAssertEqual(
+            dictionaryHeadline(correctionSourcedCount: 2),
+            "See what your voice taught."
+        )
+        XCTAssertTrue(
+            dictionarySubtitle(correctionSourcedCount: 2, totalEntries: 5)
+                .contains("2 learned-from-voice")
+        )
+        XCTAssertEqual(
+            dictionarySubtitle(correctionSourcedCount: 0, totalEntries: 0),
+            "Corrections and custom words come from the live local quality loop."
+        )
     }
 }

@@ -132,6 +132,7 @@ Jednostka dystrybucji: manifest `plugin.json` w formacie desktop-commander
 czyta built-iny (shipped in-app, wersje przypięte) + `~/.codescribe/plugins/`.
 
 **Tiery (moat vs wygoda):**
+
 - **Moat (nasze, płatne switche):** loctree (strukturalna percepcja kodu),
   aicx (pamięć między-agentowa), prview (PR review), vibecrafted (fleet
   runtime), rust-memex. Nikt inny tego nie ma — to definiuje dev/pro/team.
