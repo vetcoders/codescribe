@@ -66,6 +66,11 @@ install_name_tool -id @rpath/libcodescribe_ffi.dylib "$DYLIB"
 echo "==> [3/7] Generating Swift bindings via uniffi-bindgen"
 mkdir -p "$BRIDGE_DIR"
 "$BINDGEN" generate --library "$DYLIB" --language swift --out-dir "$BRIDGE_DIR"
+# uniffi-bindgen emits trailing whitespace; the repo strips it everywhere, so
+# raw output dirtied the tree on every build (and stamped DMGs "-dirty" from a
+# clean checkout). Normalize at the source: regeneration is idempotent against
+# the committed form.
+find "$BRIDGE_DIR" -name '*.swift' -exec sed -i '' -E 's/[[:space:]]+$//' {} +
 
 echo "==> [4/7] Generating Xcode project (xcodegen)"
 ( cd macos && xcodegen generate )

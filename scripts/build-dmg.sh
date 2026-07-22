@@ -141,6 +141,14 @@ fi
 
 echo "DMG ready: $DMG_PATH"
 
+# Release canon: every DMG ships with its SHA-256 next to it (bare filename
+# inside, so `shasum -c` works from the release directory).
+(
+  cd "$(dirname "$DMG_PATH")"
+  shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
+)
+echo "SHA-256: $(cat "$DMG_PATH.sha256")"
+
 if [[ "$NOTARIZE" -eq 1 ]]; then
   echo "Notarizing DMG with profile: $NOTARY_PROFILE"
   NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH" "$APP_PATH"
