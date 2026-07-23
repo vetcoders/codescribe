@@ -37,6 +37,12 @@ const ENV_ALLOW_DOWNLOAD: &str = "CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD";
 
 const BRIDGE_TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(30);
 const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// In-bridge SFSpeech recognition deadline (seconds). Must stay under the
+/// Apple final-pass budget (~3 s) and far below `BRIDGE_TRANSCRIBE_TIMEOUT` so
+/// a stalled callback can still fall through to Whisper. Mirrors
+/// `sfSpeechRecognitionDeadlineSeconds()` in the Swift bridge.
+#[cfg(test)]
+const SF_SPEECH_RECOGNITION_DEADLINE_SECS: f64 = 2.5;
 
 /// Zero-sized adapter using Apple's SpeechAnalyzer via subprocess bridge.
 pub struct AppleSpeechAnalyzerAdapter;
@@ -946,6 +952,63 @@ mod tests {
         assert!(
             msg.contains("unsupported"),
             "expected honest unsupported error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn probe_st_supported_not_installed_falls_to_sf_when_ready() {
+        // Bridge fall-through shape: ST was in catalog but not installed; SF
+        // on-device is ready so probe returns the SF backend (not ST uninstalled).
+        let response: BridgeResponse = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "status": "ok",
+                "text": "",
+                "segments": [],
+                "locale_supported": true,
+                "locale_installed": true,
+                "backend": "sf_speech_recognizer"
+            }"#,
+        )
+        .expect("fixture");
+        let probe = interpret_probe_response(&response);
+        assert!(probe.supported);
+        assert!(probe.installed);
+        assert_eq!(probe.backend, Some(AppleSttBackend::SfSpeechRecognizer));
+        let backend = preferred_backend_for_probe(true, true, Some("sf_speech_recognizer"))
+            .expect("SF ready after ST uninstalled fall-through");
+        assert_eq!(backend, AppleSttBackend::SfSpeechRecognizer);
+    }
+
+    #[test]
+    fn probe_st_supported_not_installed_without_sf_is_not_ready() {
+        // When SF cannot serve either, probe may still report ST with
+        // installed=false — ready-backend selection must refuse to serve.
+        let err = preferred_backend_for_probe(true, false, Some("speech_transcriber")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not installed") || msg.contains("assets"),
+            "expected not-installed refusal, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sf_speech_deadline_sits_under_bridge_and_apple_budgets() {
+        // Const bounds live in const blocks (clippy::assertions_on_constants);
+        // the runtime comparison against the bridge timeout stays a live assert.
+        const {
+            assert!(
+                SF_SPEECH_RECOGNITION_DEADLINE_SECS < 3.0,
+                "deadline must stay under the 3 s Apple final-pass budget"
+            );
+            assert!(
+                SF_SPEECH_RECOGNITION_DEADLINE_SECS >= 1.0,
+                "deadline must allow real on-device recognition to finish"
+            );
+        }
+        assert!(
+            SF_SPEECH_RECOGNITION_DEADLINE_SECS < BRIDGE_TRANSCRIBE_TIMEOUT.as_secs_f64(),
+            "deadline must be below the 30 s Rust bridge timeout so Whisper fallback can start"
         );
     }
 

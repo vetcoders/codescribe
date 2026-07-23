@@ -149,13 +149,25 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
 // MARK: - Probe (ST → SFSpeech on-device)
 
 private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeResponse {
-    // Prefer SpeechTranscriber when the locale is in its catalog.
+    // Prefer SpeechTranscriber only when the locale is supported AND installed.
+    // Catalog support alone must not abandon SFSpeech on-device (e.g. ST listed
+    // for a locale whose model assets are missing).
     let stSupported = await SpeechTranscriber.supportedLocales
     if let effectiveLocale = bestAvailableLocale(requested: locale, available: stSupported) {
-        return try await probeSpeechTranscriber(
+        let st = try await probeSpeechTranscriber(
             effectiveLocale: effectiveLocale,
             allowDownload: allowDownload
         )
+        if st.localeInstalled == true {
+            return st
+        }
+        // ST supported but not installed (or install failed): fall through to SF.
+        let sf = probeSfSpeech(locale: locale)
+        if sf.localeSupported == true {
+            return sf
+        }
+        // Neither ready: return the ST probe (honest not-installed / install error).
+        return st
     }
 
     // Fallback: SFSpeechRecognizer on-device for locales ST does not serve (e.g. pl-PL).
@@ -246,8 +258,26 @@ private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
 }
 
 private func transcribe(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+    // Same ready-backend decision as probe: ST only when supported+installed.
     let supportedLocales = await SpeechTranscriber.supportedLocales
     if let effectiveLocale = bestAvailableLocale(requested: locale, available: supportedLocales) {
+        let installed = await SpeechTranscriber.installedLocales
+        if containsLocale(installed, locale: effectiveLocale) {
+            let payload = try await transcribeWithSpeechTranscriber(
+                audioPath: audioPath,
+                locale: effectiveLocale
+            )
+            return TranscriptionPayload(
+                text: payload.text,
+                segments: payload.segments,
+                backend: .speechTranscriber
+            )
+        }
+        // ST in catalog but assets missing → SFSpeech on-device when available.
+        if sfSpeechOnDeviceReady(locale: locale) {
+            return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale)
+        }
+        // Last resort: attempt ST (may fail with a clear runtime error).
         let payload = try await transcribeWithSpeechTranscriber(
             audioPath: audioPath,
             locale: effectiveLocale
@@ -260,6 +290,11 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
     }
 
     return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale)
+}
+
+private func sfSpeechOnDeviceReady(locale: Locale) -> Bool {
+    guard let recognizer = SFSpeechRecognizer(locale: locale) else { return false }
+    return recognizer.isAvailable && recognizer.supportsOnDeviceRecognition
 }
 
 private func transcribeWithSpeechTranscriber(
@@ -333,17 +368,40 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async thr
 
     // Keep the recognizer alive for the task lifetime.
     let retained = recognizer
+    // In-bridge deadline sits under the Apple stop-path budget (≤3 s final pass)
+    // and well below the Rust bridge subprocess timeout (30 s) so a stalled
+    // callback can still fall back to Whisper promptly.
+    let deadlineSeconds = sfSpeechRecognitionDeadlineSeconds()
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
         var settled = false
-        let task = retained.recognitionTask(with: request) { result, error in
+        var recognitionTask: SFSpeechRecognitionTask?
+        let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
+            if settled { return }
+            settled = true
+            switch outcome {
+            case .success(let payload):
+                continuation.resume(returning: payload)
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+        let timeoutWork = DispatchWorkItem {
+            recognitionTask?.cancel()
+            settle(.failure(BridgeError.runtime("sf_speech: recognition_timeout")))
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: .now() + deadlineSeconds,
+            execute: timeoutWork
+        )
+        recognitionTask = retained.recognitionTask(with: request) { result, error in
             if settled { return }
             if let error {
-                settled = true
-                continuation.resume(throwing: BridgeError.runtime("sf_speech: \(error.localizedDescription)"))
+                timeoutWork.cancel()
+                settle(.failure(BridgeError.runtime("sf_speech: \(error.localizedDescription)")))
                 return
             }
             guard let result, result.isFinal else { return }
-            settled = true
+            timeoutWork.cancel()
             let text = result.bestTranscription.formattedString
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let segments = result.bestTranscription.segments.compactMap { segment -> BridgeSegment? in
@@ -354,17 +412,28 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async thr
                 guard start.isFinite, end.isFinite, end >= start else { return nil }
                 return BridgeSegment(text: segText, startTs: start, endTs: end)
             }
-            continuation.resume(
-                returning: TranscriptionPayload(
+            settle(.success(
+                TranscriptionPayload(
                     text: text,
                     segments: normalizeSegments(segments),
                     backend: .sfSpeechRecognizer
                 )
-            )
+            ))
         }
-        // If the task is cancelled without callback, fail closed.
-        _ = task
+        // Cancellation without a final/error callback is covered by the deadline.
+        _ = recognitionTask
     }
+}
+
+/// Seconds before a stalled SFSpeech callback is cancelled. Overridable for tests.
+func sfSpeechRecognitionDeadlineSeconds() -> TimeInterval {
+    if let raw = ProcessInfo.processInfo.environment["CODESCRIBE_SFSPEECH_DEADLINE_SECS"],
+       let value = TimeInterval(raw), value > 0, value <= 30
+    {
+        return value
+    }
+    // Comfortably below the 3 s Apple final-pass product budget.
+    return 2.5
 }
 
 // MARK: - Segment helpers

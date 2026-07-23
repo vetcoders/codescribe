@@ -191,6 +191,11 @@ pub struct UserSettings {
     /// `onboarding_mode`). `None`/absent means the built-in auto policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_engine: Option<String>,
+    /// Final-pass routing mode (`always` | `smart` | `off`).
+    /// Seeds `FINAL_PASS_MODE` (alias `CODESCRIBE_FINAL_PASS_MODE`). Default
+    /// Smart when absent. Distinct from lexicon `FinalPassMode` in contracts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_pass_mode: Option<String>,
     /// Layered incremental transcription phase ("off" | "phase1").
     /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`; anything other than
     /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
@@ -309,6 +314,8 @@ struct SpeechEngineV2 {
     // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
     #[serde(skip_serializing_if = "Option::is_none")]
     stt_engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_pass_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     layered_transcription: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -522,6 +529,7 @@ impl UserSettings {
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
                     stt_engine: self.stt_engine.clone(),
+                    final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
                 }),
@@ -755,6 +763,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.stt_engine.clone()),
+            final_pass_mode: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.final_pass_mode.clone()),
             layered_transcription: v2
                 .speech
                 .as_ref()
@@ -1025,6 +1038,20 @@ impl UserSettings {
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
             "CODESCRIBE_STT_ENGINE" => self.stt_engine = Some(value.to_owned()),
+            "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
+                let normalized = value.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "always" | "smart" | "off" => {
+                        self.final_pass_mode = Some(normalized);
+                    }
+                    _ => {
+                        warn!(
+                            "Rejected final_pass_mode write (expected always|smart|off): {value}"
+                        );
+                        return;
+                    }
+                }
+            }
             "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
                 self.layered_transcription = Some(value.to_owned())
             }
@@ -1371,6 +1398,7 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let settings = UserSettings {
             stt_engine: Some("apple".to_string()),
+            final_pass_mode: Some("smart".to_string()),
             layered_transcription: Some("phase1".to_string()),
             stt_initial_prompt_enabled: Some(true),
             ..Default::default()
@@ -1379,16 +1407,19 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
+        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
         assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
         assert_eq!(loaded.stt_initial_prompt_enabled, Some(true));
 
-        // Setters route all three keys (settings.json stays a valid seed source).
+        // Setters route keys (settings.json stays a valid seed source).
         let mut mutated = loaded;
         mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
+        mutated.set_string("FINAL_PASS_MODE", "off");
         mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
         mutated.set_bool("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", false);
         let reloaded = UserSettings::load();
         assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
+        assert_eq!(reloaded.final_pass_mode.as_deref(), Some("off"));
         assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
         assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
     }

@@ -64,4 +64,17 @@ JSON stdin request / JSON stdout response, `protocol_version: 1`.
 Additive fields (no wire version bump):
 
 - `backend`: `speech_transcriber` | `sf_speech_recognizer` (probe + transcribe)
-)
+
+## Backend order (supported **and** installed)
+
+1. **SpeechTranscriber** — only when the locale is in the ST catalog **and**
+   the model assets are installed (optional download when
+   `CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD=1`).
+2. **SFSpeechRecognizer on-device** — when ST lacks the locale, or ST is in the
+   catalog but assets are missing, and SF supports on-device recognition for
+   that locale (notably **pl-PL**).
+3. Honest error — only when neither backend can serve the locale.
+
+A stalled SFSpeech callback is cancelled after ~2.5 s
+(`CODESCRIBE_SFSPEECH_DEADLINE_SECS` override) so Whisper fallback is not
+blocked for the full 30 s bridge timeout.

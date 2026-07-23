@@ -634,12 +634,26 @@ reload = "restart"
 category = "stt"
 description = "Cloud STT API key; prefer Settings / macOS Keychain"
 
+[vars.FINAL_PASS_MODE]
+default = "smart"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Stop-path final re-pass routing: always | smart (default) | off. Always = full WAV STT every stop; smart = skip when streaming completeness is adjudicated; off = streaming is final (repetition guardrail still runs). Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
+
+[vars.CODESCRIBE_FINAL_PASS_MODE]
+default = "smart"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Alias of FINAL_PASS_MODE (always|smart|off)"
+
 [vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
 default = "0"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "Run final-pass local STT on full audio (overrides streaming output)"
+description = "Legacy: falsey maps to FINAL_PASS_MODE=off, truthy to always. Prefer FINAL_PASS_MODE."
 
 [vars.CODESCRIBE_TOGGLE_FINAL_PASS]
 default = "1"

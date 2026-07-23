@@ -779,6 +779,13 @@ impl Config {
         {
             Self::safe_set_env("CODESCRIBE_STT_ENGINE", v);
         }
+        // FINAL_PASS_MODE is the mission-canonical key; seed both aliases when unset.
+        if Self::config_runtime_env_var("FINAL_PASS_MODE").is_err()
+            && Self::config_runtime_env_var("CODESCRIBE_FINAL_PASS_MODE").is_err()
+            && let Some(ref v) = settings.final_pass_mode
+        {
+            Self::safe_set_env("FINAL_PASS_MODE", v);
+        }
         if Self::config_runtime_env_var("CODESCRIBE_LAYERED_TRANSCRIPTION").is_err()
             && let Some(ref v) = settings.layered_transcription
         {
