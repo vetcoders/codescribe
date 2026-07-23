@@ -805,8 +805,31 @@ where
     Ok(())
 }
 
+/// Result of a successful overlay-quality commit (evidence always; learn when Correction).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayCorrectionCommit {
+    pub quality_path: PathBuf,
+    /// Lexicon pairs actually upserted from this commit (0 when evidence-only or filtered).
+    pub pairs_learned: u32,
+    /// True when the formatting level is not Correction — record saved, nothing taught.
+    pub evidence_only: bool,
+}
+
+impl OverlayCorrectionCommit {
+    /// Honest post-edit acknowledgement for the overlay toast (operator UX, LL-E).
+    pub fn acknowledgement_message(&self) -> String {
+        if self.evidence_only || self.pairs_learned == 0 {
+            "Saved as evidence".to_string()
+        } else if self.pairs_learned == 1 {
+            "Saved — 1 pair learned".to_string()
+        } else {
+            format!("Saved — {} pairs learned", self.pairs_learned)
+        }
+    }
+}
+
 /// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
-/// Called from bridge (and tests). Returns the quality file path on success.
+/// Called from bridge (and tests). Returns path + honest pairs-learned count.
 /// `action` (e.g. "copy", "send", "close") is carried into meta for future analytics (P2-03 triage over-correct).
 pub fn commit_overlay_correction(
     raw_text: &str,
@@ -815,7 +838,7 @@ pub fn commit_overlay_correction(
     mode: &str,
     model: Option<String>,
     action: Option<&str>,
-) -> Result<PathBuf> {
+) -> Result<OverlayCorrectionCommit> {
     commit_overlay_correction_with_level(
         raw_text,
         delivered_text,
@@ -838,7 +861,7 @@ pub fn commit_overlay_correction_with_level(
     model: Option<String>,
     action: Option<&str>,
     formatting_level: Option<&str>,
-) -> Result<PathBuf> {
+) -> Result<OverlayCorrectionCommit> {
     commit_overlay_correction_with_confidence(
         raw_text,
         delivered_text,
@@ -854,7 +877,7 @@ pub fn commit_overlay_correction_with_level(
 }
 
 /// Like [`commit_overlay_correction_with_level`], plus optional STT confidence
-/// fields recorded on the quality JSONL line (W11-C).
+/// fields recorded on the quality JSONL line (W11-C / LL-D).
 #[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_correction_with_confidence(
     raw_text: &str,
@@ -867,11 +890,12 @@ pub fn commit_overlay_correction_with_confidence(
     avg_logprob: Option<f32>,
     speech_pct: Option<f32>,
     confidence_flags: Vec<String>,
-) -> Result<PathBuf> {
+) -> Result<OverlayCorrectionCommit> {
     let formatting_level = formatting_level
         .map(FormattingPolicy::parse)
         .transpose()?
         .map(|level| level.as_str().to_string());
+    let teaches = formatting_level.as_deref() == Some(FormattingPolicy::Correction.as_str());
     let record = QualityRecord::new_with_confidence(
         raw_text.to_string(),
         delivered_text.to_string(),
@@ -886,28 +910,37 @@ pub fn commit_overlay_correction_with_confidence(
     );
     let qpath = save_quality_record(&record)?;
 
-    if record.formatting_level.as_deref() == Some(FormattingPolicy::Correction.as_str()) {
+    let mut pairs_learned = 0u32;
+    if teaches {
         // Word-level extraction may yield several pairs; upsert each.
         for (variant, canonical) in extract_lexicon_candidates(delivered_text, edited_text) {
             if is_sensible_lexicon_candidate(&variant, &canonical) {
-                if let Err(e) = upsert_correction_in_custom_lexicon(&variant, &canonical) {
-                    tracing::warn!(
-                        "quality: failed to append lexicon candidate {} -> {}: {}",
-                        variant,
-                        canonical,
-                        e
-                    );
-                } else {
-                    tracing::info!(
-                        "quality: added lexicon candidate {} -> {}",
-                        variant,
-                        canonical
-                    );
+                match upsert_correction_in_custom_lexicon(&variant, &canonical) {
+                    Ok(()) => {
+                        pairs_learned = pairs_learned.saturating_add(1);
+                        tracing::info!(
+                            "quality: added lexicon candidate {} -> {}",
+                            variant,
+                            canonical
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "quality: failed to append lexicon candidate {} -> {}: {}",
+                            variant,
+                            canonical,
+                            e
+                        );
+                    }
                 }
             }
         }
     }
-    Ok(qpath)
+    Ok(OverlayCorrectionCommit {
+        quality_path: qpath,
+        pairs_learned,
+        evidence_only: !teaches,
+    })
 }
 
 /// Replay historical `corrections.jsonl` through the current extractor.
@@ -1280,7 +1313,7 @@ mod tests {
         let delivered = format!("{body}zaznaczenie koniec");
         let edited = format!("{body}selection koniec");
 
-        commit_overlay_correction(
+        let commit = commit_overlay_correction(
             &delivered,
             &delivered,
             &edited,
@@ -1289,6 +1322,8 @@ mod tests {
             Some("copy"),
         )
         .expect("commit long dictation fix");
+        assert_eq!(commit.pairs_learned, 1);
+        assert_eq!(commit.acknowledgement_message(), "Saved — 1 pair learned");
 
         let entries = custom_lexicon_entries().expect("lexicon");
         assert!(
@@ -1504,7 +1539,7 @@ mod tests {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
         }
 
-        let p = commit_overlay_correction(
+        let commit = commit_overlay_correction(
             "raw raw",
             "uni agentka here",
             "Junie here",
@@ -1513,7 +1548,14 @@ mod tests {
             Some("test"),
         )
         .expect("commit should succeed");
+        let p = commit.quality_path.clone();
         assert!(p.ends_with("corrections.jsonl"));
+        assert!(
+            commit.pairs_learned >= 1,
+            "correction should teach at least one pair"
+        );
+        assert!(!commit.evidence_only);
+        assert!(commit.acknowledgement_message().contains("learned"));
         // Proof of isolation: the quality file landed under the overridden DATA_DIR
         // (config_dir + quality_dir respect it; real ~/.codescribe untouched).
         assert!(
@@ -1572,7 +1614,8 @@ mod tests {
             Some("whisper-large".into()),
             Some("copy"),
         )
-        .expect("commit copy action");
+        .expect("commit copy action")
+        .quality_path;
         assert!(
             p.starts_with(&temp_root),
             "isolation: must land under temp DATA_DIR"
@@ -1604,7 +1647,8 @@ mod tests {
             None,
             Some("send"),
         )
-        .expect("commit send");
+        .expect("commit send")
+        .quality_path;
         assert!(p2.starts_with(&temp_root));
         let last2: QualityRecord = serde_json::from_str(
             std::fs::read_to_string(&p2)
@@ -1634,7 +1678,7 @@ mod tests {
         }
 
         let long = "x".repeat(150);
-        let p = commit_overlay_correction(
+        let commit = commit_overlay_correction(
             &long,
             "delivered long",
             &long,
@@ -1643,6 +1687,9 @@ mod tests {
             Some("close"),
         )
         .expect("quality record even for long (lexicon guard separate)");
+        assert_eq!(commit.pairs_learned, 0);
+        assert_eq!(commit.acknowledgement_message(), "Saved as evidence");
+        let p = commit.quality_path;
         assert!(p.starts_with(&temp_root));
 
         // lexicon candidate rejected by length (is_sensible + extract guard)
@@ -1847,7 +1894,8 @@ mod tests {
             None,
             Some("copy"),
         )
-        .expect("initial correction");
+        .expect("initial correction")
+        .quality_path;
         let original = recent_quality_records(10).expect("initial projection")[0].clone();
         let id = original.logical_id();
 

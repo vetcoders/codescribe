@@ -1274,7 +1274,8 @@ mod tests {
             Some("whisper-test".into()),
             Some("copy"),
         )
-        .expect("commit overlay correction");
+        .expect("commit overlay correction")
+        .quality_path;
         assert!(quality_path.starts_with(&temp_root));
         assert!(quality_path.ends_with("corrections.jsonl"));
 
