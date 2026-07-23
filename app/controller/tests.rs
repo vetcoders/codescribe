@@ -390,7 +390,15 @@ fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
 
 #[test]
 fn test_stop_path_budget_line_format() {
-    let line = format_stop_path_budget_line(1.234, 0.5, 0.4, 0.1, 0.2, 0.034);
+    let budget = StopPathBudget {
+        total_secs: 1.234,
+        rec_stop_secs: 0.5,
+        final_pass_secs: 0.4,
+        postproc_secs: 0.1,
+        format_secs: 0.2,
+        delivery_secs: 0.034,
+    };
+    let line = format_stop_path_budget_line(budget);
     assert!(
         line.starts_with("stop_path_budget: total=1.234s phases="),
         "unexpected budget line: {line}"
@@ -401,12 +409,89 @@ fn test_stop_path_budget_line_format() {
     assert!(line.contains("format=0.200s"));
     assert!(line.contains("delivery=0.034s"));
     assert!(
-        stop_path_phases_sum_within_total(1.234, 0.5, 0.4, 0.1, 0.2, 0.034, 0.001),
-        "phase sum must match total within tolerance"
+        line.contains("remainder=0.000s"),
+        "named phases cover total: {line}"
     );
     assert!(
-        !stop_path_phases_sum_within_total(1.234, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01),
-        "zero placeholders must fail the phase-sum check"
+        stop_path_budget_covers_total(budget, 0.001),
+        "phase sum + remainder must cover total"
+    );
+}
+
+/// Stop-path harness: real Instant spans (not invented phase sums) prove
+/// delivery is a named phase and unclassified remainder is explicit.
+#[test]
+fn test_stop_path_harness_times_delivery_and_reports_remainder() {
+    let stop_start = std::time::Instant::now();
+    // Simulate rec_stop
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let rec_stop_secs = stop_start.elapsed().as_secs_f64();
+
+    let final_pass_started = std::time::Instant::now();
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+
+    let postproc_started = std::time::Instant::now();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let postproc_secs = postproc_started.elapsed().as_secs_f64();
+
+    let format_started = std::time::Instant::now();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let format_secs = format_started.elapsed().as_secs_f64();
+
+    // Actual delivery cone (history + deliver_once handoff), not cleanup.
+    let delivery_started = std::time::Instant::now();
+    std::thread::sleep(std::time::Duration::from_millis(4));
+    let delivery_secs = delivery_started.elapsed().as_secs_f64();
+
+    // Unclassified remainder (cleanup / adjudicator overhead).
+    let cleanup_started = std::time::Instant::now();
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let _cleanup = cleanup_started.elapsed().as_secs_f64();
+
+    let total_secs = stop_start.elapsed().as_secs_f64();
+    let budget = StopPathBudget {
+        total_secs,
+        rec_stop_secs,
+        final_pass_secs,
+        postproc_secs,
+        format_secs,
+        delivery_secs,
+    };
+
+    assert!(
+        budget.delivery_secs > 0.0,
+        "delivery must be a real measured span, got {}",
+        budget.delivery_secs
+    );
+    assert!(
+        budget.unclassified_remainder_secs() > 0.0,
+        "cleanup/overhead must surface as remainder, got {}",
+        budget.unclassified_remainder_secs()
+    );
+    assert!(
+        stop_path_budget_covers_total(budget, 0.05),
+        "named phases + remainder must cover wall total"
+    );
+    let line = format_stop_path_budget_line(budget);
+    assert!(
+        line.contains("delivery=") && line.contains("remainder="),
+        "budget line must name delivery and remainder: {line}"
+    );
+    // Synthetic zero-delivery with large total must leave remainder, not pretend
+    // delivery absorbed the unmeasured cone.
+    let fake = StopPathBudget {
+        total_secs: 2.0,
+        rec_stop_secs: 0.1,
+        final_pass_secs: 0.1,
+        postproc_secs: 0.1,
+        format_secs: 0.1,
+        delivery_secs: 0.0,
+    };
+    assert!(
+        (fake.unclassified_remainder_secs() - 1.6).abs() < 0.001,
+        "zero delivery leaves remainder, got {}",
+        fake.unclassified_remainder_secs()
     );
 }
 

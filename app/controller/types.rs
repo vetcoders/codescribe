@@ -344,6 +344,8 @@ pub struct TranscriptProcessOutcome {
     pub postproc_secs: f64,
     /// Wall seconds spent in AI/local formatting branch.
     pub format_secs: f64,
+    /// Wall seconds spent in history save + deliver_once / paste handoff.
+    pub delivery_secs: f64,
 }
 
 #[cfg(test)]

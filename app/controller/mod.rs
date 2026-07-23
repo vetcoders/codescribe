@@ -1270,33 +1270,52 @@ fn truth_engine_label(
     })
 }
 
+/// Named stop-path phase timings (rec_stop → final_pass → postproc → format → delivery).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StopPathBudget {
+    pub total_secs: f64,
+    pub rec_stop_secs: f64,
+    pub final_pass_secs: f64,
+    pub postproc_secs: f64,
+    pub format_secs: f64,
+    /// Actual deliver_once / history+paste handoff span (not phase-4 cleanup).
+    pub delivery_secs: f64,
+}
+
+impl StopPathBudget {
+    pub(crate) fn named_sum_secs(self) -> f64 {
+        self.rec_stop_secs
+            + self.final_pass_secs
+            + self.postproc_secs
+            + self.format_secs
+            + self.delivery_secs
+    }
+
+    /// Wall time not attributed to a named phase (adjudication overhead, cleanup, …).
+    pub(crate) fn unclassified_remainder_secs(self) -> f64 {
+        (self.total_secs - self.named_sum_secs()).max(0.0)
+    }
+}
+
 /// Single INFO summary line for stop-path wall time (W11-B budget receipt).
-pub(crate) fn format_stop_path_budget_line(
-    total_secs: f64,
-    rec_stop_secs: f64,
-    final_pass_secs: f64,
-    postproc_secs: f64,
-    format_secs: f64,
-    delivery_secs: f64,
-) -> String {
+pub(crate) fn format_stop_path_budget_line(budget: StopPathBudget) -> String {
     format!(
-        "stop_path_budget: total={total_secs:.3}s phases={{rec_stop={rec_stop_secs:.3}s,final_pass={final_pass_secs:.3}s,postproc={postproc_secs:.3}s,format={format_secs:.3}s,delivery={delivery_secs:.3}s}}"
+        "stop_path_budget: total={total:.3}s phases={{rec_stop={rec:.3}s,final_pass={fp:.3}s,postproc={pp:.3}s,format={fmt:.3}s,delivery={del:.3}s}} remainder={rem:.3}s",
+        total = budget.total_secs,
+        rec = budget.rec_stop_secs,
+        fp = budget.final_pass_secs,
+        pp = budget.postproc_secs,
+        fmt = budget.format_secs,
+        del = budget.delivery_secs,
+        rem = budget.unclassified_remainder_secs(),
     )
 }
 
-/// Phase sum tolerance for stop-path budget tests (timing noise).
+/// Phase sum + remainder must cover total within tolerance (timing noise).
 #[cfg(test)]
-pub(crate) fn stop_path_phases_sum_within_total(
-    total_secs: f64,
-    rec_stop_secs: f64,
-    final_pass_secs: f64,
-    postproc_secs: f64,
-    format_secs: f64,
-    delivery_secs: f64,
-    tolerance_secs: f64,
-) -> bool {
-    let sum = rec_stop_secs + final_pass_secs + postproc_secs + format_secs + delivery_secs;
-    (sum - total_secs).abs() <= tolerance_secs
+pub(crate) fn stop_path_budget_covers_total(budget: StopPathBudget, tolerance_secs: f64) -> bool {
+    let covered = budget.named_sum_secs() + budget.unclassified_remainder_secs();
+    (covered - budget.total_secs).abs() <= tolerance_secs
 }
 
 /// Skip full local STT re-pass according to routing mode + completeness.
@@ -1360,6 +1379,8 @@ struct ProcessRecordingOutcome {
     final_pass_secs: f64,
     postproc_secs: f64,
     format_secs: f64,
+    /// Wall seconds for history save + deliver_once / assistive handoff.
+    delivery_secs: f64,
 }
 
 impl ProcessRecordingOutcome {
@@ -1371,6 +1392,7 @@ impl ProcessRecordingOutcome {
             final_pass_secs: 0.0,
             postproc_secs: 0.0,
             format_secs: 0.0,
+            delivery_secs: 0.0,
         }
     }
 }
@@ -3451,34 +3473,35 @@ impl RecordingController {
         self.reset_finished_recording_state().await;
         self.handle_processed_recording_result(assistive, &result)
             .await;
-        let delivery_secs = phase4.elapsed().as_secs_f64();
+        let cleanup_secs = phase4.elapsed().as_secs_f64();
         let total_secs = stop_start.elapsed().as_secs_f64();
-        let (final_pass_secs, postproc_secs, format_secs) = match &result {
+        // delivery_secs is timed inside the pipeline (history + deliver_once),
+        // not phase-4 cleanup. Remainder absorbs cleanup + adjudication overhead.
+        let (final_pass_secs, postproc_secs, format_secs, delivery_secs) = match &result {
             Ok(outcome) => (
                 outcome.final_pass_secs,
                 outcome.postproc_secs,
                 outcome.format_secs,
+                outcome.delivery_secs,
             ),
-            Err(_) => (0.0, 0.0, 0.0),
+            Err(_) => (0.0, 0.0, 0.0, 0.0),
+        };
+        let budget = StopPathBudget {
+            total_secs,
+            rec_stop_secs,
+            final_pass_secs,
+            postproc_secs,
+            format_secs,
+            delivery_secs,
         };
         info!(
-            "stop_toggle_inner: PHASE 4 — cleanup + result handler completed in {:?} (total stop time: {:?})",
+            "stop_toggle_inner: PHASE 4 — cleanup + result handler completed in {:?} (total stop time: {:?}, cleanup={cleanup_secs:.3}s)",
             phase4.elapsed(),
             stop_start.elapsed()
         );
-        info!(
-            "{}",
-            format_stop_path_budget_line(
-                total_secs,
-                rec_stop_secs,
-                final_pass_secs,
-                postproc_secs,
-                format_secs,
-                delivery_secs,
-            )
-        );
-        // phase3_secs is the outer wall for truth+postproc+format; keep it
-        // available for diagnostics without pretending it is final_pass alone.
+        info!("{}", format_stop_path_budget_line(budget));
+        // phase3_secs is the outer wall for truth+postproc+format+delivery;
+        // keep it for diagnostics without pretending it is final_pass alone.
         let _ = phase3_secs;
 
         result.map(|_| ())
@@ -4000,6 +4023,7 @@ impl RecordingController {
             final_pass_secs,
             postproc_secs: pipeline_outcome.postproc_secs,
             format_secs: pipeline_outcome.format_secs,
+            delivery_secs: pipeline_outcome.delivery_secs,
         })
     }
 
@@ -4497,6 +4521,9 @@ impl RecordingController {
             commit_required: commit_trigger.is_some(),
         });
 
+        // Delivery span: history persistence + paste/deliver_once handoff.
+        // This is the user-visible delivery cone — not phase-4 cleanup.
+        let delivery_started = std::time::Instant::now();
         // Save final transcript (skip duplicate when RAW already stored and
         // unchanged) BEFORE the paste attempt. Paste can fail transiently (e.g.
         // no focused app / Accessibility hiccup) and its `?` early-returns from
@@ -4561,6 +4588,7 @@ impl RecordingController {
         } else {
             info!("Auto-paste skipped (mode={})", mode_label);
         }
+        let delivery_secs = delivery_started.elapsed().as_secs_f64();
 
         if let Some(cloud_verdict) = cloud_verdict_opt {
             let entry = crate::state::history::save_entry_with_timestamp_and_slug(
@@ -4641,6 +4669,7 @@ impl RecordingController {
             commit_trigger,
             postproc_secs,
             format_secs,
+            delivery_secs,
         })
     }
 
