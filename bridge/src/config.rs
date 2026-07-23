@@ -91,6 +91,9 @@ pub struct CsSettings {
     /// `"whisper"`. `None` means the built-in auto policy. Written back via
     /// `update_config` with the same key (promoted → settings.json).
     pub stt_engine: Option<String>,
+    /// Final-pass routing (`FINAL_PASS_MODE`): `"always"` | `"smart"` | `"off"`.
+    /// `None` means Smart default. Written back via `update_config`.
+    pub final_pass_mode: Option<String>,
     // ── LLM backend (base) ──
     pub llm_endpoint: Option<String>,
     // ── Clipboard ──
@@ -442,6 +445,12 @@ impl CodescribeConfig {
                 settings.stt_engine.clone(),
                 &env_file,
             ),
+            final_pass_mode: effective_env_string(
+                "FINAL_PASS_MODE",
+                settings.final_pass_mode.clone(),
+                &env_file,
+            )
+            .or_else(|| effective_env_string("CODESCRIBE_FINAL_PASS_MODE", None, &env_file)),
             llm_endpoint: config.llm_endpoint.clone(),
             restore_clipboard: config.restore_clipboard,
             restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,

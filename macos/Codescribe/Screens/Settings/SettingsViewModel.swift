@@ -874,7 +874,28 @@ final class SettingsViewModel: ObservableObject {
     // MARK: - Engine-panel derived values (runtime truth)
 
     var activeSTT: String {
-        settings.useLocalStt ? "Local · final verdict" : "Cloud · streaming"
+        if !settings.useLocalStt {
+            return "Cloud · streaming"
+        }
+        let engine: String
+        switch settings.sttEngine ?? "auto" {
+        case "apple":
+            engine = "Apple on-device"
+        case "whisper", "candle":
+            engine = "Whisper"
+        default:
+            engine = "Local"
+        }
+        let mode: String
+        switch (settings.finalPassMode ?? "smart").lowercased() {
+        case "always":
+            mode = "Always final pass"
+        case "off":
+            mode = "Off final pass"
+        default:
+            mode = "Smart final pass"
+        }
+        return "\(engine) · \(mode)"
     }
 
     /// STT is "healthy" (olive dot) when a local model is configured, or when a
@@ -1227,6 +1248,34 @@ final class SettingsViewModel: ObservableObject {
     func setSttEngine(_ id: String) {
         settings.sttEngine = id
         persist("CODESCRIBE_STT_ENGINE", id)
+    }
+
+    /// Final-pass routing: always | smart | off (default smart).
+    var finalPassModeId: String {
+        let raw = (settings.finalPassMode ?? "smart").lowercased()
+        switch raw {
+        case "always", "off": return raw
+        default: return "smart"
+        }
+    }
+
+    var finalPassModeLabel: String {
+        switch finalPassModeId {
+        case "always": return "Always"
+        case "off": return "Off"
+        default: return "Smart"
+        }
+    }
+
+    func setFinalPassMode(_ id: String) {
+        let normalized: String
+        switch id.lowercased() {
+        case "always": normalized = "always"
+        case "off": normalized = "off"
+        default: normalized = "smart"
+        }
+        settings.finalPassMode = normalized
+        persist("FINAL_PASS_MODE", normalized)
     }
 
     /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); anything

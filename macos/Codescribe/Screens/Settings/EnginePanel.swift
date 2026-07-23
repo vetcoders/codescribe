@@ -116,6 +116,12 @@ struct EnginePanel: View {
         ("whisper", "Whisper (Candle)"),
     ]
 
+    private static let finalPassModeOptions: [(id: String, label: String)] = [
+        ("always", "Always"),
+        ("smart", "Smart"),
+        ("off", "Off"),
+    ]
+
     private var layeredBinding: Binding<Bool> {
         Binding(get: { model.layeredTranscriptionEnabled },
                 set: { model.setLayeredTranscription($0) })
@@ -139,6 +145,27 @@ struct EnginePanel: View {
                     }
                 } label: {
                     SettingsMenuLabel(text: model.sttEngineLabel)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+            SettingsControlRow(title: "Final pass",
+                               subtitle: "Smart skips full re-pass when streaming is complete; Off keeps repetition cleanup") {
+                Menu {
+                    ForEach(Self.finalPassModeOptions, id: \.id) { option in
+                        Button {
+                            model.setFinalPassMode(option.id)
+                        } label: {
+                            if option.id == model.finalPassModeId {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
+                        }
+                    }
+                } label: {
+                    SettingsMenuLabel(text: model.finalPassModeLabel)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)

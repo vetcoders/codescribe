@@ -457,6 +457,7 @@ extension CsSettings {
         localModel: "whisper-large-v3-turbo",
         sttEndpoint: nil,
         sttEngine: nil,
+        finalPassMode: nil,
         llmEndpoint: "https://api.openai.com/v1/responses",
         restoreClipboard: true,
         restoreClipboardDelayMs: 200,

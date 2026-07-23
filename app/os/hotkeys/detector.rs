@@ -1358,6 +1358,128 @@ mod tests {
         );
     }
 
+    /// Capture INFO records while driving blocked left/right double-tap and
+    /// wrong-arm paths. Detector is the single owner of the stable line.
+    #[test]
+    fn blocked_and_ignored_diagnostics_emit_exactly_one_info_each() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Buf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut detector = HotkeyDetector::default();
+            let config = test_config(
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::Disabled, // left binding disabled → blocked_double_tap
+                ShortcutBinding::DoubleRightOption,
+            );
+            let base = Instant::now();
+
+            // Full left Option double-tap while binding disabled → blocked INFO once.
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(100),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            );
+            let blocked = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(101),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            );
+            assert!(
+                matches!(
+                    blocked,
+                    Some(HotkeyEvent::DoubleTapBlocked {
+                        gesture: DoubleTapGesture::LeftOption,
+                        reason: DoubleTapBlockReason::BindingDisabled,
+                    })
+                ),
+                "expected blocked left double-tap, got {blocked:?}"
+            );
+
+            // Wrong arm: default arm is Shift; hold Fn + Cmd → arm_ignored INFO once.
+            let hold_fn_config = test_config(
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::DoubleLeftOption,
+                ShortcutBinding::DoubleRightOption,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(400),
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, true),
+                },
+                hold_fn_config,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(410),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(false, false, false, true, true), // cmd + fn
+                },
+                hold_fn_config,
+            );
+        });
+
+        let captured = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
+        let blocked_count = captured
+            .matches("blocked_double_tap gesture=left_option reason=binding_disabled")
+            .count();
+        let arm_count = captured
+            .matches("arm_ignored reason=wrong_arm_modifier")
+            .count();
+        assert_eq!(
+            blocked_count, 1,
+            "exactly one blocked_double_tap INFO expected, got {blocked_count} in:\n{captured}"
+        );
+        assert_eq!(
+            arm_count, 1,
+            "exactly one arm_ignored INFO expected, got {arm_count} in:\n{captured}"
+        );
+    }
+
     #[test]
     fn detector_reports_modifier_blocked_option_double_tap() {
         let mut detector = HotkeyDetector::default();
