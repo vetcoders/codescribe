@@ -373,11 +373,12 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async thr
     // callback can still fall back to Whisper promptly.
     let deadlineSeconds = sfSpeechRecognitionDeadlineSeconds()
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
-        var settled = false
-        var recognitionTask: SFSpeechRecognitionTask?
+        // settled + recognitionTask are shared between the timeout queue and the
+        // recognition callback queue — serialize all access under one lock so
+        // resume happens exactly once under race.
+        let gate = SfSpeechSettleGate()
         let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
-            if settled { return }
-            settled = true
+            guard gate.trySettle() else { return }
             switch outcome {
             case .success(let payload):
                 continuation.resume(returning: payload)
@@ -386,15 +387,15 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async thr
             }
         }
         let timeoutWork = DispatchWorkItem {
-            recognitionTask?.cancel()
+            gate.cancelTask()
             settle(.failure(BridgeError.runtime("sf_speech: recognition_timeout")))
         }
         DispatchQueue.global(qos: .userInitiated).asyncAfter(
             deadline: .now() + deadlineSeconds,
             execute: timeoutWork
         )
-        recognitionTask = retained.recognitionTask(with: request) { result, error in
-            if settled { return }
+        let task = retained.recognitionTask(with: request) { result, error in
+            if gate.isSettled() { return }
             if let error {
                 timeoutWork.cancel()
                 settle(.failure(BridgeError.runtime("sf_speech: \(error.localizedDescription)")))
@@ -420,8 +421,48 @@ private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async thr
                 )
             ))
         }
-        // Cancellation without a final/error callback is covered by the deadline.
-        _ = recognitionTask
+        gate.storeTask(task)
+    }
+}
+
+/// Exactly-once settle gate for SFSpeech timeout vs callback race.
+///
+/// Timeout work and recognition callbacks run on different queues; all state
+/// transitions go through this lock so resume is exactly-once and task cancel
+/// cannot race the assignment of `recognitionTask`.
+final class SfSpeechSettleGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var settled = false
+    private var recognitionTask: SFSpeechRecognitionTask?
+
+    func storeTask(_ task: SFSpeechRecognitionTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        recognitionTask = task
+        if settled {
+            // Timeout already won before the task handle was stored.
+            task.cancel()
+        }
+    }
+
+    func cancelTask() {
+        lock.lock()
+        defer { lock.unlock() }
+        recognitionTask?.cancel()
+    }
+
+    func trySettle() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if settled { return false }
+        settled = true
+        return true
+    }
+
+    func isSettled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return settled
     }
 }
 

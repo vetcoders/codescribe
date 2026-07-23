@@ -515,6 +515,92 @@ pub fn preferred_backend_for_probe(
         .ok_or_else(|| anyhow::anyhow!("probe reported ready without backend label"))
 }
 
+/// Mirrors `probe()` fall-through in `codescribe-stt-bridge.swift`:
+/// ST only when supported **and** installed; otherwise try SF on-device;
+/// when neither is ready, surface ST not-installed (negative path).
+///
+/// Returns the backend string the bridge would emit, plus installed flag for
+/// the selected backend. `None` backend means neither path is ready.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeFallthrough {
+    pub backend: Option<&'static str>,
+    pub locale_supported: bool,
+    pub locale_installed: bool,
+}
+
+pub fn probe_st_sf_fallthrough(
+    st_supported: bool,
+    st_installed: bool,
+    sf_on_device_ready: bool,
+) -> ProbeFallthrough {
+    if st_supported {
+        if st_installed {
+            return ProbeFallthrough {
+                backend: Some("speech_transcriber"),
+                locale_supported: true,
+                locale_installed: true,
+            };
+        }
+        // ST supported but not installed: fall through to SF when ready.
+        if sf_on_device_ready {
+            return ProbeFallthrough {
+                backend: Some("sf_speech_recognizer"),
+                locale_supported: true,
+                locale_installed: true,
+            };
+        }
+        // Negative path: ST listed, assets missing, SF cannot serve.
+        return ProbeFallthrough {
+            backend: Some("speech_transcriber"),
+            locale_supported: true,
+            locale_installed: false,
+        };
+    }
+    if sf_on_device_ready {
+        return ProbeFallthrough {
+            backend: Some("sf_speech_recognizer"),
+            locale_supported: true,
+            locale_installed: true,
+        };
+    }
+    ProbeFallthrough {
+        backend: None,
+        locale_supported: false,
+        locale_installed: false,
+    }
+}
+
+/// Exactly-once settle protocol used by the SFSpeech timeout/callback race.
+/// Executable model of `SfSpeechSettleGate` in the Swift bridge.
+#[derive(Debug, Default)]
+pub struct SfSpeechSettleGate {
+    settled: std::sync::atomic::AtomicBool,
+}
+
+impl SfSpeechSettleGate {
+    pub fn new() -> Self {
+        Self {
+            settled: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Returns true only for the first caller (exactly-once).
+    pub fn try_settle(&self) -> bool {
+        self.settled
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+
+    pub fn is_settled(&self) -> bool {
+        self.settled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 fn bridge_binary() -> PathBuf {
     let current_exe = std::env::current_exe().ok();
     bridge_binary_for_current_exe(current_exe.as_deref())
@@ -1010,6 +1096,102 @@ mod tests {
             SF_SPEECH_RECOGNITION_DEADLINE_SECS < BRIDGE_TRANSCRIBE_TIMEOUT.as_secs_f64(),
             "deadline must be below the 30 s Rust bridge timeout so Whisper fallback can start"
         );
+    }
+
+    /// Executable stall/cancel/exactly-once model of the SFSpeech settle gate.
+    #[test]
+    fn sf_speech_settle_gate_exactly_once_under_race() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+
+        let gate = Arc::new(SfSpeechSettleGate::new());
+        let resumes = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        // Simulate timeout work + late recognition callback racing.
+        for _ in 0..8 {
+            let g = Arc::clone(&gate);
+            let r = Arc::clone(&resumes);
+            handles.push(thread::spawn(move || {
+                if g.try_settle() {
+                    r.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("join");
+        }
+        assert_eq!(
+            resumes.load(Ordering::SeqCst),
+            1,
+            "exactly one resume under concurrent settle attempts"
+        );
+        assert!(gate.is_settled());
+        assert!(
+            !gate.try_settle(),
+            "post-settle try must refuse (cancel path)"
+        );
+    }
+
+    #[test]
+    fn sf_speech_settle_timeout_wins_then_callback_is_ignored() {
+        let gate = SfSpeechSettleGate::new();
+        // Stall path: timeout settles first.
+        assert!(gate.try_settle(), "timeout claims settle");
+        // Late recognition callback must not resume again.
+        assert!(!gate.try_settle(), "late callback must be ignored");
+        assert!(gate.is_settled());
+    }
+
+    /// Negative path: ST supported + uninstalled drives the bridge fall-through table.
+    #[test]
+    fn probe_st_supported_uninstalled_branch_falls_to_sf_or_refuses() {
+        // Branch 1: ST listed, assets missing, SF ready → bridge returns SF.
+        let via_sf = probe_st_sf_fallthrough(true, false, true);
+        assert_eq!(via_sf.backend, Some("sf_speech_recognizer"));
+        assert!(via_sf.locale_supported);
+        assert!(via_sf.locale_installed);
+        let backend = preferred_backend_for_probe(
+            via_sf.locale_supported,
+            via_sf.locale_installed,
+            via_sf.backend,
+        )
+        .expect("SF ready after ST uninstalled fall-through");
+        assert_eq!(backend, AppleSttBackend::SfSpeechRecognizer);
+
+        // Branch 2: ST listed, assets missing, SF not ready → not installed refusal.
+        let stuck = probe_st_sf_fallthrough(true, false, false);
+        assert_eq!(stuck.backend, Some("speech_transcriber"));
+        assert!(stuck.locale_supported);
+        assert!(!stuck.locale_installed);
+        let err = preferred_backend_for_probe(
+            stuck.locale_supported,
+            stuck.locale_installed,
+            stuck.backend,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not installed") || msg.contains("assets"),
+            "supported+uninstalled must refuse, got: {msg}"
+        );
+
+        // Drive the JSON shape the bridge emits on the SF fall-through branch.
+        let response: BridgeResponse = serde_json::from_str(
+            r#"{
+                "ok": true,
+                "status": "ok",
+                "text": "",
+                "segments": [],
+                "locale_supported": true,
+                "locale_installed": true,
+                "backend": "sf_speech_recognizer"
+            }"#,
+        )
+        .expect("fixture");
+        let probe = interpret_probe_response(&response);
+        assert_eq!(probe.backend, Some(AppleSttBackend::SfSpeechRecognizer));
+        assert!(probe.supported && probe.installed);
     }
 
     #[test]
