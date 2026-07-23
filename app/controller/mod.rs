@@ -452,6 +452,9 @@ struct RecordingTruthVerdict {
     /// Disposition of the explicit file-level final pass, when one ran.
     /// None means no final pass was attempted for this verdict.
     final_pass_disposition: Option<FinalPassDisposition>,
+    /// Actual serving engine label for sidecar/UI (`local_apple`, `local_whisper`, …).
+    /// Preference-derived labels are forbidden when a verdict is present.
+    engine_label: Option<String>,
     commit_trigger: Option<String>,
     display_status: String,
 }
@@ -540,9 +543,9 @@ fn truth_display_status(
     }
 }
 
-// allow(too_many_arguments): verdict aggregates 9 independent recording-truth
+// allow(too_many_arguments): verdict aggregates independent recording-truth
 // signals collected at one call site; a params struct would only restate the
-// same nine names. Revisit if call sites multiply.
+// same names. Revisit if call sites multiply.
 #[allow(clippy::too_many_arguments)]
 fn build_truth_verdict(
     raw_text: Option<String>,
@@ -554,6 +557,7 @@ fn build_truth_verdict(
     confidence_flags: Vec<TranscriptionConfidenceFlag>,
     sparkline: Option<String>,
     final_pass_disposition: Option<FinalPassDisposition>,
+    engine_label: Option<String>,
 ) -> RecordingTruthVerdict {
     let commit_trigger = truth_review_trigger(
         fallback_class,
@@ -577,6 +581,7 @@ fn build_truth_verdict(
         confidence_flags,
         sparkline,
         final_pass_disposition,
+        engine_label,
         commit_trigger,
         display_status,
     }
@@ -627,6 +632,10 @@ fn adjudicate_recording_truth(
         // Final-pass disposition is only meaningful when the engine ran
         // an explicit final pass (hold path). Toggle path leaves this None.
         let final_pass_disposition = verdict.final_pass.as_ref().map(|fp| fp.disposition);
+        let engine_label = Some(engine_label_from_verdict(
+            &verdict.engine,
+            final_pass_disposition,
+        ));
 
         let raw_text = if no_speech_reason.is_some() {
             None
@@ -644,6 +653,7 @@ fn adjudicate_recording_truth(
             confidence_flags,
             sparkline,
             final_pass_disposition,
+            engine_label,
         );
     }
 
@@ -656,6 +666,7 @@ fn adjudicate_recording_truth(
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
         );
@@ -689,6 +700,7 @@ fn adjudicate_recording_truth(
                 fallback_flags,
                 None,
                 None,
+                Some("cloud_stt".to_string()),
             );
         }
 
@@ -712,6 +724,7 @@ fn adjudicate_recording_truth(
                 fallback_flags,
                 None,
                 None,
+                Some("streaming_whisper".to_string()),
             );
         }
     } else {
@@ -726,6 +739,7 @@ fn adjudicate_recording_truth(
                 cloud_verdict.confidence_flags,
                 None,
                 None,
+                Some("cloud_stt".to_string()),
             );
         }
 
@@ -753,6 +767,7 @@ fn adjudicate_recording_truth(
                 confidence_flags,
                 None,
                 None,
+                Some("streaming_whisper".to_string()),
             );
         }
     }
@@ -770,6 +785,7 @@ fn adjudicate_recording_truth(
         None,
         None,
         Vec::new(),
+        None,
         None,
         None,
     )
@@ -1041,26 +1057,144 @@ fn compose_final_status(
     }
 }
 
-fn truth_engine_label(source: Option<RecordingTranscriptSource>) -> Option<String> {
+/// Canonical stop-path final-pass routing (Settings → Final pass / `FINAL_PASS_MODE`).
+/// Distinct from `pipeline::contracts::FinalPassMode` (lexicon cleanup request).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalPassRoutingMode {
+    /// Always re-run full local STT on the saved WAV.
+    Always,
+    /// Skip full re-pass only when streaming completeness is adjudicated.
+    Smart,
+    /// Streaming (post-processed) is final; keep repetition guardrail only.
+    Off,
+}
+
+impl FinalPassRoutingMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Smart => "smart",
+            Self::Off => "off",
+        }
+    }
+
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "always" | "on" | "1" | "true" | "yes" => Some(Self::Always),
+            "smart" | "auto" => Some(Self::Smart),
+            "off" | "0" | "false" | "no" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve final-pass routing from env/settings. Default: Smart.
+///
+/// Precedence:
+/// 1. `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` (`always|smart|off`)
+/// 2. Legacy `CODESCRIBE_LOCAL_STT_FINAL_PASS` falsey → Off, truthy → Always
+/// 3. Smart
+pub(crate) fn final_pass_routing_mode() -> FinalPassRoutingMode {
+    for key in ["FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
+        if let Ok(raw) = std::env::var(key)
+            && let Some(mode) = FinalPassRoutingMode::parse(&raw)
+        {
+            return mode;
+        }
+    }
+    if let Ok(raw) = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS") {
+        let v = raw.trim().to_ascii_lowercase();
+        if matches!(v.as_str(), "" | "0" | "false" | "no" | "off") {
+            return FinalPassRoutingMode::Off;
+        }
+        if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
+            return FinalPassRoutingMode::Always;
+        }
+    }
+    FinalPassRoutingMode::Smart
+}
+
+/// Typed streaming-completeness decision for Smart skip (never "non-empty ⇒ complete").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamingCompleteness {
+    Complete,
+    Incomplete { reason: &'static str },
+}
+
+/// Assess whether streaming holds an adjudicator-confirmed complete transcript.
+///
+/// Incomplete when: empty, no-speech, pending tail/partial work, or missing an
+/// utterance boundary (truncated mid-sentence is the common partial-stream case).
+pub(crate) fn assess_streaming_completeness(
+    streaming_text: &str,
+    no_speech_reason: Option<&str>,
+    pending_tail: bool,
+    partial_stale_or_dropped: bool,
+) -> StreamingCompleteness {
+    if no_speech_reason.is_some() {
+        return StreamingCompleteness::Incomplete {
+            reason: "no_speech",
+        };
+    }
+    let text = streaming_text.trim();
+    if text.is_empty() {
+        return StreamingCompleteness::Incomplete { reason: "empty" };
+    }
+    if pending_tail {
+        return StreamingCompleteness::Incomplete {
+            reason: "pending_tail",
+        };
+    }
+    if partial_stale_or_dropped {
+        return StreamingCompleteness::Incomplete {
+            reason: "partial_pending",
+        };
+    }
+    let last = text.chars().last();
+    let ends_at_boundary = matches!(last, Some('.' | '!' | '?' | '…' | '。' | ';' | '؟'));
+    if !ends_at_boundary {
+        return StreamingCompleteness::Incomplete {
+            reason: "no_utterance_boundary",
+        };
+    }
+    StreamingCompleteness::Complete
+}
+
+/// Label from the actual engine verdict (not preference). Apple→Whisper fallback
+/// reports Whisper; Smart-skip of streaming reports streaming_whisper.
+pub(crate) fn engine_label_from_verdict(
+    engine: &codescribe_core::pipeline::contracts::TranscriptionEngineVerdict,
+    final_pass_disposition: Option<FinalPassDisposition>,
+) -> String {
+    use codescribe_core::pipeline::contracts::TranscriptionEngine;
+    if matches!(final_pass_disposition, Some(FinalPassDisposition::Skipped)) {
+        return "streaming_whisper".to_string();
+    }
+    match engine.engine {
+        TranscriptionEngine::Apple => "local_apple".to_string(),
+        // Fallback-vs-primary provenance travels in verdict mode/disposition;
+        // the label states the engine that actually served.
+        TranscriptionEngine::Whisper => "local_whisper".to_string(),
+    }
+}
+
+fn truth_engine_label(
+    source: Option<RecordingTranscriptSource>,
+    actual_engine_label: Option<&str>,
+) -> Option<String> {
+    if let Some(label) = actual_engine_label {
+        return Some(label.to_string());
+    }
     source.map(|source| match source {
-        RecordingTranscriptSource::LocalFinalPass => {
-            if codescribe_core::stt::active_engine_is_apple() {
-                "local_apple".to_string()
-            } else {
-                "local_whisper".to_string()
-            }
+        // Preference-derived labels only when no verdict engine is available.
+        RecordingTranscriptSource::LocalFinalPass
+        | RecordingTranscriptSource::ToggleSessionAdjudicated => "local_whisper".to_string(),
+        RecordingTranscriptSource::CloudPrimary | RecordingTranscriptSource::CloudFallback => {
+            "cloud_stt".to_string()
         }
-        RecordingTranscriptSource::ToggleSessionAdjudicated => {
-            if codescribe_core::stt::active_engine_is_apple() {
-                "local_apple".to_string()
-            } else {
-                "local_whisper".to_string()
-            }
+        RecordingTranscriptSource::Streaming | RecordingTranscriptSource::StreamingFallback => {
+            "streaming_whisper".to_string()
         }
-        RecordingTranscriptSource::CloudPrimary => "cloud_stt".to_string(),
-        RecordingTranscriptSource::CloudFallback => "cloud_stt".to_string(),
-        RecordingTranscriptSource::Streaming => "streaming_whisper".to_string(),
-        RecordingTranscriptSource::StreamingFallback => "streaming_whisper".to_string(),
     })
 }
 
@@ -1078,23 +1212,38 @@ pub(crate) fn format_stop_path_budget_line(
     )
 }
 
-/// Skip Whisper full-WAV re-pass when streaming already holds a complete transcript.
-/// Apple on-device final pass stays (it is sub-second for pl-PL).
+/// Phase sum tolerance for stop-path budget tests (timing noise).
+#[cfg(test)]
+pub(crate) fn stop_path_phases_sum_within_total(
+    total_secs: f64,
+    rec_stop_secs: f64,
+    final_pass_secs: f64,
+    postproc_secs: f64,
+    format_secs: f64,
+    delivery_secs: f64,
+    tolerance_secs: f64,
+) -> bool {
+    let sum = rec_stop_secs + final_pass_secs + postproc_secs + format_secs + delivery_secs;
+    (sum - total_secs).abs() <= tolerance_secs
+}
+
+/// Skip full local STT re-pass according to routing mode + completeness.
+/// Apple on-device final pass stays under Smart (sub-second for pl-PL).
 pub(crate) fn should_skip_full_final_repass(
-    streaming_text: &str,
-    no_speech_reason: Option<&str>,
+    mode: FinalPassRoutingMode,
+    completeness: StreamingCompleteness,
     prefer_apple: bool,
 ) -> bool {
-    if prefer_apple {
-        return false;
+    match mode {
+        FinalPassRoutingMode::Always => false,
+        FinalPassRoutingMode::Off => true,
+        FinalPassRoutingMode::Smart => {
+            if prefer_apple {
+                return false;
+            }
+            matches!(completeness, StreamingCompleteness::Complete)
+        }
     }
-    if no_speech_reason.is_some() {
-        return false;
-    }
-    let text = streaming_text.trim();
-    // Complete enough: non-empty streaming transcript ends at a sentence/utterance
-    // boundary or is simply non-empty after a clean session stop.
-    !text.is_empty()
 }
 
 fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
@@ -1136,6 +1285,9 @@ struct ProcessRecordingOutcome {
     no_speech_reason: Option<String>,
     commit_trigger: Option<String>,
     transcript_present: bool,
+    final_pass_secs: f64,
+    postproc_secs: f64,
+    format_secs: f64,
 }
 
 impl ProcessRecordingOutcome {
@@ -1144,6 +1296,9 @@ impl ProcessRecordingOutcome {
             no_speech_reason: Some(reason.into()),
             commit_trigger: None,
             transcript_present: false,
+            final_pass_secs: 0.0,
+            postproc_secs: 0.0,
+            format_secs: 0.0,
         }
     }
 }
@@ -3226,10 +3381,14 @@ impl RecordingController {
             .await;
         let delivery_secs = phase4.elapsed().as_secs_f64();
         let total_secs = stop_start.elapsed().as_secs_f64();
-        // final_pass/postproc/format are nested inside PHASE 3; surface the
-        // aggregate as final_pass-ish work until finer-grained timers land.
-        // rec_stop = PHASE 2, delivery = PHASE 4, remaining PHASE 3 attributed
-        // to final_pass (dominant cost historically was full Whisper re-pass).
+        let (final_pass_secs, postproc_secs, format_secs) = match &result {
+            Ok(outcome) => (
+                outcome.final_pass_secs,
+                outcome.postproc_secs,
+                outcome.format_secs,
+            ),
+            Err(_) => (0.0, 0.0, 0.0),
+        };
         info!(
             "stop_toggle_inner: PHASE 4 — cleanup + result handler completed in {:?} (total stop time: {:?})",
             phase4.elapsed(),
@@ -3240,12 +3399,15 @@ impl RecordingController {
             format_stop_path_budget_line(
                 total_secs,
                 rec_stop_secs,
-                phase3_secs,
-                0.0,
-                0.0,
+                final_pass_secs,
+                postproc_secs,
+                format_secs,
                 delivery_secs,
             )
         );
+        // phase3_secs is the outer wall for truth+postproc+format; keep it
+        // available for diagnostics without pretending it is final_pass alone.
+        let _ = phase3_secs;
 
         result.map(|_| ())
     }
@@ -3421,27 +3583,36 @@ impl RecordingController {
             warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
         }
 
-        let local_final_pass_enabled = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
-            .ok()
-            .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-            .unwrap_or(true);
+        let routing_mode = final_pass_routing_mode();
+        let mut final_pass_secs = 0.0;
 
-        if use_local_stt && local_final_pass_enabled {
+        if use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off) {
             let prefer_apple = codescribe_core::stt::active_engine_is_apple();
-            let session_no_speech = {
-                let snap = snapshot_session_telemetry(&self.session_telemetry);
-                snap.no_speech_reason
-            };
-            let skip_full_repass = should_skip_full_final_repass(
+            let session_snap = snapshot_session_telemetry(&self.session_telemetry);
+            let session_no_speech = session_snap.no_speech_reason.clone();
+            let partial_pending = session_snap
+                .stats
+                .as_ref()
+                .is_some_and(|s| s.partial_stale_count > 0 || s.partial_dropped_count > 0);
+            let completeness = assess_streaming_completeness(
                 &streaming_text,
                 session_no_speech.as_deref(),
-                prefer_apple,
+                false,
+                partial_pending,
             );
+            let skip_full_repass =
+                should_skip_full_final_repass(routing_mode, completeness, prefer_apple);
 
             if skip_full_repass {
                 local_final_pass_attempted = true;
+                let reason = match completeness {
+                    StreamingCompleteness::Complete => "complete_streaming_transcript",
+                    StreamingCompleteness::Incomplete { reason } => reason,
+                };
                 info!(
-                    "final_pass_skipped reason=complete_streaming_transcript chars={}",
+                    "final_pass_skipped mode={} reason={} chars={}",
+                    routing_mode.as_str(),
+                    reason,
                     streaming_text.trim().len()
                 );
                 let text = streaming_text.trim().to_string();
@@ -3461,7 +3632,7 @@ impl RecordingController {
                         Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
                             mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
                             disposition: FinalPassDisposition::Skipped,
-                            reason: Some("complete_streaming_transcript".to_string()),
+                            reason: Some(reason.to_string()),
                             lexicon_rewrites: 0,
                             repetition_cleanups: 0,
                         }),
@@ -3473,7 +3644,8 @@ impl RecordingController {
                 let lang = language_opt.map(str::to_string);
 
                 info!(
-                    "Running final-pass local STT adjudicator (engine={}): {}",
+                    "Running final-pass local STT adjudicator (mode={} engine={}): {}",
+                    routing_mode.as_str(),
                     if prefer_apple {
                         "apple_on_device"
                     } else {
@@ -3491,6 +3663,7 @@ impl RecordingController {
                 .await
                 {
                     Ok(Ok(verdict)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
                         info!(
                             "Final-pass verdict captured ({} chars, engine={} mode={} speech_pct={:?}, avg_logprob={:?}, elapsed={:?})",
                             verdict.text.len(),
@@ -3502,12 +3675,49 @@ impl RecordingController {
                         );
                         local_final_pass_verdict = Some(verdict);
                     }
-                    Ok(Err(e)) => warn!("Final-pass transcription failed: {}", e),
-                    Err(e) => warn!("Final-pass transcription task failed: {}", e),
+                    Ok(Err(e)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        warn!("Final-pass transcription failed: {}", e);
+                    }
+                    Err(e) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        warn!("Final-pass transcription task failed: {}", e);
+                    }
                 }
             } else {
                 warn!("Final-pass local STT skipped: no audio file available");
             }
+        } else if use_local_stt && !streaming_text.trim().is_empty() {
+            // Off: streaming is final; still emit a skipped LocalFinalPass so
+            // adjudication/provenance stay honest and postproc/repetition run.
+            local_final_pass_attempted = true;
+            info!(
+                "final_pass_skipped mode=off reason=routing_off chars={}",
+                streaming_text.trim().len()
+            );
+            let text = streaming_text.trim().to_string();
+            let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                text: text.clone(),
+                ..Default::default()
+            };
+            local_final_pass_verdict = Some(
+                codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                    text,
+                    raw,
+                    None,
+                    codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                    ),
+                    Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                        mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                        disposition: FinalPassDisposition::Skipped,
+                        reason: Some("routing_off".to_string()),
+                        lexicon_rewrites: 0,
+                        repetition_cleanups: 0,
+                    }),
+                ),
+            );
         }
 
         if !use_local_stt {
@@ -3606,7 +3816,10 @@ impl RecordingController {
                         .to_string();
                 let truth_metadata = RecordingTruthMetadata {
                     source: truth_verdict.transcript_source,
-                    engine: truth_engine_label(truth_verdict.transcript_source),
+                    engine: truth_engine_label(
+                        truth_verdict.transcript_source,
+                        truth_verdict.engine_label.as_deref(),
+                    ),
                     mode: Some(mode_label),
                     fallback_class: truth_verdict.fallback_class,
                     fallback_used: truth_verdict.fallback_class.is_some()
@@ -3676,6 +3889,7 @@ impl RecordingController {
                 truth_final_pass_disposition: truth_verdict.final_pass_disposition,
                 truth_commit_trigger: truth_verdict.commit_trigger.clone(),
                 truth_display_status: truth_verdict.display_status.clone(),
+                truth_engine_label: truth_verdict.engine_label.clone(),
                 append_mode: false,
                 live_stream_session: false,
                 user_needs_separator: false,
@@ -3688,6 +3902,9 @@ impl RecordingController {
             no_speech_reason: None,
             commit_trigger: pipeline_outcome.commit_trigger,
             transcript_present,
+            final_pass_secs,
+            postproc_secs: pipeline_outcome.postproc_secs,
+            format_secs: pipeline_outcome.format_secs,
         })
     }
 
@@ -3767,6 +3984,7 @@ impl RecordingController {
             truth_final_pass_disposition,
             truth_commit_trigger,
             truth_display_status,
+            truth_engine_label: actual_engine_label,
             append_mode: _append_mode,
             live_stream_session,
             user_needs_separator: _user_needs_separator,
@@ -3783,6 +4001,7 @@ impl RecordingController {
         // This ensures ALL output paths receive clean text regardless of mode.
         // Contract: every chunk/transcript passes through StreamPostProcessor before
         // reaching overlay, clipboard, augmentation, or dataset.
+        let postproc_started = std::time::Instant::now();
         let (clean_text, postprocess_stats) = {
             let mut finalizer = StreamPostProcessor::new();
             let clean_text = finalizer
@@ -3791,6 +4010,7 @@ impl RecordingController {
             let stats = finalizer.stats();
             (clean_text, stats)
         };
+        let postproc_secs = postproc_started.elapsed().as_secs_f64();
         info!(
             "Post-processed transcript ({} chars, delta={}, drops={}/{}, gate_drops={}, lexicon_rewrites={})",
             clean_text.len(),
@@ -3845,6 +4065,7 @@ impl RecordingController {
         // - AI chat? → Hold + Shift (Chat)
         // - AI on selection? → Hold + Cmd (Selection)
         let mut is_ai_noop = false;
+        let format_started = std::time::Instant::now();
         let (formatted_text, output_kind) = if assistive {
             info!(
                 "Assistive mode ({:?}): finalizing transcript before overlay delivery",
@@ -4004,6 +4225,7 @@ impl RecordingController {
             }
         };
 
+        let format_secs = format_started.elapsed().as_secs_f64();
         let mode_label =
             recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai).to_string();
         let truth_mode_label =
@@ -4079,7 +4301,7 @@ impl RecordingController {
         let final_status = compose_final_status(&truth_display_status, output_kind);
         let truth_metadata = RecordingTruthMetadata {
             source: transcript_source,
-            engine: truth_engine_label(transcript_source),
+            engine: truth_engine_label(transcript_source, actual_engine_label.as_deref()),
             mode: Some(truth_mode_label.clone()),
             fallback_class: truth_fallback_class,
             fallback_used: truth_fallback_class.is_some()
@@ -4257,7 +4479,10 @@ impl RecordingController {
                 &entry.path,
                 &RecordingTruthMetadata {
                     source: Some(RecordingTranscriptSource::CloudPrimary),
-                    engine: truth_engine_label(Some(RecordingTranscriptSource::CloudPrimary)),
+                    engine: truth_engine_label(
+                        Some(RecordingTranscriptSource::CloudPrimary),
+                        Some("cloud_stt"),
+                    ),
                     mode: Some(truth_mode_label.clone()),
                     fallback_class: None,
                     fallback_used: false,
@@ -4291,9 +4516,10 @@ impl RecordingController {
                             &entry.path,
                             &RecordingTruthMetadata {
                                 source: Some(RecordingTranscriptSource::CloudPrimary),
-                                engine: truth_engine_label(Some(
-                                    RecordingTranscriptSource::CloudPrimary,
-                                )),
+                                engine: truth_engine_label(
+                                    Some(RecordingTranscriptSource::CloudPrimary),
+                                    Some("cloud_stt"),
+                                ),
                                 mode: Some(truth_mode_label),
                                 fallback_class: None,
                                 fallback_used: false,
@@ -4316,7 +4542,11 @@ impl RecordingController {
             });
         }
 
-        Ok(types::TranscriptProcessOutcome { commit_trigger })
+        Ok(types::TranscriptProcessOutcome {
+            commit_trigger,
+            postproc_secs,
+            format_secs,
+        })
     }
 
     /// Force reset to IDLE state without stopping recorder.

@@ -351,15 +351,40 @@ async fn test_hold_down_sets_force_raw_mode() {
 }
 
 #[test]
-fn test_truth_engine_label_maps_toggle_session_adjudicated_to_local_engine() {
-    // On macOS 26+ with a resolvable Apple bridge, Auto selects Apple; otherwise Whisper.
-    let label = truth_engine_label(Some(RecordingTranscriptSource::ToggleSessionAdjudicated));
-    assert!(
-        matches!(
-            label.as_deref(),
-            Some("local_whisper") | Some("local_apple")
-        ),
-        "expected local_whisper or local_apple, got {label:?}"
+fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
+    // Preference-only path (no verdict) stays preference-neutral default.
+    let fallback = truth_engine_label(
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        None,
+    );
+    assert_eq!(fallback.as_deref(), Some("local_whisper"));
+
+    // Actual Apple verdict must not be laundered through preference.
+    let apple = codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+        codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+    );
+    assert_eq!(
+        engine_label_from_verdict(&apple, None).as_str(),
+        "local_apple"
+    );
+
+    // Apple preference with Whisper RuntimeFallback must report Whisper.
+    let whisper_fallback = codescribe_core::pipeline::contracts::TranscriptionEngineVerdict {
+        engine: codescribe_core::pipeline::contracts::TranscriptionEngine::Whisper,
+        mode: codescribe_core::pipeline::contracts::TranscriptionEngineMode::RuntimeFallback,
+        fallback_used: true,
+    };
+    assert_eq!(
+        engine_label_from_verdict(&whisper_fallback, None).as_str(),
+        "local_whisper"
+    );
+    assert_eq!(
+        truth_engine_label(
+            Some(RecordingTranscriptSource::LocalFinalPass),
+            Some("local_whisper"),
+        )
+        .as_deref(),
+        Some("local_whisper")
     );
 }
 
@@ -375,27 +400,148 @@ fn test_stop_path_budget_line_format() {
     assert!(line.contains("postproc=0.100s"));
     assert!(line.contains("format=0.200s"));
     assert!(line.contains("delivery=0.034s"));
+    assert!(
+        stop_path_phases_sum_within_total(1.234, 0.5, 0.4, 0.1, 0.2, 0.034, 0.001),
+        "phase sum must match total within tolerance"
+    );
+    assert!(
+        !stop_path_phases_sum_within_total(1.234, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01),
+        "zero placeholders must fail the phase-sum check"
+    );
 }
 
 #[test]
 fn test_should_skip_full_final_repass_on_complete_streaming() {
-    assert!(should_skip_full_final_repass(
+    let complete = assess_streaming_completeness(
         "To jest kompletny streaming transcript.",
         None,
+        false,
+        false,
+    );
+    assert_eq!(complete, StreamingCompleteness::Complete);
+    assert!(should_skip_full_final_repass(
+        FinalPassRoutingMode::Smart,
+        complete,
         false
     ));
     assert!(
-        !should_skip_full_final_repass("  ", None, false),
-        "empty streaming must not skip"
+        !should_skip_full_final_repass(FinalPassRoutingMode::Always, complete, false),
+        "Always never skips"
     );
     assert!(
-        !should_skip_full_final_repass("tekst", Some("vad_no_speech"), false),
-        "no-speech sessions must not skip"
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+        "Off skips even on Apple"
+    );
+
+    let empty = assess_streaming_completeness("  ", None, false, false);
+    assert!(matches!(
+        empty,
+        StreamingCompleteness::Incomplete { reason: "empty" }
+    ));
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, empty, false),
+        "empty streaming must not skip under Smart"
+    );
+
+    let no_speech = assess_streaming_completeness("tekst", Some("vad_no_speech"), false, false);
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, no_speech, false),
+        "no-speech sessions must not skip under Smart"
+    );
+
+    let apple_complete = assess_streaming_completeness(
+        "To jest kompletny streaming transcript.",
+        None,
+        false,
+        false,
     );
     assert!(
-        !should_skip_full_final_repass("tekst", None, true),
-        "Apple lane keeps final-pass (sub-second on-device)"
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
+        "Apple lane keeps final-pass under Smart (sub-second on-device)"
     );
+}
+
+#[test]
+fn test_smart_skip_rejects_truncated_stream_without_boundary() {
+    let truncated = assess_streaming_completeness(
+        "To jest niepełny streaming bez końcowej kropki",
+        None,
+        false,
+        false,
+    );
+    assert!(
+        matches!(
+            truncated,
+            StreamingCompleteness::Incomplete {
+                reason: "no_utterance_boundary"
+            }
+        ),
+        "truncated mid-utterance must be Incomplete, got {truncated:?}"
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, truncated, false),
+        "partial/truncated stream must not skip full re-pass"
+    );
+
+    let pending = assess_streaming_completeness("To jest kompletne zdanie.", None, true, false);
+    assert!(matches!(
+        pending,
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail"
+        }
+    ));
+    assert!(!should_skip_full_final_repass(
+        FinalPassRoutingMode::Smart,
+        pending,
+        false
+    ));
+}
+
+#[test]
+#[serial]
+fn test_final_pass_routing_mode_defaults_smart_and_honors_env() {
+    unsafe {
+        std::env::remove_var("FINAL_PASS_MODE");
+        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
+        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
+    }
+    assert_eq!(final_pass_routing_mode(), FinalPassRoutingMode::Smart);
+
+    for (raw, expected) in [
+        ("always", FinalPassRoutingMode::Always),
+        ("SMART", FinalPassRoutingMode::Smart),
+        ("off", FinalPassRoutingMode::Off),
+    ] {
+        unsafe {
+            std::env::set_var("FINAL_PASS_MODE", raw);
+        }
+        assert_eq!(final_pass_routing_mode(), expected, "FINAL_PASS_MODE={raw}");
+    }
+
+    unsafe {
+        std::env::remove_var("FINAL_PASS_MODE");
+        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "0");
+    }
+    assert_eq!(
+        final_pass_routing_mode(),
+        FinalPassRoutingMode::Off,
+        "legacy LOCAL_STT_FINAL_PASS=0 maps to Off"
+    );
+
+    unsafe {
+        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "1");
+    }
+    assert_eq!(
+        final_pass_routing_mode(),
+        FinalPassRoutingMode::Always,
+        "legacy LOCAL_STT_FINAL_PASS=1 maps to Always"
+    );
+
+    unsafe {
+        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
+        std::env::remove_var("FINAL_PASS_MODE");
+        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
+    }
 }
 
 #[test]
@@ -750,6 +896,7 @@ fn test_transcript_pipeline_params(
         truth_final_pass_disposition: None,
         truth_commit_trigger: None,
         truth_display_status: "Ready".to_string(),
+        truth_engine_label: None,
         append_mode: false,
         live_stream_session: false,
         user_needs_separator: false,

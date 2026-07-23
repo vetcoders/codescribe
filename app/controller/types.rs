@@ -321,6 +321,8 @@ pub struct TranscriptPipelineParams {
     pub truth_final_pass_disposition: Option<FinalPassDisposition>,
     pub truth_commit_trigger: Option<String>,
     pub truth_display_status: String,
+    /// Actual serving-engine label from adjudication (not preference).
+    pub truth_engine_label: Option<String>,
     pub append_mode: bool,
     /// True when processing happens while an active stream is still running
     /// (e.g., toggle-mode utterance callback). In this mode, prefer delta-only
@@ -338,6 +340,10 @@ pub struct TranscriptPipelineParams {
 pub struct TranscriptProcessOutcome {
     /// Why manual commit/decision mode should be shown (if required).
     pub commit_trigger: Option<String>,
+    /// Wall seconds spent in StreamPostProcessor.
+    pub postproc_secs: f64,
+    /// Wall seconds spent in AI/local formatting branch.
+    pub format_secs: f64,
 }
 
 #[cfg(test)]
