@@ -316,6 +316,34 @@ pub fn lane_truth_snapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot {
     lane_truth::lane_truth_snapshot(lane.into(), &Config::load()).into()
 }
 
+/// Last stop-path serving verdict from the controller runtime owner.
+/// The Settings "Active STT" row consumes this — never configured preference.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsLastServingVerdict {
+    /// Actual engine label (`local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`).
+    pub engine: String,
+    /// Final-pass routing mode that governed the stop (`smart` / `always` / `off`).
+    pub routing_mode: String,
+    /// Final-pass disposition when one ran (`skipped`, `changed`, …).
+    pub disposition: Option<String>,
+    /// True when the serving engine was a runtime fallback (e.g. Apple→Whisper).
+    pub fallback_used: bool,
+}
+
+/// Snapshot the last serving verdict, if any stop completed in this process.
+/// `None` renders as "Not yet served" Swift-side.
+#[uniffi::export]
+pub fn current_serving_verdict() -> Option<CsLastServingVerdict> {
+    codescribe::controller::serving_status::current_last_serving().map(|verdict| {
+        CsLastServingVerdict {
+            engine: verdict.engine,
+            routing_mode: verdict.routing_mode,
+            disposition: verdict.disposition,
+            fallback_used: verdict.fallback_used,
+        }
+    })
+}
+
 /// Result of starting the provider-account login flow. `auth_url` is present
 /// when the local callback server is listening and the UI should open a browser.
 #[derive(uniffi::Record)]

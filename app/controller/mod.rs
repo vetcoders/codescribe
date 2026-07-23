@@ -24,7 +24,7 @@
 
 mod context_bucket;
 mod helpers;
-mod serving_status;
+pub mod serving_status;
 mod types;
 
 pub use helpers::{

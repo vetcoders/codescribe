@@ -69,74 +69,12 @@ pub fn clear_last_serving() {
     *guard = None;
 }
 
-/// Human-readable Active STT row. Never projects configured preference.
-pub fn format_active_stt_label(verdict: &LastServingVerdict) -> String {
-    let engine = match verdict.engine.as_str() {
-        "local_apple" => "Apple on-device",
-        "local_whisper" if verdict.fallback_used => "Whisper (fallback)",
-        "local_whisper" => "Whisper",
-        "streaming_whisper" => "Streaming Whisper",
-        "cloud_stt" => "Cloud",
-        other if !other.is_empty() => other,
-        _ => "Unknown",
-    };
-    let mode = match verdict.routing_mode.to_ascii_lowercase().as_str() {
-        "always" => "Always final pass",
-        "off" => "Off final pass",
-        _ => "Smart final pass",
-    };
-    match verdict.disposition.as_deref() {
-        Some("skipped") => format!("{engine} · {mode} · skipped"),
-        Some(disp) if !disp.is_empty() => format!("{engine} · {mode} · {disp}"),
-        _ => format!("{engine} · {mode}"),
-    }
-}
-
-/// Placeholder when no stop has published a serving verdict yet.
-pub fn active_stt_awaiting_label() -> &'static str {
-    "Not yet served"
-}
-
-/// Format from optional snapshot — `None` uses the awaiting placeholder.
-pub fn format_active_stt_optional(verdict: Option<&LastServingVerdict>) -> String {
-    match verdict {
-        Some(v) => format_active_stt_label(v),
-        None => active_stt_awaiting_label().to_string(),
-    }
-}
+// Label formatting lives Swift-side (`formatActiveSTT` in SettingsViewModel,
+// covered by SettingsTruthTests) — one display owner, no duplicate here.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn apple_to_whisper_fallback_status_is_not_apple() {
-        let verdict = LastServingVerdict {
-            engine: "local_whisper".to_string(),
-            routing_mode: "smart".to_string(),
-            disposition: Some("changed".to_string()),
-            fallback_used: true,
-        };
-        let label = format_active_stt_label(&verdict);
-        assert!(
-            label.contains("Whisper"),
-            "fallback must name Whisper, got {label}"
-        );
-        assert!(
-            label.contains("fallback"),
-            "fallback must be explicit, got {label}"
-        );
-        assert!(
-            !label.contains("Apple"),
-            "Apple→Whisper must not display Apple, got {label}"
-        );
-        assert!(label.contains("Smart final pass"));
-        assert_eq!(
-            format_active_stt_optional(None),
-            active_stt_awaiting_label()
-        );
-        assert_eq!(format_active_stt_optional(Some(&verdict)), label);
-    }
 
     #[test]
     fn publish_and_current_roundtrip() {
@@ -150,10 +88,9 @@ mod tests {
         });
         let current = current_last_serving().expect("published");
         assert_eq!(current.engine, "local_apple");
-        assert_eq!(
-            format_active_stt_label(&current),
-            "Apple on-device · Smart final pass · unchanged"
-        );
+        assert_eq!(current.routing_mode, "smart");
+        assert_eq!(current.disposition.as_deref(), Some("unchanged"));
+        assert!(!current.fallback_used);
         clear_last_serving();
     }
 }

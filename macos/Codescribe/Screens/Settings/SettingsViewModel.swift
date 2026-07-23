@@ -637,6 +637,15 @@ final class SettingsViewModel: ObservableObject {
         buildInfo: AppBuildInfo = .current(),
         laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
             laneTruthSnapshot(lane: lane)
+        },
+        servingStatusProvider: @escaping () -> LastServingVerdict? = {
+            guard let verdict = currentServingVerdict() else { return nil }
+            return LastServingVerdict(
+                engine: verdict.engine,
+                routingMode: verdict.routingMode,
+                disposition: verdict.disposition,
+                fallbackUsed: verdict.fallbackUsed
+            )
         }
     ) {
         self.engine = engine
@@ -646,6 +655,7 @@ final class SettingsViewModel: ObservableObject {
         self.hotkeys = hotkeys
         self.buildInfo = buildInfo
         self.laneTruthProvider = laneTruthProvider
+        self.servingStatusProvider = servingStatusProvider
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -678,6 +688,7 @@ final class SettingsViewModel: ObservableObject {
     /// Re-read live state (permissions can change while the window is open).
     func refresh() {
         permissions = permissionProbe.snapshot()
+        refreshServingStatus()
         // A permission granted while Settings is open (e.g. via the checklist's
         // "Open System Settings") should bring hotkeys live without an app
         // restart. Idempotent bridge call — a no-op once the tap is already armed.
@@ -863,6 +874,9 @@ final class SettingsViewModel: ObservableObject {
         if target == .agent {
             refreshAssistiveModelDiscovery()
         }
+        if target == .engine {
+            refreshServingStatus()
+        }
     }
 
     // MARK: - Reset app data (recoverable destructive action)
@@ -915,8 +929,17 @@ final class SettingsViewModel: ObservableObject {
     // MARK: - Engine-panel derived values (runtime truth)
 
     /// Last serving verdict published by the runtime owner (not config).
-    /// Injected for tests; live path refreshes from `ServingStatusStore`.
+    /// Tests inject directly; live path refreshes via `servingStatusProvider`
+    /// (UniFFI `currentServingVerdict()`) in `refresh()` and on panel entry.
     var lastServingVerdict: LastServingVerdict?
+
+    /// Runtime serving-truth source — defaults to the UniFFI bridge snapshot.
+    let servingStatusProvider: () -> LastServingVerdict?
+
+    /// Pull the latest stop-path serving verdict from the runtime owner.
+    func refreshServingStatus() {
+        lastServingVerdict = servingStatusProvider()
+    }
 
     /// Active STT row — consumes runtime serving truth only.
     /// Configured engine/mode are preference controls, not this label.

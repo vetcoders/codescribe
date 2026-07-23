@@ -6945,6 +6945,94 @@ public func FfiConverterTypeCsLaneTruthSnapshot_lower(_ value: CsLaneTruthSnapsh
 
 
 /**
+ * Last stop-path serving verdict from the controller runtime owner.
+ * The Settings "Active STT" row consumes this — never configured preference.
+ */
+public struct CsLastServingVerdict: Equatable, Hashable {
+    /**
+     * Actual engine label (`local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`).
+     */
+    public var engine: String
+    /**
+     * Final-pass routing mode that governed the stop (`smart` / `always` / `off`).
+     */
+    public var routingMode: String
+    /**
+     * Final-pass disposition when one ran (`skipped`, `changed`, …).
+     */
+    public var disposition: String?
+    /**
+     * True when the serving engine was a runtime fallback (e.g. Apple→Whisper).
+     */
+    public var fallbackUsed: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Actual engine label (`local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`).
+         */engine: String,
+        /**
+         * Final-pass routing mode that governed the stop (`smart` / `always` / `off`).
+         */routingMode: String,
+        /**
+         * Final-pass disposition when one ran (`skipped`, `changed`, …).
+         */disposition: String?,
+        /**
+         * True when the serving engine was a runtime fallback (e.g. Apple→Whisper).
+         */fallbackUsed: Bool) {
+        self.engine = engine
+        self.routingMode = routingMode
+        self.disposition = disposition
+        self.fallbackUsed = fallbackUsed
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsLastServingVerdict: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsLastServingVerdict: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsLastServingVerdict {
+        return
+            try CsLastServingVerdict(
+                engine: FfiConverterString.read(from: &buf),
+                routingMode: FfiConverterString.read(from: &buf),
+                disposition: FfiConverterOptionString.read(from: &buf),
+                fallbackUsed: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsLastServingVerdict, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.engine, into: &buf)
+        FfiConverterString.write(value.routingMode, into: &buf)
+        FfiConverterOptionString.write(value.disposition, into: &buf)
+        FfiConverterBool.write(value.fallbackUsed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLastServingVerdict_lift(_ buf: RustBuffer) throws -> CsLastServingVerdict {
+    return try FfiConverterTypeCsLastServingVerdict.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLastServingVerdict_lower(_ value: CsLastServingVerdict) -> RustBuffer {
+    return FfiConverterTypeCsLastServingVerdict.lower(value)
+}
+
+
+/**
  * Session-end counters emitted with `SessionFinalised`.
  */
 public struct CsLayerSummary: Equatable, Hashable {
@@ -8091,6 +8179,11 @@ public struct CsSettings: Equatable, Hashable {
      * `update_config` with the same key (promoted → settings.json).
      */
     public var sttEngine: String?
+    /**
+     * Final-pass routing (`FINAL_PASS_MODE`): `"always"` | `"smart"` | `"off"`.
+     * `None` means Smart default. Written back via `update_config`.
+     */
+    public var finalPassMode: String?
     public var llmEndpoint: String?
     public var restoreClipboard: Bool
     public var restoreClipboardDelayMs: UInt64
@@ -8146,7 +8239,11 @@ public struct CsSettings: Equatable, Hashable {
          * STT engine selection (`CODESCRIBE_STT_ENGINE`): `"auto"` | `"apple"` |
          * `"whisper"`. `None` means the built-in auto policy. Written back via
          * `update_config` with the same key (promoted → settings.json).
-         */sttEngine: String?, llmEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, dumpAudioLogs: Bool, llmModel: String?, llmFormattingEndpoint: String?, llmFormattingModel: String?, llmAssistiveEndpoint: String?, llmAssistiveModel: String?,
+         */sttEngine: String?,
+        /**
+         * Final-pass routing (`FINAL_PASS_MODE`): `"always"` | `"smart"` | `"off"`.
+         * `None` means Smart default. Written back via `update_config`.
+         */finalPassMode: String?, llmEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, dumpAudioLogs: Bool, llmModel: String?, llmFormattingEndpoint: String?, llmFormattingModel: String?, llmAssistiveEndpoint: String?, llmAssistiveModel: String?,
         /**
          * Assistive/agent-lane provider identity (`LLM_ASSISTIVE_PROVIDER`):
          * `"openai-responses"` | `"anthropic-messages"`. Written back via
@@ -8197,6 +8294,7 @@ public struct CsSettings: Equatable, Hashable {
         self.localModel = localModel
         self.sttEndpoint = sttEndpoint
         self.sttEngine = sttEngine
+        self.finalPassMode = finalPassMode
         self.llmEndpoint = llmEndpoint
         self.restoreClipboard = restoreClipboard
         self.restoreClipboardDelayMs = restoreClipboardDelayMs
@@ -8267,6 +8365,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 localModel: FfiConverterString.read(from: &buf),
                 sttEndpoint: FfiConverterOptionString.read(from: &buf),
                 sttEngine: FfiConverterOptionString.read(from: &buf),
+                finalPassMode: FfiConverterOptionString.read(from: &buf),
                 llmEndpoint: FfiConverterOptionString.read(from: &buf),
                 restoreClipboard: FfiConverterBool.read(from: &buf),
                 restoreClipboardDelayMs: FfiConverterUInt64.read(from: &buf),
@@ -8325,6 +8424,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterString.write(value.localModel, into: &buf)
         FfiConverterOptionString.write(value.sttEndpoint, into: &buf)
         FfiConverterOptionString.write(value.sttEngine, into: &buf)
+        FfiConverterOptionString.write(value.finalPassMode, into: &buf)
         FfiConverterOptionString.write(value.llmEndpoint, into: &buf)
         FfiConverterBool.write(value.restoreClipboard, into: &buf)
         FfiConverterUInt64.write(value.restoreClipboardDelayMs, into: &buf)
@@ -10415,6 +10515,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsLastServingVerdict: FfiConverterRustBuffer {
+    typealias SwiftType = CsLastServingVerdict?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsLastServingVerdict.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsLastServingVerdict.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCsThreadFilter: FfiConverterRustBuffer {
     typealias SwiftType = CsThreadFilter?
 
@@ -10956,6 +11080,16 @@ public func commitOverlayQualityRecord(rawText: String, deliveredText: String, e
 }
 }
 /**
+ * Snapshot the last serving verdict, if any stop completed in this process.
+ * `None` renders as "Not yet served" Swift-side.
+ */
+public func currentServingVerdict() -> CsLastServingVerdict?  {
+    return try!  FfiConverterOptionTypeCsLastServingVerdict.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_current_serving_verdict($0
+    )
+})
+}
+/**
  * Project the live Rust lane truth through UniFFI without exposing secrets.
  */
 public func laneTruthSnapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot  {
@@ -11038,6 +11172,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 47586) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_lane_truth_snapshot() != 3436) {
