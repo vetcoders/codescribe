@@ -33,6 +33,47 @@ func transcriptTagTemplateAppendWarning(_ template: String) -> String? {
         : "Missing {text}; delivered transcript will be appended after the template."
 }
 
+/// Runtime serving truth for the Active STT row (not configured preference).
+struct LastServingVerdict: Equatable {
+    let engine: String
+    let routingMode: String
+    let disposition: String?
+    let fallbackUsed: Bool
+}
+
+/// Format Active STT from the last serving verdict. Config projection is forbidden.
+func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
+    guard let verdict = lastServing else {
+        return "Not yet served"
+    }
+    let engine: String
+    switch verdict.engine {
+    case "local_apple":
+        engine = "Apple on-device"
+    case "local_whisper":
+        engine = verdict.fallbackUsed ? "Whisper (fallback)" : "Whisper"
+    case "streaming_whisper":
+        engine = "Streaming Whisper"
+    case "cloud_stt":
+        engine = "Cloud"
+    default:
+        engine = verdict.engine.isEmpty ? "Unknown" : verdict.engine
+    }
+    let mode: String
+    switch verdict.routingMode.lowercased() {
+    case "always":
+        mode = "Always final pass"
+    case "off":
+        mode = "Off final pass"
+    default:
+        mode = "Smart final pass"
+    }
+    if let disposition = verdict.disposition, !disposition.isEmpty {
+        return "\(engine) · \(mode) · \(disposition)"
+    }
+    return "\(engine) · \(mode)"
+}
+
 enum SettingsSectionAvailability: Equatable {
     case available
     case hidden
@@ -873,29 +914,14 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Engine-panel derived values (runtime truth)
 
+    /// Last serving verdict published by the runtime owner (not config).
+    /// Injected for tests; live path refreshes from `ServingStatusStore`.
+    var lastServingVerdict: LastServingVerdict?
+
+    /// Active STT row — consumes runtime serving truth only.
+    /// Configured engine/mode are preference controls, not this label.
     var activeSTT: String {
-        if !settings.useLocalStt {
-            return "Cloud · streaming"
-        }
-        let engine: String
-        switch settings.sttEngine ?? "auto" {
-        case "apple":
-            engine = "Apple on-device"
-        case "whisper", "candle":
-            engine = "Whisper"
-        default:
-            engine = "Local"
-        }
-        let mode: String
-        switch (settings.finalPassMode ?? "smart").lowercased() {
-        case "always":
-            mode = "Always final pass"
-        case "off":
-            mode = "Off final pass"
-        default:
-            mode = "Smart final pass"
-        }
-        return "\(engine) · \(mode)"
+        formatActiveSTT(lastServing: lastServingVerdict)
     }
 
     /// STT is "healthy" (olive dot) when a local model is configured, or when a

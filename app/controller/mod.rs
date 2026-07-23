@@ -24,6 +24,7 @@
 
 mod context_bucket;
 mod helpers;
+mod serving_status;
 mod types;
 
 pub use helpers::{
@@ -3828,6 +3829,28 @@ impl RecordingController {
                 &truth_verdict.confidence_flags,
             );
         }
+        // One runtime status owner for Active STT — publish actual serving truth.
+        let serving_engine = truth_verdict
+            .engine_label
+            .clone()
+            .or_else(|| {
+                truth_engine_label(
+                    truth_verdict.transcript_source,
+                    truth_verdict.engine_label.as_deref(),
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let fallback_used = matches!(
+            truth_verdict.fallback_class,
+            Some(RecordingFallbackClass::Degraded | RecordingFallbackClass::Unsafe)
+        ) || (serving_engine == "local_whisper"
+            && codescribe_core::stt::active_engine_is_apple());
+        serving_status::publish_last_serving(serving_status::LastServingVerdict {
+            engine: serving_engine,
+            routing_mode: routing_mode.as_str().to_string(),
+            disposition: truth_verdict.final_pass_disposition.map(|d| d.to_string()),
+            fallback_used,
+        });
         if let Some(source) = truth_verdict.transcript_source {
             if let Some(text) = truth_verdict.raw_text.as_ref() {
                 info!(

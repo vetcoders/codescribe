@@ -690,4 +690,42 @@ final class SettingsTruthTests: XCTestCase {
 
         XCTAssertEqual(calls, 1)
     }
+
+    /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
+    /// display configured Apple preference.
+    func testActiveSTTUsesServingVerdictNotConfiguredEngine() {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+        // No runtime verdict yet — never project configured engine as Active STT.
+        model.lastServingVerdict = nil
+        XCTAssertEqual(model.activeSTT, "Not yet served")
+        XCTAssertEqual(formatActiveSTT(lastServing: nil), "Not yet served")
+
+        // Deterministic Apple→Whisper fallback status.
+        let fallback = LastServingVerdict(
+            engine: "local_whisper",
+            routingMode: "smart",
+            disposition: "changed",
+            fallbackUsed: true
+        )
+        model.lastServingVerdict = fallback
+        let label = model.activeSTT
+        XCTAssertTrue(label.contains("Whisper"), "got \(label)")
+        XCTAssertTrue(label.contains("fallback"), "got \(label)")
+        XCTAssertFalse(label.contains("Apple"), "fallback must not show Apple: \(label)")
+        XCTAssertEqual(
+            formatActiveSTT(lastServing: fallback),
+            "Whisper (fallback) · Smart final pass · changed"
+        )
+
+        model.lastServingVerdict = LastServingVerdict(
+            engine: "local_apple",
+            routingMode: "smart",
+            disposition: "unchanged",
+            fallbackUsed: false
+        )
+        XCTAssertEqual(
+            model.activeSTT,
+            "Apple on-device · Smart final pass · unchanged"
+        )
+    }
 }
