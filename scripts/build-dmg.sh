@@ -21,9 +21,10 @@ APP_PATH="$ROOT_DIR/macos/build/Build/Products/Release/${APP_NAME}.app"
 SIGN=0
 NOTARIZE=0
 NO_EMBED=0
-# Embedding everything (Silero + MiniLM + Whisper) is the default for user
-# delivery. --no-embed flips this off for dev/recovery builds only.
-EMBED_WHISPER=1
+# Public daily release is slim: Silero VAD + MiniLM only. Whisper resolves at
+# runtime (HF cache / ~/.codescribe/models / Settings download). Embed Whisper
+# only via --embed-whisper (curiosity / offline / experimental fat SKU).
+EMBED_WHISPER=0
 EMBED_WHISPER_EXPLICIT=0
 DMG_SUFFIX=""
 
@@ -31,16 +32,18 @@ usage() {
   cat <<EOF
 Usage: $0 [options]
 
-Builds the real user artifact by default: embedded Silero VAD + MiniLM + Whisper.
+Builds the public user artifact by default: embedded Silero VAD + MiniLM.
+Whisper is NOT baked into the standard DMG (~1GB saved); users download it
+from Settings → Dictation when they want local Candle Whisper.
 
 Options:
   --sign              Codesign the .app (requires Developer ID)
   --notarize          Notarize the DMG (requires NOTARY_PROFILE)
   --identity <name>   Override codesign identity
   --entitlements <p>  Entitlements plist path (default: $ENTITLEMENTS)
-  --embed-whisper     Compatibility no-op: Whisper is embedded by default
+  --embed-whisper     Fat SKU: also embed Whisper (pair with --dmg-suffix _full)
   --dmg-suffix <s>    Append suffix before .dmg (for example: _full)
-  --no-embed          DEV/RECOVERY only: disable all model embedding
+  --no-embed          DEV/RECOVERY only: disable all optional model embedding
                       (CODESCRIBE_NO_EMBED=1) — not the public product path
 EOF
 }
@@ -63,9 +66,14 @@ if [[ "$NO_EMBED" -eq 1 && "$EMBED_WHISPER_EXPLICIT" -eq 1 ]]; then
   echo "ERROR: --no-embed and --embed-whisper cannot be used together" >&2
   exit 1
 fi
-# --no-embed (dev/recovery) wins over the embed-by-default policy.
+# --no-embed (dev/recovery) wins over optional Whisper embed.
 if [[ "$NO_EMBED" -eq 1 ]]; then
   EMBED_WHISPER=0
+fi
+# Fat SKU convention: when embedding Whisper without an explicit suffix, tag _full
+# so operators can tell slim vs fat artifacts apart on disk.
+if [[ "$EMBED_WHISPER" -eq 1 && -z "$DMG_SUFFIX" ]]; then
+  DMG_SUFFIX="_full"
 fi
 
 # Provenance slug: UTC build date + HEAD short SHA, so every DMG names the
@@ -82,9 +90,12 @@ BUILD_ENV=(env)
 BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS)
 if [[ "$NO_EMBED" -eq 1 ]]; then
   BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER CODESCRIBE_NO_EMBED=1)
-else
-  # Default user-delivery path: embed Whisper alongside Silero + MiniLM.
+elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
+  # Optional fat SKU: Silero + MiniLM + Whisper baked in.
   BUILD_ENV+=(-u CODESCRIBE_NO_EMBED CODESCRIBE_EMBED_WHISPER=1)
+else
+  # Public slim default: Silero + MiniLM; Whisper at runtime / Settings download.
+  BUILD_ENV+=(-u CODESCRIBE_NO_EMBED -u CODESCRIBE_EMBED_WHISPER)
 fi
 
 echo "=== Build DMG ==="
@@ -93,8 +104,10 @@ echo "Bundle ID: $BUNDLE_ID"
 echo "Version: $VERSION"
 if [[ "$NO_EMBED" -eq 1 ]]; then
   echo "Models: runtime assets only (CODESCRIBE_NO_EMBED=1) — dev/recovery build, not the public artifact"
+elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
+  echo "Models: embedded Silero + MiniLM + Whisper (fat SKU)"
 else
-  echo "Models: embedded Silero + MiniLM + Whisper"
+  echo "Models: embedded Silero + MiniLM; Whisper runtime/download (slim public default)"
 fi
 echo "DMG: $DMG_PATH"
 

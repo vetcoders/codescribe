@@ -71,15 +71,20 @@ build:
 	@echo "Building (debug)..."
 	@cargo build
 
-release-codescribe: ensure-models
-	@echo "Building codescribe-ffi (release dylib, embedded models: Silero + MiniLM + Whisper)..."
+# Slim public default: Silero VAD + MiniLM. Whisper is runtime/cache/Settings download.
+# Do NOT set CODESCRIBE_EMBED_WHISPER here — that is the fat experimental SKU only.
+release-codescribe:
+	@echo "Building codescribe-ffi (release dylib, embedded: Silero + MiniLM; Whisper runtime)..."
 	@echo "  The app front-end is no longer a Rust bin; this builds the UniFFI bridge dylib."
 	@echo "  Produce the runnable SwiftUI app with: make app PROFILE=release"
-	@CODESCRIBE_EMBED_WHISPER=1 cargo build --release -p codescribe-ffi
+	@echo "  Fat Whisper embed: make release-codescribe-embedded"
+	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo build --release -p codescribe-ffi
 
-# Compatibility alias — embedding Whisper is now the default for release-codescribe.
-# Kept so existing scripts / muscle memory keep working; NOT a separate public lane.
-release-codescribe-embedded: release-codescribe
+# Optional fat SKU / offline curiosity: bake Whisper into the dylib (~1GB+).
+# Not the daily release path. Pair with `make release-full` for a _full DMG.
+release-codescribe-embedded: ensure-models
+	@echo "Building codescribe-ffi (FAT: Silero + MiniLM + Whisper embedded)..."
+	@CODESCRIBE_EMBED_WHISPER=1 cargo build --release -p codescribe-ffi
 
 # ── SwiftUI app (macos/) via the codescribe-ffi UniFFI bridge ────────────────
 # Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
@@ -99,23 +104,23 @@ release-qube:
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing qube tools (embedded models: Silero + MiniLM + Whisper)..."
-	@./scripts/ensure-models.sh
-	@CODESCRIBE_EMBED_WHISPER=1 cargo install --path . --force
+	@echo "Installing qube tools (slim: Silero + MiniLM; Whisper from cache / Settings)..."
+	@./scripts/download-embedder.sh || true
+	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
 	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
+	@echo "Note: Whisper is not embedded — download via Settings → Dictation or make download-model"
 
 install-no-embed:
-	@echo "Installing qube tools (DEV/RECOVERY: runtime Whisper fallback + no optional embedded support assets)..."
-	@./scripts/ensure-models.sh
+	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
 	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
 	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
-	@echo "Note: Set CODESCRIBE_MODEL_PATH at runtime"
+	@echo "Note: Set CODESCRIBE_MODEL_PATH at runtime if Whisper is needed"
 
 config:
 	@mkdir -p ~/.codescribe
@@ -412,18 +417,19 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release binary with embedded models (Silero + MiniLM + Whisper)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI with embedded models (Silero + MiniLM + Whisper)'
-	@printf '%s\n' '  make install-no-embed Install without optional embedded assets (needs CODESCRIBE_MODEL_PATH)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release dylib slim (Silero + MiniLM; Whisper runtime)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI slim (Whisper via cache/Settings, not embedded)'
+	@printf '%s\n' '  make install-no-embed DEV/RECOVERY: no optional embeds (runtime paths only)'
+	@printf '%s\n' '  make release-codescribe-embedded Fat dylib with Whisper baked in (not daily)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Install to /Applications'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg' 'Build DMG (ad-hoc signed)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg-signed' 'Build DMG (Developer ID signed)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-standard' 'Build + sign + notarize release DMG (embedded models)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Compatibility alias for release-standard (embedded by default)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-dmgs' 'Build the notarized release DMG'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-standard' 'Sign+notarize slim DMG (no Whisper embed — daily public)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Sign+notarize fat _full DMG (Whisper embedded, optional)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-dmgs' 'Build slim + fat notarized DMGs'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'notarize' 'Notarize DMG with Apple'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-model' 'Download Whisper model from HF'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-e5' 'Download E5 embedder model from HF'
@@ -463,23 +469,25 @@ help:
 # Release & Distribution
 # ============================================================================
 
+# Daily slim DMG (public default): Silero + MiniLM, Whisper NOT embedded.
 dmg:
 	@./scripts/build-dmg.sh
 
 dmg-signed:
 	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign
 
-# ensure-models runs first so the embedded-Whisper release build finds the model
-# in the HF cache. build.rs only warns on a missing model, so without this the
-# signed/notarized DMG could ship without embedded Whisper.
-release-standard: ensure-models
+# Daily signed+notarized public artifact (same as make dmg-signed + notarize).
+# Does NOT download/embed Whisper. Apple STT works out of the box; Whisper is
+# opt-in via Settings → Dictation download (or make download-model).
+release-standard:
 	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize
 
-# Compatibility alias — the standard DMG now embeds Whisper by default, so it IS
-# the real user artifact. `_full` no longer denotes a separate "real" build.
-release-full: release-standard
+# Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
+release-full: ensure-models
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
 
-release-dmgs: release-standard
+# Both public variants: slim first, then fat _full.
+release-dmgs: release-standard release-full
 
 notarize:
 	@if ls Codescribe_*.dmg 1> /dev/null 2>&1; then \
