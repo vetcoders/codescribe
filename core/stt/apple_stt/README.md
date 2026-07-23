@@ -7,11 +7,11 @@ This directory contains the Apple STT backend for codescribe:
 
 ## Backend selection (per locale)
 
-| Priority | Backend | When |
-|---|---|---|
-| 1 | `SpeechTranscriber` (SpeechAnalyzer) | Locale is in ST supported+installed catalog |
-| 2 | `SFSpeechRecognizer` on-device | ST lacks the locale **and** `supportsOnDeviceRecognition` is true (e.g. **pl-PL**) |
-| 3 | Error | Neither backend can serve the locale |
+| Priority | Backend                              | When                                                                               |
+| -------- | ------------------------------------ | ---------------------------------------------------------------------------------- |
+| 1        | `SpeechTranscriber` (SpeechAnalyzer) | Locale is in ST supported+installed catalog                                        |
+| 2        | `SFSpeechRecognizer` on-device       | ST lacks the locale **and** `supportsOnDeviceRecognition` is true (e.g. **pl-PL**) |
+| 3        | Error                                | Neither backend can serve the locale                                               |
 
 SFSpeechRecognizer is the current public dictation-class API and the product's
 foundation for Polish — **not** a "legacy" path. Whisper remains the fallback

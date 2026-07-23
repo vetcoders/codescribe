@@ -431,13 +431,13 @@ Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
 ## Troubleshooting
 
-| Symptom                      | Cause                           | Fix                                                           |
-| ---------------------------- | ------------------------------- | ------------------------------------------------------------- |
-| Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable codescribe |
-| Double-tap too sensitive     | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
-| Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
-| VAD cuts utterance too early | VAD defaults too conservative   | Tune constants in `core/vad/config.rs` and rebuild            |
-| Double-tap / arm “does nothing” with no UI change | Gesture blocked or arm ignored at detector | Check INFO logs for stable diagnostic lines (below) |
+| Symptom                                           | Cause                                      | Fix                                                           |
+| ------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------- |
+| Hotkeys don't work                                | Accessibility permission denied            | System Settings → Privacy → Accessibility → Enable codescribe |
+| Double-tap too sensitive                          | Interval too short                         | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
+| Recording won't stop (hold)                       | Key stuck in system                        | Release all modifiers, try again                              |
+| VAD cuts utterance too early                      | VAD defaults too conservative              | Tune constants in `core/vad/config.rs` and rebuild            |
+| Double-tap / arm “does nothing” with no UI change | Gesture blocked or arm ignored at detector | Check INFO logs for stable diagnostic lines (below)           |
 
 ### Blocked / ignored gesture diagnostics (INFO)
 
@@ -450,11 +450,11 @@ blocked_double_tap gesture=left_option|right_option reason=binding_disabled|modi
 arm_ignored reason=wrong_arm_modifier
 ```
 
-| Log line | Meaning |
-| -------- | ------- |
-| `blocked_double_tap … reason=binding_disabled` | Double-tap recognized, but that Option side is not assigned to a mode |
-| `blocked_double_tap … reason=modifier_combo_active` | Double-tap recognized while another modifier/hold combo is active |
-| `arm_ignored reason=wrong_arm_modifier` | Hold base is down, but the non-configured arm key (Shift vs Cmd) was pressed |
+| Log line                                            | Meaning                                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `blocked_double_tap … reason=binding_disabled`      | Double-tap recognized, but that Option side is not assigned to a mode        |
+| `blocked_double_tap … reason=modifier_combo_active` | Double-tap recognized while another modifier/hold combo is active            |
+| `arm_ignored reason=wrong_arm_modifier`             | Hold base is down, but the non-configured arm key (Shift vs Cmd) was pressed |
 
 If **no** such line appears when you double-tap or arm, the OS never delivered
 the key event to Codescribe (permissions / focus / hardware) — that case is

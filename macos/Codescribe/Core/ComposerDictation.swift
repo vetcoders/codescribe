@@ -165,7 +165,10 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
         }
     }
     func onCorrection(text: String, previousText: String) {}
-    func onFinal(utteranceId: UInt64, text: String) {
+    func onFinal(
+        utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?,
+        confidenceFlags: [String]
+    ) {
         publishPreview {
             activePreview = ""
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
