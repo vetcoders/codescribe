@@ -3,7 +3,7 @@
 //! Reads the system SymbolicHotkeys registry and reports potential collisions
 //! with our modifier-only gestures (Fn/Ctrl/Option).
 
-use crate::config::{ShortcutBinding, UserSettings};
+use crate::config::{DeferredInsertShortcut, ShortcutBinding, UserSettings};
 use crate::os::hotkeys::ModeHotkeyBindings;
 #[cfg(target_os = "macos")]
 use std::collections::HashSet;
@@ -46,6 +46,33 @@ pub fn detect_hotkey_conflicts(settings: &UserSettings) -> Vec<HotkeyConflict> {
     let mut conflicts = detect_internal_conflicts(bindings);
     conflicts.extend(detect_macos_symbolic_conflicts(bindings));
     conflicts
+}
+
+/// Return the first enabled macOS symbolic shortcut colliding with the
+/// configured deferred-insert command. The shared CGEventTap remains alive for
+/// recording gestures; only this one-shot command is considered unavailable.
+#[cfg(target_os = "macos")]
+pub fn deferred_insert_shortcut_conflict(shortcut: DeferredInsertShortcut) -> Option<String> {
+    if !shortcut.is_enabled() {
+        return Some("Deferred insert shortcut is disabled".to_string());
+    }
+
+    load_symbolic_signatures()
+        .into_iter()
+        .find(|signature| deferred_insert_conflicts_with_symbolic(shortcut, *signature))
+        .map(|signature| {
+            format!(
+                "{} conflicts with {} (macOS #{}).",
+                shortcut.label(),
+                symbolic_hotkey_name(signature.id),
+                signature.id
+            )
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn deferred_insert_shortcut_conflict(shortcut: DeferredInsertShortcut) -> Option<String> {
+    (!shortcut.is_enabled()).then(|| "Deferred insert shortcut is disabled".to_string())
 }
 
 pub fn fn_tap_intercept_note(settings: &UserSettings) -> Option<&'static str> {
@@ -250,6 +277,26 @@ fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSi
         | HotkeyGesture::HoldCtrlShift
         | HotkeyGesture::HoldCtrlCmd => false,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn deferred_insert_conflicts_with_symbolic(
+    shortcut: DeferredInsertShortcut,
+    signature: SymbolicSignature,
+) -> bool {
+    const V_KEYCODE: i64 = 9;
+    const CONTROL: i64 = 0x0004_0000;
+    const SHIFT: i64 = 0x0002_0000;
+    const OPTION: i64 = 0x0008_0000;
+    const COMMAND: i64 = 0x0010_0000;
+
+    let modifiers = match shortcut {
+        DeferredInsertShortcut::Disabled => return false,
+        DeferredInsertShortcut::CommandOptionV => COMMAND | OPTION,
+        DeferredInsertShortcut::CommandShiftV => COMMAND | SHIFT,
+        DeferredInsertShortcut::CommandControlV => COMMAND | CONTROL,
+    };
+    signature.keycode == V_KEYCODE && signature.modifiers == modifiers
 }
 
 #[cfg(target_os = "macos")]
@@ -486,5 +533,23 @@ mod tests {
             collect_symbolic_conflicts(ModeHotkeyBindings::from_settings(&settings), &signatures);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].gesture, HotkeyGesture::HoldFn);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn deferred_insert_collision_matches_key_and_exact_modifiers() {
+        let collision = SymbolicSignature {
+            id: 777,
+            keycode: 9,
+            modifiers: 0x0010_0000 | 0x0008_0000,
+        };
+        assert!(deferred_insert_conflicts_with_symbolic(
+            DeferredInsertShortcut::CommandOptionV,
+            collision
+        ));
+        assert!(!deferred_insert_conflicts_with_symbolic(
+            DeferredInsertShortcut::CommandShiftV,
+            collision
+        ));
     }
 }

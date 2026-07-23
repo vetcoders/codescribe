@@ -231,7 +231,16 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_recording_finalising(&self);
     fn on_preview(&self, text: String);
     fn on_correction(&self, text: String, previous_text: String);
-    fn on_final(&self, utterance_id: u64, text: String);
+    /// Completed VAD-bounded utterance. Optional STT quality fields feed the
+    /// overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
+    fn on_final(
+        &self,
+        utterance_id: u64,
+        text: String,
+        avg_logprob: Option<f32>,
+        speech_pct: Option<f32>,
+        confidence_flags: Vec<String>,
+    );
     fn on_replace_range(
         &self,
         utterance_id: u64,
@@ -247,6 +256,9 @@ pub trait CsTranscriptionListener: Send + Sync {
         text: String,
         kind: CsAnnotationKind,
     );
+    /// Insert a context-bucket marker at the global transcript character
+    /// position captured when the agent combo was pressed.
+    fn on_context_marker(&self, position: u64, marker: String);
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
     /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
     /// the SAME clean text that is pasted/delivered and written to history. Surfaces
@@ -408,12 +420,24 @@ impl EventSink for CsEventSink {
                 .listener
                 .on_correction(text.clone(), previous_text.clone()),
             EngineEvent::UtteranceFinal {
-                utterance_id, text, ..
+                utterance_id,
+                text,
+                avg_logprob,
+                vad_speech_pct,
+                confidence_flags,
+                ..
             } => {
                 // Compose the composer return here: the streaming recorder's own
                 // transcript buffer is never filled on this path.
                 self.transcript.append_final(text);
-                self.listener.on_final(*utterance_id, text.clone());
+                let flags: Vec<String> = confidence_flags.iter().map(ToString::to_string).collect();
+                self.listener.on_final(
+                    *utterance_id,
+                    text.clone(),
+                    *avg_logprob,
+                    *vad_speech_pct,
+                    flags,
+                );
             }
             EngineEvent::ReplaceRange {
                 utterance_id,
@@ -789,7 +813,14 @@ mod tests {
         fn on_recording_finalising(&self) {}
         fn on_preview(&self, _text: String) {}
         fn on_correction(&self, _text: String, _previous_text: String) {}
-        fn on_final(&self, utterance_id: u64, text: String) {
+        fn on_final(
+            &self,
+            utterance_id: u64,
+            text: String,
+            _avg_logprob: Option<f32>,
+            _speech_pct: Option<f32>,
+            _confidence_flags: Vec<String>,
+        ) {
             self.final_calls.lock().unwrap().push((utterance_id, text));
         }
         fn on_replace_range(
@@ -809,6 +840,7 @@ mod tests {
             _kind: CsAnnotationKind,
         ) {
         }
+        fn on_context_marker(&self, _position: u64, _marker: String) {}
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}

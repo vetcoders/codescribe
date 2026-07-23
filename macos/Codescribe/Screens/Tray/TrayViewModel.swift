@@ -21,6 +21,7 @@ final class TrayViewModel: ObservableObject {
     @Published var autoFormatLevel: FormattingPolicyOption = .correction
     @Published var notesModeEnabled: Bool = false
     @Published var startInAssistive: Bool = false
+    @Published var holdBadgeOption: HoldBadgeOption = .twelve
 
     // Disclosure state for the nested groups. Notes is expanded by default to
     // match the static mock; Diagnostics and History are collapsed.
@@ -47,6 +48,7 @@ final class TrayViewModel: ObservableObject {
     @Published private(set) var historyItems: [TrayTranscript] = []
 
     private let engine: TrayEngine?
+    private var holdBadgeObserver: NSObjectProtocol?
 
     // Navigation intents — bound by App.swift to the actual window/scene opens.
     var onIntent: (TrayIntent) -> Void = { _ in }
@@ -73,6 +75,22 @@ final class TrayViewModel: ObservableObject {
     init(engine: TrayEngine? = nil, isRecording: Bool = false) {
         self.engine = engine
         self.isRecording = isRecording
+        // K4: Settings writes arrive on the bus; reload tray badge display.
+        holdBadgeObserver = NotificationCenter.default.addObserver(
+            forName: ConfigChangeBus.holdBadgeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reloadHoldBadgeFromDisk()
+            }
+        }
+    }
+
+    deinit {
+        if let holdBadgeObserver {
+            NotificationCenter.default.removeObserver(holdBadgeObserver)
+        }
     }
 
     // MARK: - Navigation intents
@@ -98,6 +116,7 @@ final class TrayViewModel: ObservableObject {
             autoFormatLevel = toggles.autoFormatLevel
             notesModeEnabled = toggles.notesMode
             startInAssistive = toggles.startInAssistive
+            holdBadgeOption = toggles.holdBadgeOption
         }
         Task { [weak self] in
             guard let self else { return }
@@ -174,6 +193,27 @@ final class TrayViewModel: ObservableObject {
             return
         }
         engine.setAutoFormatLevel(level)
+        refreshStatus()
+    }
+
+    /// K3: persists immediately; next badge show uses the new size.
+    /// K4: posts bus so Settings reflects the tray cycle without reopen.
+    func setHoldBadgeOption(_ option: HoldBadgeOption) {
+        guard let engine else {
+            holdBadgeOption = option
+            ConfigChangeBus.postHoldBadgeChanged()
+            return
+        }
+        if engine.setHoldBadgeOption(option) {
+            holdBadgeOption = option
+            ConfigChangeBus.postHoldBadgeChanged()
+        } else {
+            refreshStatus()
+        }
+    }
+
+    /// Peer-surface reload after Settings wrote HOLD_BADGE_SIZE / HOLD_INDICATOR.
+    func reloadHoldBadgeFromDisk() {
         refreshStatus()
     }
 

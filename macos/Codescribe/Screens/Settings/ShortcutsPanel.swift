@@ -135,7 +135,7 @@ struct ShortcutsPanel: View {
         VStack(alignment: .leading, spacing: 7) {
             assistiveModeVariant(
                 title: "Voice chat",
-                gesture: "Hold Fn+Shift",
+                gesture: armGestureLabel,
                 description: "Talk to the agent."
             )
             assistiveModeVariant(
@@ -143,6 +143,20 @@ struct ShortcutsPanel: View {
                 gesture: selectionAssistiveGesture(row),
                 description: "Select text, then speak an instruction."
             )
+            // W10-B: customize arm modifier (default Shift; Cmd alternative).
+            HStack(spacing: 8) {
+                Text("Arm with")
+                    .font(CSFont.ui(11, .medium))
+                    .foregroundStyle(CSColor.textMuted)
+                Picker("Arm modifier", selection: armModifierBinding) {
+                    Text("Shift").tag("shift")
+                    Text("Command").tag("cmd")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 180)
+            }
+            .padding(.top, 2)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -181,8 +195,25 @@ struct ShortcutsPanel: View {
         }
     }
 
+    /// Derived from the configured arm modifier — never hardcode Fn+Command.
+    private var armGestureLabel: String {
+        ArmGestureCopy.label(for: model.holdArmModifier)
+    }
+
     private func selectionAssistiveGesture(_ row: CsModeBinding) -> String {
-        row.binding == .disabled ? "Hold Fn+Command" : "\(row.bindingLabel) or Hold Fn+Command"
+        // Act-on-selection is the same arm gesture when a selection is present
+        // (W10-D lane). Copy must match the configured binding, not a dead Cmd.
+        if row.binding == .disabled {
+            return armGestureLabel
+        }
+        return "\(row.bindingLabel) or \(armGestureLabel)"
+    }
+
+    private var armModifierBinding: Binding<String> {
+        Binding(
+            get: { model.holdArmModifier },
+            set: { model.setHoldArmModifier($0) }
+        )
     }
 
     private var badgeLegend: some View {
@@ -193,6 +224,27 @@ struct ShortcutsPanel: View {
                 legendItem(color: CSColor.assistive, text: "Purple — voice goes to the agent")
                 legendItem(color: CSColor.amber, text: "Orange — processing after recording")
             }
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Pointer indicator")
+                        .font(CSFont.ui(12.5, .semibold))
+                        .foregroundStyle(CSColor.textBody)
+                    Text("Base size; Agent mode stays proportionally larger")
+                        .font(CSFont.ui(10.5, .medium))
+                        .foregroundStyle(CSColor.textMutedAlt)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Picker("Pointer indicator", selection: holdBadgeBinding) {
+                    ForEach(HoldBadgeOption.allCases) { option in
+                        Text(option.visibleName).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 230)
+            }
+            .padding(.top, 4)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
@@ -204,6 +256,13 @@ struct ShortcutsPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        )
+    }
+
+    private var holdBadgeBinding: Binding<HoldBadgeOption> {
+        Binding(
+            get: { model.holdBadgeOption },
+            set: { model.setHoldBadgeOption($0) }
         )
     }
 
@@ -344,6 +403,13 @@ struct ShortcutsPanel: View {
 
     private var divider: some View {
         Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
+    }
+}
+
+/// Single production owner for assistive-arm gesture copy in Settings.
+enum ArmGestureCopy {
+    static func label(for modifier: String) -> String {
+        modifier == "cmd" ? "Hold Fn+Command" : "Hold Fn+Shift"
     }
 }
 

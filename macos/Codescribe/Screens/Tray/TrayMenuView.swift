@@ -139,10 +139,10 @@ struct TrayMenuView: View {
             TrayRow(
                 icon: .history,
                 title: "Open history",
-                showChevron: true,
+                disclosureExpanded: viewModel.historyExpanded,
                 style: viewModel.historyExpanded ? .raised : .plain
             ) {
-                withAnimation(.easeOut(duration: 0.18)) { viewModel.toggleHistory() }
+                withAnimation(TrayDisclosureChevron.animation) { viewModel.toggleHistory() }
             }
 
             if viewModel.historyExpanded {
@@ -178,6 +178,7 @@ struct TrayMenuView: View {
             ) { viewModel.setOverlayEnabled($0) }
             autoPasteToggle
             autoFormatMenu
+            holdBadgeMenu
             toggleRow(icon: .notesMode, title: "Notes Mode", isOn: viewModel.notesModeEnabled) {
                 viewModel.setNotesMode($0)
             }
@@ -213,6 +214,21 @@ struct TrayMenuView: View {
             .accessibilityLabel("Auto Format")
             .accessibilityValue(viewModel.autoFormatLevel.visibleName)
             .accessibilityHint("Cycle automatic formatting level")
+    }
+
+    /// Pointer Indicator follows the same rolling-row grammar as Auto Format:
+    /// Off → 4px → 8px → 12px → Off, with the current value in the keycap.
+    private var holdBadgeMenu: some View {
+        TrayRow(
+            icon: .record,
+            title: "Pointer Indicator",
+            shortcut: viewModel.holdBadgeOption.visibleName,
+            shortcutColor: viewModel.holdBadgeOption == .off
+                ? CSColor.textFaintAlt : CSColor.oliveLight
+        ) { viewModel.setHoldBadgeOption(viewModel.holdBadgeOption.next) }
+            .accessibilityLabel("Pointer Indicator")
+            .accessibilityValue(viewModel.holdBadgeOption.visibleName)
+            .accessibilityHint("Cycle pointer recording indicator size")
     }
 
     /// A checkbox-style row reusing `TrayRow`, with the on/off state shown as the
@@ -257,10 +273,10 @@ struct TrayMenuView: View {
             TrayRow(
                 icon: .notes,
                 title: "Notes",
-                showChevron: true,
+                disclosureExpanded: viewModel.notesExpanded,
                 style: viewModel.notesExpanded ? .raised : .plain
             ) {
-                withAnimation(.easeOut(duration: 0.18)) { viewModel.notesExpanded.toggle() }
+                withAnimation(TrayDisclosureChevron.animation) { viewModel.notesExpanded.toggle() }
             }
 
             if viewModel.notesExpanded {
@@ -292,10 +308,12 @@ struct TrayMenuView: View {
             TrayRow(
                 icon: .diagnostics,
                 title: "Diagnostics",
-                showChevron: true,
+                disclosureExpanded: viewModel.diagnosticsExpanded,
                 style: viewModel.diagnosticsExpanded ? .raised : .plain
             ) {
-                withAnimation(.easeOut(duration: 0.18)) { viewModel.diagnosticsExpanded.toggle() }
+                withAnimation(TrayDisclosureChevron.animation) {
+                    viewModel.diagnosticsExpanded.toggle()
+                }
             }
 
             if viewModel.diagnosticsExpanded {

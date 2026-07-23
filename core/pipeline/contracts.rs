@@ -330,12 +330,15 @@ impl std::fmt::Display for TranscriptionSource {
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptionEngine {
     Whisper,
+    /// Apple on-device speech (SpeechTranscriber and/or SFSpeechRecognizer).
+    Apple,
 }
 
 impl std::fmt::Display for TranscriptionEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Whisper => write!(f, "whisper"),
+            Self::Apple => write!(f, "apple"),
         }
     }
 }
@@ -346,6 +349,10 @@ impl std::fmt::Display for TranscriptionEngine {
 pub enum TranscriptionEngineMode {
     EmbeddedDefault,
     RuntimeFallback,
+    /// Apple SpeechAnalyzer / SpeechTranscriber path (locales ST supports).
+    SpeechTranscriber,
+    /// Apple SFSpeechRecognizer on-device path (locales ST lacks, e.g. pl-PL).
+    SfSpeechOnDevice,
 }
 
 impl std::fmt::Display for TranscriptionEngineMode {
@@ -353,6 +360,8 @@ impl std::fmt::Display for TranscriptionEngineMode {
         match self {
             Self::EmbeddedDefault => write!(f, "embedded_default"),
             Self::RuntimeFallback => write!(f, "runtime_fallback"),
+            Self::SpeechTranscriber => write!(f, "speech_transcriber"),
+            Self::SfSpeechOnDevice => write!(f, "sf_speech_on_device"),
         }
     }
 }
@@ -371,6 +380,14 @@ impl TranscriptionEngineVerdict {
             engine: TranscriptionEngine::Whisper,
             mode,
             fallback_used: matches!(mode, TranscriptionEngineMode::RuntimeFallback),
+        }
+    }
+
+    pub const fn apple(mode: TranscriptionEngineMode) -> Self {
+        Self {
+            engine: TranscriptionEngine::Apple,
+            mode,
+            fallback_used: false,
         }
     }
 }
@@ -1325,6 +1342,7 @@ mod tests {
         assert_eq!(TranscriptionSource::Cloud.to_string(), "cloud");
         assert_eq!(TranscriptionSource::Fallback.to_string(), "fallback");
         assert_eq!(TranscriptionEngine::Whisper.to_string(), "whisper");
+        assert_eq!(TranscriptionEngine::Apple.to_string(), "apple");
         assert_eq!(
             TranscriptionEngineMode::EmbeddedDefault.to_string(),
             "embedded_default"
@@ -1332,6 +1350,14 @@ mod tests {
         assert_eq!(
             TranscriptionEngineMode::RuntimeFallback.to_string(),
             "runtime_fallback"
+        );
+        assert_eq!(
+            TranscriptionEngineMode::SpeechTranscriber.to_string(),
+            "speech_transcriber"
+        );
+        assert_eq!(
+            TranscriptionEngineMode::SfSpeechOnDevice.to_string(),
+            "sf_speech_on_device"
         );
     }
 

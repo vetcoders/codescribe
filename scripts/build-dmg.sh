@@ -68,7 +68,11 @@ if [[ "$NO_EMBED" -eq 1 ]]; then
   EMBED_WHISPER=0
 fi
 
-DMG_NAME="Codescribe_${VERSION}${DMG_SUFFIX}.dmg"
+# Provenance slug: UTC build date + HEAD short SHA, so every DMG names the
+# exact commit it was cut from (matches the About window's BuildInfo line).
+BUILD_DATE="$(date -u +%Y%m%d)"
+HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short=9 HEAD 2>/dev/null || echo nogit)"
+DMG_NAME="Codescribe_${VERSION}-${BUILD_DATE}-${HEAD_SHA}${DMG_SUFFIX}.dmg"
 DMG_PATH="$ROOT_DIR/$DMG_NAME"
 
 BUILD_ENV=(env)
@@ -136,6 +140,14 @@ if [[ "$SIGN" -eq 1 ]]; then
 fi
 
 echo "DMG ready: $DMG_PATH"
+
+# Release canon: every DMG ships with its SHA-256 next to it (bare filename
+# inside, so `shasum -c` works from the release directory).
+(
+  cd "$(dirname "$DMG_PATH")"
+  shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
+)
+echo "SHA-256: $(cat "$DMG_PATH.sha256")"
 
 if [[ "$NOTARIZE" -eq 1 ]]; then
   echo "Notarizing DMG with profile: $NOTARY_PROFILE"

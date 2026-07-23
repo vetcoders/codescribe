@@ -61,6 +61,7 @@ struct DictationOverlayView: View {
                 footer
             }
         }
+        .csFocusPolicy()
         .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
         // Terminal corner clip (U22): GlassPanel paints its background from the
         // CONTENT column's size, not the window's. Whenever the column outgrows
@@ -124,6 +125,17 @@ struct DictationOverlayView: View {
                 StaticStatusPill(text: state.statusText, color: state.statusColor)
                     .padding(.leading, 6)
                     .accessibilityIdentifier("overlay-phase-status")
+            }
+            if let badge = state.confidenceBadgeText {
+                Text(badge)
+                    .csMono(9, .semibold)
+                    .foregroundStyle(CSColor.terracotta)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(CSColor.terracotta.opacity(0.12))
+                    .clipShape(Capsule())
+                    .accessibilityIdentifier("overlay-confidence-badge")
+                    .accessibilityLabel(badge)
             }
             Spacer(minLength: 0)
             if state.autoPasteControlAvailable {
@@ -259,6 +271,7 @@ struct DictationOverlayView: View {
             WaveformView(
                 active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
                 transcribing: state.transcribing || state.isFinalPass,
+                indicatorMode: state.indicatorMode,
                 meter: state.levelMeter
             )
             .padding(.top, 4)

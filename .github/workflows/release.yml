@@ -83,9 +83,25 @@ jobs:
           NOTARY_PROFILE: CodescribeNotary
         run: make release-dmgs
 
+      - name: Alias newest DMG as stable Codescribe.dmg
+        # The website pins two asset URLs that must survive the provenance slug
+        # (Codescribe_<ver>-<date>-<sha>.dmg): releases/latest/download/Codescribe.dmg
+        # and releases/download/v<ver>/Codescribe.dmg. Publish the slug artifact
+        # for provenance AND a stable-named copy for the funnel, each with its
+        # SHA-256 (bare filename inside, so `shasum -c` works from the download dir).
+        run: |
+          DMG=$(ls -t Codescribe_*.dmg | head -1)
+          test -n "$DMG" || { echo "No Codescribe_*.dmg produced"; exit 1; }
+          cp "$DMG" Codescribe.dmg
+          shasum -a 256 Codescribe.dmg > Codescribe.dmg.sha256
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
-          files: Codescribe_*.dmg
+          files: |
+            Codescribe_*.dmg
+            Codescribe_*.dmg.sha256
+            Codescribe.dmg
+            Codescribe.dmg.sha256
           generate_release_notes: true

@@ -151,3 +151,5 @@
 {"term": "sticky sessions", "mispronunciations": ["stiki sessions", "sticky seszns"], "category": "networking"}
 {"term": "plik WAV", "mispronunciations": ["blik Wave", "plik wave", "blik wave", "plik łejf"], "category": "media"}
 {"term": "Toolchain", "mispronunciations": ["Tooltrain", "tool train", "tooltrain", "tulczejn"], "category": "tooling"}
+{"term": "rust'cie", "mispronunciations": ["ruście", "ruszcie", "rustcie", "ruście"], "category": "lang"}
+{"term": "w Rust'cie", "mispronunciations": ["w ruście", "w ruszcie", "w rustcie"], "category": "lang"}

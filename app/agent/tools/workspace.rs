@@ -12,12 +12,8 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::config::Config;
 use serde_json::{Value, json};
-
-/// Built-in default workspace root when `AGENT_WORKSPACE_ROOTS` is unset. Mirrors
-/// the bridge default (`bridge/src/config.rs`) and the operator convention that
-/// repositories live under `~/Git`.
-const DEFAULT_WORKSPACE_ROOT: &str = "~/Git";
 
 /// Upper bound on returned repositories — keeps the tool result bounded even if a
 /// root holds hundreds of checkouts.
@@ -49,8 +45,16 @@ fn list_projects_definition() -> ToolDefinition {
 
 async fn handle_list_projects(_input: Value) -> Vec<ToolResultContent> {
     let roots = resolved_roots();
-    let projects = scan_projects(&roots, MAX_PROJECTS);
-    let payload = json!({
+    let payload = list_projects_payload(&roots);
+    match serde_json::to_string_pretty(&payload) {
+        Ok(text) => vec![ToolResultContent::Text(text)],
+        Err(error) => vec![ToolResultContent::Error(error.to_string())],
+    }
+}
+
+fn list_projects_payload(roots: &[PathBuf]) -> Value {
+    let projects = scan_projects(roots, MAX_PROJECTS);
+    json!({
         "roots": roots
             .iter()
             .map(|root| root.display().to_string())
@@ -60,11 +64,7 @@ async fn handle_list_projects(_input: Value) -> Vec<ToolResultContent> {
             .iter()
             .map(|project| json!({ "name": project.name, "path": project.path }))
             .collect::<Vec<_>>(),
-    });
-    match serde_json::to_string_pretty(&payload) {
-        Ok(text) => vec![ToolResultContent::Text(text)],
-        Err(error) => vec![ToolResultContent::Error(error.to_string())],
-    }
+    })
 }
 
 /// A resolved local project repository.
@@ -73,31 +73,14 @@ struct Project {
     path: String,
 }
 
-/// Configured workspace roots parsed from `AGENT_WORKSPACE_ROOTS`
-/// (colon-separated, PATH-style), falling back to the built-in default. Returns
-/// raw, unexpanded strings (tilde left intact) so they can be shown verbatim in
-/// the system prompt.
+/// Configured workspace roots from fresh settings.json truth. Returns raw,
+/// unexpanded strings (tilde left intact) for the system prompt.
 pub(crate) fn configured_roots() -> Vec<String> {
-    let roots: Vec<String> = env::var("AGENT_WORKSPACE_ROOTS")
-        .ok()
-        .map(|value| {
-            value
-                .split(':')
-                .map(|segment| segment.trim().to_string())
-                .filter(|segment| !segment.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if roots.is_empty() {
-        vec![DEFAULT_WORKSPACE_ROOT.to_string()]
-    } else {
-        roots
-    }
+    Config::effective_agent_workspace_roots()
 }
 
 /// Expanded, absolute workspace roots (tilde → `$HOME`).
-fn resolved_roots() -> Vec<PathBuf> {
+pub(crate) fn resolved_roots() -> Vec<PathBuf> {
     configured_roots()
         .iter()
         .map(|root| expand_tilde(root))
@@ -183,6 +166,9 @@ pub fn workspace_prompt_section() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codescribe_core::config::UserSettings;
+    use serial_test::serial;
+    use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
     #[test]
@@ -247,5 +233,85 @@ mod tests {
         }
         // Non-tilde absolute path passes through untouched.
         assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    #[serial]
+    fn list_projects_returns_all_configured_roots_and_git_projects() {
+        let tmp = TempDir::new().expect("tempdir");
+        let data = tmp.path().join("data");
+        let root_a = tmp.path().join("root-a");
+        let root_b = tmp.path().join("root-b");
+        for repo in [
+            root_a.join("alpha"),
+            root_a.join("gamma"),
+            root_b.join("beta"),
+        ] {
+            fs::create_dir_all(repo.join(".git")).expect("create fake checkout");
+        }
+        fs::create_dir_all(root_b.join("plain")).expect("create non-repo directory");
+
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &data);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _process_roots = EnvGuard::remove("AGENT_WORKSPACE_ROOTS");
+        UserSettings {
+            agent_workspace_roots: Some(vec![
+                root_a.display().to_string(),
+                root_b.display().to_string(),
+            ]),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist configured roots");
+
+        let roots = resolved_roots();
+        let actual = list_projects_payload(&roots);
+        let expected = json!({
+            "roots": [root_a.display().to_string(), root_b.display().to_string()],
+            "count": 3,
+            "projects": [
+                { "name": "alpha", "path": root_a.join("alpha").display().to_string() },
+                { "name": "gamma", "path": root_a.join("gamma").display().to_string() },
+                { "name": "beta", "path": root_b.join("beta").display().to_string() },
+            ],
+        });
+        assert_eq!(actual, expected);
+        assert_eq!(
+            serde_json::to_string_pretty(&actual).expect("serialize actual payload"),
+            serde_json::to_string_pretty(&expected).expect("serialize expected payload")
+        );
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = env::var_os(key);
+            // SAFETY: the test mutating process env is serialized.
+            unsafe { env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = env::var_os(key);
+            // SAFETY: the test mutating process env is serialized.
+            unsafe { env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: the test mutating process env is serialized.
+            unsafe {
+                match self.previous.as_ref() {
+                    Some(value) => env::set_var(self.key, value),
+                    None => env::remove_var(self.key),
+                }
+            }
+        }
     }
 }

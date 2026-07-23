@@ -54,7 +54,7 @@ struct UserPanel: View {
                 Toggle("", isOn: taggingBinding)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .tint(CSColor.terracotta)
+                    .tint(CSColor.chromeAccent)
                     .accessibilityLabel("Tag transcripts for AI agents")
                     .accessibilityValue(model.settings.transcriptTaggingEnabled ? "On" : "Off")
             }
@@ -106,7 +106,7 @@ struct UserPanel: View {
                 }
                 .buttonStyle(.plain)
                 .font(CSFont.mono(10.5, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.chromeAccent)
                 .accessibilityLabel("Restore default transcript tag template")
             }
             .padding(.top, 9)
@@ -132,7 +132,7 @@ struct UserPanel: View {
                     Text("↗")
                 }
                 .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.chromeAccent)
             }
             .padding(.top, 18)
             .accessibilityLabel("Open Codescribe documentation")

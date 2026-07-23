@@ -46,6 +46,8 @@ use crate::{CsError, CsLanguage};
 pub struct CsSettings {
     // ── Hotkeys ──
     pub hold_exclusive: bool,
+    /// Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
+    pub hold_arm_modifier: String,
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
     pub toggle_silence_sec: f32,
@@ -89,6 +91,9 @@ pub struct CsSettings {
     /// `"whisper"`. `None` means the built-in auto policy. Written back via
     /// `update_config` with the same key (promoted → settings.json).
     pub stt_engine: Option<String>,
+    /// Final-pass routing (`FINAL_PASS_MODE`): `"always"` | `"smart"` | `"off"`.
+    /// `None` means Smart default. Written back via `update_config`.
+    pub final_pass_mode: Option<String>,
     // ── LLM backend (base) ──
     pub llm_endpoint: Option<String>,
     // ── Clipboard ──
@@ -311,6 +316,34 @@ pub fn lane_truth_snapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot {
     lane_truth::lane_truth_snapshot(lane.into(), &Config::load()).into()
 }
 
+/// Last stop-path serving verdict from the controller runtime owner.
+/// The Settings "Active STT" row consumes this — never configured preference.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsLastServingVerdict {
+    /// Actual engine label (`local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`).
+    pub engine: String,
+    /// Final-pass routing mode that governed the stop (`smart` / `always` / `off`).
+    pub routing_mode: String,
+    /// Final-pass disposition when one ran (`skipped`, `changed`, …).
+    pub disposition: Option<String>,
+    /// True when the serving engine was a runtime fallback (e.g. Apple→Whisper).
+    pub fallback_used: bool,
+}
+
+/// Snapshot the last serving verdict, if any stop completed in this process.
+/// `None` renders as "Not yet served" Swift-side.
+#[uniffi::export]
+pub fn current_serving_verdict() -> Option<CsLastServingVerdict> {
+    codescribe::controller::serving_status::current_last_serving().map(|verdict| {
+        CsLastServingVerdict {
+            engine: verdict.engine,
+            routing_mode: verdict.routing_mode,
+            disposition: verdict.disposition,
+            fallback_used: verdict.fallback_used,
+        }
+    })
+}
+
 /// Result of starting the provider-account login flow. `auth_url` is present
 /// when the local callback server is listening and the UI should open a browser.
 #[derive(uniffi::Record)]
@@ -348,6 +381,10 @@ pub struct CsTrayToggles {
     /// Notes Mode: voice → daily note (no paste). Backed by the core
     /// `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
     pub notes_mode_enabled: bool,
+    /// Cursor-following recording indicator visibility.
+    pub hold_indicator: bool,
+    /// Base indicator diameter. Assistive mode keeps its existing multiplier.
+    pub hold_badge_size: u32,
 }
 
 /// Thin handle to the codescribe config engine. Stateless: each method reloads
@@ -397,6 +434,7 @@ impl CodescribeConfig {
         let env_file = load_config_env_file();
         CsSettings {
             hold_exclusive: config.hold_exclusive,
+            hold_arm_modifier: config.hold_arm_modifier.as_str().to_string(),
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
             toggle_silence_sec: config.toggle_silence_sec,
@@ -435,6 +473,12 @@ impl CodescribeConfig {
                 settings.stt_engine.clone(),
                 &env_file,
             ),
+            final_pass_mode: effective_env_string(
+                "FINAL_PASS_MODE",
+                settings.final_pass_mode.clone(),
+                &env_file,
+            )
+            .or_else(|| effective_env_string("CODESCRIBE_FINAL_PASS_MODE", None, &env_file)),
             llm_endpoint: config.llm_endpoint.clone(),
             restore_clipboard: config.restore_clipboard,
             restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
@@ -486,12 +530,7 @@ impl CodescribeConfig {
                 settings.layered_transcription.clone(),
                 &env_file,
             ),
-            agent_workspace_roots: effective_env_list(
-                "AGENT_WORKSPACE_ROOTS",
-                settings.agent_workspace_roots.clone(),
-                &env_file,
-                DEFAULT_AGENT_WORKSPACE_ROOT,
-            ),
+            agent_workspace_roots: Config::effective_agent_workspace_roots(),
             buffer_delay_ms: effective_settings_parse(
                 "CODESCRIBE_BUFFER_DELAY_MS",
                 settings.buffer_delay_ms,
@@ -570,6 +609,8 @@ impl CodescribeConfig {
             // AND no paste). Reading just quick_notes_enabled could show the toggle
             // ON while dictation still pastes (save_only=false) — an edge desync.
             notes_mode_enabled: config.quick_notes_enabled && config.quick_notes_save_only,
+            hold_indicator: config.hold_indicator,
+            hold_badge_size: config.hold_badge_size,
         }
     }
 
@@ -1587,10 +1628,6 @@ fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
     file.sync_data()
 }
 
-/// Built-in default workspace root when `AGENT_WORKSPACE_ROOTS` is unset. Kept in
-/// sync with the `list_projects` tool default (`app/agent/tools/workspace.rs`).
-const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
-
 fn load_config_env_file() -> HashMap<String, String> {
     let path = Config::env_path();
     if path.exists() {
@@ -1648,43 +1685,6 @@ where
     setting
         .or_else(|| file_env_string(key, env_file).and_then(|value| value.parse().ok()))
         .or_else(|| env_parse(key))
-}
-
-fn parse_roots(value: &str) -> Vec<String> {
-    value
-        .split(':')
-        .map(|segment| segment.trim().to_string())
-        .filter(|segment| !segment.is_empty())
-        .collect()
-}
-
-/// Colon-separated env var into a trimmed, non-empty `Vec<String>`. Falls back to
-/// a single-element `[default]` when the var is unset/empty, so the Settings UI
-/// always renders the effective root the agent tool will scan.
-fn effective_env_list(
-    key: &str,
-    setting: Option<Vec<String>>,
-    env_file: &HashMap<String, String>,
-    default: &str,
-) -> Vec<String> {
-    let roots = file_env_string(key, env_file)
-        .map(|value| parse_roots(&value))
-        .or_else(|| {
-            setting.map(|roots| {
-                roots
-                    .into_iter()
-                    .map(|segment| segment.trim().to_string())
-                    .filter(|segment| !segment.is_empty())
-                    .collect()
-            })
-        })
-        .or_else(|| std::env::var(key).ok().map(|value| parse_roots(&value)))
-        .unwrap_or_default();
-    if roots.is_empty() {
-        vec![default.to_string()]
-    } else {
-        roots
-    }
 }
 
 /// Non-empty env var as `Some(String)`, else `None`.
@@ -2293,6 +2293,52 @@ mod settings_snapshot_tests {
                 None => std::env::remove_var("LLM_MODEL"),
             }
         }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn workspace_roots_persist_across_fresh_config_instances() {
+        let root = scratch("workspace_roots");
+        std::fs::create_dir_all(&root).expect("create workspace-root scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _process_roots = EnvGuard::remove("AGENT_WORKSPACE_ROOTS");
+        let expected = vec![
+            "~/Git".to_string(),
+            "/Volumes/vc-workspace/vetcoders".to_string(),
+            "/Volumes/vc-workspace/Loctree".to_string(),
+            "/Volumes/vc-workspace/libraxisai".to_string(),
+        ];
+
+        CodescribeConfig::new()
+            .update_config("AGENT_WORKSPACE_ROOTS".to_string(), expected.join(":"))
+            .expect("persist workspace roots through bridge");
+
+        assert_eq!(
+            UserSettings::load().agent_workspace_roots,
+            Some(expected.clone()),
+            "the UI write must land in durable settings.json"
+        );
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let legacy = Config::parse_env_file(&env_path).expect("parse optional env file");
+            assert!(
+                !legacy.contains_key("AGENT_WORKSPACE_ROOTS"),
+                "promoted roots must not be rewritten to the reinstall-fragile .env store"
+            );
+        }
+
+        // A new bridge object has no in-memory carryover; it must reconstruct
+        // the exact list from settings.json and must not replace it with ~/Git.
+        let fresh = CodescribeConfig::new().load_settings();
+        assert_eq!(fresh.agent_workspace_roots, expected);
+        let second_fresh = CodescribeConfig::new().load_settings();
+        assert_eq!(
+            second_fresh.agent_workspace_roots,
+            fresh.agent_workspace_roots
+        );
+
         let _ = remove_path_without_following_symlinks(&root);
     }
 

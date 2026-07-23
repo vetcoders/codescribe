@@ -22,11 +22,14 @@
 //! keep a 400ms floor even if settings lower the generic hold delay. This prevents
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
+mod context_bucket;
 mod helpers;
+pub mod serving_status;
 mod types;
 
 pub use helpers::{
-    is_assistive_session, is_conversation_session, set_assistive_session, set_conversation_session,
+    is_assistive_session, is_conversation_session, publish_recording_indicator,
+    set_assistive_session, set_conversation_session,
 };
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 
@@ -47,15 +50,17 @@ use chrono::{DateTime, Local};
 
 use crate::audio::streaming_recorder::StreamingRecorder;
 use crate::config::models::ModelManager;
-use crate::config::{Config, UserSettings};
+use crate::config::{Config, DeferredInsertShortcut, UserSettings};
 use crate::os::clipboard;
-use crate::os::hotkeys::HoldMode;
+use crate::os::hold_badge::BadgeMode;
+use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
     AssistiveContext, activate_app_by_name, build_assistive_input, capture_assistive_context,
-    capture_assistive_context_with_prior_frontmost, capture_frontmost_app_only,
-    capture_frontmost_app_only_with_prior_frontmost, get_recent_assistive_context,
-    store_recent_assistive_context, wait_for_frontmost_app,
+    capture_assistive_context_with_image_with_prior_frontmost, capture_frontmost_app_only,
+    wait_for_frontmost_app,
 };
+use crate::os::shortcut_registry;
+use context_bucket::{ContextBucket, ContextMarker};
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
@@ -63,13 +68,17 @@ use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
 use codescribe_core::pipeline::contracts::{
-    FileTranscriptionOptions, FinalPassDisposition, TranscriptionConfidenceFlag,
-    TranscriptionVerdict,
+    FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
 };
 
+#[cfg(test)]
+use helpers::SessionEngineStats;
+#[cfg(test)]
+use helpers::build_image_attachments_from_text;
 use helpers::{
-    SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    reset_session_telemetry, send_assistive_with_agent_runtime, snapshot_session_telemetry,
+    CompletenessCommitSource, SessionTelemetrySnapshot, SharedSessionTelemetry,
+    new_session_telemetry, raw_save_enabled, reset_session_telemetry,
+    send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
 };
 use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
@@ -94,6 +103,126 @@ fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     } else {
         configured_ms
     }
+}
+
+/// Combo capture with optional clipboard-image provider (W10-C).
+/// `image_provider` returns PNG bytes when the pasteboard holds an image.
+/// Tests pass `|| None` when only selection capture is under exercise.
+fn capture_combo_context_with_image(
+    bucket: &mut ContextBucket,
+    position: usize,
+    provider: impl FnOnce() -> AssistiveContext,
+    image_provider: impl FnOnce() -> Option<Vec<u8>>,
+) -> Result<(AssistiveContext, Option<ContextMarker>)> {
+    let mut context = provider();
+    let marker = match context.selected_text.take() {
+        Some(selected_text) => bucket.add_selection(position, selected_text)?,
+        None => None,
+    };
+    if let Some(png) = image_provider() {
+        let _ = bucket.add_image_png(&png)?;
+    }
+    Ok((context, marker))
+}
+
+/// Voice→agent prompt lane (W10-D).
+///
+/// - **VoiceChat**: clean assistive / armed hold without a selection transform.
+///   Wire is spoken text (+ context tags / image markers). No assistive skeleton,
+///   no `assistive.txt` persona.
+/// - **ActOnSelection**: armed with a selection targeting a transformation.
+///   Skeleton + `assistive.txt` persona remain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssistiveLane {
+    VoiceChat,
+    ActOnSelection,
+}
+
+impl AssistiveLane {
+    pub(crate) fn use_assistive_persona(self) -> bool {
+        matches!(self, Self::ActOnSelection)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AssistiveDelivery {
+    pub wire: String,
+    pub lane: AssistiveLane,
+    pub raw_transcript: String,
+}
+
+fn decide_assistive_lane(context: &AssistiveContext, bucket: &ContextBucket) -> AssistiveLane {
+    // Selection may live on the context (legacy) or already be in the bucket
+    // (capture_combo_context_with takes selected_text into the bucket).
+    let has_inline_selection = context
+        .selected_text
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty());
+    if has_inline_selection || bucket.has_selection_items() {
+        AssistiveLane::ActOnSelection
+    } else {
+        AssistiveLane::VoiceChat
+    }
+}
+
+fn assemble_assistive_delivery_lane(
+    transcript: &str,
+    context: &AssistiveContext,
+    bucket: &ContextBucket,
+) -> AssistiveDelivery {
+    let lane = decide_assistive_lane(context, bucket);
+    let raw_transcript = transcript.to_string();
+    let wire = match lane {
+        AssistiveLane::ActOnSelection => {
+            // Skeleton + selection/context fields; bucket tags append after.
+            // The bucket truth flows into the header so the skeleton never
+            // claims "no selection" while <selection_N> tags ride below.
+            bucket.append_to_message(&build_assistive_input(transcript, context, bucket.len()))
+        }
+        AssistiveLane::VoiceChat => {
+            // Spoken text only (+ optional context tags / image markers).
+            // No USER_INSTRUCTION skeleton.
+            bucket.append_to_message(transcript.trim())
+        }
+    };
+    AssistiveDelivery {
+        wire,
+        lane,
+        raw_transcript,
+    }
+}
+
+/// Raw/format paste lane (channel 2): the finalized transcript pasted into the
+/// frontmost app consumes the `ContextBucket` exactly like the assistive lanes
+/// do — selections ride along as `<codescribe_context>` tags (inline under the
+/// byte limit, `PATH:` for oversized spills). Images never enter the text
+/// paste: the vision marker block is an agent contract, so the paste lane
+/// skips it. An empty (or images-only) bucket leaves the transcript
+/// byte-for-byte untouched.
+fn assemble_raw_paste_wire(transcript: &str, bucket: &ContextBucket) -> String {
+    if !bucket.has_selection_items() {
+        return transcript.to_string();
+    }
+    strip_trailing_image_marker_block(&bucket.append_to_message(transcript))
+}
+
+/// Drop the trailing vision-marker block appended by
+/// `ContextBucket::append_to_message` when images share the bucket with
+/// selections. Only a suffix that structurally matches the block (marker
+/// header followed exclusively by `- <path>` lines) is stripped, so selection
+/// payloads keep arbitrary content intact.
+fn strip_trailing_image_marker_block(wire: &str) -> String {
+    let header = format!(
+        "\n\n---\n{}\n",
+        codescribe_core::attachment::IMAGE_PATHS_MARKER
+    );
+    if let Some(idx) = wire.rfind(&header) {
+        let tail = &wire[idx + header.len()..];
+        if !tail.is_empty() && tail.lines().all(|line| line.starts_with("- ")) {
+            return wire[..idx].to_string();
+        }
+    }
+    wire.to_string()
 }
 
 const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -327,6 +456,9 @@ struct RecordingTruthVerdict {
     /// Disposition of the explicit file-level final pass, when one ran.
     /// None means no final pass was attempted for this verdict.
     final_pass_disposition: Option<FinalPassDisposition>,
+    /// Actual serving engine label for sidecar/UI (`local_apple`, `local_whisper`, …).
+    /// Preference-derived labels are forbidden when a verdict is present.
+    engine_label: Option<String>,
     commit_trigger: Option<String>,
     display_status: String,
 }
@@ -415,9 +547,9 @@ fn truth_display_status(
     }
 }
 
-// allow(too_many_arguments): verdict aggregates 9 independent recording-truth
+// allow(too_many_arguments): verdict aggregates independent recording-truth
 // signals collected at one call site; a params struct would only restate the
-// same nine names. Revisit if call sites multiply.
+// same names. Revisit if call sites multiply.
 #[allow(clippy::too_many_arguments)]
 fn build_truth_verdict(
     raw_text: Option<String>,
@@ -429,6 +561,7 @@ fn build_truth_verdict(
     confidence_flags: Vec<TranscriptionConfidenceFlag>,
     sparkline: Option<String>,
     final_pass_disposition: Option<FinalPassDisposition>,
+    engine_label: Option<String>,
 ) -> RecordingTruthVerdict {
     let commit_trigger = truth_review_trigger(
         fallback_class,
@@ -452,6 +585,7 @@ fn build_truth_verdict(
         confidence_flags,
         sparkline,
         final_pass_disposition,
+        engine_label,
         commit_trigger,
         display_status,
     }
@@ -502,6 +636,10 @@ fn adjudicate_recording_truth(
         // Final-pass disposition is only meaningful when the engine ran
         // an explicit final pass (hold path). Toggle path leaves this None.
         let final_pass_disposition = verdict.final_pass.as_ref().map(|fp| fp.disposition);
+        let engine_label = Some(engine_label_from_verdict(
+            &verdict.engine,
+            final_pass_disposition,
+        ));
 
         let raw_text = if no_speech_reason.is_some() {
             None
@@ -519,6 +657,7 @@ fn adjudicate_recording_truth(
             confidence_flags,
             sparkline,
             final_pass_disposition,
+            engine_label,
         );
     }
 
@@ -531,6 +670,7 @@ fn adjudicate_recording_truth(
             None,
             None,
             Vec::new(),
+            None,
             None,
             None,
         );
@@ -564,6 +704,7 @@ fn adjudicate_recording_truth(
                 fallback_flags,
                 None,
                 None,
+                Some("cloud_stt".to_string()),
             );
         }
 
@@ -587,6 +728,7 @@ fn adjudicate_recording_truth(
                 fallback_flags,
                 None,
                 None,
+                Some("streaming_whisper".to_string()),
             );
         }
     } else {
@@ -601,6 +743,7 @@ fn adjudicate_recording_truth(
                 cloud_verdict.confidence_flags,
                 None,
                 None,
+                Some("cloud_stt".to_string()),
             );
         }
 
@@ -628,6 +771,7 @@ fn adjudicate_recording_truth(
                 confidence_flags,
                 None,
                 None,
+                Some("streaming_whisper".to_string()),
             );
         }
     }
@@ -645,6 +789,7 @@ fn adjudicate_recording_truth(
         None,
         None,
         Vec::new(),
+        None,
         None,
         None,
     )
@@ -682,6 +827,15 @@ fn truth_recording_mode_label(
     } else {
         recording_mode_label(assistive, hold_mode, force_raw, force_ai)
     }
+}
+
+fn session_auto_format_enabled(
+    config: &Config,
+    _assistive: bool,
+    force_raw: bool,
+    force_ai: bool,
+) -> bool {
+    force_ai || (!force_raw && config.ai_formatting_enabled)
 }
 
 fn maybe_wrap_transcript_for_delivery(text: &str, config: &Config, mode: &str) -> String {
@@ -725,17 +879,84 @@ pub enum OverlayPasteDelivery {
     Pasted,
     /// Focus never left Codescribe; tagged text was copied instead of pasted.
     CopiedToClipboard,
+    /// Synthetic event posting is not trusted; tagged text was copied instead.
+    AccessibilityPermissionNeeded,
+    /// Tagged text is armed in process memory for the global Paste Here command.
+    DeferredInsertArmed,
     /// Nothing to deliver (empty transcript).
     Noop,
 }
 
-/// True when a synthetic Cmd+V would land in Codescribe itself instead of the
-/// intended target. `None` (signal unavailable) keeps the legacy best-effort
-/// paste: never break delivery on a missing probe.
-fn overlay_paste_would_self_target(frontmost_app: Option<&str>) -> bool {
-    frontmost_app
-        .map(|name| name.trim().eq_ignore_ascii_case("codescribe"))
-        .unwrap_or(false)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayPasteResult {
+    pub delivery: OverlayPasteDelivery,
+    pub target_app_name: Option<String>,
+    pub frontmost_app_name: Option<String>,
+    pub deferred_insert_shortcut: Option<String>,
+    pub deferred_insert_failure: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeferredInsertRegistration {
+    Available { shortcut_label: String },
+    Unavailable { reason: String },
+}
+
+fn deferred_insert_registration(
+    shortcut: DeferredInsertShortcut,
+    manager_active: bool,
+    collision: Option<&str>,
+) -> DeferredInsertRegistration {
+    if !shortcut.is_enabled() {
+        return DeferredInsertRegistration::Unavailable {
+            reason: "Paste Here shortcut is disabled".to_string(),
+        };
+    }
+    if !manager_active {
+        return DeferredInsertRegistration::Unavailable {
+            reason: "Paste Here hotkey registration failed".to_string(),
+        };
+    }
+    if let Some(reason) = collision {
+        return DeferredInsertRegistration::Unavailable {
+            reason: reason.to_string(),
+        };
+    }
+    DeferredInsertRegistration::Available {
+        shortcut_label: shortcut.label().to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverlayPasteDisposition {
+    Paste,
+    CopyTargetUnavailable,
+    CopyFrontmostUnavailable,
+    CopyTargetMismatch,
+    CopyAccessibilityDenied,
+}
+
+fn overlay_paste_disposition(
+    target_app: Option<&str>,
+    frontmost_app: Option<&str>,
+    can_post_events: bool,
+) -> OverlayPasteDisposition {
+    let Some(target) = target_app.map(str::trim).filter(|name| !name.is_empty()) else {
+        return OverlayPasteDisposition::CopyTargetUnavailable;
+    };
+    let Some(frontmost) = frontmost_app.map(str::trim).filter(|name| !name.is_empty()) else {
+        return OverlayPasteDisposition::CopyFrontmostUnavailable;
+    };
+    if frontmost.eq_ignore_ascii_case("codescribe") {
+        return OverlayPasteDisposition::CopyTargetMismatch;
+    }
+    if !frontmost.eq_ignore_ascii_case(target) {
+        return OverlayPasteDisposition::CopyTargetMismatch;
+    }
+    if !can_post_events {
+        return OverlayPasteDisposition::CopyAccessibilityDenied;
+    }
+    OverlayPasteDisposition::Paste
 }
 
 fn toggle_final_pass_enabled() -> bool {
@@ -840,15 +1061,288 @@ fn compose_final_status(
     }
 }
 
-fn truth_engine_label(source: Option<RecordingTranscriptSource>) -> Option<String> {
-    source.map(|source| match source {
-        RecordingTranscriptSource::LocalFinalPass => "local_whisper".to_string(),
-        RecordingTranscriptSource::ToggleSessionAdjudicated => "local_whisper".to_string(),
-        RecordingTranscriptSource::CloudPrimary => "cloud_stt".to_string(),
-        RecordingTranscriptSource::CloudFallback => "cloud_stt".to_string(),
-        RecordingTranscriptSource::Streaming => "streaming_whisper".to_string(),
-        RecordingTranscriptSource::StreamingFallback => "streaming_whisper".to_string(),
+/// Canonical stop-path final-pass routing (Settings → Final pass / `FINAL_PASS_MODE`).
+/// Distinct from `pipeline::contracts::FinalPassMode` (lexicon cleanup request).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalPassRoutingMode {
+    /// Always re-run full local STT on the saved WAV.
+    Always,
+    /// Skip full re-pass only when streaming completeness is adjudicated.
+    Smart,
+    /// Streaming (post-processed) is final; keep repetition guardrail only.
+    Off,
+}
+
+impl FinalPassRoutingMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Smart => "smart",
+            Self::Off => "off",
+        }
+    }
+
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "always" | "on" | "1" | "true" | "yes" => Some(Self::Always),
+            "smart" | "auto" => Some(Self::Smart),
+            "off" | "0" | "false" | "no" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve final-pass routing from env/settings. Default: Smart.
+///
+/// Precedence:
+/// 1. `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` (`always|smart|off`)
+/// 2. Legacy `CODESCRIBE_LOCAL_STT_FINAL_PASS` falsey → Off, truthy → Always
+/// 3. Smart
+pub(crate) fn final_pass_routing_mode() -> FinalPassRoutingMode {
+    for key in ["FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
+        if let Ok(raw) = std::env::var(key)
+            && let Some(mode) = FinalPassRoutingMode::parse(&raw)
+        {
+            return mode;
+        }
+    }
+    if let Ok(raw) = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS") {
+        let v = raw.trim().to_ascii_lowercase();
+        if matches!(v.as_str(), "" | "0" | "false" | "no" | "off") {
+            return FinalPassRoutingMode::Off;
+        }
+        if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
+            return FinalPassRoutingMode::Always;
+        }
+    }
+    FinalPassRoutingMode::Smart
+}
+
+/// Typed streaming-completeness decision for Smart skip (never "non-empty ⇒ complete").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamingCompleteness {
+    Complete,
+    Incomplete { reason: &'static str },
+}
+
+/// Recorder/adjudicator evidence for Smart final-pass skip.
+///
+/// Punctuation is never the authority: Completeness requires an adjudicated
+/// commit source, coverage, and a cleared pending tail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamingCompletenessEvidence {
+    pub streaming_text: String,
+    pub no_speech_reason: Option<String>,
+    pub pending_tail: bool,
+    pub partial_stale_or_dropped: bool,
+    pub commit_source: Option<CompletenessCommitSource>,
+    pub committed_chars: usize,
+    pub total_utterances: u64,
+}
+
+impl StreamingCompletenessEvidence {
+    /// Build evidence from the live session snapshot + streaming splice text.
+    pub(crate) fn from_session(streaming_text: &str, session: &SessionTelemetrySnapshot) -> Self {
+        let partial_stale_or_dropped = session
+            .stats
+            .as_ref()
+            .is_some_and(|s| s.partial_stale_count > 0 || s.partial_dropped_count > 0);
+        let total_utterances = session
+            .stats
+            .as_ref()
+            .map(|s| s.total_utterances)
+            .unwrap_or(0);
+        Self {
+            streaming_text: streaming_text.to_string(),
+            no_speech_reason: session.no_speech_reason.clone(),
+            pending_tail: session.pending_tail,
+            partial_stale_or_dropped,
+            commit_source: session.last_commit_source,
+            committed_chars: session.committed_chars,
+            total_utterances,
+        }
+    }
+
+    /// Coverage is present when the adjudicator sealed at least one utterance
+    /// (commit source + committed chars or engine utterance count).
+    pub(crate) fn has_coverage(&self) -> bool {
+        self.committed_chars > 0 || self.total_utterances > 0
+    }
+}
+
+/// Assess whether streaming holds an adjudicator-confirmed complete transcript.
+///
+/// Incomplete when: empty, no-speech, pending tail, partial stale/drop, missing
+/// commit source, or zero coverage. A punctuated prefix with a pending tail is
+/// always Incomplete — punctuation alone never authorizes Complete.
+pub(crate) fn assess_streaming_completeness(
+    evidence: &StreamingCompletenessEvidence,
+) -> StreamingCompleteness {
+    if evidence.no_speech_reason.is_some() {
+        return StreamingCompleteness::Incomplete {
+            reason: "no_speech",
+        };
+    }
+    let text = evidence.streaming_text.trim();
+    if text.is_empty() {
+        return StreamingCompleteness::Incomplete { reason: "empty" };
+    }
+    if evidence.pending_tail {
+        return StreamingCompleteness::Incomplete {
+            reason: "pending_tail",
+        };
+    }
+    if evidence.partial_stale_or_dropped {
+        return StreamingCompleteness::Incomplete {
+            reason: "partial_pending",
+        };
+    }
+    if evidence.commit_source.is_none() {
+        return StreamingCompleteness::Incomplete {
+            reason: "no_commit_source",
+        };
+    }
+    if !evidence.has_coverage() {
+        return StreamingCompleteness::Incomplete {
+            reason: "no_coverage",
+        };
+    }
+    StreamingCompleteness::Complete
+}
+
+/// Convenience for tests that build evidence by field rather than from a session.
+#[cfg(test)]
+pub(crate) fn assess_streaming_completeness_fields(
+    streaming_text: &str,
+    no_speech_reason: Option<&str>,
+    pending_tail: bool,
+    partial_stale_or_dropped: bool,
+    commit_source: Option<CompletenessCommitSource>,
+    committed_chars: usize,
+    total_utterances: u64,
+) -> StreamingCompleteness {
+    assess_streaming_completeness(&StreamingCompletenessEvidence {
+        streaming_text: streaming_text.to_string(),
+        no_speech_reason: no_speech_reason.map(str::to_string),
+        pending_tail,
+        partial_stale_or_dropped,
+        commit_source,
+        committed_chars,
+        total_utterances,
     })
+}
+
+/// Label from the actual engine verdict (not preference). Apple→Whisper fallback
+/// reports Whisper; Smart-skip of streaming reports streaming_whisper.
+pub(crate) fn engine_label_from_verdict(
+    engine: &codescribe_core::pipeline::contracts::TranscriptionEngineVerdict,
+    final_pass_disposition: Option<FinalPassDisposition>,
+) -> String {
+    use codescribe_core::pipeline::contracts::TranscriptionEngine;
+    if matches!(final_pass_disposition, Some(FinalPassDisposition::Skipped)) {
+        return "streaming_whisper".to_string();
+    }
+    match engine.engine {
+        TranscriptionEngine::Apple => "local_apple".to_string(),
+        // Fallback-vs-primary provenance travels in verdict mode/disposition;
+        // the label states the engine that actually served.
+        TranscriptionEngine::Whisper => "local_whisper".to_string(),
+    }
+}
+
+fn truth_engine_label(
+    source: Option<RecordingTranscriptSource>,
+    actual_engine_label: Option<&str>,
+) -> Option<String> {
+    if let Some(label) = actual_engine_label {
+        return Some(label.to_string());
+    }
+    source.map(|source| match source {
+        // Preference-derived labels only when no verdict engine is available.
+        RecordingTranscriptSource::LocalFinalPass
+        | RecordingTranscriptSource::ToggleSessionAdjudicated => "local_whisper".to_string(),
+        RecordingTranscriptSource::CloudPrimary | RecordingTranscriptSource::CloudFallback => {
+            "cloud_stt".to_string()
+        }
+        RecordingTranscriptSource::Streaming | RecordingTranscriptSource::StreamingFallback => {
+            "streaming_whisper".to_string()
+        }
+    })
+}
+
+/// Named stop-path phase timings (rec_stop → final_pass → postproc → format → delivery).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StopPathBudget {
+    pub total_secs: f64,
+    pub rec_stop_secs: f64,
+    pub final_pass_secs: f64,
+    pub postproc_secs: f64,
+    pub format_secs: f64,
+    /// Actual deliver_once / history+paste handoff span (not phase-4 cleanup).
+    pub delivery_secs: f64,
+}
+
+impl StopPathBudget {
+    pub(crate) fn named_sum_secs(self) -> f64 {
+        self.rec_stop_secs
+            + self.final_pass_secs
+            + self.postproc_secs
+            + self.format_secs
+            + self.delivery_secs
+    }
+
+    /// Wall time not attributed to a named phase (adjudication overhead, cleanup, …).
+    pub(crate) fn unclassified_remainder_secs(self) -> f64 {
+        (self.total_secs - self.named_sum_secs()).max(0.0)
+    }
+}
+
+/// Single INFO summary line for stop-path wall time (W11-B budget receipt).
+pub(crate) fn format_stop_path_budget_line(budget: StopPathBudget) -> String {
+    format!(
+        "stop_path_budget: total={total:.3}s phases={{rec_stop={rec:.3}s,final_pass={fp:.3}s,postproc={pp:.3}s,format={fmt:.3}s,delivery={del:.3}s}} remainder={rem:.3}s",
+        total = budget.total_secs,
+        rec = budget.rec_stop_secs,
+        fp = budget.final_pass_secs,
+        pp = budget.postproc_secs,
+        fmt = budget.format_secs,
+        del = budget.delivery_secs,
+        rem = budget.unclassified_remainder_secs(),
+    )
+}
+
+/// Phase sum + remainder must cover total within tolerance (timing noise).
+#[cfg(test)]
+pub(crate) fn stop_path_budget_covers_total(budget: StopPathBudget, tolerance_secs: f64) -> bool {
+    let covered = budget.named_sum_secs() + budget.unclassified_remainder_secs();
+    (covered - budget.total_secs).abs() <= tolerance_secs
+}
+
+/// Correlated assistive-delivery receipt. Receipt boundary (audit F1): the
+/// `stop_path_budget` closes when the stop pipeline returns; assistive overlay
+/// submission is user-triggered *after* that, so its real send gets its own
+/// wall-clock line instead of being folded into a budget that already ended.
+pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &str) -> String {
+    format!("assistive_delivery_budget: total={total_secs:.3}s outcome={outcome}")
+}
+
+/// Skip full local STT re-pass according to routing mode + completeness.
+/// Apple on-device final pass stays under Smart (sub-second for pl-PL).
+pub(crate) fn should_skip_full_final_repass(
+    mode: FinalPassRoutingMode,
+    completeness: StreamingCompleteness,
+    prefer_apple: bool,
+) -> bool {
+    match mode {
+        FinalPassRoutingMode::Always => false,
+        FinalPassRoutingMode::Off => true,
+        FinalPassRoutingMode::Smart => {
+            if prefer_apple {
+                return false;
+            }
+            matches!(completeness, StreamingCompleteness::Complete)
+        }
+    }
 }
 
 fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
@@ -890,6 +1384,11 @@ struct ProcessRecordingOutcome {
     no_speech_reason: Option<String>,
     commit_trigger: Option<String>,
     transcript_present: bool,
+    final_pass_secs: f64,
+    postproc_secs: f64,
+    format_secs: f64,
+    /// Wall seconds for history save + deliver_once / assistive handoff.
+    delivery_secs: f64,
 }
 
 impl ProcessRecordingOutcome {
@@ -898,10 +1397,15 @@ impl ProcessRecordingOutcome {
             no_speech_reason: Some(reason.into()),
             commit_trigger: None,
             transcript_present: false,
+            final_pass_secs: 0.0,
+            postproc_secs: 0.0,
+            format_secs: 0.0,
+            delivery_secs: 0.0,
         }
     }
 }
 
+#[cfg(test)]
 fn should_allow_full_user_bubble_rewrite(
     skip_user_bubble: bool,
     append_mode: bool,
@@ -1007,6 +1511,13 @@ pub struct RecordingController {
     /// Must be captured BEFORE showing any overlay window, because overlays
     /// may steal focus and destroy the user's selection context.
     assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
+    /// Trigger-time context retained after recording cleanup until the overlay
+    /// either auto-sends the untouched final transcript or the user explicitly
+    /// sends an edited transcript.
+    pending_assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
+    /// Combo-collected selections for the active dictation. The bucket survives
+    /// recording cleanup and is consumed only at the agent-send seam.
+    context_bucket: Arc<Mutex<ContextBucket>>,
     /// App that was frontmost when the user initiated a hold session, before
     /// Codescribe badge/overlay UI can become frontmost.
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
@@ -1171,6 +1682,10 @@ impl RecordingController {
             toggle_user_has_text: Arc::new(AtomicBool::new(false)),
             toggle_assistant_has_text: Arc::new(AtomicBool::new(false)),
             assistive_context: Arc::new(RwLock::new(None)),
+            pending_assistive_context: Arc::new(RwLock::new(None)),
+            context_bucket: Arc::new(Mutex::new(ContextBucket::for_codescribe_data_dir(
+                Config::config_dir(),
+            ))),
             pre_overlay_frontmost_app: Arc::new(RwLock::new(None)),
             last_segment_audio_offset: Arc::new(AtomicUsize::new(0)),
             // Conversation mode (lazy init)
@@ -1199,11 +1714,159 @@ impl RecordingController {
 
     async fn show_processing_badge_if_enabled(&self) {
         let hold_indicator = self.config.read().await.hold_indicator;
-        if hold_indicator {
-            crate::os::hold_badge::show_badge_for_mode(
-                crate::os::hold_badge::BadgeMode::Processing,
-            );
+        publish_recording_indicator(BadgeMode::Processing, hold_indicator);
+    }
+
+    async fn publish_indicator(&self, mode: BadgeMode) {
+        let hold_indicator = self.config.read().await.hold_indicator;
+        publish_recording_indicator(mode, hold_indicator);
+    }
+
+    async fn current_live_transcript_position(&self, state: State) -> usize {
+        if !matches!(state, State::RecHold | State::RecToggle) {
+            return 0;
         }
+        let transcript_buffer = {
+            let recorder = self.recorder.lock().await;
+            recorder
+                .as_ref()
+                .map(StreamingRecorder::transcript_buffer_handle)
+        };
+        let Some(transcript_buffer) = transcript_buffer else {
+            return 0;
+        };
+        transcript_buffer.lock().await.chars().count()
+    }
+
+    async fn capture_assistive_combo_context(
+        &self,
+        state: State,
+        prior_frontmost_app: Option<String>,
+    ) -> AssistiveContext {
+        // Start selection capture first: focus/caret state may disappear as soon
+        // as the combo changes the UI. Snapshot the live transcript position
+        // concurrently while the OS capture is already in flight.
+        let capture_task = tokio::task::spawn_blocking(move || {
+            capture_assistive_context_with_image_with_prior_frontmost(prior_frontmost_app)
+        });
+        let position = self.current_live_transcript_position(state).await;
+        let captured_payload = capture_task.await.unwrap_or_default();
+        let captured = captured_payload.context;
+        let fallback = captured.clone();
+        // A selected image is retained before clipboard restoration. If Cmd+C
+        // produced no image, preserve the existing clipboard-image behavior.
+        let image_png = match captured_payload.image_png {
+            some @ Some(_) => some,
+            None => tokio::task::spawn_blocking(clipboard::get_image_png_best_effort)
+                .await
+                .unwrap_or(None),
+        };
+        let result = {
+            let mut bucket = self.context_bucket.lock().await;
+            capture_combo_context_with_image(&mut bucket, position, || captured, || image_png)
+        };
+
+        match result {
+            Ok((context, Some(marker))) => {
+                let marker = format!("{{{}}}", marker.label);
+                let _ = self.event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::ContextMarker {
+                        position: u64::try_from(position).unwrap_or(u64::MAX),
+                        marker,
+                    },
+                });
+                context
+            }
+            Ok((context, None)) => context,
+            Err(error) => {
+                warn!("Context bucket capture failed; retaining legacy selection context: {error}");
+                fallback
+            }
+        }
+    }
+
+    /// Deliver the overlay's current transcript with the context captured at
+    /// trigger time. Taking the context makes delivery one-shot.
+    pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
+        self.deliver_pending_assistive_transcript_with(
+            transcript,
+            |wire, language, max_tokens, persona| {
+                Box::pin(send_assistive_with_agent_runtime_lane(
+                    wire, language, max_tokens, persona,
+                ))
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            },
+        )
+        .await
+    }
+
+    /// Production body with an injectable send adapter. The harness executes
+    /// this exact instrumentation boundary with a fake adapter — moving the
+    /// timer off the real send breaks the harness, not just a formatter test.
+    pub(crate) async fn deliver_pending_assistive_transcript_with<F>(
+        &self,
+        transcript: String,
+        send: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(
+            String,
+            crate::config::Language,
+            i32,
+            bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    {
+        let delivery_started = std::time::Instant::now();
+        if transcript.trim().is_empty() {
+            info!(
+                "{}",
+                format_assistive_delivery_budget_line(
+                    delivery_started.elapsed().as_secs_f64(),
+                    "empty_transcript",
+                )
+            );
+            return Ok(false);
+        }
+        let Some(context) = self.pending_assistive_context.write().await.take() else {
+            info!(
+                "{}",
+                format_assistive_delivery_budget_line(
+                    delivery_started.elapsed().as_secs_f64(),
+                    "no_pending_context",
+                )
+            );
+            return Ok(false);
+        };
+        let config = self.config.read().await.clone();
+        let delivery = {
+            let mut bucket = self.context_bucket.lock().await;
+            let delivery = assemble_assistive_delivery_lane(&transcript, &context, &bucket);
+            match bucket.archive_and_reset("assistive-delivery") {
+                Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+                Ok(None) => {}
+                Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+            }
+            delivery
+        };
+        // Raw spoken transcript is already history-saved as Raw in the finalize
+        // pipeline (W10-D D4). Wire content is lane-truth for the agent turn.
+        send(
+            delivery.wire,
+            config.whisper_language,
+            config.ai_assistive_max_tokens,
+            delivery.lane.use_assistive_persona(),
+        )
+        .await;
+        info!(
+            "{}",
+            format_assistive_delivery_budget_line(
+                delivery_started.elapsed().as_secs_f64(),
+                "delivered",
+            )
+        );
+        Ok(true)
     }
 
     async fn set_state_with_broadcast(
@@ -1257,34 +1920,152 @@ impl RecordingController {
     /// path as automatic dictation delivery: restore the pre-overlay target app,
     /// apply transcript tagging config, then synthesize Cmd+V via clipboard.
     ///
-    /// Self-paste guard: when the frontmost app is still Codescribe after the
-    /// activation attempt (activation failed, Automation TCC denial, or no
-    /// latched target), a synthetic Cmd+V would land back in our own UI. The
-    /// tagged text is copied to the clipboard instead and `CopiedToClipboard`
-    /// reports the honest outcome to the UI.
-    pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteDelivery> {
+    /// Delivery is fail-closed: Cmd+V is posted only when the runtime frontmost
+    /// app exactly matches the latched target and Accessibility permits event
+    /// posting. Every unconfirmed case becomes a tagged clipboard copy.
+    pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Ok(OverlayPasteDelivery::Noop);
+            return Ok(OverlayPasteResult {
+                delivery: OverlayPasteDelivery::Noop,
+                target_app_name: None,
+                frontmost_app_name: None,
+                deferred_insert_shortcut: None,
+                deferred_insert_failure: None,
+            });
         }
 
         let target_app = self.pre_overlay_frontmost_app.read().await.clone();
-        if let Some(app_name) = target_app.as_deref()
-            && activate_app_by_name(app_name)
-        {
-            let _ = wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
+        if let Some(app_name) = target_app.as_deref() {
+            let activated = activate_app_by_name(app_name);
+            let focus_confirmed =
+                activated && wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
+            debug!(
+                app_name,
+                activated, focus_confirmed, "Overlay paste target activation"
+            );
         }
 
         let config = self.config.read().await.clone();
         let paste_text = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
         let frontmost = crate::os::selection::current_frontmost_app_name();
-        if overlay_paste_would_self_target(frontmost.as_deref()) {
-            clipboard::set_clipboard(&paste_text)
-                .context("Failed to copy overlay text after self-paste guard")?;
-            return Ok(OverlayPasteDelivery::CopiedToClipboard);
+        let preflight = clipboard::synthetic_paste_preflight();
+        let disposition = overlay_paste_disposition(
+            target_app.as_deref(),
+            frontmost.as_deref(),
+            preflight.can_post_events(),
+        );
+
+        let mut deferred_insert_shortcut = None;
+        let mut deferred_insert_failure = None;
+        let delivery = match disposition {
+            OverlayPasteDisposition::Paste => {
+                clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
+                OverlayPasteDelivery::Pasted
+            }
+            OverlayPasteDisposition::CopyAccessibilityDenied => {
+                warn!(
+                    target_app = ?target_app,
+                    frontmost_app = ?frontmost,
+                    cg_post_event_access = preflight.cg_post_event_access,
+                    ax_trusted = preflight.ax_trusted,
+                    "Synthetic overlay paste blocked by Accessibility preflight"
+                );
+                self.arm_or_copy_deferred_payload(
+                    paste_text,
+                    &config,
+                    &mut deferred_insert_shortcut,
+                    &mut deferred_insert_failure,
+                )?
+            }
+            copy_disposition => {
+                warn!(
+                    ?copy_disposition,
+                    target_app = ?target_app,
+                    frontmost_app = ?frontmost,
+                    "Overlay paste target was not exactly confirmed"
+                );
+                self.arm_or_copy_deferred_payload(
+                    paste_text,
+                    &config,
+                    &mut deferred_insert_shortcut,
+                    &mut deferred_insert_failure,
+                )?
+            }
+        };
+
+        Ok(OverlayPasteResult {
+            delivery,
+            target_app_name: target_app,
+            frontmost_app_name: frontmost,
+            deferred_insert_shortcut,
+            deferred_insert_failure,
+        })
+    }
+
+    fn arm_or_copy_deferred_payload(
+        &self,
+        payload: String,
+        config: &Config,
+        shortcut_label: &mut Option<String>,
+        registration_failure: &mut Option<String>,
+    ) -> Result<OverlayPasteDelivery> {
+        let collision =
+            shortcut_registry::deferred_insert_shortcut_conflict(config.deferred_insert_shortcut);
+        match deferred_insert_registration(
+            config.deferred_insert_shortcut,
+            hotkeys::is_global_hotkey_manager_active(),
+            collision.as_deref(),
+        ) {
+            DeferredInsertRegistration::Available {
+                shortcut_label: label,
+            } => {
+                if !clipboard::arm_deferred_insert(payload) {
+                    return Ok(OverlayPasteDelivery::Noop);
+                }
+                *shortcut_label = Some(label);
+                Ok(OverlayPasteDelivery::DeferredInsertArmed)
+            }
+            DeferredInsertRegistration::Unavailable { reason } => {
+                clipboard::set_clipboard(&payload)
+                    .context("Failed to copy overlay text after Paste Here registration failure")?;
+                *registration_failure = Some(reason);
+                Ok(OverlayPasteDelivery::CopiedToClipboard)
+            }
         }
-        clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
-        Ok(OverlayPasteDelivery::Pasted)
+    }
+
+    /// Arm the edited overlay transcript without attempting target activation.
+    /// Used when the caret is known to still be inside Codescribe.
+    pub async fn defer_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Ok(OverlayPasteResult {
+                delivery: OverlayPasteDelivery::Noop,
+                target_app_name: None,
+                frontmost_app_name: None,
+                deferred_insert_shortcut: None,
+                deferred_insert_failure: None,
+            });
+        }
+        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
+        let config = self.config.read().await.clone();
+        let payload = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        let mut deferred_insert_shortcut = None;
+        let mut deferred_insert_failure = None;
+        let delivery = self.arm_or_copy_deferred_payload(
+            payload,
+            &config,
+            &mut deferred_insert_shortcut,
+            &mut deferred_insert_failure,
+        )?;
+        Ok(OverlayPasteResult {
+            delivery,
+            target_app_name: target_app,
+            frontmost_app_name: Some("Codescribe".to_string()),
+            deferred_insert_shortcut,
+            deferred_insert_failure,
+        })
     }
 
     /// Copy the tagged transcript to the clipboard without any synthetic paste.
@@ -1624,6 +2405,24 @@ impl RecordingController {
             return Ok(());
         }
 
+        if current_state == State::Idle
+            && event.key_type == HotkeyType::Hold
+            && matches!(event.action, HotkeyAction::Down)
+        {
+            // Leftovers from a previous session are archived, never destroyed
+            // (operator law 2026-07-21: reproducible moment-of-truth in store).
+            match self
+                .context_bucket
+                .lock()
+                .await
+                .archive_and_reset("session-start-discard")
+            {
+                Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+                Ok(None) => {}
+                Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+            }
+        }
+
         // Update mode flags from event (supports mid-hold mode changes via Press events).
         // A toggle press while already in RecToggle means "stop this session"; it must not
         // rewrite the active session identity with the key that happened to stop it.
@@ -1660,42 +2459,36 @@ impl RecordingController {
                             *self.assistive_mode.write().await = true;
                             *self.force_raw_mode.write().await = false;
                             *self.force_ai_mode.write().await = false;
-                            *self.assistive_context.write().await = None;
+                            let prior_frontmost_app =
+                                self.pre_overlay_frontmost_app.read().await.clone();
+                            let ctx = self
+                                .capture_assistive_combo_context(current_state, prior_frontmost_app)
+                                .await;
+                            *self.assistive_context.write().await = Some(ctx);
 
-                            // If we switch modes while already recording, update UI immediately.
                             if matches!(current_state, State::RecHold | State::RecToggle) {
-                                let prior_frontmost_app =
-                                    self.pre_overlay_frontmost_app.read().await.clone();
-                                let ctx = tokio::task::spawn_blocking(move || {
-                                    capture_frontmost_app_only_with_prior_frontmost(
-                                        prior_frontmost_app,
-                                    )
-                                })
-                                .await
-                                .unwrap_or_default();
-                                *self.assistive_context.write().await = Some(ctx);
-                                set_assistive_session(true);
+                                publish_recording_indicator(
+                                    BadgeMode::Assistive,
+                                    self.config.read().await.hold_indicator,
+                                );
                             }
                         }
                         HoldMode::Selection => {
                             *self.assistive_mode.write().await = true;
                             *self.force_raw_mode.write().await = false;
                             *self.force_ai_mode.write().await = false;
-                            *self.assistive_context.write().await = None;
+                            let prior_frontmost_app =
+                                self.pre_overlay_frontmost_app.read().await.clone();
+                            let ctx = self
+                                .capture_assistive_combo_context(current_state, prior_frontmost_app)
+                                .await;
+                            *self.assistive_context.write().await = Some(ctx);
 
-                            // If we switch modes while already recording, update UI immediately.
                             if matches!(current_state, State::RecHold | State::RecToggle) {
-                                let prior_frontmost_app =
-                                    self.pre_overlay_frontmost_app.read().await.clone();
-                                let ctx = tokio::task::spawn_blocking(move || {
-                                    capture_assistive_context_with_prior_frontmost(
-                                        prior_frontmost_app,
-                                    )
-                                })
-                                .await
-                                .unwrap_or_default();
-                                *self.assistive_context.write().await = Some(ctx);
-                                set_assistive_session(true);
+                                publish_recording_indicator(
+                                    BadgeMode::Assistive,
+                                    self.config.read().await.hold_indicator,
+                                );
                             }
                         }
                     }
@@ -1794,16 +2587,7 @@ impl RecordingController {
             State::RecToggle => {
                 info!("Toggle pressed; entering stop flow (state=REC_TOGGLE)");
                 self.assistive_loop_active.store(false, Ordering::SeqCst);
-                let toggle_assistive = *self.assistive_mode.read().await;
-                if toggle_assistive {
-                    // Assistive hands-off: finalize the cumulative Emil bubble and invoke
-                    // the agent ONCE with the complete session. (ADR 2026-05-28 Faza 1.)
-                    self.stop_toggle_recording().await?;
-                } else {
-                    // Normal hands-off: ALWAYS save WAV + run the final pass and enter
-                    // decision mode. Never discard the session audio. (ADR 2026-05-28 Faza 1.)
-                    self.stop_toggle_and_adjudicate().await?;
-                }
+                self.stop_toggle_and_adjudicate().await?;
             }
             State::RecHold => {
                 // Safety/UX: if a hands-off toggle is triggered while in hold recording
@@ -2257,11 +3041,21 @@ impl RecordingController {
         self.cancel_pending_hold_start().await;
         let task_generation = self.hold_start_generation.load(Ordering::SeqCst);
 
-        let pre_overlay_frontmost_app = tokio::task::spawn_blocking(capture_frontmost_app_only)
-            .await
-            .ok()
-            .and_then(|ctx| ctx.frontmost_app);
-        *self.pre_overlay_frontmost_app.write().await = pre_overlay_frontmost_app;
+        *self.pending_assistive_context.write().await = None;
+        let initial_hold_mode = *hold_mode.read().await;
+        let trigger_context = if matches!(initial_hold_mode, HoldMode::Chat | HoldMode::Selection) {
+            self.assistive_context
+                .read()
+                .await
+                .clone()
+                .unwrap_or_default()
+        } else {
+            tokio::task::spawn_blocking(capture_frontmost_app_only)
+                .await
+                .unwrap_or_default()
+        };
+        *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
+        *self.assistive_context.write().await = Some(trigger_context);
 
         // Reset VAD flag for new session
         self.vad_triggered.store(false, Ordering::SeqCst);
@@ -2271,8 +3065,6 @@ impl RecordingController {
         let recorder = Arc::clone(&self.recorder);
         let delay = Duration::from_millis(delay_ms);
         let vad_flag = Arc::clone(&self.vad_triggered);
-        let assistive_context = Arc::clone(&self.assistive_context);
-        let pre_overlay_frontmost_app = Arc::clone(&self.pre_overlay_frontmost_app);
         let event_broadcast = self.event_broadcast.clone();
         let serial_lock = Arc::clone(&self.serial_lock);
         let hold_start_generation = Arc::clone(&self.hold_start_generation);
@@ -2329,13 +3121,14 @@ impl RecordingController {
             let is_assistive = matches!(hold_mode, HoldMode::Chat | HoldMode::Selection);
             // Cursor-following recording badge (config-gated): red for hold dictation,
             // purple for assistive/agent. Works headless — no overlay needed.
-            if config.hold_indicator {
-                crate::os::hold_badge::show_badge_for_mode(if is_assistive {
-                    crate::os::hold_badge::BadgeMode::Assistive
+            publish_recording_indicator(
+                if is_assistive {
+                    BadgeMode::Assistive
                 } else {
-                    crate::os::hold_badge::BadgeMode::Hold
-                });
-            }
+                    BadgeMode::Hold
+                },
+                config.hold_indicator,
+            );
             let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
             // Start the recorder (skip in tests: no CoreAudio device needed)
@@ -2441,30 +3234,6 @@ impl RecordingController {
             if beep {
                 crate::audio::play_sound_with_volume("Tink", sound_volume);
             }
-
-            if is_assistive {
-                // Capture context BEFORE starting (paste-back / frontmost tracking).
-                let prior_frontmost_app = pre_overlay_frontmost_app.read().await.clone();
-                let ctx = match hold_mode {
-                    HoldMode::Selection => tokio::task::spawn_blocking(move || {
-                        capture_assistive_context_with_prior_frontmost(prior_frontmost_app)
-                    })
-                    .await
-                    .unwrap_or_default(),
-                    HoldMode::Chat | HoldMode::Raw => tokio::task::spawn_blocking(move || {
-                        capture_frontmost_app_only_with_prior_frontmost(prior_frontmost_app)
-                    })
-                    .await
-                    .unwrap_or_default(),
-                };
-                *assistive_context.write().await = Some(ctx);
-            } else {
-                // Capture frontmost app for paste actions (no selection/clipboard).
-                let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
-                    .await
-                    .unwrap_or_default();
-                *assistive_context.write().await = Some(ctx);
-            }
         });
 
         *self.hold_start_task.lock().await = Some(task);
@@ -2487,6 +3256,29 @@ impl RecordingController {
         }
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
 
+        *self.pending_assistive_context.write().await = None;
+        match self
+            .context_bucket
+            .lock()
+            .await
+            .archive_and_reset("session-start-discard")
+        {
+            Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+            Ok(None) => {}
+            Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+        }
+        let trigger_context = if is_assistive {
+            tokio::task::spawn_blocking(capture_assistive_context)
+                .await
+                .unwrap_or_default()
+        } else {
+            tokio::task::spawn_blocking(capture_frontmost_app_only)
+                .await
+                .unwrap_or_default()
+        };
+        *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
+        *self.assistive_context.write().await = Some(trigger_context);
+
         // Generate session ID
         let new_session_id = Uuid::new_v4().to_string();
         *self.session_id.write().await = Some(new_session_id.clone());
@@ -2507,13 +3299,12 @@ impl RecordingController {
         let config = self.config.read().await.clone();
         // Cursor-following recording badge (config-gated): pulsing red for toggle /
         // hands-off, purple for assistive/agent.
-        if config.hold_indicator {
-            crate::os::hold_badge::show_badge_for_mode(if is_assistive {
-                crate::os::hold_badge::BadgeMode::Assistive
-            } else {
-                crate::os::hold_badge::BadgeMode::Toggle
-            });
-        }
+        self.publish_indicator(if is_assistive {
+            BadgeMode::Assistive
+        } else {
+            BadgeMode::Toggle
+        })
+        .await;
         let language = config.whisper_language;
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
@@ -2552,7 +3343,7 @@ impl RecordingController {
         // Runtime pipeline is always event-based.
         Self::configure_toggle_event_sink(
             recorder,
-            !is_assistive && overlay_enabled,
+            overlay_enabled,
             is_assistive,
             self.event_broadcast.clone(),
             Arc::clone(&self.session_telemetry),
@@ -2573,7 +3364,7 @@ impl RecordingController {
                 Self::clear_recorder_callbacks(recorder);
                 Self::configure_toggle_event_sink(
                     recorder,
-                    !is_assistive && overlay_enabled,
+                    overlay_enabled,
                     is_assistive,
                     self.event_broadcast.clone(),
                     Arc::clone(&self.session_telemetry),
@@ -2608,143 +3399,10 @@ impl RecordingController {
             crate::audio::play_sound_with_volume("Tink", sound_volume);
         }
 
-        if is_assistive {
-            // Toggle-assistive is a hands-off chat loop with optional selection context.
-            // Capture selection when available (best-effort), otherwise just app name.
-            let ctx = tokio::task::spawn_blocking(capture_assistive_context)
-                .await
-                .unwrap_or_default();
-            tokio::task::spawn_blocking({
-                let ctx = ctx.clone();
-                move || store_recent_assistive_context(&ctx)
-            })
-            .await
-            .ok();
-            *self.assistive_context.write().await = Some(ctx);
-        } else {
-            // Capture frontmost app for paste actions (no selection/clipboard).
-            let ctx = tokio::task::spawn_blocking(capture_frontmost_app_only)
-                .await
-                .unwrap_or_default();
-            *self.assistive_context.write().await = Some(ctx);
-        }
-
-        Ok(())
-    }
-
-    /// Stop the assistive (Emil) hands-off session.
-    ///
-    /// ADR 2026-05-28 Faza 1 contract: the assistive hands-off session is ONE
-    /// continuous dictation. Deltas have already streamed cumulatively into the Emil
-    /// bubble during recording (no per-utterance finalize). On stop we:
-    ///   1. stop the recorder and capture the WHOLE session transcript + WAV,
-    ///   2. retain the full audio (no discard),
-    ///   3. finalize the bubble and invoke the agent ONCE with the complete message.
-    ///
-    /// Emil therefore answers the entire dictation as a single user message — never
-    /// a stream of fragmented per-sentence shots.
-    async fn stop_toggle_recording(&self) -> Result<()> {
-        // Ignore if not recording
-        if *self.state.read().await != State::RecToggle {
-            return Ok(());
-        }
-
-        info!("Stopping toggle recording (assistive hands-off — single agent message)");
-
-        let assistive = *self.assistive_mode.read().await;
-        let config = self.config.read().await.clone();
-
-        // Stop recording, capture full-session transcript + WAV path. We use `stop()`
-        // (not `stop_and_discard_path()`) so the full audio is retained for the session.
-        let mut recorder_guard = self.recorder.lock().await;
-        let mut stop_error: Option<anyhow::Error> = None;
-        let mut session_transcript = String::new();
-        let mut session_audio_path: Option<std::path::PathBuf> = None;
-        if let Some(recorder) = recorder_guard.as_mut() {
-            if !cfg!(test) {
-                match recorder.stop().await {
-                    Ok((transcript, audio_path)) => {
-                        session_transcript = transcript;
-                        session_audio_path = audio_path;
-                    }
-                    Err(e) => {
-                        warn!("Toggle stop: recorder stop failed; continuing cleanup: {e}");
-                        stop_error = Some(e);
-                    }
-                }
-            }
-            Self::clear_recorder_callbacks(recorder);
-        } else {
-            let error = Self::recorder_unavailable_error("Toggle-stop");
-            warn!("Toggle stop: {error}; continuing cleanup");
-            stop_error = Some(error);
-        }
-        drop(recorder_guard);
-
-        // Persist the full session audio (operator contract: hands-off never drops audio).
-        if config.dump_audio_logs
-            && let Some(path) = &session_audio_path
-        {
-            let _ = crate::state::history::save_audio(
-                path.as_path(),
-                chrono::Local::now(),
-                Some(session_transcript.as_str()),
-                crate::state::history::TranscriptKind::Raw,
-            );
-        }
-
-        // Snapshot assistive context BEFORE clearing session state.
-        let assistive_ctx = if assistive {
-            let preserved = self.assistive_context.read().await.clone().filter(|ctx| {
-                ctx.frontmost_app.is_some()
-                    || ctx
-                        .selected_text
-                        .as_deref()
-                        .is_some_and(|text| !text.trim().is_empty())
-            });
-            if preserved.is_some() {
-                preserved
-            } else {
-                tokio::task::spawn_blocking(|| {
-                    get_recent_assistive_context(Duration::from_secs(90))
-                })
-                .await
-                .ok()
-                .flatten()
-            }
-        } else {
-            None
-        };
-
-        // Reset state. `assistive_context` was already captured above (preserved
-        // path), so clearing it here via the shared helper is safe.
-        self.reset_session_fields().await;
-
-        // Assistive: finalize the cumulative bubble and invoke the agent ONCE with the
-        // complete session message.
-        if assistive && !session_transcript.trim().is_empty() {
-            let ctx = assistive_ctx.unwrap_or_default();
-            let assistive_input = build_assistive_input(&session_transcript, &ctx);
-            helpers::send_assistive_with_agent_runtime(
-                assistive_input,
-                config.whisper_language,
-                config.ai_assistive_max_tokens,
-            )
-            .await;
-        }
-
-        if let Some(e) = stop_error {
-            return Err(anyhow::anyhow!("Failed to stop recorder: {e}"));
-        }
-
         Ok(())
     }
 
     async fn stop_toggle_and_adjudicate(&self) -> Result<()> {
-        if cfg!(test) {
-            return self.stop_toggle_recording().await;
-        }
-
         if *self.state.read().await != State::RecToggle {
             return Ok(());
         }
@@ -2816,7 +3474,7 @@ impl RecordingController {
         self.set_state(State::Busy).await;
         self.show_processing_badge_if_enabled().await;
 
-        let result = {
+        let (result, rec_stop_secs, phase3_secs) = {
             let phase1 = std::time::Instant::now();
             info!("stop_toggle_inner: PHASE 1 — locking recorder mutex");
             let mut recorder_guard = self.recorder.lock().await;
@@ -2831,6 +3489,7 @@ impl RecordingController {
             info!("stop_toggle_inner: PHASE 2 — calling recorder.stop() (cpal drain + WAV save)");
             let (streaming_text, raw_audio_path_opt) =
                 recorder.stop().await.context("Failed to stop recorder")?;
+            let rec_stop_secs = phase2.elapsed().as_secs_f64();
             info!(
                 "stop_toggle_inner: PHASE 2 — recorder.stop() returned in {:?} (streaming_text={} chars, has_wav={})",
                 phase2.elapsed(),
@@ -2856,12 +3515,13 @@ impl RecordingController {
                     Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
                 )
                 .await;
+            let phase3_secs = phase3.elapsed().as_secs_f64();
             info!(
                 "stop_toggle_inner: PHASE 3 — process_stopped_recording completed in {:?} (ok={})",
                 phase3.elapsed(),
                 r.is_ok()
             );
-            r
+            (r, rec_stop_secs, phase3_secs)
         };
 
         let phase4 = std::time::Instant::now();
@@ -2871,11 +3531,36 @@ impl RecordingController {
         self.reset_finished_recording_state().await;
         self.handle_processed_recording_result(assistive, &result)
             .await;
+        let cleanup_secs = phase4.elapsed().as_secs_f64();
+        let total_secs = stop_start.elapsed().as_secs_f64();
+        // delivery_secs is timed inside the pipeline (history + deliver_once),
+        // not phase-4 cleanup. Remainder absorbs cleanup + adjudication overhead.
+        let (final_pass_secs, postproc_secs, format_secs, delivery_secs) = match &result {
+            Ok(outcome) => (
+                outcome.final_pass_secs,
+                outcome.postproc_secs,
+                outcome.format_secs,
+                outcome.delivery_secs,
+            ),
+            Err(_) => (0.0, 0.0, 0.0, 0.0),
+        };
+        let budget = StopPathBudget {
+            total_secs,
+            rec_stop_secs,
+            final_pass_secs,
+            postproc_secs,
+            format_secs,
+            delivery_secs,
+        };
         info!(
-            "stop_toggle_inner: PHASE 4 — cleanup + result handler completed in {:?} (total stop time: {:?})",
+            "stop_toggle_inner: PHASE 4 — cleanup + result handler completed in {:?} (total stop time: {:?}, cleanup={cleanup_secs:.3}s)",
             phase4.elapsed(),
             stop_start.elapsed()
         );
+        info!("{}", format_stop_path_budget_line(budget));
+        // phase3_secs is the outer wall for truth+postproc+format+delivery;
+        // keep it for diagnostics without pretending it is final_pass alone.
+        let _ = phase3_secs;
 
         result.map(|_| ())
     }
@@ -3051,46 +3736,142 @@ impl RecordingController {
             warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
         }
 
-        let local_final_pass_enabled = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS")
-            .ok()
-            .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
-            .unwrap_or(true);
+        let routing_mode = final_pass_routing_mode();
+        let mut final_pass_secs = 0.0;
 
-        if use_local_stt && local_final_pass_enabled {
-            if let Some(path) = &audio_path {
+        if use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off) {
+            let prefer_apple = codescribe_core::stt::active_engine_is_apple();
+            let session_snap = snapshot_session_telemetry(&self.session_telemetry);
+            // Adjudicator completeness object — pending_tail / coverage /
+            // commit_source come from session telemetry, never hardcoded.
+            let completeness_evidence =
+                StreamingCompletenessEvidence::from_session(&streaming_text, &session_snap);
+            let completeness = assess_streaming_completeness(&completeness_evidence);
+            let skip_full_repass =
+                should_skip_full_final_repass(routing_mode, completeness, prefer_apple);
+
+            if skip_full_repass {
+                local_final_pass_attempted = true;
+                let reason = match completeness {
+                    StreamingCompleteness::Complete => "complete_streaming_transcript",
+                    StreamingCompleteness::Incomplete { reason } => reason,
+                };
+                let commit_src = completeness_evidence
+                    .commit_source
+                    .map(CompletenessCommitSource::as_str)
+                    .unwrap_or("none");
+                info!(
+                    "final_pass_skipped mode={} reason={} chars={} commit_source={} pending_tail={} committed_chars={}",
+                    routing_mode.as_str(),
+                    reason,
+                    streaming_text.trim().len(),
+                    commit_src,
+                    completeness_evidence.pending_tail,
+                    completeness_evidence.committed_chars,
+                );
+                let text = streaming_text.trim().to_string();
+                let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                    text: text.clone(),
+                    ..Default::default()
+                };
+                local_final_pass_verdict = Some(
+                    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                        text,
+                        raw,
+                        None,
+                        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                            codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                        ),
+                        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                            disposition: FinalPassDisposition::Skipped,
+                            reason: Some(reason.to_string()),
+                            lexicon_rewrites: 0,
+                            repetition_cleanups: 0,
+                        }),
+                    ),
+                );
+            } else if let Some(path) = &audio_path {
                 local_final_pass_attempted = true;
                 let wav_path = path.as_path().to_path_buf();
                 let lang = language_opt.map(str::to_string);
 
                 info!(
-                    "Running final-pass local STT adjudicator: {}",
+                    "Running final-pass local STT adjudicator (mode={} engine={}): {}",
+                    routing_mode.as_str(),
+                    if prefer_apple {
+                        "apple_on_device"
+                    } else {
+                        "whisper"
+                    },
                     wav_path.display()
                 );
 
+                let final_pass_started = std::time::Instant::now();
                 match tokio::task::spawn_blocking(move || {
-                    crate::whisper::transcribe_file_verdict(
-                        &wav_path,
-                        lang.as_deref(),
-                        FileTranscriptionOptions::default(),
-                    )
+                    // Route through active engine so pl-PL Auto serves Apple
+                    // SFSpeechRecognizer on-device instead of Whisper full-WAV re-pass.
+                    codescribe_core::stt::transcribe_file_verdict(&wav_path, lang.as_deref())
                 })
                 .await
                 {
                     Ok(Ok(verdict)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
                         info!(
-                            "Final-pass verdict captured ({} chars, speech_pct={:?}, avg_logprob={:?})",
+                            "Final-pass verdict captured ({} chars, engine={} mode={} speech_pct={:?}, avg_logprob={:?}, elapsed={:?})",
                             verdict.text.len(),
+                            verdict.engine.engine,
+                            verdict.engine.mode,
                             verdict.vad.as_ref().map(|vad| vad.speech_pct),
-                            verdict.raw.avg_logprob
+                            verdict.raw.avg_logprob,
+                            final_pass_started.elapsed()
                         );
                         local_final_pass_verdict = Some(verdict);
                     }
-                    Ok(Err(e)) => warn!("Final-pass transcription failed: {}", e),
-                    Err(e) => warn!("Final-pass transcription task failed: {}", e),
+                    Ok(Err(e)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        warn!("Final-pass transcription failed: {}", e);
+                    }
+                    Err(e) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        warn!("Final-pass transcription task failed: {}", e);
+                    }
                 }
             } else {
                 warn!("Final-pass local STT skipped: no audio file available");
             }
+        } else if use_local_stt && !streaming_text.trim().is_empty() {
+            // Off: streaming is final; still emit a skipped LocalFinalPass so
+            // adjudication/provenance stay honest and postproc/repetition run.
+            local_final_pass_attempted = true;
+            info!(
+                "final_pass_skipped mode=off reason=routing_off chars={}",
+                streaming_text.trim().len()
+            );
+            let text = streaming_text.trim().to_string();
+            let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                text: text.clone(),
+                ..Default::default()
+            };
+            local_final_pass_verdict = Some(
+                codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                    text,
+                    raw,
+                    None,
+                    codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                    ),
+                    Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                        mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                        disposition: FinalPassDisposition::Skipped,
+                        reason: Some("routing_off".to_string()),
+                        lexicon_rewrites: 0,
+                        repetition_cleanups: 0,
+                    }),
+                ),
+            );
         }
 
         if !use_local_stt {
@@ -3129,6 +3910,28 @@ impl RecordingController {
                 &truth_verdict.confidence_flags,
             );
         }
+        // One runtime status owner for Active STT — publish actual serving truth.
+        let serving_engine = truth_verdict
+            .engine_label
+            .clone()
+            .or_else(|| {
+                truth_engine_label(
+                    truth_verdict.transcript_source,
+                    truth_verdict.engine_label.as_deref(),
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let fallback_used = matches!(
+            truth_verdict.fallback_class,
+            Some(RecordingFallbackClass::Degraded | RecordingFallbackClass::Unsafe)
+        ) || (serving_engine == "local_whisper"
+            && codescribe_core::stt::active_engine_is_apple());
+        serving_status::publish_last_serving(serving_status::LastServingVerdict {
+            engine: serving_engine,
+            routing_mode: routing_mode.as_str().to_string(),
+            disposition: truth_verdict.final_pass_disposition.map(|d| d.to_string()),
+            fallback_used,
+        });
         if let Some(source) = truth_verdict.transcript_source {
             if let Some(text) = truth_verdict.raw_text.as_ref() {
                 info!(
@@ -3189,7 +3992,10 @@ impl RecordingController {
                         .to_string();
                 let truth_metadata = RecordingTruthMetadata {
                     source: truth_verdict.transcript_source,
-                    engine: truth_engine_label(truth_verdict.transcript_source),
+                    engine: truth_engine_label(
+                        truth_verdict.transcript_source,
+                        truth_verdict.engine_label.as_deref(),
+                    ),
                     mode: Some(mode_label),
                     fallback_class: truth_verdict.fallback_class,
                     fallback_used: truth_verdict.fallback_class.is_some()
@@ -3259,6 +4065,7 @@ impl RecordingController {
                 truth_final_pass_disposition: truth_verdict.final_pass_disposition,
                 truth_commit_trigger: truth_verdict.commit_trigger.clone(),
                 truth_display_status: truth_verdict.display_status.clone(),
+                truth_engine_label: truth_verdict.engine_label.clone(),
                 append_mode: false,
                 live_stream_session: false,
                 user_needs_separator: false,
@@ -3271,6 +4078,10 @@ impl RecordingController {
             no_speech_reason: None,
             commit_trigger: pipeline_outcome.commit_trigger,
             transcript_present,
+            final_pass_secs,
+            postproc_secs: pipeline_outcome.postproc_secs,
+            format_secs: pipeline_outcome.format_secs,
+            delivery_secs: pipeline_outcome.delivery_secs,
         })
     }
 
@@ -3350,11 +4161,12 @@ impl RecordingController {
             truth_final_pass_disposition,
             truth_commit_trigger,
             truth_display_status,
-            append_mode,
+            truth_engine_label: actual_engine_label,
+            append_mode: _append_mode,
             live_stream_session,
             user_needs_separator: _user_needs_separator,
             assistant_needs_separator: _assistant_needs_separator,
-            skip_user_bubble,
+            skip_user_bubble: _skip_user_bubble,
         } = p;
         let language_opt = language_opt.as_deref();
 
@@ -3366,6 +4178,7 @@ impl RecordingController {
         // This ensures ALL output paths receive clean text regardless of mode.
         // Contract: every chunk/transcript passes through StreamPostProcessor before
         // reaching overlay, clipboard, augmentation, or dataset.
+        let postproc_started = std::time::Instant::now();
         let (clean_text, postprocess_stats) = {
             let mut finalizer = StreamPostProcessor::new();
             let clean_text = finalizer
@@ -3374,6 +4187,7 @@ impl RecordingController {
             let stats = finalizer.stats();
             (clean_text, stats)
         };
+        let postproc_secs = postproc_started.elapsed().as_secs_f64();
         info!(
             "Post-processed transcript ({} chars, delta={}, drops={}/{}, gate_drops={}, lexicon_rewrites={})",
             clean_text.len(),
@@ -3384,15 +4198,18 @@ impl RecordingController {
             postprocess_stats.lexicon_rewrites
         );
 
-        let raw_entry_path = if !live_stream_session && (raw_save_enabled || assistive) {
-            let raw_entry = crate::state::history::save_entry_with_timestamp_and_slug(
-                &raw_text,
-                Some(recording_timestamp),
-                crate::state::history::TranscriptKind::Raw,
-                Some(&raw_text),
-            );
-            info!("Raw transcript saved: {}", raw_entry.path.display());
-            Some(raw_entry.path)
+        // Persist raw transcript off the AI-format critical path (W11-B): format
+        // must not serialize behind history I/O it does not need.
+        let raw_save_join = if !live_stream_session && (raw_save_enabled || assistive) {
+            let raw_text_for_save = raw_text.clone();
+            Some(tokio::task::spawn_blocking(move || {
+                crate::state::history::save_entry_with_timestamp_and_slug(
+                    &raw_text_for_save,
+                    Some(recording_timestamp),
+                    crate::state::history::TranscriptKind::Raw,
+                    Some(&raw_text_for_save),
+                )
+            }))
         } else {
             None
         };
@@ -3403,9 +4220,7 @@ impl RecordingController {
             warn!("Detected repetition loop in transcription - will clean up");
         }
 
-        let chat_active = assistive;
-
-        let mut effective_hold_mode = if assistive && matches!(hold_mode, HoldMode::Raw) {
+        let effective_hold_mode = if assistive && matches!(hold_mode, HoldMode::Raw) {
             // Toggle-assistive path doesn't have a meaningful hold-mode; treat as Chat
             // but allow optional selection context if it was captured.
             HoldMode::Chat
@@ -3416,7 +4231,7 @@ impl RecordingController {
 
         // Determine final text based on mode (NEW architecture):
         //
-        // 1. HoldMode::Chat / HoldMode::Selection (assistive=true): ALWAYS AI augmentation
+        // 1. Assistive is a delivery flag; formatting remains a session setting.
         // 2. Ctrl Hold (force_raw=true): ALWAYS raw transcript (ignores AI toggle)
         // 3. Left double Option (force_ai=true): ALWAYS AI formatting
         // 4. Toggle (neither): respects AI_FORMATTING_ENABLED toggle
@@ -3427,68 +4242,57 @@ impl RecordingController {
         // - AI chat? → Hold + Shift (Chat)
         // - AI on selection? → Hold + Cmd (Selection)
         let mut is_ai_noop = false;
+        let format_started = std::time::Instant::now();
         let (formatted_text, output_kind) = if assistive {
             info!(
-                "Assistive mode ({:?}): augmenting transcript via AI",
+                "Assistive mode ({:?}): finalizing transcript before overlay delivery",
                 effective_hold_mode
             );
 
-            if chat_active
-                && (skip_user_bubble
-                    || !should_allow_full_user_bubble_rewrite(
-                        skip_user_bubble,
-                        append_mode,
-                        live_stream_session,
-                    ))
-            {
-                // Preserve controller state: the user-bubble was either finalized
-                // (event pipeline) or built from deltas (delta-first path); both mark
-                // that the toggle session carries user text. The full-rewrite branch
-                // does not set this flag.
-                self.toggle_user_has_text.store(true, Ordering::SeqCst);
-            }
-
-            let mut ctx = self
+            let ctx = self
                 .assistive_context
                 .read()
                 .await
                 .clone()
                 .unwrap_or_default();
+            *self.pending_assistive_context.write().await = Some(ctx);
 
-            // Ensure we have a target app label (best-effort, no selection, no clipboard).
-            if ctx.frontmost_app.is_none() {
-                ctx.frontmost_app = tokio::task::spawn_blocking(capture_frontmost_app_only)
-                    .await
-                    .ok()
-                    .and_then(|c| c.frontmost_app);
-            }
-
-            let missing_selection = matches!(effective_hold_mode, HoldMode::Selection)
-                && ctx.selected_text.as_deref().unwrap_or("").trim().is_empty();
-            if missing_selection {
-                warn!(
-                    "Selection mode requested, but no selected text captured; falling back to Chat mode"
-                );
-                effective_hold_mode = HoldMode::Chat;
-            }
-
-            // Split behavior:
-            // - Chat: ignore selection.
-            // - Selection: if no selection was captured, we already downgraded to Chat mode.
-            let assistive_input = build_assistive_input(&clean_text, &ctx);
-            if chat_active {
-                send_assistive_with_agent_runtime(
-                    assistive_input,
-                    config.whisper_language,
-                    config.ai_assistive_max_tokens,
+            if session_auto_format_enabled(&config, assistive, force_raw, force_ai)
+                && ai_key_available
+            {
+                let lang_str = language_opt.map(String::from);
+                let result = crate::ai_formatting::format_text_with_status(
+                    &clean_text,
+                    lang_str.as_deref(),
+                    false,
+                    None,
                 )
                 .await;
+                is_ai_noop = result.status == crate::ai_formatting::AiFormatStatus::AiNoop;
+                let kind = match result.status {
+                    crate::ai_formatting::AiFormatStatus::Applied
+                    | crate::ai_formatting::AiFormatStatus::AiNoop => {
+                        crate::state::history::TranscriptKind::FormattedTranscript
+                    }
+                    crate::ai_formatting::AiFormatStatus::Failed => {
+                        crate::state::history::TranscriptKind::FormattingFailed
+                    }
+                    crate::ai_formatting::AiFormatStatus::Skipped => {
+                        crate::state::history::TranscriptKind::Raw
+                    }
+                };
+                (result.text, kind)
+            } else if has_repetition {
+                (
+                    crate::ai_formatting::remove_simple_repetitions(&clean_text),
+                    crate::state::history::TranscriptKind::Raw,
+                )
+            } else {
+                (
+                    clean_text.clone(),
+                    crate::state::history::TranscriptKind::Raw,
+                )
             }
-            // Agent runtime path persists full conversation in ThreadStore.
-            (
-                clean_text.clone(),
-                crate::state::history::TranscriptKind::AssistantInterpretation,
-            )
         } else if force_raw {
             // Ctrl Hold: ALWAYS raw transcript (fast dictation mode)
             // Post-processed clean_text is used (lexicon + cleanup already applied)
@@ -3551,7 +4355,8 @@ impl RecordingController {
             }
         } else {
             // Double Option: respects AI Formatting toggle setting
-            let ai_formatting_enabled = config.ai_formatting_enabled;
+            let ai_formatting_enabled =
+                session_auto_format_enabled(&config, assistive, force_raw, force_ai);
             let should_use_ai = ai_formatting_enabled && ai_key_available;
 
             if should_use_ai {
@@ -3597,6 +4402,7 @@ impl RecordingController {
             }
         };
 
+        let format_secs = format_started.elapsed().as_secs_f64();
         let mode_label =
             recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai).to_string();
         let truth_mode_label =
@@ -3660,7 +4466,7 @@ impl RecordingController {
         // LocalFinalPass text. Emitted here — inside the awaited stop pipeline, before
         // the Idle StateChange — so it reaches the listener ahead of the stop/finalise
         // events that drive the overlay's finalize.
-        if !assistive && !final_formatted_text.trim().is_empty() {
+        if !final_formatted_text.trim().is_empty() {
             let _ = self.event_broadcast.send(IpcEvent {
                 timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 payload: IpcEventPayload::FinalTranscript {
@@ -3672,7 +4478,7 @@ impl RecordingController {
         let final_status = compose_final_status(&truth_display_status, output_kind);
         let truth_metadata = RecordingTruthMetadata {
             source: transcript_source,
-            engine: truth_engine_label(transcript_source),
+            engine: truth_engine_label(transcript_source, actual_engine_label.as_deref()),
             mode: Some(truth_mode_label.clone()),
             fallback_class: truth_fallback_class,
             fallback_used: truth_fallback_class.is_some()
@@ -3690,6 +4496,20 @@ impl RecordingController {
             display_status: Some(final_status.clone()),
         };
 
+        let raw_entry_path = if let Some(handle) = raw_save_join {
+            match handle.await {
+                Ok(entry) => {
+                    info!("Raw transcript saved: {}", entry.path.display());
+                    Some(entry.path)
+                }
+                Err(e) => {
+                    warn!("Raw transcript save task failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         if let Some(path) = raw_entry_path.as_deref() {
             write_truth_sidecar_logged(path, &truth_metadata);
         }
@@ -3759,6 +4579,9 @@ impl RecordingController {
             commit_required: commit_trigger.is_some(),
         });
 
+        // Delivery span: history persistence + paste/deliver_once handoff.
+        // This is the user-visible delivery cone — not phase-4 cleanup.
+        let delivery_started = std::time::Instant::now();
         // Save final transcript (skip duplicate when RAW already stored and
         // unchanged) BEFORE the paste attempt. Paste can fail transiently (e.g.
         // no focused app / Accessibility hiccup) and its `?` early-returns from
@@ -3784,11 +4607,29 @@ impl RecordingController {
             info!("Final transcript matches RAW; skipping duplicate save");
         }
 
+        // Paste lane consumes the ContextBucket exactly like assistive delivery
+        // does (assemble + archive under one lock — parity with
+        // deliver_pending_assistive_transcript). Assistive sessions never take
+        // this branch (`resolve_auto_paste_policy` vetoes them), so their bucket
+        // stays intact for the overlay delivery lane.
+        let paste_wire = if should_auto_paste {
+            let mut bucket = self.context_bucket.lock().await;
+            let wire = assemble_raw_paste_wire(&final_formatted_text, &bucket);
+            match bucket.archive_and_reset("paste-delivery") {
+                Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
+                Ok(None) => {}
+                Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
+            }
+            wire
+        } else {
+            final_formatted_text.clone()
+        };
+
         if cfg!(test) {
             info!("Skipping paste in tests (mode={})", mode_label);
         } else if should_auto_paste {
             let paste_text = maybe_wrap_transcript_for_delivery_with_quality(
-                &final_formatted_text,
+                &paste_wire,
                 &config,
                 &mode_label,
                 Some(&truth_metadata),
@@ -3805,6 +4646,7 @@ impl RecordingController {
         } else {
             info!("Auto-paste skipped (mode={})", mode_label);
         }
+        let delivery_secs = delivery_started.elapsed().as_secs_f64();
 
         if let Some(cloud_verdict) = cloud_verdict_opt {
             let entry = crate::state::history::save_entry_with_timestamp_and_slug(
@@ -3818,7 +4660,10 @@ impl RecordingController {
                 &entry.path,
                 &RecordingTruthMetadata {
                     source: Some(RecordingTranscriptSource::CloudPrimary),
-                    engine: truth_engine_label(Some(RecordingTranscriptSource::CloudPrimary)),
+                    engine: truth_engine_label(
+                        Some(RecordingTranscriptSource::CloudPrimary),
+                        Some("cloud_stt"),
+                    ),
                     mode: Some(truth_mode_label.clone()),
                     fallback_class: None,
                     fallback_used: false,
@@ -3852,9 +4697,10 @@ impl RecordingController {
                             &entry.path,
                             &RecordingTruthMetadata {
                                 source: Some(RecordingTranscriptSource::CloudPrimary),
-                                engine: truth_engine_label(Some(
-                                    RecordingTranscriptSource::CloudPrimary,
-                                )),
+                                engine: truth_engine_label(
+                                    Some(RecordingTranscriptSource::CloudPrimary),
+                                    Some("cloud_stt"),
+                                ),
                                 mode: Some(truth_mode_label),
                                 fallback_class: None,
                                 fallback_used: false,
@@ -3877,7 +4723,12 @@ impl RecordingController {
             });
         }
 
-        Ok(types::TranscriptProcessOutcome { commit_trigger })
+        Ok(types::TranscriptProcessOutcome {
+            commit_trigger,
+            postproc_secs,
+            format_secs,
+            delivery_secs,
+        })
     }
 
     /// Force reset to IDLE state without stopping recorder.

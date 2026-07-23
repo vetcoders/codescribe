@@ -35,7 +35,7 @@ struct CreatorPanel: View {
                     Toggle("", isOn: formattingEnabledBinding)
                         .toggleStyle(.switch)
                         .labelsHidden()
-                        .tint(CSColor.terracotta)
+                        .tint(CSColor.chromeAccent)
                 }
                 SettingsControlRow(title: "Auto Format",
                                    subtitle: "Correction only, balanced editing, or maximum polish") {
@@ -173,7 +173,7 @@ private struct LanguageIdentityPicker: View {
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1.5)
                                 .background(
-                                    Capsule().fill(CSColor.terracotta.opacity(0.16))
+                                    Capsule().fill(CSColor.chromeAccent.opacity(0.16))
                                 )
                         } else {
                             Text("Automatic detection")
@@ -186,12 +186,12 @@ private struct LanguageIdentityPicker: View {
                     .padding(.horizontal, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? CSColor.terracotta.opacity(0.12) : Color.clear)
+                            .fill(isSelected ? CSColor.chromeAccent.opacity(0.12) : Color.clear)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(
-                                isSelected ? CSColor.terracotta.opacity(0.5) : CSColor.hairline(0.07),
+                                isSelected ? CSColor.chromeAccent.opacity(0.5) : CSColor.hairline(0.07),
                                 lineWidth: 1
                             )
                     )

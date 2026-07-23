@@ -116,6 +116,12 @@ struct EnginePanel: View {
         ("whisper", "Whisper (Candle)"),
     ]
 
+    private static let finalPassModeOptions: [(id: String, label: String)] = [
+        ("always", "Always"),
+        ("smart", "Smart"),
+        ("off", "Off"),
+    ]
+
     private var layeredBinding: Binding<Bool> {
         Binding(get: { model.layeredTranscriptionEnabled },
                 set: { model.setLayeredTranscription($0) })
@@ -144,12 +150,33 @@ struct EnginePanel: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
             }
+            SettingsControlRow(title: "Final pass",
+                               subtitle: "Smart skips full re-pass when streaming is complete; Off keeps repetition cleanup") {
+                Menu {
+                    ForEach(Self.finalPassModeOptions, id: \.id) { option in
+                        Button {
+                            model.setFinalPassMode(option.id)
+                        } label: {
+                            if option.id == model.finalPassModeId {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
+                        }
+                    }
+                } label: {
+                    SettingsMenuLabel(text: model.finalPassModeLabel)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
             SettingsControlRow(title: "Layered transcription",
                                subtitle: "Experimental: Apple live layer + Whisper tail patches") {
                 Toggle("", isOn: layeredBinding)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .tint(CSColor.terracotta)
+                    .tint(CSColor.chromeAccent)
             }
         }
     }
@@ -213,7 +240,7 @@ struct EnginePanel: View {
                     .font(CSFont.ui(12.5, .semibold))
                     .foregroundStyle(CSColor.textBody)
             }
-            .tint(CSColor.terracottaLight)
+            .tint(CSColor.chromeAccent)
         }
         .padding(15)
         .background(card)
@@ -294,7 +321,7 @@ struct EnginePanel: View {
                     .foregroundStyle(CSColor.textBody)
             }
             Slider(value: value, in: range, step: step)
-                .tint(CSColor.terracotta)
+                .tint(CSColor.chromeAccent)
         }
     }
 
@@ -317,7 +344,7 @@ struct EnginePanel: View {
                     .foregroundStyle(CSColor.textBody)
             }
             Slider(value: silenceBinding, in: 0.5 ... 30, step: 0.5)
-                .tint(CSColor.terracotta)
+                .tint(CSColor.chromeAccent)
                 .accessibilityLabel("Hands-free silence duration")
                 .accessibilityValue(String(format: "%.1f seconds", model.settings.toggleSilenceSec))
         }

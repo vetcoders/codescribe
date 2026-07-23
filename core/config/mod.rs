@@ -33,7 +33,8 @@ pub use defaults::{
 };
 // Re-export types
 pub use types::{
-    Config, ModeBinding, OverlayPositionMode, ShortcutBinding, TranscriptSendMode, WorkMode,
+    Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding, OverlayPositionMode,
+    ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
 pub use settings::{FormattingPolicy, UserSettings};

@@ -202,16 +202,16 @@ private struct PromptEditor: View {
         }) {
             Text(editing ? "Save" : "Edit")
                 .font(CSFont.ui(12, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.chromeAccent)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
                 .background(
                     RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .fill(CSColor.terracotta.opacity(0.14))
+                        .fill(CSColor.chromeAccent.opacity(0.14))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .strokeBorder(CSColor.terracotta.opacity(0.28), lineWidth: 1)
+                        .strokeBorder(CSColor.chromeAccent.opacity(0.28), lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)

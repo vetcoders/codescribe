@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
+use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::tray_status::{self, TrayStatus, TrayStatusSnapshot};
 use tracing::trace;
 
@@ -34,11 +35,32 @@ pub enum CsTrayStatusTone {
     Critical,
 }
 
+/// Canonical recording semantics shared by badge, tray, and overlay.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsIndicatorMode {
+    Hold,
+    Toggle,
+    Processing,
+    Assistive,
+}
+
+impl From<BadgeMode> for CsIndicatorMode {
+    fn from(value: BadgeMode) -> Self {
+        match value {
+            BadgeMode::Hold => Self::Hold,
+            BadgeMode::Toggle => Self::Toggle,
+            BadgeMode::Processing => Self::Processing,
+            BadgeMode::Assistive => Self::Assistive,
+        }
+    }
+}
+
 /// One menu-bar status update.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsTrayStatusPayload {
     pub kind: CsTrayStatusKind,
     pub tone: CsTrayStatusTone,
+    pub indicator_mode: CsIndicatorMode,
     pub assistive: bool,
     pub tooltip: String,
     pub menu_label: String,
@@ -126,6 +148,7 @@ fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayS
     CsTrayStatusPayload {
         kind,
         tone,
+        indicator_mode: snapshot.indicator_mode.into(),
         assistive: snapshot.is_assistive_visible(),
         tooltip: snapshot.tooltip(),
         menu_label: snapshot.menu_label().to_string(),
@@ -148,7 +171,7 @@ fn publish_tray_status(snapshot: TrayStatusSnapshot) {
     if !changed {
         trace!(
             status = ?snapshot.status,
-            assistive = snapshot.assistive,
+            indicator_mode = ?snapshot.indicator_mode,
             "coalesced duplicate tray status"
         );
         return;
@@ -168,7 +191,7 @@ fn publish_tray_status(snapshot: TrayStatusSnapshot) {
     } else {
         trace!(
             status = ?snapshot.status,
-            assistive = snapshot.assistive,
+            indicator_mode = ?snapshot.indicator_mode,
             "tray status changed without Swift listener"
         );
     }
@@ -214,6 +237,7 @@ mod tests {
 
         assert_eq!(payload.kind, CsTrayStatusKind::Processing);
         assert_eq!(payload.tone, CsTrayStatusTone::Active);
+        assert_eq!(payload.indicator_mode, CsIndicatorMode::Processing);
         assert!(!payload.assistive);
         assert_eq!(payload.tooltip, "Codescribe - Processing...");
         assert_eq!(payload.menu_label, "Status: Processing...");
@@ -226,6 +250,7 @@ mod tests {
 
         assert_eq!(payload.kind, CsTrayStatusKind::Listening);
         assert_eq!(payload.tone, CsTrayStatusTone::Active);
+        assert_eq!(payload.indicator_mode, CsIndicatorMode::Assistive);
         assert!(payload.assistive);
         assert_eq!(payload.tooltip, "Codescribe - Agent listening...");
         assert_eq!(payload.menu_label, "Status: Agent listening...");

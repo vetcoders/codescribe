@@ -351,11 +351,422 @@ async fn test_hold_down_sets_force_raw_mode() {
 }
 
 #[test]
-fn test_truth_engine_label_maps_toggle_session_adjudicated_to_local_whisper() {
+fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
+    // Preference-only path (no verdict) stays preference-neutral default.
+    let fallback = truth_engine_label(
+        Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
+        None,
+    );
+    assert_eq!(fallback.as_deref(), Some("local_whisper"));
+
+    // Actual Apple verdict must not be laundered through preference.
+    let apple = codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+        codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+    );
     assert_eq!(
-        truth_engine_label(Some(RecordingTranscriptSource::ToggleSessionAdjudicated)).as_deref(),
+        engine_label_from_verdict(&apple, None).as_str(),
+        "local_apple"
+    );
+
+    // Apple preference with Whisper RuntimeFallback must report Whisper.
+    let whisper_fallback = codescribe_core::pipeline::contracts::TranscriptionEngineVerdict {
+        engine: codescribe_core::pipeline::contracts::TranscriptionEngine::Whisper,
+        mode: codescribe_core::pipeline::contracts::TranscriptionEngineMode::RuntimeFallback,
+        fallback_used: true,
+    };
+    assert_eq!(
+        engine_label_from_verdict(&whisper_fallback, None).as_str(),
+        "local_whisper"
+    );
+    assert_eq!(
+        truth_engine_label(
+            Some(RecordingTranscriptSource::LocalFinalPass),
+            Some("local_whisper"),
+        )
+        .as_deref(),
         Some("local_whisper")
     );
+}
+
+#[test]
+fn test_stop_path_budget_line_format() {
+    let budget = StopPathBudget {
+        total_secs: 1.234,
+        rec_stop_secs: 0.5,
+        final_pass_secs: 0.4,
+        postproc_secs: 0.1,
+        format_secs: 0.2,
+        delivery_secs: 0.034,
+    };
+    let line = format_stop_path_budget_line(budget);
+    assert!(
+        line.starts_with("stop_path_budget: total=1.234s phases="),
+        "unexpected budget line: {line}"
+    );
+    assert!(line.contains("rec_stop=0.500s"));
+    assert!(line.contains("final_pass=0.400s"));
+    assert!(line.contains("postproc=0.100s"));
+    assert!(line.contains("format=0.200s"));
+    assert!(line.contains("delivery=0.034s"));
+    assert!(
+        line.contains("remainder=0.000s"),
+        "named phases cover total: {line}"
+    );
+    assert!(
+        stop_path_budget_covers_total(budget, 0.001),
+        "phase sum + remainder must cover total"
+    );
+}
+
+/// Stop-path harness (automatic lane): execute the REAL production pipeline
+/// and read the delivery span from its outcome — no sleeps, no invented sums.
+/// If the delivery timer moves out of `process_transcript_text_pipeline`,
+/// `outcome.delivery_secs` collapses to 0.0 and this fails.
+#[tokio::test]
+async fn test_stop_path_harness_executes_production_pipeline_delivery_span() {
+    let controller = RecordingController::new();
+    let stop_start = std::time::Instant::now();
+    let config = Config {
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let params = test_transcript_pipeline_params(
+        "production harness transcript",
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+    );
+
+    let outcome = controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("production pipeline");
+
+    assert!(
+        outcome.delivery_secs > 0.0,
+        "pipeline must time the real delivery cone (history + paste branch), got {}",
+        outcome.delivery_secs
+    );
+    let budget = StopPathBudget {
+        total_secs: stop_start.elapsed().as_secs_f64(),
+        // rec_stop + final_pass are timed by the caller (stop_toggle_inner),
+        // outside the text pipeline this harness executes.
+        rec_stop_secs: 0.0,
+        final_pass_secs: 0.0,
+        postproc_secs: outcome.postproc_secs,
+        format_secs: outcome.format_secs,
+        delivery_secs: outcome.delivery_secs,
+    };
+    assert!(
+        stop_path_budget_covers_total(budget, 0.05),
+        "production phases + remainder must cover wall total"
+    );
+    let line = format_stop_path_budget_line(budget);
+    assert!(
+        line.contains("delivery=") && line.contains("remainder="),
+        "budget line must name delivery and remainder: {line}"
+    );
+    // Zero-delivery with large total must leave remainder, not pretend delivery
+    // absorbed the unmeasured cone.
+    let fake = StopPathBudget {
+        total_secs: 2.0,
+        rec_stop_secs: 0.1,
+        final_pass_secs: 0.1,
+        postproc_secs: 0.1,
+        format_secs: 0.1,
+        delivery_secs: 0.0,
+    };
+    assert!(
+        (fake.unclassified_remainder_secs() - 1.6).abs() < 0.001,
+        "zero delivery leaves remainder, got {}",
+        fake.unclassified_remainder_secs()
+    );
+}
+
+/// Assistive harness: run the REAL `deliver_pending_assistive_transcript_with`
+/// boundary with an injected send adapter of known duration and assert the
+/// emitted `assistive_delivery_budget` receipt measured it. Moving the timer
+/// off the real send makes the captured total shrink below the adapter cost.
+#[tokio::test]
+async fn test_assistive_delivery_budget_times_real_send_adapter() {
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buf").extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Buf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let controller = RecordingController::new();
+    *controller.pending_assistive_context.write().await = Some(AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: Some("selected".to_string()),
+    });
+
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent_flag = std::sync::Arc::clone(&sent);
+    const ADAPTER_MS: u64 = 25;
+    let delivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "assistive harness transcript".to_string(),
+            move |_wire, _language, _max_tokens, _persona| {
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(ADAPTER_MS)).await;
+                    sent_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            },
+        )
+        .await
+        .expect("assistive delivery");
+
+    assert!(delivered, "pending context present → delivery must run");
+    assert!(
+        sent.load(std::sync::atomic::Ordering::SeqCst),
+        "injected send adapter must actually run"
+    );
+    let log = String::from_utf8(buf.0.lock().expect("log buf").clone()).expect("utf8 log");
+    let line = log
+        .lines()
+        .find(|l| l.contains("assistive_delivery_budget:"))
+        .unwrap_or_else(|| panic!("assistive_delivery_budget receipt missing in: {log}"));
+    assert!(line.contains("outcome=delivered"), "got: {line}");
+    let total: f64 = line
+        .split("total=")
+        .nth(1)
+        .and_then(|rest| rest.split('s').next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("unparsable receipt line: {line}"));
+    assert!(
+        total >= ADAPTER_MS as f64 / 1000.0,
+        "receipt must contain the real send duration (>= {ADAPTER_MS}ms), got {total}s"
+    );
+
+    // One-shot: the second submit finds no pending context and says so.
+    let redelivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "assistive harness transcript".to_string(),
+            |_wire, _language, _max_tokens, _persona| Box::pin(async {}),
+        )
+        .await
+        .expect("second delivery attempt");
+    assert!(!redelivered, "context is one-shot");
+    let log = String::from_utf8(buf.0.lock().expect("log buf").clone()).expect("utf8 log");
+    assert!(
+        log.contains("outcome=no_pending_context"),
+        "second attempt must emit a no_pending_context receipt: {log}"
+    );
+}
+
+#[test]
+fn test_should_skip_full_final_repass_on_complete_streaming() {
+    // Completeness requires adjudicator commit source + coverage, not punctuation.
+    let complete = assess_streaming_completeness_fields(
+        "To jest kompletny streaming transcript.",
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        40,
+        1,
+    );
+    assert_eq!(complete, StreamingCompleteness::Complete);
+    assert!(should_skip_full_final_repass(
+        FinalPassRoutingMode::Smart,
+        complete,
+        false
+    ));
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Always, complete, false),
+        "Always never skips"
+    );
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+        "Off skips even on Apple"
+    );
+
+    let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
+    assert!(matches!(
+        empty,
+        StreamingCompleteness::Incomplete { reason: "empty" }
+    ));
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, empty, false),
+        "empty streaming must not skip under Smart"
+    );
+
+    let no_speech = assess_streaming_completeness_fields(
+        "tekst",
+        Some("vad_no_speech"),
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        5,
+        1,
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, no_speech, false),
+        "no-speech sessions must not skip under Smart"
+    );
+
+    let apple_complete = assess_streaming_completeness_fields(
+        "To jest kompletny streaming transcript.",
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        40,
+        1,
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
+        "Apple lane keeps final-pass under Smart (sub-second on-device)"
+    );
+}
+
+#[test]
+fn test_smart_skip_rejects_missing_commit_source_even_when_punctuated() {
+    // Punctuation is not the authority: no adjudicator commit ⇒ Incomplete.
+    let punctuated_only = assess_streaming_completeness_fields(
+        "To jest zdanie z kropką na końcu.",
+        None,
+        false,
+        false,
+        None,
+        0,
+        0,
+    );
+    assert!(
+        matches!(
+            punctuated_only,
+            StreamingCompleteness::Incomplete {
+                reason: "no_commit_source"
+            }
+        ),
+        "punctuated text without commit source must be Incomplete, got {punctuated_only:?}"
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, punctuated_only, false),
+        "punctuation alone must not skip full re-pass"
+    );
+}
+
+#[test]
+fn test_punctuated_prefix_with_pending_tail_must_not_skip() {
+    // Falsifier: earlier utterance ends in punctuation, but a pending tail remains.
+    let evidence = StreamingCompletenessEvidence {
+        streaming_text: "Pierwsze zdanie. Trwa jeszcze".to_string(),
+        no_speech_reason: None,
+        pending_tail: true,
+        partial_stale_or_dropped: false,
+        commit_source: Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars: 16,
+        total_utterances: 1,
+    };
+    let pending = assess_streaming_completeness(&evidence);
+    assert!(
+        matches!(
+            pending,
+            StreamingCompleteness::Incomplete {
+                reason: "pending_tail"
+            }
+        ),
+        "punctuated prefix + pending tail must be Incomplete, got {pending:?}"
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, pending, false),
+        "pending tail must force full re-pass under Smart"
+    );
+}
+
+#[test]
+fn test_completeness_evidence_from_session_wires_pending_tail() {
+    let session = SessionTelemetrySnapshot {
+        no_speech_reason: None,
+        stats: Some(SessionEngineStats {
+            total_utterances: 1,
+            ..Default::default()
+        }),
+        pending_tail: true,
+        last_commit_source: Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars: 12,
+    };
+    let evidence =
+        StreamingCompletenessEvidence::from_session("To jest kompletne zdanie.", &session);
+    assert!(evidence.pending_tail);
+    assert_eq!(
+        evidence.commit_source,
+        Some(CompletenessCommitSource::UtteranceFinal)
+    );
+    assert_eq!(evidence.committed_chars, 12);
+    assert_eq!(evidence.total_utterances, 1);
+    let completeness = assess_streaming_completeness(&evidence);
+    assert!(matches!(
+        completeness,
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail"
+        }
+    ));
+}
+
+#[test]
+#[serial]
+fn test_final_pass_routing_mode_defaults_smart_and_honors_env() {
+    unsafe {
+        std::env::remove_var("FINAL_PASS_MODE");
+        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
+        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
+    }
+    assert_eq!(final_pass_routing_mode(), FinalPassRoutingMode::Smart);
+
+    for (raw, expected) in [
+        ("always", FinalPassRoutingMode::Always),
+        ("SMART", FinalPassRoutingMode::Smart),
+        ("off", FinalPassRoutingMode::Off),
+    ] {
+        unsafe {
+            std::env::set_var("FINAL_PASS_MODE", raw);
+        }
+        assert_eq!(final_pass_routing_mode(), expected, "FINAL_PASS_MODE={raw}");
+    }
+
+    unsafe {
+        std::env::remove_var("FINAL_PASS_MODE");
+        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "0");
+    }
+    assert_eq!(
+        final_pass_routing_mode(),
+        FinalPassRoutingMode::Off,
+        "legacy LOCAL_STT_FINAL_PASS=0 maps to Off"
+    );
+
+    unsafe {
+        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "1");
+    }
+    assert_eq!(
+        final_pass_routing_mode(),
+        FinalPassRoutingMode::Always,
+        "legacy LOCAL_STT_FINAL_PASS=1 maps to Always"
+    );
+
+    unsafe {
+        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
+        std::env::remove_var("FINAL_PASS_MODE");
+        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
+    }
 }
 
 #[test]
@@ -424,13 +835,66 @@ fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
 }
 
 #[test]
-fn test_overlay_self_paste_guard_trips_only_on_codescribe_frontmost() {
-    assert!(overlay_paste_would_self_target(Some("Codescribe")));
-    assert!(overlay_paste_would_self_target(Some("  codescribe  ")));
-    assert!(overlay_paste_would_self_target(Some("CODESCRIBE")));
-    assert!(!overlay_paste_would_self_target(Some("Alacritty")));
-    assert!(!overlay_paste_would_self_target(Some("Terminal")));
-    assert!(!overlay_paste_would_self_target(None));
+fn test_overlay_paste_disposition_decision_table() {
+    let cases = [
+        (
+            Some("Pensieve"),
+            Some("  PENSIEVE  "),
+            true,
+            OverlayPasteDisposition::Paste,
+            "exact target, case-insensitive",
+        ),
+        (
+            Some("Pensieve"),
+            Some("Alacritty"),
+            true,
+            OverlayPasteDisposition::CopyTargetMismatch,
+            "third app",
+        ),
+        (
+            Some("Pensieve"),
+            Some("Codescribe"),
+            true,
+            OverlayPasteDisposition::CopyTargetMismatch,
+            "overlay app",
+        ),
+        (
+            Some("Codescribe"),
+            Some("Codescribe"),
+            true,
+            OverlayPasteDisposition::CopyTargetMismatch,
+            "overlay app is never a delivery target",
+        ),
+        (
+            None,
+            Some("Pensieve"),
+            true,
+            OverlayPasteDisposition::CopyTargetUnavailable,
+            "target lost",
+        ),
+        (
+            Some("Pensieve"),
+            None,
+            true,
+            OverlayPasteDisposition::CopyFrontmostUnavailable,
+            "focus unconfirmed",
+        ),
+        (
+            Some("Pensieve"),
+            Some("Pensieve"),
+            false,
+            OverlayPasteDisposition::CopyAccessibilityDenied,
+            "event posting denied",
+        ),
+    ];
+
+    for (target, frontmost, can_post_events, expected, label) in cases {
+        assert_eq!(
+            overlay_paste_disposition(target, frontmost, can_post_events),
+            expected,
+            "{label}"
+        );
+    }
 }
 
 #[test]
@@ -455,6 +919,32 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
     assert_eq!(
         maybe_wrap_transcript_for_delivery("literal transcript", &config, "dictation"),
         "<codescribe mode=\"dictation\" lang=\"auto\">\nliteral transcript\n</codescribe>"
+    );
+}
+
+#[test]
+fn deferred_insert_registration_failure_preserves_copy_fallback() {
+    assert_eq!(
+        deferred_insert_registration(DeferredInsertShortcut::CommandOptionV, false, None,),
+        DeferredInsertRegistration::Unavailable {
+            reason: "Paste Here hotkey registration failed".to_string(),
+        }
+    );
+    assert_eq!(
+        deferred_insert_registration(
+            DeferredInsertShortcut::CommandOptionV,
+            true,
+            Some("⌘⌥V conflicts with macOS #99"),
+        ),
+        DeferredInsertRegistration::Unavailable {
+            reason: "⌘⌥V conflicts with macOS #99".to_string(),
+        }
+    );
+    assert_eq!(
+        deferred_insert_registration(DeferredInsertShortcut::CommandShiftV, true, None,),
+        DeferredInsertRegistration::Available {
+            shortcut_label: "⌘⇧V".to_string(),
+        }
     );
 }
 
@@ -631,6 +1121,7 @@ fn test_transcript_pipeline_params(
         truth_final_pass_disposition: None,
         truth_commit_trigger: None,
         truth_display_status: "Ready".to_string(),
+        truth_engine_label: None,
         append_mode: false,
         live_stream_session: false,
         user_needs_separator: false,
@@ -649,6 +1140,428 @@ async fn final_transcript_text(events: &mut tokio::sync::broadcast::Receiver<Ipc
             _ => continue,
         }
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn assistive_pipeline_emits_same_final_overlay_event_and_preserves_trigger_context() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    let original = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: Some("original selection".to_string()),
+    };
+    *controller.assistive_context.write().await = Some(original.clone());
+    let mut events = controller.subscribe_events();
+    let config = Config {
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let mut params = test_transcript_pipeline_params(
+        "unified final transcript",
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive transcript pipeline");
+
+    assert_eq!(
+        final_transcript_text(&mut events).await,
+        "unified final transcript"
+    );
+    *controller.assistive_context.write().await = Some(AssistiveContext {
+        frontmost_app: Some("Changed".to_string()),
+        selected_text: Some("later selection".to_string()),
+    });
+    assert_eq!(
+        controller.pending_assistive_context.read().await.as_ref(),
+        Some(&original),
+        "delivery must retain the trigger-time context, not recapture at send"
+    );
+}
+
+#[test]
+fn hold_combo_captures_selection_at_press_and_returns_exact_marker_position() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    let selected = std::sync::Arc::new(std::sync::Mutex::new("original selection".to_string()));
+    let provider_value = std::sync::Arc::clone(&selected);
+
+    let (context, marker) = capture_combo_context_with_image(
+        &mut bucket,
+        13,
+        move || AssistiveContext {
+            frontmost_app: Some("Notes".to_string()),
+            selected_text: Some(provider_value.lock().expect("selection provider").clone()),
+        },
+        || None,
+    )
+    .expect("combo capture");
+    *selected.lock().expect("selection mutation") = "mutated later".to_string();
+
+    assert_eq!(
+        marker,
+        Some(ContextMarker {
+            position: 13,
+            label: "selection_1".to_string(),
+        })
+    );
+    assert_eq!(context.frontmost_app.as_deref(), Some("Notes"));
+    assert_eq!(
+        context.selected_text, None,
+        "bucket owns selection delivery"
+    );
+    let payload = bucket.append_to_message("voice {selection_1}");
+    assert!(payload.contains("original selection"));
+    assert!(!payload.contains("mutated later"));
+}
+
+#[test]
+fn assistive_delivery_assembly_has_marked_transcript_then_tagged_bucket() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    bucket
+        .add_selection(4, "selected body".to_string())
+        .expect("selection capture");
+    let context = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: None,
+    };
+
+    // Selection in bucket → act-on-selection lane keeps skeleton, and the
+    // header tells the truth about where the selection travels.
+    assert_eq!(
+        assemble_assistive_delivery_lane("ask {selection_1} now", &context, &bucket).wire,
+        "USER_INSTRUCTION:\n<<<\nask {selection_1} now\n>\n\n\
+SELECTED_TEXT: carried in <codescribe_context> (1 selection).\n\n\
+CONTEXT:\n- frontmost_app: Notes\n\n\
+<codescribe_context>\n\
+<selection_1>\nselected body\n</selection_1>\n\
+</codescribe_context>"
+    );
+}
+
+#[test]
+fn assistive_wire_header_never_denies_bucket_selections() {
+    // Incident t_2026-07-21_zcryie: three <selection_N> blocks under a header
+    // claiming "no selection available" made the model treat them as a leak.
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    for (position, text) in [(2, "alpha"), (9, "beta"), (16, "gamma")] {
+        bucket
+            .add_selection(position, text.to_string())
+            .expect("selection capture");
+    }
+    let context = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: None,
+    };
+
+    let wire = assemble_assistive_delivery_lane("compare all three", &context, &bucket).wire;
+
+    assert!(!wire.contains("no selection available"));
+    assert!(!wire.contains("brak dostępnego zaznaczenia"));
+    assert!(wire.contains("SELECTED_TEXT: carried in <codescribe_context> (3 selections)."));
+    for label in ["<selection_1>", "<selection_2>", "<selection_3>"] {
+        assert!(wire.contains(label), "missing {label} in wire: {wire}");
+    }
+}
+
+#[test]
+fn voice_chat_lane_wire_is_spoken_text_without_skeleton() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    let context = AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: None,
+    };
+    let delivery = assemble_assistive_delivery_lane("co to jest?", &context, &bucket);
+    assert_eq!(delivery.lane, AssistiveLane::VoiceChat);
+    assert!(!delivery.lane.use_assistive_persona());
+    assert_eq!(delivery.wire, "co to jest?");
+    assert!(!delivery.wire.contains("USER_INSTRUCTION"));
+    assert!(!delivery.wire.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+    assert_eq!(delivery.raw_transcript, "co to jest?");
+}
+
+#[test]
+fn act_on_selection_lane_uses_skeleton_and_assistive_persona() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    bucket
+        .add_selection(0, "hello world".to_string())
+        .expect("selection");
+    let context = AssistiveContext {
+        frontmost_app: None,
+        selected_text: None,
+    };
+    let delivery = assemble_assistive_delivery_lane("make this bold", &context, &bucket);
+    assert_eq!(delivery.lane, AssistiveLane::ActOnSelection);
+    assert!(delivery.lane.use_assistive_persona());
+    assert!(delivery.wire.contains("USER_INSTRUCTION"));
+    assert!(delivery.wire.contains("hello world"));
+}
+
+#[test]
+#[serial]
+fn combo_without_selection_leaves_bucket_empty_and_arm_truth_intact() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    let (context, marker) = capture_combo_context_with_image(
+        &mut bucket,
+        0,
+        || AssistiveContext {
+            frontmost_app: Some("Notes".to_string()),
+            selected_text: None,
+        },
+        || None,
+    )
+    .expect("combo no-op");
+
+    publish_recording_indicator(BadgeMode::Assistive, false);
+    assert!(is_assistive_session(), "plain combo still arms agent mode");
+    assert_eq!(context.frontmost_app.as_deref(), Some("Notes"));
+    assert_eq!(marker, None);
+    assert!(bucket.is_empty());
+    publish_recording_indicator(BadgeMode::Hold, false);
+}
+
+#[test]
+fn armed_image_capture_reaches_vision_attachment_assembly_and_degrades_oversize() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new(
+        temp_dir.path().join("selections"),
+        temp_dir.path().join("images"),
+        codescribe_core::attachment::MAX_VISION_IMAGE_BYTES as usize,
+    );
+    let png = b"\x89PNG\r\n\x1a\nselected-image".to_vec();
+    let (context, marker) =
+        capture_combo_context_with_image(&mut bucket, 0, AssistiveContext::default, || {
+            Some(png.clone())
+        })
+        .expect("armed image capture");
+    assert!(
+        marker.is_none(),
+        "image capture does not fake a text marker"
+    );
+
+    let delivery = assemble_assistive_delivery_lane("what is in this image?", &context, &bucket);
+    let (cleaned, attachments, dropped) = build_image_attachments_from_text(&delivery.wire);
+    assert_eq!(cleaned.trim_end(), "what is in this image?");
+    assert_eq!(
+        attachments.len(),
+        1,
+        "stored marker must become vision input"
+    );
+    assert_eq!(attachments[0].media_type, "image/png");
+    assert!(dropped.is_empty());
+
+    let mut oversized_bucket = ContextBucket::new(
+        temp_dir.path().join("oversized-selections"),
+        temp_dir.path().join("oversized-images"),
+        codescribe_core::attachment::MAX_VISION_IMAGE_BYTES as usize,
+    );
+    let oversized = vec![0u8; codescribe_core::attachment::MAX_VISION_IMAGE_BYTES as usize + 1];
+    oversized_bucket
+        .add_image_png(&oversized)
+        .expect("oversized image persists as path reference");
+    let oversized_wire = oversized_bucket.append_to_message("inspect if possible");
+    let (cleaned, attachments, dropped) = build_image_attachments_from_text(&oversized_wire);
+    assert_eq!(cleaned.trim_end(), "inspect if possible");
+    assert!(
+        attachments.is_empty(),
+        "oversized image must not reach the model"
+    );
+    assert_eq!(dropped.len(), 1, "degrade must be explicit to the caller");
+}
+
+#[test]
+fn raw_paste_wire_carries_inline_and_spilled_selections() {
+    // Operator scenario: raw dictation with two captured selections, one of
+    // them oversized. The paste wire must inline the small one and spill the
+    // big one as a PATH reference — same contract as the assistive lanes.
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 32);
+    bucket
+        .add_selection(3, "small inline selection".to_string())
+        .expect("inline selection");
+    let oversized_body = "x".repeat(64);
+    bucket
+        .add_selection(9, oversized_body.clone())
+        .expect("oversized selection");
+
+    let wire = assemble_raw_paste_wire("dictated raw text", &bucket);
+
+    assert!(
+        wire.starts_with("dictated raw text\n\n<codescribe_context>\n"),
+        "wire must be transcript + context block: {wire}"
+    );
+    assert!(wire.contains("<selection_1>\nsmall inline selection\n</selection_1>"));
+    assert!(wire.contains("<selection_2>\nPATH: "));
+    assert!(
+        !wire.contains(&oversized_body),
+        "oversized selection must not be inlined"
+    );
+    let spill_path = wire
+        .lines()
+        .find_map(|line| line.strip_prefix("PATH: "))
+        .expect("spill path in wire");
+    assert_eq!(
+        std::fs::read_to_string(spill_path).expect("spilled selection body"),
+        oversized_body,
+        "spill file must carry the full selection"
+    );
+}
+
+#[test]
+fn raw_paste_wire_with_empty_bucket_is_byte_for_byte_transcript() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let bucket = ContextBucket::new_selections_only(temp_dir.path().join("selections"), 1024);
+    // Trailing whitespace intentionally present: empty bucket must not even
+    // trim — output stays byte-for-byte identical to today's paste.
+    let transcript = "plain dictation with trailing newline \n";
+    assert_eq!(assemble_raw_paste_wire(transcript, &bucket), transcript);
+}
+
+#[test]
+fn raw_paste_wire_skips_bucket_images() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut bucket = ContextBucket::new(
+        temp_dir.path().join("selections"),
+        temp_dir.path().join("images"),
+        1024,
+    );
+    bucket
+        .add_image_png(b"\x89PNG\r\n\x1a\nfake-image")
+        .expect("image capture");
+
+    // Images-only bucket: text paste stays byte-for-byte the transcript.
+    assert_eq!(
+        assemble_raw_paste_wire("look at this", &bucket),
+        "look at this"
+    );
+
+    // Images + selection: selection tags ride along, vision marker does not.
+    bucket
+        .add_selection(0, "text selection".to_string())
+        .expect("selection capture");
+    let wire = assemble_raw_paste_wire("look at this", &bucket);
+    assert!(wire.contains("<selection_1>\ntext selection\n</selection_1>"));
+    assert!(
+        !wire.contains(codescribe_core::attachment::IMAGE_PATHS_MARKER),
+        "vision marker is an agent contract, never paste text: {wire}"
+    );
+    assert!(wire.ends_with("</codescribe_context>"));
+}
+
+#[tokio::test]
+#[serial]
+async fn raw_pipeline_finalize_consumes_bucket_like_assistive_delivery() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    controller
+        .context_bucket
+        .lock()
+        .await
+        .add_selection(0, "carry me into the paste".to_string())
+        .expect("selection capture");
+    assert!(controller.context_bucket.lock().await.has_selection_items());
+
+    controller
+        .process_transcript_text_pipeline(test_transcript_pipeline_params(
+            "raw dictation with a pending selection",
+            Config::default(),
+            true,
+            false,
+            Some(RecordingTranscriptSource::LocalFinalPass),
+        ))
+        .await
+        .expect("raw pipeline succeeds");
+
+    let bucket = controller.context_bucket.lock().await;
+    assert!(
+        !bucket.has_selection_items(),
+        "raw finalize must clear the bucket after delivery (parity with assistive)"
+    );
+    assert!(
+        bucket.is_empty(),
+        "images are consumed alongside selections"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn assistive_pipeline_leaves_bucket_for_overlay_delivery_lane() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _env_guard = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let controller = RecordingController::new();
+    controller
+        .context_bucket
+        .lock()
+        .await
+        .add_selection(0, "assistive selection".to_string())
+        .expect("selection capture");
+    let config = Config {
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let mut params = test_transcript_pipeline_params(
+        "assistive dictation",
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+    );
+    params.assistive = true;
+    params.hold_mode = HoldMode::Chat;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("assistive pipeline succeeds");
+
+    assert!(
+        controller.context_bucket.lock().await.has_selection_items(),
+        "assistive finalize must NOT steal the bucket — overlay delivery consumes it"
+    );
+}
+
+#[test]
+fn formatting_setting_is_orthogonal_to_hold_and_assistive_delivery() {
+    let config = Config {
+        ai_formatting_enabled: true,
+        ..Config::default()
+    };
+    assert!(session_auto_format_enabled(&config, false, false, false));
+    assert!(session_auto_format_enabled(&config, true, false, false));
+    assert!(!session_auto_format_enabled(&config, false, true, false));
+}
+
+#[test]
+#[serial]
+fn one_indicator_transition_updates_shared_rust_state_and_tray_snapshot() {
+    publish_recording_indicator(BadgeMode::Assistive, false);
+    assert!(is_assistive_session());
+    assert_eq!(
+        crate::os::tray_status::current_tray_status_snapshot().indicator_mode,
+        BadgeMode::Assistive
+    );
+
+    publish_recording_indicator(BadgeMode::Processing, false);
+    assert!(!is_assistive_session());
+    assert_eq!(
+        crate::os::tray_status::current_tray_status_snapshot().indicator_mode,
+        BadgeMode::Processing
+    );
 }
 
 struct EnvVarGuard {
@@ -937,6 +1850,7 @@ async fn test_assistive_pipeline_persists_raw_voice_history() {
     );
     let saved = std::fs::read_to_string(transcript_path).expect("read transcript");
     assert_eq!(saved, raw_voice);
+    assert!(!saved.contains("USER_INSTRUCTION"));
     assert!(!saved.contains("INSTRUKCJA_UŻYTKOWNIKA"));
 
     let metadata = read_truth_sidecar(transcript_path).expect("assistive truth sidecar");
@@ -1203,6 +2117,7 @@ fn test_adjudicate_recording_truth_blocks_local_no_speech() {
     let session = SessionTelemetrySnapshot {
         no_speech_reason: Some("telemetry_should_not_override_core".to_string()),
         stats: None,
+        ..Default::default()
     };
 
     let verdict = adjudicate_recording_truth(

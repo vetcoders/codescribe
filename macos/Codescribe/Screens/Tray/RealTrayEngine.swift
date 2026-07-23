@@ -50,7 +50,8 @@ final class RealTrayEngine: TrayEngine {
         autoPasteEnabled: Bool,
         autoFormatLevel: FormattingPolicyOption,
         notesMode: Bool,
-        startInAssistive: Bool
+        startInAssistive: Bool,
+        holdBadgeOption: HoldBadgeOption
     )? {
         let toggles = config.trayToggles()
         guard let formatLevel = FormattingPolicyOption(rawValue: toggles.formattingLevel) else {
@@ -62,7 +63,11 @@ final class RealTrayEngine: TrayEngine {
             toggles.autoPasteEnabled,
             formatLevel,
             toggles.notesModeEnabled,
-            toggles.startAssistive
+            toggles.startAssistive,
+            HoldBadgeOption(
+                indicatorEnabled: toggles.holdIndicator,
+                size: toggles.holdBadgeSize
+            )
         )
     }
 
@@ -76,6 +81,16 @@ final class RealTrayEngine: TrayEngine {
 
     func setAutoFormatLevel(_ level: FormattingPolicyOption) {
         _ = try? config.setAutoFormatLevel(level: level.rawValue)
+    }
+
+    func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
+        guard let size = option.size else {
+            return (try? config.updateConfig(key: "HOLD_INDICATOR", value: "0")) != nil
+        }
+        return (try? config.updateConfigMany(entries: [
+            CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
+            CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
+        ])) != nil
     }
 
     func setNotesMode(_ enabled: Bool) -> Bool {

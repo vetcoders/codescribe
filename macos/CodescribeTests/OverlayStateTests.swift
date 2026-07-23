@@ -6,12 +6,18 @@ private final class OverlayStateTestEngine: DictationEngine {
     var pastedText: String?
     var pasteCallCount = 0
     var pasteOutcome: CsPasteOutcome = .pasted
+    var pasteFrontmostAppNameValue: String?
+    var deferredText: String?
+    var deferOutcome: CsPasteOutcome = .deferredInsertArmed
+    var deferredInsertShortcutValue: String? = "⌘⌥V"
+    var deferredInsertFailureValue: String?
     var copiedTaggedText: String?
     var onCopyTagged: (() -> Void)?
     var formattedResult: Result<String, Error> = .success("")
     var formattedLevels: [FormattingPolicyOption] = []
     var onFormat: ((FormattingPolicyOption) -> Void)?
     var onPaste: (() -> Void)?
+    var onDefer: (() -> Void)?
     var pasteTargetAppNameValue: String?
     var onPasteTargetRead: (() -> Void)?
     var persistedPolicy = OverlayPolicySnapshot(
@@ -21,6 +27,9 @@ private final class OverlayStateTestEngine: DictationEngine {
     var persistAutoPasteWrites = true
     var autoPasteWrites: [Bool] = []
     var policyReadCount = 0
+    var sentAssistiveTexts: [String] = []
+    var assistiveSendResult = true
+    var onAssistiveSend: (() -> Void)?
 
     func setListener(_ listener: CsTranscriptionListener) {}
     func startRecording(language: CsLanguage?) async throws {}
@@ -53,11 +62,28 @@ private final class OverlayStateTestEngine: DictationEngine {
         case .failure(let error): throw error
         }
     }
-    func pasteText(text: String) async throws -> CsPasteOutcome {
+    func pasteText(text: String) async throws -> CsPasteResult {
         pastedText = text
         pasteCallCount += 1
         onPaste?()
-        return pasteOutcome
+        return CsPasteResult(
+            outcome: pasteOutcome,
+            targetAppName: pasteTargetAppNameValue,
+            frontmostAppName: pasteFrontmostAppNameValue,
+            deferredInsertShortcut: deferredInsertShortcutValue,
+            deferredInsertFailure: deferredInsertFailureValue
+        )
+    }
+    func deferText(text: String) async throws -> CsPasteResult {
+        deferredText = text
+        onDefer?()
+        return CsPasteResult(
+            outcome: deferOutcome,
+            targetAppName: pasteTargetAppNameValue,
+            frontmostAppName: "Codescribe",
+            deferredInsertShortcut: deferredInsertShortcutValue,
+            deferredInsertFailure: deferredInsertFailureValue
+        )
     }
     func copyTaggedTranscript(text: String) async throws {
         copiedTaggedText = text
@@ -66,6 +92,11 @@ private final class OverlayStateTestEngine: DictationEngine {
     func pasteTargetAppName() async -> String? {
         onPasteTargetRead?()
         return pasteTargetAppNameValue
+    }
+    func sendAssistiveTranscript(text: String) async throws -> Bool {
+        sentAssistiveTexts.append(text)
+        onAssistiveSend?()
+        return assistiveSendResult
     }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
@@ -588,22 +619,51 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
-    func testInsertDegradesToTaggedCopyWhenCaretIsInCodescribe() async {
+    func testInsertArmsDeferredSlotWithoutCopyWhenCaretIsInCodescribe() async {
         let clock = OverlayStateTestClock()
         let state = makeFinalizedState(clock: clock, text: "guarded transcript")
         let engine = OverlayStateTestEngine()
-        let copyCalled = expectation(description: "tagged copy called")
-        engine.onCopyTagged = { copyCalled.fulfill() }
+        let deferCalled = expectation(description: "deferred insert armed")
+        engine.onDefer = { deferCalled.fulfill() }
+        engine.pasteTargetAppNameValue = "Pensieve"
         state.engine = engine
         state.insertCaretInCodescribeProbe = { true }
 
         state.pasteToPreviousApp()
-        await fulfillment(of: [copyCalled], timeout: 1)
+        await fulfillment(of: [deferCalled], timeout: 1)
         await Task.yield()
 
-        XCTAssertEqual(engine.copiedTaggedText, "guarded transcript")
+        XCTAssertEqual(engine.deferredText, "guarded transcript")
+        XCTAssertNil(engine.copiedTaggedText)
         XCTAssertNil(engine.pastedText, "guard must not fall through to synthetic paste")
-        XCTAssertEqual(state.toast, "Caret is in Codescribe — copied with tags")
+        XCTAssertEqual(
+            state.toast,
+            "Couldn't reach Pensieve — put your cursor where you want the text "
+                + "and press ⌘⌥V. Your clipboard is untouched."
+        )
+    }
+
+    func testInsertFallsBackToTaggedCopyWhenHotkeyRegistrationFails() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "fallback transcript")
+        let engine = OverlayStateTestEngine()
+        engine.deferOutcome = .copiedToClipboard
+        engine.deferredInsertFailureValue = "Paste Here hotkey registration failed"
+        engine.pasteTargetAppNameValue = "Pensieve"
+        let deferCalled = expectation(description: "deferred insert fallback")
+        engine.onDefer = { deferCalled.fulfill() }
+        state.engine = engine
+        state.insertCaretInCodescribeProbe = { true }
+
+        state.pasteToPreviousApp()
+        await fulfillment(of: [deferCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(
+            state.toast,
+            "Paste Here hotkey registration failed — copied with tags instead. "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        )
     }
 
     func testInsertShowsCopiedToastWhenControllerGuardDegrades() async {
@@ -611,6 +671,9 @@ final class OverlayStateTests: XCTestCase {
         let state = makeFinalizedState(clock: clock, text: "belt and braces transcript")
         let engine = OverlayStateTestEngine()
         engine.pasteOutcome = .copiedToClipboard
+        engine.deferredInsertShortcutValue = nil
+        engine.pasteTargetAppNameValue = "Pensieve"
+        engine.pasteFrontmostAppNameValue = "Alacritty"
         let pasteCalled = expectation(description: "paste called")
         engine.onPaste = { pasteCalled.fulfill() }
         state.engine = engine
@@ -621,7 +684,36 @@ final class OverlayStateTests: XCTestCase {
         await Task.yield()
 
         XCTAssertEqual(engine.pastedText, "belt and braces transcript")
-        XCTAssertEqual(state.toast, "Target app not focused — copied with tags")
+        XCTAssertEqual(
+            state.toast,
+            "Copied — your cursor is in Alacritty, not Pensieve. "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        )
+    }
+
+    func testInsertShowsAccessibilityPermissionToastWhenEventPostingDenied() async {
+        let clock = OverlayStateTestClock()
+        let state = makeFinalizedState(clock: clock, text: "permission transcript")
+        let engine = OverlayStateTestEngine()
+        engine.pasteOutcome = .accessibilityPermissionNeeded
+        engine.deferredInsertFailureValue = "Paste Here hotkey registration failed"
+        engine.pasteTargetAppNameValue = "Pensieve"
+        engine.pasteFrontmostAppNameValue = "Pensieve"
+        let pasteCalled = expectation(description: "permission fallback called")
+        engine.onPaste = { pasteCalled.fulfill() }
+        state.engine = engine
+        state.insertCaretInCodescribeProbe = { false }
+
+        state.pasteToPreviousApp()
+        await fulfillment(of: [pasteCalled], timeout: 1)
+        await Task.yield()
+
+        XCTAssertEqual(engine.pastedText, "permission transcript")
+        XCTAssertEqual(
+            state.toast,
+            "Paste Here hotkey registration failed — copied with tags instead. "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        )
     }
 
     func testFormatCancelsAutoHideWithoutRearming() async {
@@ -675,20 +767,121 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
-    func testCloseIsImmediateAndSendUsesImmediateHandoffPath() {
+    func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
         let clock = OverlayStateTestClock()
-        let state = makeFinalizedState(clock: clock)
+        let engine = OverlayStateTestEngine()
+        let state = OverlayState(nowProvider: { clock.now })
+        state.engine = engine
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "ready transcript")
+        state.finishControllerRecording()
         var closeCount = 0
         var sentText: String?
         state.onClose = { closeCount += 1 }
         state.onSendToAgent = { sentText = $0 }
+        let delivered = expectation(description: "agent button delivered")
+        engine.onAssistiveSend = { delivered.fulfill() }
 
         state.sendToAgent()
+        await fulfillment(of: [delivered], timeout: 1)
         XCTAssertEqual(sentText, "ready transcript")
-        XCTAssertEqual(closeCount, 0, "send delegates immediate hide to the handoff closure")
+        XCTAssertEqual(engine.sentAssistiveTexts, ["ready transcript"])
+        XCTAssertEqual(closeCount, 1)
 
         state.close()
-        XCTAssertEqual(closeCount, 1, "Close button and brand CloseDot share this action")
+        XCTAssertEqual(closeCount, 2, "Close button and brand CloseDot share this action")
+    }
+
+    func testUntouchedAgentFinalAutoSendsAtDeadline() async {
+        let clock = OverlayStateTestClock()
+        let engine = OverlayStateTestEngine()
+        let state = OverlayState(nowProvider: { clock.now })
+        state.engine = engine
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "untouched final")
+        state.finishControllerRecording()
+        let delivered = expectation(description: "untouched final delivered")
+        engine.onAssistiveSend = { delivered.fulfill() }
+
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        await fulfillment(of: [delivered], timeout: 1)
+        XCTAssertEqual(engine.sentAssistiveTexts, ["untouched final"])
+    }
+
+    func testContextMarkerLandsAtCapturedWordPositionAndSurvivesFinalPass() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyPreview("alpha beta")
+
+        state.applyContextMarker(position: 5, marker: "{selection_1}")
+        XCTAssertEqual(state.liveText, "alpha {selection_1} beta")
+
+        state.applyFinal(utteranceId: 1, "alpha beta")
+        state.applyFinalTranscript("alpha beta")
+        state.finishControllerRecording()
+        XCTAssertEqual(state.formattedText, "alpha {selection_1} beta")
+        XCTAssertEqual(state.activeText, "alpha {selection_1} beta")
+    }
+
+    func testContextMarkerInsideWordStaysUnpaddedForLosslessTitles() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyPreview("bardzo mnie drażni")
+
+        // Position 9 splits "mnie" between "mn" and "ie": no padding, so the
+        // split stays lossless for downstream title derivation.
+        state.applyContextMarker(position: 9, marker: "{selection_1}")
+        XCTAssertEqual(state.liveText, "bardzo mn{selection_1}ie drażni")
+    }
+
+    func testContextMarkersAtSamePositionKeepCaptureOrder() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyPreview("alpha")
+
+        state.applyContextMarker(position: 5, marker: "{selection_1}")
+        state.applyContextMarker(position: 5, marker: "{selection_2}")
+        state.applyContextMarker(position: 5, marker: "{selection_3}")
+
+        XCTAssertEqual(
+            state.liveText,
+            "alpha {selection_1} {selection_2} {selection_3}"
+        )
+    }
+
+    func testAnyAgentFinalEditPermanentlyVetoesAutoSendUntilButton() async {
+        let clock = OverlayStateTestClock()
+        let engine = OverlayStateTestEngine()
+        let state = OverlayState(nowProvider: { clock.now })
+        state.engine = engine
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "original final")
+        state.finishControllerRecording()
+        state.userEditedTranscript("edited final")
+        state.userEditedTranscript("original final")
+
+        clock.now = 5
+        state.fireAutoHideNowForTests()
+        await Task.yield()
+        XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
+
+        let delivered = expectation(description: "edited final delivered by button")
+        engine.onAssistiveSend = { delivered.fulfill() }
+        state.sendToAgent()
+        await fulfillment(of: [delivered], timeout: 1)
+        XCTAssertEqual(engine.sentAssistiveTexts, ["original final"])
     }
 
     func testNoSpeechAutoHidesAfterFiveSeconds() {
@@ -760,7 +953,7 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(controller.state.autoPasteControlAvailable)
     }
 
-    func testAgentModesNeverOrderOverlayFrontEvenWhenToggleIsOn() {
+    func testAgentModesAlwaysOrderOverlayFrontWhenToggleIsOn() {
         for mode in ["Chat", "Selection"] {
             var frontCount = 0
             let controller = OverlayController(
@@ -774,12 +967,12 @@ final class OverlayStateTests: XCTestCase {
             )
 
             controller.showForRecording()
-            XCTAssertEqual(frontCount, 0, "\(mode) uses the authoritative assistive gate")
+            XCTAssertEqual(frontCount, 1, "\(mode) shares the canonical overlay path")
             XCTAssertFalse(controller.state.autoPasteControlAvailable)
         }
     }
 
-    func testMidHoldAssistiveUpgradeImmediatelyHidesVisibleOverlay() {
+    func testMidHoldAssistiveUpgradeKeepsOverlayVisibleAndFlipsSemantics() {
         var frontCount = 0
         var outCount = 0
         let controller = OverlayController(
@@ -796,8 +989,9 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(frontCount, 1)
         XCTAssertEqual(outCount, 0)
 
-        controller.handleAssistiveStatusChange(true)
-        XCTAssertEqual(outCount, 1)
+        controller.handleIndicatorModeChange(.assistive)
+        XCTAssertEqual(outCount, 0)
+        XCTAssertEqual(controller.state.indicatorMode, .assistive)
         XCTAssertFalse(controller.state.autoPasteControlAvailable)
     }
 
@@ -811,6 +1005,51 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
         XCTAssertTrue(panel.isFloatingPanel)
         XCTAssertFalse(panel.canBecomeMain)
+    }
+
+    func testLowConfidenceBadgeVisibilityLogic() {
+        XCTAssertFalse(
+            OverlayState.OverlayConfidence.showsLowConfidenceBadge(avgLogprob: -0.2, flags: [])
+        )
+        XCTAssertTrue(
+            OverlayState.OverlayConfidence.showsLowConfidenceBadge(avgLogprob: -1.4, flags: [])
+        )
+        XCTAssertTrue(
+            OverlayState.OverlayConfidence.showsLowConfidenceBadge(
+                avgLogprob: -0.3,
+                flags: ["possible_hallucination_logprob"]
+            )
+        )
+        XCTAssertEqual(
+            OverlayState.OverlayConfidence.confidenceLabel(avgLogprob: -1.4),
+            "low"
+        )
+        XCTAssertEqual(
+            OverlayState.OverlayConfidence.confidenceLabel(avgLogprob: -0.2),
+            "high"
+        )
+    }
+
+    func testApplyFinalTracksSessionConfidenceForBadge() {
+        let state = OverlayState()
+        state.applyFinal(
+            utteranceId: 1,
+            "pierwsze",
+            avgLogprob: -0.3,
+            speechPct: 0.9,
+            confidenceFlags: []
+        )
+        XCTAssertFalse(state.showsLowConfidenceBadge)
+        state.applyFinal(
+            utteranceId: 2,
+            "drugie",
+            avgLogprob: -1.5,
+            speechPct: 0.4,
+            confidenceFlags: ["possible_hallucination_logprob"]
+        )
+        XCTAssertEqual(state.sessionAvgLogprob, -1.5)
+        XCTAssertTrue(state.showsLowConfidenceBadge)
+        XCTAssertEqual(state.confidenceBadgeText, "low confidence")
     }
 
 }

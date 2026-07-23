@@ -26,7 +26,7 @@ final class SettingsTruthTests: XCTestCase {
 
     func testSectionAvailabilityKeepsPromisesHonest() {
         for section in [
-            SettingsSection.creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user,
+            SettingsSection.creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .user,
         ] {
             XCTAssertEqual(section.availability, .available)
             XCTAssertTrue(section.isInteractive)
@@ -34,14 +34,15 @@ final class SettingsTruthTests: XCTestCase {
     }
 
     /// The full route map: stable id, one visible title owner, and the explicit
-    /// panel destination SettingsView's detail switch consumes. All eight rail
-    /// sections, including the consolidation cuts engine→Dictation,
-    /// voiceLab→Dictionary, keys→Providers.
+    /// panel destination SettingsView's detail switch consumes. All nine rail
+    /// sections, including engine→Dictation, voiceLab→Dictionary,
+    /// keys→Providers, and the dedicated Agent destination.
     func testSettingsSectionRoutesTitlesAndDestinationsOwnTheRail() {
         let expectations: [(SettingsSection, String, String, SettingsPanelDestination)] = [
             (.creator, "creator", "Creator", .creator),
             (.shortcuts, "shortcuts", "Hotkeys", .shortcuts),
             (.keys, "keys", "Providers", .providers),
+            (.agent, "agent", "Agent", .agent),
             (.prompts, "prompts", "Prompts", .prompts),
             (.engine, "engine", "Dictation", .dictation),
             (.audio, "audio", "Audio", .audio),
@@ -65,6 +66,92 @@ final class SettingsTruthTests: XCTestCase {
             Set(SettingsSection.allCases.map(\.title)).count,
             SettingsSection.allCases.count
         )
+    }
+
+    func testProvidersAndAgentOwnDisjointSettingsCapabilities() {
+        XCTAssertEqual(KeysPanel.ownedCapabilities, [.apiKeys])
+        XCTAssertEqual(
+            AgentPanel.ownedCapabilities,
+            [.llmLanes, .workspaceRoots, .agentStatus, .mcpServers]
+        )
+        XCTAssertTrue(KeysPanel.ownedCapabilities.isDisjoint(with: AgentPanel.ownedCapabilities))
+    }
+
+    func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
+        SettingsDeepLink.pendingSection = nil
+        defer { SettingsDeepLink.pendingSection = nil }
+
+        SettingsDeepLink.pendingSection = .keys
+        XCTAssertEqual(SettingsDeepLink.consume()?.destination, .providers)
+        XCTAssertNil(SettingsDeepLink.consume())
+
+        XCTAssertEqual(SettingsDeepLink.agentConfigurationSection, .agent)
+        SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
+        XCTAssertEqual(SettingsDeepLink.consume()?.destination, .agent)
+        XCTAssertNil(SettingsDeepLink.consume())
+    }
+
+    func testSettingsSplitConstructionDoesNotWriteConfigOrKeychain() {
+        var configWrites: [(String, String)] = []
+        let engine = MockSettingsEngine(
+            updateConfigObserver: { configWrites.append(($0, $1)) }
+        )
+        let model = SettingsViewModel(engine: engine)
+        let keychainSnapshot = model.keyAccounts.map {
+            "\($0):\(model.keyStatus.isSet(account: $0))"
+        }
+
+        model.select(.keys)
+        _ = KeysPanel(model: model)
+        model.select(.agent)
+        _ = AgentPanel(model: model)
+
+        XCTAssertTrue(configWrites.isEmpty, "the IA split must not write settings.json")
+        XCTAssertEqual(
+            model.keyAccounts.map { "\($0):\(model.keyStatus.isSet(account: $0))" },
+            keychainSnapshot,
+            "the IA split must preserve the complete Keychain presence snapshot"
+        )
+    }
+
+    func testHoldBadgeControlRoundTripsAllPositionsAndOffPreservesSize() {
+        var persisted = CsSettings.sample
+        persisted.holdIndicator = true
+        persisted.holdBadgeSize = 8
+        var singleWrites: [(String, String)] = []
+        var batchWrites: [[CsConfigEntry]] = []
+        let engine = MockSettingsEngine(
+            settingsLoader: { persisted },
+            updateConfigManyObserver: { entries in
+                batchWrites.append(entries)
+                for entry in entries {
+                    if entry.key == "HOLD_INDICATOR" {
+                        persisted.holdIndicator = entry.value == "1"
+                    } else if entry.key == "HOLD_BADGE_SIZE", let size = UInt32(entry.value) {
+                        persisted.holdBadgeSize = size
+                    }
+                }
+            },
+            updateConfigObserver: { key, value in
+                singleWrites.append((key, value))
+                if key == "HOLD_INDICATOR" { persisted.holdIndicator = value == "1" }
+            }
+        )
+        let model = SettingsViewModel(engine: engine)
+        model.refresh()
+
+        model.setHoldBadgeOption(.off)
+        XCTAssertEqual(model.holdBadgeOption, .off)
+        XCTAssertEqual(model.settings.holdBadgeSize, 8, "Off must preserve the stored size")
+        XCTAssertEqual(singleWrites.map(\.0), ["HOLD_INDICATOR"])
+
+        for option in [HoldBadgeOption.four, .eight, .twelve] {
+            model.setHoldBadgeOption(option)
+            XCTAssertEqual(model.holdBadgeOption, option)
+        }
+        XCTAssertEqual(batchWrites.count, 3)
+        XCTAssertTrue(batchWrites.allSatisfy { $0.map(\.key) == ["HOLD_INDICATOR", "HOLD_BADGE_SIZE"] })
+        XCTAssertEqual(batchWrites.compactMap { $0.last?.value }, ["4", "8", "12"])
     }
 
     /// Dictation owns every transcription-behavior write and each control keeps
@@ -172,10 +259,10 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(batches[1].map(\.value), ["0"])
     }
 
-    /// Providers owns the one lane-edit grammar. Every lane preserves its exact
+    /// Agent owns the one lane-edit grammar. Every lane preserves its exact
     /// endpoint/model keys, and whitespace/empty input keeps the reset semantics
     /// (an empty write clears the JSON override).
-    func testProviderLaneEditorsPreserveExactKeysAndEmptyResetSemantics() {
+    func testAgentLaneEditorsPreserveExactKeysAndEmptyResetSemantics() {
         var writes: [(key: String, value: String)] = []
         let model = SettingsViewModel(
             engine: MockSettingsEngine { key, value in
@@ -229,7 +316,7 @@ final class SettingsTruthTests: XCTestCase {
     /// injection path. Pixel rendering belongs in a UI/visual test: AppKit-backed
     /// controls (`Slider`, `Picker`, `Toggle`) can recurse in off-window
     /// `NSHostingView` / `ImageRenderer` layout on macOS 26.
-    func testFourOwnerPanelsConstructFromHermeticPreviews() {
+    func testFiveOwnerPanelsConstructFromHermeticPreviews() {
         func assertConcretePanel<Panel: View>(
             _ panel: Panel,
             model: SettingsViewModel,
@@ -265,7 +352,10 @@ final class SettingsTruthTests: XCTestCase {
 
         let providers = SettingsViewModel.preview(.keys)
         assertConcretePanel(KeysPanel(model: providers), model: providers, section: .keys, name: "providers")
-        let previewLane = providers.llmLane(.assistive)
+
+        let agent = SettingsViewModel.preview(.agent)
+        assertConcretePanel(AgentPanel(model: agent), model: agent, section: .agent, name: "agent")
+        let previewLane = agent.llmLane(.assistive)
         XCTAssertEqual(previewLane.providerId, "openai-responses")
         XCTAssertEqual(previewLane.resolvedEndpoint, "https://api.openai.com/v1/responses")
     }
@@ -599,5 +689,43 @@ final class SettingsTruthTests: XCTestCase {
         model.clearMcpConfiguration()
 
         XCTAssertEqual(calls, 1)
+    }
+
+    /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
+    /// display configured Apple preference.
+    func testActiveSTTUsesServingVerdictNotConfiguredEngine() {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+        // No runtime verdict yet — never project configured engine as Active STT.
+        model.lastServingVerdict = nil
+        XCTAssertEqual(model.activeSTT, "Not yet served")
+        XCTAssertEqual(formatActiveSTT(lastServing: nil), "Not yet served")
+
+        // Deterministic Apple→Whisper fallback status.
+        let fallback = LastServingVerdict(
+            engine: "local_whisper",
+            routingMode: "smart",
+            disposition: "changed",
+            fallbackUsed: true
+        )
+        model.lastServingVerdict = fallback
+        let label = model.activeSTT
+        XCTAssertTrue(label.contains("Whisper"), "got \(label)")
+        XCTAssertTrue(label.contains("fallback"), "got \(label)")
+        XCTAssertFalse(label.contains("Apple"), "fallback must not show Apple: \(label)")
+        XCTAssertEqual(
+            formatActiveSTT(lastServing: fallback),
+            "Whisper (fallback) · Smart final pass · changed"
+        )
+
+        model.lastServingVerdict = LastServingVerdict(
+            engine: "local_apple",
+            routingMode: "smart",
+            disposition: "unchanged",
+            fallbackUsed: false
+        )
+        XCTAssertEqual(
+            model.activeSTT,
+            "Apple on-device · Smart final pass · unchanged"
+        )
     }
 }

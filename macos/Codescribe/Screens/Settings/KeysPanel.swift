@@ -1,38 +1,29 @@
 import Foundation
 import SwiftUI
 
-// Providers panel: the one owner of external-AI integrations. Read-only runtime
-// rows show the resolved LLM truth per lane; the lane editors below are the ONE
-// edit path for provider, endpoint, and model overrides (promoted config keys).
-// API keys are write-only — secrets go to the Keychain via `setApiKey` and are
-// NEVER read back across the FFI; presence renders from `CsKeyStatus` booleans.
-// Workspace roots, Agent status, and MCP servers complete the agent substrate.
+// Providers panel: write-only API-key management. Secrets go to the Keychain
+// via `setApiKey` and are NEVER read back across the FFI; presence renders from
+// `CsKeyStatus` booleans. Agent configuration lives in `AgentPanel`.
 
 struct KeysPanel: View {
+    static let ownedCapabilities: Set<SettingsPanelCapability> = [.apiKeys]
+
     @ObservedObject var model: SettingsViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             EyebrowLabel(text: "Settings · \(SettingsSection.keys.title)")
-            Text("Who answers your requests.")
+            Text("API keys.")
                 .font(CSFont.ui(26, .bold))
                 .tracking(-0.5)
                 .foregroundStyle(CSColor.textHigh)
                 .padding(.top, 6)
 
-            Text("LLM providers, request lanes, API keys, and the agent substrate — every external integration lives here.")
+            Text("Stored in the macOS Keychain. Keys are write-only here — codescribe never displays a stored secret.")
                 .font(CSFont.ui(12.5))
                 .lineSpacing(2)
                 .foregroundStyle(CSColor.textMutedAlt)
                 .padding(.top, 8)
-
-            runtimeRows
-                .padding(.top, 20)
-
-            SettingsSectionLabel("LLM lanes")
-                .padding(.top, 22)
-            LLMLanesSection(model: model)
-                .padding(.top, 11)
 
             SettingsSectionLabel("API keys")
                 .padding(.top, 22)
@@ -69,55 +60,18 @@ struct KeysPanel: View {
             }
             .padding(.top, 16)
 
-            WorkspaceRootsSection(model: model)
-                .padding(.top, 30)
-
-            AgentStatusSection(model: model)
-                .padding(.top, 30)
-
-            MCPServersSection(model: model)
-                .padding(.top, 26)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
     }
 
-    // MARK: Runtime key/value rows (resolved LLM truth — read-only)
-
-    private var runtimeRows: some View {
-        VStack(spacing: 0) {
-            RuntimeRow(key: "AI formatting", value: model.formattingDescription,
-                       tint: true, trailing: .none)
-            divider
-            ForEach(LLMLane.allCases) { lane in
-                let laneModel = model.llmLane(lane)
-                RuntimeRow(key: "\(lane.title) endpoint", value: laneModel.resolvedEndpoint,
-                           tint: false, mono: true, trailing: .none)
-                divider
-                RuntimeRow(key: "\(lane.title) model", value: laneModel.resolvedModel,
-                           tint: true, mono: true, trailing: .none)
-                divider
-            }
-            RuntimeRow(key: "API keys", value: model.apiKeysDescription,
-                       tint: false,
-                       trailing: model.apiKeysStored ? .text("secure", CSColor.oliveLight) : .text("missing", CSColor.amber))
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-        )
-    }
-
-    private var divider: some View {
-        Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
-    }
 }
 
 // MARK: - Editable LLM lanes (the one provider/model edit grammar)
 
 /// Three request lanes sharing one visual grammar while preserving their distinct
-/// promoted config keys. Runtime rows above remain the effective read-only truth.
+/// promoted config keys. AgentPanel's runtime rows remain the effective
+/// read-only truth.
 struct LLMLanesSection: View {
     @ObservedObject var model: SettingsViewModel
 
@@ -343,7 +297,7 @@ private struct LLMLaneEditor: View {
     ) -> some View {
         Button("Save", action: action)
             .font(CSFont.ui(11.5, .semibold))
-            .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+            .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.chromeAccent)
             .buttonStyle(.plain)
             .disabled(draft.isEmpty)
             .accessibilityLabel(accessibilityLabel)
@@ -551,16 +505,16 @@ private struct KeyRow: View {
                 Button(action: save) {
                     Text("Save")
                         .font(CSFont.ui(12, .semibold))
-                        .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.terracottaLight)
+                        .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.chromeAccent)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(
                             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                                .fill(CSColor.terracotta.opacity(draft.isEmpty ? 0.06 : 0.14))
+                                .fill(CSColor.chromeAccent.opacity(draft.isEmpty ? 0.06 : 0.14))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                                .strokeBorder(CSColor.terracotta.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
+                                .strokeBorder(CSColor.chromeAccent.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
                         )
                 }
                 .buttonStyle(.plain)

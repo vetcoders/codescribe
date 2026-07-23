@@ -27,6 +27,12 @@ private struct OverlayTranscriptAnnotation: Equatable {
     var text: String
 }
 
+private struct OverlayContextMarker: Equatable {
+    var position: Int
+    var marker: String
+    var order: Int
+}
+
 private struct OverlayTranscriptSegment: Equatable {
     var utteranceId: UInt64?
     var text: String
@@ -79,9 +85,11 @@ protocol DictationEngine: AnyObject {
         language: CsLanguage?,
         level: FormattingPolicyOption
     ) async throws -> String
-    func pasteText(text: String) async throws -> CsPasteOutcome
+    func pasteText(text: String) async throws -> CsPasteResult
+    func deferText(text: String) async throws -> CsPasteResult
     func copyTaggedTranscript(text: String) async throws
     func pasteTargetAppName() async -> String?
+    func sendAssistiveTranscript(text: String) async throws -> Bool
     func transcribeFile(path: String) async throws -> CsTranscription
 }
 
@@ -154,6 +162,11 @@ final class OverlayState: ObservableObject {
     /// / close so it can never stick. See `WaveformView(transcribing:)`.
     @Published var transcribing: Bool = false
     @Published var toast: String?              // transient error notice
+    /// Utterance-level STT confidence for the open session (lowest avg_logprob wins).
+    /// Fed by `on_final` confidence args; drives the header low-confidence badge (LL-E).
+    @Published private(set) var sessionAvgLogprob: Float?
+    @Published private(set) var sessionSpeechPct: Float?
+    @Published private(set) var sessionConfidenceFlags: [String] = []
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
     @Published var formatFailureStatus: String?
@@ -175,6 +188,7 @@ final class OverlayState: ObservableObject {
     /// session finalizes without usable text; refined by `on_no_speech`'s reason
     /// so VAD silence and quality-gate rejection read differently.
     @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
+    @Published private(set) var indicatorMode: CsIndicatorMode = .hold
 
     // MARK: Panel placement (persisted; the window orchestrator repositions live)
     /// Anchored placement: one of six screen anchors, applied on every show().
@@ -220,6 +234,10 @@ final class OverlayState: ObservableObject {
     /// `finalizeTranscript` can pick the right notice when it resolves to empty.
     private var pendingNoSpeechMessage: String?
     private var committedSegments: [OverlayTranscriptSegment] = []
+    /// Global transcript markers captured by the agent combo. They remain
+    /// independent from per-utterance semantic annotations so the authoritative
+    /// final pass cannot erase context references.
+    @Published private var contextMarkers: [OverlayContextMarker] = []
     /// Authoritative post-stop transcript pushed by the Rust controller
     /// (`on_final_transcript_ready` → LocalFinalPass `final_formatted_text`) — the
     /// SAME text the delivery/paste and tray "Copy" use. When present it is the
@@ -248,6 +266,10 @@ final class OverlayState: ObservableObject {
     /// (TextEditor re-layout) and spins the SwiftUI render graph at 100% CPU in Idle.
     /// The authoritative `FinalTranscript` is the only post-finalize update allowed.
     private var finalized = false
+    private var agentSessionArmed = false
+    private var agentFinalTranscriptAppeared = false
+    private var agentAutoSendCancelled = false
+    private var agentDeliveryStarted = false
     private var toastTask: Task<Void, Never>?
     private var mockRevealTask: Task<Void, Never>?
     /// Belt-and-suspenders guard against an orphaned optimistic "starting" overlay.
@@ -296,6 +318,20 @@ final class OverlayState: ObservableObject {
         case .error: return CSColor.terracotta
         }
     }
+
+    /// Mirrors `core/transcript_tagging.rs` confidence_label thresholds.
+    /// Badge is shown when the utterance-level signal is low or the hallucination flag is set.
+    var showsLowConfidenceBadge: Bool {
+        OverlayConfidence.showsLowConfidenceBadge(
+            avgLogprob: sessionAvgLogprob,
+            flags: sessionConfidenceFlags
+        )
+    }
+
+    var confidenceBadgeText: String? {
+        guard showsLowConfidenceBadge else { return nil }
+        return "low confidence"
+    }
     /// Only the live-capture pill ripples. During `transcribing` / `final pass` we swap
     /// to the static pill so its repeatForever animation tears down — a second visual
     /// cue that capture has ended and post-processing is in flight.
@@ -311,7 +347,8 @@ final class OverlayState: ObservableObject {
     }
     var tagColor: Color {
         switch mode {
-        case .listening: return CSColor.terracottaLight
+        case .listening:
+            return indicatorMode == .assistive ? CSColor.assistiveLight : CSColor.terracottaLight
         case .formatted: return CSColor.oliveLight
         case .noSpeech: return CSColor.textMuted
         case .error: return CSColor.terracotta
@@ -339,10 +376,14 @@ final class OverlayState: ObservableObject {
     }
 
     /// committed finals + the current interim preview, space-joined.
-    var liveText: String {
+    private var rawLiveText: String {
         (committedUtterances + [preview])
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .joined(separator: " ")
+    }
+
+    var liveText: String {
+        insertingContextMarkers(into: rawLiveText)
     }
 
     /// Text shown in the listening body, in the SAME prominent slot that renders
@@ -533,10 +574,7 @@ final class OverlayState: ObservableObject {
     func sendToAgent() {
         // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
         captureQualityIfEdited(action: "send")
-        cancelAutoHide()
-        onSendToAgent?(activeText)
-        // The onSendToAgent closure (wired in OverlayController) also hides;
-        // the cancel ensures timer is dead even if closure path changes.
+        deliverAgentTranscript()
     }
 
     /// Caret-truth probe for the Insert self-paste guard. The overlay is a
@@ -559,24 +597,65 @@ final class OverlayState: ObservableObject {
         Task { @MainActor in
             defer { self.restartAutoHideCountdown() }
             do {
+                let result: CsPasteResult?
                 if self.insertCaretInCodescribeProbe() {
                     // The caret sits inside Codescribe (e.g. the overlay's own
                     // editable FINAL) — a synthetic Cmd+V would paste the
-                    // transcript right back into the overlay. Degrade to a
-                    // tagged clipboard copy and say so.
-                    try await engine?.copyTaggedTranscript(text: text)
-                    self.showToast("Caret is in Codescribe — copied with tags")
-                    return
+                    // transcript right back into the overlay. Arm the in-memory
+                    // Paste Here slot without touching the user's clipboard.
+                    result = try await engine?.deferText(text: text)
+                } else {
+                    result = try await engine?.pasteText(text: text)
                 }
-                let outcome = try await engine?.pasteText(text: text)
-                if outcome == .copiedToClipboard {
-                    self.showToast("Target app not focused — copied with tags")
+                switch result?.outcome {
+                case .deferredInsertArmed:
+                    let target = result?.targetAppName ?? "the target app"
+                    let shortcut = result?.deferredInsertShortcut ?? "⌘⌥V"
+                    self.showToast(
+                        "Couldn't reach \(target) — put your cursor where you want the text "
+                            + "and press \(shortcut). Your clipboard is untouched."
+                    )
+                case .copiedToClipboard:
+                    self.showToast(self.copiedInsertFallbackToast(
+                        frontmost: result?.frontmostAppName,
+                        target: result?.targetAppName,
+                        failure: result?.deferredInsertFailure
+                    ))
+                case .accessibilityPermissionNeeded:
+                    self.showToast(self.copiedInsertFallbackToast(
+                        frontmost: result?.frontmostAppName,
+                        target: result?.targetAppName,
+                        failure: result?.deferredInsertFailure
+                    ))
+                case .pasted, .noop, nil:
+                    break
                 }
             } catch {
                 self.errorMessage = "Couldn't paste transcript: \(error)"
                 self.showToast("Couldn't paste transcript")
             }
         }
+    }
+
+    private func copiedInsertFallbackToast(
+        frontmost: String?,
+        target: String?,
+        failure: String?
+    ) -> String {
+        if let failure {
+            return "\(failure) — copied with tags instead. "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        }
+        if let frontmost, let target {
+            return "Copied — your cursor is in \(frontmost), not \(target). "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        }
+        if let target {
+            return "Copied — focus couldn't be confirmed for \(target). "
+                + "Clipboard replaced; press Cmd+V where you want it."
+        }
+        return "Copied — the target app was lost. "
+            + "Clipboard replaced; press Cmd+V where you want it."
     }
 
     /// Persist through C02's single config seam, then immediately replace local
@@ -637,8 +716,21 @@ final class OverlayState: ObservableObject {
     /// TextEditor writes through this seam so only actual user edits — never a
     /// programmatic format/final update — re-anchor the terminal lifetime.
     func userEditedTranscript(_ text: String) {
+        if agentSessionArmed, agentFinalTranscriptAppeared, text != formattedText {
+            agentAutoSendCancelled = true
+        }
         formattedText = text
         restartAutoHideCountdown()
+    }
+
+    /// Consume the canonical Rust indicator mode. Agent arm is a one-shot
+    /// session latch; the accepted orange processing phase must not disarm it.
+    func applyIndicatorMode(_ mode: CsIndicatorMode) {
+        indicatorMode = mode
+        if mode == .assistive {
+            agentSessionArmed = true
+            autoPasteControlAvailable = false
+        }
     }
 
     /// AppKit reports window motion separately from SwiftUI content events.
@@ -681,16 +773,74 @@ final class OverlayState: ObservableObject {
             ? sttRawText
             : delivered
         let formattingLevel = qualityFormattingLevel.rawValue
-        Task.detached(priority: .utility) {
+        let avgLogprob = sessionAvgLogprob
+        let speechPct = sessionSpeechPct
+        let confidenceFlags = sessionConfidenceFlags
+        Task.detached(priority: .utility) { [weak self] in
             // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
             // quality write is best-effort; never block UI action.
-            try? commitOverlayQualityRecord(
+            let result = try? commitOverlayQualityRecord(
                 rawText: rawForRecord,
                 deliveredText: delivered,
                 editedText: edited,
                 action: action,
-                formattingLevel: formattingLevel
+                formattingLevel: formattingLevel,
+                avgLogprob: avgLogprob,
+                speechPct: speechPct,
+                confidenceFlags: confidenceFlags
             )
+            if let acknowledgement = result?.acknowledgement, !acknowledgement.isEmpty {
+                await MainActor.run {
+                    self?.showToast(acknowledgement)
+                }
+            }
+        }
+    }
+
+    /// Pure helpers for XCTest — keep thresholds aligned with `core/transcript_tagging.rs`.
+    enum OverlayConfidence {
+        /// Same as `HIGH_CONFIDENCE_AVG_LOGPROB_MIN` / `LOW_CONFIDENCE_AVG_LOGPROB_MAX`.
+        static let highMin: Float = -0.45
+        static let lowMax: Float = -1.20
+        /// `POSSIBLE_HALLUCINATION_LOGPROB` in contracts.rs — badge gate.
+        static let hallucinationThreshold: Float = -1.0
+
+        static func confidenceLabel(avgLogprob: Float?) -> String {
+            guard let value = avgLogprob else { return "unknown" }
+            if value >= highMin { return "high" }
+            if value <= lowMax { return "low" }
+            return "medium"
+        }
+
+        static func showsLowConfidenceBadge(avgLogprob: Float?, flags: [String]) -> Bool {
+            if flags.contains("possible_hallucination_logprob") {
+                return true
+            }
+            if let avg = avgLogprob, avg <= hallucinationThreshold {
+                return true
+            }
+            return confidenceLabel(avgLogprob: avgLogprob) == "low"
+        }
+    }
+
+    /// Keep the most concerning utterance signal for the open session.
+    private func noteUtteranceConfidence(
+        avgLogprob: Float?,
+        speechPct: Float?,
+        flags: [String]
+    ) {
+        if let next = avgLogprob {
+            if let current = sessionAvgLogprob {
+                sessionAvgLogprob = min(current, next)
+            } else {
+                sessionAvgLogprob = next
+            }
+        }
+        if let speechPct {
+            sessionSpeechPct = speechPct
+        }
+        for flag in flags where !sessionConfidenceFlags.contains(flag) {
+            sessionConfidenceFlags.append(flag)
         }
     }
 
@@ -699,6 +849,8 @@ final class OverlayState: ObservableObject {
     }
 
     func handleRecordingPreparing() {
+        agentSessionArmed = indicatorMode == .assistive
+        autoPasteControlAvailable = !agentSessionArmed
         finalized = false
         isFinalPass = false
         mode = .listening
@@ -832,6 +984,12 @@ final class OverlayState: ObservableObject {
             return
         }
         autoHideDeadline = nil
+        if agentSessionArmed, agentFinalTranscriptAppeared {
+            if !agentAutoSendCancelled {
+                deliverAgentTranscript()
+            }
+            return
+        }
         onClose?()
     }
 
@@ -847,6 +1005,28 @@ final class OverlayState: ObservableObject {
         autoHideTask?.cancel()
         autoHideTask = nil
         autoHideDeadline = nil
+    }
+
+    private func deliverAgentTranscript() {
+        let text = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard agentSessionArmed, !agentDeliveryStarted, !text.isEmpty, let engine else { return }
+        agentDeliveryStarted = true
+        cancelAutoHide()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if try await engine.sendAssistiveTranscript(text: text) {
+                    onSendToAgent?(text)
+                    onClose?()
+                } else {
+                    agentDeliveryStarted = false
+                    showToast("Agent delivery is no longer available")
+                }
+            } catch {
+                agentDeliveryStarted = false
+                showToast("Couldn't send to Agent")
+            }
+        }
     }
 
     private func abortRecordingSession(resetTranscript shouldResetTranscript: Bool = false) {
@@ -944,7 +1124,14 @@ final class OverlayState: ObservableObject {
     /// order — the authoritative ordering the bridge already provides. No lossy
     /// normalized matching, no text-dedup (a legitimately repeated token must not
     /// be dropped).
-    func applyFinal(utteranceId: UInt64, _ text: String) {
+    func applyFinal(
+        utteranceId: UInt64,
+        _ text: String,
+        avgLogprob: Float? = nil,
+        speechPct: Float? = nil,
+        confidenceFlags: [String] = []
+    ) {
+        noteUtteranceConfidence(avgLogprob: avgLogprob, speechPct: speechPct, flags: confidenceFlags)
         guard !finalized else { return }
         markTranscriptActivity()
         // A1 contract sensor (debug-only): Rust trims at source and computes
@@ -988,6 +1175,20 @@ final class OverlayState: ObservableObject {
             return
         }
         syncCommittedUtterances()
+    }
+
+    func applyContextMarker(position: UInt64, marker: String) {
+        guard !finalized, let offset = Int(exactly: position) else { return }
+        let clean = marker.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        contextMarkers.append(
+            OverlayContextMarker(position: offset, marker: clean, order: contextMarkers.count)
+        )
+        if mode == .formatted {
+            let base = usableAuthoritativeFinalText ?? rawLiveText
+            let rendered = insertingContextMarkers(into: base)
+            if formattedText != rendered { formattedText = rendered }
+        }
     }
 
     func applySessionFinalised() {
@@ -1042,17 +1243,21 @@ final class OverlayState: ObservableObject {
         guard !clean.isEmpty, clean != authoritativeFinalText else { return }
         authoritativeFinalText = clean
         formatFailureStatus = nil
-        if mode == .formatted, formattedText != clean {
-            formattedText = clean
+        let rendered = insertingContextMarkers(into: clean)
+        if mode == .formatted, formattedText != rendered {
+            formattedText = rendered
         } else if mode == .noSpeech {
             // Real text arrived after we finalised to no-speech (empty at the
             // time): recover it as the normal FINAL rather than losing it.
-            formattedText = clean
+            formattedText = rendered
             mode = .formatted
             restartAutoHideCountdown()
         }
         if deliveredText.isEmpty, !clean.isEmpty {
-            deliveredText = clean
+            deliveredText = rendered
+        }
+        if agentSessionArmed {
+            agentFinalTranscriptAppeared = true
         }
         if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !clean.isEmpty {
             sttRawText = clean
@@ -1081,8 +1286,9 @@ final class OverlayState: ObservableObject {
         } else {
             commitPreviewIfNeeded()
         }
-        let resolved = shouldShowNoSpeechOutcome ? "" : (usableAuthoritativeFinalText ?? liveText)
-        if resolved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let resolvedBase = shouldShowNoSpeechOutcome ? "" : (usableAuthoritativeFinalText ?? rawLiveText)
+        let resolved = insertingContextMarkers(into: resolvedBase)
+        if resolvedBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Nothing usable was captured — VAD silence, or all speech rejected by
             // the quality gate. Surface a dedicated no-speech outcome instead of a
             // blank editable FINAL (Copy/Format/Send acting on an empty string).
@@ -1099,9 +1305,12 @@ final class OverlayState: ObservableObject {
             if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 // Best effort: if no STT raw from per-utterance finals yet, fall back to the
                 // resolved assembly (still the raw-streaming path, not AI formatted).
-                sttRawText = resolved
+                sttRawText = resolvedBase
             }
             mode = .formatted
+            if agentSessionArmed {
+                agentFinalTranscriptAppeared = true
+            }
         }
         // FREEZE: from here, late streaming events are dropped (see the apply guards)
         // so nothing keeps mutating @Published state and re-rendering in Idle.
@@ -1129,16 +1338,23 @@ final class OverlayState: ObservableObject {
         preview = ""
         committedSegments = []
         committedUtterances = []
+        contextMarkers = []
         authoritativeFinalText = nil
         deliveredText = ""
         sttRawText = ""
         qualityFormattingLevel = .off
+        sessionAvgLogprob = nil
+        sessionSpeechPct = nil
+        sessionConfidenceFlags = []
         preFormatText = nil
         preFormatLevel = nil
         formatFailureStatus = nil
         pendingNoSpeechMessage = nil
         noSpeechNotice = OverlayState.defaultNoSpeechNotice
         finalized = false
+        agentFinalTranscriptAppeared = false
+        agentAutoSendCancelled = false
+        agentDeliveryStarted = false
         transcribing = false
         isFinalPass = false
         // A hidden panel may not emit a pointer-exit event. Never carry a paused
@@ -1203,9 +1419,40 @@ final class OverlayState: ObservableObject {
             // the raw streaming assembly. Without it, fall back to the live assembly.
             // Dedupe the write — an identical reassignment still re-invalidates the
             // bound TextEditor and feeds the Idle render churn.
-            let resolved = usableAuthoritativeFinalText ?? liveText
+            let resolved = usableAuthoritativeFinalText
+                .map { insertingContextMarkers(into: $0) }
+                ?? liveText
             if formattedText != resolved { formattedText = resolved }
         }
+    }
+
+    private func insertingContextMarkers(into text: String) -> String {
+        guard !contextMarkers.isEmpty else { return text }
+        var rendered = text
+        let ordered = contextMarkers.sorted {
+            if $0.position == $1.position { return $0.order > $1.order }
+            return $0.position > $1.position
+        }
+        for item in ordered {
+            let offset = min(max(item.position, 0), rendered.count)
+            let index = rendered.index(rendered.startIndex, offsetBy: offset)
+            let previous: Character? =
+                index > rendered.startIndex ? rendered[rendered.index(before: index)] : nil
+            let next: Character? = index < rendered.endIndex ? rendered[index] : nil
+            // A marker landing INSIDE a word ("mn|ie") stays unpadded, so the
+            // split is lossless downstream: title derivation strips the bare
+            // marker and the word reads whole again ("mnie"). Space padding is
+            // only for word-boundary insertions.
+            let splitsWord = (previous?.isLetter == true || previous?.isNumber == true)
+                && (next?.isLetter == true || next?.isNumber == true)
+            let needsLeadingSpace = !splitsWord && previous != nil && previous?.isWhitespace != true
+            let needsTrailingSpace = !splitsWord && next != nil && next?.isWhitespace != true
+            let insertion = (needsLeadingSpace ? " " : "")
+                + item.marker
+                + (needsTrailingSpace ? " " : "")
+            rendered.insert(contentsOf: insertion, at: index)
+        }
+        return rendered
     }
 
     private func normalized(_ text: String) -> String {
@@ -1353,14 +1600,20 @@ final class ControllerDictationEngine: DictationEngine {
             level: level.rawValue
         )
     }
-    func pasteText(text: String) async throws -> CsPasteOutcome {
+    func pasteText(text: String) async throws -> CsPasteResult {
         try await hotkeys.pasteText(text: text)
+    }
+    func deferText(text: String) async throws -> CsPasteResult {
+        try await hotkeys.deferText(text: text)
     }
     func copyTaggedTranscript(text: String) async throws {
         try await hotkeys.copyTextTagged(text: text)
     }
     func pasteTargetAppName() async -> String? {
         await hotkeys.pasteTargetAppName()
+    }
+    func sendAssistiveTranscript(text: String) async throws -> Bool {
+        try await hotkeys.sendAssistiveTranscript(text: text)
     }
     func transcribeFile(path: String) async throws -> CsTranscription {
         throw NSError(domain: "CodescribeRedesign", code: 1, userInfo: [
@@ -1399,8 +1652,24 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func onCorrection(text: String, previousText: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyCorrection(text, previousText: previousText) } }
     }
-    func onFinal(utteranceId: UInt64, text: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyFinal(utteranceId: utteranceId, text) } }
+    func onFinal(
+        utteranceId: UInt64,
+        text: String,
+        avgLogprob: Float?,
+        speechPct: Float?,
+        confidenceFlags: [String]
+    ) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.state?.applyFinal(
+                    utteranceId: utteranceId,
+                    text,
+                    avgLogprob: avgLogprob,
+                    speechPct: speechPct,
+                    confidenceFlags: confidenceFlags
+                )
+            }
+        }
     }
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {
         DispatchQueue.main.async {
@@ -1413,6 +1682,13 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 self.state?.applyInsertAnnotation(utteranceId: utteranceId, position: position, text: text)
+            }
+        }
+    }
+    func onContextMarker(position: UInt64, marker: String) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.state?.applyContextMarker(position: position, marker: marker)
             }
         }
     }
@@ -1464,9 +1740,27 @@ final class MockDictationEngine: DictationEngine {
         language: CsLanguage?,
         level: FormattingPolicyOption
     ) async throws -> String { text }
-    func pasteText(text: String) async throws -> CsPasteOutcome { .pasted }
+    func pasteText(text: String) async throws -> CsPasteResult {
+        CsPasteResult(
+            outcome: .pasted,
+            targetAppName: nil,
+            frontmostAppName: nil,
+            deferredInsertShortcut: nil,
+            deferredInsertFailure: nil
+        )
+    }
+    func deferText(text: String) async throws -> CsPasteResult {
+        CsPasteResult(
+            outcome: .deferredInsertArmed,
+            targetAppName: nil,
+            frontmostAppName: "Codescribe",
+            deferredInsertShortcut: "⌘⌥V",
+            deferredInsertFailure: nil
+        )
+    }
     func copyTaggedTranscript(text: String) async throws {}
     func pasteTargetAppName() async -> String? { nil }
+    func sendAssistiveTranscript(text: String) async throws -> Bool { true }
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }

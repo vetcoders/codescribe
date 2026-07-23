@@ -1,5 +1,5 @@
 use super::config::HotkeyRuntimeConfig;
-use crate::config::ShortcutBinding;
+use crate::config::{DeferredInsertShortcut, ShortcutBinding};
 use std::time::{Duration, Instant};
 
 // --- Constants ---
@@ -35,14 +35,12 @@ pub enum HoldMode {
 pub enum HotkeyEvent {
     /// Front the existing Agent window without starting recording or sending.
     ShowAgent,
+    /// Deliver the current in-memory deferred transcript at the active caret.
+    InsertHere,
     /// Hold gesture detected (press/release configured modifier combo)
-    Hold {
-        action: HoldAction,
-        mode: HoldMode,
-        force_ai: bool,
-    },
+    Hold { action: HoldAction, mode: HoldMode },
     /// Modifier change while hold is active (e.g., add/remove Shift/Cmd).
-    HoldUpdate { mode: HoldMode, force_ai: bool },
+    HoldUpdate { mode: HoldMode },
     /// Normal toggle gesture (double-tap left Option)
     ToggleNormal,
     /// Raw toggle gesture (double-tap Ctrl)
@@ -69,6 +67,13 @@ impl DoubleTapGesture {
             Self::RightOption => "Double-tap Right Option",
         }
     }
+
+    pub fn reason_token(self) -> &'static str {
+        match self {
+            Self::LeftOption => "left_option",
+            Self::RightOption => "right_option",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +89,31 @@ impl DoubleTapBlockReason {
             Self::ModifierComboActive => "another modifier or hold gesture is active",
         }
     }
+
+    /// Stable token for log/Diagnostics lines (`blocked_double_tap reason=…`).
+    pub fn reason_token(self) -> &'static str {
+        match self {
+            Self::BindingDisabled => "binding_disabled",
+            Self::ModifierComboActive => "modifier_combo_active",
+        }
+    }
+}
+
+/// Stable INFO log line for a blocked double-tap (visibility only — no routing change).
+pub fn blocked_double_tap_diagnostic_line(
+    gesture: DoubleTapGesture,
+    reason: DoubleTapBlockReason,
+) -> String {
+    format!(
+        "blocked_double_tap gesture={} reason={}",
+        gesture.reason_token(),
+        reason.reason_token()
+    )
+}
+
+/// Stable INFO log line when an arm attempt is ignored (visibility only).
+pub fn arm_ignored_diagnostic_line(reason: &str) -> String {
+    format!("arm_ignored reason={reason}")
 }
 
 /// Modifier flags for hold gesture detection
@@ -157,6 +187,7 @@ pub enum HotkeyPhysicalKey {
     RightControl,
     Fn,
     Space,
+    V,
     Other,
 }
 
@@ -197,7 +228,6 @@ pub struct HotkeyDetector {
     hold_active: bool,
     hold_active_ts: Option<Instant>,
     hold_mode: HoldMode,
-    hold_force_ai: bool,
     hold_event_sent: bool,
     last_left_tap_ts: Option<Instant>,
     last_right_tap_ts: Option<Instant>,
@@ -208,6 +238,9 @@ pub struct HotkeyDetector {
     option_side: Option<bool>,
     key_pressed_during_modifier: bool,
     show_agent_space_down: bool,
+    insert_here_v_down: bool,
+    /// Edge-trigger for `arm_ignored` diagnostics (visibility only).
+    wrong_arm_logged: bool,
 }
 
 impl Default for HotkeyDetector {
@@ -216,7 +249,6 @@ impl Default for HotkeyDetector {
             hold_active: false,
             hold_active_ts: None,
             hold_mode: HoldMode::Raw,
-            hold_force_ai: false,
             hold_event_sent: false,
             last_left_tap_ts: None,
             last_right_tap_ts: None,
@@ -227,6 +259,8 @@ impl Default for HotkeyDetector {
             option_side: None,
             key_pressed_during_modifier: false,
             show_agent_space_down: false,
+            insert_here_v_down: false,
+            wrong_arm_logged: false,
         }
     }
 }
@@ -246,6 +280,9 @@ impl HotkeyDetector {
             HotkeyDetectorInput::KeyUp { key, modifiers } => {
                 if key == HotkeyPhysicalKey::Space {
                     self.show_agent_space_down = false;
+                }
+                if key == HotkeyPhysicalKey::V {
+                    self.insert_here_v_down = false;
                 }
                 if !modifiers.ctrl && !modifiers.option && !modifiers.cmd && !modifiers.fn_key {
                     self.key_pressed_during_modifier = false;
@@ -271,6 +308,16 @@ impl HotkeyDetector {
         modifiers: HotkeyModifierSnapshot,
         config: HotkeyRuntimeConfig,
     ) -> Option<HotkeyEvent> {
+        if key == HotkeyPhysicalKey::V
+            && deferred_insert_modifiers_match(config.deferred_insert_shortcut, modifiers)
+        {
+            if self.insert_here_v_down {
+                return None;
+            }
+            self.insert_here_v_down = true;
+            return Some(HotkeyEvent::InsertHere);
+        }
+
         if key == HotkeyPhysicalKey::Space
             && modifiers.cmd
             && modifiers.shift
@@ -301,16 +348,13 @@ impl HotkeyDetector {
 
             if in_delay_window {
                 let mode = self.hold_mode;
-                let force_ai = self.hold_force_ai;
                 self.hold_active = false;
                 self.hold_active_ts = None;
-                self.hold_force_ai = false;
                 self.hold_event_sent = false;
                 self.key_pressed_during_modifier = true;
                 emitted = Some(HotkeyEvent::Hold {
                     action: HoldAction::Up,
                     mode,
-                    force_ai,
                 });
             }
         }
@@ -355,40 +399,38 @@ impl HotkeyDetector {
                 modifiers.cmd,
                 dictation_binding,
                 config.hold_exclusive,
+                config.hold_arm_modifier,
             )
         };
-        let force_ai_now = if assistive_selection_combo_active {
-            false
-        } else {
-            compute_hold_force_ai(
-                modifiers.option,
-                modifiers.shift,
-                modifiers.cmd,
-                dictation_binding,
-            )
+
+        // Visibility-only: rising edge when the non-configured arm modifier is
+        // pressed while hold base is active (valentino-class silent arm).
+        let base_for_arm = hold_base_pressed(modifiers, dictation_binding);
+        let wrong_arm = match config.hold_arm_modifier {
+            crate::config::HoldArmModifier::Shift => modifiers.cmd && !modifiers.shift,
+            crate::config::HoldArmModifier::Cmd => modifiers.shift && !modifiers.cmd,
         };
+        if base_for_arm && wrong_arm && !self.wrong_arm_logged {
+            tracing::info!("{}", arm_ignored_diagnostic_line("wrong_arm_modifier"));
+            self.wrong_arm_logged = true;
+        } else if !wrong_arm {
+            self.wrong_arm_logged = false;
+        }
 
         let mut emitted = None;
         if combo_active && !self.hold_active {
             self.hold_active = true;
             self.hold_active_ts = Some(now);
             self.hold_mode = mode_now;
-            self.hold_force_ai = force_ai_now;
             self.hold_event_sent = true;
             emitted = Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: self.hold_mode,
-                force_ai: self.hold_force_ai,
             });
-        } else if combo_active
-            && self.hold_active
-            && (mode_now != self.hold_mode || force_ai_now != self.hold_force_ai)
-        {
+        } else if combo_active && self.hold_active && mode_now != self.hold_mode {
             self.hold_mode = mode_now;
-            self.hold_force_ai = force_ai_now;
             emitted = Some(HotkeyEvent::HoldUpdate {
                 mode: self.hold_mode,
-                force_ai: self.hold_force_ai,
             });
         } else if !combo_active && self.hold_active {
             self.hold_active = false;
@@ -396,11 +438,9 @@ impl HotkeyDetector {
                 emitted = Some(HotkeyEvent::Hold {
                     action: HoldAction::Up,
                     mode: self.hold_mode,
-                    force_ai: self.hold_force_ai,
                 });
             }
             self.hold_active_ts = None;
-            self.hold_force_ai = false;
         }
 
         if raw_toggle_enabled {
@@ -545,6 +585,36 @@ impl HotkeyDetector {
     }
 }
 
+fn deferred_insert_modifiers_match(
+    shortcut: DeferredInsertShortcut,
+    modifiers: HotkeyModifierSnapshot,
+) -> bool {
+    match shortcut {
+        DeferredInsertShortcut::Disabled => false,
+        DeferredInsertShortcut::CommandOptionV => {
+            modifiers.cmd
+                && modifiers.option
+                && !modifiers.ctrl
+                && !modifiers.shift
+                && !modifiers.fn_key
+        }
+        DeferredInsertShortcut::CommandShiftV => {
+            modifiers.cmd
+                && modifiers.shift
+                && !modifiers.ctrl
+                && !modifiers.option
+                && !modifiers.fn_key
+        }
+        DeferredInsertShortcut::CommandControlV => {
+            modifiers.cmd
+                && modifiers.ctrl
+                && !modifiers.option
+                && !modifiers.shift
+                && !modifiers.fn_key
+        }
+    }
+}
+
 fn elapsed_between(now: Instant, previous: Instant) -> Duration {
     now.checked_duration_since(previous).unwrap_or_default()
 }
@@ -592,8 +662,13 @@ fn register_blocked_option_double_tap(
         (&mut detector.last_left_tap_ts, DoubleTapGesture::LeftOption)
     };
 
-    consume_double_tap(last_tap, now, interval_ms)
-        .then_some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
+    if consume_double_tap(last_tap, now, interval_ms) {
+        let line = blocked_double_tap_diagnostic_line(gesture, reason);
+        tracing::info!("{line}");
+        Some(HotkeyEvent::DoubleTapBlocked { gesture, reason })
+    } else {
+        None
+    }
 }
 
 fn hold_base_pressed(
@@ -638,12 +713,12 @@ fn check_hold_combo(modifiers: HotkeyModifierSnapshot, dictation_binding: Shortc
 
 fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
     match binding {
-        ShortcutBinding::HoldFn
+        ShortcutBinding::Disabled
+        | ShortcutBinding::HoldFn
         | ShortcutBinding::HoldCtrl
         | ShortcutBinding::HoldCtrlAlt
         | ShortcutBinding::HoldCtrlShift
-        | ShortcutBinding::HoldCtrlCmd => Some(binding),
-        ShortcutBinding::Disabled
+        | ShortcutBinding::HoldCtrlCmd
         | ShortcutBinding::DoubleCtrl
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => None,
@@ -655,10 +730,18 @@ fn compute_hold_mode(
     cmd: bool,
     dictation_binding: ShortcutBinding,
     hold_exclusive: bool,
+    arm_modifier: crate::config::HoldArmModifier,
 ) -> HoldMode {
     if hold_exclusive {
         return HoldMode::Raw;
     }
+
+    // W10-B: only the *configured* arm modifier arms Chat. The other must stay
+    // dead so Settings copy and detector agree (default Shift; Cmd alternative).
+    let arm_active = match arm_modifier {
+        crate::config::HoldArmModifier::Shift => shift,
+        crate::config::HoldArmModifier::Cmd => cmd,
+    };
 
     match dictation_binding {
         ShortcutBinding::Disabled
@@ -668,36 +751,13 @@ fn compute_hold_mode(
         | ShortcutBinding::DoubleCtrl
         | ShortcutBinding::DoubleLeftOption
         | ShortcutBinding::DoubleRightOption => HoldMode::Raw,
-        ShortcutBinding::HoldCtrlAlt => {
-            if cmd {
-                HoldMode::Selection
-            } else if shift {
+        ShortcutBinding::HoldCtrlAlt | ShortcutBinding::HoldFn => {
+            if arm_active {
                 HoldMode::Chat
             } else {
                 HoldMode::Raw
             }
         }
-        ShortcutBinding::HoldFn => {
-            if shift {
-                HoldMode::Chat
-            } else if cmd {
-                HoldMode::Selection
-            } else {
-                HoldMode::Raw
-            }
-        }
-    }
-}
-
-fn compute_hold_force_ai(
-    option: bool,
-    shift: bool,
-    cmd: bool,
-    dictation_binding: ShortcutBinding,
-) -> bool {
-    match dictation_binding {
-        ShortcutBinding::HoldCtrlAlt => option && !shift && !cmd,
-        _ => false,
     }
 }
 
@@ -718,8 +778,10 @@ mod tests {
                 assistive,
             },
             hold_exclusive: false,
+            hold_arm_modifier: crate::config::HoldArmModifier::Shift,
             hold_start_delay_ms: 800,
             double_tap_interval_ms: 200,
+            deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
         }
     }
 
@@ -799,64 +861,235 @@ mod tests {
     }
 
     #[test]
-    fn compute_hold_mode_respects_modifiers() {
-        // Fn base with Shift/Cmd modifiers
+    fn detector_deferred_insert_command_uses_configured_chord_once_per_press() {
+        let mut config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        config.deferred_insert_shortcut = DeferredInsertShortcut::CommandShiftV;
+        let mut detector = HotkeyDetector::default();
+        let base = Instant::now();
+        let command_shift = mods(false, false, true, true, false);
+
         assert_eq!(
-            compute_hold_mode(false, false, ShortcutBinding::HoldFn, false),
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base,
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::InsertHere)
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            None,
+            "key repeat must not deliver twice"
+        );
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::V,
+                modifiers: command_shift,
+            },
+            config,
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(2),
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            Some(HotkeyEvent::InsertHere)
+        );
+
+        config.deferred_insert_shortcut = DeferredInsertShortcut::Disabled;
+        detector.feed(
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::V,
+                modifiers: command_shift,
+            },
+            config,
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::KeyDown {
+                    now: base + Duration::from_millis(3),
+                    key: HotkeyPhysicalKey::V,
+                    modifiers: command_shift,
+                },
+                config,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn compute_hold_mode_respects_modifiers() {
+        use crate::config::HoldArmModifier;
+        // Fn base + default Shift arm: Shift arms, Cmd does not.
+        assert_eq!(
+            compute_hold_mode(
+                false,
+                false,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldFn, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Chat
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldFn, false),
-            HoldMode::Selection
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Shift
+            ),
+            HoldMode::Raw
+        );
+
+        // Cmd-selected arm: Cmd arms, Shift does not.
+        assert_eq!(
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Cmd
+            ),
+            HoldMode::Chat
+        );
+        assert_eq!(
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldFn,
+                false,
+                HoldArmModifier::Cmd
+            ),
+            HoldMode::Raw
         );
 
         // Ctrl-only ignores Shift/Cmd modifiers
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldCtrl, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldCtrl,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldCtrl, false),
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldCtrl,
+                false,
+                HoldArmModifier::Cmd
+            ),
             HoldMode::Raw
         );
 
-        // Ctrl+Option allows modifiers
+        // Ctrl+Option allows the configured arm
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldCtrlAlt, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldCtrlAlt,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Chat
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldCtrlAlt, false),
-            HoldMode::Selection
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldCtrlAlt,
+                false,
+                HoldArmModifier::Shift
+            ),
+            HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(false, false, ShortcutBinding::HoldCtrlAlt, false),
+            compute_hold_mode(
+                false,
+                false,
+                ShortcutBinding::HoldCtrlAlt,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
 
         // Ctrl+Shift/Cmd are fixed to raw
         assert_eq!(
-            compute_hold_mode(true, false, ShortcutBinding::HoldCtrlShift, false),
+            compute_hold_mode(
+                true,
+                false,
+                ShortcutBinding::HoldCtrlShift,
+                false,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(false, true, ShortcutBinding::HoldCtrlCmd, false),
+            compute_hold_mode(
+                false,
+                true,
+                ShortcutBinding::HoldCtrlCmd,
+                false,
+                HoldArmModifier::Cmd
+            ),
             HoldMode::Raw
         );
     }
 
     #[test]
     fn compute_hold_mode_exclusive_forces_raw() {
+        use crate::config::HoldArmModifier;
         assert_eq!(
-            compute_hold_mode(true, true, ShortcutBinding::HoldFn, true),
+            compute_hold_mode(
+                true,
+                true,
+                ShortcutBinding::HoldFn,
+                true,
+                HoldArmModifier::Shift
+            ),
             HoldMode::Raw
         );
         assert_eq!(
-            compute_hold_mode(true, true, ShortcutBinding::HoldCtrlAlt, true),
+            compute_hold_mode(
+                true,
+                true,
+                ShortcutBinding::HoldCtrlAlt,
+                true,
+                HoldArmModifier::Cmd
+            ),
             HoldMode::Raw
         );
     }
@@ -883,7 +1116,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
         assert_eq!(
@@ -898,7 +1130,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
         assert!(!detector.is_combo_active());
@@ -1098,6 +1329,158 @@ mod tests {
     }
 
     #[test]
+    fn blocked_double_tap_diagnostic_line_uses_stable_reason_tokens() {
+        assert_eq!(
+            blocked_double_tap_diagnostic_line(
+                DoubleTapGesture::LeftOption,
+                DoubleTapBlockReason::BindingDisabled,
+            ),
+            "blocked_double_tap gesture=left_option reason=binding_disabled"
+        );
+        assert_eq!(
+            blocked_double_tap_diagnostic_line(
+                DoubleTapGesture::RightOption,
+                DoubleTapBlockReason::ModifierComboActive,
+            ),
+            "blocked_double_tap gesture=right_option reason=modifier_combo_active"
+        );
+        assert_eq!(
+            arm_ignored_diagnostic_line("wrong_arm_modifier"),
+            "arm_ignored reason=wrong_arm_modifier"
+        );
+        assert_eq!(
+            DoubleTapBlockReason::BindingDisabled.reason_token(),
+            "binding_disabled"
+        );
+        assert_eq!(
+            DoubleTapBlockReason::ModifierComboActive.reason_token(),
+            "modifier_combo_active"
+        );
+    }
+
+    /// Capture INFO records while driving blocked left/right double-tap and
+    /// wrong-arm paths. Detector is the single owner of the stable line.
+    #[test]
+    fn blocked_and_ignored_diagnostics_emit_exactly_one_info_each() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Buf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut detector = HotkeyDetector::default();
+            let config = test_config(
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::Disabled, // left binding disabled → blocked_double_tap
+                ShortcutBinding::DoubleRightOption,
+            );
+            let base = Instant::now();
+
+            // Full left Option double-tap while binding disabled → blocked INFO once.
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(100),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            );
+            let blocked = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(101),
+                    key: HotkeyPhysicalKey::LeftOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            );
+            assert!(
+                matches!(
+                    blocked,
+                    Some(HotkeyEvent::DoubleTapBlocked {
+                        gesture: DoubleTapGesture::LeftOption,
+                        reason: DoubleTapBlockReason::BindingDisabled,
+                    })
+                ),
+                "expected blocked left double-tap, got {blocked:?}"
+            );
+
+            // Wrong arm: default arm is Shift; hold Fn + Cmd → arm_ignored INFO once.
+            let hold_fn_config = test_config(
+                ShortcutBinding::HoldFn,
+                ShortcutBinding::DoubleLeftOption,
+                ShortcutBinding::DoubleRightOption,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(400),
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, true),
+                },
+                hold_fn_config,
+            );
+            let _ = detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(410),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(false, false, false, true, true), // cmd + fn
+                },
+                hold_fn_config,
+            );
+        });
+
+        let captured = String::from_utf8_lossy(&buf.0.lock().unwrap()).to_string();
+        let blocked_count = captured
+            .matches("blocked_double_tap gesture=left_option reason=binding_disabled")
+            .count();
+        let arm_count = captured
+            .matches("arm_ignored reason=wrong_arm_modifier")
+            .count();
+        assert_eq!(
+            blocked_count, 1,
+            "exactly one blocked_double_tap INFO expected, got {blocked_count} in:\n{captured}"
+        );
+        assert_eq!(
+            arm_count, 1,
+            "exactly one arm_ignored INFO expected, got {arm_count} in:\n{captured}"
+        );
+    }
+
+    #[test]
     fn detector_reports_modifier_blocked_option_double_tap() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1179,7 +1562,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
 
@@ -1195,7 +1577,6 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode: HoldMode::Raw,
-                force_ai: false,
             })
         );
 
@@ -1251,14 +1632,13 @@ mod tests {
             Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: HoldMode::Raw,
-                force_ai: true,
             })
         );
         assert!(detector.is_combo_active());
     }
 
     #[test]
-    fn detector_routes_assistive_hold_binding_to_selection_mode() {
+    fn detector_releases_legacy_assistive_hold_binding() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
             ShortcutBinding::HoldFn,
@@ -1288,11 +1668,7 @@ mod tests {
                 },
                 config,
             ),
-            Some(HotkeyEvent::Hold {
-                action: HoldAction::Down,
-                mode: HoldMode::Selection,
-                force_ai: false,
-            })
+            None
         );
 
         assert_eq!(
@@ -1304,11 +1680,7 @@ mod tests {
                 },
                 config,
             ),
-            Some(HotkeyEvent::Hold {
-                action: HoldAction::Up,
-                mode: HoldMode::Selection,
-                force_ai: false,
-            })
+            None
         );
     }
 

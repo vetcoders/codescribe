@@ -16,6 +16,7 @@ use super::types::{ContentBlock, Message, Role};
 const THREADS_DIR_NAME: &str = "threads";
 const BLOBS_DIR_NAME: &str = "blobs";
 const THREAD_FILE_EXT: &str = "json";
+const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Thread {
@@ -153,6 +154,18 @@ impl ThreadStore {
     }
 
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
+        // ThreadStore is the durable title boundary. Source-specific delivery
+        // paths may hand us an assistive heredoc delimiter (`<<<`) as their
+        // heuristic title; normalize it from the first user message before
+        // either the thread JSON or its index projection can persist it.
+        let normalized = if thread.title_is_heuristic() && !title_is_meaningful(&thread.title) {
+            let mut normalized = thread.clone();
+            normalize_heuristic_title(&mut normalized);
+            Some(normalized)
+        } else {
+            None
+        };
+        let thread = normalized.as_ref().unwrap_or(thread);
         let path = self.thread_path(&thread.id)?;
         let json = serde_json::to_vec_pretty(thread).context("Failed to serialize thread JSON")?;
         atomic_write(&path, &json)?;
@@ -163,13 +176,62 @@ impl ThreadStore {
     }
 
     pub fn load_thread(&self, id: &str) -> Result<Thread> {
+        let mut thread = self.load_thread_raw(id)?;
+        if normalize_heuristic_title(&mut thread) {
+            // Lazy migration for pre-0.13.0 files. A read remains usable even
+            // on a read-only volume; the warning preserves the persistence
+            // failure while the caller still receives a safe in-memory title.
+            if let Err(error) = self.save_thread(&thread) {
+                warn!(thread_id = %id, %error, "Failed to persist healed thread title");
+            }
+        }
+        Ok(thread)
+    }
+
+    /// Heal legacy index rows whose heuristic title has no readable content.
+    /// Returns the number of thread JSON + index entries repaired. Re-running
+    /// is idempotent: once a row is healed it is no longer a candidate.
+    pub fn heal_degenerate_titles(&self) -> Result<usize> {
+        let index = ThreadIndex::load_or_create(&self.threads_dir)?;
+        let candidate_ids = index
+            .data()
+            .threads
+            .iter()
+            .filter(|summary| !title_is_meaningful(&summary.title))
+            .map(|summary| summary.id.clone())
+            .collect::<Vec<_>>();
+
+        let mut healed = 0;
+        for id in candidate_ids {
+            let result = (|| -> Result<bool> {
+                let mut thread = self.load_thread_raw(&id)?;
+                if !normalize_heuristic_title(&mut thread) {
+                    return Ok(false);
+                }
+                self.save_thread(&thread)?;
+                Ok(true)
+            })();
+            match result {
+                Ok(true) => healed += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    // One corrupt/stale row must not make the entire thread
+                    // rail disappear. Keep the row for the Swift fallback and
+                    // preserve a diagnostic for repair.
+                    warn!(thread_id = %id, %error, "Failed to heal legacy thread title");
+                }
+            }
+        }
+        Ok(healed)
+    }
+
+    fn load_thread_raw(&self, id: &str) -> Result<Thread> {
         let path = self.thread_path(id)?;
         let path = canonical_existing_child(&self.threads_dir, &path)?;
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read thread file: {}", path.display()))?;
-        let thread = serde_json::from_str::<Thread>(&raw)
-            .with_context(|| format!("Failed to parse thread file: {}", path.display()))?;
-        Ok(thread)
+        serde_json::from_str::<Thread>(&raw)
+            .with_context(|| format!("Failed to parse thread file: {}", path.display()))
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
@@ -196,8 +258,8 @@ impl ThreadStore {
     /// `updated_at` is left untouched so a rename does not reorder the rail.
     pub fn set_thread_title(&self, id: &str, title: &str) -> Result<bool> {
         let trimmed = title.trim();
-        if trimmed.is_empty() {
-            bail!("Thread title cannot be empty");
+        if !title_is_meaningful(trimmed) {
+            bail!("Thread title must contain readable text");
         }
         let path = self.thread_path(id)?;
         if !path.exists() {
@@ -216,8 +278,8 @@ impl ThreadStore {
     /// `updated_at` stays unchanged so title completion cannot reorder the rail.
     pub fn set_generated_title(&self, id: &str, title: &str) -> Result<bool> {
         let trimmed = title.trim();
-        if trimmed.is_empty() {
-            bail!("Generated thread title cannot be empty");
+        if !title_is_meaningful(trimmed) {
+            bail!("Generated thread title must contain readable text");
         }
         let path = self.thread_path(id)?;
         if !path.exists() {
@@ -299,6 +361,189 @@ impl ThreadStore {
         self.blobs_dir
             .join(format!("{}_{}.bin", stem, Utc::now().timestamp_millis()))
     }
+}
+
+/// A persisted title must carry at least one Unicode letter or number. This
+/// rejects punctuation-only transport markers such as `<<<` while preserving
+/// ordinary multilingual titles.
+pub fn title_is_meaningful(title: &str) -> bool {
+    let trimmed = title.trim();
+    !trimmed.starts_with("<<<") && trimmed.chars().any(char::is_alphanumeric)
+}
+
+fn normalize_heuristic_title(thread: &mut Thread) -> bool {
+    if !thread.title_is_heuristic() || title_is_meaningful(&thread.title) {
+        return false;
+    }
+    thread.title = derive_title_from_messages(&thread.messages);
+    true
+}
+
+fn derive_title_from_messages(messages: &[ThreadMessage]) -> String {
+    let Some(first_user) = messages
+        .iter()
+        .find(|message| message.role.eq_ignore_ascii_case("user"))
+    else {
+        return DEFAULT_THREAD_TITLE.to_string();
+    };
+
+    let mut chunks = Vec::new();
+    for value in &first_user.content {
+        collect_title_text(value, &mut chunks);
+    }
+    for chunk in chunks {
+        for line in chunk.lines() {
+            if let Some(title) = normalize_title_line(line) {
+                return title;
+            }
+        }
+    }
+    DEFAULT_THREAD_TITLE.to_string()
+}
+
+fn collect_title_text(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) if !text.trim().is_empty() => out.push(text.to_string()),
+        Value::Array(items) if !items.iter().all(Value::is_number) => {
+            for item in items {
+                collect_title_text(item, out);
+            }
+        }
+        Value::Object(map) => match map.get("type").and_then(Value::as_str) {
+            Some("text") | Some("input_text") | Some("output_text") | None => {
+                if let Some(text) = map.get("text").and_then(Value::as_str)
+                    && !text.trim().is_empty()
+                {
+                    out.push(text.to_string());
+                }
+            }
+            Some("tool_result") => {
+                if let Some(content) = map.get("content") {
+                    collect_title_text(content, out);
+                }
+            }
+            Some(_) => {}
+        },
+        _ => {}
+    }
+}
+
+fn normalize_title_line(line: &str) -> Option<String> {
+    let stripped = strip_context_markers(line);
+    let line = stripped.as_deref().unwrap_or(line);
+    let trimmed = line.trim();
+    if !title_is_meaningful(trimmed) || is_assistive_wire_label(trimmed) {
+        return None;
+    }
+    let normalized = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clipped = normalized.chars().take(72).collect::<String>();
+    title_is_meaningful(&clipped).then_some(clipped)
+}
+
+/// Vowel inventory used to recognise word fragments left behind by a mid-word
+/// context-marker capture. Covers PL/EN plus common Latin accents; `y` counts
+/// as a vowel so only consonant-only runs (never standalone words) glue.
+const TITLE_FRAGMENT_VOWELS: &str = "aeiouyąęóàáâäãåèéêëìíîïòôöõùúûü";
+
+/// Remove `{selection_N}` / `{image_N}` context-bucket markers from a title
+/// candidate. Returns `None` when the line has no marker (borrow fast path).
+///
+/// The overlay space-pads a marker even when the capture lands mid-word
+/// ("mnie" -> "mn {selection_1} ie" — intended capture behaviour), so plain
+/// removal would leave the fragments apart. A letter run of two or more
+/// characters without any vowel is not a standalone PL/EN word — treat it as
+/// a split-word fragment and glue without a space; otherwise keep a single
+/// space. Titles only: message bodies keep their markers untouched.
+fn strip_context_markers(line: &str) -> Option<String> {
+    find_context_marker(line)?;
+    let mut text = line.to_string();
+    while let Some((start, end)) = find_context_marker(&text) {
+        let left_end = text[..start].trim_end().len();
+        let right_start = text.len() - text[end..].trim_start().len();
+        // Unpadded marker (no whitespace on either side) is the overlay's
+        // lossless mid-word form ("mn{selection_1}ie") — glue unconditionally.
+        // The vowel heuristic below only serves legacy space-padded captures.
+        let no_gap = left_end == start && right_start == end;
+        let keep_space = left_end > 0
+            && right_start < text.len()
+            && !no_gap
+            && !glues_split_word(&text[..left_end], &text[right_start..]);
+        let mut next = String::with_capacity(text.len());
+        next.push_str(&text[..left_end]);
+        if keep_space {
+            next.push(' ');
+        }
+        next.push_str(&text[right_start..]);
+        text = next;
+    }
+    Some(text)
+}
+
+/// Byte range of the first `{selection_N}` / `{image_N}` marker, if any.
+/// The marker grammar is pure ASCII (`context_bucket.rs` label contract),
+/// so the returned offsets always sit on `char` boundaries.
+fn find_context_marker(text: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    while let Some(rel) = text[from..].find('{') {
+        let open = from + rel;
+        let tail = &text[open + 1..];
+        for label in ["selection_", "image_"] {
+            if let Some(rest) = tail.strip_prefix(label) {
+                let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                if digits > 0 && rest[digits..].starts_with('}') {
+                    return Some((open, open + 1 + label.len() + digits + 1));
+                }
+            }
+        }
+        from = open + 1;
+    }
+    None
+}
+
+fn glues_split_word(left: &str, right: &str) -> bool {
+    let left_fragment: Vec<char> = left
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_alphabetic())
+        .collect();
+    let right_fragment: Vec<char> = right.chars().take_while(|ch| ch.is_alphabetic()).collect();
+    fragment_lacks_vowel(&left_fragment) || fragment_lacks_vowel(&right_fragment)
+}
+
+fn fragment_lacks_vowel(fragment: &[char]) -> bool {
+    fragment.len() >= 2
+        && !fragment.iter().any(|ch| {
+            ch.to_lowercase()
+                .any(|low| TITLE_FRAGMENT_VOWELS.contains(low))
+        })
+}
+
+fn is_assistive_wire_label(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    [
+        // Canonical English skeleton labels (build_assistive_input).
+        "user_instruction:",
+        "user instruction:",
+        "selected_text:",
+        "selected text:",
+        "context:",
+        // Legacy Polish labels — threads persisted before the EN rename.
+        "instrukcja_użytkownika:",
+        "instrukcja użytkownika:",
+        "zaznaczony_tekst:",
+        "zaznaczony tekst:",
+        "kontekst:",
+        "kontekst_aplikacji:",
+        "kontekst aplikacji:",
+        "aplikacja:",
+        "okno:",
+        "system prompt",
+        "you are an agent",
+        "jesteś agentem",
+        "jestes agentem",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
 }
 
 fn app_data_dir() -> PathBuf {
@@ -632,6 +877,200 @@ mod tests {
     }
 
     #[test]
+    fn save_replaces_assistive_delimiter_title_before_json_and_index_persist() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.title = "<<<".to_string();
+        thread.messages[0].content = vec![json!({
+            "type": "input_text",
+            "text": "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nPrzygotuj plan wypisu pacjenta\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
+        })];
+
+        store.save_thread(&thread)?;
+
+        let persisted: Thread =
+            serde_json::from_str(&fs::read_to_string(store.thread_file_path(&thread.id)?)?)?;
+        assert_eq!(persisted.title, "Przygotuj plan wypisu pacjenta");
+        assert!(persisted.title_is_heuristic());
+
+        let index = ThreadIndex::load_or_create(store.threads_dir())?;
+        assert_eq!(index.data().threads[0].title, persisted.title);
+        Ok(())
+    }
+
+    #[test]
+    fn assistive_wire_labels_are_skipped_in_both_label_languages() {
+        // Canonical EN labels (current wires) and legacy PL labels (threads
+        // already on disk) must BOTH stay out of derived titles.
+        for label in [
+            "USER_INSTRUCTION:",
+            "SELECTED_TEXT: no selection available.",
+            "SELECTED_TEXT: carried in <codescribe_context>.",
+            "SELECTED_TEXT: carried in <codescribe_context> (3 selections).",
+            "CONTEXT:",
+            "INSTRUKCJA_UŻYTKOWNIKA:",
+            "ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.",
+            "KONTEKST:",
+        ] {
+            assert!(
+                is_assistive_wire_label(label),
+                "label must be skip-listed: {label}"
+            );
+            assert_eq!(
+                normalize_title_line(label),
+                None,
+                "label must never become a title: {label}"
+            );
+        }
+        assert!(!is_assistive_wire_label("Plan wypisu pacjenta"));
+        assert_eq!(
+            normalize_title_line("Plan wypisu pacjenta").as_deref(),
+            Some("Plan wypisu pacjenta")
+        );
+    }
+
+    #[test]
+    fn save_replaces_assistive_delimiter_title_for_english_wire() -> Result<()> {
+        // EN mirror of the PL fixture above: the canonical wire produced after
+        // the label rename must yield the instruction as the derived title.
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.title = "<<<".to_string();
+        thread.messages[0].content = vec![json!({
+            "type": "input_text",
+            "text": "USER_INSTRUCTION:\n<<<\nPrzygotuj plan wypisu pacjenta\n>\n\nSELECTED_TEXT: no selection available.\n"
+        })];
+
+        store.save_thread(&thread)?;
+
+        let persisted: Thread =
+            serde_json::from_str(&fs::read_to_string(store.thread_file_path(&thread.id)?)?)?;
+        assert_eq!(persisted.title, "Przygotuj plan wypisu pacjenta");
+        assert!(persisted.title_is_heuristic());
+        Ok(())
+    }
+
+    #[test]
+    fn save_strips_context_bucket_marker_and_rejoins_split_word_in_title() -> Result<()> {
+        // Incident input, verbatim: a selection capture landed mid-word and the
+        // overlay space-padded the marker inside "mnie". The derived title must
+        // read like the user's sentence, not like wire.
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.title = "<<<".to_string();
+        let incident =
+            "Chciałbym Ci przedstawić taką jedną rzecz, która mn {selection_1} ie bardzo drażni...";
+        thread.messages[0].content = vec![json!({
+            "type": "input_text",
+            "text": incident
+        })];
+
+        store.save_thread(&thread)?;
+
+        let persisted: Thread =
+            serde_json::from_str(&fs::read_to_string(store.thread_file_path(&thread.id)?)?)?;
+        assert_eq!(
+            persisted.title,
+            "Chciałbym Ci przedstawić taką jedną rzecz, która mnie bardzo drażni..."
+        );
+        // Message bodies keep their markers untouched: strip is title-only.
+        assert_eq!(persisted.messages[0].content[0]["text"], incident);
+        Ok(())
+    }
+
+    #[test]
+    fn title_markers_at_word_boundaries_collapse_to_single_space() {
+        assert_eq!(
+            normalize_title_line("say {selection_1} then").as_deref(),
+            Some("say then")
+        );
+        assert_eq!(
+            normalize_title_line("look {image_1} here").as_deref(),
+            Some("look here")
+        );
+        assert_eq!(
+            normalize_title_line("stack {selection_1} {selection_2} them").as_deref(),
+            Some("stack them")
+        );
+        assert_eq!(
+            normalize_title_line("{selection_1} leading and trailing {image_2}").as_deref(),
+            Some("leading and trailing")
+        );
+        // Mid-word split glues back without a space.
+        assert_eq!(
+            normalize_title_line("która mn {selection_1} ie bardzo drażni").as_deref(),
+            Some("która mnie bardzo drażni")
+        );
+        // Lossless unpadded mid-word form (overlay no longer pads inside words)
+        // — glues regardless of vowels, so even fragments the legacy heuristic
+        // could not join come back whole.
+        assert_eq!(
+            normalize_title_line("która mn{selection_1}ie bardzo drażni").as_deref(),
+            Some("która mnie bardzo drażni")
+        );
+        assert_eq!(
+            normalize_title_line("bard{selection_1}zo lubię pieguski").as_deref(),
+            Some("bardzo lubię pieguski")
+        );
+        // A marker-only line leaves no readable content behind.
+        assert_eq!(normalize_title_line("{selection_1}"), None);
+        // Index-less braces are not bucket markers — leave them alone.
+        assert_eq!(
+            normalize_title_line("keep {selection_} literal").as_deref(),
+            Some("keep {selection_} literal")
+        );
+    }
+
+    #[test]
+    fn title_marker_strip_still_clips_at_72_chars() {
+        let padding = "x".repeat(100);
+        let line = format!("mn {{selection_1}} ie {padding}");
+        let title = normalize_title_line(&line).expect("meaningful title");
+        assert_eq!(title.chars().count(), 72);
+        assert!(title.starts_with("mnie x"));
+        assert!(!title.contains("selection"));
+    }
+
+    #[test]
+    fn legacy_delimiter_fixture_heals_file_index_and_export_idempotently() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let store = ThreadStore::new_in(tmp.path().join("threads"))?;
+        let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
+        thread.messages[0].content = vec![json!({
+            "type": "text",
+            "text": "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nCompare insulin protocols\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
+        })];
+        store.save_thread(&thread)?;
+
+        // Emulate a pre-fix 0.13.0 artifact: both the source JSON and its
+        // denormalized index row carry the heredoc delimiter as title.
+        let thread_path = store.thread_file_path(&thread.id)?;
+        let mut thread_json: Value = serde_json::from_str(&fs::read_to_string(&thread_path)?)?;
+        thread_json["title"] = json!("<<<");
+        atomic_write(&thread_path, &serde_json::to_vec_pretty(&thread_json)?)?;
+
+        let index_path = store.threads_dir().join("index.json");
+        let mut index_json: Value = serde_json::from_str(&fs::read_to_string(&index_path)?)?;
+        index_json["threads"][0]["title"] = json!("<<<");
+        atomic_write(&index_path, &serde_json::to_vec_pretty(&index_json)?)?;
+
+        assert_eq!(store.heal_degenerate_titles()?, 1);
+        let healed = store.load_thread(&thread.id)?;
+        assert_eq!(healed.title, "Compare insulin protocols");
+        let healed_index = ThreadIndex::load_or_create(store.threads_dir())?;
+        assert_eq!(healed_index.data().threads[0].title, healed.title);
+
+        let markdown = crate::agent::thread_export::thread_to_markdown(&healed, false);
+        assert!(markdown.starts_with("# Compare insulin protocols"));
+        assert!(!markdown.contains("# <<<"));
+        assert_eq!(store.heal_degenerate_titles()?, 0);
+        Ok(())
+    }
+
+    #[test]
     fn legacy_openai_text_aliases_restore_as_plain_text() {
         let message = ThreadMessage {
             role: "assistant".to_string(),
@@ -865,6 +1304,9 @@ mod tests {
         store.save_thread(&thread)?;
 
         assert!(store.set_generated_title(&id, " \n\t ").is_err());
+        assert!(store.set_generated_title(&id, "<<<").is_err());
+        assert!(store.set_generated_title(&id, "<<< 2026-07-20").is_err());
+        assert!(store.set_thread_title(&id, "<<<").is_err());
         assert!(!store.set_generated_title("t_2026-01-01_missing", "Generated")?);
 
         assert!(store.set_thread_title(&id, "Custom authority")?);

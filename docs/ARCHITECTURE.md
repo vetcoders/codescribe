@@ -26,6 +26,28 @@ Existing files (`core/stt/whisper/`, `core/audio/streaming_recorder.rs`, `core/v
 `app/ui/overlay/mod.rs`) keep their public APIs — the layered orchestrator reuses them as Layer 1
 and Layer 3 backends. See ADR §"What is shipped today" for the gap analysis.
 
+### Final pass routing & stop-path receipts (since W11, 2026-07-23)
+
+The Apple bridge (`core/stt/apple_stt/codescribe-stt-bridge.swift`) probes dual
+backends per locale: `SpeechTranscriber` only when supported **and installed**,
+else `SFSpeechRecognizer` on-device (notably pl-PL — measured 0.24–2.3 s final
+pass vs the 20–30 s double-Whisper era). Stop-path final-pass routing is owned
+by `FINAL_PASS_MODE` (`always|smart|off`, Smart default; Settings → Dictation →
+"Final pass"); Smart skips the full re-pass only on a typed, adjudicator-backed
+completeness decision (`StreamingCompleteness`), never on punctuation.
+
+Two INFO receipts prove the path in `codescribe.log`:
+
+- `stop_path_budget: total=…s phases={rec_stop,final_pass,postproc,format,delivery} remainder=…s`
+  — closes when the stop pipeline returns; remainder is explicit, never relabeled.
+- `assistive_delivery_budget: total=…s outcome=delivered|no_pending_context|empty_transcript`
+  — assistive overlay submission is user-triggered after the stop budget ends,
+  so its real agent-runtime send reports its own wall clock.
+
+The Settings "Active STT" row consumes the last serving verdict published by
+`app/controller/serving_status.rs` through UniFFI `current_serving_verdict()` —
+runtime truth (including Apple→Whisper fallback), never configured preference.
+
 ## System Overview
 
 ```mermaid
@@ -79,7 +101,7 @@ flowchart TB
        │                            └──────────────┘      └──────────────┘
        │
   Fn hold → Raw mode (no AI)
-  Fn+Shift hold → Assistive mode (AI)
+  Fn+Shift hold → Assistive arm (default; Cmd selectable in Settings)
   Double Option → Toggle mode (respects AI setting)
 ```
 
@@ -188,9 +210,10 @@ State transitions:
 ```rust
 // app/controller/mod.rs - handle_hotkey_event()
 match (hotkey, flags) {
-    (Hold, no_shift)  => force_raw = true,   // Fn: always raw
-    (Hold, shift)     => assistive = true,   // Fn+Shift: chat
-    (Hold, cmd)       => selection = true,  // Fn+Cmd: selection mode
+    (Hold, no_arm)    => force_raw = true,   // Fn: always raw
+    (Hold, arm_mod)   => assistive = true,   // configured arm (Shift default / Cmd alt)
+    // Act-on-selection is a delivery lane when a selection is present (W10-D),
+    // not a separate dead Cmd chord.
     (Toggle, force_ai)=> force_ai = true,    // Left Option x2: force AI
     (Toggle, _)       => /* respects AI_FORMATTING_ENABLED */
 }

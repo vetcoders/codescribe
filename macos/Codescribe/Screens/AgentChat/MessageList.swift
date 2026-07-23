@@ -139,7 +139,7 @@ private struct LatestPill: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 CSIconView(icon: .chevronDown, size: 9, weight: .semibold,
-                           color: CSColor.terracottaLight)
+                           color: CSColor.chromeAccent)
                 Text("Latest")
                     .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(hovering ? CSColor.textHigh : CSColor.textBody)
@@ -313,7 +313,7 @@ private struct AttachmentChip: View {
                     .frame(width: 18, height: 18)
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             } else {
-                CSIconView(icon: .photo, size: 11, color: CSColor.terracottaLight)
+                CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
             }
             Text(attachment.name)
                 .font(CSFont.mono(10.5, .medium))

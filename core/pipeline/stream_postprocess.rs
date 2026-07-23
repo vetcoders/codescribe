@@ -441,7 +441,7 @@ fn load_legacy_jsonl_with_terms(
         }
 
         // Merge top-level mispronunciations with extras.mispronunciations
-        // (veterinary.jsonl stores them in extras, programming.jsonl at top level)
+        // (legacy seed rows store them in extras, programming.jsonl at top level)
         let mut all_mis = entry.mispronunciations;
         if let Some(extras) = entry.extras {
             all_mis.extend(extras.mispronunciations);
@@ -1274,7 +1274,8 @@ mod tests {
             Some("whisper-test".into()),
             Some("copy"),
         )
-        .expect("commit overlay correction");
+        .expect("commit overlay correction")
+        .quality_path;
         assert!(quality_path.starts_with(&temp_root));
         assert!(quality_path.ends_with("corrections.jsonl"));
 
@@ -1651,6 +1652,30 @@ mod tests {
         // Nothing lost when the term survives.
         let none = protected_terms_lost("Codescribe is great", "Codescribe is wonderful");
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn python_whole_word_boundary_does_not_corrupt_wordpython() {
+        // Regression: build_word_regex uses \b so "Python" must not rewrite
+        // the embedded sequence inside "WordPython".
+        let lexicon = builtin_only_lexicon();
+        // Explicit rule: pajton -> Python (programming.jsonl). Whole-word only.
+        let out = lexicon.apply("WordPython and pajton rocks");
+        assert!(
+            out.contains("WordPython"),
+            "must not corrupt WordPython, got {out}"
+        );
+        assert!(
+            out.contains("Python"),
+            "standalone pajton should become Python, got {out}"
+        );
+        // Stronger: applying "Python" as variant pattern must not hit WordPython.
+        let re = build_word_regex("Python").expect("Python word regex");
+        let rewritten = re.replace_all("WordPython", "XX");
+        assert_eq!(
+            rewritten, "WordPython",
+            "\\bPython\\b must not match inside WordPython"
+        );
     }
 
     #[test]

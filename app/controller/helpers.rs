@@ -21,6 +21,7 @@ use codescribe_core::config::Config;
 use codescribe_core::llm::lane_truth;
 use serde_json::json;
 
+use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
 use crate::os::tray_status;
 
 /// Global flag for current session mode.
@@ -36,6 +37,22 @@ static IS_CONVERSATION_SESSION: AtomicBool = AtomicBool::new(false);
 pub fn set_assistive_session(is_assistive: bool) {
     IS_ASSISTIVE_SESSION.store(is_assistive, Ordering::SeqCst);
     tray_status::set_tray_assistive_session(is_assistive);
+}
+
+/// Publish one canonical recording-indicator state to every Rust-owned sink.
+/// Swift receives the same `BadgeMode` through the tray-status bridge, so the
+/// cursor badge, menu glyph, and overlay spectrometer cannot drift by inventing
+/// their own lane enums.
+pub fn publish_recording_indicator(mode: BadgeMode, show_cursor_badge: bool) {
+    IS_ASSISTIVE_SESSION.store(mode == BadgeMode::Assistive, Ordering::SeqCst);
+    tray_status::set_tray_indicator_mode(mode);
+    if show_cursor_badge {
+        let persisted_size = Config::load_without_keychain().hold_badge_size;
+        show_hold_badge_with_config(HoldBadgeConfig::from_mode_with_base_diameter(
+            mode,
+            f64::from(persisted_size),
+        ));
+    }
 }
 
 /// Check if current session is assistive mode
@@ -56,8 +73,7 @@ pub fn is_conversation_session() -> bool {
 /// Route transcription delta to the active overlay.
 ///
 /// Contract:
-/// - Assistive sessions stream into Agent overlay chat bubbles.
-/// - Non-assistive sessions publish engine events over IPC/FFI for the Swift overlay.
+/// - Every dictation session publishes the same engine events over IPC/FFI.
 /// - `delta` must already follow `TranscriptDelta` backspace semantics.
 ///   This function must never receive full preview snapshots.
 pub fn route_transcription_delta(_delta: &str) {
@@ -67,7 +83,6 @@ pub fn route_transcription_delta(_delta: &str) {
 
 /// DeltaSink that routes deltas to the active UI overlay.
 ///
-/// Uses `is_assistive_session()` to decide: chat bubble vs transcription overlay.
 /// Plugs into `PresentationEmitter` → `BufferedEmitter` → delta chain.
 pub struct RoutingDeltaSink;
 
@@ -333,7 +348,10 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
     })
 }
 
-fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
+fn build_agent_stream_options(
+    ai_assistive_max_tokens: i32,
+    use_assistive_persona: bool,
+) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
@@ -342,7 +360,7 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
 
     StreamOptions {
         model,
-        system_prompt: Some(compose_agent_system_prompt()),
+        system_prompt: Some(compose_agent_system_prompt(use_assistive_persona)),
         max_tokens,
         temperature: None,
         // First-attempt default: preserve conversational chain. Session retry
@@ -351,16 +369,22 @@ fn build_agent_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
     }
 }
 
-/// Compose the agent system prompt: the base assistive prompt, the workspace
-/// section that pins the configured project roots and tells the model to resolve
-/// project names via `list_projects` instead of guessing filesystem paths, and
-/// the review-tool + connector doctrine that governs long-running MCP review
-/// calls and GitHub-connector fallback.
-fn compose_agent_system_prompt() -> String {
-    let base = crate::config::get_assistive_prompt();
+/// Compose the agent system prompt.
+///
+/// - `use_assistive_persona=true` (act-on-selection lane): base is `assistive.txt`.
+/// - `use_assistive_persona=false` (voice-chat lane, W10-D): agent persona only —
+///   workspace + doctrine, no "text assistant" identity.
+fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
     let workspace = crate::agent::tools::workspace::workspace_prompt_section();
     let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
-    format!("{base}\n\n{workspace}\n\n{doctrine}")
+    if use_assistive_persona {
+        let base = crate::config::get_assistive_prompt();
+        format!("{base}\n\n{workspace}\n\n{doctrine}")
+    } else {
+        format!(
+            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}"
+        )
+    }
 }
 
 /// Title-case a `snake_case` / `kebab-case` identifier into readable words.
@@ -482,6 +506,12 @@ fn agent_ui_event_to_delivery(event: &AgentUiEvent) -> AgentDeliveryEvent {
 /// to completion (the channel is bounded). Debug logging of tool activity stays;
 /// disk persistence still happens in `run_agent_send_path` after the drain.
 async fn apply_agent_ui_event(event: AgentUiEvent) {
+    if matches!(event, AgentUiEvent::Done) {
+        info!(
+            target: "codescribe::agent_delivery",
+            "w10a_turn_done"
+        );
+    }
     crate::agent_delivery::publish_agent_delivery_event(agent_ui_event_to_delivery(&event));
     match event {
         AgentUiEvent::TextDelta(_)
@@ -688,7 +718,9 @@ const MAX_AGENT_VISION_IMAGES: usize = 16;
 /// Returns `(cleaned_text, loaded_images, dropped_names)`. `dropped_names` lists
 /// images that could not be forwarded (missing/unreadable/too large) so the
 /// caller can surface a visible attachment error instead of silently continuing.
-fn build_image_attachments_from_text(text: &str) -> (String, Vec<ImageAttachment>, Vec<String>) {
+pub(super) fn build_image_attachments_from_text(
+    text: &str,
+) -> (String, Vec<ImageAttachment>, Vec<String>) {
     let (cleaned, mut paths) = codescribe_core::attachment::parse_image_attachment_block(text);
 
     if paths.is_empty() {
@@ -786,6 +818,14 @@ where
         // a You-bubble (user_text) + assistant placeholder, then fills it from the
         // deltas below. `user_text` is the attachment-marker-stripped transcript,
         // so the bubble shows the spoken text, not the internal attachment block.
+        // W10-A runtime receipt: log before publish so installed-app probes can
+        // prove reveal_ts < done_ts (Swift logs w10a_reveal_* on the same turn).
+        info!(
+            target: "codescribe::agent_delivery",
+            "w10a_turn_started thread_id={} user_chars={}",
+            thread_store_id,
+            user_text.chars().count()
+        );
         crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::TurnStarted {
             thread_id: thread_store_id.clone(),
             user_text: user_text.clone(),
@@ -952,9 +992,10 @@ async fn run_agent_send_with_fallback(
     text: String,
     whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
+    use_assistive_persona: bool,
 ) {
     let _send_guard = AgentSendInFlightGuard::new();
-    let stream_options = build_agent_stream_options(ai_assistive_max_tokens);
+    let stream_options = build_agent_stream_options(ai_assistive_max_tokens, use_assistive_persona);
     let agent_result = {
         let mut guard = runtime_state.lock().await;
         run_agent_send_path(&mut guard, text.clone(), stream_options).await
@@ -990,10 +1031,11 @@ async fn run_agent_send_with_fallback(
     }
 }
 
-pub(crate) async fn send_assistive_with_agent_runtime(
+pub(crate) async fn send_assistive_with_agent_runtime_lane(
     text: String,
     whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
+    use_assistive_persona: bool,
 ) {
     let runtime_state = shared_agent_runtime_state();
     run_agent_send_with_fallback(
@@ -1001,6 +1043,7 @@ pub(crate) async fn send_assistive_with_agent_runtime(
         text,
         whisper_language,
         ai_assistive_max_tokens,
+        use_assistive_persona,
     )
     .await;
 }
@@ -1037,11 +1080,35 @@ pub(crate) struct SessionEngineStats {
     pub partial_dropped_count: u64,
 }
 
+/// How the last committed streaming text was sourced (adjudicator truth).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletenessCommitSource {
+    /// At least one `UtteranceFinal` landed in this session.
+    UtteranceFinal,
+    /// `SessionFinalised` sealed the buffer.
+    SessionFinalised,
+}
+
+impl CompletenessCommitSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::UtteranceFinal => "utterance_final",
+            Self::SessionFinalised => "session_finalised",
+        }
+    }
+}
+
 /// Session telemetry captured from `EngineEvent`s.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionTelemetrySnapshot {
     pub no_speech_reason: Option<String>,
     pub stats: Option<SessionEngineStats>,
+    /// Open Preview/Correction without a subsequent UtteranceFinal (pending tail).
+    pub pending_tail: bool,
+    /// Last adjudicator commit that sealed streaming text, if any.
+    pub last_commit_source: Option<CompletenessCommitSource>,
+    /// Characters accumulated from UtteranceFinal commits (coverage signal).
+    pub committed_chars: usize,
 }
 
 pub(crate) type SharedSessionTelemetry = Arc<StdMutex<SessionTelemetrySnapshot>>;
@@ -1099,6 +1166,21 @@ impl EventSink for SessionTelemetrySink {
         match event {
             EngineEvent::NoSpeech { reason } => {
                 guard.no_speech_reason = Some(reason.clone());
+            }
+            // Preview / Correction leave an open tail until UtteranceFinal seals it.
+            EngineEvent::Preview { .. } | EngineEvent::Correction { .. } => {
+                guard.pending_tail = true;
+            }
+            EngineEvent::UtteranceFinal { text, .. } => {
+                guard.pending_tail = false;
+                guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
+                guard.committed_chars = guard
+                    .committed_chars
+                    .saturating_add(text.trim().chars().count());
+            }
+            EngineEvent::SessionFinalised { .. } => {
+                guard.pending_tail = false;
+                guard.last_commit_source = Some(CompletenessCommitSource::SessionFinalised);
             }
             EngineEvent::Stats {
                 hallucination_drops,
@@ -1396,6 +1478,8 @@ mod tests {
             snapshot.no_speech_reason.as_deref(),
             Some("vad_no_speech_detected")
         );
+        assert!(!snapshot.pending_tail);
+        assert!(snapshot.last_commit_source.is_none());
         let stats = snapshot.stats.expect("stats should be captured");
         assert_eq!(stats.hallucination_drops, 2);
         assert_eq!(stats.semantic_gate_drops, 1);
@@ -1413,6 +1497,62 @@ mod tests {
     }
 
     #[test]
+    fn test_session_telemetry_tracks_pending_tail_and_commit_source() {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+
+        sink.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "To jest".to_string(),
+        });
+        let open = snapshot_session_telemetry(&shared);
+        assert!(open.pending_tail, "preview leaves a pending tail");
+        assert!(open.last_commit_source.is_none());
+
+        sink.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "To jest kompletne zdanie.".to_string(),
+            raw_text: "To jest kompletne zdanie.".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: vec![],
+            vad_speech_pct: Some(80.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: vec![],
+        });
+        let sealed = snapshot_session_telemetry(&shared);
+        assert!(!sealed.pending_tail);
+        assert_eq!(
+            sealed.last_commit_source,
+            Some(CompletenessCommitSource::UtteranceFinal)
+        );
+        assert_eq!(
+            sealed.committed_chars,
+            "To jest kompletne zdanie.".chars().count()
+        );
+
+        sink.on_event(&EngineEvent::Correction {
+            rev: 2,
+            text: "poprawka".to_string(),
+            previous_text: "To jest kompletne zdanie.".to_string(),
+        });
+        assert!(snapshot_session_telemetry(&shared).pending_tail);
+
+        sink.on_event(&EngineEvent::SessionFinalised {
+            session_id: "s1".to_string(),
+            layer_summary: Default::default(),
+        });
+        let finalised = snapshot_session_telemetry(&shared);
+        assert!(!finalised.pending_tail);
+        assert_eq!(
+            finalised.last_commit_source,
+            Some(CompletenessCommitSource::SessionFinalised)
+        );
+    }
+
+    #[test]
     fn test_reset_session_telemetry_clears_snapshot() {
         let shared = new_session_telemetry();
         {
@@ -1422,12 +1562,18 @@ mod tests {
                 hallucination_drops: 1,
                 ..Default::default()
             });
+            guard.pending_tail = true;
+            guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
+            guard.committed_chars = 12;
         }
         reset_session_telemetry(&shared);
 
         let snapshot = snapshot_session_telemetry(&shared);
         assert!(snapshot.no_speech_reason.is_none());
         assert!(snapshot.stats.is_none());
+        assert!(!snapshot.pending_tail);
+        assert!(snapshot.last_commit_source.is_none());
+        assert_eq!(snapshot.committed_chars, 0);
     }
 
     /// The per-turn generation machinery is removed: ordinary consecutive

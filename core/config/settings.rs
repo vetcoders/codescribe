@@ -55,6 +55,29 @@ impl FormattingPolicy {
     }
 }
 
+/// Built-in workspace root used only when no user-managed roots exist.
+pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
+
+/// Trim workspace-root entries and discard empty rows while preserving the
+/// operator's order. This is the canonical normalization boundary shared by
+/// persistence, the agent tools, and readiness.
+pub fn normalize_agent_workspace_roots<I, S>(roots: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    roots
+        .into_iter()
+        .map(|root| root.as_ref().trim().to_string())
+        .filter(|root| !root.is_empty())
+        .collect()
+}
+
+/// Parse the colon-joined UniFFI/env wire representation used by Settings.
+pub fn parse_agent_workspace_roots(value: &str) -> Vec<String> {
+    normalize_agent_workspace_roots(value.split(':'))
+}
+
 /// Regular-user settings (JSON, GUI-managed).
 /// All fields are Option — None means "use default or .env override".
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -64,6 +87,9 @@ pub struct UserSettings {
     pub whisper_language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_exclusive: Option<bool>,
+    /// Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_arm_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,6 +191,11 @@ pub struct UserSettings {
     /// `onboarding_mode`). `None`/absent means the built-in auto policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_engine: Option<String>,
+    /// Final-pass routing mode (`always` | `smart` | `off`).
+    /// Seeds `FINAL_PASS_MODE` (alias `CODESCRIBE_FINAL_PASS_MODE`). Default
+    /// Smart when absent. Distinct from lexicon `FinalPassMode` in contracts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_pass_mode: Option<String>,
     /// Layered incremental transcription phase ("off" | "phase1").
     /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`; anything other than
     /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
@@ -177,10 +208,10 @@ pub struct UserSettings {
 
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
-    /// project name to an absolute path. Seeds `AGENT_WORKSPACE_ROOTS`
-    /// (colon-joined); `None`/absent means the built-in default (`~/Git`).
-    /// Env-managed (NOT promoted), same rationale as the F1 STT knobs: a manual
-    /// `~/.codescribe/.env` line keeps winning.
+    /// project name to an absolute path. The Settings UI sends the
+    /// `AGENT_WORKSPACE_ROOTS` wire key, but this field in durable
+    /// `settings.json` is the source of truth. `None`/absent means the built-in
+    /// default (`~/Git`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_workspace_roots: Option<Vec<String>>,
 }
@@ -240,6 +271,8 @@ struct HoldV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     exclusive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    arm_modifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     start_delay_ms: Option<u64>,
 }
 
@@ -281,6 +314,8 @@ struct SpeechEngineV2 {
     // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
     #[serde(skip_serializing_if = "Option::is_none")]
     stt_engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_pass_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     layered_transcription: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -405,6 +440,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
     "HOLD_EXCLUSIVE",
+    "HOLD_ARM_MODIFIER",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
     "AUTO_PASTE_ENABLED",
@@ -443,6 +479,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
     "ONBOARDING_MODE",
+    "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
     "CODESCRIBE_TYPING_CPS",
@@ -473,6 +510,7 @@ impl UserSettings {
                 }),
                 hold: Some(HoldV2 {
                     exclusive: self.hold_exclusive,
+                    arm_modifier: self.hold_arm_modifier.clone(),
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 mode_bindings: Some(normalized_mode_bindings),
@@ -491,6 +529,7 @@ impl UserSettings {
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
                     stt_engine: self.stt_engine.clone(),
+                    final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
                 }),
@@ -557,6 +596,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|i| i.hold.as_ref())
                 .and_then(|h| h.exclusive),
+            hold_arm_modifier: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.hold.as_ref())
+                .and_then(|h| h.arm_modifier.clone()),
             mode_bindings: v2
                 .interaction
                 .as_ref()
@@ -719,6 +763,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.stt_engine.clone()),
+            final_pass_mode: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.final_pass_mode.clone()),
             layered_transcription: v2
                 .speech
                 .as_ref()
@@ -989,20 +1038,34 @@ impl UserSettings {
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
             "CODESCRIBE_STT_ENGINE" => self.stt_engine = Some(value.to_owned()),
+            "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
+                let normalized = value.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "always" | "smart" | "off" => {
+                        self.final_pass_mode = Some(normalized);
+                    }
+                    _ => {
+                        warn!(
+                            "Rejected final_pass_mode write (expected always|smart|off): {value}"
+                        );
+                        return;
+                    }
+                }
+            }
             "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
                 self.layered_transcription = Some(value.to_owned())
             }
             "AGENT_WORKSPACE_ROOTS" => {
-                // Colon-separated on the wire (PATH-style); empty → None so the
-                // core falls back to the built-in default (`~/Git`).
-                let roots: Vec<String> = value
-                    .split(':')
-                    .map(str::trim)
-                    .filter(|segment| !segment.is_empty())
-                    .map(str::to_owned)
-                    .collect();
+                let roots = parse_agent_workspace_roots(value);
                 self.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
             }
+            "HOLD_ARM_MODIFIER" => match value.parse::<crate::config::HoldArmModifier>() {
+                Ok(arm) => self.hold_arm_modifier = Some(arm.as_str().to_string()),
+                Err(error) => {
+                    warn!("Rejected hold arm modifier write: {error}");
+                    return;
+                }
+            },
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
@@ -1335,6 +1398,7 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let settings = UserSettings {
             stt_engine: Some("apple".to_string()),
+            final_pass_mode: Some("smart".to_string()),
             layered_transcription: Some("phase1".to_string()),
             stt_initial_prompt_enabled: Some(true),
             ..Default::default()
@@ -1343,16 +1407,19 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
+        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
         assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
         assert_eq!(loaded.stt_initial_prompt_enabled, Some(true));
 
-        // Setters route all three keys (settings.json stays a valid seed source).
+        // Setters route keys (settings.json stays a valid seed source).
         let mut mutated = loaded;
         mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
+        mutated.set_string("FINAL_PASS_MODE", "off");
         mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
         mutated.set_bool("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", false);
         let reloaded = UserSettings::load();
         assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
+        assert_eq!(reloaded.final_pass_mode.as_deref(), Some("off"));
         assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
         assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
     }

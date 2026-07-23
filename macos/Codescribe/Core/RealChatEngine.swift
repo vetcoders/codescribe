@@ -147,12 +147,16 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling,
             MainActor.assumeIsolated {
                 // The transcript is now the chat's You-bubble — the overlay's job
                 // is done, so it fades out instead of lingering over the reply.
+                // Order: hide overlay → passive reveal (no focus steal) → ingest
+                // so the You-bubble + streaming assistant render while the turn
+                // is still live. End-of-turn must not re-activate (W10-A).
                 AppModel.shared.overlay.hideForAgentHandoff()
                 self.revealChat()
                 self.store.ingestVoiceTurn(threadId: threadId, userText: userText)
             }
         }
     }
+
     func onTextDelta(delta: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDelta(delta) } }
     }
@@ -177,14 +181,36 @@ final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling,
         }
     }
     func onDone() {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDone() } }
+        // Terminal only — never open/activate the agent window here (W10-A).
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceDone()
+                // Turn-completed persistence edge: broadcast so every observer
+                // of the persisted thread set re-reads disk truth (rail live
+                // refresh, wave S cut C) — not just the store this listener
+                // happens to drive.
+                ThreadsChangeBus.postThreadsChanged()
+            }
+        }
     }
     func onError(message: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceError(message) } }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceError(message)
+                // Errored turns still persisted the user message (and any
+                // partial reply) — the rail must learn about the thread even
+                // without a clean onDone.
+                ThreadsChangeBus.postThreadsChanged()
+            }
+        }
     }
     func onCancelled(threadId: String) {
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { self.store.ingestVoiceCancelled(threadId: threadId) }
+            MainActor.assumeIsolated {
+                self.store.ingestVoiceCancelled(threadId: threadId)
+                // Cancelled turns persist their user half too — same rule.
+                ThreadsChangeBus.postThreadsChanged()
+            }
         }
     }
 }

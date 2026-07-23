@@ -1,6 +1,105 @@
+import AppKit
 import SwiftUI
 
 // Reusable glass primitives shared by every screen. Build once, consume everywhere.
+
+/// App-wide focus policy: pointer interaction releases keyboard focus after the
+/// clicked control handles its event, while keyboard navigation and text entry
+/// keep AppKit's native focus behavior and visible accessibility affordances.
+///
+/// Apply `csFocusPolicy()` once at a window's content root. This deliberately
+/// avoids `.focusEffectDisabled()` on ordinary buttons: hiding the effect also
+/// hides the keyboard-visible focus cue that macOS users rely on.
+@MainActor
+enum CSFocusPolicy {
+    enum InputModality {
+        case keyboard
+        case pointer
+    }
+
+    static func shouldReleaseFocus(
+        for modality: InputModality,
+        hitView: NSView?
+    ) -> Bool {
+        modality == .pointer && !isTextInput(hitView)
+    }
+
+    static func isTextInput(_ view: NSView?) -> Bool {
+        var candidate = view
+        while let current = candidate {
+            if current is NSTextField || current is NSTextView {
+                return true
+            }
+            candidate = current.superview
+        }
+        return false
+    }
+}
+
+private struct CSFocusPolicyModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background {
+            CSFocusPolicyMonitor()
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct CSFocusPolicyMonitor: NSViewRepresentable {
+    func makeNSView(context: Context) -> CSFocusPolicyMonitorView {
+        CSFocusPolicyMonitorView()
+    }
+
+    func updateNSView(_ nsView: CSFocusPolicyMonitorView, context: Context) {}
+}
+
+@MainActor
+private final class CSFocusPolicyMonitorView: NSView {
+    private var mouseMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeMouseMonitor()
+        guard let window else { return }
+
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak window] event in
+            guard let window, event.window === window else { return event }
+            let hitView = window.contentView?.hitTest(event.locationInWindow)
+            guard CSFocusPolicy.shouldReleaseFocus(for: .pointer, hitView: hitView) else {
+                return event
+            }
+
+            // Let SwiftUI deliver the click first, then release the responder it
+            // may have assigned to the button. Text inputs are excluded above.
+            DispatchQueue.main.async { [weak window] in
+                window?.makeFirstResponder(nil)
+            }
+            return event
+        }
+    }
+
+    deinit {
+        if let mouseMonitor {
+            NSEvent.removeMonitor(mouseMonitor)
+        }
+    }
+
+    private func removeMouseMonitor() {
+        guard let mouseMonitor else { return }
+        NSEvent.removeMonitor(mouseMonitor)
+        self.mouseMonitor = nil
+    }
+}
+
+extension View {
+    /// Installs Codescribe's pointer-vs-keyboard focus policy for one window.
+    func csFocusPolicy() -> some View {
+        modifier(CSFocusPolicyModifier())
+    }
+}
 
 /// Dark glass container: ultraThinMaterial tinted + hairline border + deep shadow.
 struct GlassPanel<Content: View>: View {

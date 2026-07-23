@@ -33,6 +33,7 @@ struct VoiceLabLexiconRow: Identifiable, Equatable {
     let id: Int
     let variant: String
     let canonical: String
+    let source: String
 }
 
 func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionRow] {
@@ -54,10 +55,28 @@ func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
         VoiceLabLexiconRow(
             id: index,
             variant: entry.variant,
-            canonical: entry.canonical
+            canonical: entry.canonical,
+            source: entry.source
         )
     }
 }
+
+/// Honest Dictionary headline from two independent store counts (LL-F).
+/// No causality claim — corrections recorded ≠ rules learned until the loop teaches.
+func dictionaryHeadline(correctionsRecorded: Int, rulesLearned: Int) -> String {
+    "\(correctionsRecorded) corrections recorded · \(rulesLearned) rules learned"
+}
+
+func dictionarySubtitle(correctionsRecorded: Int, rulesLearned: Int, totalEntries: Int) -> String {
+    if rulesLearned > 0 {
+        return "\(rulesLearned) rules from correction provenance · \(totalEntries) custom dictionary entries total."
+    }
+    if correctionsRecorded > 0 {
+        return "\(correctionsRecorded) corrections on disk · 0 rules taught yet from this store."
+    }
+    return "Correction history and custom dictionary entries from the local quality store."
+}
+
 
 struct VoiceLabPanel: View {
     @ObservedObject var model: SettingsViewModel
@@ -71,17 +90,32 @@ struct VoiceLabPanel: View {
         customLexiconRows(model.customLexiconEntries)
     }
 
+    private var rulesLearnedCount: Int {
+        lexicon.filter { $0.source == "correction" }.count
+    }
+
+    private var correctionsRecordedCount: Int {
+        corrections.count
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 0) {
                     EyebrowLabel(text: "Settings · \(SettingsSection.voiceLab.title)")
-                    Text("See what your voice taught.")
+                    Text(dictionaryHeadline(
+                        correctionsRecorded: correctionsRecordedCount,
+                        rulesLearned: rulesLearnedCount
+                    ))
                         .font(CSFont.ui(26, .bold))
                         .tracking(-0.5)
                         .foregroundStyle(CSColor.textHigh)
                         .padding(.top, 6)
-                    Text("Corrections and custom words come from the live local quality loop.")
+                    Text(dictionarySubtitle(
+                        correctionsRecorded: correctionsRecordedCount,
+                        rulesLearned: rulesLearnedCount,
+                        totalEntries: lexicon.count
+                    ))
                         .font(CSFont.ui(12.5))
                         .foregroundStyle(CSColor.textMutedAlt)
                         .padding(.top, 8)
@@ -91,7 +125,7 @@ struct VoiceLabPanel: View {
                     model.refreshVoiceLab()
                 }
                 .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.chromeAccent)
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
             }
@@ -142,7 +176,7 @@ struct VoiceLabPanel: View {
                             HStack(spacing: 7) {
                                 Text("→")
                                     .font(CSFont.mono(11, .semibold))
-                                    .foregroundStyle(CSColor.terracottaLight)
+                                    .foregroundStyle(CSColor.chromeAccent)
                                 Text(row.editedText)
                                     .font(CSFont.ui(13, .semibold))
                                     .foregroundStyle(CSColor.textBody)
@@ -208,7 +242,7 @@ struct VoiceLabPanel: View {
                             .textSelection(.enabled)
                         Text("→")
                             .font(CSFont.mono(11, .semibold))
-                            .foregroundStyle(CSColor.terracottaLight)
+                            .foregroundStyle(CSColor.chromeAccent)
                         Text(row.canonical)
                             .font(CSFont.mono(11.5, .semibold))
                             .foregroundStyle(CSColor.textBody)

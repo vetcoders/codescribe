@@ -205,6 +205,7 @@ struct MockSettingsEngine: SettingsEngine {
     var promptRestoreObserver: ((String) throws -> Void)?
     var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
     var clearMcpConfigurationObserver: (() throws -> Void)?
+    var settingsLoader: (() -> CsSettings)?
     var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
     var resetAudioInputDeviceObserver: (() throws -> Void)?
     var voiceLabEditObserver: ((String, String) throws -> CsQualityRecord)?
@@ -212,7 +213,7 @@ struct MockSettingsEngine: SettingsEngine {
     // call sites continue to bind to config writes, not Voice Lab edits.
     var updateConfigObserver: ((String, String) throws -> Void)?
 
-    func loadSettings() -> CsSettings { settings }
+    func loadSettings() -> CsSettings { settingsLoader?() ?? settings }
     func configDir() -> String { dir }
     func shouldShowOnboarding() -> Bool { onboarding }
     func onboardingMode() -> String? { mode }
@@ -249,7 +250,10 @@ struct MockSettingsEngine: SettingsEngine {
             variant: record.variant,
             editedText: canonical,
             action: "edit",
-            timestampMs: record.timestampMs
+            timestampMs: record.timestampMs,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
     }
 
@@ -421,6 +425,7 @@ extension CsSettings {
     /// Sample config matching the mock (Polish whisper, local STT final-verdict).
     static let sample = CsSettings(
         holdExclusive: true,
+        holdArmModifier: "shift",
         holdStartDelayMs: 250,
         doubleTapIntervalMs: 320,
         toggleSilenceSec: 1.5,
@@ -435,7 +440,7 @@ extension CsSettings {
         showDockIcon: false,
         transcriptionOverlayEnabled: true,
         holdIndicator: true,
-        holdBadgeSize: 28,
+        holdBadgeSize: 12,
         holdBadgeOffsetX: 0,
         holdBadgeOffsetY: 0,
         overlayPositionMode: "snapped_top_right",
@@ -452,6 +457,7 @@ extension CsSettings {
         localModel: "whisper-large-v3-turbo",
         sttEndpoint: nil,
         sttEngine: nil,
+        finalPassMode: nil,
         llmEndpoint: "https://api.openai.com/v1/responses",
         restoreClipboard: true,
         restoreClipboardDelayMs: 200,

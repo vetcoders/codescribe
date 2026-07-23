@@ -33,6 +33,47 @@ func transcriptTagTemplateAppendWarning(_ template: String) -> String? {
         : "Missing {text}; delivered transcript will be appended after the template."
 }
 
+/// Runtime serving truth for the Active STT row (not configured preference).
+struct LastServingVerdict: Equatable {
+    let engine: String
+    let routingMode: String
+    let disposition: String?
+    let fallbackUsed: Bool
+}
+
+/// Format Active STT from the last serving verdict. Config projection is forbidden.
+func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
+    guard let verdict = lastServing else {
+        return "Not yet served"
+    }
+    let engine: String
+    switch verdict.engine {
+    case "local_apple":
+        engine = "Apple on-device"
+    case "local_whisper":
+        engine = verdict.fallbackUsed ? "Whisper (fallback)" : "Whisper"
+    case "streaming_whisper":
+        engine = "Streaming Whisper"
+    case "cloud_stt":
+        engine = "Cloud"
+    default:
+        engine = verdict.engine.isEmpty ? "Unknown" : verdict.engine
+    }
+    let mode: String
+    switch verdict.routingMode.lowercased() {
+    case "always":
+        mode = "Always final pass"
+    case "off":
+        mode = "Off final pass"
+    default:
+        mode = "Smart final pass"
+    }
+    if let disposition = verdict.disposition, !disposition.isEmpty {
+        return "\(engine) · \(mode) · \(disposition)"
+    }
+    return "\(engine) · \(mode)"
+}
+
 enum SettingsSectionAvailability: Equatable {
     case available
     case hidden
@@ -67,17 +108,67 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
+    case off
+    case four
+    case eight
+    case twelve
+
+    var id: String { visibleName }
+    var visibleName: String {
+        guard let size else { return "Off" }
+        return "\(size)px"
+    }
+    var size: UInt32? {
+        switch self {
+        case .off: return nil
+        case .four: return 4
+        case .eight: return 8
+        case .twelve: return 12
+        }
+    }
+
+    init(indicatorEnabled: Bool, size: UInt32) {
+        guard indicatorEnabled else {
+            self = .off
+            return
+        }
+        switch size {
+        case 4: self = .four
+        case 8: self = .eight
+        default: self = .twelve
+        }
+    }
+
+    var next: Self {
+        let all = Self.allCases
+        let index = all.firstIndex(of: self) ?? all.startIndex
+        return all[(index + 1) % all.count]
+    }
+}
+
 /// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
 /// map exhaustively, so routing stays testable without rendering.
 enum SettingsPanelDestination: Equatable {
     case creator
     case shortcuts
     case providers
+    case agent
     case prompts
     case dictation
     case audio
     case dictionary
     case user
+}
+
+/// Testable ownership contract for the two settings surfaces that used to be
+/// mixed together. This is UI metadata only; it never participates in storage.
+enum SettingsPanelCapability: Hashable {
+    case apiKeys
+    case llmLanes
+    case workspaceRoots
+    case agentStatus
+    case mcpServers
 }
 
 // Every rail section declares its product truth explicitly. The raw value is a
@@ -88,6 +179,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case creator
     case shortcuts
     case keys
+    case agent
     case prompts
     case engine
     case audio
@@ -101,6 +193,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .creator: return "Creator"
         case .shortcuts: return "Hotkeys"
         case .keys: return "Providers"
+        case .agent: return "Agent"
         case .prompts: return "Prompts"
         case .engine: return "Dictation"
         case .audio: return "Audio"
@@ -114,6 +207,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .creator: return .creator
         case .shortcuts: return .shortcuts
         case .keys: return .providers
+        case .agent: return .agent
         case .prompts: return .prompts
         case .engine: return .dictation
         case .audio: return .audio
@@ -124,7 +218,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var availability: SettingsSectionAvailability {
         switch self {
-        case .creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user:
+        case .creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .user:
             return .available
         }
     }
@@ -232,6 +326,7 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
 @MainActor
 enum SettingsDeepLink {
     static let pendingSectionDidChange = Notification.Name("codescribe.settingsDeepLink.pendingSectionDidChange")
+    static let agentConfigurationSection: SettingsSection = .agent
 
     static var pendingSection: SettingsSection? {
         didSet {
@@ -531,6 +626,7 @@ final class SettingsViewModel: ObservableObject {
         providerId: String,
         modelEditGeneration: Int
     )?
+    private var holdBadgeObserver: NSObjectProtocol?
 
     init(
         engine: SettingsEngine? = nil,
@@ -541,6 +637,15 @@ final class SettingsViewModel: ObservableObject {
         buildInfo: AppBuildInfo = .current(),
         laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
             laneTruthSnapshot(lane: lane)
+        },
+        servingStatusProvider: @escaping () -> LastServingVerdict? = {
+            guard let verdict = currentServingVerdict() else { return nil }
+            return LastServingVerdict(
+                engine: verdict.engine,
+                routingMode: verdict.routingMode,
+                disposition: verdict.disposition,
+                fallbackUsed: verdict.fallbackUsed
+            )
         }
     ) {
         self.engine = engine
@@ -550,6 +655,7 @@ final class SettingsViewModel: ObservableObject {
         self.hotkeys = hotkeys
         self.buildInfo = buildInfo
         self.laneTruthProvider = laneTruthProvider
+        self.servingStatusProvider = servingStatusProvider
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -566,11 +672,23 @@ final class SettingsViewModel: ObservableObject {
         self.audioInput = .sample
         self.audioInputReadError = nil
         self.resetPreview = .sample
+        // K4: tray cycles arrive on the bus; reload Settings badge display.
+        // Register after every stored property is initialized (Swift init order).
+        holdBadgeObserver = NotificationCenter.default.addObserver(
+            forName: ConfigChangeBus.holdBadgeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reloadHoldBadgeFromDisk()
+            }
+        }
     }
 
     /// Re-read live state (permissions can change while the window is open).
     func refresh() {
         permissions = permissionProbe.snapshot()
+        refreshServingStatus()
         // A permission granted while Settings is open (e.g. via the checklist's
         // "Open System Settings") should bring hotkeys live without an app
         // restart. Idempotent bridge call — a no-op once the tap is already armed.
@@ -753,8 +871,11 @@ final class SettingsViewModel: ObservableObject {
     func select(_ target: SettingsSection) {
         guard target.availability == .available else { return }
         section = target
-        if target == .keys {
+        if target == .agent {
             refreshAssistiveModelDiscovery()
+        }
+        if target == .engine {
+            refreshServingStatus()
         }
     }
 
@@ -807,8 +928,23 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Engine-panel derived values (runtime truth)
 
+    /// Last serving verdict published by the runtime owner (not config).
+    /// Tests inject directly; live path refreshes via `servingStatusProvider`
+    /// (UniFFI `currentServingVerdict()`) in `refresh()` and on panel entry.
+    var lastServingVerdict: LastServingVerdict?
+
+    /// Runtime serving-truth source — defaults to the UniFFI bridge snapshot.
+    let servingStatusProvider: () -> LastServingVerdict?
+
+    /// Pull the latest stop-path serving verdict from the runtime owner.
+    func refreshServingStatus() {
+        lastServingVerdict = servingStatusProvider()
+    }
+
+    /// Active STT row — consumes runtime serving truth only.
+    /// Configured engine/mode are preference controls, not this label.
     var activeSTT: String {
-        settings.useLocalStt ? "Local · final verdict" : "Cloud · streaming"
+        formatActiveSTT(lastServing: lastServingVerdict)
     }
 
     /// STT is "healthy" (olive dot) when a local model is configured, or when a
@@ -1163,6 +1299,34 @@ final class SettingsViewModel: ObservableObject {
         persist("CODESCRIBE_STT_ENGINE", id)
     }
 
+    /// Final-pass routing: always | smart | off (default smart).
+    var finalPassModeId: String {
+        let raw = (settings.finalPassMode ?? "smart").lowercased()
+        switch raw {
+        case "always", "off": return raw
+        default: return "smart"
+        }
+    }
+
+    var finalPassModeLabel: String {
+        switch finalPassModeId {
+        case "always": return "Always"
+        case "off": return "Off"
+        default: return "Smart"
+        }
+    }
+
+    func setFinalPassMode(_ id: String) {
+        let normalized: String
+        switch id.lowercased() {
+        case "always": normalized = "always"
+        case "off": normalized = "off"
+        default: normalized = "smart"
+        }
+        settings.finalPassMode = normalized
+        persist("FINAL_PASS_MODE", normalized)
+    }
+
     /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); anything
     /// else (including "off"/absent) is OFF — mirrors the core `layered_phase`.
     var layeredTranscriptionEnabled: Bool {
@@ -1176,6 +1340,55 @@ final class SettingsViewModel: ObservableObject {
         let value = on ? "phase1" : "off"
         settings.layeredTranscription = value
         persist("CODESCRIBE_LAYERED_TRANSCRIPTION", value)
+    }
+
+    var holdBadgeOption: HoldBadgeOption {
+        HoldBadgeOption(
+            indicatorEnabled: settings.holdIndicator,
+            size: settings.holdBadgeSize
+        )
+    }
+
+    /// Off changes visibility only, preserving the stored size. A concrete size
+    /// enables the indicator and writes both existing keys atomically.
+    ///
+    /// K3 (W10-E): persists immediately; takes effect at the *next* badge show
+    /// (no live redraw of a visible caret badge).
+    /// K4: posts `ConfigChangeBus.holdBadgeDidChange` so the tray reflects it.
+    func setHoldBadgeOption(_ option: HoldBadgeOption) {
+        guard let size = option.size else {
+            settings.holdIndicator = false
+            persist("HOLD_INDICATOR", "0")
+            ConfigChangeBus.postHoldBadgeChanged()
+            return
+        }
+        settings.holdIndicator = true
+        settings.holdBadgeSize = size
+        persistMany([
+            CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
+            CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
+        ])
+        ConfigChangeBus.postHoldBadgeChanged()
+    }
+
+    /// Reload badge fields from the engine after a peer surface (tray) wrote them.
+    func reloadHoldBadgeFromDisk() {
+        guard let engine else { return }
+        settings = engine.loadSettings()
+        objectWillChange.send()
+    }
+
+    /// Assistive-arm modifier on the hold base: `"shift"` (default) or `"cmd"`.
+    var holdArmModifier: String {
+        let raw = settings.holdArmModifier.lowercased()
+        return (raw == "cmd" || raw == "command") ? "cmd" : "shift"
+    }
+
+    func setHoldArmModifier(_ value: String) {
+        let normalized = (value.lowercased() == "cmd" || value.lowercased() == "command")
+            ? "cmd" : "shift"
+        settings.holdArmModifier = normalized
+        persist("HOLD_ARM_MODIFIER", normalized)
     }
 
     // MARK: - Agent workspace roots (list_projects tool)

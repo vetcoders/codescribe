@@ -14,6 +14,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use tracing::trace;
 
+use crate::os::hold_badge::BadgeMode;
+
 type TrayStatusSink = Arc<dyn Fn(TrayStatusSnapshot) + Send + Sync + 'static>;
 
 /// Status of the Codescribe system, formerly reflected in the AppKit tray icon.
@@ -72,20 +74,34 @@ impl TrayStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrayStatusSnapshot {
     pub status: TrayStatus,
-    pub assistive: bool,
+    pub indicator_mode: BadgeMode,
 }
 
 impl TrayStatusSnapshot {
     pub fn new(status: TrayStatus, assistive: bool) -> Self {
-        Self { status, assistive }
+        let indicator_mode = if status == TrayStatus::Thinking {
+            BadgeMode::Processing
+        } else if assistive {
+            BadgeMode::Assistive
+        } else {
+            BadgeMode::Hold
+        };
+        Self {
+            status,
+            indicator_mode,
+        }
+    }
+
+    pub fn with_indicator_mode(status: TrayStatus, indicator_mode: BadgeMode) -> Self {
+        Self {
+            status,
+            indicator_mode,
+        }
     }
 
     pub fn is_assistive_visible(&self) -> bool {
-        self.assistive
-            && matches!(
-                self.status,
-                TrayStatus::Starting | TrayStatus::Listening | TrayStatus::Thinking
-            )
+        self.indicator_mode == BadgeMode::Assistive
+            && matches!(self.status, TrayStatus::Starting | TrayStatus::Listening)
     }
 
     pub fn tooltip(&self) -> String {
@@ -151,11 +167,27 @@ pub fn current_tray_status_snapshot() -> TrayStatusSnapshot {
 
 /// Update only the active assistive lane and notify Swift if the payload changed.
 pub fn set_tray_assistive_session(assistive: bool) {
+    set_tray_indicator_mode(if assistive {
+        BadgeMode::Assistive
+    } else {
+        BadgeMode::Hold
+    });
+}
+
+/// Publish the canonical recording indicator semantic. Badge, tray, and overlay
+/// all consume this same `BadgeMode`; status (`Listening`/`Thinking`) remains a
+/// separate lifecycle axis. Processing always wins over the session lane.
+pub fn set_tray_indicator_mode(indicator_mode: BadgeMode) {
     let snapshot = {
         let mut current = current_status_store()
             .write()
             .unwrap_or_else(|error| error.into_inner());
-        let next = TrayStatusSnapshot::new(current.status, assistive);
+        let effective_mode = if current.status == TrayStatus::Thinking {
+            BadgeMode::Processing
+        } else {
+            indicator_mode
+        };
+        let next = TrayStatusSnapshot::with_indicator_mode(current.status, effective_mode);
         if *current == next {
             return;
         }
@@ -176,7 +208,12 @@ pub fn update_tray_status(status: TrayStatus) {
         let mut current = current_status_store()
             .write()
             .unwrap_or_else(|error| error.into_inner());
-        let next = TrayStatusSnapshot::new(status, current.assistive);
+        let indicator_mode = if status == TrayStatus::Thinking {
+            BadgeMode::Processing
+        } else {
+            current.indicator_mode
+        };
+        let next = TrayStatusSnapshot::with_indicator_mode(status, indicator_mode);
         *current = next;
         next
     };
@@ -196,7 +233,7 @@ fn notify_tray_status(snapshot: TrayStatusSnapshot) {
     } else {
         trace!(
             status = ?snapshot.status,
-            assistive = snapshot.assistive,
+            indicator_mode = ?snapshot.indicator_mode,
             "tray status updated before Swift bridge listener registration"
         );
     }
@@ -207,15 +244,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn assistive_visible_covers_starting_through_thinking() {
+    fn assistive_visible_covers_starting_and_listening_only() {
         // The assistive lane is set before the pipeline emits `Listening`, so the
         // long "Starting..." warm-up must already read as assistive - otherwise the
         // menu bar flashes dictation styling until the first `Listening` beat.
-        for status in [
-            TrayStatus::Starting,
-            TrayStatus::Listening,
-            TrayStatus::Thinking,
-        ] {
+        for status in [TrayStatus::Starting, TrayStatus::Listening] {
             assert!(
                 TrayStatusSnapshot::new(status, true).is_assistive_visible(),
                 "{status:?} with an active assistive lane should read as assistive"
@@ -228,5 +261,10 @@ mod tests {
         assert!(!TrayStatusSnapshot::new(TrayStatus::Idle, true).is_assistive_visible());
         assert!(!TrayStatusSnapshot::new(TrayStatus::Success, true).is_assistive_visible());
         assert!(!TrayStatusSnapshot::new(TrayStatus::Starting, false).is_assistive_visible());
+        assert!(!TrayStatusSnapshot::new(TrayStatus::Thinking, true).is_assistive_visible());
+        assert_eq!(
+            TrayStatusSnapshot::new(TrayStatus::Thinking, true).indicator_mode,
+            BadgeMode::Processing
+        );
     }
 }

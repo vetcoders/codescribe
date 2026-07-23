@@ -21,8 +21,13 @@ use super::defaults::{
     default_assistive_model, default_assistive_provider, default_formatting_model,
     default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
-use super::settings::FormattingPolicy;
-use super::types::{Config, Language, OverlayPositionMode, TranscriptSendMode};
+use super::settings::{
+    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, normalize_agent_workspace_roots,
+    parse_agent_workspace_roots,
+};
+use super::types::{
+    Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
+};
 
 static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
 static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -71,6 +76,7 @@ impl Config {
 
         // One-time import from legacy .env-only installs into settings.json.
         super::migrate::migrate_if_needed(file_env_vars.as_ref());
+        super::migrate::migrate_agent_workspace_roots_if_needed(file_env_vars.as_ref());
 
         // Optional .env remains available for env-managed / power-user keys, but
         // promoted settings are intentionally excluded so stale ~/.codescribe/.env
@@ -91,6 +97,21 @@ impl Config {
 
         // Apply user settings first (lowest priority after defaults)
         config.apply_user_settings(&user_settings);
+
+        // Hold-indicator controls remain existing power-user `.env` keys (no
+        // settings.json schema or migration). Re-read just these two values on
+        // every snapshot so Settings/tray writes hot-apply after process-env
+        // bootstrap; an explicit process env still wins in `load_from_env`.
+        if let Some(file_env) = file_env_vars.as_ref() {
+            if let Some(value) = file_env.get("HOLD_INDICATOR") {
+                config.hold_indicator = matches!(value.as_str(), "1" | "true" | "yes" | "on");
+            }
+            if let Some(value) = file_env.get("HOLD_BADGE_SIZE")
+                && let Ok(size) = value.parse()
+            {
+                config.hold_badge_size = size;
+            }
+        }
 
         // Override with environment variables (explicit runtime env + injected env-managed .env).
         config.load_from_env();
@@ -166,6 +187,41 @@ impl Config {
         FormattingPolicy::resolve(runtime.as_deref(), settings.formatting_level.as_deref())
     }
 
+    /// Resolve the roots selected in Settings from fresh persisted truth.
+    ///
+    /// `settings.json` is authoritative. A legacy `.env`/process value is used
+    /// only when the durable field is absent, so an old bootstrap value cannot
+    /// mask a live Settings write. The migration pass copies legacy `.env`
+    /// roots into `settings.json` before this resolver runs.
+    pub fn effective_agent_workspace_roots() -> Vec<String> {
+        let settings = super::settings::UserSettings::load();
+        let persisted =
+            normalize_agent_workspace_roots(settings.agent_workspace_roots.unwrap_or_default());
+        if !persisted.is_empty() {
+            return persisted;
+        }
+
+        let env_path = Self::env_path();
+        if env_path.exists()
+            && let Ok(vars) = Self::parse_env_file(&env_path)
+            && let Some(value) = vars.get("AGENT_WORKSPACE_ROOTS")
+        {
+            let roots = parse_agent_workspace_roots(value);
+            if !roots.is_empty() {
+                return roots;
+            }
+        }
+
+        if let Ok(value) = std::env::var("AGENT_WORKSPACE_ROOTS") {
+            let roots = parse_agent_workspace_roots(&value);
+            if !roots.is_empty() {
+                return roots;
+            }
+        }
+
+        vec![DEFAULT_AGENT_WORKSPACE_ROOT.to_string()]
+    }
+
     /// Inject optional .env values into the process environment without allowing
     /// legacy file overrides to shadow promoted settings.json-backed keys.
     fn inject_file_env_for_runtime(file_env: &HashMap<String, String>) {
@@ -227,6 +283,11 @@ impl Config {
         if let Ok(val) = Self::config_runtime_env_var("HOLD_EXCLUSIVE") {
             self.hold_exclusive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
+        if let Ok(val) = Self::config_runtime_env_var("HOLD_ARM_MODIFIER")
+            && let Ok(arm) = val.parse()
+        {
+            self.hold_arm_modifier = arm;
+        }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_START_DELAY_MS")
             && let Ok(ms) = val.parse()
         {
@@ -241,6 +302,11 @@ impl Config {
             && let Ok(sec) = val.parse()
         {
             self.toggle_silence_sec = sec;
+        }
+        if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
+            && let Ok(shortcut) = val.parse::<DeferredInsertShortcut>()
+        {
+            self.deferred_insert_shortcut = shortcut;
         }
 
         // Language
@@ -297,7 +363,7 @@ impl Config {
             self.tray_start_assistive = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_INDICATOR") {
-            self.hold_indicator = val.parse().unwrap_or(true);
+            self.hold_indicator = matches!(val.as_str(), "1" | "true" | "yes" | "on");
         }
         if let Ok(val) = Self::config_runtime_env_var("HOLD_BADGE_SIZE")
             && let Ok(size) = val.parse()
@@ -485,6 +551,12 @@ impl Config {
             && let Some(v) = settings.hold_exclusive
         {
             self.hold_exclusive = v;
+        }
+        if Self::config_runtime_env_var("HOLD_ARM_MODIFIER").is_err()
+            && let Some(ref v) = settings.hold_arm_modifier
+            && let Ok(arm) = v.parse()
+        {
+            self.hold_arm_modifier = arm;
         }
         // AI
         if Self::config_runtime_env_var("AI_FORMATTING_ENABLED").is_err()
@@ -707,6 +779,13 @@ impl Config {
         {
             Self::safe_set_env("CODESCRIBE_STT_ENGINE", v);
         }
+        // FINAL_PASS_MODE is the mission-canonical key; seed both aliases when unset.
+        if Self::config_runtime_env_var("FINAL_PASS_MODE").is_err()
+            && Self::config_runtime_env_var("CODESCRIBE_FINAL_PASS_MODE").is_err()
+            && let Some(ref v) = settings.final_pass_mode
+        {
+            Self::safe_set_env("FINAL_PASS_MODE", v);
+        }
         if Self::config_runtime_env_var("CODESCRIBE_LAYERED_TRANSCRIPTION").is_err()
             && let Some(ref v) = settings.layered_transcription
         {
@@ -723,8 +802,9 @@ impl Config {
         }
 
         // ── Agent workspace roots ──
-        // Colon-joined (PATH-style); the `list_projects` tool reads and splits it.
-        // Explicit process env / .env wins; settings.json only seeds when absent.
+        // Compatibility seed for older runtime readers. Agent tools no longer
+        // consume this mutable process snapshot; they re-read settings.json via
+        // `effective_agent_workspace_roots` on every call.
         if Self::config_runtime_env_var("AGENT_WORKSPACE_ROOTS").is_err()
             && let Some(ref roots) = settings.agent_workspace_roots
             && !roots.is_empty()
@@ -799,6 +879,9 @@ impl Config {
                 | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
+                }
+                "HOLD_ARM_MODIFIER" => {
+                    settings.set_string(key, value);
                 }
                 _ => {
                     settings.set_string(key, value);
@@ -878,6 +961,15 @@ impl Config {
                     }
                     "SOUND_NAME" => settings_ref.sound_name = Some((*value).to_string()),
                     "WHISPER_MODEL" => settings_ref.whisper_model = Some((*value).to_string()),
+                    "AGENT_WORKSPACE_ROOTS" => {
+                        let roots = parse_agent_workspace_roots(value);
+                        settings_ref.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
+                    }
+                    "HOLD_ARM_MODIFIER" => {
+                        if let Ok(arm) = value.parse::<crate::config::HoldArmModifier>() {
+                            settings_ref.hold_arm_modifier = Some(arm.as_str().to_string());
+                        }
+                    }
                     // ── u64 ──
                     "HOLD_START_DELAY_MS" => {
                         if let Ok(v) = value.parse::<u64>() {
@@ -1393,6 +1485,97 @@ mod tests {
 
     #[test]
     #[serial]
+    fn hold_arm_modifier_roundtrips_through_persistence_and_fresh_load() {
+        let _tmp = setup_isolated_data_dir();
+        let _modifier = TestEnvGuard::unset("HOLD_ARM_MODIFIER");
+        let config = Config::default();
+
+        for (stored, expected) in [
+            ("cmd", crate::config::HoldArmModifier::Cmd),
+            ("shift", crate::config::HoldArmModifier::Shift),
+        ] {
+            config
+                .save_to_env("HOLD_ARM_MODIFIER", stored)
+                .expect("persist arm modifier");
+            assert_eq!(
+                UserSettings::load().hold_arm_modifier.as_deref(),
+                Some(stored)
+            );
+            assert_eq!(Config::load_without_keychain().hold_arm_modifier, expected);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn hold_indicator_ui_writes_existing_env_keys_without_settings_json_drift() {
+        let _tmp = setup_isolated_data_dir();
+        let _indicator = TestEnvGuard::unset("HOLD_INDICATOR");
+        let _size = TestEnvGuard::unset("HOLD_BADGE_SIZE");
+        let settings = UserSettings {
+            show_dock_icon: Some(true),
+            ..UserSettings::default()
+        };
+        settings.save().expect("seed settings json");
+        let settings_before = fs::read(UserSettings::settings_path()).expect("read settings json");
+        let config = Config::default();
+
+        config
+            .save_to_env("HOLD_BADGE_SIZE", "8")
+            .expect("save stored badge size");
+        config
+            .save_to_env("HOLD_INDICATOR", "0")
+            .expect("disable indicator");
+        let disabled = Config::parse_env_file(&Config::env_path()).expect("read env");
+        assert_eq!(
+            disabled.get("HOLD_INDICATOR").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            disabled.get("HOLD_BADGE_SIZE").map(String::as_str),
+            Some("8"),
+            "Off must preserve the stored badge size"
+        );
+        let disabled_config = Config::load_without_keychain();
+        assert!(!disabled_config.hold_indicator);
+        assert_eq!(disabled_config.hold_badge_size, 8);
+
+        for size in [4, 8, 12] {
+            let size = size.to_string();
+            config
+                .save_to_env_many(&[("HOLD_INDICATOR", "1"), ("HOLD_BADGE_SIZE", &size)])
+                .expect("save enabled badge size");
+            let persisted = Config::parse_env_file(&Config::env_path()).expect("read env");
+            assert_eq!(
+                persisted.get("HOLD_INDICATOR").map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                persisted.get("HOLD_BADGE_SIZE").map(String::as_str),
+                Some(size.as_str())
+            );
+            // Test builds intentionally allow repeated process-env bootstrap,
+            // unlike production's one-shot tracked bootstrap. Remove the prior
+            // injected snapshot so this reload exercises the newly persisted
+            // values instead of the test-only stale process copy.
+            // SAFETY: this test is serial and the guards above restore both keys.
+            unsafe {
+                std::env::remove_var("HOLD_INDICATOR");
+                std::env::remove_var("HOLD_BADGE_SIZE");
+            }
+            let live = Config::load_without_keychain();
+            assert!(live.hold_indicator);
+            assert_eq!(live.hold_badge_size.to_string(), size);
+        }
+
+        let settings_after = fs::read(UserSettings::settings_path()).expect("read settings json");
+        assert_eq!(
+            settings_before, settings_after,
+            "settings.json must not gain badge keys"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn auto_paste_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
         let _tmp = setup_isolated_data_dir();
         let _runtime = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
@@ -1639,10 +1822,13 @@ mod tests {
             UserSettings::load().llm_model.as_deref(),
             Some("batch-model")
         );
-        let env_vars = Config::parse_env_file(&Config::env_path()).expect("parse .env");
         assert_eq!(
-            env_vars.get("AGENT_WORKSPACE_ROOTS").map(String::as_str),
-            Some("/tmp/a:/tmp/b")
+            UserSettings::load().agent_workspace_roots,
+            Some(vec!["/tmp/a".to_string(), "/tmp/b".to_string()])
+        );
+        assert!(
+            !Config::env_path().exists(),
+            "a fully promoted settings batch must not create a legacy .env"
         );
     }
 

@@ -1,3 +1,4 @@
+import AppKit
 import OSLog
 import SwiftUI
 
@@ -233,6 +234,105 @@ struct ChatThread: Identifiable {
     var totalTokens: UInt64? = nil
 }
 
+/// Shared Swift-side title guard for coordinator results, manual renames, and
+/// rail fallbacks. The durable owner is ThreadStore; this policy prevents a
+/// provider failure or stale legacy row from flashing transport punctuation in
+/// the live model before disk truth refreshes.
+enum ThreadTitlePolicy {
+    static func normalized(_ value: String?, limit: Int = 72) -> String? {
+        guard let value else { return nil }
+        let collapsed = strippingContextMarkers(from: value)
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+        guard !collapsed.hasPrefix("<<<"),
+              collapsed.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        return String(collapsed.prefix(limit))
+    }
+
+    static func firstUserExcerpt(in messages: [ChatMessage], limit: Int = 72) -> String? {
+        guard let message = messages.first(where: { $0.role == .you }) else { return nil }
+        let presented = AssistivePromptParser.presented(message)
+        return normalized(presented.text, limit: limit)
+    }
+
+    /// Vowel inventory used to recognise word fragments left behind by a
+    /// mid-word context-marker capture. Mirrors `TITLE_FRAGMENT_VOWELS` in
+    /// `core/agent/thread_store.rs` (the durable owner of title derivation).
+    private static let fragmentVowels = Set("aeiouyąęóàáâäãåèéêëìíîïòôöõùúûü")
+
+    /// Remove `{selection_N}` / `{image_N}` context-bucket markers from a
+    /// title candidate. Mirror of the Rust `strip_context_markers`: the
+    /// overlay space-pads a marker even when the capture lands mid-word
+    /// ("mnie" -> "mn {selection_1} ie"), so after removal a letter run of
+    /// two or more characters without any vowel is treated as a split-word
+    /// fragment and glued back without a space; otherwise a single space
+    /// stays. Titles only — message bodies keep their markers untouched.
+    static func strippingContextMarkers(from text: String) -> String {
+        guard text.contains("{selection_") || text.contains("{image_") else { return text }
+        var chars = Array(text)
+        while let marker = contextMarkerRange(in: chars) {
+            var leftEnd = marker.lowerBound
+            while leftEnd > 0, chars[leftEnd - 1].isWhitespace { leftEnd -= 1 }
+            var rightStart = marker.upperBound
+            while rightStart < chars.count, chars[rightStart].isWhitespace { rightStart += 1 }
+            // Unpadded marker (no whitespace on either side) is the overlay's
+            // lossless mid-word form ("mn{selection_1}ie") — glue without the
+            // vowel heuristic; that heuristic only serves legacy padded texts.
+            let noGap = leftEnd == marker.lowerBound && rightStart == marker.upperBound
+            let keepSpace = leftEnd > 0
+                && rightStart < chars.count
+                && !noGap
+                && !gluesSplitWord(chars: chars, leftEnd: leftEnd, rightStart: rightStart)
+            chars.replaceSubrange(leftEnd..<rightStart, with: keepSpace ? [" "] : [])
+        }
+        return String(chars)
+    }
+
+    private static func contextMarkerRange(in chars: [Character]) -> Range<Int>? {
+        var open = 0
+        while open < chars.count {
+            defer { open += 1 }
+            guard chars[open] == "{" else { continue }
+            for label in ["selection_", "image_"] {
+                let labelChars = Array(label)
+                let digitsStart = open + 1 + labelChars.count
+                guard digitsStart <= chars.count,
+                      Array(chars[(open + 1)..<digitsStart]) == labelChars else { continue }
+                var close = digitsStart
+                while close < chars.count, chars[close].isASCII, chars[close].isNumber {
+                    close += 1
+                }
+                if close > digitsStart, close < chars.count, chars[close] == "}" {
+                    return open..<(close + 1)
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func gluesSplitWord(chars: [Character], leftEnd: Int, rightStart: Int) -> Bool {
+        var left: [Character] = []
+        var index = leftEnd - 1
+        while index >= 0, chars[index].isLetter {
+            left.append(chars[index])
+            index -= 1
+        }
+        var right: [Character] = []
+        index = rightStart
+        while index < chars.count, chars[index].isLetter {
+            right.append(chars[index])
+            index += 1
+        }
+        return fragmentLacksVowel(left) || fragmentLacksVowel(right)
+    }
+
+    private static func fragmentLacksVowel(_ fragment: [Character]) -> Bool {
+        fragment.count >= 2 && !fragment.contains { ch in
+            ch.lowercased().contains { fragmentVowels.contains($0) }
+        }
+    }
+}
+
 // MARK: - Threads provider (read-only access to persisted codescribe threads)
 
 /// Backs the thread rail / drawer with real persisted threads from the
@@ -421,6 +521,11 @@ final class AgentChatStore: ObservableObject {
     /// the first disk persist and a manual rename interleave.
     private var customTitleThreadIDs: Set<UUID> = []
 
+    /// NotificationCenter tokens for the event-driven rail refresh (wave S,
+    /// cut C): window activation + cross-surface `threadsDidChange`. Removed
+    /// on deinit; empty when no threads provider is wired (preview/mock).
+    private var externalThreadsObservers: [NSObjectProtocol] = []
+
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
          threads: [ChatThread]? = nil,
@@ -442,6 +547,13 @@ final class AgentChatStore: ObservableObject {
         self.threads = seeded
         self.selectedThreadID = seeded.first?.id
         if let first = seeded.first { loadMessagesIfNeeded(first.id) }
+        beginObservingExternalThreadChanges()
+    }
+
+    deinit {
+        for observer in externalThreadsObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     var currentThread: ChatThread? {
@@ -495,6 +607,49 @@ final class AgentChatStore: ObservableObject {
         )
     }
 
+    // MARK: External refresh (rail live refresh — wave S, cut C)
+
+    /// Wire the event-driven rail refresh. Two triggers, zero polling:
+    /// 1. `ThreadsChangeBus.threadsDidChange` — some surface finished a turn
+    ///    whose persistence this store did not perform itself.
+    /// 2. `NSWindow.didBecomeKeyNotification` — window activation. A thread
+    ///    saved by an overlay/assistive turn while the Agent window was
+    ///    inactive becomes discoverable on the next activation, no app restart
+    ///    (incident 2026-07-21: the reply persisted but the open window kept
+    ///    rendering the launch-time list).
+    /// Provider-gated: a preview/mock store has no disk truth to re-read.
+    private func beginObservingExternalThreadChanges() {
+        guard threadsProvider != nil else { return }
+        let handler: (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshThreadsFromExternalChange() }
+        }
+        externalThreadsObservers = [
+            NotificationCenter.default.addObserver(
+                forName: ThreadsChangeBus.threadsDidChange,
+                object: nil,
+                queue: .main,
+                using: handler
+            ),
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main,
+                using: handler
+            ),
+        ]
+    }
+
+    /// Re-read persisted threads after an external change signal. Deliberately
+    /// a no-op while a composer or voice turn is in flight: the turn's own
+    /// terminal already refreshes with the right selection, and a mid-stream
+    /// replace could drop a freshly minted thread that does not exist on disk
+    /// until its first stream completes.
+    func refreshThreadsFromExternalChange() {
+        guard threadsProvider != nil else { return }
+        guard activeComposerTurn == nil, voiceTurnPhase == nil else { return }
+        refreshThreads()
+    }
+
     func searchThreads(_ query: String) {
         guard let threadsProvider else { return }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -529,8 +684,7 @@ final class AgentChatStore: ObservableObject {
     /// in memory only. No-ops on an empty or unchanged title. The chat header
     /// reads `currentThread.title`, so it updates reactively too.
     func rename(_ thread: ChatThread, to newTitle: String) {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != thread.title,
+        guard let trimmed = ThreadTitlePolicy.normalized(newTitle), trimmed != thread.title,
               let ti = threads.firstIndex(where: { $0.id == thread.id }) else { return }
         if let backendId = thread.backendId {
             if threadsProvider?.renameThread(backendId: backendId, title: trimmed) != true {
@@ -857,8 +1011,7 @@ final class AgentChatStore: ObservableObject {
     private func receiveGeneratedTitle(_ title: String?, for threadID: UUID, generationID: UUID) {
         guard var state = firstTurnTitleStates[threadID], state.generationID == generationID else { return }
         state.generationFinished = true
-        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty,
+        guard let trimmed = ThreadTitlePolicy.normalized(title),
               !customTitleThreadIDs.contains(threadID),
               state.pendingCustomTitle == nil,
               let ti = threads.firstIndex(where: { $0.id == threadID }) else {
@@ -1039,7 +1192,7 @@ final class AgentChatStore: ObservableObject {
             threadID = existing.id
             loadMessagesIfNeeded(threadID)  // surface prior history before appending
         } else {
-            let title = userTurn.text.isEmpty ? "Voice chat" : String(userTurn.text.prefix(48))
+            let title = ThreadTitlePolicy.normalized(userTurn.text, limit: 48) ?? "Voice chat"
             var thread = ChatThread(title: title, meta: "now")
             thread.backendId = backendId
             thread.messagesLoaded = true  // freshly bound to a core id → in sync

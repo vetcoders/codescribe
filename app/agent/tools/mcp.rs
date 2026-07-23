@@ -220,8 +220,9 @@ const AGENTIC_PREREQS: &[(&str, &str)] = &[
 
 /// Core capability gate — the REAL ability of the agent to act. This is the only
 /// input that decides `ready`: a configured assistive-lane provider whose API
-/// key is present, plus the compiled-in native tool set. Operator tooling (MCP
-/// servers) is informational and never enters this verdict.
+/// key is present, the compiled-in native tool set, and exact agreement between
+/// the persisted Settings roots and the roots resolved by native tools. Operator
+/// tooling (MCP servers) is informational and never enters this verdict.
 #[derive(Debug, Clone)]
 pub struct CoreReadiness {
     /// Display name of the resolved assistive-lane provider.
@@ -232,12 +233,17 @@ pub struct CoreReadiness {
     pub key_set: bool,
     /// Number of native (compiled-in) tools available to the agent.
     pub native_tool_count: usize,
+    /// Roots rendered by Settings from fresh persisted config.
+    pub configured_workspace_roots: Vec<String>,
+    /// Roots the native workspace/file tools actually resolve.
+    pub tool_workspace_roots: Vec<String>,
 }
 
 /// Probe the core capability gate from live process state: the configured
 /// assistive provider ([`lane_truth::provider`]), whether its key is set, and
-/// the count of native tools. Cheap — local config/secret reads plus building an
-/// in-memory registry (no server spawning, no network).
+/// the count of native tools, plus persisted/tool workspace-root parity. Cheap —
+/// local config/secret reads plus building an in-memory registry (no server
+/// spawning, no network).
 pub fn probe_core_readiness() -> CoreReadiness {
     let snapshot = lane_truth::lane_truth_snapshot(
         lane_truth::LaneTruthLane::Assistive,
@@ -245,7 +251,16 @@ pub fn probe_core_readiness() -> CoreReadiness {
     );
     let provider = ProviderKind::from_str(&snapshot.provider_id)
         .expect("lane truth must emit a canonical provider id");
-    assemble_core_readiness(provider, snapshot.key_account, snapshot.key_present)
+    let configured_workspace_roots =
+        codescribe_core::config::Config::effective_agent_workspace_roots();
+    let tool_workspace_roots = super::workspace::configured_roots();
+    assemble_core_readiness(
+        provider,
+        snapshot.key_account,
+        snapshot.key_present,
+        configured_workspace_roots,
+        tool_workspace_roots,
+    )
 }
 
 #[cfg(test)]
@@ -256,13 +271,16 @@ fn probe_core_readiness_with_secret(
     let key_env_key = provider.api_key_env_key().to_string();
     let key_set = resolve_secret(&key_env_key).is_some();
 
-    assemble_core_readiness(provider, key_env_key, key_set)
+    let roots = codescribe_core::config::Config::effective_agent_workspace_roots();
+    assemble_core_readiness(provider, key_env_key, key_set, roots.clone(), roots)
 }
 
 fn assemble_core_readiness(
     provider: ProviderKind,
     key_env_key: String,
     key_set: bool,
+    configured_workspace_roots: Vec<String>,
+    tool_workspace_roots: Vec<String>,
 ) -> CoreReadiness {
     let mut registry = ToolRegistry::new();
     super::register_native_tools(&mut registry);
@@ -273,13 +291,21 @@ fn assemble_core_readiness(
         key_env_key,
         key_set,
         native_tool_count,
+        configured_workspace_roots,
+        tool_workspace_roots,
     }
+}
+
+fn workspace_roots_match(core: &CoreReadiness) -> bool {
+    !core.configured_workspace_roots.is_empty()
+        && core.configured_workspace_roots == core.tool_workspace_roots
 }
 
 /// Readiness verdict for the Agentic operating lane.
 ///
 /// `ready` is decided SOLELY by the core capability gate ([`CoreReadiness`]:
-/// assistive provider configured + its API key set + native tools compiled in).
+/// assistive provider configured + its API key set + native tools compiled in +
+/// exact Settings/native-tool workspace-root parity).
 /// The per-server MCP rows (Vibecrafted / AICX / Loctree / PRView) are
 /// INFORMATIONAL context only — they can never flip `ready` — because they are
 /// operator tooling an end-user install will not have. This is the C4
@@ -297,7 +323,8 @@ impl AgenticReadinessReport {
     }
 
     /// `true` only when the core capability gate passes: a configured assistive
-    /// provider with its API key set and at least one native tool available.
+    /// provider with its API key set, at least one native tool available, and
+    /// matching non-empty Settings/native-tool workspace roots.
     /// Operator-tooling MCP rows are informational and never affect this verdict.
     pub fn is_ready(&self) -> bool {
         self.ready
@@ -455,7 +482,8 @@ fn assemble_readiness(
         .clone();
 
     let tools_present = core.native_tool_count > 0;
-    let ready = core.key_set && tools_present;
+    let roots_match = workspace_roots_match(&core);
+    let ready = core.key_set && tools_present && roots_match;
 
     // ---- Core capability gate rows (these decide `ready`). ----
     let verdict = if ready {
@@ -470,8 +498,10 @@ fn assemble_readiness(
     } else {
         let reason = if !core.key_set {
             format!("assistive API key missing (set {})", core.key_env_key)
-        } else {
+        } else if !tools_present {
             "no native tools available".to_string()
+        } else {
+            "workspace roots differ between Settings and native tools".to_string()
         };
         McpStatusRow {
             label: "Agentic readiness:".to_string(),
@@ -507,10 +537,31 @@ fn assemble_readiness(
         },
     };
 
-    let mut rows = Vec::with_capacity(AGENTIC_PREREQS.len() + 5);
+    let roots_row = McpStatusRow {
+        label: "Workspace roots:".to_string(),
+        value: if roots_match {
+            format!(
+                "{} configured — native tools synchronized",
+                core.configured_workspace_roots.len()
+            )
+        } else {
+            format!(
+                "mismatch — Settings={:?}, native tools={:?}",
+                core.configured_workspace_roots, core.tool_workspace_roots
+            )
+        },
+        tone: if roots_match {
+            McpRowTone::Good
+        } else {
+            McpRowTone::Bad
+        },
+    };
+
+    let mut rows = Vec::with_capacity(AGENTIC_PREREQS.len() + 6);
     rows.push(verdict);
     rows.push(provider_row);
     rows.push(tools_row);
+    rows.push(roots_row);
 
     // ---- Informational operator-tooling rows (never gate `ready`). ----
     if let Some(note) = config_note {
@@ -981,6 +1032,8 @@ mod tests {
             key_env_key: "LLM_ASSISTIVE_API_KEY".to_string(),
             key_set: true,
             native_tool_count: 10,
+            configured_workspace_roots: vec!["~/Git".to_string()],
+            tool_workspace_roots: vec!["~/Git".to_string()],
         }
     }
 
@@ -1121,6 +1174,35 @@ mod tests {
         let verdict = find_row(&report, "Agentic readiness:");
         assert!(
             verdict.value.contains("no native tools"),
+            "got: {}",
+            verdict.value
+        );
+    }
+
+    #[test]
+    fn workspace_root_mismatch_blocks_readiness() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        let core = CoreReadiness {
+            configured_workspace_roots: vec![
+                "~/Git".to_string(),
+                "/Volumes/vc-workspace/vetcoders".to_string(),
+            ],
+            tool_workspace_roots: vec!["~/Git".to_string()],
+            ..core_ready()
+        };
+
+        let report = probe_agentic_readiness_at(&path, core);
+        assert!(
+            !report.is_ready(),
+            "readiness must not claim READY when native tools resolve fewer roots than Settings"
+        );
+        let roots = find_row(&report, "Workspace roots:");
+        assert_eq!(roots.tone, McpRowTone::Bad);
+        assert!(roots.value.contains("mismatch"), "got: {}", roots.value);
+        let verdict = find_row(&report, "Agentic readiness:");
+        assert!(
+            verdict.value.contains("workspace roots differ"),
             "got: {}",
             verdict.value
         );

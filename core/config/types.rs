@@ -135,6 +135,48 @@ impl FromStr for ShortcutBinding {
     }
 }
 
+/// Global command chord used to deliver an armed transcript at the current
+/// caret. This is intentionally separate from the modifier-only work-mode
+/// bindings: it is a one-shot delivery command, not a recording gesture.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredInsertShortcut {
+    Disabled,
+    #[default]
+    CommandOptionV,
+    CommandShiftV,
+    CommandControlV,
+}
+
+impl DeferredInsertShortcut {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::CommandOptionV => "⌘⌥V",
+            Self::CommandShiftV => "⌘⇧V",
+            Self::CommandControlV => "⌘⌃V",
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+}
+
+impl FromStr for DeferredInsertShortcut {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disabled" => Ok(Self::Disabled),
+            "command_option_v" | "cmd_option_v" | "cmd_alt_v" => Ok(Self::CommandOptionV),
+            "command_shift_v" | "cmd_shift_v" => Ok(Self::CommandShiftV),
+            "command_control_v" | "cmd_control_v" | "cmd_ctrl_v" => Ok(Self::CommandControlV),
+            _ => Err(format!("Unknown DeferredInsertShortcut: {value}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModeBinding {
     pub mode: WorkMode,
@@ -271,6 +313,46 @@ impl FromStr for OverlayPositionMode {
     }
 }
 
+/// Modifier that arms assistive (Chat) on top of the dictation hold base.
+///
+/// Default is Shift (Fn+Shift). Cmd is a Settings-selectable alternative so
+/// HoldMode::Selection / Cmd is not a dead UI lie (W10-B).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldArmModifier {
+    #[default]
+    Shift,
+    Cmd,
+}
+
+impl HoldArmModifier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Shift => "shift",
+            Self::Cmd => "cmd",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Shift => "Shift",
+            Self::Cmd => "Command",
+        }
+    }
+}
+
+impl FromStr for HoldArmModifier {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "shift" | "hold_shift" | "fn_shift" => Ok(Self::Shift),
+            "cmd" | "command" | "meta" | "hold_cmd" | "fn_cmd" => Ok(Self::Cmd),
+            other => Err(format!("Unknown HoldArmModifier: {other}")),
+        }
+    }
+}
+
 /// Codescribe configuration structure.
 ///
 /// This struct contains all configuration options for the app.
@@ -281,6 +363,10 @@ pub struct Config {
     /// Whether to ignore extra modifiers when hold key is pressed
     #[serde(default)]
     pub hold_exclusive: bool,
+
+    /// Modifier that arms assistive chat on the dictation hold base (Shift default, Cmd alt).
+    #[serde(default)]
+    pub hold_arm_modifier: HoldArmModifier,
 
     /// Delay in milliseconds before starting recording after holding key
     #[serde(default = "default_hold_start_delay_ms")]
@@ -293,6 +379,10 @@ pub struct Config {
     /// Silence duration (seconds) before sending a toggle utterance
     #[serde(default = "default_toggle_silence_sec")]
     pub toggle_silence_sec: f32,
+
+    /// Global one-shot command for inserting the in-memory deferred transcript.
+    #[serde(default)]
+    pub deferred_insert_shortcut: DeferredInsertShortcut,
 
     // ===== Language =====
     /// Whisper language preference
@@ -476,9 +566,11 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
+            hold_arm_modifier: HoldArmModifier::default(),
             hold_start_delay_ms: default_hold_start_delay_ms(),
             double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
+            deferred_insert_shortcut: DeferredInsertShortcut::default(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
             auto_paste_enabled: default_auto_paste_enabled(),
@@ -537,7 +629,7 @@ impl Config {
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);
 
         // Validate badge size
-        if self.hold_badge_size < 8 || self.hold_badge_size > 64 {
+        if ![4, 8, 12].contains(&self.hold_badge_size) {
             self.hold_badge_size = 12;
         }
     }
@@ -545,7 +637,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, ShortcutBinding};
+    use super::{Config, DeferredInsertShortcut, ShortcutBinding};
     use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
     #[test]
@@ -557,9 +649,32 @@ mod tests {
     }
 
     #[test]
+    fn deferred_insert_shortcut_round_trips_and_defaults_to_command_option_v() {
+        assert_eq!(
+            Config::default().deferred_insert_shortcut,
+            DeferredInsertShortcut::CommandOptionV
+        );
+
+        let configured = Config {
+            deferred_insert_shortcut: DeferredInsertShortcut::CommandShiftV,
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&configured).expect("serialize config");
+        let decoded: Config = serde_json::from_str(&json).expect("deserialize config");
+        assert_eq!(
+            decoded.deferred_insert_shortcut,
+            DeferredInsertShortcut::CommandShiftV
+        );
+        assert_eq!(
+            "cmd_ctrl_v".parse(),
+            Ok(DeferredInsertShortcut::CommandControlV)
+        );
+    }
+
+    #[test]
     fn default_config_keeps_hold_modifiers_enabled() {
-        // hold_exclusive=true makes Fn-hold RAW-only and disables the documented
-        // Fn+Shift→Chat / Fn+Cmd→Selection modifiers (HOTKEYS_CONTRACT.md). The
+        // hold_exclusive=true makes Fn-hold RAW-only and disables the configured
+        // arm modifier (default Shift → Chat; Cmd alternative — W10-B). The
         // canonical default MUST stay false so those combos work out of the box;
         // exclusive is opt-in (HOLD_EXCLUSIVE=1). Guards the 2026-05-30 regression
         // where the runtime default / .env.example shipped exclusive ON.
@@ -567,6 +682,20 @@ mod tests {
             !Config::default().hold_exclusive,
             "Config default must keep hold modifiers enabled (hold_exclusive=false)"
         );
+        assert_eq!(
+            Config::default().hold_arm_modifier,
+            super::HoldArmModifier::Shift,
+            "default arm modifier is Shift"
+        );
+    }
+
+    #[test]
+    fn hold_arm_modifier_parses_shift_and_cmd() {
+        use super::HoldArmModifier;
+        assert_eq!("shift".parse(), Ok(HoldArmModifier::Shift));
+        assert_eq!("cmd".parse(), Ok(HoldArmModifier::Cmd));
+        assert_eq!("command".parse(), Ok(HoldArmModifier::Cmd));
+        assert!("nope".parse::<HoldArmModifier>().is_err());
     }
 
     #[test]
@@ -583,5 +712,26 @@ mod tests {
             !Config::default().stt_initial_prompt_enabled,
             "Whisper initial_prompt must stay opt-in after W2-F WER collapse"
         );
+    }
+
+    #[test]
+    fn hold_badge_sanitize_accepts_only_exposed_scale() {
+        for size in [4, 8, 12] {
+            let mut config = Config {
+                hold_badge_size: size,
+                ..Config::default()
+            };
+            config.sanitize();
+            assert_eq!(config.hold_badge_size, size);
+        }
+
+        for size in [0, 7, 16, 64] {
+            let mut config = Config {
+                hold_badge_size: size,
+                ..Config::default()
+            };
+            config.sanitize();
+            assert_eq!(config.hold_badge_size, 12);
+        }
     }
 }
