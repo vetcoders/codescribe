@@ -418,68 +418,57 @@ fn test_stop_path_budget_line_format() {
     );
 }
 
-/// Stop-path harness: real Instant spans (not invented phase sums) prove
-/// delivery is a named phase and unclassified remainder is explicit.
-#[test]
-fn test_stop_path_harness_times_delivery_and_reports_remainder() {
+/// Stop-path harness (automatic lane): execute the REAL production pipeline
+/// and read the delivery span from its outcome — no sleeps, no invented sums.
+/// If the delivery timer moves out of `process_transcript_text_pipeline`,
+/// `outcome.delivery_secs` collapses to 0.0 and this fails.
+#[tokio::test]
+async fn test_stop_path_harness_executes_production_pipeline_delivery_span() {
+    let controller = RecordingController::new();
     let stop_start = std::time::Instant::now();
-    // Simulate rec_stop
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    let rec_stop_secs = stop_start.elapsed().as_secs_f64();
-
-    let final_pass_started = std::time::Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(3));
-    let final_pass_secs = final_pass_started.elapsed().as_secs_f64();
-
-    let postproc_started = std::time::Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(2));
-    let postproc_secs = postproc_started.elapsed().as_secs_f64();
-
-    let format_started = std::time::Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(2));
-    let format_secs = format_started.elapsed().as_secs_f64();
-
-    // Actual delivery cone (history + deliver_once handoff), not cleanup.
-    let delivery_started = std::time::Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(4));
-    let delivery_secs = delivery_started.elapsed().as_secs_f64();
-
-    // Unclassified remainder (cleanup / adjudicator overhead).
-    let cleanup_started = std::time::Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(3));
-    let _cleanup = cleanup_started.elapsed().as_secs_f64();
-
-    let total_secs = stop_start.elapsed().as_secs_f64();
-    let budget = StopPathBudget {
-        total_secs,
-        rec_stop_secs,
-        final_pass_secs,
-        postproc_secs,
-        format_secs,
-        delivery_secs,
+    let config = Config {
+        ai_formatting_enabled: false,
+        ..Config::default()
     };
+    let params = test_transcript_pipeline_params(
+        "production harness transcript",
+        config,
+        false,
+        false,
+        Some(RecordingTranscriptSource::LocalFinalPass),
+    );
+
+    let outcome = controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("production pipeline");
 
     assert!(
-        budget.delivery_secs > 0.0,
-        "delivery must be a real measured span, got {}",
-        budget.delivery_secs
+        outcome.delivery_secs > 0.0,
+        "pipeline must time the real delivery cone (history + paste branch), got {}",
+        outcome.delivery_secs
     );
-    assert!(
-        budget.unclassified_remainder_secs() > 0.0,
-        "cleanup/overhead must surface as remainder, got {}",
-        budget.unclassified_remainder_secs()
-    );
+    let budget = StopPathBudget {
+        total_secs: stop_start.elapsed().as_secs_f64(),
+        // rec_stop + final_pass are timed by the caller (stop_toggle_inner),
+        // outside the text pipeline this harness executes.
+        rec_stop_secs: 0.0,
+        final_pass_secs: 0.0,
+        postproc_secs: outcome.postproc_secs,
+        format_secs: outcome.format_secs,
+        delivery_secs: outcome.delivery_secs,
+    };
     assert!(
         stop_path_budget_covers_total(budget, 0.05),
-        "named phases + remainder must cover wall total"
+        "production phases + remainder must cover wall total"
     );
     let line = format_stop_path_budget_line(budget);
     assert!(
         line.contains("delivery=") && line.contains("remainder="),
         "budget line must name delivery and remainder: {line}"
     );
-    // Synthetic zero-delivery with large total must leave remainder, not pretend
-    // delivery absorbed the unmeasured cone.
+    // Zero-delivery with large total must leave remainder, not pretend delivery
+    // absorbed the unmeasured cone.
     let fake = StopPathBudget {
         total_secs: 2.0,
         rec_stop_secs: 0.1,
@@ -492,6 +481,93 @@ fn test_stop_path_harness_times_delivery_and_reports_remainder() {
         (fake.unclassified_remainder_secs() - 1.6).abs() < 0.001,
         "zero delivery leaves remainder, got {}",
         fake.unclassified_remainder_secs()
+    );
+}
+
+/// Assistive harness: run the REAL `deliver_pending_assistive_transcript_with`
+/// boundary with an injected send adapter of known duration and assert the
+/// emitted `assistive_delivery_budget` receipt measured it. Moving the timer
+/// off the real send makes the captured total shrink below the adapter cost.
+#[tokio::test]
+async fn test_assistive_delivery_budget_times_real_send_adapter() {
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buf").extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Buf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let controller = RecordingController::new();
+    *controller.pending_assistive_context.write().await = Some(AssistiveContext {
+        frontmost_app: Some("Notes".to_string()),
+        selected_text: Some("selected".to_string()),
+    });
+
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent_flag = std::sync::Arc::clone(&sent);
+    const ADAPTER_MS: u64 = 25;
+    let delivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "assistive harness transcript".to_string(),
+            move |_wire, _language, _max_tokens, _persona| {
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(ADAPTER_MS)).await;
+                    sent_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            },
+        )
+        .await
+        .expect("assistive delivery");
+
+    assert!(delivered, "pending context present → delivery must run");
+    assert!(
+        sent.load(std::sync::atomic::Ordering::SeqCst),
+        "injected send adapter must actually run"
+    );
+    let log = String::from_utf8(buf.0.lock().expect("log buf").clone()).expect("utf8 log");
+    let line = log
+        .lines()
+        .find(|l| l.contains("assistive_delivery_budget:"))
+        .unwrap_or_else(|| panic!("assistive_delivery_budget receipt missing in: {log}"));
+    assert!(line.contains("outcome=delivered"), "got: {line}");
+    let total: f64 = line
+        .split("total=")
+        .nth(1)
+        .and_then(|rest| rest.split('s').next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("unparsable receipt line: {line}"));
+    assert!(
+        total >= ADAPTER_MS as f64 / 1000.0,
+        "receipt must contain the real send duration (>= {ADAPTER_MS}ms), got {total}s"
+    );
+
+    // One-shot: the second submit finds no pending context and says so.
+    let redelivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "assistive harness transcript".to_string(),
+            |_wire, _language, _max_tokens, _persona| Box::pin(async {}),
+        )
+        .await
+        .expect("second delivery attempt");
+    assert!(!redelivered, "context is one-shot");
+    let log = String::from_utf8(buf.0.lock().expect("log buf").clone()).expect("utf8 log");
+    assert!(
+        log.contains("outcome=no_pending_context"),
+        "second attempt must emit a no_pending_context receipt: {log}"
     );
 }
 

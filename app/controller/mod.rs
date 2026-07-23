@@ -1318,6 +1318,14 @@ pub(crate) fn stop_path_budget_covers_total(budget: StopPathBudget, tolerance_se
     (covered - budget.total_secs).abs() <= tolerance_secs
 }
 
+/// Correlated assistive-delivery receipt. Receipt boundary (audit F1): the
+/// `stop_path_budget` closes when the stop pipeline returns; assistive overlay
+/// submission is user-triggered *after* that, so its real send gets its own
+/// wall-clock line instead of being folded into a budget that already ended.
+pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &str) -> String {
+    format!("assistive_delivery_budget: total={total_secs:.3}s outcome={outcome}")
+}
+
 /// Skip full local STT re-pass according to routing mode + completeness.
 /// Apple on-device final pass stays under Smart (sub-second for pl-PL).
 pub(crate) fn should_skip_full_final_repass(
@@ -1782,10 +1790,53 @@ impl RecordingController {
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
+        self.deliver_pending_assistive_transcript_with(
+            transcript,
+            |wire, language, max_tokens, persona| {
+                Box::pin(send_assistive_with_agent_runtime_lane(
+                    wire, language, max_tokens, persona,
+                ))
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+            },
+        )
+        .await
+    }
+
+    /// Production body with an injectable send adapter. The harness executes
+    /// this exact instrumentation boundary with a fake adapter — moving the
+    /// timer off the real send breaks the harness, not just a formatter test.
+    pub(crate) async fn deliver_pending_assistive_transcript_with<F>(
+        &self,
+        transcript: String,
+        send: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(
+            String,
+            crate::config::Language,
+            i32,
+            bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    {
+        let delivery_started = std::time::Instant::now();
         if transcript.trim().is_empty() {
+            info!(
+                "{}",
+                format_assistive_delivery_budget_line(
+                    delivery_started.elapsed().as_secs_f64(),
+                    "empty_transcript",
+                )
+            );
             return Ok(false);
         }
         let Some(context) = self.pending_assistive_context.write().await.take() else {
+            info!(
+                "{}",
+                format_assistive_delivery_budget_line(
+                    delivery_started.elapsed().as_secs_f64(),
+                    "no_pending_context",
+                )
+            );
             return Ok(false);
         };
         let config = self.config.read().await.clone();
@@ -1801,13 +1852,20 @@ impl RecordingController {
         };
         // Raw spoken transcript is already history-saved as Raw in the finalize
         // pipeline (W10-D D4). Wire content is lane-truth for the agent turn.
-        send_assistive_with_agent_runtime_lane(
+        send(
             delivery.wire,
             config.whisper_language,
             config.ai_assistive_max_tokens,
             delivery.lane.use_assistive_persona(),
         )
         .await;
+        info!(
+            "{}",
+            format_assistive_delivery_budget_line(
+                delivery_started.elapsed().as_secs_f64(),
+                "delivered",
+            )
+        );
         Ok(true)
     }
 

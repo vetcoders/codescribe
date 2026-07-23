@@ -32,8 +32,10 @@ fn sink_slot() -> &'static RwLock<Option<ServingStatusSink>> {
 }
 
 /// Register (or replace) a process-local listener for serving-status changes.
-/// Bridge / Settings wire this to push Active STT updates without polling.
-#[allow(dead_code)] // consumed by bridge once UniFFI serving-status surface lands
+/// NOT wired yet: the shipped Settings path is snapshot-on-refresh/panel-entry
+/// via UniFFI `current_serving_verdict()` (polling, not push). This sink exists
+/// for a future push upgrade; until a caller lands it stays dead code.
+#[allow(dead_code)]
 pub fn set_serving_status_sink(sink: Option<ServingStatusSink>) {
     let mut guard = sink_slot()
         .write()
