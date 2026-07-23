@@ -162,6 +162,11 @@ final class OverlayState: ObservableObject {
     /// / close so it can never stick. See `WaveformView(transcribing:)`.
     @Published var transcribing: Bool = false
     @Published var toast: String?              // transient error notice
+    /// Utterance-level STT confidence for the open session (lowest avg_logprob wins).
+    /// Fed by `on_final` confidence args; drives the header low-confidence badge (LL-E).
+    @Published private(set) var sessionAvgLogprob: Float?
+    @Published private(set) var sessionSpeechPct: Float?
+    @Published private(set) var sessionConfidenceFlags: [String] = []
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
     @Published var formatFailureStatus: String?
@@ -312,6 +317,20 @@ final class OverlayState: ObservableObject {
         case .noSpeech: return CSColor.textMuted
         case .error: return CSColor.terracotta
         }
+    }
+
+    /// Mirrors `core/transcript_tagging.rs` confidence_label thresholds.
+    /// Badge is shown when the utterance-level signal is low or the hallucination flag is set.
+    var showsLowConfidenceBadge: Bool {
+        OverlayConfidence.showsLowConfidenceBadge(
+            avgLogprob: sessionAvgLogprob,
+            flags: sessionConfidenceFlags
+        )
+    }
+
+    var confidenceBadgeText: String? {
+        guard showsLowConfidenceBadge else { return nil }
+        return "low confidence"
     }
     /// Only the live-capture pill ripples. During `transcribing` / `final pass` we swap
     /// to the static pill so its repeatForever animation tears down — a second visual
@@ -754,19 +773,74 @@ final class OverlayState: ObservableObject {
             ? sttRawText
             : delivered
         let formattingLevel = qualityFormattingLevel.rawValue
-        Task.detached(priority: .utility) {
+        let avgLogprob = sessionAvgLogprob
+        let speechPct = sessionSpeechPct
+        let confidenceFlags = sessionConfidenceFlags
+        Task.detached(priority: .utility) { [weak self] in
             // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
             // quality write is best-effort; never block UI action.
-            try? commitOverlayQualityRecord(
+            let result = try? commitOverlayQualityRecord(
                 rawText: rawForRecord,
                 deliveredText: delivered,
                 editedText: edited,
                 action: action,
                 formattingLevel: formattingLevel,
-                avgLogprob: nil,
-                speechPct: nil,
-                confidenceFlags: []
+                avgLogprob: avgLogprob,
+                speechPct: speechPct,
+                confidenceFlags: confidenceFlags
             )
+            if let acknowledgement = result?.acknowledgement, !acknowledgement.isEmpty {
+                await MainActor.run {
+                    self?.showToast(acknowledgement)
+                }
+            }
+        }
+    }
+
+    /// Pure helpers for XCTest — keep thresholds aligned with `core/transcript_tagging.rs`.
+    enum OverlayConfidence {
+        /// Same as `HIGH_CONFIDENCE_AVG_LOGPROB_MIN` / `LOW_CONFIDENCE_AVG_LOGPROB_MAX`.
+        static let highMin: Float = -0.45
+        static let lowMax: Float = -1.20
+        /// `POSSIBLE_HALLUCINATION_LOGPROB` in contracts.rs — badge gate.
+        static let hallucinationThreshold: Float = -1.0
+
+        static func confidenceLabel(avgLogprob: Float?) -> String {
+            guard let value = avgLogprob else { return "unknown" }
+            if value >= highMin { return "high" }
+            if value <= lowMax { return "low" }
+            return "medium"
+        }
+
+        static func showsLowConfidenceBadge(avgLogprob: Float?, flags: [String]) -> Bool {
+            if flags.contains("possible_hallucination_logprob") {
+                return true
+            }
+            if let avg = avgLogprob, avg <= hallucinationThreshold {
+                return true
+            }
+            return confidenceLabel(avgLogprob: avgLogprob) == "low"
+        }
+    }
+
+    /// Keep the most concerning utterance signal for the open session.
+    private func noteUtteranceConfidence(
+        avgLogprob: Float?,
+        speechPct: Float?,
+        flags: [String]
+    ) {
+        if let next = avgLogprob {
+            if let current = sessionAvgLogprob {
+                sessionAvgLogprob = min(current, next)
+            } else {
+                sessionAvgLogprob = next
+            }
+        }
+        if let speechPct {
+            sessionSpeechPct = speechPct
+        }
+        for flag in flags where !sessionConfidenceFlags.contains(flag) {
+            sessionConfidenceFlags.append(flag)
         }
     }
 
@@ -1050,7 +1124,14 @@ final class OverlayState: ObservableObject {
     /// order — the authoritative ordering the bridge already provides. No lossy
     /// normalized matching, no text-dedup (a legitimately repeated token must not
     /// be dropped).
-    func applyFinal(utteranceId: UInt64, _ text: String) {
+    func applyFinal(
+        utteranceId: UInt64,
+        _ text: String,
+        avgLogprob: Float? = nil,
+        speechPct: Float? = nil,
+        confidenceFlags: [String] = []
+    ) {
+        noteUtteranceConfidence(avgLogprob: avgLogprob, speechPct: speechPct, flags: confidenceFlags)
         guard !finalized else { return }
         markTranscriptActivity()
         // A1 contract sensor (debug-only): Rust trims at source and computes
@@ -1262,6 +1343,9 @@ final class OverlayState: ObservableObject {
         deliveredText = ""
         sttRawText = ""
         qualityFormattingLevel = .off
+        sessionAvgLogprob = nil
+        sessionSpeechPct = nil
+        sessionConfidenceFlags = []
         preFormatText = nil
         preFormatLevel = nil
         formatFailureStatus = nil
@@ -1568,8 +1652,24 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func onCorrection(text: String, previousText: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyCorrection(text, previousText: previousText) } }
     }
-    func onFinal(utteranceId: UInt64, text: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyFinal(utteranceId: utteranceId, text) } }
+    func onFinal(
+        utteranceId: UInt64,
+        text: String,
+        avgLogprob: Float?,
+        speechPct: Float?,
+        confidenceFlags: [String]
+    ) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.state?.applyFinal(
+                    utteranceId: utteranceId,
+                    text,
+                    avgLogprob: avgLogprob,
+                    speechPct: speechPct,
+                    confidenceFlags: confidenceFlags
+                )
+            }
+        }
     }
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {
         DispatchQueue.main.async {

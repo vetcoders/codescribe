@@ -1007,4 +1007,49 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertFalse(panel.canBecomeMain)
     }
 
+    func testLowConfidenceBadgeVisibilityLogic() {
+        XCTAssertFalse(
+            OverlayState.OverlayConfidence.showsLowConfidenceBadge(avgLogprob: -0.2, flags: [])
+        )
+        XCTAssertTrue(
+            OverlayState.OverlayConfidence.showsLowConfidenceBadge(avgLogprob: -1.4, flags: [])
+        )
+        XCTAssertTrue(
+            OverlayState.OverlayConfidence.showsLowConfidenceBadge(
+                avgLogprob: -0.3,
+                flags: ["possible_hallucination_logprob"]
+            )
+        )
+        XCTAssertEqual(
+            OverlayState.OverlayConfidence.confidenceLabel(avgLogprob: -1.4),
+            "low"
+        )
+        XCTAssertEqual(
+            OverlayState.OverlayConfidence.confidenceLabel(avgLogprob: -0.2),
+            "high"
+        )
+    }
+
+    func testApplyFinalTracksSessionConfidenceForBadge() {
+        let state = OverlayState()
+        state.applyFinal(
+            utteranceId: 1,
+            "pierwsze",
+            avgLogprob: -0.3,
+            speechPct: 0.9,
+            confidenceFlags: []
+        )
+        XCTAssertFalse(state.showsLowConfidenceBadge)
+        state.applyFinal(
+            utteranceId: 2,
+            "drugie",
+            avgLogprob: -1.5,
+            speechPct: 0.4,
+            confidenceFlags: ["possible_hallucination_logprob"]
+        )
+        XCTAssertEqual(state.sessionAvgLogprob, -1.5)
+        XCTAssertTrue(state.showsLowConfidenceBadge)
+        XCTAssertEqual(state.confidenceBadgeText, "low confidence")
+    }
+
 }

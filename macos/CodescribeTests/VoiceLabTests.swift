@@ -175,20 +175,24 @@ final class VoiceLabTests: XCTestCase {
 
     func testDictionaryHeadlineHonestyForCorrectionSource() {
         XCTAssertEqual(
-            dictionaryHeadline(correctionSourcedCount: 0),
-            "Corrections recorded — teaching starts from your next short fix."
+            dictionaryHeadline(correctionsRecorded: 0, rulesLearned: 0),
+            "0 corrections recorded · 0 rules learned"
         )
         XCTAssertEqual(
-            dictionaryHeadline(correctionSourcedCount: 2),
-            "See what your voice taught."
+            dictionaryHeadline(correctionsRecorded: 74, rulesLearned: 3),
+            "74 corrections recorded · 3 rules learned"
         )
         XCTAssertTrue(
-            dictionarySubtitle(correctionSourcedCount: 2, totalEntries: 5)
-                .contains("2 learned-from-voice")
+            dictionarySubtitle(correctionsRecorded: 74, rulesLearned: 3, totalEntries: 5)
+                .contains("3 rules from correction provenance")
         )
         XCTAssertEqual(
-            dictionarySubtitle(correctionSourcedCount: 0, totalEntries: 0),
-            "Corrections and custom words come from the live local quality loop."
+            dictionarySubtitle(correctionsRecorded: 10, rulesLearned: 0, totalEntries: 0),
+            "10 corrections on disk · 0 rules taught yet from this store."
+        )
+        XCTAssertFalse(
+            dictionaryHeadline(correctionsRecorded: 1, rulesLearned: 0)
+                .contains("voice taught")
         )
     }
 }

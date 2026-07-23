@@ -61,19 +61,20 @@ func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
     }
 }
 
-/// Honest Dictionary headline: "your voice taught" only when ≥1 correction-sourced entry.
-func dictionaryHeadline(correctionSourcedCount: Int) -> String {
-    if correctionSourcedCount > 0 {
-        return "See what your voice taught."
-    }
-    return "Corrections recorded — teaching starts from your next short fix."
+/// Honest Dictionary headline from two independent store counts (LL-F).
+/// No causality claim — corrections recorded ≠ rules learned until the loop teaches.
+func dictionaryHeadline(correctionsRecorded: Int, rulesLearned: Int) -> String {
+    "\(correctionsRecorded) corrections recorded · \(rulesLearned) rules learned"
 }
 
-func dictionarySubtitle(correctionSourcedCount: Int, totalEntries: Int) -> String {
-    if correctionSourcedCount > 0 {
-        return "\(correctionSourcedCount) learned-from-voice · \(totalEntries) custom dictionary entries · live local quality loop."
+func dictionarySubtitle(correctionsRecorded: Int, rulesLearned: Int, totalEntries: Int) -> String {
+    if rulesLearned > 0 {
+        return "\(rulesLearned) rules from correction provenance · \(totalEntries) custom dictionary entries total."
     }
-    return "Corrections and custom words come from the live local quality loop."
+    if correctionsRecorded > 0 {
+        return "\(correctionsRecorded) corrections on disk · 0 rules taught yet from this store."
+    }
+    return "Correction history and custom dictionary entries from the local quality store."
 }
 
 
@@ -89,8 +90,12 @@ struct VoiceLabPanel: View {
         customLexiconRows(model.customLexiconEntries)
     }
 
-    private var learnedFromVoiceCount: Int {
+    private var rulesLearnedCount: Int {
         lexicon.filter { $0.source == "correction" }.count
+    }
+
+    private var correctionsRecordedCount: Int {
+        corrections.count
     }
 
     var body: some View {
@@ -98,12 +103,19 @@ struct VoiceLabPanel: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 0) {
                     EyebrowLabel(text: "Settings · \(SettingsSection.voiceLab.title)")
-                    Text(dictionaryHeadline(correctionSourcedCount: learnedFromVoiceCount))
+                    Text(dictionaryHeadline(
+                        correctionsRecorded: correctionsRecordedCount,
+                        rulesLearned: rulesLearnedCount
+                    ))
                         .font(CSFont.ui(26, .bold))
                         .tracking(-0.5)
                         .foregroundStyle(CSColor.textHigh)
                         .padding(.top, 6)
-                    Text(dictionarySubtitle(correctionSourcedCount: learnedFromVoiceCount, totalEntries: lexicon.count))
+                    Text(dictionarySubtitle(
+                        correctionsRecorded: correctionsRecordedCount,
+                        rulesLearned: rulesLearnedCount,
+                        totalEntries: lexicon.count
+                    ))
                         .font(CSFont.ui(12.5))
                         .foregroundStyle(CSColor.textMutedAlt)
                         .padding(.top, 8)
