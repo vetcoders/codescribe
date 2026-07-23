@@ -1080,11 +1080,35 @@ pub(crate) struct SessionEngineStats {
     pub partial_dropped_count: u64,
 }
 
+/// How the last committed streaming text was sourced (adjudicator truth).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletenessCommitSource {
+    /// At least one `UtteranceFinal` landed in this session.
+    UtteranceFinal,
+    /// `SessionFinalised` sealed the buffer.
+    SessionFinalised,
+}
+
+impl CompletenessCommitSource {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::UtteranceFinal => "utterance_final",
+            Self::SessionFinalised => "session_finalised",
+        }
+    }
+}
+
 /// Session telemetry captured from `EngineEvent`s.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionTelemetrySnapshot {
     pub no_speech_reason: Option<String>,
     pub stats: Option<SessionEngineStats>,
+    /// Open Preview/Correction without a subsequent UtteranceFinal (pending tail).
+    pub pending_tail: bool,
+    /// Last adjudicator commit that sealed streaming text, if any.
+    pub last_commit_source: Option<CompletenessCommitSource>,
+    /// Characters accumulated from UtteranceFinal commits (coverage signal).
+    pub committed_chars: usize,
 }
 
 pub(crate) type SharedSessionTelemetry = Arc<StdMutex<SessionTelemetrySnapshot>>;
@@ -1142,6 +1166,21 @@ impl EventSink for SessionTelemetrySink {
         match event {
             EngineEvent::NoSpeech { reason } => {
                 guard.no_speech_reason = Some(reason.clone());
+            }
+            // Preview / Correction leave an open tail until UtteranceFinal seals it.
+            EngineEvent::Preview { .. } | EngineEvent::Correction { .. } => {
+                guard.pending_tail = true;
+            }
+            EngineEvent::UtteranceFinal { text, .. } => {
+                guard.pending_tail = false;
+                guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
+                guard.committed_chars = guard
+                    .committed_chars
+                    .saturating_add(text.trim().chars().count());
+            }
+            EngineEvent::SessionFinalised { .. } => {
+                guard.pending_tail = false;
+                guard.last_commit_source = Some(CompletenessCommitSource::SessionFinalised);
             }
             EngineEvent::Stats {
                 hallucination_drops,
@@ -1439,6 +1478,8 @@ mod tests {
             snapshot.no_speech_reason.as_deref(),
             Some("vad_no_speech_detected")
         );
+        assert!(!snapshot.pending_tail);
+        assert!(snapshot.last_commit_source.is_none());
         let stats = snapshot.stats.expect("stats should be captured");
         assert_eq!(stats.hallucination_drops, 2);
         assert_eq!(stats.semantic_gate_drops, 1);
@@ -1456,6 +1497,62 @@ mod tests {
     }
 
     #[test]
+    fn test_session_telemetry_tracks_pending_tail_and_commit_source() {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+
+        sink.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "To jest".to_string(),
+        });
+        let open = snapshot_session_telemetry(&shared);
+        assert!(open.pending_tail, "preview leaves a pending tail");
+        assert!(open.last_commit_source.is_none());
+
+        sink.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "To jest kompletne zdanie.".to_string(),
+            raw_text: "To jest kompletne zdanie.".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: vec![],
+            vad_speech_pct: Some(80.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: vec![],
+        });
+        let sealed = snapshot_session_telemetry(&shared);
+        assert!(!sealed.pending_tail);
+        assert_eq!(
+            sealed.last_commit_source,
+            Some(CompletenessCommitSource::UtteranceFinal)
+        );
+        assert_eq!(
+            sealed.committed_chars,
+            "To jest kompletne zdanie.".chars().count()
+        );
+
+        sink.on_event(&EngineEvent::Correction {
+            rev: 2,
+            text: "poprawka".to_string(),
+            previous_text: "To jest kompletne zdanie.".to_string(),
+        });
+        assert!(snapshot_session_telemetry(&shared).pending_tail);
+
+        sink.on_event(&EngineEvent::SessionFinalised {
+            session_id: "s1".to_string(),
+            layer_summary: Default::default(),
+        });
+        let finalised = snapshot_session_telemetry(&shared);
+        assert!(!finalised.pending_tail);
+        assert_eq!(
+            finalised.last_commit_source,
+            Some(CompletenessCommitSource::SessionFinalised)
+        );
+    }
+
+    #[test]
     fn test_reset_session_telemetry_clears_snapshot() {
         let shared = new_session_telemetry();
         {
@@ -1465,12 +1562,18 @@ mod tests {
                 hallucination_drops: 1,
                 ..Default::default()
             });
+            guard.pending_tail = true;
+            guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
+            guard.committed_chars = 12;
         }
         reset_session_telemetry(&shared);
 
         let snapshot = snapshot_session_telemetry(&shared);
         assert!(snapshot.no_speech_reason.is_none());
         assert!(snapshot.stats.is_none());
+        assert!(!snapshot.pending_tail);
+        assert!(snapshot.last_commit_source.is_none());
+        assert_eq!(snapshot.committed_chars, 0);
     }
 
     /// The per-turn generation machinery is removed: ordinary consecutive

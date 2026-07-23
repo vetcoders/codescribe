@@ -71,10 +71,13 @@ use codescribe_core::pipeline::contracts::{
 };
 
 #[cfg(test)]
+use helpers::SessionEngineStats;
+#[cfg(test)]
 use helpers::build_image_attachments_from_text;
 use helpers::{
-    SessionTelemetrySnapshot, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    reset_session_telemetry, send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
+    CompletenessCommitSource, SessionTelemetrySnapshot, SharedSessionTelemetry,
+    new_session_telemetry, raw_save_enabled, reset_session_telemetry,
+    send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
 };
 use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
@@ -1121,43 +1124,111 @@ pub(crate) enum StreamingCompleteness {
     Incomplete { reason: &'static str },
 }
 
+/// Recorder/adjudicator evidence for Smart final-pass skip.
+///
+/// Punctuation is never the authority: Completeness requires an adjudicated
+/// commit source, coverage, and a cleared pending tail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamingCompletenessEvidence {
+    pub streaming_text: String,
+    pub no_speech_reason: Option<String>,
+    pub pending_tail: bool,
+    pub partial_stale_or_dropped: bool,
+    pub commit_source: Option<CompletenessCommitSource>,
+    pub committed_chars: usize,
+    pub total_utterances: u64,
+}
+
+impl StreamingCompletenessEvidence {
+    /// Build evidence from the live session snapshot + streaming splice text.
+    pub(crate) fn from_session(streaming_text: &str, session: &SessionTelemetrySnapshot) -> Self {
+        let partial_stale_or_dropped = session
+            .stats
+            .as_ref()
+            .is_some_and(|s| s.partial_stale_count > 0 || s.partial_dropped_count > 0);
+        let total_utterances = session
+            .stats
+            .as_ref()
+            .map(|s| s.total_utterances)
+            .unwrap_or(0);
+        Self {
+            streaming_text: streaming_text.to_string(),
+            no_speech_reason: session.no_speech_reason.clone(),
+            pending_tail: session.pending_tail,
+            partial_stale_or_dropped,
+            commit_source: session.last_commit_source,
+            committed_chars: session.committed_chars,
+            total_utterances,
+        }
+    }
+
+    /// Coverage is present when the adjudicator sealed at least one utterance
+    /// (commit source + committed chars or engine utterance count).
+    pub(crate) fn has_coverage(&self) -> bool {
+        self.committed_chars > 0 || self.total_utterances > 0
+    }
+}
+
 /// Assess whether streaming holds an adjudicator-confirmed complete transcript.
 ///
-/// Incomplete when: empty, no-speech, pending tail/partial work, or missing an
-/// utterance boundary (truncated mid-sentence is the common partial-stream case).
+/// Incomplete when: empty, no-speech, pending tail, partial stale/drop, missing
+/// commit source, or zero coverage. A punctuated prefix with a pending tail is
+/// always Incomplete — punctuation alone never authorizes Complete.
 pub(crate) fn assess_streaming_completeness(
-    streaming_text: &str,
-    no_speech_reason: Option<&str>,
-    pending_tail: bool,
-    partial_stale_or_dropped: bool,
+    evidence: &StreamingCompletenessEvidence,
 ) -> StreamingCompleteness {
-    if no_speech_reason.is_some() {
+    if evidence.no_speech_reason.is_some() {
         return StreamingCompleteness::Incomplete {
             reason: "no_speech",
         };
     }
-    let text = streaming_text.trim();
+    let text = evidence.streaming_text.trim();
     if text.is_empty() {
         return StreamingCompleteness::Incomplete { reason: "empty" };
     }
-    if pending_tail {
+    if evidence.pending_tail {
         return StreamingCompleteness::Incomplete {
             reason: "pending_tail",
         };
     }
-    if partial_stale_or_dropped {
+    if evidence.partial_stale_or_dropped {
         return StreamingCompleteness::Incomplete {
             reason: "partial_pending",
         };
     }
-    let last = text.chars().last();
-    let ends_at_boundary = matches!(last, Some('.' | '!' | '?' | '…' | '。' | ';' | '؟'));
-    if !ends_at_boundary {
+    if evidence.commit_source.is_none() {
         return StreamingCompleteness::Incomplete {
-            reason: "no_utterance_boundary",
+            reason: "no_commit_source",
+        };
+    }
+    if !evidence.has_coverage() {
+        return StreamingCompleteness::Incomplete {
+            reason: "no_coverage",
         };
     }
     StreamingCompleteness::Complete
+}
+
+/// Convenience for tests that build evidence by field rather than from a session.
+#[cfg(test)]
+pub(crate) fn assess_streaming_completeness_fields(
+    streaming_text: &str,
+    no_speech_reason: Option<&str>,
+    pending_tail: bool,
+    partial_stale_or_dropped: bool,
+    commit_source: Option<CompletenessCommitSource>,
+    committed_chars: usize,
+    total_utterances: u64,
+) -> StreamingCompleteness {
+    assess_streaming_completeness(&StreamingCompletenessEvidence {
+        streaming_text: streaming_text.to_string(),
+        no_speech_reason: no_speech_reason.map(str::to_string),
+        pending_tail,
+        partial_stale_or_dropped,
+        commit_source,
+        committed_chars,
+        total_utterances,
+    })
 }
 
 /// Label from the actual engine verdict (not preference). Apple→Whisper fallback
@@ -3589,17 +3660,11 @@ impl RecordingController {
         if use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off) {
             let prefer_apple = codescribe_core::stt::active_engine_is_apple();
             let session_snap = snapshot_session_telemetry(&self.session_telemetry);
-            let session_no_speech = session_snap.no_speech_reason.clone();
-            let partial_pending = session_snap
-                .stats
-                .as_ref()
-                .is_some_and(|s| s.partial_stale_count > 0 || s.partial_dropped_count > 0);
-            let completeness = assess_streaming_completeness(
-                &streaming_text,
-                session_no_speech.as_deref(),
-                false,
-                partial_pending,
-            );
+            // Adjudicator completeness object — pending_tail / coverage /
+            // commit_source come from session telemetry, never hardcoded.
+            let completeness_evidence =
+                StreamingCompletenessEvidence::from_session(&streaming_text, &session_snap);
+            let completeness = assess_streaming_completeness(&completeness_evidence);
             let skip_full_repass =
                 should_skip_full_final_repass(routing_mode, completeness, prefer_apple);
 
@@ -3609,11 +3674,18 @@ impl RecordingController {
                     StreamingCompleteness::Complete => "complete_streaming_transcript",
                     StreamingCompleteness::Incomplete { reason } => reason,
                 };
+                let commit_src = completeness_evidence
+                    .commit_source
+                    .map(CompletenessCommitSource::as_str)
+                    .unwrap_or("none");
                 info!(
-                    "final_pass_skipped mode={} reason={} chars={}",
+                    "final_pass_skipped mode={} reason={} chars={} commit_source={} pending_tail={} committed_chars={}",
                     routing_mode.as_str(),
                     reason,
-                    streaming_text.trim().len()
+                    streaming_text.trim().len(),
+                    commit_src,
+                    completeness_evidence.pending_tail,
+                    completeness_evidence.committed_chars,
                 );
                 let text = streaming_text.trim().to_string();
                 let raw = codescribe_core::pipeline::contracts::RawTranscript {

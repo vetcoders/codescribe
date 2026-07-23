@@ -412,11 +412,15 @@ fn test_stop_path_budget_line_format() {
 
 #[test]
 fn test_should_skip_full_final_repass_on_complete_streaming() {
-    let complete = assess_streaming_completeness(
+    // Completeness requires adjudicator commit source + coverage, not punctuation.
+    let complete = assess_streaming_completeness_fields(
         "To jest kompletny streaming transcript.",
         None,
         false,
         false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        40,
+        1,
     );
     assert_eq!(complete, StreamingCompleteness::Complete);
     assert!(should_skip_full_final_repass(
@@ -433,7 +437,7 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         "Off skips even on Apple"
     );
 
-    let empty = assess_streaming_completeness("  ", None, false, false);
+    let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
     assert!(matches!(
         empty,
         StreamingCompleteness::Incomplete { reason: "empty" }
@@ -443,17 +447,28 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         "empty streaming must not skip under Smart"
     );
 
-    let no_speech = assess_streaming_completeness("tekst", Some("vad_no_speech"), false, false);
+    let no_speech = assess_streaming_completeness_fields(
+        "tekst",
+        Some("vad_no_speech"),
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        5,
+        1,
+    );
     assert!(
         !should_skip_full_final_repass(FinalPassRoutingMode::Smart, no_speech, false),
         "no-speech sessions must not skip under Smart"
     );
 
-    let apple_complete = assess_streaming_completeness(
+    let apple_complete = assess_streaming_completeness_fields(
         "To jest kompletny streaming transcript.",
         None,
         false,
         false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        40,
+        1,
     );
     assert!(
         !should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
@@ -462,38 +477,87 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
 }
 
 #[test]
-fn test_smart_skip_rejects_truncated_stream_without_boundary() {
-    let truncated = assess_streaming_completeness(
-        "To jest niepełny streaming bez końcowej kropki",
+fn test_smart_skip_rejects_missing_commit_source_even_when_punctuated() {
+    // Punctuation is not the authority: no adjudicator commit ⇒ Incomplete.
+    let punctuated_only = assess_streaming_completeness_fields(
+        "To jest zdanie z kropką na końcu.",
         None,
         false,
         false,
+        None,
+        0,
+        0,
     );
     assert!(
         matches!(
-            truncated,
+            punctuated_only,
             StreamingCompleteness::Incomplete {
-                reason: "no_utterance_boundary"
+                reason: "no_commit_source"
             }
         ),
-        "truncated mid-utterance must be Incomplete, got {truncated:?}"
+        "punctuated text without commit source must be Incomplete, got {punctuated_only:?}"
     );
     assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, truncated, false),
-        "partial/truncated stream must not skip full re-pass"
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, punctuated_only, false),
+        "punctuation alone must not skip full re-pass"
     );
+}
 
-    let pending = assess_streaming_completeness("To jest kompletne zdanie.", None, true, false);
+#[test]
+fn test_punctuated_prefix_with_pending_tail_must_not_skip() {
+    // Falsifier: earlier utterance ends in punctuation, but a pending tail remains.
+    let evidence = StreamingCompletenessEvidence {
+        streaming_text: "Pierwsze zdanie. Trwa jeszcze".to_string(),
+        no_speech_reason: None,
+        pending_tail: true,
+        partial_stale_or_dropped: false,
+        commit_source: Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars: 16,
+        total_utterances: 1,
+    };
+    let pending = assess_streaming_completeness(&evidence);
+    assert!(
+        matches!(
+            pending,
+            StreamingCompleteness::Incomplete {
+                reason: "pending_tail"
+            }
+        ),
+        "punctuated prefix + pending tail must be Incomplete, got {pending:?}"
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, pending, false),
+        "pending tail must force full re-pass under Smart"
+    );
+}
+
+#[test]
+fn test_completeness_evidence_from_session_wires_pending_tail() {
+    let session = SessionTelemetrySnapshot {
+        no_speech_reason: None,
+        stats: Some(SessionEngineStats {
+            total_utterances: 1,
+            ..Default::default()
+        }),
+        pending_tail: true,
+        last_commit_source: Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars: 12,
+    };
+    let evidence =
+        StreamingCompletenessEvidence::from_session("To jest kompletne zdanie.", &session);
+    assert!(evidence.pending_tail);
+    assert_eq!(
+        evidence.commit_source,
+        Some(CompletenessCommitSource::UtteranceFinal)
+    );
+    assert_eq!(evidence.committed_chars, 12);
+    assert_eq!(evidence.total_utterances, 1);
+    let completeness = assess_streaming_completeness(&evidence);
     assert!(matches!(
-        pending,
+        completeness,
         StreamingCompleteness::Incomplete {
             reason: "pending_tail"
         }
-    ));
-    assert!(!should_skip_full_final_repass(
-        FinalPassRoutingMode::Smart,
-        pending,
-        false
     ));
 }
 
@@ -1892,6 +1956,7 @@ fn test_adjudicate_recording_truth_blocks_local_no_speech() {
     let session = SessionTelemetrySnapshot {
         no_speech_reason: Some("telemetry_should_not_override_core".to_string()),
         stats: None,
+        ..Default::default()
     };
 
     let verdict = adjudicate_recording_truth(
