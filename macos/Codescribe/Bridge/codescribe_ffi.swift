@@ -5158,7 +5158,11 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
 
     func onCorrection(text: String, previousText: String)
 
-    func onFinal(utteranceId: UInt64, text: String)
+    /**
+     * Completed VAD-bounded utterance. Optional STT quality fields feed the
+     * overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
+     */
+    func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])
 
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource)
 
@@ -5310,11 +5314,18 @@ open func onCorrection(text: String, previousText: String)  {try! rustCall() {
 }
 }
 
-open func onFinal(utteranceId: UInt64, text: String)  {try! rustCall() {
+    /**
+     * Completed VAD-bounded utterance. Optional STT quality fields feed the
+     * overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
+     */
+open func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_final(
             self.uniffiCloneHandle(),
         FfiConverterUInt64.lower(utteranceId),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),
+        FfiConverterOptionFloat.lower(avgLogprob),
+        FfiConverterOptionFloat.lower(speechPct),
+        FfiConverterSequenceString.lower(confidenceFlags),$0
     )
 }
 }
@@ -5586,6 +5597,9 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
             uniffiHandle: UInt64,
             utteranceId: UInt64,
             text: RustBuffer,
+            avgLogprob: RustBuffer,
+            speechPct: RustBuffer,
+            confidenceFlags: RustBuffer,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -5596,7 +5610,10 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
                 }
                 return uniffiObj.onFinal(
                      utteranceId: try FfiConverterUInt64.lift(utteranceId),
-                     text: try FfiConverterString.lift(text)
+                     text: try FfiConverterString.lift(text),
+                     avgLogprob: try FfiConverterOptionFloat.lift(avgLogprob),
+                     speechPct: try FfiConverterOptionFloat.lift(speechPct),
+                     confidenceFlags: try FfiConverterSequenceString.lift(confidenceFlags)
                 )
             }
 
@@ -7967,6 +7984,83 @@ public func FfiConverterTypeCsProviderOption_lift(_ buf: RustBuffer) throws -> C
 #endif
 public func FfiConverterTypeCsProviderOption_lower(_ value: CsProviderOption) -> RustBuffer {
     return FfiConverterTypeCsProviderOption.lower(value)
+}
+
+
+/**
+ * Result of an overlay quality commit — honest learn count for the acknowledgement toast.
+ */
+public struct CsQualityCommitResult: Equatable, Hashable {
+    /**
+     * Lexicon pairs actually upserted (0 when evidence-only or filtered out).
+     */
+    public var pairsLearned: UInt32
+    /**
+     * True when the formatting level is not Correction.
+     */
+    public var evidenceOnly: Bool
+    /**
+     * Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
+     */
+    public var acknowledgement: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Lexicon pairs actually upserted (0 when evidence-only or filtered out).
+         */pairsLearned: UInt32,
+        /**
+         * True when the formatting level is not Correction.
+         */evidenceOnly: Bool,
+        /**
+         * Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
+         */acknowledgement: String) {
+        self.pairsLearned = pairsLearned
+        self.evidenceOnly = evidenceOnly
+        self.acknowledgement = acknowledgement
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsQualityCommitResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsQualityCommitResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsQualityCommitResult {
+        return
+            try CsQualityCommitResult(
+                pairsLearned: FfiConverterUInt32.read(from: &buf),
+                evidenceOnly: FfiConverterBool.read(from: &buf),
+                acknowledgement: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsQualityCommitResult, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.pairsLearned, into: &buf)
+        FfiConverterBool.write(value.evidenceOnly, into: &buf)
+        FfiConverterString.write(value.acknowledgement, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsQualityCommitResult_lift(_ buf: RustBuffer) throws -> CsQualityCommitResult {
+    return try FfiConverterTypeCsQualityCommitResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsQualityCommitResult_lower(_ value: CsQualityCommitResult) -> RustBuffer {
+    return FfiConverterTypeCsQualityCommitResult.lower(value)
 }
 
 
@@ -11066,7 +11160,8 @@ public func audioInputSnapshot()throws  -> CsAudioInputSnapshot  {
     )
 })
 }
-public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws  -> CsQualityCommitResult  {
+    return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(
         FfiConverterString.lower(rawText),
         FfiConverterString.lower(deliveredText),
@@ -11077,7 +11172,7 @@ public func commitOverlayQualityRecord(rawText: String, deliveredText: String, e
         FfiConverterOptionFloat.lower(speechPct),
         FfiConverterSequenceString.lower(confidenceFlags),$0
     )
-}
+})
 }
 /**
  * Snapshot the last serving verdict, if any stop completed in this process.
@@ -11171,7 +11266,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 47586) {
+    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 48769) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
@@ -11591,7 +11686,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 23365) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 52785) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 13855) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 3950) {

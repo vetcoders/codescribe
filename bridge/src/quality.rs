@@ -9,11 +9,33 @@
 //! Privacy: local disk only.
 
 use codescribe_core::quality::overlay_quality::{
-    CustomLexiconEntry, QualityRecord, commit_overlay_correction_with_confidence,
-    custom_lexicon_entries, finalize_voice_lab_correction, recent_quality_records,
+    CustomLexiconEntry, OverlayCorrectionCommit, QualityRecord,
+    commit_overlay_correction_with_confidence, custom_lexicon_entries,
+    finalize_voice_lab_correction, recent_quality_records,
 };
 
 use crate::CsError;
+
+/// Result of an overlay quality commit — honest learn count for the acknowledgement toast.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsQualityCommitResult {
+    /// Lexicon pairs actually upserted (0 when evidence-only or filtered out).
+    pub pairs_learned: u32,
+    /// True when the formatting level is not Correction.
+    pub evidence_only: bool,
+    /// Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
+    pub acknowledgement: String,
+}
+
+impl From<OverlayCorrectionCommit> for CsQualityCommitResult {
+    fn from(commit: OverlayCorrectionCommit) -> Self {
+        Self {
+            pairs_learned: commit.pairs_learned,
+            evidence_only: commit.evidence_only,
+            acknowledgement: commit.acknowledgement_message(),
+        }
+    }
+}
 
 /// UI-safe projection of a persisted overlay correction.
 #[derive(uniffi::Record, Debug, Clone, PartialEq)]
@@ -105,7 +127,7 @@ pub fn commit_overlay_quality_record(
     avg_logprob: Option<f32>,
     speech_pct: Option<f32>,
     confidence_flags: Vec<String>,
-) -> Result<(), CsError> {
+) -> Result<CsQualityCommitResult, CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
     // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
     commit_overlay_correction_with_confidence(
@@ -120,7 +142,7 @@ pub fn commit_overlay_quality_record(
         speech_pct,
         confidence_flags,
     )
-    .map(|_path| ())
+    .map(Into::into)
     .map_err(|e| CsError::Quality {
         msg: format!("quality commit failed: {}", e),
     })
@@ -231,12 +253,15 @@ mod tests {
         }
         std::fs::remove_dir_all(&temp_root).expect("remove temp quality root");
 
-        result.expect("bridge commit");
+        let commit = result.expect("bridge commit");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].formatting_level.as_deref(), Some("max"));
         assert_eq!(records[0].avg_logprob, Some(-1.2));
         assert_eq!(records[0].speech_pct, Some(0.75));
         assert_eq!(records[0].confidence_flags, vec!["test_flag".to_string()]);
+        assert_eq!(commit.pairs_learned, 0);
+        assert!(commit.evidence_only);
+        assert_eq!(commit.acknowledgement, "Saved as evidence");
         assert!(
             lexicon.is_empty(),
             "Max evidence must not teach the lexicon"

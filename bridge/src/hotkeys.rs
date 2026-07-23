@@ -231,8 +231,16 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 ..
             } => listener.on_correction(text, previous_text),
             EngineEventWire::UtteranceFinal {
-                utterance_id, text, ..
-            } => listener.on_final(utterance_id, text),
+                utterance_id,
+                text,
+                avg_logprob,
+                vad_speech_pct,
+                confidence_flags,
+                ..
+            } => {
+                let flags: Vec<String> = confidence_flags.iter().map(ToString::to_string).collect();
+                listener.on_final(utterance_id, text, avg_logprob, vad_speech_pct, flags);
+            }
             EngineEventWire::ReplaceRange {
                 utterance_id,
                 start,
@@ -1510,7 +1518,15 @@ mod preparing_compensation_tests {
         }
         fn on_preview(&self, _text: String) {}
         fn on_correction(&self, _text: String, _previous_text: String) {}
-        fn on_final(&self, _utterance_id: u64, _text: String) {}
+        fn on_final(
+            &self,
+            _utterance_id: u64,
+            _text: String,
+            _avg_logprob: Option<f32>,
+            _speech_pct: Option<f32>,
+            _confidence_flags: Vec<String>,
+        ) {
+        }
         fn on_replace_range(
             &self,
             _utterance_id: u64,
