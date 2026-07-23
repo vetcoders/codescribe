@@ -48,6 +48,75 @@ pub struct CsAudioInputSnapshot {
     pub runtime_configuration_matches: bool,
 }
 
+/// Whether local Whisper weights are ready (embedded or on-disk). Used by
+/// Settings → Dictation so users can download the model without a fat DMG.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsWhisperModelStatus {
+    pub available: bool,
+    pub embedded: bool,
+    pub path: Option<String>,
+    pub model_id: String,
+    pub repo: String,
+    pub size_hint: String,
+}
+
+impl From<codescribe_core::config::models::WhisperModelStatus> for CsWhisperModelStatus {
+    fn from(s: codescribe_core::config::models::WhisperModelStatus) -> Self {
+        Self {
+            available: s.available,
+            embedded: s.embedded,
+            path: s.path,
+            model_id: s.model_id,
+            repo: s.repo,
+            size_hint: s.size_hint,
+        }
+    }
+}
+
+/// Progress callbacks for Settings Whisper download (large, multi-file).
+/// `bytes_total` is `-1` when the server did not send Content-Length.
+#[uniffi::export(with_foreign)]
+pub trait CsWhisperDownloadListener: Send + Sync {
+    fn on_progress(&self, file: String, bytes_done: u64, bytes_total: i64);
+    fn on_complete(&self, path: String);
+}
+
+/// Snapshot Whisper availability without constructing a dictation session.
+#[uniffi::export]
+pub fn whisper_model_status() -> CsWhisperModelStatus {
+    CsWhisperModelStatus::from(codescribe_core::config::models::whisper_model_status())
+}
+
+/// Download the default Whisper model (idempotent if already complete).
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn download_whisper_model(
+    listener: Option<Arc<dyn CsWhisperDownloadListener>>,
+) -> Result<CsWhisperModelStatus, CsError> {
+    tokio::task::spawn_blocking(move || {
+        let path =
+            codescribe_core::config::models::download_default_whisper_model(|file, done, total| {
+                if let Some(ref listener) = listener {
+                    listener.on_progress(
+                        file.to_string(),
+                        done,
+                        total.map(|t| t as i64).unwrap_or(-1),
+                    );
+                }
+            })
+            .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+        if let Some(ref listener) = listener {
+            listener.on_complete(path.display().to_string());
+        }
+        Ok(CsWhisperModelStatus::from(
+            codescribe_core::config::models::whisper_model_status(),
+        ))
+    })
+    .await
+    .map_err(|e| CsError::Recording {
+        msg: format!("download_whisper_model join error: {e}"),
+    })?
+}
+
 fn normalized_device_name(device: Option<&str>) -> Option<String> {
     device
         .map(str::trim)
@@ -557,6 +626,11 @@ impl CodescribeDictation {
     /// Wraps `whisper::is_initialized` (stt/whisper/singleton.rs:207).
     pub fn is_model_loaded(&self) -> bool {
         whisper::is_initialized()
+    }
+
+    /// Whether the default Whisper weights are on disk / embedded (not necessarily loaded).
+    pub fn whisper_model_ready_status(&self) -> CsWhisperModelStatus {
+        CsWhisperModelStatus::from(codescribe_core::config::models::whisper_model_status())
     }
 
     /// Start microphone dictation. Builds a `CsEventSink` from the registered
