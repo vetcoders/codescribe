@@ -164,6 +164,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
+- `FINAL_PASS_MODE` (HOT RELOADED; `always|smart|off`; default `smart`; alias `CODESCRIBE_FINAL_PASS_MODE`) — routing final passu na stopie: `smart` pomija pełny re-pass gdy adjudykator ma kompletny streaming (tylko tail-patch), `always` = zawsze pełny re-pass, `off` = werdykt streamingu jest finalny (guardrail powtórzeń zostaje aktywny). Settings → Dictation → "Final pass". Legacy `CODESCRIBE_TOGGLE_FINAL_PASS`: falsey→`off`, truthy→`always`.
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
 - `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
 
