@@ -100,7 +100,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 ## Features
 
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
-- **Two DMG variants** — The standard DMG embeds Silero VAD + MiniLM support assets and resolves Whisper from cache/download. The `_full` DMG embeds Silero + MiniLM + Whisper for users who prefer one larger download.
+- **Two DMG variants** — Standard (daily) embeds Silero VAD + MiniLM; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for offline/curiosity installs.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -330,14 +330,18 @@ Codescribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 ### Runtime Whisper (Current)
 
-User-delivery app builds (`make app PROFILE=release`, `make install-app`, the release DMG) embed the Rust support assets through the SwiftUI bundle pipeline: Silero VAD, the MiniLM semantic embedder, and Whisper (`CODESCRIBE_EMBED_WHISPER=1`). Fast developer Rust builds stay lean and resolve Whisper at runtime from the locations below; that same resolution order is the fallback whenever a build is not embedded.
+**Daily public builds are slim.** `make release`, `make dmg` / `dmg-signed`, and `make release-standard` embed **Silero VAD** (required) and **MiniLM** when available. **Whisper is not baked in** (~900 MB–1.5 GB saved). Install local Candle Whisper from **Settings → Dictation → Download Whisper**, or run `make download-model`.
+
+Optional fat SKU (offline / curiosity): `make release-full` or `CODESCRIBE_EMBED_WHISPER=1` / `make release-codescribe-embedded`.
+
+Runtime resolution when Whisper is not embedded:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
 3. `./models/whisper-large-v3-turbo-mlx-q8/`
 4. Hugging Face cache snapshots for `LibraxisAI/whisper-large-v3-turbo-mlx-q8`
 
-`CODESCRIBE_NO_EMBED=1` remains a development/recovery path and disables optional embedded support assets too; it is not the public standard DMG mode.
+`CODESCRIBE_NO_EMBED=1` is a development/recovery path that also skips MiniLM embed; it is not the public slim product path.
 
 Model files required:
 

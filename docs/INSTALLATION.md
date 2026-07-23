@@ -46,7 +46,7 @@ make notarize         # Notarize with Apple (requires Developer ID)
 # make release-dmgs    # Build + sign + notarize standard and full DMGs
 ```
 
-**Result**: `Codescribe_X.Y.Z.dmg` and `Codescribe_X.Y.Z_full.dmg` ready for distribution. The standard DMG embeds Silero + embedder and resolves Whisper from cache/download. The full DMG embeds Silero + embedder + Whisper.
+**Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero + MiniLM; Whisper via Settings download / cache) and optional `…_full.dmg` (embeds Whisper too). Daily operator flow is slim: `make release && make dmg-signed && make notarize`.
 
 ## Configuration
 

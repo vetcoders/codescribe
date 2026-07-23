@@ -51,6 +51,11 @@ struct EnginePanel: View {
             engineControls
                 .padding(.top, 11)
 
+            SettingsSectionLabel("Local Whisper model")
+                .padding(.top, 22)
+            whisperDownloadSection
+                .padding(.top, 11)
+
             SettingsSectionLabel("Preview timing")
                 .padding(.top, 22)
             previewTimingSection
@@ -179,6 +184,83 @@ struct EnginePanel: View {
                     .tint(CSColor.chromeAccent)
             }
         }
+    }
+
+    // MARK: Local Whisper download (public DMG is slim — model is opt-in)
+
+    private var whisperDownloadSection: some View {
+        let status = model.localWhisperStatus
+        return VStack(alignment: .leading, spacing: 10) {
+            SettingsControlRow(
+                title: "Install state",
+                subtitle: whisperInstallSubtitle(status)
+            ) {
+                Text(whisperInstallLabel(status))
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(status.available ? CSColor.oliveLight : CSColor.amber)
+            }
+
+            if model.whisperDownloadInFlight {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let fraction = model.whisperDownloadFraction {
+                        ProgressView(value: fraction)
+                            .progressViewStyle(.linear)
+                            .tint(CSColor.chromeAccent)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(model.whisperDownloadDetail ?? "Downloading…")
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(CSColor.textFaint)
+                        .lineLimit(2)
+                }
+            } else if !status.available {
+                SettingsControlRow(
+                    title: "Download Whisper",
+                    subtitle: "Optional local Candle model (\(status.sizeHint)). Apple STT works without it."
+                ) {
+                    Button("Download") {
+                        model.startWhisperDownload()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(CSColor.chromeAccent)
+                }
+            } else if !status.embedded {
+                // On-disk / cache — offer re-check, not re-download spam.
+                SettingsControlRow(
+                    title: "Local path",
+                    subtitle: status.path ?? status.modelId
+                ) {
+                    Button("Recheck") {
+                        model.refreshWhisperModelStatus()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            } else {
+                Text("This build embeds Whisper (fat SKU). Runtime download is not required.")
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+            }
+        }
+    }
+
+    private func whisperInstallLabel(_ status: CsWhisperModelStatus) -> String {
+        if status.embedded { return "Embedded" }
+        if status.available { return "Installed" }
+        return "Not installed"
+    }
+
+    private func whisperInstallSubtitle(_ status: CsWhisperModelStatus) -> String {
+        if status.embedded {
+            return "Baked into this fat build · \(status.modelId)"
+        }
+        if status.available {
+            return "Ready for Whisper engine · \(status.modelId)"
+        }
+        return "Needed only when STT engine is Whisper or layered tail patches"
     }
 
     // MARK: Preview timing (overlay pacing — writes the existing promoted keys)

@@ -564,6 +564,56 @@ private struct BackgroundSettingsEngine: @unchecked Sendable {
     let engine: SettingsEngine
 }
 
+extension CsWhisperModelStatus {
+    /// Placeholder for canvas / engine-less previews (no network, no disk probe).
+    static let sampleUnavailable = CsWhisperModelStatus(
+        available: false,
+        embedded: false,
+        path: nil,
+        modelId: "whisper-large-v3-turbo-mlx-q8",
+        repo: "LibraxisAI/whisper-large-v3-turbo-mlx-q8",
+        sizeHint: "~900 MB"
+    )
+}
+
+/// Bridges UniFFI download callbacks onto the main-actor SettingsViewModel.
+final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked Sendable {
+    weak var model: SettingsViewModel?
+
+    init(model: SettingsViewModel) {
+        self.model = model
+    }
+
+    func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
+        let fraction: Double?
+        if bytesTotal > 0 {
+            fraction = min(1.0, Double(bytesDone) / Double(bytesTotal))
+        } else {
+            fraction = nil
+        }
+        let mbDone = Double(bytesDone) / 1_048_576.0
+        let detail: String
+        if bytesTotal > 0 {
+            let mbTotal = Double(bytesTotal) / 1_048_576.0
+            detail = String(format: "%@ · %.0f / %.0f MB", file, mbDone, mbTotal)
+        } else {
+            detail = String(format: "%@ · %.0f MB", file, mbDone)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.model?.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
+        }
+    }
+
+    func onComplete(path: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.model?.applyWhisperDownloadProgress(
+                detail: "Saved · \(path)",
+                fraction: 1.0
+            )
+        }
+    }
+}
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var section: SettingsSection = .creator
@@ -597,6 +647,19 @@ final class SettingsViewModel: ObservableObject {
     /// "failed" …) — honest status for the row without raising a modal error.
     @Published private(set) var accountLoginNotices: [String: String] = [:]
     @Published var lastError: String?
+
+    // MARK: - Local Whisper download (Settings → Dictation)
+
+    /// Live availability of default Whisper weights (embedded or on disk).
+    /// Named `localWhisperStatus` so it does not shadow UniFFI free functions
+    /// `whisperModelStatus()` / `downloadWhisperModel(...)`.
+    @Published private(set) var localWhisperStatus: CsWhisperModelStatus = .sampleUnavailable
+    @Published private(set) var whisperDownloadInFlight = false
+    /// Human status under the download control (file name + progress).
+    @Published private(set) var whisperDownloadDetail: String?
+    /// 0...1 when Content-Length is known; nil for indeterminate.
+    @Published private(set) var whisperDownloadFraction: Double?
+    private var whisperDownloadSink: WhisperDownloadProgressSink?
 
     // MARK: - Hotkeys (mode bindings)
 
@@ -703,9 +766,53 @@ final class SettingsViewModel: ObservableObject {
             refreshVoiceLab()
             refreshAudioInput()
         }
+        refreshWhisperModelStatus()
         refreshAgentStatus()
         reloadMcpServers()
         loadHotkeys()
+    }
+
+    /// Re-probe Whisper install state (embedded / on-disk / missing).
+    func refreshWhisperModelStatus() {
+        // Live UniFFI path; sample mode (engine == nil in pure previews) keeps
+        // the static placeholder so canvas previews stay offline-safe.
+        guard engine != nil else { return }
+        localWhisperStatus = whisperModelStatus()
+    }
+
+    /// Called from UniFFI download callbacks (main-queue hopped).
+    fileprivate func applyWhisperDownloadProgress(detail: String, fraction: Double?) {
+        whisperDownloadDetail = detail
+        whisperDownloadFraction = fraction
+    }
+
+    /// Download default Whisper into `~/.codescribe/models/…` (idempotent).
+    func startWhisperDownload() {
+        guard engine != nil else { return }
+        guard !whisperDownloadInFlight else { return }
+        whisperDownloadInFlight = true
+        whisperDownloadDetail = "Starting download…"
+        whisperDownloadFraction = nil
+        lastError = nil
+        let sink = WhisperDownloadProgressSink(model: self)
+        whisperDownloadSink = sink
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let status = try await downloadWhisperModel(listener: sink)
+                self.localWhisperStatus = status
+                self.whisperDownloadDetail = status.available
+                    ? "Ready · \(status.path ?? status.modelId)"
+                    : "Download finished but model still unavailable"
+                self.whisperDownloadFraction = status.available ? 1.0 : nil
+            } catch {
+                self.lastError = String(describing: error)
+                self.whisperDownloadDetail = "Download failed"
+                self.whisperDownloadFraction = nil
+            }
+            self.whisperDownloadInFlight = false
+            self.whisperDownloadSink = nil
+        }
     }
 
     /// Re-probe just the agent substrate (readiness + MCP status). Cheap on-disk
