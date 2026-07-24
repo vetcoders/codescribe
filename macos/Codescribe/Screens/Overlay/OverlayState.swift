@@ -379,6 +379,40 @@ final class OverlayState: ObservableObject {
         return mode == .listening ? "vad-gated preview" : "editable"
     }
 
+    /// Footer left engine chip — last stop serving label when available, else
+    /// configured preference. Never a hardcoded "local whisper" (STT_CONTRACT).
+    var footerEngineLabel: String {
+        // Free UniFFI function (same as Settings Active STT).
+        if let serving = currentServingVerdict() {
+            let eng = serving.engine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !eng.isEmpty {
+                return Self.displayEngineChip(eng)
+            }
+        }
+        if let pref = try? CodescribeConfig().loadSettings().sttEngine?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !pref.isEmpty
+        {
+            switch pref.lowercased() {
+            case "apple": return "local apple"
+            case "whisper", "candle": return "local whisper"
+            case "auto": return "auto · apple-first"
+            default: return pref
+            }
+        }
+        return "local apple"
+    }
+
+    private static func displayEngineChip(_ engine: String) -> String {
+        let e = engine.lowercased()
+        if e.contains("apple") { return "local apple" }
+        if e.contains("merged") && e.contains("whisper") { return "merged · whisper fill" }
+        if e.contains("streaming") { return "streaming whisper" }
+        if e.contains("whisper") { return "local whisper" }
+        if e.contains("cloud") { return "cloud stt" }
+        return engine
+    }
+
     /// committed finals + the current interim preview, space-joined.
     private var rawLiveText: String {
         (committedUtterances + [preview])

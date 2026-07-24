@@ -10,7 +10,7 @@ import SwiftUI
 //               formatted = editable finalized transcript
 //   action row  recording: Finish; finalized: Copy · Insert · Format · To Agent.
 //               All actions are neutral/grey; Close is the ONE red control.
-//   footer      ● local whisper (olive) · meta on the right
+//   footer      ● <engine chip from serving/preference> · meta on the right
 //
 // A transient toast (no-speech / error) floats over the bottom edge.
 struct DictationOverlayView: View {
@@ -589,8 +589,10 @@ struct DictationOverlayView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
-                Text("●").foregroundStyle(CSColor.olive)
-                Text("local whisper").foregroundStyle(CSColor.textFaintAlt)
+                Text("●").foregroundStyle(footerEngineDot)
+                // Product truth: never hardcode "local whisper". Chip = last serving
+                // engine when known, else preference (Apple live default).
+                Text(state.footerEngineLabel).foregroundStyle(CSColor.textFaintAlt)
             }
             Spacer(minLength: 0)
             Text(state.footerRight)
@@ -600,6 +602,13 @@ struct DictationOverlayView: View {
         .csMono(10, .medium)
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
+    }
+
+    private var footerEngineDot: Color {
+        let label = state.footerEngineLabel.lowercased()
+        if label.contains("apple") { return CSColor.oliveLight }
+        if label.contains("whisper") { return CSColor.olive }
+        return CSColor.amber
     }
 }
 
