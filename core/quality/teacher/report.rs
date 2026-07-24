@@ -234,20 +234,25 @@ pub fn teach(input: TeacherInput) -> TeacherReport {
         None
     };
 
+    // Hit-rate is engine-agnostic: "live weakness × whisper error co-location".
+    // It only measures the *Apple* bet when live is Apple (see label / caller).
+    // Candle-live × whisper-file is a baseline / lexicon harvest, not that bet.
     let thesis_summary = match hit_rate {
         Some(r) if r >= 0.5 => format!(
-            "THESIS HOLDS: {whisper_errors_at_live_weak}/{whisper_errors} Whisper errors vs human \
-             co-locate with live weakness ({:.0}%). Apple-style under-gen gaps demask Whisper excess.",
+            "LIVE-WEAK × WHISPER-ERR co-locates {whisper_errors_at_live_weak}/{whisper_errors} \
+             ({:.0}%). Valid Apple-gap≡Whisper-halu bet ONLY if live leg is Apple; \
+             candle-live is same-family baseline / lexicon harvest.",
             r * 100.0
         ),
         Some(r) => format!(
-            "THESIS WEAK/MIXED: only {whisper_errors_at_live_weak}/{whisper_errors} Whisper errors \
-             at live-weak loci ({:.0}%). Need more sessions or time-tagged gaps.",
+            "LIVE-WEAK × WHISPER-ERR co-locates only {whisper_errors_at_live_weak}/{whisper_errors} \
+             ({:.0}%). Need more sessions, time-tagged gaps, or true Apple live leg \
+             (candle-live alone cannot falsify/prove the Apple bet).",
             r * 100.0
         ),
         None if input.human.is_none() => format!(
             "No human ref — emitted {} live×whisper attention spans for Needs attention UI. \
-             Add --human to score the gap≡halu bet.",
+             Add --human to score co-location; Apple bet still needs Apple live.",
             attention.len()
         ),
         None => "No Whisper errors vs human — nothing to score.".into(),
