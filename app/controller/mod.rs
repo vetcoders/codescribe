@@ -3431,6 +3431,8 @@ impl RecordingController {
         if !cfg!(test)
             && let Err(e) = codescribe_core::stt::preflight_apple_live_ready()
         {
+            // Must log the actual cause — silent "resetting flags" made padaka undiagnosable.
+            error!("Toggle-start aborted (Apple STT preflight): {e:#}");
             drop(recorder_guard);
             self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
                 .await;

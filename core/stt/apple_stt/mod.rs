@@ -148,13 +148,24 @@ struct BridgeSegment {
     end_ts: f32,
 }
 
-/// Initialize Apple STT backend once (platform + bridge + locale readiness).
+/// Initialize Apple STT backend (platform + bridge + locale readiness).
+///
+/// **Success is process-cached.** Failures are **not** — a first probe with
+/// `speech_auth_not_determined` must not poison the rest of the process after
+/// the user grants Speech Recognition (or after DevID re-sign fixes TCC
+/// identity). That poison was the product padaka: every toggle-start preflight
+/// failed with a stale auth error until full app restart.
 pub fn init() -> Result<()> {
-    static INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
-    let cached = INIT.get_or_init(|| init_impl().map_err(|e| format!("{:#}", e)));
-    match cached {
-        Ok(()) => Ok(()),
-        Err(message) => bail!("{message}"),
+    static INIT_OK: OnceLock<()> = OnceLock::new();
+    if INIT_OK.get().is_some() {
+        return Ok(());
+    }
+    match init_impl() {
+        Ok(()) => {
+            let _ = INIT_OK.set(());
+            Ok(())
+        }
+        Err(err) => Err(err),
     }
 }
 
