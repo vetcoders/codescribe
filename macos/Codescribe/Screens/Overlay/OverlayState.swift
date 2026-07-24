@@ -1112,6 +1112,18 @@ final class OverlayState: ObservableObject {
     }
 
     func handleError(message: String) {
+        // Mid-session Apple STT glitch with an existing draft must NOT kill the
+        // take (that was the "recording stopped before a transcript" dupa). Soft
+        // toast + keep listening; Whisper emergency recovery / next VAD segment
+        // can still fill. Empty take with hard fail stays terminal.
+        let draft = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let midSession = recording || warmingUp || transcribing
+        let appleish = message.contains("Apple STT") || message.contains("transcribe_live")
+            || message.contains("live path failed")
+        if midSession && !draft.isEmpty && appleish {
+            showToast("Apple lag — keeping draft")
+            return
+        }
         presentTerminalError(message: message, toast: message)
     }
 
