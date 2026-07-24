@@ -337,6 +337,21 @@ test-formatting:
 ENGINE_CLIP ?= tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav
 ENGINE_ALL_CLIPS ?= 0
 ENGINE_BRIDGE ?= target/release/codescribe-stt-bridge
+# Live verbose: session/STT tracing during the long Apple/Candle run.
+# Override quieter: ENGINE_RUST_LOG=warn make test-engine-apple
+ENGINE_RUST_LOG ?= info,codescribe_core=info,codescribe=info
+
+# Run cargo test with a PTY so stderr/stdout stay line-buffered through `tee`
+# (plain pipe fully buffers → "running for over 60s" then silence for minutes).
+define ENGINE_CARGO_TEST_LIVE
+if command -v stdbuf >/dev/null 2>&1; then \
+  stdbuf -oL -eL cargo test --test e2e_overlay_delivery_parity e2e_file_audio_as_mic_overlay_and_delivery_parity -- --nocapture 2>&1 | stdbuf -oL tee -a "$$LOG"; \
+elif command -v script >/dev/null 2>&1; then \
+  script -q /dev/null cargo test --test e2e_overlay_delivery_parity e2e_file_audio_as_mic_overlay_and_delivery_parity -- --nocapture 2>&1 | tee -a "$$LOG"; \
+else \
+  cargo test --test e2e_overlay_delivery_parity e2e_file_audio_as_mic_overlay_and_delivery_parity -- --nocapture 2>&1 | tee -a "$$LOG"; \
+fi; test_rc=$${PIPESTATUS[0]}
+endef
 
 # Fast: pure assembly + stream-floor + always-on e2e contracts (no STT / no Apple).
 test-engine:
@@ -356,23 +371,28 @@ $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift
 
 # Real mic-sim path: Apple live multi-seal freezed+append + Whisper file final.
 # Needs Speech Recognition authorized for the bridge process (once).
+# Verbose live log: RUST_LOG + line-buffered tee (see ENGINE_RUST_LOG / ENGINE_CARGO_TEST_LIVE).
 test-engine-apple: $(ENGINE_BRIDGE)
 	@$(TEST_SETUP); \
 	set -o pipefail; \
 	echo "=== Core engine Apple live (multi-utterance freezed+append) ===" | tee -a "$$LOG"; \
 	echo "  clip=$(ENGINE_CLIP)  all_clips=$(ENGINE_ALL_CLIPS)" | tee -a "$$LOG"; \
 	echo "  bridge=$(CURDIR)/$(ENGINE_BRIDGE)" | tee -a "$$LOG"; \
+	echo "  RUST_LOG=$(ENGINE_RUST_LOG)  (override: ENGINE_RUST_LOG=warn make …)" | tee -a "$$LOG"; \
+	echo "  note: ~1–3 min/clip of Apple STT; heartbeats + tracing stream live" | tee -a "$$LOG"; \
 	$(ENV_LOAD); \
 	export CODESCRIBE_STT_ENGINE=apple; \
 	export CODESCRIBE_APPLE_STT_BRIDGE="$(CURDIR)/$(ENGINE_BRIDGE)"; \
 	export CODESCRIBE_E2E_STT=1; \
+	export RUST_LOG="$(ENGINE_RUST_LOG)"; \
+	export RUST_LOG_STYLE=always; \
 	if [[ "$(ENGINE_ALL_CLIPS)" == "1" ]]; then \
 	  export CODESCRIBE_E2E_ALL_CLIPS=1; \
 	  unset CODESCRIBE_E2E_AUDIO || true; \
 	else \
 	  export CODESCRIBE_E2E_AUDIO="$(ENGINE_CLIP)"; \
 	fi; \
-	cargo test --test e2e_overlay_delivery_parity e2e_file_audio_as_mic_overlay_and_delivery_parity -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	$(ENGINE_CARGO_TEST_LIVE); \
 	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
@@ -381,16 +401,19 @@ test-engine-candle:
 	@$(TEST_SETUP); \
 	set -o pipefail; \
 	echo "=== Core engine Candle live (multi-utterance freezed+append) ===" | tee -a "$$LOG"; \
+	echo "  RUST_LOG=$(ENGINE_RUST_LOG)" | tee -a "$$LOG"; \
 	$(ENV_LOAD); \
 	export CODESCRIBE_STT_ENGINE=candle; \
 	export CODESCRIBE_E2E_STT=1; \
+	export RUST_LOG="$(ENGINE_RUST_LOG)"; \
+	export RUST_LOG_STYLE=always; \
 	if [[ "$(ENGINE_ALL_CLIPS)" == "1" ]]; then \
 	  export CODESCRIBE_E2E_ALL_CLIPS=1; \
 	  unset CODESCRIBE_E2E_AUDIO || true; \
 	else \
 	  export CODESCRIBE_E2E_AUDIO="$(ENGINE_CLIP)"; \
 	fi; \
-	cargo test --test e2e_overlay_delivery_parity e2e_file_audio_as_mic_overlay_and_delivery_parity -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	$(ENGINE_CARGO_TEST_LIVE); \
 	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 

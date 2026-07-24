@@ -298,6 +298,18 @@ fn data_assets_wav_fixtures_exist() {
 
 // ── Opt-in: real STT through live session + file final ──────────────────────
 
+fn init_e2e_tracing() {
+    // Without a subscriber, RUST_LOG is a no-op → minutes of silence on Apple live.
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,codescribe_core=info,codescribe=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(true)
+        .try_init();
+}
+
 #[tokio::test]
 async fn e2e_file_audio_as_mic_overlay_and_delivery_parity() {
     if skip_unless_opt_in(
@@ -308,6 +320,8 @@ async fn e2e_file_audio_as_mic_overlay_and_delivery_parity() {
     ) {
         return;
     }
+
+    init_e2e_tracing();
 
     let language = std::env::var("CODESCRIBE_E2E_LANG")
         .ok()
@@ -344,13 +358,28 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         "  audio: {:.1}s @ {} Hz, lang={:?}",
         duration, sample_rate, language
     );
+    eprintln!(
+        "  live session starting (Apple/Candle may take ~1–3× realtime; heartbeats every 10s)…"
+    );
+    let _ = std::io::Write::flush(&mut std::io::stderr());
 
     // 1) Live path — identical to StreamingRecorder → transcription_session.
     let t0 = std::time::Instant::now();
+    let heartbeat = tokio::spawn(async move {
+        let mut n = 0u64;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            n += 10;
+            eprintln!("  … live session still running ({n}s wall elapsed)");
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+        }
+    });
     let events = collect_buffered_engine_events(&samples, sample_rate, language.clone())
         .await
         .unwrap_or_else(|e| panic!("live session on {}: {e}", clip.display()));
+    heartbeat.abort();
     eprintln!("  live session done in {:?}", t0.elapsed());
+    let _ = std::io::Write::flush(&mut std::io::stderr());
 
     let live = assemble_live_from_events(&events);
     let overlay = live.full_text();
