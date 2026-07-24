@@ -509,40 +509,118 @@ private func transcribeWithSfSpeechAudioBuffer(
         throw BridgeError.runtime("sf_speech_buffer: open audio failed: \(error.localizedDescription)")
     }
 
-    // Official virtual-mic pattern: AVAudioEngine player → installTap →
-    // SFSpeechAudioBufferRecognitionRequest. Manual dump-append loses long
-    // Polish dictation; CoreAudio tap delivers the same bus path as a mic.
-    let engine = AVAudioEngine()
-    let player = AVAudioPlayerNode()
-    engine.attach(player)
+    // Live engine = SFSpeechAudioBufferRecognitionRequest (dictation buffer API).
+    // Feed PCM by direct file dump — same request type as a CoreAudio mic tap,
+    // without AVAudioEngine real-time playback (which settled on the first
+    // isFinal, raced the mixer under concurrent Whisper load, and wall-clocked
+    // 1× realtime so multi-utterance e2e often hit timeout/empty).
     let fileFormat = audioFile.processingFormat
-    engine.connect(player, to: engine.mainMixerNode, format: fileFormat)
-    // Mute hardware output — we only need the tap as virtual mic.
-    engine.mainMixerNode.outputVolume = 0
+    let audioSeconds = Double(audioFile.length) / max(fileFormat.sampleRate, 1.0)
+    // On-device SFSpeechAudioBuffer keeps a short active hypothesis window.
+    // Continuous dumps longer than ~12–15s routinely collapse to a tail
+    // fragment (product VAD already seals shorter utterances; this chunking
+    // is the safety net for long temp WAVs / Teacher full-file probes).
+    let maxWindowSeconds: Double = 12.0
+
+    if audioSeconds <= maxWindowSeconds {
+        return try await recognizeSfSpeechBufferWindow(
+            audioFile: audioFile,
+            locale: locale,
+            recognizer: recognizer,
+            startFrame: 0,
+            frameCount: AVAudioFramePosition(audioFile.length),
+            timeOffset: 0
+        )
+    }
+
+    var textParts: [String] = []
+    var allSegments: [BridgeSegment] = []
+    var frame: AVAudioFramePosition = 0
+    let total = AVAudioFramePosition(audioFile.length)
+    let rate = fileFormat.sampleRate
+    let windowFramesMax = AVAudioFramePosition(maxWindowSeconds * rate)
+    // Small overlap so phrase boundaries on the cut don't drop words.
+    let overlapFrames = AVAudioFramePosition(0.4 * rate)
+    while frame < total {
+        let windowFrames = min(windowFramesMax, total - frame)
+        if windowFrames <= 0 { break }
+        let timeOffset = Double(frame) / rate
+        let part = try await recognizeSfSpeechBufferWindow(
+            audioFile: audioFile,
+            locale: locale,
+            recognizer: recognizer,
+            startFrame: frame,
+            frameCount: windowFrames,
+            timeOffset: timeOffset
+        )
+        let trimmed = part.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            textParts.append(trimmed)
+        }
+        allSegments.append(contentsOf: part.segments)
+        if windowFrames < windowFramesMax {
+            break
+        }
+        let advance = max(windowFrames - overlapFrames, windowFrames / 2)
+        frame += advance
+    }
+    return TranscriptionPayload(
+        text: textParts.joined(separator: " "),
+        segments: normalizeSegments(allSegments),
+        backend: .sfSpeechRecognizer
+    )
+}
+
+/// One SFSpeechAudioBuffer window via virtual-mic (AVAudioEngine player → tap).
+///
+/// Accumulates multi-phrase `isFinal` results and settles only after playback
+/// ends — never on the first intermediate final (that was the live under-gen bug).
+private func recognizeSfSpeechBufferWindow(
+    audioFile: AVAudioFile,
+    locale: Locale,
+    recognizer: SFSpeechRecognizer,
+    startFrame: AVAudioFramePosition,
+    frameCount: AVAudioFramePosition,
+    timeOffset: Double
+) async throws -> TranscriptionPayload {
+    let fileFormat = audioFile.processingFormat
+    let rate = max(fileFormat.sampleRate, 1.0)
+    let audioSeconds = Double(frameCount) / rate
+    let deadlineSeconds = max(20.0, audioSeconds + 25.0)
+    let retained = recognizer
+
+    // Slice window into a temp buffer file when not the full file — player
+    // schedules whole files; for multi-window we read PCM and feed via engine.
+    // Single-window full-file path uses scheduleFile for fidelity.
+    let isFullFile = startFrame == 0 && frameCount == AVAudioFramePosition(audioFile.length)
 
     let request = SFSpeechAudioBufferRecognitionRequest()
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
 
+    let engine = AVAudioEngine()
+    let player = AVAudioPlayerNode()
+    engine.attach(player)
+    engine.connect(player, to: engine.mainMixerNode, format: fileFormat)
+    engine.mainMixerNode.outputVolume = 0
+
     let bus: AVAudioNodeBus = 0
     let bufferSize: AVAudioFrameCount = 1024
+    // Tap the player (proven path for short Polish fixtures). Mixer-bus tap
+    // returned silent buffers on this machine.
     player.installTap(onBus: bus, bufferSize: bufferSize, format: fileFormat) { buffer, _ in
         request.append(buffer)
     }
 
-    let audioSeconds = Double(audioFile.length) / fileFormat.sampleRate
-    let deadlineSeconds = max(sfSpeechRecognitionDeadlineSeconds(), audioSeconds + 20.0)
-    let retained = recognizer
-
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
         let gate = SfSpeechSettleGate()
-        let latest = SfSpeechLatestResult()
+        let acc = SfSpeechPhraseAccumulator(timeOffset: timeOffset)
         let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
             guard gate.trySettle() else { return }
             player.removeTap(onBus: bus)
-            engine.stop()
             player.stop()
+            engine.stop()
             request.endAudio()
             switch outcome {
             case .success(let payload):
@@ -553,26 +631,40 @@ private func transcribeWithSfSpeechAudioBuffer(
         }
         let timeoutWork = DispatchWorkItem {
             gate.cancelTask()
-            if let partial = latest.snapshot(), !partial.text.isEmpty {
-                settle(.success(partial))
+            if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
+                settle(.success(payload))
             } else {
-                settle(.failure(BridgeError.runtime("sf_speech_buffer: recognition_timeout")))
+                settle(.failure(BridgeError.runtime(
+                    "sf_speech_buffer: recognition_timeout after \(String(format: "%.1f", deadlineSeconds))s (locale=\(locale.identifier))"
+                )))
             }
         }
         DispatchQueue.global(qos: .userInitiated).asyncAfter(
             deadline: .now() + deadlineSeconds,
             execute: timeoutWork
         )
+
         let task = retained.recognitionTask(with: request) { result, error in
             if gate.isSettled() { return }
             if let error {
-                if let partial = latest.snapshot(), !partial.text.isEmpty {
+                if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
                     timeoutWork.cancel()
-                    settle(.success(partial))
+                    settle(.success(payload))
+                    return
+                }
+                let ns = error as NSError
+                // Cancel / no-speech after endAudio — treat as empty success when no text.
+                if ns.domain == "kAFAssistantErrorDomain" || ns.code == 216 || ns.code == 1 {
+                    timeoutWork.cancel()
+                    settle(.success(
+                        TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
+                    ))
                     return
                 }
                 timeoutWork.cancel()
-                settle(.failure(BridgeError.runtime("sf_speech_buffer: \(error.localizedDescription)")))
+                settle(.failure(BridgeError.runtime(
+                    "sf_speech_buffer: \(error.localizedDescription) (domain=\(ns.domain) code=\(ns.code))"
+                )))
                 return
             }
             guard let result else { return }
@@ -581,37 +673,33 @@ private func transcribeWithSfSpeechAudioBuffer(
             let segments = result.bestTranscription.segments.compactMap { segment -> BridgeSegment? in
                 let segText = segment.substring.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !segText.isEmpty else { return nil }
-                let start = segment.timestamp
-                let end = segment.timestamp + segment.duration
+                let start = segment.timestamp + timeOffset
+                let end = segment.timestamp + segment.duration + timeOffset
                 guard start.isFinite, end.isFinite, end >= start else { return nil }
                 return BridgeSegment(text: segText, startTs: start, endTs: end)
             }
-            let payload = TranscriptionPayload(
-                text: text,
-                segments: normalizeSegments(segments),
-                backend: .sfSpeechRecognizer
-            )
-            latest.store(payload)
             if result.isFinal {
-                timeoutWork.cancel()
-                settle(.success(payload))
+                // Multi-phrase: freeze and keep listening — do NOT settle here.
+                acc.commitFinal(text: text, segments: segments)
+            } else {
+                acc.storePartial(text: text, segments: segments)
             }
         }
         gate.storeTask(task)
 
         do {
             try engine.start()
-            player.scheduleFile(audioFile, at: nil) {
-                // File finished playing through the engine — end recognition input.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            let onPlaybackDone: () -> Void = {
+                // File finished through the engine — end recognition input.
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.35) {
                     if gate.isSettled() { return }
                     request.endAudio()
-                    // Give SFSpeech a beat to emit isFinal; else keep latest partial.
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) {
+                    let settleGrace = max(1.5, min(4.0, audioSeconds * 0.05 + 1.2))
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settleGrace) {
                         if gate.isSettled() { return }
                         timeoutWork.cancel()
-                        if let partial = latest.snapshot() {
-                            settle(.success(partial))
+                        if let payload = acc.snapshotPayload() {
+                            settle(.success(payload))
                         } else {
                             settle(.success(
                                 TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
@@ -619,6 +707,21 @@ private func transcribeWithSfSpeechAudioBuffer(
                         }
                     }
                 }
+            }
+
+            if isFullFile {
+                player.scheduleFile(audioFile, at: nil, completionHandler: onPlaybackDone)
+            } else {
+                // Windowed: schedule a single PCM buffer for [startFrame, frameCount).
+                audioFile.framePosition = startFrame
+                guard let buffer = AVAudioPCMBuffer(
+                    pcmFormat: fileFormat,
+                    frameCapacity: AVAudioFrameCount(frameCount)
+                ) else {
+                    throw BridgeError.runtime("sf_speech_buffer: window buffer alloc failed")
+                }
+                try audioFile.read(into: buffer, frameCount: AVAudioFrameCount(frameCount))
+                player.scheduleBuffer(buffer, completionHandler: onPlaybackDone)
             }
             player.play()
         } catch {
@@ -630,21 +733,71 @@ private func transcribeWithSfSpeechAudioBuffer(
     }
 }
 
-/// Holds the latest non-final (or final) SFSpeech payload for timeout fallback.
-final class SfSpeechLatestResult: @unchecked Sendable {
+/// Accumulates multi-phrase SFSpeech finals + current partial for one buffer request.
+///
+/// Critical: intermediate `isFinal` must NOT settle the request — continuous
+/// Polish dictation emits phrase-level finals while more audio still arrives.
+final class SfSpeechPhraseAccumulator: @unchecked Sendable {
     private let lock = NSLock()
-    private var payload: TranscriptionPayload?
+    private let timeOffset: Double
+    private var finals: [String] = []
+    private var finalSegments: [BridgeSegment] = []
+    private var partialText: String = ""
+    private var partialSegments: [BridgeSegment] = []
 
-    fileprivate func store(_ value: TranscriptionPayload) {
-        lock.lock()
-        payload = value
-        lock.unlock()
+    init(timeOffset: Double) {
+        self.timeOffset = timeOffset
     }
 
-    fileprivate func snapshot() -> TranscriptionPayload? {
+    fileprivate func commitFinal(text: String, segments: [BridgeSegment]) {
         lock.lock()
         defer { lock.unlock() }
-        return payload
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty {
+            finals.append(t)
+            finalSegments.append(contentsOf: segments)
+        }
+        partialText = ""
+        partialSegments = []
+    }
+
+    fileprivate func storePartial(text: String, segments: [BridgeSegment]) {
+        lock.lock()
+        defer { lock.unlock() }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Detect SFSpeech phrase restart without isFinal: new partial neither
+        // extends nor is a prefix of the previous hypothesis → freeze prior.
+        if !partialText.isEmpty && !t.isEmpty {
+            let prev = partialText
+            let extends = t.hasPrefix(prev) || prev.hasPrefix(t) || t.contains(prev) || prev.contains(t)
+            let collapsed = t.count + 12 < prev.count
+            if collapsed && !extends {
+                finals.append(prev)
+                finalSegments.append(contentsOf: partialSegments)
+            }
+        }
+        partialText = t
+        partialSegments = segments
+    }
+
+    fileprivate func snapshotPayload() -> TranscriptionPayload? {
+        lock.lock()
+        defer { lock.unlock() }
+        var parts = finals
+        if !partialText.isEmpty {
+            parts.append(partialText)
+        }
+        let text = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        var segs = finalSegments
+        if !partialText.isEmpty {
+            segs.append(contentsOf: partialSegments)
+        }
+        // Return payload even when empty so callers can treat silence honestly.
+        return TranscriptionPayload(
+            text: text,
+            segments: normalizeSegments(segs),
+            backend: .sfSpeechRecognizer
+        )
     }
 }
 

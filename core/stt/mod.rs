@@ -140,8 +140,9 @@ fn run_apple_live_only<T>(
     }
 
     apple_path().map_err(|err| {
+        // `{:#}` surfaces the full anyhow chain (bridge stderr / timeout / JSON).
         warn!(
-            "Apple STT live-only: failed during {}: {} (no Whisper fallback)",
+            "Apple STT live-only: failed during {}: {:#} (no Whisper fallback)",
             context, err
         );
         err.context(format!(

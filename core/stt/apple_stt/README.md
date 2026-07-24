@@ -67,7 +67,7 @@ Commands:
 | --- | --- | --- |
 | `probe` | ST → SF capability | locale readiness + honest `speech_auth` |
 | `request_auth` | `SFSpeechRecognizer.requestAuthorization` | force TCC dialog / inspect auth |
-| `transcribe_live` | **Virtual mic**: `AVAudioEngine` player → tap → `SFSpeechAudioBufferRecognitionRequest` | **Live dictation** (product + Teacher live leg) |
+| `transcribe_live` | **Virtual mic**: `AVAudioEngine` → mixer tap → `SFSpeechAudioBufferRecognitionRequest` (multi-phrase accumulate, >55s chunked) | **Live dictation** (product + Teacher live leg) |
 | `transcribe` | `SFSpeechURLRecognitionRequest` | File final-pass only (known collapse on long pl) |
 
 Additive fields (no wire version bump):
@@ -75,15 +75,17 @@ Additive fields (no wire version bump):
 - `backend`: `speech_transcriber` | `sf_speech_recognizer` (probe + transcribe)
 - `speech_auth`: `not_determined` | `denied` | `restricted` | `authorized`
 
-### Why virtual mic (not file URL) for live
+### Why buffer API (not file URL) for live
 
 Apple's **file** engine (`SFSpeechURLRecognitionRequest`) under-generates / returns
 empty on long Polish fixtures. Product live must exercise the **buffer** engine
-the same way a CoreAudio mic does. `transcribe_live` plays the fixture through
-`AVAudioEngine` with a silent mixer and installs a tap that appends PCM into
-`SFSpeechAudioBufferRecognitionRequest` — software virtual microphone, no
-BlackHole required for e2e/Teacher. Hardware virtual cables (BlackHole Multi-
-Output) remain optional for full-app path testing.
+(`SFSpeechAudioBufferRecognitionRequest`) — the same request type hardware mic
+taps use. Fixture audio plays through a muted `AVAudioEngine` with a mixer-bus
+tap appending PCM into that request. Multi-phrase `isFinal` results are
+**accumulated** (never settle on the first phrase — that was the live under-gen
+bug). Windows >~12s are chunked with a short overlap (on-device buffer
+hypothesis collapses on longer continuous dumps). No BlackHole required for
+e2e/Teacher.
 
 Rust live path (`transcribe_via_bridge` / chunk commits) calls `transcribe_live`.
 

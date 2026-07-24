@@ -15,7 +15,7 @@ use std::fs;
 use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -369,10 +369,24 @@ fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<Transcript
     })
 }
 
+/// SFSpeech / AVAudioEngine misbehave under concurrent bridge processes
+/// (partial pass + commit + re-transcribe in the live session). Serialize
+/// all bridge invocations process-wide.
+fn bridge_global_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn run_bridge_with_timeout(
     request: &BridgeRequest<'_>,
     timeout: Option<std::time::Duration>,
 ) -> Result<BridgeResponse> {
+    // Hold the lock for the whole spawn→wait so two AVAudioEngine sessions
+    // never race on the same machine (empty/timeout/auth flakes).
+    let _guard = bridge_global_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let bridge_bin = bridge_binary();
     let mut child = Command::new(&bridge_bin)
         .stdin(Stdio::piped())
