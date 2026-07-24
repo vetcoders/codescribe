@@ -37,6 +37,10 @@ path = "bin/qube_report.rs"
 name = "qube-daemon"
 path = "bin/qube_daemon.rs"
 
+[[bin]]
+name = "codescribe-teacher"
+path = "bin/codescribe-teacher.rs"
+
 [lib]
 path = "app/lib.rs"
 
