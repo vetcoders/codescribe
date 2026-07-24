@@ -290,18 +290,25 @@ fn transcribe_via_bridge(
 
     init()?;
 
+    // Live path: write a short temp WAV only as a *sample source*, then ask the
+    // bridge for `transcribe_live` (SFSpeechAudioBuffer / virtual-mic engine).
+    // Final-pass still uses `transcribe` → SFSpeechURL on the real file path.
     let wav = TempWavFile::write(audio, sample_rate)?;
     let audio_path = wav.path().display().to_string();
     let locale = resolved_locale(language);
     let request = BridgeRequest {
         protocol_version: 1,
-        command: "transcribe",
+        command: "transcribe_live",
         locale: &locale,
         audio_path: Some(audio_path.as_str()),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
     };
-    let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
-        .context("Apple STT bridge transcribe failed")?;
+    // Buffer-live can take ~audio_len + margin; reuse long timeout (30s default
+    // is tight for multi-minute utterances — compute from sample count).
+    let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
+    let timeout = std::time::Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
+    let response = run_bridge_with_timeout(&request, Some(timeout))
+        .context("Apple STT bridge transcribe_live (virtual mic / AudioBuffer) failed")?;
 
     Ok(raw_transcript_from_bridge_response(response))
 }

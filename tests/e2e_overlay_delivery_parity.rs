@@ -369,6 +369,15 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         );
         assert_eq!(delivery.trim(), stream_for_floor.trim());
         eprintln!("  ✓ length regression rejected (stream kept as floor)");
+    } else if final_verdict.text.trim().is_empty() && !stream_for_floor.trim().is_empty() {
+        // Empty Apple file final (common SFSpeechURL collapse) is also a
+        // regression: delivery must keep the live/stream floor, never blank.
+        assert_eq!(
+            source, "streaming_floor",
+            "empty file final must not replace non-empty live assembly"
+        );
+        assert_eq!(delivery.trim(), stream_for_floor.trim());
+        eprintln!("  ✓ empty final rejected (stream kept as floor)");
     } else {
         assert!(
             matches!(source, "final_pass" | "streaming_floor"),

@@ -61,9 +61,32 @@ On unsupported hosts (non-macOS or macOS < 26), Codescribe logs a warning and fa
 
 JSON stdin request / JSON stdout response, `protocol_version: 1`.
 
+Commands:
+
+| command | Engine surface | Use |
+| --- | --- | --- |
+| `probe` | ST → SF capability | locale readiness + honest `speech_auth` |
+| `request_auth` | `SFSpeechRecognizer.requestAuthorization` | force TCC dialog / inspect auth |
+| `transcribe_live` | **Virtual mic**: `AVAudioEngine` player → tap → `SFSpeechAudioBufferRecognitionRequest` | **Live dictation** (product + Teacher live leg) |
+| `transcribe` | `SFSpeechURLRecognitionRequest` | File final-pass only (known collapse on long pl) |
+
 Additive fields (no wire version bump):
 
 - `backend`: `speech_transcriber` | `sf_speech_recognizer` (probe + transcribe)
+- `speech_auth`: `not_determined` | `denied` | `restricted` | `authorized`
+
+### Why virtual mic (not file URL) for live
+
+Apple's **file** engine (`SFSpeechURLRecognitionRequest`) under-generates / returns
+empty on long Polish fixtures. Product live must exercise the **buffer** engine
+the same way a CoreAudio mic does. `transcribe_live` plays the fixture through
+`AVAudioEngine` with a silent mixer and installs a tap that appends PCM into
+`SFSpeechAudioBufferRecognitionRequest` — software virtual microphone, no
+BlackHole required for e2e/Teacher. Hardware virtual cables (BlackHole Multi-
+Output) remain optional for full-app path testing.
+
+Rust live path (`transcribe_via_bridge` / chunk commits) calls `transcribe_live`.
+File final-pass still calls `transcribe` (URL) so Teacher can contrast the two.
 
 ## Backend order (supported **and** installed)
 

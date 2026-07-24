@@ -43,6 +43,8 @@ struct BridgeResponse: Codable {
     /// Selected Apple backend: `speech_transcriber` | `sf_speech_recognizer` | null
     let backend: String?
     let error: String?
+    /// SFSpeechRecognizer authorization: not_determined | denied | restricted | authorized
+    let speechAuth: String?
 }
 
 enum BridgeError: Error, CustomStringConvertible {
@@ -84,7 +86,8 @@ Task {
             localeSupported: nil,
             localeInstalled: nil,
             backend: nil,
-            error: String(describing: error)
+            error: String(describing: error),
+            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
         )
         do {
             try writeResponse(response)
@@ -126,10 +129,17 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
     switch request.command {
     case "probe":
         return try await probe(locale: locale, allowDownload: request.allowDownload)
+    case "request_auth":
+        // Operator/CLI: force the system Speech Recognition dialog (if notDetermined).
+        return try await requestSpeechAuthorizationResponse()
     case "transcribe":
+        // Offline / final-pass: SFSpeechURLRecognitionRequest (file engine).
+        // Known to under-generate / collapse on long Polish dictation — product
+        // floor-guards against this path winning over live assembly.
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
+        try await ensureSpeechAuthorizedForSfSpeech()
         let transcription = try await transcribe(audioPath: audioPath, locale: locale)
         return BridgeResponse(
             ok: true,
@@ -139,7 +149,29 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
             localeSupported: true,
             localeInstalled: true,
             backend: transcription.backend.rawValue,
-            error: nil
+            error: nil,
+            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+        )
+    case "transcribe_live":
+        // Live / virtual-mic: SFSpeechAudioBufferRecognitionRequest.
+        // Feed PCM buffers as if from a microphone (fixture WAV or hardware
+        // mic path both land here). This is the Apple engine that product
+        // live dictation must use — NOT the file URL path.
+        guard let audioPath = request.audioPath, !audioPath.isEmpty else {
+            throw BridgeError.missingAudioPath
+        }
+        try await ensureSpeechAuthorizedForSfSpeech()
+        let transcription = try await transcribeLiveBuffered(audioPath: audioPath, locale: locale)
+        return BridgeResponse(
+            ok: true,
+            status: "ok",
+            text: transcription.text,
+            segments: transcription.segments,
+            localeSupported: true,
+            localeInstalled: true,
+            backend: transcription.backend.rawValue,
+            error: nil,
+            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
         )
     default:
         throw BridgeError.unsupportedCommand(request.command)
@@ -199,7 +231,8 @@ private func probeSpeechTranscriber(
                 localeSupported: true,
                 localeInstalled: isInstalled,
                 backend: AppleSttBackend.speechTranscriber.rawValue,
-                error: "asset_install_failed: \(error)"
+                error: "asset_install_failed: \(error)",
+                speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
             )
         }
     }
@@ -212,11 +245,14 @@ private func probeSpeechTranscriber(
         localeSupported: true,
         localeInstalled: isInstalled,
         backend: AppleSttBackend.speechTranscriber.rawValue,
-        error: nil
+        error: nil,
+        speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
     )
 }
 
 private func probeSfSpeech(locale: Locale) -> BridgeResponse {
+    let auth = SFSpeechRecognizer.authorizationStatus()
+    let authLabel = speechAuthLabel(auth)
     guard let recognizer = SFSpeechRecognizer(locale: locale) else {
         return BridgeResponse(
             ok: true,
@@ -226,22 +262,96 @@ private func probeSfSpeech(locale: Locale) -> BridgeResponse {
             localeSupported: false,
             localeInstalled: false,
             backend: nil,
-            error: nil
+            error: nil,
+            speechAuth: authLabel
         )
     }
 
     let onDevice = recognizer.supportsOnDeviceRecognition
     // Serving path requires on-device recognition (product doctrine for offline Polish).
-    let supported = recognizer.isAvailable && onDevice
+    // Auth must also be authorized — otherwise probe used to lie "supported" while
+    // every transcribe returned empty text (notDetermined / denied).
+    let authOk = auth == .authorized
+    let supported = recognizer.isAvailable && onDevice && authOk
+    var err: String? = nil
+    if onDevice && !authOk {
+        err = "speech_auth_\(authLabel)"
+    }
     return BridgeResponse(
-        ok: true,
-        status: "ok",
+        ok: authOk && supported,
+        status: authOk && supported ? "ok" : "error",
         text: "",
         segments: [],
-        localeSupported: supported,
+        localeSupported: recognizer.isAvailable && onDevice,
         localeInstalled: onDevice,
-        backend: supported ? AppleSttBackend.sfSpeechRecognizer.rawValue : nil,
-        error: nil
+        backend: (authOk && supported) ? AppleSttBackend.sfSpeechRecognizer.rawValue : nil,
+        error: err,
+        speechAuth: authLabel
+    )
+}
+
+// MARK: - Speech recognition authorization (TCC)
+
+private func speechAuthLabel(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
+    switch status {
+    case .notDetermined: return "not_determined"
+    case .denied: return "denied"
+    case .restricted: return "restricted"
+    case .authorized: return "authorized"
+    @unknown default: return "unknown"
+    }
+}
+
+/// Prompt system dialog when status is notDetermined; fail loudly if denied.
+private func ensureSpeechAuthorizedForSfSpeech() async throws {
+    let status = SFSpeechRecognizer.authorizationStatus()
+    switch status {
+    case .authorized:
+        return
+    case .denied:
+        throw BridgeError.runtime(
+            "speech_auth_denied: enable Speech Recognition for this process in System Settings › Privacy & Security › Speech Recognition"
+        )
+    case .restricted:
+        throw BridgeError.runtime("speech_auth_restricted: Speech Recognition restricted by policy")
+    case .notDetermined:
+        let granted = await requestSpeechAuthorization()
+        if !granted {
+            throw BridgeError.runtime(
+                "speech_auth_denied: user declined Speech Recognition (or dialog could not be shown outside an .app with NSSpeechRecognitionUsageDescription)"
+            )
+        }
+    @unknown default:
+        throw BridgeError.runtime("speech_auth_unknown")
+    }
+}
+
+private func requestSpeechAuthorization() async -> Bool {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+        SFSpeechRecognizer.requestAuthorization { status in
+            continuation.resume(returning: status == .authorized)
+        }
+    }
+}
+
+private func requestSpeechAuthorizationResponse() async throws -> BridgeResponse {
+    let before = speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+    if SFSpeechRecognizer.authorizationStatus() == .notDetermined {
+        _ = await requestSpeechAuthorization()
+    }
+    let after = SFSpeechRecognizer.authorizationStatus()
+    let label = speechAuthLabel(after)
+    let ok = after == .authorized
+    return BridgeResponse(
+        ok: ok,
+        status: ok ? "ok" : "error",
+        text: "",
+        segments: [],
+        localeSupported: nil,
+        localeInstalled: nil,
+        backend: nil,
+        error: ok ? nil : "speech_auth_\(label) (was \(before))",
+        speechAuth: label
     )
 }
 
@@ -344,6 +454,198 @@ private func transcribeWithSpeechTranscriber(
     let text = combined.isEmpty ? fallback : combined
     let segments = normalizeSegments(finalSegments.isEmpty ? volatileSegments : finalSegments)
     return (text, segments)
+}
+
+/// Virtual-mic live path: feed fixture/hardware PCM into
+/// `SFSpeechAudioBufferRecognitionRequest` (dictation engine), not the file URL engine.
+///
+/// WAV on disk is only a *source of samples* — same as a virtual CoreAudio device
+/// would deliver. Recognition uses the buffer API Apple designs for live mic.
+private func transcribeLiveBuffered(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+    // Prefer SpeechTranscriber streaming when locale is installed; else SF buffer.
+    let stSupported = await SpeechTranscriber.supportedLocales
+    if let effectiveLocale = bestAvailableLocale(requested: locale, available: stSupported) {
+        let installed = await SpeechTranscriber.installedLocales
+        if containsLocale(installed, locale: effectiveLocale) {
+            // SpeechAnalyzer already streams PCM from file into the analyzer —
+            // that is the live/buffer path for ST locales (not SF URL).
+            let (text, segments) = try await transcribeWithSpeechTranscriber(
+                audioPath: audioPath,
+                locale: effectiveLocale
+            )
+            return TranscriptionPayload(
+                text: text,
+                segments: segments,
+                backend: .speechTranscriber
+            )
+        }
+    }
+    return try await transcribeWithSfSpeechAudioBuffer(audioPath: audioPath, locale: locale)
+}
+
+private func transcribeWithSfSpeechAudioBuffer(
+    audioPath: String,
+    locale: Locale
+) async throws -> TranscriptionPayload {
+    guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+        throw BridgeError.runtime(
+            "neither SpeechTranscriber nor SFSpeechRecognizer supports locale \(locale.identifier)"
+        )
+    }
+    guard recognizer.isAvailable else {
+        throw BridgeError.runtime("SFSpeechRecognizer is not available for locale \(locale.identifier)")
+    }
+    guard recognizer.supportsOnDeviceRecognition else {
+        throw BridgeError.runtime(
+            "SFSpeechRecognizer on-device recognition not supported for locale \(locale.identifier)"
+        )
+    }
+
+    let url = URL(fileURLWithPath: audioPath)
+    let audioFile: AVAudioFile
+    do {
+        audioFile = try AVAudioFile(forReading: url)
+    } catch {
+        throw BridgeError.runtime("sf_speech_buffer: open audio failed: \(error.localizedDescription)")
+    }
+
+    // Official virtual-mic pattern: AVAudioEngine player → installTap →
+    // SFSpeechAudioBufferRecognitionRequest. Manual dump-append loses long
+    // Polish dictation; CoreAudio tap delivers the same bus path as a mic.
+    let engine = AVAudioEngine()
+    let player = AVAudioPlayerNode()
+    engine.attach(player)
+    let fileFormat = audioFile.processingFormat
+    engine.connect(player, to: engine.mainMixerNode, format: fileFormat)
+    // Mute hardware output — we only need the tap as virtual mic.
+    engine.mainMixerNode.outputVolume = 0
+
+    let request = SFSpeechAudioBufferRecognitionRequest()
+    request.requiresOnDeviceRecognition = true
+    request.shouldReportPartialResults = true
+    request.taskHint = .dictation
+
+    let bus: AVAudioNodeBus = 0
+    let bufferSize: AVAudioFrameCount = 1024
+    player.installTap(onBus: bus, bufferSize: bufferSize, format: fileFormat) { buffer, _ in
+        request.append(buffer)
+    }
+
+    let audioSeconds = Double(audioFile.length) / fileFormat.sampleRate
+    let deadlineSeconds = max(sfSpeechRecognitionDeadlineSeconds(), audioSeconds + 20.0)
+    let retained = recognizer
+
+    return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
+        let gate = SfSpeechSettleGate()
+        let latest = SfSpeechLatestResult()
+        let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
+            guard gate.trySettle() else { return }
+            player.removeTap(onBus: bus)
+            engine.stop()
+            player.stop()
+            request.endAudio()
+            switch outcome {
+            case .success(let payload):
+                continuation.resume(returning: payload)
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+        let timeoutWork = DispatchWorkItem {
+            gate.cancelTask()
+            if let partial = latest.snapshot(), !partial.text.isEmpty {
+                settle(.success(partial))
+            } else {
+                settle(.failure(BridgeError.runtime("sf_speech_buffer: recognition_timeout")))
+            }
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: .now() + deadlineSeconds,
+            execute: timeoutWork
+        )
+        let task = retained.recognitionTask(with: request) { result, error in
+            if gate.isSettled() { return }
+            if let error {
+                if let partial = latest.snapshot(), !partial.text.isEmpty {
+                    timeoutWork.cancel()
+                    settle(.success(partial))
+                    return
+                }
+                timeoutWork.cancel()
+                settle(.failure(BridgeError.runtime("sf_speech_buffer: \(error.localizedDescription)")))
+                return
+            }
+            guard let result else { return }
+            let text = result.bestTranscription.formattedString
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let segments = result.bestTranscription.segments.compactMap { segment -> BridgeSegment? in
+                let segText = segment.substring.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !segText.isEmpty else { return nil }
+                let start = segment.timestamp
+                let end = segment.timestamp + segment.duration
+                guard start.isFinite, end.isFinite, end >= start else { return nil }
+                return BridgeSegment(text: segText, startTs: start, endTs: end)
+            }
+            let payload = TranscriptionPayload(
+                text: text,
+                segments: normalizeSegments(segments),
+                backend: .sfSpeechRecognizer
+            )
+            latest.store(payload)
+            if result.isFinal {
+                timeoutWork.cancel()
+                settle(.success(payload))
+            }
+        }
+        gate.storeTask(task)
+
+        do {
+            try engine.start()
+            player.scheduleFile(audioFile, at: nil) {
+                // File finished playing through the engine — end recognition input.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    if gate.isSettled() { return }
+                    request.endAudio()
+                    // Give SFSpeech a beat to emit isFinal; else keep latest partial.
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) {
+                        if gate.isSettled() { return }
+                        timeoutWork.cancel()
+                        if let partial = latest.snapshot() {
+                            settle(.success(partial))
+                        } else {
+                            settle(.success(
+                                TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
+                            ))
+                        }
+                    }
+                }
+            }
+            player.play()
+        } catch {
+            timeoutWork.cancel()
+            settle(.failure(BridgeError.runtime(
+                "sf_speech_buffer: engine start failed: \(error.localizedDescription)"
+            )))
+        }
+    }
+}
+
+/// Holds the latest non-final (or final) SFSpeech payload for timeout fallback.
+final class SfSpeechLatestResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var payload: TranscriptionPayload?
+
+    fileprivate func store(_ value: TranscriptionPayload) {
+        lock.lock()
+        payload = value
+        lock.unlock()
+    }
+
+    fileprivate func snapshot() -> TranscriptionPayload? {
+        lock.lock()
+        defer { lock.unlock() }
+        return payload
+    }
 }
 
 private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
