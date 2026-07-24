@@ -9,6 +9,7 @@
 
 pub(crate) mod correction;
 pub(crate) mod emitter;
+pub mod live_assembly;
 #[cfg(any(test, feature = "offline_eval"))]
 pub(crate) mod offline;
 pub(crate) mod pipeline;
@@ -21,6 +22,7 @@ pub(crate) mod tuning;
 mod tests;
 
 pub use emitter::{BufferedEmitter, emitter_tick_loop};
+pub use live_assembly::{LiveAssembly, assemble_live_from_events};
 #[cfg(any(test, feature = "offline_eval"))]
 pub use offline::transcribe_streaming_samples;
 pub use session::{SessionConfig, collect_buffered_engine_events, transcribe_buffered_samples};

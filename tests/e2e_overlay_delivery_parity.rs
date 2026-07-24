@@ -32,7 +32,9 @@ use codescribe::audio;
 use codescribe_core::pipeline::contracts::{
     EngineEvent, FINAL_PASS_REGRESSION_MIN_STREAM_CHARS, final_pass_is_length_regression,
 };
-use codescribe_core::pipeline::streaming::collect_buffered_engine_events;
+use codescribe_core::pipeline::streaming::{
+    assemble_live_from_events, collect_buffered_engine_events,
+};
 use codescribe_core::stt;
 
 #[path = "support/e2e_stt_matrix.rs"]
@@ -40,64 +42,129 @@ mod e2e_stt_matrix;
 
 use e2e_stt_matrix::{STT_OPT_IN_ENV, skip_unless_opt_in};
 
-// ── Overlay-shaped assembly (mirrors OverlayState.rawLiveText semantics) ─────
+// ── Product live assembly (shipped `assemble_live_from_events`) ───────────────
 
-/// Freezed previous utterances + open interim preview (append relative to freezed).
-///
-/// This is the product live model: `applyPreview` only mutates the open tail;
-/// `UtteranceFinal` freezes a segment and clears the tail.
 fn overlay_assembly_from_events(events: &[EngineEvent]) -> String {
-    let mut freezed: Vec<String> = Vec::new();
-    let mut preview = String::new();
-
-    for event in events {
-        match event {
-            EngineEvent::Preview { text, .. } => {
-                // Utterance-local cumulative interim → replace open tail only.
-                preview = text.trim().to_string();
-            }
-            EngineEvent::Correction { text, .. } => {
-                preview = text.trim().to_string();
-            }
-            EngineEvent::UtteranceFinal { text, .. } => {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    freezed.push(trimmed.to_string());
-                }
-                preview.clear();
-            }
-            EngineEvent::NoSpeech { .. } => {
-                preview.clear();
-            }
-            _ => {}
-        }
-    }
-
-    let mut parts = freezed;
-    let preview = preview.trim();
-    if !preview.is_empty() {
-        parts.push(preview.to_string());
-    }
-    parts.join(" ")
+    assemble_live_from_events(events).full_text()
 }
 
-/// Stop-path streaming splice: sealed finals only (no open interim).
 fn streaming_floor_from_events(events: &[EngineEvent]) -> String {
-    events
-        .iter()
-        .filter_map(|e| match e {
-            EngineEvent::UtteranceFinal { text, .. } => {
-                let t = text.trim();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t.to_string())
-                }
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    assemble_live_from_events(events).streaming_floor()
+}
+
+/// Engine bar: multi-pause dictation must seal ≥2 freezed finals and cover the
+/// spoken body (not a ~tens-of-chars tail on a 50s+ clip).
+fn assert_engine_multi_utterance_assembly(
+    events: &[EngineEvent],
+    human: Option<&str>,
+    clip_label: &str,
+) {
+    let assembly = assemble_live_from_events(events);
+    let sealed = assembly.sealed_count();
+    let full = assembly.full_text();
+    let chars = full.chars().count();
+
+    eprintln!(
+        "  engine bar: sealed_finals={sealed} freezed={:?} full_chars={chars}",
+        assembly
+            .freezed
+            .iter()
+            .map(|s| s.chars().count())
+            .collect::<Vec<_>>()
+    );
+    eprintln!("  ── live assembly (full) ──\n{full}\n  ── end live assembly ──");
+
+    assert!(
+        sealed >= 2,
+        "CORE ENGINE: {clip_label} must emit ≥2 sealed UtteranceFinal (freezed+append); got {sealed}. \
+         Single-final tail is not a dictation engine."
+    );
+    assert!(
+        chars >= 120,
+        "CORE ENGINE: {clip_label} live assembly too short ({chars} chars) — tail-only collapse"
+    );
+
+    if let Some(human) = human {
+        let human_lower = human.to_lowercase();
+        let live_lower = full.to_lowercase();
+        // Body anchors (Polish + domain) — not perfect WER; Apple may garble
+        // Latin brand tokens while still covering the spoken arc.
+        let anchors = [
+            "kubernetes",
+            "konfiguracj",
+            "dawce",
+            "codescribe",
+            "rust",
+            "loctree",
+            "pacjent",
+            "tokio",
+            "algorytm",
+            "leksykon",
+            "transkrypc",
+            "klatki",
+            "beztlenow",
+            "masa",
+            "implement",
+            "endpoint",
+            "toolchain",
+        ];
+        let human_hits: Vec<_> = anchors
+            .iter()
+            .filter(|a| human_lower.contains(**a))
+            .collect();
+        if !human_hits.is_empty() {
+            let matched = human_hits
+                .iter()
+                .filter(|a| live_lower.contains(**a))
+                .count();
+            eprintln!(
+                "  engine bar anchors: {matched}/{} human_hits={human_hits:?}",
+                human_hits.len()
+            );
+            assert!(
+                matched >= 1,
+                "CORE ENGINE: live assembly shares no body anchors with human for {clip_label}\n\
+                 live={full}\n\
+                 human_hits={human_hits:?}"
+            );
+        }
+        // Coverage vs human: not WER — body must not be < ~25% of human chars.
+        let human_chars = human.chars().count().max(1);
+        let ratio = chars as f32 / human_chars as f32;
+        let pct = (ratio * 100.0).round() as i32;
+        eprintln!("  engine bar coverage vs human: {pct}% ({chars}/{human_chars})");
+        assert!(
+            ratio >= 0.25,
+            "CORE ENGINE: live assembly covers only {pct}% of human for {clip_label} \
+             (need ≥25% body coverage, not tail fragment)"
+        );
+    }
+}
+
+#[test]
+fn single_final_short_tail_fails_engine_bar() {
+    // Pin the known broken shape so pseudo-success cannot regress.
+    let events = vec![EngineEvent::UtteranceFinal {
+        utterance_id: 1,
+        text: "o Esterna przepisze krople".into(),
+        raw_text: "o Esterna przepisze krople".into(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: vec![],
+        vad_speech_pct: None,
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: vec![],
+    }];
+    let assembly = assemble_live_from_events(&events);
+    assert_eq!(assembly.sealed_count(), 1);
+    assert!(assembly.full_text().chars().count() < 40);
+    // Engine bar would fail: sealed < 2 and chars < 120.
+    assert!(
+        assembly.sealed_count() < 2 || assembly.full_text().chars().count() < 120,
+        "broken shape must fail engine bar predicates"
+    );
 }
 
 /// Delivery after adjudicate length guard (stream is floor of truth).
@@ -180,6 +247,11 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
 
     let floor = streaming_floor_from_events(&events);
     assert_eq!(floor, "pierwsze zdanie");
+
+    let assembly = assemble_live_from_events(&events);
+    assert_eq!(assembly.sealed_count(), 1);
+    assert_eq!(assembly.freezed, vec!["pierwsze zdanie".to_string()]);
+    assert_eq!(assembly.preview, "drugie zdanie live");
 }
 
 #[test]
@@ -276,19 +348,17 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         .unwrap_or_else(|e| panic!("live session on {}: {e}", clip.display()));
     eprintln!("  live session done in {:?}", t0.elapsed());
 
-    let overlay = overlay_assembly_from_events(&events);
-    let stream_floor = streaming_floor_from_events(&events);
+    let live = assemble_live_from_events(&events);
+    let overlay = live.full_text();
+    let stream_floor = live.streaming_floor();
     let preview_count = events
         .iter()
         .filter(|e| matches!(e, EngineEvent::Preview { .. }))
         .count();
-    let final_count = events
-        .iter()
-        .filter(|e| matches!(e, EngineEvent::UtteranceFinal { .. }))
-        .count();
+    let final_count = live.sealed_count();
 
     eprintln!(
-        "  events: total={} previews={} utterance_finals={}",
+        "  events: total={} previews={} utterance_finals(sealed)={}",
         events.len(),
         preview_count,
         final_count
@@ -393,7 +463,8 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         clip.display()
     );
 
-    if let Some(human) = human_reference_for_wav(clip) {
+    let human = human_reference_for_wav(clip);
+    if let Some(ref human) = human {
         eprintln!("  ── human_reference (full) ──\n{human}\n  ── end human_reference ──");
         let human_lower = human.to_lowercase();
         let delivery_lower = delivery.to_lowercase();
@@ -429,4 +500,12 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
             );
         }
     }
+
+    // Core engine bar: multi-utterance freezed+append with body coverage.
+    // Applies whenever live path ran (Apple or Candle); Apple is the hard product case.
+    let clip_label = clip
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| clip.display().to_string());
+    assert_engine_multi_utterance_assembly(&events, human.as_deref(), &clip_label);
 }

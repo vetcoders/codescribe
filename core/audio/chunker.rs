@@ -28,7 +28,17 @@ use crate::vad;
 // ═══════════════════════════════════════════════════════════
 
 const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
-pub(crate) const DEFAULT_BUFFERED_SILENCE_SEC: f32 = 1.2;
+/// Silence that closes a sealed utterance in buffered (Utterance) mode.
+///
+/// Kept tight enough that natural pauses in dictation (list items, breaths)
+/// produce **multiple** `UtteranceFinal` seals — required for freezed+append.
+/// 1.2s previously glued entire 50s+ clips into one seal; Apple live then
+/// collapsed the long commit to a tail fragment.
+pub(crate) const DEFAULT_BUFFERED_SILENCE_SEC: f32 = 0.55;
+
+/// Force-seal continuous speech in buffered mode so no single commit window
+/// grows beyond what live STT (Apple AudioBuffer) can carry.
+pub(crate) const DEFAULT_BUFFERED_MAX_UTTERANCE_SEC: f32 = 12.0;
 
 // ═══════════════════════════════════════════════════════════
 // Public types
@@ -162,6 +172,9 @@ pub(crate) struct SpeechSession {
     vad_unavailable_frames_pending: u64,
     /// Avoid flooding logs when VAD model is unavailable.
     vad_unavailable_logged: bool,
+    /// After a max-utterance force seal, re-open the segment so continuous speech
+    /// is not lost waiting for a fresh Silero Start.
+    force_reopen_after_seal: bool,
 }
 
 impl SpeechSession {
@@ -258,6 +271,7 @@ impl SpeechSession {
             vad_unavailable_frames_total: 0,
             vad_unavailable_frames_pending: 0,
             vad_unavailable_logged: false,
+            force_reopen_after_seal: false,
         }
     }
 
@@ -375,6 +389,7 @@ impl SpeechSession {
             vad_unavailable_frames_total: 0,
             vad_unavailable_frames_pending: 0,
             vad_unavailable_logged: false,
+            force_reopen_after_seal: false,
         }
     }
 
@@ -583,12 +598,37 @@ impl SpeechSession {
                 self.last_emit_raw = end;
                 self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
             }
+
+            // Force-seal continuous speech at max_utterance so freezed+append
+            // gets multiple finals even when Silero never sees a long pause
+            // (core engine: utterance-by-utterance, not one 50s tail).
+            if let SpeechMode::Utterance {
+                max_utterance_samples,
+                ..
+            } = self.mode
+                && let Some(start) = self.segment_start
+                && self.pending_end.is_none()
+                && self.raw_cursor.saturating_sub(start) >= max_utterance_samples
+            {
+                debug!(
+                    "Utterance max-duration force seal at {}s (start={}, cursor={})",
+                    max_utterance_samples as f32 / self.output_sample_rate as f32,
+                    start,
+                    self.raw_cursor
+                );
+                self.pending_end = Some(self.raw_cursor);
+                self.last_boundary_prob = speech_prob;
+                self.force_reopen_after_seal = true;
+            }
         }
 
         if let Some(end) = self.pending_end
             && self.raw_cursor >= end
         {
             let end = end.min(self.raw_cursor);
+            let reopen = self.force_reopen_after_seal;
+            self.force_reopen_after_seal = false;
+
             if let Some(start) = self.segment_start.take()
                 && let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
                 && let Some(chunk) = self.raw_slice(emit_start, emit_end)
@@ -610,6 +650,13 @@ impl SpeechSession {
             // later flush() does not use stale speech probability.
             self.max_speech_prob = 0.0;
             self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
+
+            if reopen {
+                // Continuous speech force-seal: re-open immediately.
+                self.segment_start = Some(end);
+                self.last_emit_raw = end;
+                self.segment_peak_prob = self.last_boundary_prob;
+            }
         }
 
         // Safety net: when no segment is active, cap raw_buffer to prevent
@@ -1119,6 +1166,13 @@ fn utterance_silence_sec_override() -> Option<f32> {
         .map(|v| v.clamp(0.1, 10.0))
 }
 
+fn utterance_max_sec_override() -> Option<f32> {
+    std::env::var("CODESCRIBE_BUFFERED_MAX_UTTERANCE_SEC")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map(|v| v.clamp(3.0, 120.0))
+}
+
 // ═══════════════════════════════════════════════════════════
 // Configuration helpers
 // ═══════════════════════════════════════════════════════════
@@ -1142,10 +1196,12 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
 
 pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
     // Buffered mode feeds final utterances through the serialized Commit lane.
-    // Keep the base stream VAD at 0.3s, but avoid over-fragmenting buffered speech.
+    // Silence + max-utterance force multi-seal freezed+append (core engine).
     let vad_cfg = vad::VadConfig {
         max_silence_duration_sec: utterance_silence_sec_override()
             .unwrap_or(DEFAULT_BUFFERED_SILENCE_SEC),
+        max_utterance_sec: utterance_max_sec_override()
+            .unwrap_or(DEFAULT_BUFFERED_MAX_UTTERANCE_SEC),
         ..vad::VadConfig::default()
     };
 

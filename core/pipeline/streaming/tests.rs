@@ -1772,6 +1772,26 @@ fn test_apply_final_boundary_text_replaces_preview_with_cleaned_final() {
 }
 
 #[test]
+fn test_apply_final_boundary_text_keeps_preview_when_commit_collapses() {
+    // Core engine: Apple commit of long window returned a short tail; freezed
+    // must keep the richer live preview, not seal the collapse.
+    let mut accumulated =
+        "Kubernetes wymaga konfiguracji po grze SQL jako bazy danych. Podajemy amoksycylinę w dawce."
+            .to_string();
+    let collapsed = "o Esterna przepisze krople";
+    let has_content = apply_final_boundary_text(&mut accumulated, collapsed);
+    assert!(has_content);
+    assert!(
+        accumulated.contains("Kubernetes"),
+        "must keep stream-floor preview, got: {accumulated}"
+    );
+    assert!(
+        !accumulated.eq(collapsed),
+        "must not replace with collapsed commit tail"
+    );
+}
+
+#[test]
 fn test_apply_final_boundary_text_reports_empty_when_no_preview_and_no_final() {
     let mut accumulated = String::new();
     let has_content = apply_final_boundary_text(&mut accumulated, "   ");

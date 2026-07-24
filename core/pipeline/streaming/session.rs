@@ -624,10 +624,12 @@ pub(crate) async fn transcription_session(
                                         vad_started = true;
                                     }
 
+                                    // Gates (short-utterance duration) must measure the *full*
+                                    // sealed segment, not only the trailing silence-pad slice `u`.
                                     let outcome = enqueue_pending_utterance(
                                         &mut pending_utterances,
                                         PendingUtteranceWorkItem {
-                                            audio: u,
+                                            audio: full.clone(),
                                             inference_audio: full,
                                             is_final: true,
                                             scheduler_utterance_id,
