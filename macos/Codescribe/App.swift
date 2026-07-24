@@ -186,10 +186,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Prompt Speech Recognition while undetermined so Apple live dictation can
     /// start on first hotkey without a Settings detour. Denied/restricted is a
     /// no-op here — Settings › Dictation surfaces the deep link.
+    ///
+    /// Accessory (LSUIElement) apps often fail to surface TCC dialogs unless the
+    /// process is briefly activation-eligible — promote to regular for the
+    /// request window, then restore the dock policy.
     private func ensureSpeechRecognitionAtLaunch() {
         let probe = NativePermissionProbe().snapshot()
-        guard probe.speechRecognition == .notDetermined else { return }
-        SpeechRecognitionPermission.request { state in
+        guard probe.speechRecognition == .notDetermined else {
+            appLogger.info(
+                "Speech Recognition at launch already \(String(describing: probe.speechRecognition), privacy: .public)"
+            )
+            return
+        }
+        let priorPolicy = NSApp.activationPolicy()
+        if priorPolicy == .accessory {
+            NSApp.setActivationPolicy(.regular)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        SpeechRecognitionPermission.request { [weak self] state in
+            guard let self else { return }
+            if priorPolicy == .accessory {
+                // Restore accessory only when the user has not enabled Dock icon.
+                if !self.config.trayToggles().showDockIcon {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
             appLogger.info("Speech Recognition at launch → \(String(describing: state), privacy: .public)")
         }
     }
