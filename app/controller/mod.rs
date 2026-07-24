@@ -3853,10 +3853,10 @@ impl RecordingController {
                 let lang = language_opt.map(str::to_string);
 
                 info!(
-                    "Running final-pass local STT adjudicator (mode={} engine={}): {}",
+                    "Running final-pass local STT adjudicator (mode={} live_engine={} file_final=whisper): {}",
                     routing_mode.as_str(),
                     if prefer_apple {
-                        "apple_on_device"
+                        "apple_live"
                     } else {
                         "whisper"
                     },
@@ -3865,8 +3865,9 @@ impl RecordingController {
 
                 let final_pass_started = std::time::Instant::now();
                 match tokio::task::spawn_blocking(move || {
-                    // Route through active engine so pl-PL Auto serves Apple
-                    // SFSpeechRecognizer on-device instead of Whisper full-WAV re-pass.
+                    // File final is always Whisper. Apple is live-only (AudioBuffer);
+                    // SFSpeechURL full-file pass collapses long pl dictation and is
+                    // not a product final path (2026-07-24 operator + data_assets/02).
                     codescribe_core::stt::transcribe_file_verdict(&wav_path, lang.as_deref())
                 })
                 .await

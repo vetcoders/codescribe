@@ -86,7 +86,13 @@ BlackHole required for e2e/Teacher. Hardware virtual cables (BlackHole Multi-
 Output) remain optional for full-app path testing.
 
 Rust live path (`transcribe_via_bridge` / chunk commits) calls `transcribe_live`.
-File final-pass still calls `transcribe` (URL) so Teacher can contrast the two.
+
+**File final-pass does not use Apple.** `stt::transcribe_file_verdict` always
+routes full-WAV adjudication to Whisper when a final re-pass is needed. Apple
+`SFSpeechURL` on long Polish fixtures returns a tail fragment (0–66 chars) that
+can still beat a broken live stream on pure length — that is a product bug, not
+a second opinion. Teacher may still invoke bridge `transcribe` (URL) offline to
+contrast engines; the controller/router must not.
 
 ## Backend order (supported **and** installed)
 

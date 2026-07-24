@@ -231,11 +231,18 @@ pub fn init_active_engine() -> anyhow::Result<()> {
     }
 }
 
-/// File-level transcription verdict routed through the active STT engine.
+/// File-level transcription verdict for **stop final-pass only**.
 ///
-/// Final-pass adjudication must call this (not Whisper alone) so pl-PL Auto
-/// serves Apple on-device (SFSpeechRecognizer) instead of a Whisper full-WAV
-/// re-pass. Whisper remains the fallback when Apple init/transcribe fails.
+/// Product split (operator truth 2026-07-24, clips 01–04 + div0):
+/// - **Live** = Apple buffer / virtual-mic (`transcribe_live`, SFSpeechAudioBuffer).
+/// - **File final** = Whisper only. Apple `SFSpeechURLRecognitionRequest` on a
+///   full WAV is an engineering mistake at scale: collapses long Polish dictation
+///   to a tail fragment (0–66 chars) and can *still beat* a thin live stream on
+///   length regression because the fragment is slightly longer than the broken
+///   live assembly — see data_assets/02 e2e (live 26c, Apple file 66c, human 600c+).
+///
+/// When `CODESCRIBE_STT_ENGINE=apple`, live paths stay Apple-only; this function
+/// deliberately does **not** call `apple_stt::transcribe_file_verdict`.
 pub fn transcribe_file_verdict(
     path: &std::path::Path,
     language: Option<&str>,
@@ -247,25 +254,23 @@ pub fn transcribe_file_verdict(
             // ONNX has no dedicated file-verdict path; use Candle Whisper for file final-pass.
             whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
         }
-        SttEngine::Apple => run_apple_or_whisper(
-            "transcribe_file_verdict",
-            || apple_stt::transcribe_file_verdict(path, language),
-            || {
-                whisper::transcribe_file_verdict(
-                    path,
-                    language,
-                    FileTranscriptionOptions::default(),
-                )
-            },
-        ),
+        SttEngine::Apple => {
+            // Do not route file final through Apple — even as "primary with Whisper
+            // fallback". Apple file STT is not a product final path.
+            tracing::info!(
+                "file final-pass forced to Whisper (Apple is live-only; SFSpeechURL is not final)"
+            );
+            whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
+        }
         SttEngine::Candle => {
             whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
         }
     }
 }
 
-/// Whether the active router would prefer the Apple on-device lane for final pass.
-/// Exposed for controller skip/budget diagnostics and tests.
+/// Whether the **live** router is on the Apple lane (buffer / progressive).
+///
+/// Not a signal to run Apple on file final-pass — see [`transcribe_file_verdict`].
 pub fn active_engine_is_apple() -> bool {
     matches!(selected_engine(), SttEngine::Apple)
 }
@@ -480,5 +485,32 @@ mod tests {
             msg.contains("bridge boom") || msg.contains("no Whisper") || msg.contains("live"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn file_final_pass_is_whisper_policy_even_when_live_engine_is_apple() {
+        // Source-level product invariant: Apple arm of transcribe_file_verdict
+        // must call whisper::transcribe_file_verdict only (no apple_stt file).
+        // data_assets/02: Apple URL final 66c beat live 26c and still lost human 600c+.
+        let src = include_str!("mod.rs");
+        let apple_arm = src
+            .split("SttEngine::Apple =>")
+            .nth(2) // third occurrence ≈ file-final match arm after live helpers
+            .unwrap_or("");
+        // Fall back: scan the function body by name.
+        let fn_body = src
+            .split("pub fn transcribe_file_verdict")
+            .nth(1)
+            .and_then(|s| s.split("pub fn active_engine_is_apple").next())
+            .unwrap_or("");
+        assert!(
+            fn_body.contains("forced to Whisper") || fn_body.contains("file final-pass forced"),
+            "transcribe_file_verdict must document Whisper-only file final"
+        );
+        assert!(
+            !fn_body.contains("apple_stt::transcribe_file_verdict"),
+            "transcribe_file_verdict must not call apple_stt file path (Apple is live-only)"
+        );
+        let _ = apple_arm;
     }
 }
