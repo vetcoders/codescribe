@@ -487,10 +487,15 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_BUFFERED_INTERIM_SEC",
     "WHISPER_MODEL",
     "BACKEND_MAX_UPLOAD_MB",
-    // NOTE (F1/W2-G): CODESCRIBE_STT_ENGINE / CODESCRIBE_LAYERED_TRANSCRIPTION /
-    // CODESCRIBE_STT_INITIAL_PROMPT_ENABLED are deliberately NOT promoted — they
-    // stay env-managed so an existing ~/.codescribe/.env line keeps winning.
-    // settings.json only seeds them when the env var is absent (loader.rs).
+    // STT contract (2026-07-24): engine + final-pass are product settings.
+    // UI writes land in settings.json; process env is reconciled on write so
+    // a stale ~/.codescribe/.env line cannot silently lottery the live path.
+    "CODESCRIBE_STT_ENGINE",
+    "FINAL_PASS_MODE",
+    "CODESCRIBE_FINAL_PASS_MODE",
+    // Still env-seedable when unset; not full dual-brain for STT engine:
+    // "CODESCRIBE_LAYERED_TRANSCRIPTION",
+    // "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
 ];
 
 /// Check if a key is a promoted (settings.json) setting.
@@ -758,16 +763,22 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_max_upload_mb),
+            // Product default: Apple live (must-have). Empty `speech.engine: {}`
+            // used to leave stt_engine=None → env/auto lottery; pin apple.
             stt_engine: v2
                 .speech
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.stt_engine.clone()),
+                .and_then(|e| e.stt_engine.clone())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| Some("apple".to_string())),
             final_pass_mode: v2
                 .speech
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.final_pass_mode.clone()),
+                .and_then(|e| e.final_pass_mode.clone())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| Some("smart".to_string())),
             layered_transcription: v2
                 .speech
                 .as_ref()
@@ -1422,6 +1433,35 @@ mod tests {
         assert_eq!(reloaded.final_pass_mode.as_deref(), Some("off"));
         assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
         assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
+    }
+
+    #[test]
+    #[serial]
+    fn empty_speech_engine_defaults_to_apple_live_product() {
+        // MacGyver lottery shape: schema v3 with speech.engine: {} left stt_engine
+        // unset and .env=auto won. Product must pin Apple live + smart final.
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(
+            &path,
+            r#"{
+  "schema_version": 3,
+  "speech": {
+    "language": "pl",
+    "engine": {}
+  }
+}"#,
+        )
+        .expect("write empty engine settings");
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.stt_engine.as_deref(),
+            Some("apple"),
+            "empty speech.engine must pin Apple live, not leave None/auto lottery"
+        );
+        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
+        assert!(is_promoted_key("CODESCRIBE_STT_ENGINE"));
+        assert!(is_promoted_key("FINAL_PASS_MODE"));
     }
 
     #[test]

@@ -139,8 +139,17 @@ struct EnginePanel: View {
 
     private var engineControls: some View {
         VStack(spacing: 8) {
+            // Preferred live engine is Apple (must-have). Whisper is final-pass /
+            // recovery / offline — not the silent dual-brain lottery.
+            if let note = model.sttEngineTruthNote {
+                Text(note)
+                    .font(CSFont.ui(11.5))
+                    .foregroundStyle(CSColor.amber)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 2)
+            }
             SettingsControlRow(title: "STT engine",
-                               subtitle: "Auto prefers Apple live speech, else Whisper") {
+                               subtitle: "Apple = live speech (product default). Whisper = final pass / offline.") {
                 Menu {
                     ForEach(Self.sttEngineOptions, id: \.id) { option in
                         Button {

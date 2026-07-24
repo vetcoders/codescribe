@@ -771,20 +771,16 @@ impl Config {
             Self::config_init_set_env("BACKEND_MAX_UPLOAD_MB", v.to_string());
         }
 
-        // ── STT engine / layered transcription (F1) ──
-        // Explicit process env wins; settings.json seeds the env-only knobs that
-        // core/stt reads per-call (selected_engine / layered_phase).
-        if Self::config_runtime_env_var("CODESCRIBE_STT_ENGINE").is_err()
-            && let Some(ref v) = settings.stt_engine
-        {
+        // ── STT engine / final-pass (STT_CONTRACT single brain) ──
+        // Product rule: durable settings.json wins for live engine selection so a
+        // leftover CODESCRIBE_STT_ENGINE=auto in .env cannot lottery Apple death.
+        // CI/power users still override by writing settings or using setSttEngine.
+        if let Some(ref v) = settings.stt_engine {
             Self::safe_set_env("CODESCRIBE_STT_ENGINE", v);
         }
-        // FINAL_PASS_MODE is the mission-canonical key; seed both aliases when unset.
-        if Self::config_runtime_env_var("FINAL_PASS_MODE").is_err()
-            && Self::config_runtime_env_var("CODESCRIBE_FINAL_PASS_MODE").is_err()
-            && let Some(ref v) = settings.final_pass_mode
-        {
+        if let Some(ref v) = settings.final_pass_mode {
             Self::safe_set_env("FINAL_PASS_MODE", v);
+            Self::safe_set_env("CODESCRIBE_FINAL_PASS_MODE", v);
         }
         if Self::config_runtime_env_var("CODESCRIBE_LAYERED_TRANSCRIPTION").is_err()
             && let Some(ref v) = settings.layered_transcription
@@ -887,6 +883,14 @@ impl Config {
                     settings.set_string(key, value);
                 }
             }
+            // STT contract: settings write is product truth — pin process env +
+            // .env so boot cannot re-lottery via a stale CODESCRIBE_STT_ENGINE.
+            if matches!(
+                key,
+                "CODESCRIBE_STT_ENGINE" | "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE"
+            ) {
+                Self::reconcile_stt_runtime_key(key, value);
+            }
             return Ok(());
         }
 
@@ -968,6 +972,17 @@ impl Config {
                     "HOLD_ARM_MODIFIER" => {
                         if let Ok(arm) = value.parse::<crate::config::HoldArmModifier>() {
                             settings_ref.hold_arm_modifier = Some(arm.as_str().to_string());
+                        }
+                    }
+                    "CODESCRIBE_STT_ENGINE" => {
+                        settings_ref.stt_engine = Some((*value).to_string());
+                        Self::reconcile_stt_runtime_key(key, value);
+                    }
+                    "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
+                        let normalized = value.trim().to_ascii_lowercase();
+                        if matches!(normalized.as_str(), "always" | "smart" | "off") {
+                            settings_ref.final_pass_mode = Some(normalized.clone());
+                            Self::reconcile_stt_runtime_key(key, &normalized);
                         }
                     }
                     // ── u64 ──
@@ -1113,6 +1128,54 @@ impl Config {
             _ => return false,
         }
         true
+    }
+
+    /// Pin STT-related process env + ~/.codescribe/.env to the settings value.
+    ///
+    /// Product rule (STT_CONTRACT / W2-A): Settings UI is the single brain for
+    /// live engine selection. A leftover `CODESCRIBE_STT_ENGINE=auto` in `.env`
+    /// must not win over an explicit `speech.engine.stt_engine` write.
+    pub fn reconcile_stt_runtime_key(key: &str, value: &str) {
+        let value = value.trim();
+        if value.is_empty() {
+            return;
+        }
+        // Live process truth used by core/stt::selected_engine() on every call.
+        // Must bypass the bootstrap lock: UI writes happen after Config::load
+        // marked env seeding done. Intentional single-writer path (settings UI).
+        // SAFETY: same keys as boot seed; only called from save_to_env* on STT knobs.
+        unsafe {
+            std::env::set_var(key, value);
+            if key == "FINAL_PASS_MODE" {
+                std::env::set_var("CODESCRIBE_FINAL_PASS_MODE", value);
+            } else if key == "CODESCRIBE_FINAL_PASS_MODE" {
+                std::env::set_var("FINAL_PASS_MODE", value);
+            }
+        }
+
+        let env_path = Self::env_path();
+        let mut vars = if env_path.exists() {
+            Self::parse_env_file(&env_path).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        let before = vars.get(key).cloned();
+        vars.insert(key.to_string(), value.to_string());
+        if key == "FINAL_PASS_MODE" {
+            vars.insert("CODESCRIBE_FINAL_PASS_MODE".to_string(), value.to_string());
+        } else if key == "CODESCRIBE_FINAL_PASS_MODE" {
+            vars.insert("FINAL_PASS_MODE".to_string(), value.to_string());
+        }
+        if before.as_deref() != Some(value) {
+            if let Some(parent) = env_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Err(e) = Self::write_env_file(&env_path, &vars) {
+                warn!("Failed to reconcile STT key {key} in .env: {e}");
+            } else {
+                info!("STT runtime reconciled {key}={value} (settings + process env + .env)");
+            }
+        }
     }
 
     /// Parse .env file into HashMap.

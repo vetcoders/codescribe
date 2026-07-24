@@ -150,6 +150,45 @@ fn run_apple_live_only<T>(
     })
 }
 
+/// Preferential engine label for UI honesty (`local_apple` / `local_whisper` / …).
+pub fn preferred_engine_label() -> &'static str {
+    match selected_engine() {
+        SttEngine::Apple => "local_apple",
+        SttEngine::Onnx => "local_whisper",
+        SttEngine::Candle => "local_whisper",
+    }
+}
+
+/// Preflight before starting a recording when live engine is Apple.
+///
+/// Fails **before** REC so we never open an empty overlay that dies mid-take.
+/// Whisper is not substituted here — recovery is a separate stop-path cut when
+/// audio already exists.
+pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
+    if !matches!(selected_engine(), SttEngine::Apple) {
+        return Ok(());
+    }
+    if !apple_stt::is_runtime_available() {
+        anyhow::bail!(
+            "Apple Speech is not available on this macOS version. \
+             Install a supported macOS or switch STT engine to Whisper in Settings."
+        );
+    }
+    if !apple_stt::is_bridge_resolvable() {
+        anyhow::bail!(
+            "Apple STT bridge not found. Use the Codescribe.app build (bridge beside the app) \
+             or set CODESCRIBE_APPLE_STT_BRIDGE to the bridge binary."
+        );
+    }
+    // Probe Speech TCC + locale assets once before audio starts.
+    apple_stt::init().map_err(|err| {
+        anyhow::anyhow!(
+            "Apple Speech is not ready: {err}. \
+             Enable Speech Recognition for Codescribe in System Settings › Privacy & Security."
+        )
+    })
+}
+
 fn warn_initial_prompt_unsupported(engine: &str) {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
@@ -471,6 +510,14 @@ mod tests {
     fn selected_engine_auto_alias_uses_platform_default() {
         let _guard = EnvGuard::set("auto");
         assert_eq!(selected_engine(), default_engine());
+    }
+
+    #[test]
+    #[serial]
+    fn preflight_apple_live_ready_is_noop_when_engine_is_not_apple() {
+        let _guard = EnvGuard::set("whisper");
+        preflight_apple_live_ready().expect("Whisper preference must not require Apple preflight");
+        assert_eq!(preferred_engine_label(), "local_whisper");
     }
 
     #[test]

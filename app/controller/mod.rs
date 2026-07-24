@@ -3239,6 +3239,18 @@ impl RecordingController {
                 set_assistive_session(false);
                 return;
             }
+            // Apple live must-have: refuse start before audio when Speech is not ready
+            // (empty mid-take death is not an acceptable product mode).
+            if !cfg!(test)
+                && let Err(e) = codescribe_core::stt::preflight_apple_live_ready()
+            {
+                error!("Hold-start aborted (Apple STT preflight): {e}");
+                drop(rec_guard);
+                *session_id.write().await = None;
+                set_assistive_session(false);
+                crate::os::hold_badge::hide_hold_badge();
+                return;
+            }
             // Hold-to-talk: the key-down is the source of truth. Don't auto-stop mid-hold.
             rec.recorder.config.auto_silence = false;
             rec.recorder.set_on_vad_stop(move || {
@@ -3413,6 +3425,14 @@ impl RecordingController {
         {
             drop(recorder_guard);
             self.reset_session_after_start_failure("Toggle-start preflight")
+                .await;
+            return Err(e);
+        }
+        if !cfg!(test)
+            && let Err(e) = codescribe_core::stt::preflight_apple_live_ready()
+        {
+            drop(recorder_guard);
+            self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
                 .await;
             return Err(e);
         }

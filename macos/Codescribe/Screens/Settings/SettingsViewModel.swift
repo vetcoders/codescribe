@@ -1409,21 +1409,53 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - STT engine / layered transcription (Engine panel controls)
 
-    /// Selected STT engine id ("auto" | "apple" | "whisper"); absent → auto policy.
-    var sttEngineId: String { settings.sttEngine ?? "auto" }
+    /// Selected STT engine id ("auto" | "apple" | "whisper"); empty → product default Apple.
+    var sttEngineId: String {
+        let raw = (settings.sttEngine ?? "apple").lowercased()
+        switch raw {
+        case "auto", "apple", "whisper", "candle", "onnx": return raw == "candle" ? "whisper" : raw
+        default: return "apple"
+        }
+    }
 
     /// Display label for the current STT engine selection.
     var sttEngineLabel: String {
         switch sttEngineId {
         case "apple": return "Apple (live)"
         case "whisper", "candle": return "Whisper (Candle)"
-        default: return "Auto"
+        case "auto": return "Auto (Apple-first)"
+        default: return "Apple (live)"
         }
     }
 
+    /// Honest dual-brain note when preference and Active STT last run diverge.
+    var sttEngineTruthNote: String? {
+        let pref = sttEngineId
+        let active = activeSTT.lowercased()
+        if active.contains("not yet") || active.isEmpty { return nil }
+        // Preference Apple but last run was Whisper recovery / file pass is OK
+        // to mention once when the chip is clearly whisper while user picked apple.
+        if pref == "apple", active.contains("whisper") {
+            return "Preference: Apple live · last take used Whisper (final/recovery). Live partials stay Apple."
+        }
+        if pref == "whisper" || pref == "candle", active.contains("apple") {
+            return "Preference: Whisper · last take was Apple live — check env override or restart."
+        }
+        return nil
+    }
+
     func setSttEngine(_ id: String) {
-        settings.sttEngine = id
-        persist("CODESCRIBE_STT_ENGINE", id)
+        let normalized: String
+        switch id.lowercased() {
+        case "auto": normalized = "auto"
+        case "whisper", "candle": normalized = "whisper"
+        case "onnx": normalized = "onnx"
+        default: normalized = "apple"
+        }
+        settings.sttEngine = normalized
+        // Persist promotes to settings.json AND reconciles process env + .env
+        // (single brain — no CODESCRIBE_STT_ENGINE lottery).
+        persist("CODESCRIBE_STT_ENGINE", normalized)
     }
 
     /// Final-pass routing: always | smart | off (default smart).

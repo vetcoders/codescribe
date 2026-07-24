@@ -1,0 +1,251 @@
+# STT contract — front → backend (no lottery)
+
+> Status: operator truth map · 2026-07-24 · branch `feat/operator-feedback-wave9`
+> Goal: every UI/hotkey entry is one line to one handler; settings truth is one place.
+> **Operator lock: Apple STT is MUST-HAVE for live.** Whisper = final-pass / recovery only — not the primary product escape hatch.
+> Planning report: `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0724/plans/stt-apple-must-have/00_PLANNING_REPORT.md`
+
+---
+
+## 0. Your machine right now (why it failed) — *historical diagnosis*
+
+| Layer | What you had | Effect |
+|-------|----------------|--------|
+| `settings.json` → `speech.engine` | **`{}` empty** | No durable `stt_engine` |
+| `~/.codescribe/.env` → `CODESCRIBE_STT_ENGINE` | **`auto`** | Env **won** over empty settings |
+| Runtime `selected_engine()` | `auto` → Apple if bridge OK | Live STT = Apple |
+| Live path | `run_apple_live_only` | **No Whisper mid-live** on failure |
+
+```text
+Apple STT live path failed … (Candle Whisper fallback disabled for live)
+Recording stopped before a transcript was available.
+```
+
+**Not rocket science:** auto picked Apple; Apple failed mid-take; live refuses Whisper.
+
+### Fixed product contract (2026-07-24 ship cut)
+
+| Layer | Rule |
+|-------|------|
+| Empty `speech.engine` | Load defaults to **`stt_engine=apple`**, **`final_pass_mode=smart`** |
+| Settings UI write | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain) |
+| Record start | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready |
+| Live vs final | Live = Apple only; file final = Whisper; recovery path separate from mid-stream swap |
+
+---
+
+## 1. What `settings.json` should contain (STT-relevant)
+
+**Path (only this file for UI-promoted settings):**
+`~/Library/Application Support/Codescribe/settings.json`
+
+**Schema v3 — speech.engine keys that actually matter:**
+
+| JSON path | Internal field | Wire / env | Values | Required for “simple works”? |
+|-----------|----------------|------------|--------|--------------------------------|
+| `speech.language` | `whisper_language` | `WHISPER_LANGUAGE` | `pl`, `en`, … | Yes (you have `pl` ✓) |
+| `speech.engine.stt_engine` | `stt_engine` | `CODESCRIBE_STT_ENGINE` | `auto` \| `apple` \| `whisper` \| `candle` \| `onnx` | **Yes — pick explicit** |
+| `speech.engine.final_pass_mode` | `final_pass_mode` | `FINAL_PASS_MODE` | `always` \| `smart` \| `off` | Recommended (`smart`) |
+| `speech.engine.whisper_model` | `whisper_model` | `WHISPER_MODEL` | model id | If engine = whisper |
+| `speech.engine.mode` | maps to `use_local_stt` | legacy | `local_whisper` / `cloud_whisper` | Optional legacy |
+| `speech.engine.local_model` | `local_model` | path | model path | Optional |
+| `speech.formatting.level` | `formatting_level` | — | `off`/`correction`/`smart`/`max` | AI format (not STT) |
+| `speech.emission.*` | buffer/typing | Voice Lab | numbers | Overlay pacing only |
+
+**Yours today:**
+
+```json
+"speech": {
+  "language": "pl",
+  "engine": {},          // ← EMPTY = no choice recorded
+  "formatting": { "enabled": true, "level": "smart", ... },
+  "emission": { ... }
+}
+```
+
+**Minimal durable engine block (Apple-first daily driver):**
+
+```json
+"speech": {
+  "language": "pl",
+  "engine": {
+    "stt_engine": "apple",
+    "final_pass_mode": "smart"
+  },
+  "formatting": { "enabled": true, "level": "smart" }
+}
+```
+
+**And** either:
+
+1. Remove `CODESCRIBE_STT_ENGINE=auto` from `~/.codescribe/.env`, **or**
+2. Set `CODESCRIBE_STT_ENGINE=apple` in `.env` (env always wins if present).
+
+If you keep `.env = auto` and only fill `settings.json`, **settings do not win** for engine selection at runtime.
+
+Empty recordings with Apple selected are a **reliability cut** (preflight + typed Whisper *recovery* with audio), not a reason to abandon Apple as primary.
+
+---
+
+## 2. Precedence (one rule)
+
+```text
+1. Process env (set at boot from .env load, OR reconciled on Settings write)
+2. Else settings.json seeds process env once (loader.rs apply_user_settings)
+3. Else built-in default:
+     auto → Apple if bridge resolvable else Candle Whisper
+     empty settings.stt_engine → product default **apple**
+```
+
+Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconcile_stt_runtime_key`.
+
+**Single brain (W2-A):**
+`CODESCRIBE_STT_ENGINE` and `FINAL_PASS_MODE` are **promoted** settings. UI write updates `settings.json`, process env, and `.env` together. No silent dual brain.
+
+Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPTION`, `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
+
+---
+
+## 3. Front entry → backend handler (STT spine)
+
+### 3.1 Hotkeys (start/stop recording)
+
+| Front entry | Binding (your settings) | Bridge / OS | Controller | Backend |
+|-------------|-------------------------|-------------|------------|---------|
+| Hold Fn (dictation) | `mode_bindings.dictation = hold_fn` | `CodescribeHotkeys` + CGEventTap | `AppController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
+| Double Left Option (formatting) | `formatting = double_left_option` | same | hold/toggle + force AI format path | STT same, then `core/llm` formatting |
+| Double Right Option (assistive) | `assistive = double_right_option` | same | assistive session | STT same, then agent lane |
+
+**Stop** always drains recorder → live/final transcription → delivery (paste / overlay / agent).
+
+### 3.2 Settings UI → config
+
+| Front control | UniFFI | Core |
+|---------------|--------|------|
+| Load Settings form | `CodescribeConfig.load_settings()` | `UserSettings::load` + `Config::load` + env merge → `CsSettings` |
+| Save knobs | `update_config` / `update_config_many` | `UserSettings::set_*` → write `settings.json`; may seed env |
+| Active STT row | `current_serving_verdict()` | `serving_status::current_last_serving` (**last actual run**, not preference) |
+| Whisper model status / download | `whisper_model_status` / `download_whisper_model` | `core/config/models.rs` |
+| Audio device | `audio_input_snapshot` + config keys | `UserSettings.audio_input_device` + cpal |
+| Mic permission | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions` |
+| Lane (LLM) truth | `lane_truth_snapshot(lane)` | `core/llm/lane_truth.rs` |
+
+### 3.3 Dictation overlay / tray
+
+| Front | UniFFI | Handler |
+|-------|--------|---------|
+| Live partials / final text | `CsTranscriptionListener` callbacks | streaming pipeline → listener |
+| Dictation service object | `CodescribeDictation` | wraps controller recording API |
+| Tray status glyphs | `CodescribeTrayStatus` + listener | controller tray payload |
+| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles |
+
+### 3.4 STT engine dispatch (the nit)
+
+| Call site | When | Function | Engine rule |
+|-----------|------|----------|-------------|
+| Live chunk / long / try | during recording | `transcribe_*` via `run_apple_live_only` if engine=Apple | **Apple only — no Whisper** |
+| Adapter acquisition | init / some paths | `get_adapter` | Apple uses `run_apple_or_whisper` (fallback OK) |
+| Offline / file final-pass | after stop, non-live | final pass routing | can still Apple→Whisper depending on mode |
+
+**This split is the MacGyver fracture:** UI can show Whisper readiness while live is Apple-only and fails closed.
+
+```text
+selected_engine()
+  ├── Onnx   → onnx_adapter
+  ├── Apple  → LIVE: run_apple_live_only  |  ADAPTER: run_apple_or_whisper
+  └── Candle → whisper singleton (label: local_whisper)
+```
+
+`auto` = Apple if `apple_stt::is_runtime_available() && is_bridge_resolvable()` else Candle.
+
+---
+
+## 4. Labels vs truth
+
+| Surface | Source of truth | Not truth |
+|---------|-----------------|-----------|
+| Settings **preference** `stt_engine` | `CsSettings.stt_engine` (env-merged) | — |
+| Settings **Active STT** | `current_serving_verdict().engine` last run | Preference string |
+| Overlay footer engine chip | last verdict / controller truth label | “I wanted Whisper” |
+| Error text | actual failing path | — |
+
+Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`.
+
+---
+
+## 5. Operator cheat-sheet — make it boring
+
+### Want Apple live (product default — must-have)
+
+1. Settings + env both pin Apple (no empty `engine: {}`, no silent `auto` fight):
+   ```bash
+   CODESCRIBE_STT_ENGINE=apple
+   ```
+   ```json
+   "engine": { "stt_engine": "apple", "final_pass_mode": "smart" }
+   ```
+2. Full quit + relaunch.
+3. Footer / Active STT after a take: **`local_apple`** on happy path.
+4. Empty death mid-take = **code cut** (preflight + Whisper recovery when audio exists) — see planning report Wave 1. Settings alone cannot fix `run_apple_live_only`.
+
+### Want Whisper-only (power user / offline — not product default)
+
+Same pattern with `stt_engine: "whisper"`. Allowed; not the Codescribe daily-driver story while Apple is must-have.
+
+### Do **not** leave
+
+```json
+"engine": {}
+```
+plus
+```bash
+CODESCRIBE_STT_ENGINE=auto
+```
+unless you accept Apple lottery on every session.
+
+---
+
+## 6. Full front surface map (non-STT, for completeness)
+
+| Domain | Front / UniFFI | Backend owner |
+|--------|----------------|---------------|
+| Config / keys | `CodescribeConfig` | `core/config/*`, Keychain |
+| Hotkeys | `CodescribeHotkeys` | `app/os/hotkeys`, controller |
+| Recording / STT | `CodescribeDictation`, listeners | controller + `core/stt` + `core/audio` |
+| Agent chat | `CodescribeAgent` | `core/agent/*`, LLM lane |
+| Agent delivery (voice→thread) | `CsAgentDeliveryListener` | `ThreadDeliveryGateway` |
+| Threads | `CodescribeThreads` | `core/agent/thread_*` |
+| MCP | `CodescribeMcpAdmin` | `core/mcp` |
+| Quality / lexicon | `quality_*`, lexicon FFI | `core/quality` |
+| Notes | `CodescribeNotes` | notes store |
+| Tray | `CodescribeTrayStatus` | controller tray |
+
+---
+
+## 7. Falsification premises
+
+1. **Lie:** “settings.json alone sets the engine.”
+   **Truth:** process env / `.env` wins when set.
+2. **Lie:** “footer local whisper means live is Whisper.”
+   **Truth:** last verdict or preference can diverge from live Apple.
+3. **Lie:** “Apple fails so Whisper should catch it live.”
+   **Truth:** live Apple path explicitly disables Candle fallback (`22305e26`).
+4. **Lie:** empty `speech.engine` is fine.
+   **Truth:** empty = no durable preference; `auto` decides every boot.
+
+---
+
+## 8. Cuts landed (this ship)
+
+| Cut | Status | Where |
+|-----|--------|--------|
+| P0 Promote STT engine to settings + reconcile `.env`/process | **landed** | `PROMOTED_SETTINGS_KEYS` + `reconcile_stt_runtime_key` |
+| P0 Default empty engine → apple + smart final | **landed** | `UserSettings::from_v2` |
+| P1 Preflight Apple before hold/toggle start | **landed** | `preflight_apple_live_ready` + controller start |
+| P1 Settings truth note (pref vs last Active STT) | **landed** | `sttEngineTruthNote` + Engine panel |
+| P1 Mid-live Apple fail → Whisper recovery with audio | **open** (next wave) | keep audio; stop-path recovery |
+| Operator machine pin | **done** | `settings.json` + `.env` → `apple` |
+
+---
+
+_Vibecrafted. with AI Agents by VetCoders (c)2024-2026 LibraxisAI_
