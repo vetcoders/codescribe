@@ -8,6 +8,7 @@
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
+        test-engine test-engine-apple test-engine-candle test-teacher \
         demo demo-raw demo-assistive check semgrep fix clean help \
         dmg dmg-signed release-standard release-full release-dmgs notarize download-model download-e5 download-embedder ensure-models \
         hooks
@@ -329,6 +330,76 @@ test-formatting:
 	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
+# ── Core engine (freezed+append / Apple live multi-utterance) ────────────────
+# Clip for STT engine e2e (mic-sim → transcription_session). Override:
+#   make test-engine-apple ENGINE_CLIP=tests/assets/data_assets/01_no-to-dobra.wav
+#   make test-engine-apple ENGINE_ALL_CLIPS=1
+ENGINE_CLIP ?= tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav
+ENGINE_ALL_CLIPS ?= 0
+ENGINE_BRIDGE ?= target/release/codescribe-stt-bridge
+
+# Fast: pure assembly + stream-floor + always-on e2e contracts (no STT / no Apple).
+test-engine:
+	@echo "=== Core engine (unit + always-on contracts, no STT) ==="
+	@cargo test -p codescribe-core --lib live_assembly -- --nocapture
+	@cargo test -p codescribe-core --lib apply_final_boundary -- --nocapture
+	@cargo test --test e2e_overlay_delivery_parity -- --nocapture
+	@echo "OK — freezed+append + single-final-tail fail bar green."
+	@echo "Apple live multi-utterance (slow):  make test-engine-apple"
+	@echo "Candle live multi-utterance:        make test-engine-candle"
+
+# Ensure Apple STT bridge binary exists (virtual-mic / AudioBuffer path).
+$(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift
+	@echo "Building codescribe-stt-bridge → $(ENGINE_BRIDGE)"
+	@mkdir -p $(dir $(ENGINE_BRIDGE))
+	@swiftc -O -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift
+
+# Real mic-sim path: Apple live multi-seal freezed+append + Whisper file final.
+# Needs Speech Recognition authorized for the bridge process (once).
+test-engine-apple: $(ENGINE_BRIDGE)
+	@$(TEST_SETUP); \
+	set -o pipefail; \
+	echo "=== Core engine Apple live (multi-utterance freezed+append) ===" | tee -a "$$LOG"; \
+	echo "  clip=$(ENGINE_CLIP)  all_clips=$(ENGINE_ALL_CLIPS)" | tee -a "$$LOG"; \
+	echo "  bridge=$(CURDIR)/$(ENGINE_BRIDGE)" | tee -a "$$LOG"; \
+	$(ENV_LOAD); \
+	export CODESCRIBE_STT_ENGINE=apple; \
+	export CODESCRIBE_APPLE_STT_BRIDGE="$(CURDIR)/$(ENGINE_BRIDGE)"; \
+	export CODESCRIBE_E2E_STT=1; \
+	if [[ "$(ENGINE_ALL_CLIPS)" == "1" ]]; then \
+	  export CODESCRIBE_E2E_ALL_CLIPS=1; \
+	  unset CODESCRIBE_E2E_AUDIO || true; \
+	else \
+	  export CODESCRIBE_E2E_AUDIO="$(ENGINE_CLIP)"; \
+	fi; \
+	cargo test --test e2e_overlay_delivery_parity e2e_file_audio_as_mic_overlay_and_delivery_parity -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
+
+# Same engine bar on Candle live (no Apple; useful CI / offline).
+test-engine-candle:
+	@$(TEST_SETUP); \
+	set -o pipefail; \
+	echo "=== Core engine Candle live (multi-utterance freezed+append) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); \
+	export CODESCRIBE_STT_ENGINE=candle; \
+	export CODESCRIBE_E2E_STT=1; \
+	if [[ "$(ENGINE_ALL_CLIPS)" == "1" ]]; then \
+	  export CODESCRIBE_E2E_ALL_CLIPS=1; \
+	  unset CODESCRIBE_E2E_AUDIO || true; \
+	else \
+	  export CODESCRIBE_E2E_AUDIO="$(ENGINE_CLIP)"; \
+	fi; \
+	cargo test --test e2e_overlay_delivery_parity e2e_file_audio_as_mic_overlay_and_delivery_parity -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
+
+# Teacher CLI: live×whisper×human → Needs attention → lexicon (built-in proof fixture).
+test-teacher:
+	@echo "=== Teacher proof (built-in e2e 01 texts; no mic) ==="
+	@cargo run --bin codescribe-teacher -- proof --html /tmp/codescribe-teacher.html
+	@echo "HTML: /tmp/codescribe-teacher.html  (open /tmp/codescribe-teacher.html)"
+
 test-all:
 	@$(TEST_SETUP); \
 	set -o pipefail; \
@@ -460,6 +531,10 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-sse' 'Run SSE streaming tests (real API)'
 	@printf '%s\n' '  make test-formatting Run AI formatting tests'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine' 'Core freezed+append unit bar (fast, no STT)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-apple' 'Apple live multi-utterance e2e (ENGINE_CLIP / ENGINE_ALL_CLIPS=1)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-candle' 'Candle live multi-utterance e2e (same engine bar)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-teacher' 'Teacher CLI proof HTML (live×whisper×human)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'Run full test suite'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Verify formatting + clippy + semgrep (CI-safe)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
