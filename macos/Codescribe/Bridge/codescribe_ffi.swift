@@ -2129,6 +2129,11 @@ public protocol CodescribeDictationProtocol: AnyObject, Sendable {
      */
     func transcribeFile(path: String) async throws  -> CsTranscription
 
+    /**
+     * Whether the default Whisper weights are on disk / embedded (not necessarily loaded).
+     */
+    func whisperModelReadyStatus()  -> CsWhisperModelStatus
+
 }
 /**
  * Thin handle to the codescribe dictation engine (streaming recorder +
@@ -2368,6 +2373,17 @@ open func transcribeFile(path: String)async throws  -> CsTranscription  {
             liftFunc: FfiConverterTypeCsTranscription_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
+}
+
+    /**
+     * Whether the default Whisper weights are on disk / embedded (not necessarily loaded).
+     */
+open func whisperModelReadyStatus() -> CsWhisperModelStatus  {
+    return try!  FfiConverterTypeCsWhisperModelStatus_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribedictation_whisper_model_ready_status(
+            self.uniffiCloneHandle(),$0
+    )
+})
 }
 
 
@@ -6105,6 +6121,235 @@ public func FfiConverterTypeCsTrayStatusListener_lower(_ value: CsTrayStatusList
 
 
 
+
+
+/**
+ * Progress callbacks for Settings Whisper download (large, multi-file).
+ * `bytes_total` is `-1` when the server did not send Content-Length.
+ */
+public protocol CsWhisperDownloadListener: AnyObject, Sendable {
+
+    func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64)
+
+    func onComplete(path: String)
+
+}
+/**
+ * Progress callbacks for Settings Whisper download (large, multi-file).
+ * `bytes_total` is `-1` when the server did not send Content-Length.
+ */
+open class CsWhisperDownloadListenerImpl: CsWhisperDownloadListener, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_codescribe_ffi_fn_clone_cswhisperdownloadlistener(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        try! rustCall { uniffi_codescribe_ffi_fn_free_cswhisperdownloadlistener(handle, $0) }
+    }
+
+
+
+
+open func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_on_progress(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(file),
+        FfiConverterUInt64.lower(bytesDone),
+        FfiConverterInt64.lower(bytesTotal),$0
+    )
+}
+}
+
+open func onComplete(path: String)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_on_complete(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),$0
+    )
+}
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceCsWhisperDownloadListener {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceCsWhisperDownloadListener] = [UniffiVTableCallbackInterfaceCsWhisperDownloadListener(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeCsWhisperDownloadListener.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface CsWhisperDownloadListener: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeCsWhisperDownloadListener.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface CsWhisperDownloadListener: handle missing in uniffiClone")
+            }
+        },
+        onProgress: { (
+            uniffiHandle: UInt64,
+            file: RustBuffer,
+            bytesDone: UInt64,
+            bytesTotal: Int64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsWhisperDownloadListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onProgress(
+                     file: try FfiConverterString.lift(file),
+                     bytesDone: try FfiConverterUInt64.lift(bytesDone),
+                     bytesTotal: try FfiConverterInt64.lift(bytesTotal)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onComplete: { (
+            uniffiHandle: UInt64,
+            path: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsWhisperDownloadListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onComplete(
+                     path: try FfiConverterString.lift(path)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitCsWhisperDownloadListener() {
+    uniffi_codescribe_ffi_fn_init_callback_vtable_cswhisperdownloadlistener(UniffiCallbackInterfaceCsWhisperDownloadListener.vtable)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsWhisperDownloadListener: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<CsWhisperDownloadListener>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = CsWhisperDownloadListener
+
+    public static func lift(_ handle: UInt64) throws -> CsWhisperDownloadListener {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return CsWhisperDownloadListenerImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: CsWhisperDownloadListener) -> UInt64 {
+         if let rustImpl = value as? CsWhisperDownloadListenerImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsWhisperDownloadListener {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CsWhisperDownloadListener, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperDownloadListener_lift(_ handle: UInt64) throws -> CsWhisperDownloadListener {
+    return try FfiConverterTypeCsWhisperDownloadListener.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperDownloadListener_lower(_ value: CsWhisperDownloadListener) -> UInt64 {
+    return FfiConverterTypeCsWhisperDownloadListener.lower(value)
+}
+
+
+
+
 /**
  * Result of starting the provider-account login flow. `auth_url` is present
  * when the local callback server is listening and the UI should open a browser.
@@ -6667,6 +6912,69 @@ public func FfiConverterTypeCsConfigEntry_lift(_ buf: RustBuffer) throws -> CsCo
 #endif
 public func FfiConverterTypeCsConfigEntry_lower(_ value: CsConfigEntry) -> RustBuffer {
     return FfiConverterTypeCsConfigEntry.lower(value)
+}
+
+
+/**
+ * Result of Dictionary "Teach" — promote corrections + proposed into live lexicon.
+ */
+public struct CsDictionaryTeachResult: Equatable, Hashable {
+    public var fromCorrections: UInt32
+    public var fromProposed: UInt32
+    public var totalRules: UInt32
+    public var rulesFromCorrectionSource: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(fromCorrections: UInt32, fromProposed: UInt32, totalRules: UInt32, rulesFromCorrectionSource: UInt32) {
+        self.fromCorrections = fromCorrections
+        self.fromProposed = fromProposed
+        self.totalRules = totalRules
+        self.rulesFromCorrectionSource = rulesFromCorrectionSource
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsDictionaryTeachResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsDictionaryTeachResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsDictionaryTeachResult {
+        return
+            try CsDictionaryTeachResult(
+                fromCorrections: FfiConverterUInt32.read(from: &buf),
+                fromProposed: FfiConverterUInt32.read(from: &buf),
+                totalRules: FfiConverterUInt32.read(from: &buf),
+                rulesFromCorrectionSource: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsDictionaryTeachResult, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.fromCorrections, into: &buf)
+        FfiConverterUInt32.write(value.fromProposed, into: &buf)
+        FfiConverterUInt32.write(value.totalRules, into: &buf)
+        FfiConverterUInt32.write(value.rulesFromCorrectionSource, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDictionaryTeachResult_lift(_ buf: RustBuffer) throws -> CsDictionaryTeachResult {
+    return try FfiConverterTypeCsDictionaryTeachResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsDictionaryTeachResult_lower(_ value: CsDictionaryTeachResult) -> RustBuffer {
+    return FfiConverterTypeCsDictionaryTeachResult.lower(value)
 }
 
 
@@ -9327,6 +9635,78 @@ public func FfiConverterTypeCsTrayToggles_lower(_ value: CsTrayToggles) -> RustB
     return FfiConverterTypeCsTrayToggles.lower(value)
 }
 
+
+/**
+ * Whether local Whisper weights are ready (embedded or on-disk). Used by
+ * Settings → Dictation so users can download the model without a fat DMG.
+ */
+public struct CsWhisperModelStatus: Equatable, Hashable {
+    public var available: Bool
+    public var embedded: Bool
+    public var path: String?
+    public var modelId: String
+    public var repo: String
+    public var sizeHint: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(available: Bool, embedded: Bool, path: String?, modelId: String, repo: String, sizeHint: String) {
+        self.available = available
+        self.embedded = embedded
+        self.path = path
+        self.modelId = modelId
+        self.repo = repo
+        self.sizeHint = sizeHint
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsWhisperModelStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsWhisperModelStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsWhisperModelStatus {
+        return
+            try CsWhisperModelStatus(
+                available: FfiConverterBool.read(from: &buf),
+                embedded: FfiConverterBool.read(from: &buf),
+                path: FfiConverterOptionString.read(from: &buf),
+                modelId: FfiConverterString.read(from: &buf),
+                repo: FfiConverterString.read(from: &buf),
+                sizeHint: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsWhisperModelStatus, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.available, into: &buf)
+        FfiConverterBool.write(value.embedded, into: &buf)
+        FfiConverterOptionString.write(value.path, into: &buf)
+        FfiConverterString.write(value.modelId, into: &buf)
+        FfiConverterString.write(value.repo, into: &buf)
+        FfiConverterString.write(value.sizeHint, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelStatus_lift(_ buf: RustBuffer) throws -> CsWhisperModelStatus {
+    return try FfiConverterTypeCsWhisperModelStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsWhisperModelStatus_lower(_ value: CsWhisperModelStatus) -> RustBuffer {
+    return FfiConverterTypeCsWhisperModelStatus.lower(value)
+}
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
@@ -10609,6 +10989,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsWhisperDownloadListener: FfiConverterRustBuffer {
+    typealias SwiftType = CsWhisperDownloadListener?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsWhisperDownloadListener.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsWhisperDownloadListener.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCsLastServingVerdict: FfiConverterRustBuffer {
     typealias SwiftType = CsLastServingVerdict?
 
@@ -11185,6 +11589,23 @@ public func currentServingVerdict() -> CsLastServingVerdict?  {
 })
 }
 /**
+ * Download the default Whisper model (idempotent if already complete).
+ */
+public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async throws  -> CsWhisperModelStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_func_download_whisper_model(FfiConverterOptionTypeCsWhisperDownloadListener.lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsWhisperModelStatus_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+/**
  * Project the live Rust lane truth through UniFFI without exposing secrets.
  */
 public func laneTruthSnapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot  {
@@ -11237,6 +11658,16 @@ public func qualityRecentRecords(limit: UInt64)throws  -> [CsQualityRecord]  {
 })
 }
 /**
+ * Teach live dictionary from quality store (corrections.jsonl + proposed.jsonl).
+ * Product: Dictionary panel "Teach" so rules leave the udawany 0-learned state.
+ */
+public func qualityTeachDictionaryFromStore()throws  -> CsDictionaryTeachResult  {
+    return try  FfiConverterTypeCsDictionaryTeachResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_quality_teach_dictionary_from_store($0
+    )
+})
+}
+/**
  * Request microphone permission (shows the system dialog when undetermined),
  * returning whether access is granted.
  * Wraps `os::permissions::request_microphone` (app/os/permissions.rs:301).
@@ -11244,6 +11675,15 @@ public func qualityRecentRecords(limit: UInt64)throws  -> [CsQualityRecord]  {
 public func requestMicPermission() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_func_request_mic_permission($0
+    )
+})
+}
+/**
+ * Snapshot Whisper availability without constructing a dictation session.
+ */
+public func whisperModelStatus() -> CsWhisperModelStatus  {
+    return try!  FfiConverterTypeCsWhisperModelStatus_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_whisper_model_status($0
     )
 })
 }
@@ -11272,6 +11712,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 38859) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_lane_truth_snapshot() != 3436) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -11287,7 +11730,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_quality_recent_records() != 51586) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_whisper_model_status() != 33505) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_availability() != 21425) {
@@ -11471,6 +11920,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribedictation_transcribe_file() != 13892) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_whisper_model_ready_status() != 38237) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 35701) {
@@ -11719,6 +12171,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 44268) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_progress() != 23954) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_complete() != 22222) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 37889) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -11752,6 +12210,7 @@ private let initializationResult: InitializationResult = {
     uniffiCallbackInitCsAppActionListener()
     uniffiCallbackInitCsTranscriptionListener()
     uniffiCallbackInitCsTrayStatusListener()
+    uniffiCallbackInitCsWhisperDownloadListener()
     return InitializationResult.ok
 }()
 

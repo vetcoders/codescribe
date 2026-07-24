@@ -42,6 +42,7 @@ protocol SettingsEngine {
     func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
     func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
     func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord
+    func teachDictionaryFromStore() throws -> CsDictionaryTeachResult
 
     // Keychain-backed API keys — presence booleans only, secrets never read back
     func keyStatus() -> CsKeyStatus
@@ -120,6 +121,9 @@ final class RealSettingsEngine: SettingsEngine {
     }
     func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord {
         try qualityFinalizeCorrection(correctionId: id, canonical: canonical)
+    }
+    func teachDictionaryFromStore() throws -> CsDictionaryTeachResult {
+        try qualityTeachDictionaryFromStore()
     }
 
     func keyStatus() -> CsKeyStatus { config.keyStatus() }
@@ -254,6 +258,17 @@ struct MockSettingsEngine: SettingsEngine {
             avgLogprob: nil,
             speechPct: nil,
             confidenceFlags: []
+        )
+    }
+    func teachDictionaryFromStore() throws -> CsDictionaryTeachResult {
+        // Preview / mock: treat current lexicon as already taught.
+        let total = UInt32(lexiconEntries.count)
+        let fromCorrection = UInt32(lexiconEntries.filter { $0.source == "correction" }.count)
+        return CsDictionaryTeachResult(
+            fromCorrections: 0,
+            fromProposed: 0,
+            totalRules: total,
+            rulesFromCorrectionSource: fromCorrection
         )
     }
 

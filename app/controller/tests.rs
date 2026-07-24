@@ -2188,28 +2188,36 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
 }
 
 #[test]
-fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_preview() {
+fn test_adjudicate_recording_truth_merges_live_floor_with_whisper_final() {
+    // Product: never full-replace live with Whisper. Merge keeps live tokens
+    // and fills gaps (85% Apple×Whisper thesis).
+    let live = "powtarzajacy sie streaming preview";
+    let whisper = "czysty final pass";
+    let merged = codescribe_core::quality::merge_live_whisper(live, whisper);
+
     let verdict = adjudicate_recording_truth(
         true,
         true,
-        Some(make_final_pass_verdict(
-            "czysty final pass",
-            82.0,
-            Some(-0.22),
-            false,
-        )),
-        "powtarzajacy sie streaming preview".to_string(),
+        Some(make_final_pass_verdict(whisper, 82.0, Some(-0.22), false)),
+        live.to_string(),
         None,
         &SessionTelemetrySnapshot::default(),
     );
 
-    assert_eq!(verdict.raw_text.as_deref(), Some("czysty final pass"));
+    assert_eq!(verdict.raw_text.as_deref(), Some(merged.text.as_str()));
     assert_eq!(
         verdict.transcript_source,
         Some(RecordingTranscriptSource::LocalFinalPass)
     );
     assert_eq!(verdict.fallback_class, None);
-    assert!(verdict.confidence_flags.is_empty());
+    assert!(
+        verdict
+            .engine_label
+            .as_deref()
+            .is_some_and(|e| e.contains("merged_live_whisper")),
+        "engine_label={:?}",
+        verdict.engine_label
+    );
     assert_eq!(verdict.commit_trigger, None);
     assert_eq!(verdict.display_status, "Final-pass local");
 }
@@ -2258,29 +2266,33 @@ fn test_recon_final_pass_rejected_on_catastrophic_length_regression() {
 }
 
 #[test]
-fn test_recon_comparable_final_pass_still_preferred_over_stream() {
-    // Comparable length: final remains delivery-grade winner (not a collapse).
+fn test_recon_comparable_final_pass_merges_not_full_replace() {
+    // Comparable length: still merge (live floor + whisper fill), never silent overwrite.
+    let live = "poprawny tekst z live preview";
+    let whisper = "podmieniony final pass tekst dluzszy niz prog";
+    let merged = codescribe_core::quality::merge_live_whisper(live, whisper);
+
     let verdict = adjudicate_recording_truth(
         true,
         true,
-        Some(make_final_pass_verdict(
-            "podmieniony final pass tekst dluzszy niz prog",
-            82.0,
-            Some(-0.24),
-            false,
-        )),
-        "poprawny tekst z live preview".to_string(),
+        Some(make_final_pass_verdict(whisper, 82.0, Some(-0.24), false)),
+        live.to_string(),
         None,
         &SessionTelemetrySnapshot::default(),
     );
 
-    assert_eq!(
-        verdict.raw_text.as_deref(),
-        Some("podmieniony final pass tekst dluzszy niz prog")
-    );
+    assert_eq!(verdict.raw_text.as_deref(), Some(merged.text.as_str()));
     assert_eq!(
         verdict.transcript_source,
         Some(RecordingTranscriptSource::LocalFinalPass)
+    );
+    assert!(
+        verdict
+            .engine_label
+            .as_deref()
+            .is_some_and(|e| e.contains("merged_live_whisper")),
+        "engine_label={:?}",
+        verdict.engine_label
     );
 }
 

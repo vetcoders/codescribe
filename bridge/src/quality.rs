@@ -9,9 +9,9 @@
 //! Privacy: local disk only.
 
 use codescribe_core::quality::overlay_quality::{
-    CustomLexiconEntry, OverlayCorrectionCommit, QualityRecord,
+    CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, QualityRecord,
     commit_overlay_correction_with_confidence, custom_lexicon_entries,
-    finalize_voice_lab_correction, recent_quality_records,
+    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store,
 };
 
 use crate::CsError;
@@ -169,6 +169,37 @@ pub fn lexicon_custom_entries() -> Result<Vec<CsLexiconEntry>, CsError> {
         .map(|entries| entries.into_iter().map(Into::into).collect())
         .map_err(|error| CsError::Quality {
             msg: format!("custom lexicon read failed: {error}"),
+        })
+}
+
+/// Result of Dictionary "Teach" — promote corrections + proposed into live lexicon.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDictionaryTeachResult {
+    pub from_corrections: u32,
+    pub from_proposed: u32,
+    pub total_rules: u32,
+    pub rules_from_correction_source: u32,
+}
+
+impl From<DictionaryTeachResult> for CsDictionaryTeachResult {
+    fn from(value: DictionaryTeachResult) -> Self {
+        Self {
+            from_corrections: value.from_corrections,
+            from_proposed: value.from_proposed,
+            total_rules: value.total_rules,
+            rules_from_correction_source: value.rules_from_correction_source,
+        }
+    }
+}
+
+/// Teach live dictionary from quality store (corrections.jsonl + proposed.jsonl).
+/// Product: Dictionary panel "Teach" so rules leave the udawany 0-learned state.
+#[uniffi::export]
+pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, CsError> {
+    teach_dictionary_from_store()
+        .map(Into::into)
+        .map_err(|error| CsError::Quality {
+            msg: format!("dictionary teach failed: {error:#}"),
         })
 }
 

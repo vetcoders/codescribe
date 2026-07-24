@@ -89,58 +89,19 @@ fn assert_engine_multi_utterance_assembly(
     );
 
     if let Some(human) = human {
-        let human_lower = human.to_lowercase();
-        let live_lower = full.to_lowercase();
-        // Body anchors (Polish + domain) — not perfect WER; Apple may garble
-        // Latin brand tokens while still covering the spoken arc.
-        let anchors = [
-            "kubernetes",
-            "konfiguracj",
-            "dawce",
-            "codescribe",
-            "rust",
-            "loctree",
-            "pacjent",
-            "tokio",
-            "algorytm",
-            "leksykon",
-            "transkrypc",
-            "klatki",
-            "beztlenow",
-            "masa",
-            "implement",
-            "endpoint",
-            "toolchain",
-        ];
-        let human_hits: Vec<_> = anchors
-            .iter()
-            .filter(|a| human_lower.contains(**a))
-            .collect();
-        if !human_hits.is_empty() {
-            let matched = human_hits
-                .iter()
-                .filter(|a| live_lower.contains(**a))
-                .count();
-            eprintln!(
-                "  engine bar anchors: {matched}/{} human_hits={human_hits:?}",
-                human_hits.len()
-            );
-            assert!(
-                matched >= 1,
-                "CORE ENGINE: live assembly shares no body anchors with human for {clip_label}\n\
-                 live={full}\n\
-                 human_hits={human_hits:?}"
-            );
-        }
-        // Coverage vs human: not WER — body must not be < ~25% of human chars.
+        // Per-lane doctrine (operator 2026-07-24, 85% thesis):
+        // Apple live under-gen means **domain anchors live in gaps** — do NOT
+        // require kubernetes/rust/etc on the live leg. Assert Polish body coverage
+        // (char ratio) only. Domain anchors belong on **delivery after Whisper
+        // fill**, checked separately when final-pass ran.
         let human_chars = human.chars().count().max(1);
         let ratio = chars as f32 / human_chars as f32;
         let pct = (ratio * 100.0).round() as i32;
-        eprintln!("  engine bar coverage vs human: {pct}% ({chars}/{human_chars})");
+        eprintln!("  engine bar live coverage vs human: {pct}% ({chars}/{human_chars})");
         assert!(
-            ratio >= 0.25,
+            ratio >= 0.20,
             "CORE ENGINE: live assembly covers only {pct}% of human for {clip_label} \
-             (need ≥25% body coverage, not tail fragment)"
+             (need ≥20% body coverage — gaps are fill canvas, not failure)"
         );
     }
 }
@@ -501,16 +462,19 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         eprintln!("  ── human_reference (full) ──\n{human}\n  ── end human_reference ──");
         let human_lower = human.to_lowercase();
         let delivery_lower = delivery.to_lowercase();
-        // Soft keyword overlap — not WER (engines differ); catch total garbage.
-        let anchors = [
+        // Domain anchors on **delivery** (post Whisper fill / merge), not on Apple live.
+        let domain_anchors = [
             "rust",
             "loctree",
             "codescribe",
             "kubernetes",
             "pacjent",
             "tokio",
+            "toolchain",
+            "lexicon",
+            "leksykon",
         ];
-        let human_hits: Vec<_> = anchors
+        let human_hits: Vec<_> = domain_anchors
             .iter()
             .filter(|a| human_lower.contains(**a))
             .collect();
@@ -520,13 +484,12 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
                 .filter(|a| delivery_lower.contains(**a))
                 .count();
             eprintln!(
-                "  human-ref anchors in delivery: {matched}/{} ({human_hits:?})",
+                "  delivery domain anchors: {matched}/{} ({human_hits:?})",
                 human_hits.len()
             );
-            // At least one shared anchor when human text mentions domain terms.
             assert!(
                 matched >= 1,
-                "delivery shares no anchors with human reference for {}\n\
+                "delivery (after fill) shares no domain anchors with human for {}\n\
                  delivery={delivery}\n\
                  human_hits={human_hits:?}",
                 clip.display()

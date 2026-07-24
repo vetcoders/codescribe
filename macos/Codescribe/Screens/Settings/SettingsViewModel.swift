@@ -637,6 +637,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var voiceLabReadError: String?
     @Published private(set) var voiceLabEditPending: Set<String> = []
     @Published private(set) var voiceLabEditErrors: [String: String] = [:]
+    @Published private(set) var voiceLabTeachPending: Bool = false
+    @Published private(set) var voiceLabTeachMessage: String?
     @Published private(set) var audioInput: CsAudioInputSnapshot
     @Published private(set) var audioInputReadError: String?
     @Published private(set) var resetPreview: CsResetPreview
@@ -1293,6 +1295,24 @@ final class SettingsViewModel: ObservableObject {
             qualityRecords = []
             customLexiconEntries = []
             voiceLabReadError = String(describing: error)
+        }
+    }
+
+    /// Mine corrections.jsonl + proposed lexicon into the live custom dictionary.
+    func teachDictionaryFromStore() {
+        guard let engine, !voiceLabTeachPending else { return }
+        voiceLabTeachPending = true
+        voiceLabTeachMessage = nil
+        defer { voiceLabTeachPending = false }
+        do {
+            let result = try engine.teachDictionaryFromStore()
+            voiceLabTeachMessage =
+                "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
+            refreshVoiceLab()
+        } catch {
+            let message = String(describing: error)
+            voiceLabTeachMessage = "Teach failed: \(message)"
+            lastError = message
         }
     }
 

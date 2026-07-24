@@ -14,10 +14,12 @@
 //! for the "gaps ≡ hallucination sites" bet.
 
 mod align;
+mod merge;
 mod report;
 mod tokenize;
 
 pub use align::{AlignOp, align_words};
+pub use merge::{MergeMode, MergedDelivery, merge_live_whisper};
 pub use report::{
     AttentionKind, AttentionSpan, LexiconHint, TeacherInput, TeacherReport, report_to_html, teach,
 };

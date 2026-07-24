@@ -1038,6 +1038,102 @@ pub struct ReplayCandidate {
     pub applied: bool,
 }
 
+/// Result of promoting store evidence (corrections + proposed) into the live dictionary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictionaryTeachResult {
+    /// Pairs upserted from quality corrections.jsonl (Correction level).
+    pub from_corrections: u32,
+    /// Pairs upserted from lexicon.custom.proposed.jsonl.
+    pub from_proposed: u32,
+    /// Flattened custom-lexicon rows after teach (variant→canonical).
+    pub total_rules: u32,
+    /// Subset with source=correction after teach.
+    pub rules_from_correction_source: u32,
+}
+
+/// Teach the live custom dictionary from quality store evidence.
+///
+/// 1. Replay `quality/corrections.jsonl` through the extractor (`apply=true`).
+/// 2. Promote any rows in `lexicon.custom.proposed.jsonl` into the live file.
+///
+/// Idempotent: re-running only upserts missing/updated pairs. This is the product
+/// "Teach" button so Dictionary stops showing "0 rules learned" while evidence sits idle.
+pub fn teach_dictionary_from_store() -> Result<DictionaryTeachResult> {
+    let config_dir = Config::config_dir();
+    let corrections_path = config_dir.join("quality").join("corrections.jsonl");
+    let proposed_path = config_dir.join("lexicon.custom.proposed.jsonl");
+
+    let mut from_corrections = 0u32;
+    if corrections_path.exists() {
+        let table = replay_corrections_through_extractor(&corrections_path, true)?;
+        from_corrections = table.iter().filter(|c| c.applied).count() as u32;
+    }
+
+    let mut from_proposed = 0u32;
+    if proposed_path.exists() {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- local config_dir path only
+        let file = File::open(&proposed_path)
+            .with_context(|| format!("open proposed lexicon {}", proposed_path.display()))?;
+        for (index, line) in BufReader::new(file).lines().enumerate() {
+            let line = line.with_context(|| format!("read proposed line {}", index + 1))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("teach: skip malformed proposed line {}: {}", index + 1, e);
+                    continue;
+                }
+            };
+            let term = value
+                .get("term")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some(canonical) = term else { continue };
+            let variants: Vec<String> = value
+                .get("mispronunciations")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for variant in variants {
+                if !is_sensible_lexicon_candidate(&variant, canonical) {
+                    continue;
+                }
+                match upsert_correction_in_custom_lexicon(&variant, canonical) {
+                    Ok(()) => from_proposed = from_proposed.saturating_add(1),
+                    Err(e) => tracing::warn!(
+                        "teach: failed proposed {} → {}: {:#}",
+                        variant,
+                        canonical,
+                        e
+                    ),
+                }
+            }
+        }
+    }
+
+    let entries = custom_lexicon_entries()?;
+    let rules_from_correction_source = entries
+        .iter()
+        .filter(|e| e.source == LEXICON_SOURCE_CORRECTION)
+        .count() as u32;
+
+    Ok(DictionaryTeachResult {
+        from_corrections,
+        from_proposed,
+        total_rules: entries.len() as u32,
+        rules_from_correction_source,
+    })
+}
+
 /// Finalize the canonical value of one learned correction. The variant and
 /// immutable audit fields come from the latest resolved revision. The custom
 /// dictionary is atomically replaced first; only then is the superseding

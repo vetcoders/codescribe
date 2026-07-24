@@ -61,20 +61,26 @@ func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
     }
 }
 
-/// Honest Dictionary headline from two independent store counts (LL-F).
-/// No causality claim — corrections recorded ≠ rules learned until the loop teaches.
+/// Honest Dictionary headline.
+/// Every custom lexicon variant→canonical is a **live rule** the engine applies.
+/// Correction provenance is a subset, not the only “real” count.
 func dictionaryHeadline(correctionsRecorded: Int, rulesLearned: Int) -> String {
-    "\(correctionsRecorded) corrections recorded · \(rulesLearned) rules learned"
+    "\(correctionsRecorded) corrections recorded · \(rulesLearned) rules in dictionary"
 }
 
-func dictionarySubtitle(correctionsRecorded: Int, rulesLearned: Int, totalEntries: Int) -> String {
+func dictionarySubtitle(
+    correctionsRecorded: Int,
+    rulesLearned: Int,
+    taughtFromCorrections: Int,
+    totalEntries: Int
+) -> String {
     if rulesLearned > 0 {
-        return "\(rulesLearned) rules from correction provenance · \(totalEntries) custom dictionary entries total."
+        return "\(rulesLearned) live rules (variant→canonical) · \(taughtFromCorrections) with correction provenance · \(totalEntries) store rows."
     }
     if correctionsRecorded > 0 {
-        return "\(correctionsRecorded) corrections on disk · 0 rules taught yet from this store."
+        return "\(correctionsRecorded) corrections on disk · dictionary empty — press Teach to mine rules from the store."
     }
-    return "Correction history and custom dictionary entries from the local quality store."
+    return "Correction history and custom dictionary. Teach promotes corrections + proposed → live lexicon."
 }
 
 
@@ -90,7 +96,13 @@ struct VoiceLabPanel: View {
         customLexiconRows(model.customLexiconEntries)
     }
 
+    /// Every flattened lexicon pair is a rule PostProcessor applies.
     private var rulesLearnedCount: Int {
+        lexicon.count
+    }
+
+    /// Subset taught from correction / proposed provenance (source=correction).
+    private var taughtFromCorrectionsCount: Int {
         lexicon.filter { $0.source == "correction" }.count
     }
 
@@ -114,20 +126,37 @@ struct VoiceLabPanel: View {
                     Text(dictionarySubtitle(
                         correctionsRecorded: correctionsRecordedCount,
                         rulesLearned: rulesLearnedCount,
+                        taughtFromCorrections: taughtFromCorrectionsCount,
                         totalEntries: lexicon.count
                     ))
                         .font(CSFont.ui(12.5))
                         .foregroundStyle(CSColor.textMutedAlt)
                         .padding(.top, 8)
+                    if let teachMsg = model.voiceLabTeachMessage {
+                        Text(teachMsg)
+                            .font(CSFont.mono(11, .medium))
+                            .foregroundStyle(CSColor.oliveLight)
+                            .padding(.top, 8)
+                    }
                 }
                 Spacer(minLength: 0)
-                Button("Refresh") {
-                    model.refreshVoiceLab()
+                HStack(spacing: 12) {
+                    Button("Teach") {
+                        model.teachDictionaryFromStore()
+                    }
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.chromeAccent)
+                    .buttonStyle(.plain)
+                    .disabled(model.voiceLabTeachPending)
+                    .accessibilityLabel("Teach dictionary from corrections and proposed rules")
+                    Button("Refresh") {
+                        model.refreshVoiceLab()
+                    }
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.chromeAccent)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
                 }
-                .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.chromeAccent)
-                .buttonStyle(.plain)
-                .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
             }
 
             SettingsSectionLabel("Recent corrections · \(corrections.count)")
@@ -248,11 +277,15 @@ struct VoiceLabPanel: View {
                             .foregroundStyle(CSColor.textBody)
                             .textSelection(.enabled)
                         Spacer(minLength: 0)
+                        Text(row.source)
+                            .font(CSFont.mono(10, .medium))
+                            .foregroundStyle(CSColor.textFaintAlt)
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
                     .background(card)
                     .overlay(cardBorder)
+                    .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
                 }
             }
         }

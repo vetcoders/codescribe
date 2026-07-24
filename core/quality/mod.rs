@@ -3,4 +3,7 @@ pub mod qube_daemon;
 pub mod qube_report;
 pub mod teacher;
 
-pub use teacher::{TeacherInput, TeacherReport, report_to_html, teach};
+pub use teacher::{
+    MergeMode, MergedDelivery, TeacherInput, TeacherReport, merge_live_whisper, report_to_html,
+    teach,
+};

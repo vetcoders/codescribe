@@ -683,6 +683,38 @@ fn adjudicate_recording_truth(
                     "final-pass length regression vs live assembly — keeping stream as floor of truth"
                 );
                 // Fall through to streaming / cloud branches.
+            } else if let Some(stream) = streaming_text.as_ref() {
+                // Product: never full-replace live with Whisper. Merge live floor
+                // + Whisper gap-fill (85% Apple×Whisper thesis; Teacher AlignOp).
+                let merged = codescribe_core::quality::merge_live_whisper(stream, final_text);
+                info!(
+                    mode = ?merged.mode,
+                    equal = merged.equal_tokens,
+                    whisper_fill = merged.whisper_fill_tokens,
+                    live_subs = merged.live_kept_substitutes,
+                    live_chars = stream.chars().count(),
+                    whisper_chars = final_text.chars().count(),
+                    merged_chars = merged.text.chars().count(),
+                    "delivery merge: live floor + whisper fill (not full-replace)"
+                );
+                // Merged path still used a final pass; keep engine label from final
+                // but text is composite live×whisper.
+                let eng = engine_label
+                    .clone()
+                    .map(|e| format!("merged_live_whisper:{e}"))
+                    .or_else(|| Some("merged_live_whisper".to_string()));
+                return build_truth_verdict(
+                    Some(merged.text),
+                    Some(RecordingTranscriptSource::LocalFinalPass),
+                    fallback_class,
+                    None,
+                    speech_pct,
+                    avg_logprob,
+                    confidence_flags,
+                    sparkline,
+                    final_pass_disposition,
+                    eng,
+                );
             } else {
                 return build_truth_verdict(
                     Some(final_text.clone()),
