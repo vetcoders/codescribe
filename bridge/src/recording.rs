@@ -409,17 +409,23 @@ impl ComposerTranscriptSource {
     }
 }
 
-/// Pick the composer return: the whole-WAV final pass wins whenever it produced
-/// non-empty text (it decodes the recording as one continuous utterance, so it
-/// avoids the mid-word cut artifacts of the streaming splice); otherwise the
-/// streaming accumulation is the fallback authority. Both inputs are trimmed.
+/// Pick the composer return.
+///
+/// Final pass wins when non-empty **and** not a catastrophic length regression
+/// vs the live streaming assembly (stream is the floor of truth). Empty/absent
+/// final, or a collapsing file-STT final (e.g. Apple SFSpeech 12 chars vs a
+/// long stream), falls back to streaming. Both inputs are trimmed.
 fn select_composer_transcript(
     final_pass: Option<&str>,
     streaming: &str,
 ) -> (String, ComposerTranscriptSource) {
     if let Some(text) = final_pass {
         let trimmed = text.trim();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty()
+            && !codescribe_core::pipeline::contracts::final_pass_is_length_regression(
+                trimmed, streaming,
+            )
+        {
             return (trimmed.to_string(), ComposerTranscriptSource::FinalPass);
         }
     }
@@ -1015,13 +1021,21 @@ mod tests {
         );
     }
 
-    /// A non-empty final pass is the delivery-grade winner over the streaming
-    /// splice; both sides are trimmed on the way out.
+    /// A non-empty final pass of comparable length is the delivery-grade winner.
     #[test]
     fn select_composer_transcript_prefers_final_pass() {
         let (text, source) = select_composer_transcript(Some("  raz dwa trzy  "), "raz dwa tszy");
         assert_eq!(text, "raz dwa trzy");
         assert_eq!(source, ComposerTranscriptSource::FinalPass);
+    }
+
+    /// Collapsing file-final (Apple SFSpeech short) must not blank a real stream.
+    #[test]
+    fn select_composer_transcript_rejects_length_regression() {
+        let stream = "Im wystarczy i jeszcze sporo z freezed live assembly utterance dwa";
+        let (text, source) = select_composer_transcript(Some("Im wystarczy"), stream);
+        assert_eq!(text, stream.trim());
+        assert_eq!(source, ComposerTranscriptSource::StreamingFallback);
     }
 
     /// An absent or empty/whitespace final pass falls back to the streaming

@@ -601,6 +601,9 @@ fn adjudicate_recording_truth(
 ) -> RecordingTruthVerdict {
     let streaming_text = non_empty_transcript(Some(streaming_text));
     let cloud_verdict = cloud_verdict.filter(|verdict| !verdict.text.trim().is_empty());
+    // When file-final collapses vs live assembly (Apple SFSpeech short file
+    // path), keep the stream as floor of truth and mark provenance.
+    let mut final_pass_length_regression = false;
 
     if use_local_stt && let Some(verdict) = local_final_pass_verdict {
         let speech_pct = verdict.vad.as_ref().map(|vad| vad.speech_pct);
@@ -647,18 +650,55 @@ fn adjudicate_recording_truth(
             non_empty_transcript(Some(verdict.text))
         };
 
-        return build_truth_verdict(
-            raw_text,
-            Some(RecordingTranscriptSource::LocalFinalPass),
-            fallback_class,
-            no_speech_reason,
-            speech_pct,
-            avg_logprob,
-            confidence_flags,
-            sparkline,
-            final_pass_disposition,
-            engine_label,
-        );
+        // Explicit no-speech from final pass remains authoritative.
+        if no_speech_reason.is_some() {
+            return build_truth_verdict(
+                None,
+                Some(RecordingTranscriptSource::LocalFinalPass),
+                fallback_class,
+                no_speech_reason,
+                speech_pct,
+                avg_logprob,
+                confidence_flags,
+                sparkline,
+                final_pass_disposition,
+                engine_label,
+            );
+        }
+
+        if let Some(final_text) = raw_text.as_ref() {
+            let is_regression = streaming_text.as_ref().is_some_and(|stream| {
+                codescribe_core::pipeline::contracts::final_pass_is_length_regression(
+                    final_text, stream,
+                )
+            });
+            if is_regression {
+                final_pass_length_regression = true;
+                warn!(
+                    final_chars = final_text.chars().count(),
+                    stream_chars = streaming_text
+                        .as_ref()
+                        .map(|s| s.chars().count())
+                        .unwrap_or(0),
+                    "final-pass length regression vs live assembly — keeping stream as floor of truth"
+                );
+                // Fall through to streaming / cloud branches.
+            } else {
+                return build_truth_verdict(
+                    Some(final_text.clone()),
+                    Some(RecordingTranscriptSource::LocalFinalPass),
+                    fallback_class,
+                    None,
+                    speech_pct,
+                    avg_logprob,
+                    confidence_flags,
+                    sparkline,
+                    final_pass_disposition,
+                    engine_label,
+                );
+            }
+        }
+        // Empty final text without no_speech → fall through to stream floor.
     }
 
     if let Some(reason) = &session_telemetry.no_speech_reason {
@@ -678,7 +718,12 @@ fn adjudicate_recording_truth(
 
     if use_local_stt {
         let mut confidence_flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
-        if local_final_pass_attempted {
+        if final_pass_length_regression {
+            push_typed_flag(
+                &mut confidence_flags,
+                TranscriptionConfidenceFlag::FinalPassLengthRegression,
+            );
+        } else if local_final_pass_attempted {
             push_typed_flag(
                 &mut confidence_flags,
                 TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
@@ -718,6 +763,14 @@ fn adjudicate_recording_truth(
                 &mut fallback_flags,
                 TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
             );
+            // Regression keep-stream is still live assembly truth, not "degraded
+            // because final missing" — label as streaming floor when we rejected
+            // a collapsing final pass.
+            let engine = if final_pass_length_regression {
+                Some("streaming_live_floor".to_string())
+            } else {
+                Some("streaming_whisper".to_string())
+            };
             return build_truth_verdict(
                 Some(text),
                 Some(RecordingTranscriptSource::StreamingFallback),
@@ -728,7 +781,7 @@ fn adjudicate_recording_truth(
                 fallback_flags,
                 None,
                 None,
-                Some("streaming_whisper".to_string()),
+                engine,
             );
         }
     } else {
@@ -1327,19 +1380,21 @@ pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &s
 }
 
 /// Skip full local STT re-pass according to routing mode + completeness.
-/// Apple on-device final pass stays under Smart (sub-second for pl-PL).
+///
+/// Smart treats Apple the same as Whisper: when the live assembly is adjudicator-
+/// complete, skip full-file re-pass. Apple's strength is **live** (buffer /
+/// progressive) dictation, not full-WAV file STT — forcing SFSpeech on a long
+/// file was collapsing multi-minute sessions to a few words (div0 2026-07-23).
+/// `prefer_apple` remains for diagnostics / logging only.
 pub(crate) fn should_skip_full_final_repass(
     mode: FinalPassRoutingMode,
     completeness: StreamingCompleteness,
-    prefer_apple: bool,
+    _prefer_apple: bool,
 ) -> bool {
     match mode {
         FinalPassRoutingMode::Always => false,
         FinalPassRoutingMode::Off => true,
         FinalPassRoutingMode::Smart => {
-            if prefer_apple {
-                return false;
-            }
             matches!(completeness, StreamingCompleteness::Complete)
         }
     }

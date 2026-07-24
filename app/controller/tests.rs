@@ -632,8 +632,8 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         1,
     );
     assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
-        "Apple lane keeps final-pass under Smart (sub-second on-device)"
+        should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
+        "Smart+Apple skips full-file re-pass when live assembly is complete (Apple live is floor; file SFSpeech is not)"
     );
 }
 
@@ -2215,12 +2215,56 @@ fn test_adjudicate_recording_truth_prefers_local_final_pass_over_streaming_previ
 }
 
 #[test]
-fn test_recon_final_pass_replaces_correct_live_preview_even_when_text_is_worse() {
+fn test_recon_final_pass_rejected_on_catastrophic_length_regression() {
+    // div0 2026-07-23 class: long live assembly vs collapsing Apple file final.
+    let live = "Im wystarczy i jeszcze sporo z freezed live assembly utterance dwa trzy";
+    let short_final = "Im wystarczy";
+    assert!(
+        codescribe_core::pipeline::contracts::final_pass_is_length_regression(short_final, live)
+    );
+
     let verdict = adjudicate_recording_truth(
         true,
         true,
         Some(make_final_pass_verdict(
-            "podmieniony final pass",
+            short_final,
+            82.0,
+            Some(-0.24),
+            false,
+        )),
+        live.to_string(),
+        None,
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some(live));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::StreamingFallback)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::FinalPassLengthRegression),
+        "flags={:?}",
+        verdict.confidence_flags
+    );
+    assert!(
+        !verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::LocalFinalPassUnavailable),
+        "regression is not 'unavailable' — final ran but was rejected"
+    );
+}
+
+#[test]
+fn test_recon_comparable_final_pass_still_preferred_over_stream() {
+    // Comparable length: final remains delivery-grade winner (not a collapse).
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(make_final_pass_verdict(
+            "podmieniony final pass tekst dluzszy niz prog",
             82.0,
             Some(-0.24),
             false,
@@ -2230,16 +2274,14 @@ fn test_recon_final_pass_replaces_correct_live_preview_even_when_text_is_worse()
         &SessionTelemetrySnapshot::default(),
     );
 
-    assert_eq!(verdict.raw_text.as_deref(), Some("podmieniony final pass"));
-    assert_ne!(
+    assert_eq!(
         verdict.raw_text.as_deref(),
-        Some("poprawny tekst z live preview")
+        Some("podmieniony final pass tekst dluzszy niz prog")
     );
     assert_eq!(
         verdict.transcript_source,
         Some(RecordingTranscriptSource::LocalFinalPass)
     );
-    assert_eq!(verdict.display_status, "Final-pass local");
 }
 
 #[test]
