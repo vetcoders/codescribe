@@ -1044,7 +1044,7 @@ impl CodescribeConfig {
     }
 
     /// Persisted resume step for the first-run wizard (0-based index into the
-    /// canonical 12-step flow). Returns `0` (Welcome) when no progress marker
+    /// canonical 13-step flow). Returns `0` (Welcome) when no progress marker
     /// exists yet, so a fresh install starts at the top.
     pub fn onboarding_progress(&self) -> u32 {
         codescribe::load_onboarding_progress() as u32

@@ -369,13 +369,23 @@ struct AgenticReadinessStepView: View {
     }
 }
 
-// MARK: - Permission (all five scopes)
+// MARK: - Permission (mic → … → speech → full-disk)
 
 struct PermissionStepView: View {
     let kind: PermissionKind
     @ObservedObject var model: OnboardingViewModel
 
     private var state: PermissionState { model.permissions.state(kind) }
+
+    /// Primary CTA mirrors Settings matrix: in-app request while undetermined
+    /// (when the scope supports it), System Settings deep-link once determined.
+    private var primaryTitle: String {
+        if state.isGranted { return "Granted" }
+        if state == .notDetermined, kind.supportsInAppPermissionRequest {
+            return "Allow \(kind.rawValue)"
+        }
+        return "Open System Settings"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -395,8 +405,9 @@ struct PermissionStepView: View {
                 .padding(.top, 4)
 
             HStack(spacing: 10) {
-                OnboardingButton(title: "Open System Settings", kind: .primary) {
-                    model.openSystemSettings(for: kind)
+                OnboardingButton(title: primaryTitle, kind: .primary) {
+                    guard !state.isGranted else { return }
+                    model.grantPermission(for: kind)
                 }
                 OnboardingButton(title: "Refresh status", kind: .secondary) {
                     model.refreshPermissions()
@@ -406,6 +417,10 @@ struct PermissionStepView: View {
 
             if kind == .fullDiskAccess {
                 Text("Optional — skip it to limit file-aware features only.")
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+            } else if kind == .speechRecognition {
+                Text("Required for Apple live dictation. Without it Codescribe cannot run on-device Speech.")
                     .font(CSFont.mono(11, .medium))
                     .foregroundStyle(CSColor.textFaint)
             } else {
@@ -568,7 +583,8 @@ struct DoneStepView: View {
     @ObservedObject var model: OnboardingViewModel
 
     private let summaryOrder: [PermissionKind] = [
-        .microphone, .accessibility, .inputMonitoring, .screenRecording, .fullDiskAccess,
+        .microphone, .accessibility, .inputMonitoring, .screenRecording,
+        .speechRecognition, .fullDiskAccess,
     ]
 
     var body: some View {

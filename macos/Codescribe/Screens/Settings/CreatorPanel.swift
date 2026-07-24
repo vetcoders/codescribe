@@ -274,15 +274,15 @@ private struct PermissionChecklistRow: View {
                     .foregroundStyle(CSColor.oliveLight)
             } else {
                 Button {
-                    if kind == .speechRecognition, state == .notDetermined {
-                        SpeechRecognitionPermission.request { _ in onStateChanged?() }
+                    if state == .notDetermined, kind.supportsInAppPermissionRequest {
+                        kind.requestInApp { _ in onStateChanged?() }
                     } else {
                         kind.openSystemSettings()
                     }
                 } label: {
                     Text(
-                        kind == .speechRecognition && state == .notDetermined
-                            ? "allow Speech Recognition"
+                        state == .notDetermined && kind.supportsInAppPermissionRequest
+                            ? "allow \(kind.rawValue)"
                             : "open System Settings"
                     )
                         .font(CSFont.mono(11, .semibold))

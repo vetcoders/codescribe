@@ -31,11 +31,12 @@ fn onboarding_progress_path() -> PathBuf {
     Config::config_dir().join("onboarding_progress")
 }
 
-/// Canonical first-run wizard step count: `Welcome`, `Mode`, 5× `Permission`,
-/// `Language`, `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`. Mirrors the
-/// SwiftUI `OnboardingStep` flow; kept here so the persisted resume index can be
+/// Canonical first-run wizard step count: `Welcome`, `Mode`, 6× `Permission`
+/// (mic → accessibility → input → screen → speech → full-disk), `Language`,
+/// `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`. Mirrors the SwiftUI
+/// `OnboardingStep` flow; kept here so the persisted resume index can be
 /// clamped without depending on the (excised) AppKit step table.
-const TOTAL_ONBOARDING_STEPS: usize = 12;
+const TOTAL_ONBOARDING_STEPS: usize = 13;
 
 /// Persist the wizard's current step so a relaunch resumes where the user left
 /// off. Writer half of the `onboarding_progress` marker; the SwiftUI wizard is
@@ -71,11 +72,12 @@ pub fn mark_onboarding_done() {
     let _ = fs::write(setup_done, "done");
 }
 
-const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
+const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 5] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
     PermissionKind::InputMonitoring,
     PermissionKind::ScreenRecording,
+    PermissionKind::SpeechRecognition,
 ];
 
 /// Leading non-permission wizard steps (`Welcome`, `Mode`) that precede the
@@ -85,12 +87,13 @@ const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
 const WIZARD_STEPS_BEFORE_PERMISSIONS: usize = 2;
 
 /// Permission steps in resume-flow order, immediately following the leading
-/// steps.
-const PERMISSION_STEP_ORDER: [PermissionKind; 5] = [
+/// steps. Must match Swift `OnboardingStep.flow` permission slots.
+const PERMISSION_STEP_ORDER: [PermissionKind; 6] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
     PermissionKind::InputMonitoring,
     PermissionKind::ScreenRecording,
+    PermissionKind::SpeechRecognition,
     PermissionKind::FullDiskAccess,
 ];
 
@@ -120,12 +123,14 @@ fn permission_status_from_snapshot(
     accessibility: PermissionStatus,
     input_monitoring: PermissionStatus,
     screen_recording: PermissionStatus,
+    speech_recognition: PermissionStatus,
 ) -> PermissionStatus {
     match kind {
         PermissionKind::Microphone => microphone,
         PermissionKind::Accessibility => accessibility,
         PermissionKind::InputMonitoring => input_monitoring,
         PermissionKind::ScreenRecording => screen_recording,
+        PermissionKind::SpeechRecognition => speech_recognition,
         PermissionKind::FullDiskAccess => PermissionStatus::Granted,
     }
 }
@@ -137,6 +142,7 @@ fn setup_done_refresh_target(
     accessibility: PermissionStatus,
     input_monitoring: PermissionStatus,
     screen_recording: PermissionStatus,
+    speech_recognition: PermissionStatus,
 ) -> Option<usize> {
     if !setup_done_exists || !app_bundle_runtime {
         return None;
@@ -151,6 +157,7 @@ fn setup_done_refresh_target(
                 accessibility,
                 input_monitoring,
                 screen_recording,
+                speech_recognition,
             ) != PermissionStatus::Granted
         })
         .and_then(permission_step_index)
@@ -163,7 +170,7 @@ fn invalidate_setup_done_if_permissions_missing() {
     }
 
     // Outside an app bundle the permission model does not apply, so setup_done is
-    // never invalidated here. Return before the four system-wide permission probes
+    // never invalidated here. Return before the system-wide permission probes
     // below (evaluated as call arguments) so dev/CLI runs pay nothing.
     if !current_runtime_is_app_bundle() {
         return;
@@ -176,6 +183,7 @@ fn invalidate_setup_done_if_permissions_missing() {
         permission_status(PermissionKind::Accessibility),
         permission_status(PermissionKind::InputMonitoring),
         permission_status(PermissionKind::ScreenRecording),
+        permission_status(PermissionKind::SpeechRecognition),
     ) else {
         return;
     };

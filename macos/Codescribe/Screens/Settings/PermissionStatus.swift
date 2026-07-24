@@ -68,6 +68,49 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         guard let url = settingsURL else { return }
         NSWorkspace.shared.open(url)
     }
+
+    /// Scopes that can fire a first-run system dialog from our process. Once
+    /// the user has decided (granted/denied), macOS never re-prompts — callers
+    /// must deep-link to System Settings instead.
+    var supportsInAppPermissionRequest: Bool {
+        switch self {
+        case .microphone, .speechRecognition, .screenRecording, .inputMonitoring:
+            return true
+        case .accessibility, .fullDiskAccess:
+            // Accessibility and Full Disk Access are only toggled in System Settings.
+            return false
+        }
+    }
+
+    /// Fire the in-app TCC dialog when still undetermined. Always calls
+    /// `completion` on the main queue with the post-request state (or the
+    /// preflight state when the scope cannot request in-app).
+    func requestInApp(completion: @escaping (PermissionState) -> Void) {
+        switch self {
+        case .speechRecognition:
+            SpeechRecognitionPermission.request(completion: completion)
+        case .microphone:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    completion(granted ? .granted : NativePermissionProbe().snapshot().microphone)
+                }
+            }
+        case .screenRecording:
+            let ok = CGRequestScreenCaptureAccess()
+            DispatchQueue.main.async {
+                completion(ok ? .granted : NativePermissionProbe().snapshot().screenRecording)
+            }
+        case .inputMonitoring:
+            let ok = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+            DispatchQueue.main.async {
+                completion(ok ? .granted : NativePermissionProbe().snapshot().inputMonitoring)
+            }
+        case .accessibility, .fullDiskAccess:
+            DispatchQueue.main.async {
+                completion(NativePermissionProbe().snapshot().state(self))
+            }
+        }
+    }
 }
 
 /// Snapshot of all four scopes captured at one moment.

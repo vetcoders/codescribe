@@ -497,8 +497,10 @@ private struct PermissionMatrixCell: View {
             // undetermined — the system dialog grants the app's own TCC
             // identity, which the bridge child inherits. Once determined,
             // macOS never re-prompts, so fall through to the deep link.
-            if kind == .speechRecognition, state == .notDetermined {
-                SpeechRecognitionPermission.request { _ in onStateChanged?() }
+            // Same grant path as onboarding: in-app dialog while undetermined,
+            // System Settings deep-link once macOS will no longer re-prompt.
+            if state == .notDetermined, kind.supportsInAppPermissionRequest {
+                kind.requestInApp { _ in onStateChanged?() }
             } else {
                 kind.openSystemSettings()
             }

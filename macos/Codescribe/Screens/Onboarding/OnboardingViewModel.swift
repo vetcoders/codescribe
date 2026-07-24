@@ -334,6 +334,26 @@ final class OnboardingViewModel: ObservableObject {
         kind.openSystemSettings()
     }
 
+    /// Same grant path as Settings › Dictation / Creator checklist:
+    /// - undetermined + in-app-requestable → system dialog from this process
+    /// - otherwise → Privacy deep-link (macOS never re-prompts once determined)
+    /// Always re-probes (and re-arms hotkeys) after the attempt settles.
+    func grantPermission(for kind: PermissionKind) {
+        let state = permissions.state(kind)
+        if state == .notDetermined, kind.supportsInAppPermissionRequest {
+            kind.requestInApp { [weak self] _ in
+                self?.reprobePermissions()
+            }
+            return
+        }
+        kind.openSystemSettings()
+        // User may flip the toggle and return without leaving the step — refresh
+        // once after the deep-link so a fast grant is visible immediately.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.reprobePermissions()
+        }
+    }
+
     func refreshPermissions() {
         reprobePermissions()
     }
