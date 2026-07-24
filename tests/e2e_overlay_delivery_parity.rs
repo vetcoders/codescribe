@@ -302,8 +302,10 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         stream_floor.chars().count()
     );
     if !overlay.is_empty() {
-        let preview: String = overlay.chars().take(120).collect();
-        eprintln!("  overlay preview: {preview}…");
+        eprintln!("  ── overlay_assembly (full) ──\n{overlay}\n  ── end overlay_assembly ──");
+    }
+    if !stream_floor.is_empty() && stream_floor != overlay {
+        eprintln!("  ── streaming_floor (full) ──\n{stream_floor}\n  ── end streaming_floor ──");
     }
 
     // Live must produce something for speech fixtures (otherwise STT cold/broken).
@@ -342,8 +344,8 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         final_verdict.text.chars().count()
     );
     eprintln!(
-        "  final-pass text preview: {}…",
-        final_verdict.text.chars().take(120).collect::<String>()
+        "  ── final-pass text (full) ──\n{}\n  ── end final-pass ──",
+        final_verdict.text
     );
 
     // 3) Delivery rule (stream floor of truth).
@@ -358,6 +360,7 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         "  delivery source={source} chars={}",
         delivery.chars().count()
     );
+    eprintln!("  ── delivery (full) ──\n{delivery}\n  ── end delivery ──");
 
     if final_pass_is_length_regression(final_verdict.text.trim(), stream_for_floor) {
         assert_eq!(
@@ -382,6 +385,7 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
     );
 
     if let Some(human) = human_reference_for_wav(clip) {
+        eprintln!("  ── human_reference (full) ──\n{human}\n  ── end human_reference ──");
         let human_lower = human.to_lowercase();
         let delivery_lower = delivery.to_lowercase();
         // Soft keyword overlap — not WER (engines differ); catch total garbage.
