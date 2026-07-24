@@ -206,7 +206,7 @@ final class VoiceLabTests: XCTestCase {
         )
     }
 
-    func testTeachDictionarySurfacesHonestMessage() {
+    func testTeachDictionarySurfacesHonestMessage() throws {
         // Product: Teach is a real Settings surface, not a decorative button.
         // Mock returns a zero-delta teach result; ViewModel still writes a
         // non-empty status line with live-rule counts.
