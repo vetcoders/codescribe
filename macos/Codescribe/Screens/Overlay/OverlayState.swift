@@ -271,6 +271,10 @@ final class OverlayState: ObservableObject {
     private var agentAutoSendCancelled = false
     private var agentDeliveryStarted = false
     private var toastTask: Task<Void, Never>?
+    /// One-shot guard for the in-place Speech Recognition request+retry. macOS
+    /// never re-prompts once the scope is determined, so a second attempt in
+    /// the same app run could only loop on the terminal error.
+    private var speechAuthRequestAttempted = false
     private var mockRevealTask: Task<Void, Never>?
     /// Belt-and-suspenders guard against an orphaned optimistic "starting" overlay.
     /// The Rust bridge now guarantees a terminal event for every preparing it shows
@@ -474,11 +478,33 @@ final class OverlayState: ObservableObject {
             if !engine.isModelLoaded() { try await engine.initModel() }
             try await engine.startRecording(language: language)
         } catch {
-            presentTerminalError(
-                message: "Couldn't start recording: \(error)",
-                toast: "Couldn't start recording"
-            )
+            await handleStartFailure(error, language: language)
         }
+    }
+
+    /// A start failure caused by an undetermined Speech Recognition grant is
+    /// recoverable in place: fire the TCC dialog from the main app process (so
+    /// the grant lands on the app's identity, which the bridge child inherits)
+    /// and retry the start once when authorized. Every other failure — and a
+    /// declined dialog — funnels into the terminal error path, where
+    /// `speechAuthNotice` rewrites raw `speech_auth_*` markers.
+    private func handleStartFailure(_ error: Error, language: CsLanguage?) async {
+        let described = "\(error)"
+        if described.contains("speech_auth_not_determined"), !speechAuthRequestAttempted {
+            speechAuthRequestAttempted = true
+            abortRecordingSession()
+            let state = await withCheckedContinuation { continuation in
+                SpeechRecognitionPermission.request { continuation.resume(returning: $0) }
+            }
+            if state == .granted {
+                await runStart(language: language)
+                return
+            }
+        }
+        presentTerminalError(
+            message: "Couldn't start recording: \(described)",
+            toast: "Couldn't start recording"
+        )
     }
 
     func formatTranscript(level: FormattingPolicyOption) {
@@ -1055,7 +1081,29 @@ final class OverlayState: ObservableObject {
         presentTerminalError(message: message, toast: message)
     }
 
+    /// User-facing rewrite for Speech Recognition TCC failures. The engine
+    /// reports raw bridge markers (`speech_auth_not_determined` / `_denied` /
+    /// `_restricted`); surfacing those verbatim reads as a crash, when the fix
+    /// is one System Settings toggle. Returns nil for every other error.
+    static func speechAuthNotice(from message: String) -> String? {
+        guard message.contains("speech_auth_") else { return nil }
+        if message.contains("speech_auth_not_determined") {
+            return "Apple dictation needs Speech Recognition access — "
+                + "grant it in Settings › Dictation or System Settings › "
+                + "Privacy & Security › Speech Recognition"
+        }
+        if message.contains("speech_auth_denied") || message.contains("speech_auth_restricted") {
+            return "Speech Recognition is off for Codescribe — enable it in "
+                + "System Settings › Privacy & Security › Speech Recognition"
+        }
+        return "Speech Recognition access is unavailable — check System "
+            + "Settings › Privacy & Security › Speech Recognition"
+    }
+
     private func presentTerminalError(message: String, toast: String) {
+        let speechNotice = OverlayState.speechAuthNotice(from: message)
+        let message = speechNotice ?? message
+        let toast = speechNotice ?? toast
         abortRecordingSession()
         preview = ""
         committedSegments = []

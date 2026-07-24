@@ -35,6 +35,7 @@ use codescribe_core::pipeline::contracts::{
 use codescribe_core::pipeline::streaming::{
     assemble_live_from_events, collect_buffered_engine_events,
 };
+use codescribe_core::quality::{MergeMode, merge_live_whisper};
 use codescribe_core::stt;
 
 #[path = "support/e2e_stt_matrix.rs"]
@@ -132,7 +133,9 @@ fn single_final_short_tail_fails_engine_bar() {
     );
 }
 
-/// Delivery after adjudicate length guard (stream is floor of truth).
+/// Delivery after adjudicate length guard — mirrors controller production path:
+/// length regression keeps stream floor; otherwise `merge_live_whisper` (never
+/// full-replace live with Whisper — audit F1).
 fn delivery_from_stream_and_final(stream: &str, final_text: &str) -> (&'static str, String) {
     let stream = stream.trim();
     let final_text = final_text.trim();
@@ -142,7 +145,17 @@ fn delivery_from_stream_and_final(stream: &str, final_text: &str) -> (&'static s
     if final_pass_is_length_regression(final_text, stream) {
         return ("streaming_floor_after_regression", stream.to_string());
     }
-    ("final_pass", final_text.to_string())
+    if stream.is_empty() {
+        return ("final_pass", final_text.to_string());
+    }
+    let merged = merge_live_whisper(stream, final_text);
+    let source = match merged.mode {
+        MergeMode::Empty => "streaming_floor",
+        MergeMode::LiveOnly => "streaming_floor",
+        MergeMode::WhisperOnly => "final_pass",
+        MergeMode::LiveFloorWhisperFill => "merged_live_whisper",
+    };
+    (source, merged.text)
 }
 
 fn data_assets_dir() -> PathBuf {
@@ -217,6 +230,30 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
     assert_eq!(assembly.sealed_count(), 1);
     assert_eq!(assembly.freezed, vec!["pierwsze zdanie".to_string()]);
     assert_eq!(assembly.preview, "drugie zdanie live");
+}
+
+#[test]
+fn delivery_merges_live_floor_with_whisper_fill_not_full_replace() {
+    // Same shape as teacher merge unit tests: live under-gen + whisper excess.
+    let live = "korzystając z surowej transkrypcji Toolchain 2024";
+    let whisper =
+        "No to dobra teraz generalnie korzystając z surowej transkrypcji Tooltrain 2024 Dziękuję";
+    let (source, delivery) = delivery_from_stream_and_final(live, whisper);
+    assert_eq!(source, "merged_live_whisper");
+    // Live floor: Toolchain must not be silently full-replaced by Tooltrain alone.
+    let lower = delivery.to_lowercase();
+    assert!(
+        lower.contains("toolchain") || lower.contains("tooltrain"),
+        "merged lost domain token: {delivery}"
+    );
+    // Whisper gap-fill openers land in the delivery.
+    assert!(
+        lower.contains("dobra") || lower.contains("generalnie") || lower.contains("no"),
+        "whisper fill missing in: {delivery}"
+    );
+    // Not a silent full-replace of live with whisper.
+    assert_ne!(delivery.trim(), whisper.trim());
+    assert_ne!(delivery.trim(), live.trim());
 }
 
 #[test]
@@ -444,7 +481,10 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         eprintln!("  ✓ empty final rejected (stream kept as floor)");
     } else {
         assert!(
-            matches!(source, "final_pass" | "streaming_floor"),
+            matches!(
+                source,
+                "final_pass" | "streaming_floor" | "merged_live_whisper"
+            ),
             "unexpected delivery source {source}"
         );
         eprintln!("  ✓ final accepted or stream used without collapse");

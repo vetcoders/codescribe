@@ -11,7 +11,8 @@ struct EnginePanel: View {
     @State private var advancedTimingExpanded = false
 
     private let matrixOrder: [PermissionKind] = [
-        .microphone, .accessibility, .inputMonitoring, .screenRecording
+        .microphone, .accessibility, .inputMonitoring, .screenRecording,
+        .speechRecognition
     ]
     private let columns = [
         GridItem(.flexible(), spacing: 8),
@@ -70,7 +71,11 @@ struct EnginePanel: View {
                 .padding(.top, 22)
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(matrixOrder) { kind in
-                    PermissionMatrixCell(kind: kind, state: model.permissions.state(kind))
+                    PermissionMatrixCell(
+                        kind: kind,
+                        state: model.permissions.state(kind),
+                        onStateChanged: { model.refresh() }
+                    )
                 }
             }
             .padding(.top, 11)
@@ -457,6 +462,8 @@ struct EnginePanel: View {
 private struct PermissionMatrixCell: View {
     let kind: PermissionKind
     let state: PermissionState
+    /// Re-probe hook fired after an in-app permission request resolves.
+    var onStateChanged: (() -> Void)? = nil
 
     private var granted: Bool { state.isGranted }
     private var accent: Color { granted ? CSColor.olive : CSColor.terracotta }
@@ -484,7 +491,18 @@ private struct PermissionMatrixCell: View {
                 .strokeBorder(accent.opacity(0.2), lineWidth: 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture { if !granted { kind.openSystemSettings() } }
+        .onTapGesture {
+            guard !granted else { return }
+            // Speech Recognition can be requested straight from the app while
+            // undetermined — the system dialog grants the app's own TCC
+            // identity, which the bridge child inherits. Once determined,
+            // macOS never re-prompts, so fall through to the deep link.
+            if kind == .speechRecognition, state == .notDetermined {
+                SpeechRecognitionPermission.request { _ in onStateChanged?() }
+            } else {
+                kind.openSystemSettings()
+            }
+        }
     }
 }
 

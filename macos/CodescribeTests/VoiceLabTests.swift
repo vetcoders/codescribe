@@ -176,23 +176,49 @@ final class VoiceLabTests: XCTestCase {
     func testDictionaryHeadlineHonestyForCorrectionSource() {
         XCTAssertEqual(
             dictionaryHeadline(correctionsRecorded: 0, rulesLearned: 0),
-            "0 corrections recorded · 0 rules learned"
+            "0 corrections recorded · 0 rules in dictionary"
         )
         XCTAssertEqual(
             dictionaryHeadline(correctionsRecorded: 74, rulesLearned: 3),
-            "74 corrections recorded · 3 rules learned"
+            "74 corrections recorded · 3 rules in dictionary"
         )
         XCTAssertTrue(
-            dictionarySubtitle(correctionsRecorded: 74, rulesLearned: 3, totalEntries: 5)
-                .contains("3 rules from correction provenance")
+            dictionarySubtitle(
+                correctionsRecorded: 74,
+                rulesLearned: 3,
+                taughtFromCorrections: 3,
+                totalEntries: 5
+            )
+            .contains("3 with correction provenance")
         )
         XCTAssertEqual(
-            dictionarySubtitle(correctionsRecorded: 10, rulesLearned: 0, totalEntries: 0),
-            "10 corrections on disk · 0 rules taught yet from this store."
+            dictionarySubtitle(
+                correctionsRecorded: 10,
+                rulesLearned: 0,
+                taughtFromCorrections: 0,
+                totalEntries: 0
+            ),
+            "10 corrections on disk · dictionary empty — press Teach to mine rules from the store."
         )
         XCTAssertFalse(
             dictionaryHeadline(correctionsRecorded: 1, rulesLearned: 0)
                 .contains("voice taught")
         )
+    }
+
+    func testTeachDictionarySurfacesHonestMessage() {
+        // Product: Teach is a real Settings surface, not a decorative button.
+        // Mock returns a zero-delta teach result; ViewModel still writes a
+        // non-empty status line with live-rule counts.
+        let engine = MockSettingsEngine(
+            lexiconEntries: [
+                CsLexiconEntry(variant: "luks tri", canonical: "Loctree", source: "correction"),
+            ]
+        )
+        let model = SettingsViewModel(engine: engine)
+        model.teachDictionaryFromStore()
+        let msg = try XCTUnwrap(model.voiceLabTeachMessage)
+        XCTAssertTrue(msg.contains("live rules"), "expected live-rules count, got: \(msg)")
+        XCTAssertTrue(msg.hasPrefix("Taught"), "expected Taught status, got: \(msg)")
     }
 }

@@ -4,6 +4,7 @@ import ApplicationServices
 import CoreGraphics
 import IOKit.hid
 import AppKit
+import Speech
 
 // Native macOS permission probes for the Settings screen.
 // Permissions are NOT exposed via FFI — they are read live from the system
@@ -33,16 +34,19 @@ enum PermissionState: Equatable {
     }
 }
 
-/// The privacy scopes codescribe touches. The first four gate live dictation /
+/// The privacy scopes codescribe touches. The first five gate live dictation /
 /// hotkeys and appear in the Settings engine matrix (which enumerates them by an
-/// explicit list, NOT `allCases`); `fullDiskAccess` is the optional fifth scope
-/// used only by the first-run onboarding wizard, so adding it here does not
-/// change any Settings surface.
+/// explicit list, NOT `allCases`); `fullDiskAccess` is the optional scope used
+/// only by the first-run onboarding wizard, so adding it here does not change
+/// any Settings surface. `speechRecognition` is the TCC scope behind Apple live
+/// dictation (`SFSpeechRecognizer`) — the bridge child process inherits the
+/// app's grant, so the main app must own request + display.
 enum PermissionKind: String, CaseIterable, Identifiable {
     case microphone = "Microphone"
     case accessibility = "Accessibility"
     case inputMonitoring = "Input Monitoring"
     case screenRecording = "Screen Recording"
+    case speechRecognition = "Speech Recognition"
     case fullDiskAccess = "Full Disk Access"
 
     var id: String { rawValue }
@@ -55,6 +59,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
         case .accessibility: return URL(string: base + "Privacy_Accessibility")
         case .inputMonitoring: return URL(string: base + "Privacy_ListenEvent")
         case .screenRecording: return URL(string: base + "Privacy_ScreenCapture")
+        case .speechRecognition: return URL(string: base + "Privacy_SpeechRecognition")
         case .fullDiskAccess: return URL(string: base + "Privacy_AllFiles")
         }
     }
@@ -71,8 +76,11 @@ struct PermissionSnapshot: Equatable {
     var accessibility: PermissionState
     var inputMonitoring: PermissionState
     var screenRecording: PermissionState
-    /// Optional fifth scope, probed only for the onboarding wizard. Settings
-    /// never reads it (its matrix lists the first four explicitly).
+    /// Speech Recognition TCC scope (Apple live dictation). Defaulted so the
+    /// existing call sites and tests that build snapshots keep compiling.
+    var speechRecognition: PermissionState = .notDetermined
+    /// Optional scope, probed only for the onboarding wizard. Settings never
+    /// reads it (its matrix lists the dictation scopes explicitly).
     var fullDiskAccess: PermissionState = .notDetermined
 
     func state(_ kind: PermissionKind) -> PermissionState {
@@ -81,6 +89,7 @@ struct PermissionSnapshot: Equatable {
         case .accessibility: return accessibility
         case .inputMonitoring: return inputMonitoring
         case .screenRecording: return screenRecording
+        case .speechRecognition: return speechRecognition
         case .fullDiskAccess: return fullDiskAccess
         }
     }
@@ -91,6 +100,7 @@ struct PermissionSnapshot: Equatable {
         accessibility: .granted,
         inputMonitoring: .granted,
         screenRecording: .granted,
+        speechRecognition: .granted,
         fullDiskAccess: .granted
     )
 }
@@ -111,8 +121,18 @@ struct NativePermissionProbe: PermissionProbing {
             accessibility: AXIsProcessTrusted() ? .granted : .denied,
             inputMonitoring: inputMonitoringState(),
             screenRecording: CGPreflightScreenCaptureAccess() ? .granted : .denied,
+            speechRecognition: speechRecognitionState(),
             fullDiskAccess: fullDiskAccessState()
         )
+    }
+
+    private func speechRecognitionState() -> PermissionState {
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized: return .granted
+        case .notDetermined: return .notDetermined
+        case .denied, .restricted: return .denied
+        @unknown default: return .denied
+        }
     }
 
     /// Heuristic Full Disk Access probe mirroring the core's
@@ -163,4 +183,27 @@ struct MockPermissionProbe: PermissionProbing {
     let value: PermissionSnapshot
     init(_ value: PermissionSnapshot = .allGranted) { self.value = value }
     func snapshot() -> PermissionSnapshot { value }
+}
+
+// MARK: - Speech Recognition request (main-process TCC dialog)
+
+/// The one deliberate exception to the "reads — never prompts" probe doctrine:
+/// Speech Recognition must be REQUESTED from the main app process so the grant
+/// lands on `com.vetcoders.codescribe` (the bridge child inherits it). Prompting
+/// from the CLI bridge grants the terminal's identity instead — the exact trap
+/// this helper closes. Only fires the system dialog while `.notDetermined`;
+/// afterwards macOS never re-prompts and the caller should deep-link instead.
+enum SpeechRecognitionPermission {
+    static func request(completion: @escaping (PermissionState) -> Void) {
+        SFSpeechRecognizer.requestAuthorization { status in
+            let state: PermissionState
+            switch status {
+            case .authorized: state = .granted
+            case .notDetermined: state = .notDetermined
+            case .denied, .restricted: state = .denied
+            @unknown default: state = .denied
+            }
+            DispatchQueue.main.async { completion(state) }
+        }
+    }
 }

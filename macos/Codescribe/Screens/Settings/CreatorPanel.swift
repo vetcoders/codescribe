@@ -20,8 +20,18 @@ struct CreatorPanel: View {
             SettingsSectionLabel("Permission checklist")
                 .padding(.top, 22)
             VStack(spacing: 8) {
-                ForEach([PermissionKind.microphone, .accessibility, .inputMonitoring, .screenRecording]) { kind in
-                    PermissionChecklistRow(kind: kind, state: model.permissions.state(kind))
+                ForEach([
+                    PermissionKind.microphone,
+                    .accessibility,
+                    .inputMonitoring,
+                    .screenRecording,
+                    .speechRecognition,
+                ]) { kind in
+                    PermissionChecklistRow(
+                        kind: kind,
+                        state: model.permissions.state(kind),
+                        onStateChanged: { model.refresh() }
+                    )
                 }
             }
             .padding(.top, 11)
@@ -246,6 +256,8 @@ struct SettingsControlRow<Control: View>: View {
 private struct PermissionChecklistRow: View {
     let kind: PermissionKind
     let state: PermissionState
+    /// Re-probe after an in-app request (Speech Recognition dialog).
+    var onStateChanged: (() -> Void)? = nil
 
     private var granted: Bool { state.isGranted }
 
@@ -262,9 +274,17 @@ private struct PermissionChecklistRow: View {
                     .foregroundStyle(CSColor.oliveLight)
             } else {
                 Button {
-                    kind.openSystemSettings()
+                    if kind == .speechRecognition, state == .notDetermined {
+                        SpeechRecognitionPermission.request { _ in onStateChanged?() }
+                    } else {
+                        kind.openSystemSettings()
+                    }
                 } label: {
-                    Text("open System Settings")
+                    Text(
+                        kind == .speechRecognition && state == .notDetermined
+                            ? "allow Speech Recognition"
+                            : "open System Settings"
+                    )
                         .font(CSFont.mono(11, .semibold))
                         .foregroundStyle(CSColor.terracottaLight)
                 }

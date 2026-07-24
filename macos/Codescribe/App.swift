@@ -172,10 +172,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startHotkeys()
         registerVoiceDelivery()
         prewarmRecordingController()
+        // Speech Recognition TCC must be requested from THIS process
+        // (com.vetcoders.codescribe). The bridge child is co-located under
+        // Contents/MacOS and inherits the app's responsible identity; granting
+        // only via Terminal/CLI leaves the app as speech_auth_not_determined.
+        ensureSpeechRecognitionAtLaunch()
         // Show the first-run wizard on top of the freshly-installed tray when the
         // core reports onboarding is still due (no setup_done marker, or a stale
         // one invalidated because a required permission is missing).
         onboarding.presentIfNeeded()
+    }
+
+    /// Prompt Speech Recognition while undetermined so Apple live dictation can
+    /// start on first hotkey without a Settings detour. Denied/restricted is a
+    /// no-op here — Settings › Dictation surfaces the deep link.
+    private func ensureSpeechRecognitionAtLaunch() {
+        let probe = NativePermissionProbe().snapshot()
+        guard probe.speechRecognition == .notDetermined else { return }
+        SpeechRecognitionPermission.request { state in
+            appLogger.info("Speech Recognition at launch → \(String(describing: state), privacy: .public)")
+        }
     }
 
     /// Bind the tray's app-level action closures (Help / About / Notes /

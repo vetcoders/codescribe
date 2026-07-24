@@ -1052,4 +1052,35 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.confidenceBadgeText, "low confidence")
     }
 
+    // MARK: Speech Recognition TCC error rewriting
+
+    func testSpeechAuthNotDeterminedRewritesToActionableNotice() {
+        let notice = OverlayState.speechAuthNotice(
+            from: "Apple STT bridge probe failed: speech_auth_not_determined"
+        )
+        XCTAssertNotNil(notice)
+        XCTAssertTrue(notice?.contains("Speech Recognition") == true)
+        XCTAssertFalse(notice?.contains("speech_auth") == true)
+    }
+
+    func testSpeechAuthDeniedRewritesToSystemSettingsHint() {
+        let notice = OverlayState.speechAuthNotice(
+            from: "Couldn't start recording: speech_auth_denied: enable Speech Recognition"
+        )
+        XCTAssertNotNil(notice)
+        XCTAssertTrue(notice?.contains("System Settings") == true)
+    }
+
+    func testNonSpeechErrorsAreNotRewritten() {
+        XCTAssertNil(OverlayState.speechAuthNotice(from: "Couldn't start recording: mic busy"))
+    }
+
+    func testHandleErrorSurfacesFriendlySpeechAuthToast() {
+        let state = OverlayState()
+        state.handleError(message: "Apple STT bridge probe failed: speech_auth_not_determined (no Whisper fallback)")
+        XCTAssertEqual(state.mode, .error)
+        XCTAssertTrue(state.errorMessage?.contains("Speech Recognition") == true)
+        XCTAssertFalse(state.toast?.contains("speech_auth") == true)
+    }
+
 }

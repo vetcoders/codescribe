@@ -623,6 +623,7 @@ extension PermissionKind {
         case .accessibility: return "Accessibility Access"
         case .inputMonitoring: return "Input Monitoring Access"
         case .screenRecording: return "Screen Recording Access"
+        case .speechRecognition: return "Speech Recognition Access"
         case .fullDiskAccess: return "Full Disk Access"
         }
     }
@@ -638,6 +639,8 @@ extension PermissionKind {
             return "Detect keyboard shortcuts to start and stop voice recording."
         case .screenRecording:
             return "Capture screen context to give the AI assistant visual awareness of what you're working on."
+        case .speechRecognition:
+            return "Power Apple live dictation on-device. Speech never leaves your Mac."
         case .fullDiskAccess:
             return "Read project files for AI context. Optional — limits file-aware features if skipped."
         }

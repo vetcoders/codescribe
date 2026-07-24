@@ -130,6 +130,9 @@ struct BridgeResponse {
     backend: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    /// SFSpeechRecognizer TCC: `not_determined` | `denied` | `restricted` | `authorized`.
+    #[serde(default)]
+    speech_auth: Option<String>,
 }
 
 impl BridgeResponse {
@@ -159,7 +162,30 @@ fn init_impl() -> Result<()> {
     ensure_supported_platform()?;
     let locale = resolved_locale(None);
     let allow_download = env_bool(ENV_ALLOW_DOWNLOAD, true);
-    let probe = probe_bridge(&locale, allow_download)?;
+    let mut probe = probe_bridge(&locale, allow_download)?;
+
+    // Speech Recognition TCC lives on the process that calls SFSpeechRecognizer
+    // (the bridge helper, attributed to the hosting app when launched from
+    // Codescribe.app). When still undetermined, ask once — headless CLI can
+    // fail the dialog, but the main app also requests on launch so product
+    // path has two chances before we hard-fail.
+    if probe.speech_auth.as_deref() == Some("not_determined") {
+        tracing::info!(
+            "Apple STT speech_auth=not_determined — requesting authorization via bridge"
+        );
+        let _ = request_speech_auth_bridge(&locale, allow_download);
+        probe = probe_bridge(&locale, allow_download)?;
+    }
+
+    if let Some(auth) = probe.speech_auth.as_deref() {
+        if auth != "authorized" {
+            bail!(
+                "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
+                 System Settings › Privacy & Security › Speech Recognition \
+                 (or Settings › Dictation permission matrix)"
+            );
+        }
+    }
 
     if !probe.supported {
         bail!(
@@ -180,8 +206,9 @@ fn init_impl() -> Result<()> {
 
     if let Some(backend) = probe.backend {
         tracing::info!(
-            "Apple STT ready locale={locale} backend={}",
-            backend.as_str()
+            "Apple STT ready locale={locale} backend={} speech_auth={}",
+            backend.as_str(),
+            probe.speech_auth.as_deref().unwrap_or("unknown")
         );
     }
 
@@ -478,6 +505,8 @@ struct ProbeResult {
     supported: bool,
     installed: bool,
     backend: Option<AppleSttBackend>,
+    /// Bridge `speech_auth` label when present.
+    speech_auth: Option<String>,
 }
 
 /// Pure probe interpretation used by init and unit tests (router selection truth).
@@ -489,6 +518,7 @@ fn interpret_probe_response(response: &BridgeResponse) -> ProbeResult {
             .backend
             .as_deref()
             .and_then(AppleSttBackend::from_bridge),
+        speech_auth: response.speech_auth.clone(),
     }
 }
 
@@ -503,6 +533,19 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
         .context("Apple STT bridge probe failed")?;
     Ok(interpret_probe_response(&response))
+}
+
+fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<BridgeResponse> {
+    let request = BridgeRequest {
+        protocol_version: 1,
+        command: "request_auth",
+        locale,
+        audio_path: None,
+        allow_download,
+    };
+    // Dialog can wait on the user; reuse the generous probe budget.
+    run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
+        .context("Apple STT bridge request_auth failed")
 }
 
 /// Preferred backend label for a locale given a probe snapshot (test seam).
