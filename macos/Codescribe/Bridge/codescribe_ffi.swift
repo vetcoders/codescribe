@@ -1210,7 +1210,7 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
 
     /**
      * Persisted resume step for the first-run wizard (0-based index into the
-     * canonical 12-step flow). Returns `0` (Welcome) when no progress marker
+     * canonical 13-step flow). Returns `0` (Welcome) when no progress marker
      * exists yet, so a fresh install starts at the top.
      */
     func onboardingProgress()  -> UInt32
@@ -1683,7 +1683,7 @@ open func onboardingMode() -> String?  {
 
     /**
      * Persisted resume step for the first-run wizard (0-based index into the
-     * canonical 12-step flow). Returns `0` (Welcome) when no progress marker
+     * canonical 13-step flow). Returns `0` (Welcome) when no progress marker
      * exists yet, so a fresh install starts at the top.
      */
 open func onboardingProgress() -> UInt32  {
@@ -11823,7 +11823,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_mode() != 10234) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_progress() != 29913) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_progress() != 28580) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_reset_app_data() != 24728) {

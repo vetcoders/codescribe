@@ -53,6 +53,35 @@ BINDGEN="$TARGET_DIR/uniffi-bindgen"
 STT_BRIDGE_SRC="core/stt/apple_stt/codescribe-stt-bridge.swift"
 STT_BRIDGE_BIN="$TARGET_DIR/codescribe-stt-bridge"
 
+# ── Build provenance (Pensieve-style) ───────────────────────────────────────
+# Stamp MUST be computed BEFORE cargo/uniffi/xcodegen. Those steps rewrite
+# generated Bridge Swift and can leave local noise (DMG .sha256, scratch files).
+# About panel must show the commit that was checked out — not "-dirty" because a
+# later stage regenerated UniFFI or an untracked artifact sat in the tree.
+#
+# Dirty rule (honest product truth):
+#   - only TRACKED files (ignore untracked operator junk)
+#   - exclude UniFFI-generated Bridge (rewritten every build, then normalized)
+#   - if remaining porcelain is non-empty → append -dirty
+STAMP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD)"
+  # Tracked-only; drop Bridge paths (UniFFI rewrite mid-build). Untracked junk
+  # (local *.dmg.sha256, scratch files) is ignored on purpose.
+  if git -C "$REPO_ROOT" status --porcelain --untracked-files=no --ignore-submodules=none \
+    | grep -Ev 'macos/Codescribe/Bridge/|Codescribe/Bridge/' \
+    | grep -q .
+  then
+    STAMP_COMMIT="${STAMP_COMMIT}-dirty"
+  fi
+  STAMP_BUILD_NUM="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
+else
+  STAMP_COMMIT="nogit"
+  STAMP_BUILD_NUM="0"
+fi
+STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "==> stamp (pre-build): v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
+
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
 if [ "$PROFILE" = "release" ]; then
   cargo build -p codescribe-ffi --release
@@ -66,11 +95,19 @@ install_name_tool -id @rpath/libcodescribe_ffi.dylib "$DYLIB"
 echo "==> [3/7] Generating Swift bindings via uniffi-bindgen"
 mkdir -p "$BRIDGE_DIR"
 "$BINDGEN" generate --library "$DYLIB" --language swift --out-dir "$BRIDGE_DIR"
-# uniffi-bindgen emits trailing whitespace; the repo strips it everywhere, so
-# raw output dirtied the tree on every build (and stamped DMGs "-dirty" from a
-# clean checkout). Normalize at the source: regeneration is idempotent against
-# the committed form.
+# uniffi-bindgen emits trailing whitespace and often drops the final newline;
+# normalize so regeneration stays close to the committed form when tracked.
 find "$BRIDGE_DIR" -name '*.swift' -exec sed -i '' -E 's/[[:space:]]+$//' {} +
+# Ensure trailing newline (POSIX text files) after uniffi rewrite.
+python3 - <<'PY'
+from pathlib import Path
+root = Path("macos/Codescribe/Bridge")
+if root.is_dir():
+    for p in root.glob("*.swift"):
+        data = p.read_bytes()
+        if data and not data.endswith(b"\n"):
+            p.write_bytes(data + b"\n")
+PY
 
 echo "==> [4/7] Generating Xcode project (xcodegen)"
 ( cd macos && xcodegen generate )
@@ -79,24 +116,6 @@ if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
   echo "==> SKIP_XCODEBUILD=1 — stopping after xcodegen (stages 1-4 verified)."
   exit 0
 fi
-
-# Build provenance (Pensieve-style stamp): version from the workspace Cargo.toml,
-# commit + monotonic build number from git, built-at in UTC. All four land in
-# Info.plist via the $(VAR) placeholders project.yml declares, so the About
-# panel shows exactly what was built, from what, and when. A dirty worktree is
-# marked honestly — a stamped build must never masquerade as a clean commit.
-STAMP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
-if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD)"
-  if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal --ignore-submodules=none)" ]; then
-    STAMP_COMMIT="${STAMP_COMMIT}-dirty"
-  fi
-  STAMP_BUILD_NUM="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
-else
-  STAMP_COMMIT="nogit"
-  STAMP_BUILD_NUM="0"
-fi
-STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
 echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
