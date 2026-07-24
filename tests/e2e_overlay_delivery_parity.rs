@@ -54,6 +54,10 @@ fn streaming_floor_from_events(events: &[EngineEvent]) -> String {
 
 /// Engine bar: multi-pause dictation must seal ≥2 freezed finals and cover the
 /// spoken body (not a ~tens-of-chars tail on a 50s+ clip).
+///
+/// Missing words / Apple under-gen are **not** failure — they are the canvas for
+/// Whisper fill + human + lexicon (Teacher). This bar only rejects "no engine":
+/// single-final tail collapse, not imperfect WER.
 fn assert_engine_multi_utterance_assembly(
     events: &[EngineEvent],
     human: Option<&str>,

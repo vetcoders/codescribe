@@ -7,6 +7,11 @@
 //!
 //! Without multi-final freeze+append there is no dictation engine — only a
 //! single tail fragment.
+//!
+//! **Gaps in Apple live text are not engine failure.** Under-generation at
+//! uncertainty is the product canvas: Whisper over-gen / human / lexicon fill
+//! those loci (Teacher: Needs attention → lexicon). Engine success = multi-seal
+//! freezed+append spanning the spoken arc — not perfect WER vs human.
 
 use crate::pipeline::contracts::EngineEvent;
 
