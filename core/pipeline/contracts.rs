@@ -164,6 +164,10 @@ pub enum TranscriptionConfidenceFlag {
     /// AI formatting pass ran but the emitted text is effectively the
     /// raw input (no edit applied) — status should not read "Applied".
     AiNoopDetected,
+    /// File-level final pass produced text that catastrophically regressed
+    /// versus the live streaming assembly (e.g. Apple SFSpeech 12 chars vs
+    /// multi-utterance stream). Adjudicator kept the stream as floor of truth.
+    FinalPassLengthRegression,
 }
 
 impl std::fmt::Display for TranscriptionConfidenceFlag {
@@ -185,8 +189,34 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
             Self::UnverifiedStream => write!(f, "unverified_stream"),
             Self::CloudPrimaryMissing => write!(f, "cloud_primary_missing"),
             Self::AiNoopDetected => write!(f, "ai_noop_detected"),
+            Self::FinalPassLengthRegression => write!(f, "final_pass_length_regression"),
         }
     }
+}
+
+/// Whether a non-empty final-pass transcript is a catastrophic length regression
+/// vs the live streaming assembly.
+///
+/// Product rule (div0 log 2026-07-23): Apple file STT can return ~12 chars on a
+/// ~98s recording while the live assembly held a longer stream. Streaming is the
+/// floor of truth; final may only replace it when it is not a collapse.
+///
+/// - Streams shorter than [`FINAL_PASS_REGRESSION_MIN_STREAM_CHARS`] never trigger
+///   regression (preserves cold-start recovery when live was empty/thin).
+/// - Otherwise final wins only if it keeps at least 40% of stream char count.
+pub const FINAL_PASS_REGRESSION_MIN_STREAM_CHARS: usize = 24;
+
+pub fn final_pass_is_length_regression(final_text: &str, streaming_text: &str) -> bool {
+    let final_chars = final_text.trim().chars().count();
+    let stream_chars = streaming_text.trim().chars().count();
+    if stream_chars < FINAL_PASS_REGRESSION_MIN_STREAM_CHARS {
+        return false;
+    }
+    if final_chars == 0 {
+        return true;
+    }
+    // final < 0.4 * stream  ⇔  final * 5 < stream * 2
+    final_chars.saturating_mul(5) < stream_chars.saturating_mul(2)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1805,6 +1835,7 @@ mod tests {
             TranscriptionConfidenceFlag::UnverifiedStream,
             TranscriptionConfidenceFlag::CloudPrimaryMissing,
             TranscriptionConfidenceFlag::AiNoopDetected,
+            TranscriptionConfidenceFlag::FinalPassLengthRegression,
         ];
         for flag in cases {
             let json = serde_json::to_string(&flag).expect("serialize flag");
@@ -1885,12 +1916,42 @@ mod tests {
                 "\"ai_noop_detected\"",
                 TranscriptionConfidenceFlag::AiNoopDetected,
             ),
+            (
+                "\"final_pass_length_regression\"",
+                TranscriptionConfidenceFlag::FinalPassLengthRegression,
+            ),
         ];
         for (json, expected) in legacy_tokens {
             let restored: TranscriptionConfidenceFlag = serde_json::from_str(json)
                 .unwrap_or_else(|e| panic!("legacy token {json} must deserialize: {e}"));
             assert_eq!(restored, expected, "legacy token {json}");
         }
+    }
+
+    #[test]
+    fn final_pass_length_regression_div0_apple_file_collapse() {
+        // div0 2026-07-23: ~98s audio, stream 56 chars, Apple file final 12 chars.
+        let stream = "Im wystarczy i jeszcze troche z live assembly stream";
+        assert!(stream.chars().count() >= FINAL_PASS_REGRESSION_MIN_STREAM_CHARS);
+        assert!(final_pass_is_length_regression("Im wystarczy", stream));
+    }
+
+    #[test]
+    fn final_pass_length_regression_spares_cold_start_and_comparable_finals() {
+        // Empty/thin live → final must still recover (cold Whisper / cold Apple).
+        assert!(!final_pass_is_length_regression(
+            "poczatek wypowiedzi z zimnego startu",
+            ""
+        ));
+        assert!(!final_pass_is_length_regression(
+            "krotki final",
+            "krotki stream"
+        ));
+        // Comparable length: final may win even if not identical.
+        assert!(!final_pass_is_length_regression(
+            "czysty final pass tekst dlugi wystarczajaco",
+            "powtarzajacy sie streaming preview tekst"
+        ));
     }
 
     #[test]

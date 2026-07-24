@@ -118,6 +118,38 @@ fn run_apple_or_whisper<T>(
     }
 }
 
+/// Live/stream Apple path: **never** fall through to Candle Whisper.
+///
+/// Product rule: letter-level Apple live must not be replaced by Whisper mid-
+/// session (Whisper loses to Apple live on dictation UX). File final-pass may
+/// still use [`run_apple_or_whisper`]. Failures surface to the scheduler so the
+/// live assembly keeps prior committed text instead of a collapsing Candle path.
+fn run_apple_live_only<T>(
+    context: &str,
+    apple_path: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if !apple_stt::is_runtime_available() {
+        let err = anyhow::anyhow!(
+            "Apple STT runtime not available during {context}; live lane refuses Candle fallback"
+        );
+        warn!(
+            "Apple STT live-only: unavailable during {}: {} (no Whisper fallback)",
+            context, err
+        );
+        return Err(err);
+    }
+
+    apple_path().map_err(|err| {
+        warn!(
+            "Apple STT live-only: failed during {}: {} (no Whisper fallback)",
+            context, err
+        );
+        err.context(format!(
+            "Apple STT live path failed during {context} (Candle Whisper fallback disabled for live)"
+        ))
+    })
+}
+
 fn warn_initial_prompt_unsupported(engine: &str) {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
@@ -297,11 +329,9 @@ pub(crate) fn transcribe_chunk(
 ) -> anyhow::Result<String> {
     match selected_engine() {
         SttEngine::Onnx => onnx_adapter::transcribe_chunk(audio, sample_rate, language),
-        SttEngine::Apple => run_apple_or_whisper(
-            "transcribe_chunk",
-            || apple_stt::transcribe_chunk(audio, sample_rate, language),
-            || candle_transcribe_chunk(audio, sample_rate, language),
-        ),
+        SttEngine::Apple => run_apple_live_only("transcribe_chunk", || {
+            apple_stt::transcribe_chunk(audio, sample_rate, language)
+        }),
         SttEngine::Candle => candle_transcribe_chunk(audio, sample_rate, language),
     }
 }
@@ -316,11 +346,9 @@ pub(crate) fn transcribe_long_with_segments(
         SttEngine::Onnx => {
             onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
         }
-        SttEngine::Apple => run_apple_or_whisper(
-            "transcribe_long_with_segments",
-            || apple_stt::transcribe_long_with_segments(audio, sample_rate, language),
-            || candle_transcribe_long_with_segments(audio, sample_rate, language),
-        ),
+        SttEngine::Apple => run_apple_live_only("transcribe_long_with_segments", || {
+            apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
+        }),
         SttEngine::Candle => candle_transcribe_long_with_segments(audio, sample_rate, language),
     }
 }
@@ -343,22 +371,11 @@ pub(crate) fn transcribe_long_with_segments_with_initial_prompt(
             onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
         }
         SttEngine::Apple => {
-            let prompt_for_candle = initial_prompt.clone();
-            run_apple_or_whisper(
-                "transcribe_long_with_segments_with_initial_prompt",
-                || {
-                    warn_initial_prompt_unsupported("Apple SpeechAnalyzer");
-                    apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
-                },
-                || {
-                    candle_transcribe_long_with_segments_with_initial_prompt(
-                        audio,
-                        sample_rate,
-                        language,
-                        prompt_for_candle,
-                    )
-                },
-            )
+            // Live/commit/refine under Apple: no Candle fallback (product rule).
+            warn_initial_prompt_unsupported("Apple SpeechAnalyzer");
+            run_apple_live_only("transcribe_long_with_segments_with_initial_prompt", || {
+                apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
+            })
         }
         SttEngine::Candle => candle_transcribe_long_with_segments_with_initial_prompt(
             audio,
@@ -380,11 +397,9 @@ pub(crate) fn try_transcribe_long_with_segments(
         SttEngine::Onnx => {
             onnx_adapter::try_transcribe_long_with_segments(audio, sample_rate, language)
         }
-        SttEngine::Apple => run_apple_or_whisper(
-            "try_transcribe_long_with_segments",
-            || apple_stt::try_transcribe_long_with_segments(audio, sample_rate, language),
-            || candle_try_transcribe_long_with_segments(audio, sample_rate, language),
-        ),
+        SttEngine::Apple => run_apple_live_only("try_transcribe_long_with_segments", || {
+            apple_stt::try_transcribe_long_with_segments(audio, sample_rate, language)
+        }),
         SttEngine::Candle => candle_try_transcribe_long_with_segments(audio, sample_rate, language),
     }
 }
@@ -451,5 +466,19 @@ mod tests {
     fn selected_engine_auto_alias_uses_platform_default() {
         let _guard = EnvGuard::set("auto");
         assert_eq!(selected_engine(), default_engine());
+    }
+
+    #[test]
+    fn run_apple_live_only_never_swallows_errors_into_whisper() {
+        // Live path must surface Apple failures — no silent Candle substitute.
+        let err = run_apple_live_only("unit_test", || -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("bridge boom"))
+        })
+        .expect_err("must not succeed via Whisper fallback");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("bridge boom") || msg.contains("no Whisper") || msg.contains("live"),
+            "unexpected error: {msg}"
+        );
     }
 }
