@@ -1299,20 +1299,39 @@ final class SettingsViewModel: ObservableObject {
     }
 
     /// Mine corrections.jsonl + proposed lexicon into the live custom dictionary.
+    /// Teach replays the whole correction store and rewrites the lexicon — real
+    /// disk I/O whose cost scales with the corpus. Running it inline froze
+    /// Settings for the duration; it now runs off the main actor like the key
+    /// probe above, with `voiceLabTeachPending` keeping the button honest until
+    /// the result lands.
     func teachDictionaryFromStore() {
         guard let engine, !voiceLabTeachPending else { return }
         voiceLabTeachPending = true
         voiceLabTeachMessage = nil
-        defer { voiceLabTeachPending = false }
-        do {
-            let result = try engine.teachDictionaryFromStore()
-            voiceLabTeachMessage =
-                "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
-            refreshVoiceLab()
-        } catch {
-            let message = String(describing: error)
-            voiceLabTeachMessage = "Teach failed: \(message)"
-            lastError = message
+        let backgroundEngine = BackgroundSettingsEngine(engine: engine)
+
+        DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine] in
+            let outcome: Result<CsDictionaryTeachResult, Error>
+            do {
+                outcome = .success(try backgroundEngine.engine.teachDictionaryFromStore())
+            } catch {
+                outcome = .failure(error)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.voiceLabTeachPending = false
+                switch outcome {
+                case .success(let result):
+                    self.voiceLabTeachMessage =
+                        "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
+                    self.refreshVoiceLab()
+                case .failure(let error):
+                    let message = String(describing: error)
+                    self.voiceLabTeachMessage = "Teach failed: \(message)"
+                    self.lastError = message
+                }
+            }
         }
     }
 

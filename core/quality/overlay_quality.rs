@@ -633,8 +633,37 @@ pub fn upsert_correction_in_custom_lexicon(variant: &str, canonical: &str) -> Re
 }
 
 fn upsert_correction_in_custom_lexicon_unlocked(variant: &str, canonical: &str) -> Result<()> {
+    upsert_corrections_unlocked(std::slice::from_ref(&(variant, canonical)))
+}
+
+/// Upsert MANY correction rules in one pass: one read, one rewrite, one atomic
+/// write — instead of a full read + reparse + fsync per pair.
+///
+/// Teaching replays every stored correction, so the per-pair path made the cost
+/// quadratic in the lexicon and multiplied fsyncs by the candidate count, all
+/// while holding the global write lock (and, from the Voice Lab button, the main
+/// thread). Result is identical to applying the pairs in order — later pairs
+/// still supersede earlier mappings of the same variant, because they run
+/// through the same rewrite, just in memory.
+pub fn upsert_corrections_in_custom_lexicon(pairs: &[(&str, &str)]) -> Result<()> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let _write_guard = CUSTOM_LEXICON_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("custom lexicon write lock was poisoned"))?;
+    upsert_corrections_unlocked(pairs)
+}
+
+fn upsert_corrections_unlocked(pairs: &[(&str, &str)]) -> Result<()> {
     assert_test_data_dir_isolated("upsert_correction_in_custom_lexicon");
-    if !is_sensible_lexicon_candidate(variant, canonical) {
+    let accepted: Vec<(&str, &str)> = pairs
+        .iter()
+        .copied()
+        .filter(|(variant, canonical)| is_sensible_lexicon_candidate(variant, canonical))
+        .collect();
+    if accepted.is_empty() {
         return Ok(());
     }
     let path = Config::config_dir().join("lexicon.custom.jsonl");
@@ -646,7 +675,10 @@ fn upsert_correction_in_custom_lexicon_unlocked(variant: &str, canonical: &str) 
             return Err(error).with_context(|| format!("read custom lexicon {}", path.display()));
         }
     };
-    let rewritten = rewrite_custom_lexicon(&existing, variant, canonical)?;
+    let mut rewritten = existing;
+    for (variant, canonical) in accepted {
+        rewritten = rewrite_custom_lexicon(&rewritten, variant, canonical)?;
+    }
     atomic_write_with_rename(&path, rewritten.as_bytes(), |from, to| fs::rename(from, to))
 }
 
@@ -1026,8 +1058,12 @@ pub fn replay_corrections_through_extractor(
             })?;
             tracing::info!("replay: backed up custom lexicon to {}", backup.display());
         }
+        let pairs: Vec<(&str, &str)> = results
+            .iter()
+            .map(|candidate| (candidate.variant.as_str(), candidate.canonical.as_str()))
+            .collect();
+        upsert_corrections_in_custom_lexicon(&pairs)?;
         for candidate in &mut results {
-            upsert_correction_in_custom_lexicon(&candidate.variant, &candidate.canonical)?;
             candidate.applied = true;
         }
     }
@@ -1076,6 +1112,7 @@ pub fn teach_dictionary_from_store() -> Result<DictionaryTeachResult> {
     }
 
     let mut from_proposed = 0u32;
+    let mut proposed_pairs: Vec<(String, String)> = Vec::new();
     if proposed_path.exists() {
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- local config_dir path only
         let file = File::open(&proposed_path)
@@ -1113,16 +1150,18 @@ pub fn teach_dictionary_from_store() -> Result<DictionaryTeachResult> {
                 if !is_sensible_lexicon_candidate(&variant, canonical) {
                     continue;
                 }
-                match upsert_correction_in_custom_lexicon(&variant, canonical) {
-                    Ok(()) => from_proposed = from_proposed.saturating_add(1),
-                    Err(e) => tracing::warn!(
-                        "teach: failed proposed {} → {}: {:#}",
-                        variant,
-                        canonical,
-                        e
-                    ),
-                }
+                proposed_pairs.push((variant, canonical.to_string()));
             }
+        }
+
+        // One write for the whole proposed file, same as the replay path above.
+        let pairs: Vec<(&str, &str)> = proposed_pairs
+            .iter()
+            .map(|(variant, canonical)| (variant.as_str(), canonical.as_str()))
+            .collect();
+        match upsert_corrections_in_custom_lexicon(&pairs) {
+            Ok(()) => from_proposed = pairs.len() as u32,
+            Err(e) => tracing::warn!("teach: failed to apply proposed rules: {:#}", e),
         }
     }
 
@@ -2058,5 +2097,134 @@ mod tests {
             1,
             "temporary file is cleaned up"
         );
+    }
+
+    /// Isolate config + data dirs into a fresh tempdir and return it, so a test
+    /// that teaches never reads or writes the operator's real lexicon.
+    fn isolated_config_dir(guard: &EnvRestore) -> tempfile::TempDir {
+        let _ = guard;
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+        fs::create_dir_all(Config::config_dir().join("quality")).unwrap();
+        temp_dir
+    }
+
+    #[test]
+    #[serial]
+    fn batch_upsert_matches_sequential_upserts_row_for_row() {
+        // The batch path exists to collapse N reads/writes into one; it earns
+        // that only if the resulting file is byte-identical to the old loop,
+        // including later pairs superseding earlier mappings of a variant.
+        let pairs = [
+            ("kubernetis", "Kubernetes"),
+            ("dokier", "Docker"),
+            ("kubernetis", "K8s"), // supersedes the first mapping
+        ];
+        let seed = r#"{"term":"Keep","mispronunciations":["keep-var"]}
+"#;
+
+        let sequential = {
+            let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+            let temp = isolated_config_dir(&_guard);
+            let path = Config::config_dir().join("lexicon.custom.jsonl");
+            fs::write(&path, seed).unwrap();
+            for (variant, canonical) in pairs {
+                upsert_correction_in_custom_lexicon(variant, canonical).unwrap();
+            }
+            let bytes = fs::read_to_string(&path).unwrap();
+            drop(temp);
+            bytes
+        };
+
+        let batched = {
+            let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+            let temp = isolated_config_dir(&_guard);
+            let path = Config::config_dir().join("lexicon.custom.jsonl");
+            fs::write(&path, seed).unwrap();
+            upsert_corrections_in_custom_lexicon(&pairs).unwrap();
+            let bytes = fs::read_to_string(&path).unwrap();
+            drop(temp);
+            bytes
+        };
+
+        assert_eq!(batched, sequential);
+        assert!(batched.contains("K8s"), "last mapping wins: {batched}");
+        assert!(
+            !batched.contains(r#"{"term":"Kubernetes""#),
+            "superseded mapping must be gone: {batched}"
+        );
+        assert!(
+            batched.contains("Keep"),
+            "unrelated rows survive: {batched}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn teach_promotes_proposed_rules_and_counts_only_what_landed() {
+        // First core-level coverage of teach_dictionary_from_store: before this,
+        // the only test of the Teach button was a Swift mock, so nothing proved
+        // the rules actually reached the lexicon.
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _temp = isolated_config_dir(&_guard);
+        let config_dir = Config::config_dir();
+
+        fs::write(
+            config_dir.join("lexicon.custom.proposed.jsonl"),
+            concat!(
+                r#"{"term":"Kubernetes","mispronunciations":["kubernetis","kubernetys"],"source":"correction"}"#,
+                "\n",
+                r#"{"term":"Docker","mispronunciations":["dokier"],"source":"correction"}"#,
+                "\n",
+                "\n",
+                "{ this line is not json\n",
+                r#"{"mispronunciations":["orphan"]}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let result = teach_dictionary_from_store().expect("teach");
+
+        // Malformed and term-less rows are skipped, not counted and not fatal.
+        assert_eq!(result.from_proposed, 3);
+        assert_eq!(result.from_corrections, 0);
+
+        let written = fs::read_to_string(config_dir.join("lexicon.custom.jsonl")).unwrap();
+        for expected in ["kubernetis", "kubernetys", "dokier"] {
+            assert!(
+                written.contains(expected),
+                "missing {expected} in {written}"
+            );
+        }
+        assert!(
+            !written.contains("orphan"),
+            "row without a term must not land"
+        );
+
+        let entries = custom_lexicon_entries().unwrap();
+        assert_eq!(result.total_rules, entries.len() as u32);
+        assert_eq!(
+            result.rules_from_correction_source,
+            entries
+                .iter()
+                .filter(|e| e.source == LEXICON_SOURCE_CORRECTION)
+                .count() as u32
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn teach_on_empty_store_is_a_no_op_not_an_error() {
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _temp = isolated_config_dir(&_guard);
+
+        let result = teach_dictionary_from_store().expect("teach on empty store");
+        assert_eq!(result.from_proposed, 0);
+        assert_eq!(result.from_corrections, 0);
+        assert_eq!(result.total_rules, 0);
     }
 }
