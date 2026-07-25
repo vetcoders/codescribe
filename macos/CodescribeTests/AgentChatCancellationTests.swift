@@ -51,6 +51,8 @@ final class AgentChatCancellationTests: XCTestCase {
         let firstStreamStarted: XCTestExpectation
         let emitPartialAndTool: Bool
         let state = LockedState()
+        var approvalHandler: (@MainActor (PendingToolApproval) -> Void)?
+        var resolvedApprovals: [(PendingToolApproval, Bool)] = []
 
         init(firstStreamStarted: XCTestExpectation, emitPartialAndTool: Bool = false) {
             self.firstStreamStarted = firstStreamStarted
@@ -95,6 +97,22 @@ final class AgentChatCancellationTests: XCTestCase {
             state.record(.rustCancel(threadId))
             state.cancelSuspendedCall()
             return true
+        }
+
+        func installToolApprovalHandler(
+            _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+        ) {
+            approvalHandler = handler
+        }
+
+        func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool {
+            resolvedApprovals.append((request, approved))
+            return true
+        }
+
+        @MainActor
+        func emitApproval(_ request: PendingToolApproval) {
+            approvalHandler?(request)
         }
     }
 
@@ -175,6 +193,48 @@ final class AgentChatCancellationTests: XCTestCase {
         XCTAssertFalse(recovered.wasStopped)
         XCTAssertFalse(recovered.isThinking)
         XCTAssertFalse(recovered.isStreaming)
+    }
+
+    func testApprovalUiResumesExactPendingCall() {
+        let engine = SpyEngine(
+            firstStreamStarted: XCTestExpectation(description: "unused stream")
+        )
+        let store = makeStore(engine: engine, backendID: "backend-approval")
+        let exact = PendingToolApproval(
+            callID: "call-exact",
+            sessionID: "session-exact",
+            threadID: "backend-approval",
+            tool: "mcp__desktop-commander__write_file",
+            server: "desktop-commander",
+            risk: "mutating",
+            summary: "write file",
+            command: nil,
+            cwd: nil,
+            paths: ["/workspace/file"]
+        )
+        let other = PendingToolApproval(
+            callID: "call-other",
+            sessionID: "session-other",
+            threadID: "other-thread",
+            tool: "mcp__desktop-commander__write_file",
+            server: "desktop-commander",
+            risk: "mutating",
+            summary: "write other file",
+            command: nil,
+            cwd: nil,
+            paths: ["/workspace/other"]
+        )
+
+        engine.emitApproval(other)
+        engine.emitApproval(exact)
+        XCTAssertEqual(store.currentToolApprovals, [exact])
+
+        store.resolveToolApproval(exact, approved: true)
+        XCTAssertEqual(engine.resolvedApprovals.count, 1)
+        XCTAssertEqual(engine.resolvedApprovals.first?.0, exact)
+        XCTAssertEqual(engine.resolvedApprovals.first?.1, true)
+        XCTAssertTrue(store.currentToolApprovals.isEmpty)
+        XCTAssertEqual(store.pendingToolApprovals, [other])
     }
 
     func testComposerActionProjectsThinkingStreamingAndCancelling() {

@@ -1,17 +1,22 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{
+    ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolOrigin,
+    ToolRegistry, ToolResultContent, ToolRisk,
+};
 use codescribe_core::llm::lane_truth;
 #[cfg(test)]
 use codescribe_core::llm::provider::LlmMode;
 use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
 use tracing::{info, warn};
+
+use super::path_policy;
 
 /// Per-server runtime discovery outcome captured during `register` (real spawn
 /// + `tools/list` handshake). Read back by the Settings Engine tab so the UI
@@ -645,16 +650,25 @@ fn register_mcp_tools_from_config(
         let definition = ToolDefinition {
             name: public_name,
             description,
-            input_schema: discovered_tool.tool.input_schema.clone(),
+            input_schema: public_input_schema(
+                &discovered_tool.server_name,
+                &original_tool_name,
+                &discovered_tool.tool.input_schema,
+            ),
         };
 
-        let register_result = registry.register(
+        let (policy, validator) = execution_policy(&server_name, &original_tool_name);
+        let register_result = registry.register_with_policy(
             definition,
             Box::new(move |input| {
                 let client = McpClient::new(client_config.clone());
                 let tool_name = original_tool_name.clone();
                 let server = server_name.clone();
                 Box::pin(async move {
+                    let input = match prepare_upstream_input(&server, &tool_name, input) {
+                        Ok(input) => input,
+                        Err(error) => return vec![ToolResultContent::Error(error.to_string())],
+                    };
                     match client.call_tool(&tool_name, input).await {
                         Ok(output) => output,
                         Err(error) => vec![ToolResultContent::Error(format!(
@@ -663,6 +677,8 @@ fn register_mcp_tools_from_config(
                     }
                 })
             }),
+            policy,
+            validator,
         );
 
         if let Err(error) = register_result {
@@ -674,6 +690,303 @@ fn register_mcp_tools_from_config(
     }
 
     Ok(registered)
+}
+
+fn public_input_schema(
+    server: &str,
+    tool: &str,
+    upstream: &serde_json::Value,
+) -> serde_json::Value {
+    let mut schema = upstream.clone();
+    if !is_desktop_commander_server(server) || tool != "start_process" {
+        return schema;
+    }
+    let Some(object) = schema.as_object_mut() else {
+        return schema;
+    };
+    let properties = object
+        .entry("properties")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(properties) = properties.as_object_mut() {
+        properties.insert(
+            "cwd".to_string(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Absolute working directory inside a configured Codescribe Agent workspace root"
+            }),
+        );
+    }
+    let required = object
+        .entry("required")
+        .or_insert_with(|| serde_json::json!([]));
+    if let Some(required) = required.as_array_mut()
+        && !required.iter().any(|value| value == "cwd")
+    {
+        required.push(serde_json::json!("cwd"));
+    }
+    schema
+}
+
+fn prepare_upstream_input(
+    server: &str,
+    tool: &str,
+    mut input: serde_json::Value,
+) -> Result<serde_json::Value> {
+    if !is_desktop_commander_server(server) || tool != "start_process" {
+        return Ok(input);
+    }
+    let cwd = required_string(&input, &["cwd"])?.to_string();
+    let command = required_string(&input, &["command"])?.to_string();
+    let object = input
+        .as_object_mut()
+        .context("Desktop Commander start_process input must be an object")?;
+    object.remove("cwd");
+    object.insert(
+        "command".to_string(),
+        serde_json::Value::String(format!("cd -- {} && {{ {}; }}", shell_quote(&cwd), command)),
+    );
+    Ok(input)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn is_desktop_commander_server(server_name: &str) -> bool {
+    server_name.eq_ignore_ascii_case("desktop-commander")
+}
+
+fn execution_policy(
+    server_name: &str,
+    upstream_tool: &str,
+) -> (ToolExecutionPolicy, Option<ToolInputValidator>) {
+    let origin = ToolOrigin::Mcp {
+        server: server_name.to_string(),
+        upstream_tool: upstream_tool.to_string(),
+    };
+    if !is_desktop_commander_server(server_name) {
+        return (
+            ToolExecutionPolicy {
+                origin,
+                risk: ToolRisk::Unknown,
+                requires_approval: false,
+            },
+            None,
+        );
+    }
+
+    let (risk, requires_approval) = match upstream_tool {
+        "get_config"
+        | "get_file_info"
+        | "list_directory"
+        | "list_processes"
+        | "list_sessions"
+        | "list_searches"
+        | "get_more_search_results"
+        | "read_process_output"
+        | "get_usage_stats"
+        | "get_recent_tool_calls"
+        | "read_file"
+        | "read_multiple_files"
+        | "start_search"
+        | "stop_search"
+        | "get_prompts" => (ToolRisk::ReadOnly, false),
+        "write_file" | "write_pdf" | "edit_block" | "move_file" | "create_directory" => {
+            (ToolRisk::Mutating, true)
+        }
+        "start_process"
+        | "interact_with_process"
+        | "force_terminate"
+        | "kill_process"
+        | "set_config_value" => (ToolRisk::ProcessControl, true),
+        _ => (ToolRisk::Unknown, false),
+    };
+    let validator = desktop_commander_validator(upstream_tool);
+    (
+        ToolExecutionPolicy {
+            origin,
+            risk,
+            requires_approval,
+        },
+        validator,
+    )
+}
+
+fn desktop_commander_validator(upstream_tool: &str) -> Option<ToolInputValidator> {
+    let tool = upstream_tool.to_string();
+    Some(Arc::new(move |input| {
+        let roots = path_policy::workspace_roots();
+        match tool.as_str() {
+            "get_file_info" | "list_directory" | "read_file" | "start_search" => {
+                if input
+                    .get("isUrl")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    bail!("Desktop Commander URL reads are denied by Codescribe policy");
+                }
+                let path = required_string(input, &["path"])?;
+                let canonical = path_policy::validate_existing(path, &roots)?;
+                Ok(ToolCallPreview {
+                    summary: format!("{tool} inside the configured workspace"),
+                    paths: vec![canonical.display().to_string()],
+                    ..Default::default()
+                })
+            }
+            "read_multiple_files" => {
+                let paths = input
+                    .get("paths")
+                    .and_then(serde_json::Value::as_array)
+                    .context("Missing required array field 'paths'")?;
+                if paths.is_empty() {
+                    bail!("Desktop Commander read_multiple_files requires at least one path");
+                }
+                let paths = paths
+                    .iter()
+                    .map(|path| {
+                        let path = path
+                            .as_str()
+                            .context("read_multiple_files paths must be strings")?;
+                        path_policy::validate_existing(path, &roots)
+                            .map(|path| path.display().to_string())
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(ToolCallPreview {
+                    summary: "Read multiple files inside the configured workspace".to_string(),
+                    paths,
+                    ..Default::default()
+                })
+            }
+            "write_file" | "write_pdf" | "create_directory" => {
+                let path = required_string(input, &["path"])?;
+                let target = path_policy::validate_new_target(path, &roots)?;
+                Ok(ToolCallPreview {
+                    summary: format!("{tool} inside the configured workspace"),
+                    paths: vec![target.display().to_string()],
+                    ..Default::default()
+                })
+            }
+            "edit_block" => {
+                let path = required_string(input, &["file_path", "path"])?;
+                let canonical = path_policy::validate_existing(path, &roots)?;
+                Ok(ToolCallPreview {
+                    summary: "Edit an existing workspace file".to_string(),
+                    paths: vec![canonical.display().to_string()],
+                    ..Default::default()
+                })
+            }
+            "move_file" => {
+                let source = required_string(input, &["source", "source_path"])?;
+                let destination = required_string(input, &["destination", "destination_path"])?;
+                let source = path_policy::validate_existing(source, &roots)?;
+                let destination = path_policy::validate_new_target(destination, &roots)?;
+                Ok(ToolCallPreview {
+                    summary: "Move a file inside the configured workspace".to_string(),
+                    paths: vec![
+                        source.display().to_string(),
+                        destination.display().to_string(),
+                    ],
+                    ..Default::default()
+                })
+            }
+            "start_process" => {
+                let command = required_string(input, &["command"])?;
+                let cwd = required_string(input, &["cwd", "path"])?;
+                let cwd = path_policy::validate_terminal(command, cwd, &roots)?;
+                Ok(ToolCallPreview {
+                    summary: "Start a process inside the configured workspace".to_string(),
+                    command: Some(redact_command_for_approval(command)),
+                    cwd: Some(cwd.display().to_string()),
+                    ..Default::default()
+                })
+            }
+            "set_config_value" => {
+                let key = required_string(input, &["key"])?;
+                let normalized = key
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if ["alloweddirectories", "blockedcommands", "codescribepolicy"]
+                    .iter()
+                    .any(|protected| normalized.contains(protected))
+                {
+                    bail!("Desktop Commander may not change security-policy key '{key}'");
+                }
+                Ok(ToolCallPreview {
+                    summary: format!("Change Desktop Commander setting '{key}'"),
+                    ..Default::default()
+                })
+            }
+            "interact_with_process" | "force_terminate" | "kill_process" => Ok(ToolCallPreview {
+                summary: format!("Desktop Commander process control: {tool}"),
+                ..Default::default()
+            }),
+            _ => Ok(ToolCallPreview {
+                summary: format!("Desktop Commander tool: {tool}"),
+                ..Default::default()
+            }),
+        }
+    }))
+}
+
+fn redact_command_for_approval(command: &str) -> String {
+    const SENSITIVE_KEYS: &[&str] = &[
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+    ];
+    let mut redact_remaining = 0usize;
+    command
+        .split_whitespace()
+        .map(|token| {
+            if redact_remaining > 0 {
+                redact_remaining -= 1;
+                return "[REDACTED]".to_string();
+            }
+            let trimmed = token.trim_matches(|character| matches!(character, '\'' | '"'));
+            let normalized = trimmed.to_ascii_lowercase();
+            if let Some((key, _)) = trimmed.split_once('=')
+                && SENSITIVE_KEYS
+                    .iter()
+                    .any(|sensitive| key.to_ascii_lowercase().contains(sensitive))
+            {
+                return format!("{key}=[REDACTED]");
+            }
+            if SENSITIVE_KEYS
+                .iter()
+                .any(|sensitive| normalized.contains(sensitive))
+            {
+                redact_remaining =
+                    if normalized.contains("authorization") || normalized.contains("cookie") {
+                        2
+                    } else {
+                        1
+                    };
+            }
+            token.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn required_string<'a>(input: &'a serde_json::Value, keys: &[&str]) -> Result<&'a str> {
+    for key in keys {
+        if let Some(value) = input.get(key).and_then(serde_json::Value::as_str)
+            && !value.trim().is_empty()
+        {
+            return Ok(value);
+        }
+    }
+    bail!(
+        "Missing required string field (expected one of: {})",
+        keys.join(", ")
+    )
 }
 
 #[derive(Debug)]
@@ -800,14 +1113,123 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use codescribe_core::agent::{ToolRegistry, ToolResultContent};
+    use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk};
     use serde_json::json;
     use serial_test::serial;
 
     use super::{
-        McpRowTone, probe_agentic_readiness_at, probe_core_readiness_with_secret,
-        probe_mcp_status_at, public_tool_name, register_mcp_tools_from_config_path,
+        McpRowTone, desktop_commander_validator, execution_policy, prepare_upstream_input,
+        probe_agentic_readiness_at, probe_core_readiness_with_secret, probe_mcp_status_at,
+        public_tool_name, redact_command_for_approval, register_mcp_tools_from_config_path,
     };
+
+    #[test]
+    fn desktop_commander_026_profile_classifies_all_26_tools() {
+        const TOOLS: &[&str] = &[
+            "create_directory",
+            "edit_block",
+            "force_terminate",
+            "get_config",
+            "get_file_info",
+            "get_more_search_results",
+            "get_prompts",
+            "get_recent_tool_calls",
+            "get_usage_stats",
+            "give_feedback_to_desktop_commander",
+            "interact_with_process",
+            "kill_process",
+            "list_directory",
+            "list_processes",
+            "list_searches",
+            "list_sessions",
+            "move_file",
+            "read_file",
+            "read_multiple_files",
+            "read_process_output",
+            "set_config_value",
+            "start_process",
+            "start_search",
+            "stop_search",
+            "write_file",
+            "write_pdf",
+        ];
+        let policies = TOOLS
+            .iter()
+            .map(|tool| (*tool, execution_policy("desktop-commander", tool).0))
+            .collect::<Vec<_>>();
+        assert_eq!(policies.len(), 26);
+        assert_eq!(
+            policies
+                .iter()
+                .filter(|(_, policy)| policy.risk == ToolRisk::ReadOnly)
+                .count(),
+            15
+        );
+        assert_eq!(
+            policies
+                .iter()
+                .filter(|(_, policy)| policy.requires_approval)
+                .count(),
+            10
+        );
+        assert_eq!(
+            policies
+                .iter()
+                .filter(|(_, policy)| policy.risk == ToolRisk::Unknown)
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            vec!["give_feedback_to_desktop_commander"]
+        );
+    }
+
+    #[test]
+    fn unknown_desktop_commander_tool_is_deny_by_default() {
+        let (policy, _) = execution_policy("desktop-commander", "future_unclassified_tool");
+        assert_eq!(policy.risk, ToolRisk::Unknown);
+        assert!(!policy.requires_approval);
+    }
+
+    #[test]
+    fn desktop_commander_terminal_preview_redacts_secrets_and_blocks_policy_key_aliases() {
+        assert_eq!(
+            redact_command_for_approval("TOKEN=hunter2 curl --password swordfish example.test"),
+            "TOKEN=[REDACTED] curl --password [REDACTED] example.test"
+        );
+        assert_eq!(
+            redact_command_for_approval(
+                "curl -H 'Authorization: Bearer hunter2' https://example.test"
+            ),
+            "curl -H 'Authorization: [REDACTED] [REDACTED] https://example.test"
+        );
+        let validator = desktop_commander_validator("set_config_value").expect("desktop validator");
+        assert!(
+            validator(&json!({"key": "security.allowedDirectories[0]", "value": "/tmp"})).is_err()
+        );
+    }
+
+    #[test]
+    fn desktop_commander_policy_metadata_is_not_sent_upstream() {
+        let upstream = prepare_upstream_input(
+            "Desktop-Commander",
+            "start_process",
+            json!({
+                "command": "printf ok",
+                "cwd": "/workspace/project",
+                "timeout_ms": 1_000
+            }),
+        )
+        .expect("prepare Desktop Commander call");
+        assert!(upstream.get("cwd").is_none());
+        assert_eq!(upstream["timeout_ms"], json!(1_000));
+        assert_eq!(
+            upstream["command"],
+            json!("cd -- '/workspace/project' && { printf ok; }")
+        );
+        assert!(upstream.get("codescribePolicy").is_none());
+
+        let (policy, _) = execution_policy("Desktop-Commander", "list_directory");
+        assert_eq!(policy.risk, ToolRisk::ReadOnly);
+    }
 
     #[test]
     fn probe_reports_missing_config_as_optional_not_broken() {

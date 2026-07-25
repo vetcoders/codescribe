@@ -1,14 +1,12 @@
-use std::collections::HashSet;
 use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
-use codescribe_core::config::Config;
 use codescribe_core::util::safe_path::safe_open_bounded;
 use serde_json::{Value, json};
 
-use super::workspace;
+use super::{path_policy, workspace};
 
 const MAX_FILE_SIZE_BYTES: u64 = 512 * 1024;
 const MAX_TEXT_CHARS: usize = 40_000;
@@ -119,7 +117,7 @@ fn validate_path_for_read_with_roots(
         .canonicalize()
         .with_context(|| format!("Failed to canonicalize path: {path_str}"))?;
 
-    let roots = canonical_allowed_roots(roots);
+    let roots = path_policy::canonical_roots(roots);
     let Some(root) = roots.into_iter().find(|root| canonical.starts_with(root)) else {
         bail!(
             "Path is outside configured workspace roots and Codescribe storage: {}",
@@ -133,18 +131,8 @@ fn validate_path_for_read_with_roots(
 fn allowed_read_roots() -> Vec<PathBuf> {
     let mut roots = workspace::resolved_roots();
     // Codescribe-owned storage is the only deliberate non-workspace exception.
-    roots.push(Config::config_dir());
-    canonical_allowed_roots(&roots)
-}
-
-fn canonical_allowed_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut seen = HashSet::new();
-    roots
-        .iter()
-        .filter_map(|root| root.canonicalize().ok())
-        .filter(|root| root.is_dir())
-        .filter(|root| seen.insert(root.clone()))
-        .collect()
+    roots.push(codescribe_core::config::Config::config_dir());
+    path_policy::canonical_roots(&roots)
 }
 
 #[cfg(test)]
@@ -152,7 +140,7 @@ pub(crate) fn is_path_allowed(path: &std::path::Path, roots: &[PathBuf]) -> bool
     let Ok(canonical) = path.canonicalize() else {
         return false;
     };
-    canonical_allowed_roots(roots)
+    path_policy::canonical_roots(roots)
         .iter()
         .any(|root| canonical.starts_with(root))
 }

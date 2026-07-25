@@ -135,6 +135,17 @@ private struct MCPServerRow: View {
                     .truncationMode(.middle)
             }
 
+            if server.name == "desktop-commander" {
+                Text("Codescribe policy · 15 allowed · 10 approval · 1 denied · 1 unknown")
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(CSColor.oliveLight)
+                    .textSelection(.enabled)
+                Text("Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots.")
+                    .font(CSFont.ui(11, .regular))
+                    .foregroundStyle(CSColor.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if pending {
                 resultLine(text: "testing…", color: CSColor.amber)
             } else if let result {

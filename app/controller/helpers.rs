@@ -481,6 +481,10 @@ fn agent_ui_event_to_delivery(event: &AgentUiEvent) -> AgentDeliveryEvent {
             name: name.clone(),
             id: id.clone(),
         },
+        AgentUiEvent::ToolApprovalRequested(request) => AgentDeliveryEvent::Error(format!(
+            "Tool approval is unavailable for voice turn {} ({})",
+            request.call_id, request.tool
+        )),
         AgentUiEvent::ToolResult {
             name,
             id,
@@ -520,6 +524,13 @@ async fn apply_agent_ui_event(event: AgentUiEvent) {
         | AgentUiEvent::Done => {}
         AgentUiEvent::ToolExecuting { name, .. } => {
             debug!("Tool executing: {name} -> {}", friendly_tool_name(&name));
+        }
+        AgentUiEvent::ToolApprovalRequested(request) => {
+            warn!(
+                call_id = %request.call_id,
+                tool = %request.tool,
+                "Voice tool call requires approval; no voice approval broker is connected"
+            );
         }
         AgentUiEvent::ToolResult {
             name,

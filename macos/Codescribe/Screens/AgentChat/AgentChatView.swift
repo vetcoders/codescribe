@@ -49,6 +49,15 @@ private struct ThreadDetail: View {
             } else {
                 Spacer()
             }
+            ForEach(store.currentToolApprovals) { request in
+                ToolApprovalCard(
+                    request: request,
+                    reject: { store.resolveToolApproval(request, approved: false) },
+                    allowOnce: { store.resolveToolApproval(request, approved: true) }
+                )
+                .padding(.horizontal, 20)
+                .padding(.bottom, 10)
+            }
             Composer(store: store)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -149,6 +158,66 @@ private struct ThreadDetail: View {
     }
 
     private var turnCount: Int { store.currentThread?.messages.count ?? 0 }
+}
+
+private struct ToolApprovalCard: View {
+    let request: PendingToolApproval
+    let reject: () -> Void
+    let allowOnce: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("Wymagana zgoda")
+                    .font(CSFont.ui(13, .semibold))
+                    .foregroundStyle(CSColor.amber)
+                Spacer()
+                Text(request.risk.replacingOccurrences(of: "_", with: " "))
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+            }
+            Text("\(request.server) · \(request.tool)")
+                .font(CSFont.mono(11.5, .semibold))
+                .foregroundStyle(CSColor.textHigh)
+                .textSelection(.enabled)
+            if !request.summary.isEmpty {
+                Text(request.summary)
+                    .font(CSFont.ui(12, .regular))
+                    .foregroundStyle(CSColor.textBody)
+            }
+            if let command = request.command {
+                Text("$ \(command)")
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(CSColor.terracottaLight)
+                    .textSelection(.enabled)
+            }
+            if let cwd = request.cwd {
+                Text("cwd: \(cwd)")
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                    .textSelection(.enabled)
+            }
+            ForEach(request.paths, id: \.self) { path in
+                Text(path)
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button("Odrzuć", role: .cancel, action: reject)
+                Button("Zezwól raz", action: allowOnce)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(14)
+        .background(CSColor.surfaceRaised(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    }
 }
 
 // MARK: - Preview (standalone — mock engine + seeded threads)

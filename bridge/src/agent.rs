@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
-    ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolRegistry,
+    ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolApprovalHandler,
+    ToolApprovalRequest, ToolOrigin, ToolRegistry,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::llm::lane_truth::assistive_identity;
@@ -43,6 +44,22 @@ pub struct CsAgentAvailability {
     pub detail: String,
 }
 
+/// Approval payload forwarded as one typed FFI record, preserving the exact
+/// call/session/thread identity used by the Rust execution gateway.
+#[derive(uniffi::Record)]
+pub struct CsToolApprovalRequest {
+    pub call_id: String,
+    pub session_id: String,
+    pub thread_id: String,
+    pub tool: String,
+    pub server: String,
+    pub risk: String,
+    pub summary: String,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub paths: Vec<String>,
+}
+
 /// Foreign callback trait — agent streaming events forwarded to Swift.
 /// Mirrors `AgentUiEvent`; the Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
@@ -51,6 +68,7 @@ pub trait CsAgentListener: Send + Sync {
     fn on_text_done(&self, text: String);
     fn on_reasoning_delta(&self, delta: String);
     fn on_tool_executing(&self, name: String, id: String);
+    fn on_tool_approval_requested(&self, request: CsToolApprovalRequest);
     fn on_tool_result(&self, name: String, id: String, summary: String, is_error: bool);
     fn on_done(&self);
     fn on_error(&self, message: String);
@@ -63,6 +81,7 @@ pub struct CodescribeAgent {
     /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
     /// itself even while the FFI object stays borrowed by other calls.
     turns: Arc<TurnRegistry>,
+    approvals: Arc<ApprovalBroker>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -171,7 +190,19 @@ impl CodescribeAgent {
     /// NOT persisted — the thread on disk keeps its last completed-turn state,
     /// so the next turn on the same thread restores clean history.
     pub fn cancel_turn(&self, thread_id: String) -> bool {
+        self.approvals.cancel_thread(&thread_id);
         self.turns.cancel(&thread_id)
+    }
+
+    pub fn resolve_tool_approval(
+        &self,
+        session_id: String,
+        thread_id: String,
+        call_id: String,
+        approved: bool,
+    ) -> bool {
+        self.approvals
+            .resolve(&session_id, &thread_id, &call_id, approved)
     }
 }
 
@@ -193,7 +224,11 @@ impl CodescribeAgent {
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
-        let mut session = AgentSession::new(provider, Arc::new(registry), ui_tx);
+        let approvals = Arc::clone(&self.approvals);
+        let approval_handler: ToolApprovalHandler =
+            Arc::new(move |request| approvals.begin(request));
+        let mut session = AgentSession::new(provider, Arc::new(registry), ui_tx)
+            .with_tool_approval(thread_id.clone(), approval_handler);
 
         // Restore prior turns for cross-turn memory. ThreadStore does blocking
         // fs I/O, so the load runs on a blocking pool thread and is awaited
@@ -309,6 +344,24 @@ async fn drive_turn(
             }
             AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
             AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
+            AgentUiEvent::ToolApprovalRequested(request) => {
+                let server = match &request.origin {
+                    ToolOrigin::Native => "native".to_string(),
+                    ToolOrigin::Mcp { server, .. } => server.clone(),
+                };
+                listener.on_tool_approval_requested(CsToolApprovalRequest {
+                    call_id: request.call_id,
+                    session_id: request.session_id,
+                    thread_id: request.thread_id,
+                    tool: request.tool,
+                    server,
+                    risk: request.risk.as_str().to_string(),
+                    summary: request.summary,
+                    command: request.command,
+                    cwd: request.cwd,
+                    paths: request.paths,
+                });
+            }
             AgentUiEvent::ToolResult {
                 name,
                 id,
@@ -331,6 +384,84 @@ async fn drive_turn(
         Err(join_error) => Err(CsError::Agent {
             msg: format!("agent task join error: {join_error}"),
         }),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ApprovalKey {
+    session_id: String,
+    thread_id: String,
+    call_id: String,
+}
+
+#[derive(Default)]
+struct ApprovalBroker {
+    pending: Mutex<HashMap<ApprovalKey, tokio::sync::oneshot::Sender<bool>>>,
+}
+
+impl ApprovalBroker {
+    fn begin(
+        self: &Arc<Self>,
+        request: ToolApprovalRequest,
+    ) -> codescribe_core::agent::ToolApprovalFuture {
+        let key = ApprovalKey {
+            session_id: request.session_id,
+            thread_id: request.thread_id,
+            call_id: request.call_id,
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .expect("approval broker lock poisoned")
+            .insert(key.clone(), tx);
+        let broker = Arc::clone(self);
+        Box::pin(async move {
+            let _guard = PendingApprovalGuard {
+                broker: Arc::clone(&broker),
+                key: key.clone(),
+            };
+            rx.await.unwrap_or(false)
+        })
+    }
+
+    fn resolve(&self, session_id: &str, thread_id: &str, call_id: &str, approved: bool) -> bool {
+        let key = ApprovalKey {
+            session_id: session_id.to_string(),
+            thread_id: thread_id.to_string(),
+            call_id: call_id.to_string(),
+        };
+        self.pending
+            .lock()
+            .expect("approval broker lock poisoned")
+            .remove(&key)
+            .is_some_and(|tx| tx.send(approved).is_ok())
+    }
+
+    fn cancel_thread(&self, thread_id: &str) {
+        let mut pending = self.pending.lock().expect("approval broker lock poisoned");
+        let keys = pending
+            .keys()
+            .filter(|key| key.thread_id == thread_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            pending.remove(&key);
+        }
+    }
+}
+
+struct PendingApprovalGuard {
+    broker: Arc<ApprovalBroker>,
+    key: ApprovalKey,
+}
+
+impl Drop for PendingApprovalGuard {
+    fn drop(&mut self) {
+        self.broker
+            .pending
+            .lock()
+            .expect("approval broker lock poisoned")
+            .remove(&self.key);
     }
 }
 
@@ -733,6 +864,7 @@ mod tests {
         fn on_tool_executing(&self, _name: String, _id: String) {
             self.tool_started.store(true, Ordering::SeqCst);
         }
+        fn on_tool_approval_requested(&self, _request: CsToolApprovalRequest) {}
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
         fn on_done(&self) {
             self.done_count.fetch_add(1, Ordering::SeqCst);
@@ -1009,6 +1141,53 @@ mod tests {
         // Same through the FFI surface object (no panic, returns false).
         let agent = CodescribeAgent::default();
         assert!(!agent.cancel_turn("idle-thread".to_string()));
+    }
+
+    #[tokio::test]
+    async fn approval_broker_resumes_only_the_exact_session_thread_and_call() {
+        let broker = Arc::new(ApprovalBroker::default());
+        let request = ToolApprovalRequest {
+            call_id: "call-exact".to_string(),
+            session_id: "session-exact".to_string(),
+            thread_id: "thread-exact".to_string(),
+            tool: "mcp__desktop-commander__write_file".to_string(),
+            origin: ToolOrigin::Mcp {
+                server: "desktop-commander".to_string(),
+                upstream_tool: "write_file".to_string(),
+            },
+            risk: codescribe_core::agent::ToolRisk::Mutating,
+            summary: "write workspace file".to_string(),
+            command: None,
+            cwd: None,
+            paths: vec!["/workspace/file".to_string()],
+        };
+        let pending = broker.begin(request);
+        assert!(!broker.resolve("session-exact", "wrong-thread", "call-exact", true));
+        assert!(!broker.resolve("wrong-session", "thread-exact", "call-exact", true));
+        assert!(broker.resolve("session-exact", "thread-exact", "call-exact", true));
+        assert!(pending.await);
+    }
+
+    #[tokio::test]
+    async fn cancelling_thread_rejects_pending_approval() {
+        let broker = Arc::new(ApprovalBroker::default());
+        let pending = broker.begin(ToolApprovalRequest {
+            call_id: "call-cancel".to_string(),
+            session_id: "session-cancel".to_string(),
+            thread_id: "thread-cancel".to_string(),
+            tool: "mcp__desktop-commander__write_file".to_string(),
+            origin: ToolOrigin::Mcp {
+                server: "desktop-commander".to_string(),
+                upstream_tool: "write_file".to_string(),
+            },
+            risk: codescribe_core::agent::ToolRisk::Mutating,
+            summary: "write workspace file".to_string(),
+            command: None,
+            cwd: None,
+            paths: vec!["/workspace/file".to_string()],
+        });
+        broker.cancel_thread("thread-cancel");
+        assert!(!pending.await);
     }
 
     #[tokio::test]

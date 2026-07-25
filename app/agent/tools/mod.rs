@@ -3,6 +3,7 @@ pub mod doctrine;
 pub mod filesystem;
 pub mod github;
 pub mod mcp;
+mod path_policy;
 pub mod screenshot;
 pub mod search_threads;
 pub mod selection;

@@ -634,6 +634,8 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
      */
     func isAvailable()  -> Bool
 
+    func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool)  -> Bool
+
     /**
      * Stream one agent reply for `text` on the conversation identified by
      * `thread_id`, forwarding token/reasoning/tool events to `listener` as they
@@ -799,6 +801,18 @@ open func isAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeagent_is_available(
             self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+open func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeagent_resolve_tool_approval(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),
+        FfiConverterString.lower(threadId),
+        FfiConverterString.lower(callId),
+        FfiConverterBool.lower(approved),$0
     )
 })
 }
@@ -4561,6 +4575,8 @@ public protocol CsAgentListener: AnyObject, Sendable {
 
     func onToolExecuting(name: String, id: String)
 
+    func onToolApprovalRequested(request: CsToolApprovalRequest)
+
     func onToolResult(name: String, id: String, summary: String, isError: Bool)
 
     func onDone()
@@ -4649,6 +4665,14 @@ open func onToolExecuting(name: String, id: String)  {try! rustCall() {
             self.uniffiCloneHandle(),
         FfiConverterString.lower(name),
         FfiConverterString.lower(id),$0
+    )
+}
+}
+
+open func onToolApprovalRequested(request: CsToolApprovalRequest)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csagentlistener_on_tool_approval_requested(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsToolApprovalRequest_lower(request),$0
     )
 }
 }
@@ -4795,6 +4819,30 @@ fileprivate struct UniffiCallbackInterfaceCsAgentListener {
                 return uniffiObj.onToolExecuting(
                      name: try FfiConverterString.lift(name),
                      id: try FfiConverterString.lift(id)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onToolApprovalRequested: { (
+            uniffiHandle: UInt64,
+            request: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAgentListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onToolApprovalRequested(
+                     request: try FfiConverterTypeCsToolApprovalRequest_lift(request)
                 )
             }
 
@@ -9375,6 +9423,94 @@ public func FfiConverterTypeCsTokenUsage_lower(_ value: CsTokenUsage) -> RustBuf
 
 
 /**
+ * Approval payload forwarded as one typed FFI record, preserving the exact
+ * call/session/thread identity used by the Rust execution gateway.
+ */
+public struct CsToolApprovalRequest: Equatable, Hashable {
+    public var callId: String
+    public var sessionId: String
+    public var threadId: String
+    public var tool: String
+    public var server: String
+    public var risk: String
+    public var summary: String
+    public var command: String?
+    public var cwd: String?
+    public var paths: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(callId: String, sessionId: String, threadId: String, tool: String, server: String, risk: String, summary: String, command: String?, cwd: String?, paths: [String]) {
+        self.callId = callId
+        self.sessionId = sessionId
+        self.threadId = threadId
+        self.tool = tool
+        self.server = server
+        self.risk = risk
+        self.summary = summary
+        self.command = command
+        self.cwd = cwd
+        self.paths = paths
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsToolApprovalRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsToolApprovalRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsToolApprovalRequest {
+        return
+            try CsToolApprovalRequest(
+                callId: FfiConverterString.read(from: &buf),
+                sessionId: FfiConverterString.read(from: &buf),
+                threadId: FfiConverterString.read(from: &buf),
+                tool: FfiConverterString.read(from: &buf),
+                server: FfiConverterString.read(from: &buf),
+                risk: FfiConverterString.read(from: &buf),
+                summary: FfiConverterString.read(from: &buf),
+                command: FfiConverterOptionString.read(from: &buf),
+                cwd: FfiConverterOptionString.read(from: &buf),
+                paths: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsToolApprovalRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.callId, into: &buf)
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterString.write(value.threadId, into: &buf)
+        FfiConverterString.write(value.tool, into: &buf)
+        FfiConverterString.write(value.server, into: &buf)
+        FfiConverterString.write(value.risk, into: &buf)
+        FfiConverterString.write(value.summary, into: &buf)
+        FfiConverterOptionString.write(value.command, into: &buf)
+        FfiConverterOptionString.write(value.cwd, into: &buf)
+        FfiConverterSequenceString.write(value.paths, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsToolApprovalRequest_lift(_ buf: RustBuffer) throws -> CsToolApprovalRequest {
+    return try FfiConverterTypeCsToolApprovalRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsToolApprovalRequest_lower(_ value: CsToolApprovalRequest) -> RustBuffer {
+    return FfiConverterTypeCsToolApprovalRequest.lower(value)
+}
+
+
+/**
  * Result of a one-shot file transcription.
  */
 public struct CsTranscription: Equatable, Hashable {
@@ -11751,6 +11887,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 64879) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 41667) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply() != 57150) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -12108,13 +12247,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_executing() != 20871) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_result() != 46057) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_approval_requested() != 33381) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_done() != 3663) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_result() != 21563) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_error() != 52350) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_done() != 60002) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_error() != 14110) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 1037) {

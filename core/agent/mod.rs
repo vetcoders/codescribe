@@ -13,8 +13,12 @@ pub mod types;
 pub use assets::AgentAssetStore;
 pub use event::{AgentEvent, AgentUiEvent};
 pub use provider::{AgentProvider, StreamOptions};
-pub use registry::{ToolDefinition, ToolFuture, ToolHandler, ToolRegistry, ToolResultContent};
-pub use session::{AgentSession, ImageAttachment};
+pub use registry::{
+    ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,
+    ToolFuture, ToolHandler, ToolInputValidator, ToolOrigin, ToolRegistry, ToolResultContent,
+    ToolRisk,
+};
+pub use session::{AgentSession, ImageAttachment, ToolApprovalFuture, ToolApprovalHandler};
 pub use thread_delivery::{
     ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
 };

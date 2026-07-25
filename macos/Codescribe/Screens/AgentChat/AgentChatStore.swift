@@ -58,6 +58,18 @@ protocol AgentChatEngine: AnyObject {
     /// "cancelled" turn.
     @discardableResult
     func cancelReply(threadId: String) -> Bool
+    func installToolApprovalHandler(
+        _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+    )
+    @discardableResult
+    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool
+}
+
+extension AgentChatEngine {
+    func installToolApprovalHandler(
+        _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+    ) {}
+    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool { false }
 }
 
 /// Source-specific adapter for hotkey/voice turns owned by the shared controller
@@ -85,6 +97,20 @@ struct ActiveComposerTurn: Equatable {
     let backendThreadID: String
     let assistantMessageID: UUID
     var phase: ComposerTurnPhase
+}
+
+struct PendingToolApproval: Identifiable, Equatable {
+    var id: String { "\(sessionID):\(threadID):\(callID)" }
+    let callID: String
+    let sessionID: String
+    let threadID: String
+    let tool: String
+    let server: String
+    let risk: String
+    let summary: String
+    let command: String?
+    let cwd: String?
+    let paths: [String]
 }
 
 enum ChatRole {
@@ -394,6 +420,7 @@ final class AgentChatStore: ObservableObject {
     /// Images staged in the composer for the next message. Cleared when the
     /// message is dispatched.
     @Published var pendingAttachments: [PendingAttachment] = []
+    @Published private(set) var pendingToolApprovals: [PendingToolApproval] = []
 
     // MARK: Composer dictation
 
@@ -546,6 +573,11 @@ final class AgentChatStore: ObservableObject {
         }
         self.threads = seeded
         self.selectedThreadID = seeded.first?.id
+        engine?.installToolApprovalHandler { [weak self] request in
+            guard let self else { return }
+            self.pendingToolApprovals.removeAll { $0.id == request.id }
+            self.pendingToolApprovals.append(request)
+        }
         if let first = seeded.first { loadMessagesIfNeeded(first.id) }
         beginObservingExternalThreadChanges()
     }
@@ -588,6 +620,16 @@ final class AgentChatStore: ObservableObject {
     }
 
     var isCancelling: Bool { selectedComposerTurnPhase == .cancelling }
+
+    var currentToolApprovals: [PendingToolApproval] {
+        guard let backendID = currentThread?.backendId else { return [] }
+        return pendingToolApprovals.filter { $0.threadID == backendID }
+    }
+
+    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) {
+        _ = engine?.resolveToolApproval(request, approved: approved)
+        pendingToolApprovals.removeAll { $0.id == request.id }
+    }
 
     // MARK: Thread ops
 
@@ -740,6 +782,7 @@ final class AgentChatStore: ObservableObject {
         inFlightSends[thread.id] = nil
         if let backendId = thread.backendId {
             _ = engine?.cancelReply(threadId: backendId)
+            pendingToolApprovals.removeAll { $0.threadID == backendId }
         }
         if activeComposerTurn?.threadID == thread.id {
             activeComposerTurn = nil
@@ -907,6 +950,9 @@ final class AgentChatStore: ObservableObject {
                         self?.recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
                     },
                     onToolResult: { [weak self] name, id, isError, reason in
+                        self?.pendingToolApprovals.removeAll {
+                            $0.threadID == backendId && $0.callID == id
+                        }
                         guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
                             return
                         }
@@ -1123,6 +1169,7 @@ final class AgentChatStore: ObservableObject {
         activeComposerTurn = turn
         inFlightSends[turn.threadID]?.task.cancel()
         let firstAcknowledgement = engine?.cancelReply(threadId: turn.backendThreadID) ?? false
+        pendingToolApprovals.removeAll { $0.threadID == turn.backendThreadID }
 
         // A very fast Stop can beat Rust's registry setup while the provider and
         // persisted history are still loading. Retry only that unacknowledged

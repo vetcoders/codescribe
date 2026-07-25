@@ -412,6 +412,7 @@ mod tests {
                     "enabled": true,
                     "env": { "TOKEN": "keepme" },
                     "timeout_seconds": 42,
+                    "codescribePolicy": { "profile": "desktop-commander-v1" },
                     "weird": [1, 2, 3]
                 }
             }
@@ -429,6 +430,10 @@ mod tests {
         // Preserved untouched.
         assert_eq!(raw["mcpServers"]["srv"]["env"]["TOKEN"], json!("keepme"));
         assert_eq!(raw["mcpServers"]["srv"]["timeout_seconds"], json!(42));
+        assert_eq!(
+            raw["mcpServers"]["srv"]["codescribePolicy"]["profile"],
+            json!("desktop-commander-v1")
+        );
         assert_eq!(raw["mcpServers"]["srv"]["weird"], json!([1, 2, 3]));
     }
 

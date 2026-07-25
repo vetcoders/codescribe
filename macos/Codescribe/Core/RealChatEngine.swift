@@ -13,6 +13,7 @@ private let attachLog = Logger(
 // main actor (FIFO) so SwiftUI @Published updates stay ordered and thread-safe.
 final class RealChatEngine: AgentChatEngine {
     private let agent = CodescribeAgent()
+    private var onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
 
     func isAvailable() -> Bool { agent.isAvailable() }
 
@@ -43,7 +44,8 @@ final class RealChatEngine: AgentChatEngine {
             onDelta: onDelta,
             onReasoning: onReasoning,
             onToolExecuting: onToolExecuting,
-            onToolResult: onToolResult
+            onToolResult: onToolResult,
+            onToolApprovalRequested: onToolApprovalRequested
         )
         // Text-only path stays byte-identical to before; only route through the
         // vision method when the composer actually staged an image.
@@ -69,6 +71,21 @@ final class RealChatEngine: AgentChatEngine {
         // bridge call is what actually aborts the in-flight turn.
         agent.cancelTurn(threadId: threadId)
     }
+
+    func installToolApprovalHandler(
+        _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+    ) {
+        onToolApprovalRequested = handler
+    }
+
+    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool {
+        agent.resolveToolApproval(
+            sessionId: request.sessionID,
+            threadId: request.threadID,
+            callId: request.callID,
+            approved: approved
+        )
+    }
 }
 
 /// Bridges Rust-side `CsAgentListener` callbacks (fired from a tokio thread) onto
@@ -78,17 +95,20 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
     private let onReasoning: @MainActor (String) -> Void
     private let onToolExecuting: @MainActor (String, String) -> Void
     private let onToolResult: @MainActor (String, String, Bool, String) -> Void
+    private let onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
 
     init(
         onDelta: @escaping @MainActor (String) -> Void,
         onReasoning: @escaping @MainActor (String) -> Void,
         onToolExecuting: @escaping @MainActor (String, String) -> Void,
-        onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
+        onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void,
+        onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
     ) {
         self.onDelta = onDelta
         self.onReasoning = onReasoning
         self.onToolExecuting = onToolExecuting
         self.onToolResult = onToolResult
+        self.onToolApprovalRequested = onToolApprovalRequested
     }
 
     func onTextDelta(delta: String) {
@@ -100,6 +120,23 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
     }
     func onToolExecuting(name: String, id: String) {
         DispatchQueue.main.async { MainActor.assumeIsolated { self.onToolExecuting(name, id) } }
+    }
+    func onToolApprovalRequested(request ffiRequest: CsToolApprovalRequest) {
+        let request = PendingToolApproval(
+            callID: ffiRequest.callId,
+            sessionID: ffiRequest.sessionId,
+            threadID: ffiRequest.threadId,
+            tool: ffiRequest.tool,
+            server: ffiRequest.server,
+            risk: ffiRequest.risk,
+            summary: ffiRequest.summary,
+            command: ffiRequest.command,
+            cwd: ffiRequest.cwd,
+            paths: ffiRequest.paths
+        )
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.onToolApprovalRequested?(request) }
+        }
     }
     func onToolResult(name: String, id: String, summary: String, isError: Bool) {
         // `summary` already carries the tool's error reason on failure (see the
