@@ -188,14 +188,14 @@ fn init_impl() -> Result<()> {
         probe = probe_bridge(&locale, allow_download)?;
     }
 
-    if let Some(auth) = probe.speech_auth.as_deref() {
-        if auth != "authorized" {
-            bail!(
-                "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
-                 System Settings › Privacy & Security › Speech Recognition \
-                 (or Settings › Dictation permission matrix)"
-            );
-        }
+    if let Some(auth) = probe.speech_auth.as_deref()
+        && auth != "authorized"
+    {
+        bail!(
+            "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
+             System Settings › Privacy & Security › Speech Recognition \
+             (or Settings › Dictation permission matrix)"
+        );
     }
 
     if !probe.supported {

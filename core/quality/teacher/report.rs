@@ -273,7 +273,7 @@ pub fn teach(input: TeacherInput) -> TeacherReport {
         lexicon_hints,
         gap_hallucination_hit_rate: hit_rate,
         whisper_errors_vs_human: whisper_errors,
-        whisper_errors_at_live_weak: whisper_errors_at_live_weak,
+        whisper_errors_at_live_weak,
         thesis_summary,
     }
 }
