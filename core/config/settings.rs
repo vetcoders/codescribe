@@ -128,6 +128,11 @@ pub struct UserSettings {
     /// dev-only fallback when this is unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai_oauth_client_id: Option<String>,
+    /// Same contract as `openai_oauth_client_id`, for Anthropic account login.
+    /// `None` ⇒ "awaiting app registration"; env
+    /// `CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID` is the dev-only fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -424,6 +429,9 @@ struct SystemV2 {
     // "Sign in with ChatGPT" OAuth client id (non-secret app identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     openai_oauth_client_id: Option<String>,
+    // Anthropic account-login OAuth client id (non-secret app identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anthropic_oauth_client_id: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -463,9 +471,10 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LLM_ASSISTIVE_PROVIDER",
     "LLM_FORMATTING_ENDPOINT",
     "LLM_FORMATTING_MODEL",
-    // "Sign in with ChatGPT" OAuth client id — non-secret app identity, so it
-    // lives in settings.json (NOT the Keychain); env stays the dev fallback.
+    // Account-login OAuth client ids — non-secret app identities, so they live
+    // in settings.json (NOT the Keychain); env stays the dev fallback.
     "LLM_OPENAI_OAUTH_CLIENT_ID",
+    "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
     // Promoted from .env
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
@@ -589,6 +598,7 @@ impl UserSettings {
                 onboarding_mode: self.onboarding_mode.clone(),
                 agent_workspace_roots: self.agent_workspace_roots.clone(),
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
+                anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
             }),
         }
     }
@@ -732,6 +742,10 @@ impl UserSettings {
                 .system
                 .as_ref()
                 .and_then(|s| s.openai_oauth_client_id.clone()),
+            anthropic_oauth_client_id: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.anthropic_oauth_client_id.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
@@ -1030,6 +1044,10 @@ impl UserSettings {
                 // Empty clears back to "awaiting app registration".
                 let trimmed = value.trim();
                 self.openai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
+            "LLM_ANTHROPIC_OAUTH_CLIENT_ID" => {
+                let trimmed = value.trim();
+                self.anthropic_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
             }
             "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
                 Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),

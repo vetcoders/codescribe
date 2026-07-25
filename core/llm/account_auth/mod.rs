@@ -13,12 +13,14 @@ use crate::config::keychain::{delete_key, load_key, save_key};
 use crate::llm::provider::ProviderKind;
 
 pub mod device_code;
+pub mod paste_code;
 pub mod pkce;
 pub mod server;
 
 pub use device_code::{
     DeviceAuthConfig, DeviceCode, complete_device_code_login, request_device_code,
 };
+pub use paste_code::{PasteCodeExchange, exchange_pasted_code, split_pasted_code};
 pub use pkce::{PkceCodes, challenge_for_verifier, generate_pkce};
 pub use server::{LoginServer, ServerOptions, exchange_code_for_tokens, run_login_server};
 
@@ -29,6 +31,64 @@ pub const OPENAI_CLIENT_ID_ENV: &str = "CODESCRIBE_OPENAI_OAUTH_CLIENT_ID";
 pub const OPENAI_ISSUER_ENV: &str = "CODESCRIBE_OPENAI_OAUTH_ISSUER";
 pub const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 pub const NO_CLIENT_ID_MESSAGE: &str = "awaiting app registration";
+
+pub const ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT: &str = "LLM_ANTHROPIC_ACCOUNT_TOKENS";
+pub const ANTHROPIC_CLIENT_ID_SETTING: &str = "LLM_ANTHROPIC_OAUTH_CLIENT_ID";
+pub const ANTHROPIC_CLIENT_ID_ENV: &str = "CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID";
+pub const ANTHROPIC_ISSUER_ENV: &str = "CODESCRIBE_ANTHROPIC_OAUTH_ISSUER";
+pub const ANTHROPIC_DEFAULT_ISSUER: &str = "https://console.anthropic.com";
+
+/// How a provider's token endpoint wants its request body. OpenAI speaks
+/// form-urlencoded (RFC 6749 §4.1.3 to the letter); Anthropic's console
+/// endpoint takes JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenRequestEncoding {
+    Form,
+    Json,
+}
+
+/// Everything that differs between providers in one place, so adding a
+/// provider is a table row rather than a new `match` arm in five functions.
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderOAuthConfig {
+    /// Keychain account name holding the serialized `AccountTokens`.
+    pub tokens_account: &'static str,
+    /// Settings router key for the operator-pasted client id (non-secret).
+    pub client_id_setting: &'static str,
+    /// Dev/CI env fallback for the client id.
+    pub client_id_env: &'static str,
+    /// Env override for the issuer base URL.
+    pub issuer_env: &'static str,
+    pub default_issuer: &'static str,
+    /// Path appended to the issuer for the token endpoint.
+    pub token_path: &'static str,
+    pub encoding: TokenRequestEncoding,
+}
+
+pub fn provider_oauth_config(
+    provider: ProviderKind,
+) -> Result<ProviderOAuthConfig, AccountAuthError> {
+    match provider {
+        ProviderKind::OpenAiResponses => Ok(ProviderOAuthConfig {
+            tokens_account: OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+            client_id_setting: OPENAI_CLIENT_ID_SETTING,
+            client_id_env: OPENAI_CLIENT_ID_ENV,
+            issuer_env: OPENAI_ISSUER_ENV,
+            default_issuer: DEFAULT_ISSUER,
+            token_path: "/oauth/token",
+            encoding: TokenRequestEncoding::Form,
+        }),
+        ProviderKind::AnthropicMessages => Ok(ProviderOAuthConfig {
+            tokens_account: ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT,
+            client_id_setting: ANTHROPIC_CLIENT_ID_SETTING,
+            client_id_env: ANTHROPIC_CLIENT_ID_ENV,
+            issuer_env: ANTHROPIC_ISSUER_ENV,
+            default_issuer: ANTHROPIC_DEFAULT_ISSUER,
+            token_path: "/v1/oauth/token",
+            encoding: TokenRequestEncoding::Json,
+        }),
+    }
+}
 
 const REFRESH_SKEW: Duration = Duration::from_secs(60);
 
@@ -145,23 +205,39 @@ pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
 }
 
 pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountAuthError> {
-    ensure_provider_supported(provider)?;
-    configured_client_id().ok_or(AccountAuthError::NoClientId)
+    let config = provider_oauth_config(provider)?;
+    configured_client_id_for(config).ok_or(AccountAuthError::NoClientId)
+}
+
+/// Operator-configured OAuth client id for the default (OpenAI) provider.
+/// Kept for existing callers; new code should use [`client_id_for_provider`].
+pub fn configured_client_id() -> Option<String> {
+    provider_oauth_config(ProviderKind::OpenAiResponses)
+        .ok()
+        .and_then(configured_client_id_for)
 }
 
 /// Operator-configured OAuth client id, or `None` (⇒ "awaiting app
 /// registration"). Reads the persisted settings snapshot on every call — a Keys
 /// panel save takes effect on the very next click, no restart — with the dev
 /// env var as the fallback, never the other way around (no frozen env).
-pub fn configured_client_id() -> Option<String> {
-    UserSettings::load()
-        .openai_oauth_client_id
-        .and_then(non_empty_trimmed)
-        .or_else(|| {
-            std::env::var(OPENAI_CLIENT_ID_ENV)
-                .ok()
-                .and_then(non_empty_trimmed)
-        })
+///
+/// No client id ships hardcoded. Reusing another vendor's registered client id
+/// (the trick some CLI ports lean on) would make Codescribe impersonate that
+/// application to the provider; every provider here waits for its own
+/// registration instead.
+fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
+    let settings = UserSettings::load();
+    let from_settings = match config.client_id_setting {
+        OPENAI_CLIENT_ID_SETTING => settings.openai_oauth_client_id.clone(),
+        ANTHROPIC_CLIENT_ID_SETTING => settings.anthropic_oauth_client_id.clone(),
+        _ => None,
+    };
+    from_settings.and_then(non_empty_trimmed).or_else(|| {
+        std::env::var(config.client_id_env)
+            .ok()
+            .and_then(non_empty_trimmed)
+    })
 }
 
 fn non_empty_trimmed(value: String) -> Option<String> {
@@ -188,11 +264,19 @@ fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
 }
 
 pub fn issuer_from_env() -> String {
-    std::env::var(OPENAI_ISSUER_ENV)
+    issuer_for(ProviderKind::OpenAiResponses)
+}
+
+/// Issuer base URL for `provider`: env override, else the provider default.
+pub fn issuer_for(provider: ProviderKind) -> String {
+    let Ok(config) = provider_oauth_config(provider) else {
+        return DEFAULT_ISSUER.to_string();
+    };
+    std::env::var(config.issuer_env)
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_ISSUER.to_string())
+        .unwrap_or_else(|| config.default_issuer.to_string())
 }
 
 pub fn store_account_tokens(
@@ -236,30 +320,60 @@ pub async fn authorization_header(provider: ProviderKind) -> Result<String, Acco
 /// Fresh access token for the stored provider account, auto-refreshing within
 /// the expiry skew. Raw token (no `Bearer ` prefix) — for request builders
 /// that format the Authorization header themselves.
+///
+/// Refresh is single-flight per provider: concurrent callers that all see an
+/// expiring token take turns on the provider's refresh lock, and every caller
+/// after the first re-reads storage and finds the token already fresh. Without
+/// this, N concurrent lanes fire N refreshes against a provider that ROTATES
+/// its refresh token, and every response after the first invalidates the token
+/// the others are about to store — signing the user out mid-session.
 pub async fn access_token(provider: ProviderKind) -> Result<String, AccountAuthError> {
-    let mut tokens = load_account_tokens(provider)?;
-    if tokens.expires_within(REFRESH_SKEW) {
-        tokens = refresh_tokens(provider, tokens).await?;
+    let tokens = load_account_tokens(provider)?;
+    if !tokens.expires_within(REFRESH_SKEW) {
+        return Ok(tokens.access_token);
     }
-    Ok(tokens.access_token)
+
+    let _lock = refresh_lock(provider).lock().await;
+    // Re-read under the lock: a concurrent holder may have just refreshed.
+    let tokens = load_account_tokens(provider)?;
+    if !tokens.expires_within(REFRESH_SKEW) {
+        return Ok(tokens.access_token);
+    }
+    Ok(refresh_tokens(provider, tokens).await?.access_token)
+}
+
+/// Per-provider refresh mutex. Held across the network round trip AND the
+/// storage write, so the winner's rotated token is durable before the next
+/// caller re-reads.
+fn refresh_lock(provider: ProviderKind) -> &'static tokio::sync::Mutex<()> {
+    use std::sync::OnceLock;
+    static OPENAI: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    static ANTHROPIC: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    match provider {
+        ProviderKind::OpenAiResponses => OPENAI.get_or_init(Default::default),
+        ProviderKind::AnthropicMessages => ANTHROPIC.get_or_init(Default::default),
+    }
 }
 
 pub async fn refresh_tokens(
     provider: ProviderKind,
     tokens: AccountTokens,
 ) -> Result<AccountTokens, AccountAuthError> {
-    ensure_provider_supported(provider)?;
+    let config = provider_oauth_config(provider)?;
     let refresh_token = tokens.refresh_token.ok_or_else(|| {
         AccountAuthError::OAuth("stored account has no refresh token".to_string())
     })?;
     let client_id = client_id_for_provider(provider)?;
-    let issuer = issuer_from_env();
-    let refreshed = refresh_openai_tokens(&issuer, &client_id, &refresh_token).await?;
+    let issuer = issuer_for(provider);
+    let refreshed =
+        refresh_provider_tokens(provider, config, &issuer, &client_id, &refresh_token).await?;
     store_account_tokens(provider, &refreshed)?;
     Ok(refreshed)
 }
 
-async fn refresh_openai_tokens(
+async fn refresh_provider_tokens(
+    provider: ProviderKind,
+    config: ProviderOAuthConfig,
     issuer: &str,
     client_id: &str,
     refresh_token: &str,
@@ -273,14 +387,22 @@ async fn refresh_openai_tokens(
         expires_in: Option<u64>,
     }
 
+    let endpoint = format!("{}{}", issuer.trim_end_matches('/'), config.token_path);
     let client = reqwest::Client::new();
-    let response = client
-        .post(format!("{}/oauth/token", issuer.trim_end_matches('/')))
-        .form(&[
+    let request = client.post(endpoint);
+    let request = match config.encoding {
+        TokenRequestEncoding::Form => request.form(&[
             ("grant_type", "refresh_token"),
             ("client_id", client_id),
             ("refresh_token", refresh_token),
-        ])
+        ]),
+        TokenRequestEncoding::Json => request.json(&serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "refresh_token": refresh_token,
+        })),
+    };
+    let response = request
         .send()
         .await
         .map_err(|error| AccountAuthError::Http(error.to_string()))?;
@@ -297,8 +419,10 @@ async fn refresh_openai_tokens(
         .await
         .map_err(|error| AccountAuthError::OAuth(error.to_string()))?;
     Ok(AccountTokens::new(
-        ProviderKind::OpenAiResponses,
+        provider,
         body.access_token,
+        // Providers that rotate the refresh token return a new one; those that
+        // do not omit the field. Carrying the old one forward keeps both honest.
         body.refresh_token.or(Some(refresh_token.to_string())),
         body.id_token,
         body.token_type,
@@ -307,16 +431,11 @@ async fn refresh_openai_tokens(
 }
 
 fn token_account(provider: ProviderKind) -> Result<&'static str, AccountAuthError> {
-    match provider {
-        ProviderKind::OpenAiResponses => Ok(OPENAI_ACCOUNT_TOKENS_ACCOUNT),
-        ProviderKind::AnthropicMessages => Err(AccountAuthError::UnsupportedProvider(
-            provider.as_str().to_string(),
-        )),
-    }
+    Ok(provider_oauth_config(provider)?.tokens_account)
 }
 
 fn ensure_provider_supported(provider: ProviderKind) -> Result<(), AccountAuthError> {
-    token_account(provider).map(|_| ())
+    provider_oauth_config(provider).map(|_| ())
 }
 
 fn now_unix() -> i64 {
@@ -480,6 +599,80 @@ mod tests {
         let loaded = load_account_tokens(ProviderKind::OpenAiResponses).unwrap();
         assert_eq!(loaded.access_token, "access");
         assert_eq!(loaded.refresh_token.as_deref(), Some("refresh"));
+    }
+
+    #[test]
+    #[serial]
+    fn provider_accounts_never_share_a_keychain_slot() {
+        let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        let _openai = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _anthropic = EnvGuard::unset(ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT);
+
+        let openai = AccountTokens::new(
+            ProviderKind::OpenAiResponses,
+            "openai-access".to_string(),
+            Some("openai-refresh".to_string()),
+            None,
+            None,
+            Some(3600),
+        );
+        store_account_tokens(ProviderKind::OpenAiResponses, &openai).unwrap();
+
+        // Signing into one provider must not make the other look signed in —
+        // a shared slot would hand Anthropic requests an OpenAI bearer token.
+        assert!(load_account_tokens(ProviderKind::AnthropicMessages).is_err());
+
+        let anthropic = AccountTokens::new(
+            ProviderKind::AnthropicMessages,
+            "anthropic-access".to_string(),
+            Some("anthropic-refresh".to_string()),
+            None,
+            None,
+            Some(3600),
+        );
+        store_account_tokens(ProviderKind::AnthropicMessages, &anthropic).unwrap();
+
+        assert_eq!(
+            load_account_tokens(ProviderKind::OpenAiResponses)
+                .unwrap()
+                .access_token,
+            "openai-access"
+        );
+        assert_eq!(
+            load_account_tokens(ProviderKind::AnthropicMessages)
+                .unwrap()
+                .access_token,
+            "anthropic-access"
+        );
+
+        clear_account_tokens(ProviderKind::AnthropicMessages).unwrap();
+        assert!(load_account_tokens(ProviderKind::AnthropicMessages).is_err());
+        assert!(load_account_tokens(ProviderKind::OpenAiResponses).is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn each_provider_reads_its_own_client_id_and_issuer() {
+        let (_settings_guard, _dir) = isolated_settings_dir("provider_identity");
+        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _anthropic_env = EnvGuard::set(ANTHROPIC_CLIENT_ID_ENV, "anthropic-from-env");
+        let _issuer = EnvGuard::unset(ANTHROPIC_ISSUER_ENV);
+
+        // OpenAI has neither setting nor env ⇒ still gated on registration,
+        // even though Anthropic's env id is present.
+        assert!(matches!(
+            client_id_for_provider(ProviderKind::OpenAiResponses),
+            Err(AccountAuthError::NoClientId)
+        ));
+        assert_eq!(
+            client_id_for_provider(ProviderKind::AnthropicMessages).unwrap(),
+            "anthropic-from-env"
+        );
+        assert_eq!(
+            issuer_for(ProviderKind::AnthropicMessages),
+            ANTHROPIC_DEFAULT_ISSUER
+        );
+        assert_eq!(issuer_for(ProviderKind::OpenAiResponses), DEFAULT_ISSUER);
     }
 
     #[derive(Debug)]
