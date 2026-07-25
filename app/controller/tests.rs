@@ -367,6 +367,15 @@ fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
         engine_label_from_verdict(&apple, None).as_str(),
         "local_apple"
     );
+    // Skipped final-pass still reports the live engine (not hardcode streaming_whisper).
+    assert_eq!(
+        engine_label_from_verdict(
+            &apple,
+            Some(codescribe_core::pipeline::contracts::FinalPassDisposition::Skipped),
+        )
+        .as_str(),
+        "live_apple"
+    );
 
     // Apple preference with Whisper RuntimeFallback must report Whisper.
     let whisper_fallback = codescribe_core::pipeline::contracts::TranscriptionEngineVerdict {
@@ -594,8 +603,12 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         "Always never skips"
     );
     assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
-        "Off skips even on Apple"
+        !should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+        "Off+Apple must NOT skip — Whisper safety-pass (report 2026-07-25 silent data-loss)"
+    );
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
+        "Off+non-Apple still skips"
     );
 
     let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
@@ -632,8 +645,8 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         1,
     );
     assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
-        "Smart+Apple skips full-file re-pass when live assembly is complete (Apple live is floor; file SFSpeech is not)"
+        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
+        "Smart+Apple must NOT skip Whisper fill (Apple live under-gens; adjudicator complete ≠ body complete)"
     );
 }
 

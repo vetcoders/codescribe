@@ -1318,14 +1318,19 @@ pub(crate) fn assess_streaming_completeness_fields(
 }
 
 /// Label from the actual engine verdict (not preference). Apple→Whisper fallback
-/// reports Whisper; Smart-skip of streaming reports streaming_whisper.
+/// reports Whisper. When final-pass was **Skipped**, label the **live** lane that
+/// served (not a hardcode `streaming_whisper` — that laundered Apple live into a
+/// Whisper label; report 2026-07-25 / footer-chip doctrine).
 pub(crate) fn engine_label_from_verdict(
     engine: &codescribe_core::pipeline::contracts::TranscriptionEngineVerdict,
     final_pass_disposition: Option<FinalPassDisposition>,
 ) -> String {
     use codescribe_core::pipeline::contracts::TranscriptionEngine;
     if matches!(final_pass_disposition, Some(FinalPassDisposition::Skipped)) {
-        return "streaming_whisper".to_string();
+        return match engine.engine {
+            TranscriptionEngine::Apple => "live_apple".to_string(),
+            TranscriptionEngine::Whisper => "streaming_whisper".to_string(),
+        };
     }
     match engine.engine {
         TranscriptionEngine::Apple => "local_apple".to_string(),
@@ -1413,16 +1418,23 @@ pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &s
 
 /// Skip full local STT re-pass according to routing mode + completeness.
 ///
-/// Smart treats Apple the same as Whisper: when the live assembly is adjudicator-
-/// complete, skip full-file re-pass. Apple's strength is **live** (buffer /
-/// progressive) dictation, not full-WAV file STT — forcing SFSpeech on a long
-/// file was collapsing multi-minute sessions to a few words (div0 2026-07-23).
-/// `prefer_apple` remains for diagnostics / logging only.
+/// File final is always **Whisper** (Apple is live-only). Apple live
+/// systematically under-gens (report 2026-07-25: 234c / ~417s with Off). So:
+/// - **Always**: never skip.
+/// - **Smart**: skip only when live was **not** Apple and assembly is complete.
+/// - **Off**: skip unless live was Apple — then force Whisper safety-pass
+///   (Off+Apple without fill is silent data-loss; operator 2026-07-25).
+///
+/// `prefer_apple` = live lane was Apple (not "prefer SFSpeechURL file final").
 pub(crate) fn should_skip_full_final_repass(
     mode: FinalPassRoutingMode,
     completeness: StreamingCompleteness,
-    _prefer_apple: bool,
+    prefer_apple: bool,
 ) -> bool {
+    if prefer_apple {
+        // Apple live is a thin floor; Whisper fill is mandatory for product truth.
+        return false;
+    }
     match mode {
         FinalPassRoutingMode::Always => false,
         FinalPassRoutingMode::Off => true,
@@ -3846,10 +3858,27 @@ impl RecordingController {
         }
 
         let routing_mode = final_pass_routing_mode();
+        let prefer_apple = codescribe_core::stt::active_engine_is_apple();
+        // Off + Apple live is silent data-loss (report 2026-07-25: 234c raw on
+        // 417s). Force Whisper safety-pass; log so operator sees the override.
+        let force_apple_whisper_safety =
+            prefer_apple && matches!(routing_mode, FinalPassRoutingMode::Off);
+        if force_apple_whisper_safety {
+            warn!(
+                "FINAL_PASS_MODE=off with Apple live — forcing Whisper safety-pass \
+                 (Off+Apple without fill is silent data-loss)"
+            );
+        }
+        let run_local_final_pass = use_local_stt
+            && (!matches!(routing_mode, FinalPassRoutingMode::Off) || force_apple_whisper_safety);
+        let effective_routing = if force_apple_whisper_safety {
+            FinalPassRoutingMode::Always
+        } else {
+            routing_mode
+        };
         let mut final_pass_secs = 0.0;
 
-        if use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off) {
-            let prefer_apple = codescribe_core::stt::active_engine_is_apple();
+        if run_local_final_pass {
             let session_snap = snapshot_session_telemetry(&self.session_telemetry);
             // Adjudicator completeness object — pending_tail / coverage /
             // commit_source come from session telemetry, never hardcoded.
@@ -3857,7 +3886,7 @@ impl RecordingController {
                 StreamingCompletenessEvidence::from_session(&streaming_text, &session_snap);
             let completeness = assess_streaming_completeness(&completeness_evidence);
             let skip_full_repass =
-                should_skip_full_final_repass(routing_mode, completeness, prefer_apple);
+                should_skip_full_final_repass(effective_routing, completeness, prefer_apple);
 
             if skip_full_repass {
                 local_final_pass_attempted = true;
@@ -3870,18 +3899,29 @@ impl RecordingController {
                     .map(CompletenessCommitSource::as_str)
                     .unwrap_or("none");
                 info!(
-                    "final_pass_skipped mode={} reason={} chars={} commit_source={} pending_tail={} committed_chars={}",
-                    routing_mode.as_str(),
+                    "final_pass_skipped mode={} reason={} chars={} commit_source={} pending_tail={} committed_chars={} live_engine={}",
+                    effective_routing.as_str(),
                     reason,
                     streaming_text.trim().len(),
                     commit_src,
                     completeness_evidence.pending_tail,
                     completeness_evidence.committed_chars,
+                    if prefer_apple { "apple" } else { "whisper" },
                 );
                 let text = streaming_text.trim().to_string();
                 let raw = codescribe_core::pipeline::contracts::RawTranscript {
                     text: text.clone(),
                     ..Default::default()
+                };
+                // Honest engine on skip: Apple live must not be laundered as Whisper.
+                let skip_engine = if prefer_apple {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+                    )
+                } else {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                    )
                 };
                 local_final_pass_verdict = Some(
                     codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
@@ -3889,9 +3929,7 @@ impl RecordingController {
                         raw,
                         None,
                         codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
-                        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
-                            codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
-                        ),
+                        skip_engine,
                         Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
                             mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
                             disposition: FinalPassDisposition::Skipped,
@@ -3908,7 +3946,7 @@ impl RecordingController {
 
                 info!(
                     "Running final-pass local STT adjudicator (mode={} live_engine={} file_final=whisper): {}",
-                    routing_mode.as_str(),
+                    effective_routing.as_str(),
                     if prefer_apple {
                         "apple_live"
                     } else {
@@ -3952,17 +3990,28 @@ impl RecordingController {
                 warn!("Final-pass local STT skipped: no audio file available");
             }
         } else if use_local_stt && !streaming_text.trim().is_empty() {
-            // Off: streaming is final; still emit a skipped LocalFinalPass so
-            // adjudication/provenance stay honest and postproc/repetition run.
+            // Off (non-Apple live): streaming is final; still emit a skipped
+            // LocalFinalPass so adjudication/provenance stay honest.
+            // Apple+Off is handled above via force_apple_whisper_safety.
             local_final_pass_attempted = true;
             info!(
-                "final_pass_skipped mode=off reason=routing_off chars={}",
-                streaming_text.trim().len()
+                "final_pass_skipped mode=off reason=routing_off chars={} live_engine={}",
+                streaming_text.trim().len(),
+                if prefer_apple { "apple" } else { "whisper" },
             );
             let text = streaming_text.trim().to_string();
             let raw = codescribe_core::pipeline::contracts::RawTranscript {
                 text: text.clone(),
                 ..Default::default()
+            };
+            let skip_engine = if prefer_apple {
+                codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+                    codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+                )
+            } else {
+                codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                    codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                )
             };
             local_final_pass_verdict = Some(
                 codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
@@ -3970,9 +4019,7 @@ impl RecordingController {
                     raw,
                     None,
                     codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
-                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
-                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
-                    ),
+                    skip_engine,
                     Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
                         mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
                         disposition: FinalPassDisposition::Skipped,
