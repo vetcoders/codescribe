@@ -545,3 +545,208 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         .unwrap_or_else(|| clip.display().to_string());
     assert_engine_multi_utterance_assembly(&events, human.as_deref(), &clip_label);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Device-capture dictation: audio through REAL CoreAudio, not an mpsc shortcut
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Every other test in this file feeds decoded samples straight into the
+// session channel. This one goes the microphone's road: a player renders the
+// fixture into a named loopback device (BlackHole), `StreamingRecorder`
+// captures FROM that device via cpal — device selection, CoreAudio callbacks,
+// resampling, ring buffer and backlog all engaged, at real time. The only
+// test-specific element in the entire path is the device NAME in
+// `AUDIO_INPUT_DEVICE` — the same production knob the app itself uses.
+//
+// Driven by scripts/e2e-blackhole-dictation.sh, which owns the environment
+// preflight (device present, mic permission, system mixer not muted). The
+// test owns the lifecycle: it arms capture BEFORE spawning the player, so the
+// head of the fixture cannot be lost to compile/startup time — the exact
+// regression (head-drop) this test exists to catch.
+
+/// EngineEvent collector for the device-capture path (the session-internal
+/// collector is private). Push-only; assertions read the final snapshot.
+struct DeviceCaptureSink(std::sync::Mutex<Vec<EngineEvent>>);
+
+impl codescribe_core::pipeline::contracts::EventSink for DeviceCaptureSink {
+    fn on_event(&self, event: &EngineEvent) {
+        self.0.lock().expect("collector lock").push(event.clone());
+    }
+}
+
+/// Lowercased alphanumeric tokens of length ≥ 4 — long enough to be
+/// discriminative in Polish, short enough to survive inflection variance.
+fn coverage_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|t| t.chars().count() >= 4)
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_device_capture_dictation() {
+    if std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        eprintln!(
+            "skip: set CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1 (run via scripts/e2e-blackhole-dictation.sh)"
+        );
+        return;
+    }
+    let device = std::env::var("AUDIO_INPUT_DEVICE")
+        .expect("device-capture run requires AUDIO_INPUT_DEVICE (the loopback device name)");
+
+    let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav")
+        });
+    let reference_path = clip.with_file_name(format!(
+        "{}_human_transcription.txt",
+        clip.file_stem().unwrap().to_string_lossy()
+    ));
+    let reference = std::fs::read_to_string(&reference_path).unwrap_or_else(|e| {
+        panic!(
+            "device-capture verdict needs ground truth beside the fixture: {} ({e})",
+            reference_path.display()
+        )
+    });
+
+    let (samples, sample_rate) =
+        audio::load_audio_file(&clip).unwrap_or_else(|e| panic!("load {}: {e}", clip.display()));
+    let clip_seconds = samples.len() as f32 / sample_rate as f32;
+    eprintln!(
+        "device-capture: {:.1}s fixture through '{device}' (engine: {})",
+        clip_seconds,
+        std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "default".into())
+    );
+
+    // 1) Arm capture FIRST — the recorder must already be listening when the
+    //    first sample leaves the player, or the head of the fixture is lost.
+    let sink = std::sync::Arc::new(DeviceCaptureSink(std::sync::Mutex::new(Vec::new())));
+    let mut recorder = codescribe_core::audio::streaming_recorder::StreamingRecorder::new()
+        .expect("recorder init (is the loopback device present?)");
+    recorder.set_event_sink(Some(sink.clone()));
+    recorder
+        .start_event_session(Some("pl".to_string()))
+        .await
+        .expect("start capture session");
+
+    // 2) Player renders the fixture into the loopback in real time. Its own
+    //    self-diagnosis (device binding + rendered-peak) turns a silent render
+    //    into a nonzero exit here instead of an empty-transcript mystery below.
+    let player_script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/audio-play-to-device.swift");
+    let mut player = std::process::Command::new("swift")
+        .arg(&player_script)
+        .arg(&device)
+        .arg(&clip)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn loopback player");
+
+    // 3) Real time is the contract: wait the clip out, plus swift-script
+    //    startup (~3s) and a settle tail. A hard ceiling keeps a wedged player
+    //    from hanging the suite.
+    let deadline = std::time::Duration::from_secs_f32(clip_seconds + 25.0);
+    let started = std::time::Instant::now();
+    let player_status = loop {
+        if let Some(status) = player.try_wait().expect("poll player") {
+            break status;
+        }
+        if started.elapsed() > deadline {
+            let _ = player.kill();
+            panic!("player exceeded {deadline:?} for a {clip_seconds:.1}s clip");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    if !player_status.success() {
+        let mut stderr_text = String::new();
+        if let Some(mut pipe) = player.stderr.take() {
+            use std::io::Read;
+            let _ = pipe.read_to_string(&mut stderr_text);
+        }
+        panic!("loopback player failed (setup problem, not an STT verdict): {stderr_text}");
+    }
+
+    // Let the tail of the audio drain through capture + session before stopping.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    recorder.stop().await.expect("stop capture session");
+
+    // 4) Verdicts against the human reference.
+    let events = sink.0.lock().expect("collector lock").clone();
+    let live = assemble_live_from_events(&events);
+    let transcript = {
+        let full = live.full_text();
+        if full.trim().is_empty() {
+            live.streaming_floor()
+        } else {
+            full
+        }
+    };
+    eprintln!(
+        "transcript chars={} sealed={} events={}",
+        transcript.chars().count(),
+        live.sealed_count(),
+        events.len()
+    );
+    // Event-shape census — when the transcript is empty, WHICH events arrived
+    // is the entire diagnosis (silence looks like zero previews; a dead engine
+    // looks like errors; a VAD miss looks like status-only traffic).
+    {
+        let mut census: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        for event in &events {
+            let name: &'static str = match event {
+                EngineEvent::Preview { .. } => "Preview",
+                EngineEvent::UtteranceFinal { .. } => "UtteranceFinal",
+                _ => "Other",
+            };
+            *census.entry(name).or_default() += 1;
+        }
+        eprintln!("event census: {census:?}");
+        for event in events.iter().take(20) {
+            eprintln!("  event: {event:?}");
+        }
+    }
+    eprintln!("── transcript ──\n{transcript}\n── end ──");
+
+    assert!(
+        !transcript.trim().is_empty(),
+        "capture path produced NO text from {clip_seconds:.1}s of speech — \
+         the loopback carried audio (player verified its render), so the loss \
+         is in device selection, capture, or the session"
+    );
+
+    let reference_tokens: std::collections::BTreeSet<String> =
+        coverage_tokens(&reference).into_iter().collect();
+    let transcript_tokens: std::collections::BTreeSet<String> =
+        coverage_tokens(&transcript).into_iter().collect();
+    let hits = reference_tokens.intersection(&transcript_tokens).count();
+    let coverage = hits as f32 / reference_tokens.len().max(1) as f32;
+    eprintln!(
+        "coverage {hits}/{} = {coverage:.2} (threshold 0.35)",
+        reference_tokens.len()
+    );
+    // 0.35 is deliberately conservative: it tolerates engine variance and
+    // loopback resampling, while still failing hard on the July field failure
+    // shape (417s of speech → 234 chars ≈ coverage near zero).
+    assert!(
+        coverage >= 0.35,
+        "transcript covers only {coverage:.2} of the reference vocabulary — \
+         the capture path is losing or garbling audio"
+    );
+
+    // Head-drop regression: the OPENING of the fixture must be represented.
+    let head_tokens: Vec<String> = coverage_tokens(&reference).into_iter().take(8).collect();
+    let head_hit = head_tokens.iter().any(|t| transcript_tokens.contains(t));
+    assert!(
+        head_hit,
+        "none of the first reference tokens {head_tokens:?} appear — \
+         the head of the stream was dropped (the exact July regression)"
+    );
+}

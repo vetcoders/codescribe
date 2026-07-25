@@ -150,11 +150,58 @@ guard status == noErr else {
 
 engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
 
+// Self-diagnosis: RMS tap on the mixer. A run that "completes" while the
+// engine renders silence would pass every exit-code check and still prove
+// nothing — the tap makes that state visible and fatal.
+final class PeakBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Float = 0
+    func update(_ candidate: Float) {
+        lock.lock()
+        if candidate > value { value = candidate }
+        lock.unlock()
+    }
+    var peak: Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+let peakBox = PeakBox()
+engine.mainMixerNode.installTap(
+    onBus: 0, bufferSize: 4096, format: engine.mainMixerNode.outputFormat(forBus: 0)
+) { buffer, _ in
+    guard let data = buffer.floatChannelData else { return }
+    let frames = Int(buffer.frameLength)
+    var peak: Float = 0
+    for channel in 0..<Int(buffer.format.channelCount) {
+        for frame in 0..<frames { peak = max(peak, abs(data[channel][frame])) }
+    }
+    peakBox.update(peak)
+}
+
 let finished = DispatchSemaphore(value: 0)
 do {
     try engine.start()
 } catch {
     fail("engine start failed: \(error.localizedDescription)", code: 4)
+}
+
+// Verify the binding actually held through start() — AVAudioEngine can revert
+// to the default device when the property write lands at the wrong moment.
+var boundDevice: AudioDeviceID = 0
+var boundSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+AudioUnitGetProperty(
+    engine.outputNode.audioUnit!,
+    kAudioOutputUnitProperty_CurrentDevice,
+    kAudioUnitScope_Global,
+    0,
+    &boundDevice,
+    &boundSize
+)
+if boundDevice != device.id {
+    let actual = deviceName(boundDevice) ?? "id \(boundDevice)"
+    fail("engine started on '\(actual)' instead of '\(device.name)' — binding did not hold", code: 4)
 }
 
 let seconds = Double(file.length) / file.processingFormat.sampleRate
@@ -174,3 +221,13 @@ if finished.wait(timeout: .now() + seconds + 5) == .timedOut {
 Thread.sleep(forTimeInterval: 0.4)
 player.stop()
 engine.stop()
+
+// A silent render is a failure, not a quiet success.
+let peak = peakBox.peak
+if peak < 0.0005 {
+    fail(
+        "engine rendered silence (peak \(peak)) — the file decoded but no signal reached '\(device.name)'",
+        code: 4
+    )
+}
+FileHandle.standardError.write(Data("rendered peak \(peak) into '\(device.name)'\n".utf8))

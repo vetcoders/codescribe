@@ -54,6 +54,23 @@ if ! printf '%s' "$AV_DEVICES" | grep -q "$DEVICE"; then
   fail "'$DEVICE' is not visible as an INPUT device to ffmpeg/avfoundation" 2
 fi
 
+# ── System mixer preflight ──────────────────────────────────────────────────
+# BlackHole honors the system mute and volume like any HAL device. A muted
+# output turns the whole loopback into digital silence and a 50% slider costs
+# ~30 dB round-trip — both were measured, not guessed (2026-07-25: an hour of
+# binding-level debugging that was actually three sliders). Fail here, in one
+# second, with the exact fix.
+VOLUME_STATE="$(osascript -e 'get volume settings' 2>/dev/null || true)"
+case "$VOLUME_STATE" in
+  *"output muted:true"*)
+    fail "system output is MUTED — the loopback will carry silence. Fix: osascript -e 'set volume without output muted'" 2 ;;
+esac
+OUT_VOL="$(printf '%s' "$VOLUME_STATE" | sed -n 's/.*output volume:\([0-9]*\).*/\1/p')"
+IN_VOL="$(printf '%s' "$VOLUME_STATE" | sed -n 's/.*input volume:\([0-9]*\).*/\1/p')"
+if [ "${OUT_VOL:-0}" -lt 90 ] || [ "${IN_VOL:-0}" -lt 90 ]; then
+  fail "system volumes attenuate the loopback (output=${OUT_VOL:-?}, input=${IN_VOL:-?}; each ~50% costs ~15 dB). Fix: osascript -e 'set volume output volume 100' -e 'set volume input volume 100'" 2
+fi
+
 REFERENCE="${FIXTURE%.wav}_human_transcription.txt"
 [ -f "$REFERENCE" ] || info "no human transcription beside the fixture — running as smoke only"
 
@@ -104,19 +121,32 @@ info "loopback carries signal (max_volume=$MAXVOL)"
 # ── 2. Real dictation run through the capture path ──────────────────────────
 # AUDIO_INPUT_DEVICE is the same knob the app uses at runtime (recorder.rs:360),
 # so this exercises production device selection, not a test-only shortcut.
-info "recording ${DURATION}s through the app's capture path"
+#
+# The TEST owns the player lifecycle (it arms capture first, then spawns the
+# player), so nothing here may play audio — a second player would double-feed
+# the loopback. This layer only prepares the engine and runs cargo.
+info "recording ~${DURATION}s through the app's capture path"
 export AUDIO_INPUT_DEVICE="$DEVICE"
 export CODESCRIBE_E2E_STT=1
 export CODESCRIBE_E2E_AUDIO="$FIXTURE"
 export CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1
 
-./scripts/audio-play-to-device.swift "$DEVICE" "$FIXTURE" >"$WORK/play.log" 2>&1 &
-PLAYER=$!
+# Engine: Apple live is the product case (same setup as make test-engine-apple).
+# ENGINE=candle skips the bridge and lets the default engine run.
+if [ "${ENGINE:-apple}" = "apple" ]; then
+  BRIDGE="target/release/codescribe-stt-bridge"
+  make "$BRIDGE" >/dev/null 2>&1 || fail "cannot build Apple STT bridge" 2
+  export CODESCRIBE_STT_ENGINE=apple
+  export CODESCRIBE_APPLE_STT_BRIDGE="$PWD/$BRIDGE"
+fi
+
+# Pre-build so compile time cannot eat into anything timing-sensitive.
+cargo test --test e2e_overlay_delivery_parity --no-run >"$WORK/build.log" 2>&1 ||
+  { tail -20 "$WORK/build.log" >&2; fail "test build failed" 2; }
 
 cargo test --test e2e_overlay_delivery_parity \
   "$CAPTURE_TEST" -- --nocapture >"$WORK/test.log" 2>&1
 STATUS=$?
-kill $PLAYER 2>/dev/null
 
 if [ $STATUS -ne 0 ]; then
   tail -40 "$WORK/test.log" >&2

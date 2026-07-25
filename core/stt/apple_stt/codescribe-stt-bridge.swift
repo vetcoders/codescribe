@@ -100,6 +100,26 @@ Task {
 dispatchMain()
 
 private func readRequest() throws -> BridgeRequest {
+    // Argv form, for the ONE case where stdin cannot be used: raising the
+    // Speech Recognition dialog. TCC attributes a privacy prompt to the
+    // responsible process, and for a binary run from a shell that is the
+    // terminal — which has no usage description, so the request aborts the
+    // process instead of prompting. Launching the bundle through
+    // LaunchServices (`open -a … --args request_auth`) makes the bundle its
+    // own responsible process, and LaunchServices gives it no stdin.
+    if CommandLine.arguments.count > 1 {
+        let command = CommandLine.arguments[1]
+        let locale =
+            CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "pl-PL"
+        return BridgeRequest(
+            protocolVersion: 1,
+            command: command,
+            locale: locale,
+            audioPath: nil,
+            allowDownload: false
+        )
+    }
+
     let input = FileHandle.standardInput.readDataToEndOfFile()
     guard !input.isEmpty else {
         throw BridgeError.invalidInput("empty stdin")

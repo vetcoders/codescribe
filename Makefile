@@ -337,6 +337,8 @@ test-formatting:
 ENGINE_CLIP ?= tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav
 ENGINE_ALL_CLIPS ?= 0
 ENGINE_BRIDGE ?= target/release/codescribe-stt-bridge
+# Minimal .app wrapper: TCC grants privacy prompts to bundles, not loose binaries.
+ENGINE_BRIDGE_APP ?= target/release/CodescribeSTTBridge.app
 # Live verbose: session/STT tracing during the long Apple/Candle run.
 # Override quieter: ENGINE_RUST_LOG=warn make test-engine-apple
 ENGINE_RUST_LOG ?= info,codescribe_core=info,codescribe=info
@@ -364,10 +366,44 @@ test-engine:
 	@echo "Candle live multi-utterance:        make test-engine-candle"
 
 # Ensure Apple STT bridge binary exists (virtual-mic / AudioBuffer path).
-$(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift
+# The Info.plist section is REQUIRED, not cosmetic: TCC crashes a process that
+# asks for Speech Recognition without a usage description
+# (__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__), so without it the standalone
+# bridge can never be authorized — and every engine test reports
+# speech_auth_not_determined forever. Ad-hoc signing keeps the TCC identity
+# stable across rebuilds, so the grant is not asked for again each time.
+$(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_stt/bridge-Info.plist
 	@echo "Building codescribe-stt-bridge → $(ENGINE_BRIDGE)"
 	@mkdir -p $(dir $(ENGINE_BRIDGE))
-	@swiftc -O -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift
+	@swiftc -O -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift \
+		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+		-Xlinker core/stt/apple_stt/bridge-Info.plist
+	@codesign --force --sign - --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE) 2>/dev/null || \
+		echo "  (codesign skipped — TCC may re-prompt after each rebuild)"
+	@# TCC attributes a privacy prompt to a BUNDLE, not to a loose executable: an
+	@# embedded __info_plist alone still aborts the process. Mirroring the binary
+	@# into a minimal .app gives it a bundle identity, so `make engine-auth` can
+	@# raise the dialog. Inside Codescribe.app the bridge inherits the app grant
+	@# and this wrapper is unused.
+	@mkdir -p $(ENGINE_BRIDGE_APP)/Contents/MacOS
+	@cp core/stt/apple_stt/bridge-Info.plist $(ENGINE_BRIDGE_APP)/Contents/Info.plist
+	@cp $(ENGINE_BRIDGE) $(ENGINE_BRIDGE_APP)/Contents/MacOS/codescribe-stt-bridge
+	@codesign --force --sign - --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE_APP) 2>/dev/null || true
+
+# One-time: raise the macOS Speech Recognition dialog for the standalone bridge.
+# Needed before `make test-engine-apple` or scripts/e2e-blackhole-dictation.sh
+# when the bridge runs outside Codescribe.app (inside the app it inherits the
+# app's grant).
+.PHONY: engine-auth
+engine-auth: $(ENGINE_BRIDGE)
+	@echo "Requesting Speech Recognition authorization (approve the system dialog)…"
+	@# Through LaunchServices, so the BUNDLE is the responsible process and TCC
+	@# can actually prompt. Running the binary from the shell makes the terminal
+	@# responsible, and the request aborts instead of prompting.
+	@open -W -a $(PWD)/$(ENGINE_BRIDGE_APP) --args request_auth pl-PL || true
+	@echo "Status:"
+	@printf '{"protocolVersion":1,"command":"probe","locale":"pl-PL","audioPath":null,"allowDownload":false}\n' \
+		| $(ENGINE_BRIDGE_APP)/Contents/MacOS/codescribe-stt-bridge
 
 # Real mic-sim path: Apple live multi-seal freezed+append + Whisper file final.
 # Needs Speech Recognition authorized for the bridge process (once).
