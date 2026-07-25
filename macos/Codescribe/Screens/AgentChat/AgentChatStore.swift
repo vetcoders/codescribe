@@ -501,6 +501,38 @@ final class AgentChatStore: ObservableObject {
     /// Injected provider for persisted threads. `nil` → falls back to mock seed.
     var threadsProvider: ChatThreadsProviding?
 
+    /// Backs the composer slash-command palette. `nil` (previews, unit tests
+    /// without a runtime) ⇒ every command lists nothing rather than lying about
+    /// what is configured.
+    var paletteSource: ComposerPaletteSourcing?
+
+    /// Entries for one palette command, resolved on demand so a freshly saved
+    /// model or a just-granted tool shows up without reopening the window.
+    func paletteEntries(for command: ComposerPaletteCommand) -> [ComposerPaletteEntry] {
+        paletteSource?.entries(for: command) ?? []
+    }
+
+    /// Apply a palette pick. Failures surface as a system line in the thread —
+    /// silently ignoring a click would leave the operator believing the model
+    /// changed when it did not.
+    func applyPaletteEntry(_ entry: ComposerPaletteEntry, for command: ComposerPaletteCommand) {
+        guard let paletteSource else { return }
+        do {
+            try paletteSource.apply(entry, for: command)
+        } catch {
+            guard let threadID = currentThread?.id else { return }
+            append(
+                ChatMessage(
+                    role: .tool,
+                    timestamp: "now",
+                    text: "Nie udało się zastosować „\(entry.title)”: "
+                        + error.localizedDescription
+                ),
+                to: threadID
+            )
+        }
+    }
+
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 

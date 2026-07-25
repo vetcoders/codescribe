@@ -47,6 +47,11 @@ struct Composer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
+            // Palette sits ABOVE the field: the list grows upward from the
+            // caret like every other completion popup on the platform, and the
+            // field never jumps down as rows appear.
+            paletteOverlay
+
             if !store.pendingAttachments.isEmpty {
                 attachmentChips
             }
@@ -166,6 +171,99 @@ struct Composer: View {
             canSend: store.canSend,
             activePhase: store.selectedComposerTurnPhase
         )
+    }
+
+    /// Slash-command palette. Rendered only while the draft parses as a command,
+    /// so an ordinary message never sees it.
+    @ViewBuilder
+    private var paletteOverlay: some View {
+        switch ComposerPaletteQuery.parse(store.draft) {
+        case .inactive:
+            EmptyView()
+        case .commands(let prefix):
+            let commands = ComposerPaletteCommand.matching(prefix: prefix)
+            if !commands.isEmpty {
+                paletteList {
+                    ForEach(commands, id: \.self) { command in
+                        paletteRow(
+                            title: "/\(command.keyword)",
+                            subtitle: command.summary,
+                            isCurrent: false
+                        ) {
+                            store.draft = ComposerPalette.draft(afterPicking: command)
+                        }
+                    }
+                }
+            }
+        case .entries(let command, let filter):
+            let entries = ComposerPalette.filter(store.paletteEntries(for: command), by: filter)
+            paletteList {
+                if entries.isEmpty {
+                    Text("Brak pozycji")
+                        .font(CSFont.ui(11.5, .regular))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                } else {
+                    ForEach(entries) { entry in
+                        paletteRow(
+                            title: entry.title,
+                            subtitle: entry.subtitle,
+                            isCurrent: entry.isCurrent
+                        ) {
+                            store.applyPaletteEntry(entry, for: command)
+                            store.draft = ComposerPalette.draftAfterApplyingEntry
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func paletteList<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) { content() }
+        }
+        .frame(maxHeight: 190)
+        .background(CSColor.surfaceRaised(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.chromeAccent.opacity(0.28), lineWidth: 1)
+        )
+    }
+
+    private func paletteRow(
+        title: String,
+        subtitle: String?,
+        isCurrent: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(CSFont.mono(11.5, .semibold))
+                        .foregroundStyle(CSColor.textHigh)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(CSFont.ui(11, .regular))
+                            .foregroundStyle(CSColor.textFaintAlt)
+                    }
+                }
+                Spacer(minLength: 8)
+                if isCurrent {
+                    Text("aktywny")
+                        .font(CSFont.mono(10, .medium))
+                        .foregroundStyle(CSColor.chromeAccent)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func performPrimaryAction() {

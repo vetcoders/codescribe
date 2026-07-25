@@ -82,6 +82,14 @@ pub struct CsMcpTestResult {
 
 /// Read/write handle over the MCP config store. Stateless: every call re-reads
 /// on-disk truth so Swift always sees current state.
+/// One persisted "always allow" grant: the `server:tool` key the approval gate
+/// checks, plus when the operator granted it (RFC 3339).
+#[derive(uniffi::Record)]
+pub struct CsToolGrant {
+    pub key: String,
+    pub granted_at: String,
+}
+
 #[derive(uniffi::Object, Default)]
 pub struct CodescribeMcpAdmin {}
 
@@ -112,6 +120,23 @@ impl CodescribeMcpAdmin {
     /// Remove the named server. Errors if it does not exist.
     pub fn remove_server(&self, name: String) -> Result<(), CsError> {
         remove_server(&name).map_err(config_err)
+    }
+
+    /// List persisted "always allow" tool grants, newest write last. Each key is
+    /// `"<server>:<upstream_tool>"` — the same identity the approval gate checks.
+    pub fn list_tool_grants(&self) -> Result<Vec<CsToolGrant>, CsError> {
+        let grants = codescribe_core::agent::tool_grants::list().map_err(config_err)?;
+        Ok(grants
+            .into_iter()
+            .map(|(key, granted_at)| CsToolGrant { key, granted_at })
+            .collect())
+    }
+
+    /// Revoke one grant so the tool asks again on its next call. Revoking a key
+    /// that is not granted succeeds — the caller's intent (this tool must ask)
+    /// already holds.
+    pub fn revoke_tool_grant(&self, key: String) -> Result<(), CsError> {
+        codescribe_core::agent::tool_grants::revoke(&key).map_err(config_err)
     }
 
     /// Spawn the named server, run the `initialize` + `tools/list` handshake, and

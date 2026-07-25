@@ -17,6 +17,10 @@ final class AppModel: ObservableObject {
 
     init() {
         let chat = AgentChatStore(engine: RealChatEngine(), threadsProvider: RealThreadsEngine())
+        chat.paletteSource = RealComposerPaletteSource(
+            settings: RealSettingsEngine(),
+            mcpAdmin: RealMCPAdminEngine()
+        )
         self.chat = chat
         self.overlay = OverlayController(store: chat, engine: ControllerDictationEngine())
         self.tray = TrayViewModel(engine: RealTrayEngine())
