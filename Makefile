@@ -397,13 +397,15 @@ $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_
 .PHONY: engine-auth
 engine-auth: $(ENGINE_BRIDGE)
 	@echo "Requesting Speech Recognition authorization (approve the system dialog)…"
-	@# Through LaunchServices, so the BUNDLE is the responsible process and TCC
-	@# can actually prompt. Running the binary from the shell makes the terminal
-	@# responsible, and the request aborts instead of prompting.
-	@open -W -a $(PWD)/$(ENGINE_BRIDGE_APP) --args request_auth pl-PL || true
+	@# CODESCRIBE_BRIDGE_DISCLAIM=1 makes the bridge re-exec itself with the
+	@# posix_spawn responsibility-disclaim attribute, so IT is the responsible
+	@# process TCC evaluates — not the terminal. (`open -a` does NOT achieve
+	@# this: launched from a terminal-descended process, the terminal stays the
+	@# responsible process and the request aborts. Measured 2026-07-25.)
+	@CODESCRIBE_BRIDGE_DISCLAIM=1 $(ENGINE_BRIDGE_APP)/Contents/MacOS/codescribe-stt-bridge request_auth pl-PL || true
 	@echo "Status:"
 	@printf '{"protocolVersion":1,"command":"probe","locale":"pl-PL","audioPath":null,"allowDownload":false}\n' \
-		| $(ENGINE_BRIDGE_APP)/Contents/MacOS/codescribe-stt-bridge
+		| CODESCRIBE_BRIDGE_DISCLAIM=1 $(ENGINE_BRIDGE_APP)/Contents/MacOS/codescribe-stt-bridge
 
 # Real mic-sim path: Apple live multi-seal freezed+append + Whisper file final.
 # Needs Speech Recognition authorized for the bridge process (once).
@@ -419,6 +421,7 @@ test-engine-apple: $(ENGINE_BRIDGE)
 	$(ENV_LOAD); \
 	export CODESCRIBE_STT_ENGINE=apple; \
 	export CODESCRIBE_APPLE_STT_BRIDGE="$(CURDIR)/$(ENGINE_BRIDGE)"; \
+	export CODESCRIBE_BRIDGE_DISCLAIM=1; \
 	export CODESCRIBE_E2E_STT=1; \
 	export RUST_LOG="$(ENGINE_RUST_LOG)"; \
 	export RUST_LOG_STYLE=always; \

@@ -72,6 +72,8 @@ enum AppleSttBackend: String {
     case sfSpeechRecognizer = "sf_speech_recognizer"
 }
 
+respawnSelfResponsibleIfRequested()
+
 Task {
     do {
         let request = try readRequest()
@@ -98,6 +100,75 @@ Task {
     exit(0)
 }
 dispatchMain()
+
+// MARK: - Responsibility disclaim (test/CLI path)
+
+/// TCC evaluates a privacy request against the *responsible process*, not the
+/// process that asks. For a bridge spawned from a shell or a test runner the
+/// responsible process is the hosting terminal, which has no
+/// NSSpeechRecognitionUsageDescription — so the grant recorded for the
+/// bridge's own identity is invisible (auth reads back `not_determined`) and
+/// raising the dialog aborts the process
+/// (`__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__`). Measured 2026-07-25: even
+/// `open -a` called from a terminal-descended process keeps the terminal
+/// responsible (crash reports carry the terminal's `responsiblePid`), while a
+/// launchd-spawned bridge reads `authorized` for the very same TCC record.
+///
+/// Fix, same as Chromium/Firefox helper processes: re-exec ourselves once via
+/// `posix_spawn` with the responsibility-disclaim attribute, which makes the
+/// child its own responsible process. stdio is inherited so the JSON protocol
+/// is untouched; the parent just waits and mirrors the exit status.
+///
+/// Gated by `CODESCRIBE_BRIDGE_DISCLAIM=1` (set by `make engine-auth` /
+/// `test-engine-apple` / the BlackHole harness). The production path — bridge
+/// spawned by Codescribe.app — must NOT disclaim: there the bridge inherits
+/// the app's Speech Recognition grant, which is the one users actually see.
+private func respawnSelfResponsibleIfRequested() {
+    let env = ProcessInfo.processInfo.environment
+    guard env["CODESCRIBE_BRIDGE_DISCLAIM"] == "1",
+        env["CODESCRIBE_BRIDGE_DISCLAIMED"] == nil
+    else { return }
+
+    // Private-but-stable libsystem symbol (used by major browsers):
+    //   int responsibility_spawnattrs_setdisclaim(posix_spawnattr_t *attrs, int disclaim)
+    typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>?, Int32) -> Int32
+    guard let sym = dlsym(dlopen(nil, RTLD_NOW), "responsibility_spawnattrs_setdisclaim") else {
+        fputs("bridge_warning: setdisclaim symbol unavailable; staying terminal-responsible\n", stderr)
+        return
+    }
+    let setDisclaim = unsafeBitCast(sym, to: SetDisclaim.self)
+
+    var attr: posix_spawnattr_t?
+    guard posix_spawnattr_init(&attr) == 0 else { return }
+    defer { posix_spawnattr_destroy(&attr) }
+    guard setDisclaim(&attr, 1) == 0 else { return }
+
+    var exeBuf = [CChar](repeating: 0, count: 4096)
+    var exeLen = UInt32(exeBuf.count)
+    guard _NSGetExecutablePath(&exeBuf, &exeLen) == 0 else { return }
+    let exePath = String(cString: exeBuf)
+
+    var argv: [UnsafeMutablePointer<CChar>?] = CommandLine.arguments.map { strdup($0) }
+    argv.append(nil)
+    var envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") }
+    envp.append(strdup("CODESCRIBE_BRIDGE_DISCLAIMED=1"))
+    envp.append(nil)
+    defer {
+        argv.forEach { free($0) }
+        envp.forEach { free($0) }
+    }
+
+    var pid: pid_t = 0
+    let rc = posix_spawn(&pid, exePath, nil, &attr, argv, envp)
+    guard rc == 0 else {
+        fputs("bridge_warning: disclaim respawn failed (posix_spawn rc=\(rc)); staying terminal-responsible\n", stderr)
+        return
+    }
+    var status: Int32 = 0
+    while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+    let signaled = status & 0x7f
+    exit(signaled != 0 ? 128 + signaled : (status >> 8) & 0xff)
+}
 
 private func readRequest() throws -> BridgeRequest {
     // Argv form, for the ONE case where stdin cannot be used: raising the
