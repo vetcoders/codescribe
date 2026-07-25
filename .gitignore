@@ -83,3 +83,6 @@ AGENTS.md
 /.vibecrafted
 /*test*.rs
 *.zip
+
+# Astro build cache (generated)
+site/.astro/

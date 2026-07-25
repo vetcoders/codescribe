@@ -3189,10 +3189,6 @@ public func FfiConverterTypeCodescribeHotkeys_lower(_ value: CodescribeHotkeys) 
 
 
 
-/**
- * Read/write handle over the MCP config store. Stateless: every call re-reads
- * on-disk truth so Swift always sees current state.
- */
 public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
 
     /**
@@ -3206,9 +3202,22 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func listServers() throws  -> [CsMcpServer]
 
     /**
+     * List persisted "always allow" tool grants, newest write last. Each key is
+     * `"<server>:<upstream_tool>"` — the same identity the approval gate checks.
+     */
+    func listToolGrants() throws  -> [CsToolGrant]
+
+    /**
      * Remove the named server. Errors if it does not exist.
      */
     func removeServer(name: String) throws
+
+    /**
+     * Revoke one grant so the tool asks again on its next call. Revoking a key
+     * that is not granted succeeds — the caller's intent (this tool must ask)
+     * already holds.
+     */
+    func revokeToolGrant(key: String) throws
 
     /**
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
@@ -3224,10 +3233,6 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func updateServer(name: String, server: CsMcpServerInput) throws
 
 }
-/**
- * Read/write handle over the MCP config store. Stateless: every call re-reads
- * on-disk truth so Swift always sees current state.
- */
 open class CodescribeMcpAdmin: CodescribeMcpAdminProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
@@ -3306,12 +3311,37 @@ open func listServers()throws  -> [CsMcpServer]  {
 }
 
     /**
+     * List persisted "always allow" tool grants, newest write last. Each key is
+     * `"<server>:<upstream_tool>"` — the same identity the approval gate checks.
+     */
+open func listToolGrants()throws  -> [CsToolGrant]  {
+    return try  FfiConverterSequenceTypeCsToolGrant.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_list_tool_grants(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Remove the named server. Errors if it does not exist.
      */
 open func removeServer(name: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_remove_server(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(name),$0
+    )
+}
+}
+
+    /**
+     * Revoke one grant so the tool asks again on its next call. Revoking a key
+     * that is not granted succeeds — the caller's intent (this tool must ask)
+     * already holds.
+     */
+open func revokeToolGrant(key: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_revoke_tool_grant(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),$0
     )
 }
 }
@@ -9512,6 +9542,64 @@ public func FfiConverterTypeCsToolApprovalRequest_lower(_ value: CsToolApprovalR
 
 
 /**
+ * Read/write handle over the MCP config store. Stateless: every call re-reads
+ * on-disk truth so Swift always sees current state.
+ * One persisted "always allow" grant: the `server:tool` key the approval gate
+ * checks, plus when the operator granted it (RFC 3339).
+ */
+public struct CsToolGrant: Equatable, Hashable {
+    public var key: String
+    public var grantedAt: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(key: String, grantedAt: String) {
+        self.key = key
+        self.grantedAt = grantedAt
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsToolGrant: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsToolGrant: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsToolGrant {
+        return
+            try CsToolGrant(
+                key: FfiConverterString.read(from: &buf),
+                grantedAt: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsToolGrant, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.key, into: &buf)
+        FfiConverterString.write(value.grantedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsToolGrant_lift(_ buf: RustBuffer) throws -> CsToolGrant {
+    return try FfiConverterTypeCsToolGrant.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsToolGrant_lower(_ value: CsToolGrant) -> RustBuffer {
+    return FfiConverterTypeCsToolGrant.lower(value)
+}
+
+
+/**
  * Result of a one-shot file transcription.
  */
 public struct CsTranscription: Equatable, Hashable {
@@ -11642,6 +11730,31 @@ fileprivate struct FfiConverterSequenceTypeCsThreadSummary: FfiConverterRustBuff
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsToolGrant: FfiConverterRustBuffer {
+    typealias SwiftType = [CsToolGrant]
+
+    public static func write(_ value: [CsToolGrant], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsToolGrant.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsToolGrant] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsToolGrant]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsToolGrant.read(from: &buf))
+        }
+        return seq
+    }
+}
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
@@ -12149,7 +12262,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_list_servers() != 32749) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_list_tool_grants() != 60648) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_remove_server() != 40619) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_revoke_tool_grant() != 5854) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_test_server() != 19902) {
