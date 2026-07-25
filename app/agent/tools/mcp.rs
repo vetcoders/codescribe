@@ -1183,7 +1183,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_desktop_commander_tool_is_deny_by_default() {
+    fn unknown_desktop_commander_tool_carries_unknown_risk_and_gates_at_decide() {
+        // Unclassified upstream tools keep Unknown risk; the registry's decide()
+        // turns that into RequireApproval (never a silent allow, never a hard
+        // deny — Destructive is the only hard deny).
         let (policy, _) = execution_policy("desktop-commander", "future_unclassified_tool");
         assert_eq!(policy.risk, ToolRisk::Unknown);
         assert!(!policy.requires_approval);

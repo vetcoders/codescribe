@@ -78,12 +78,15 @@ final class RealChatEngine: AgentChatEngine {
         onToolApprovalRequested = handler
     }
 
-    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool {
+    func resolveToolApproval(
+        _ request: PendingToolApproval, approved: Bool, remember: Bool
+    ) -> Bool {
         agent.resolveToolApproval(
             sessionId: request.sessionID,
             threadId: request.threadID,
             callId: request.callID,
-            approved: approved
+            approved: approved,
+            remember: remember
         )
     }
 }

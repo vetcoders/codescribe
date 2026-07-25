@@ -200,9 +200,10 @@ impl CodescribeAgent {
         thread_id: String,
         call_id: String,
         approved: bool,
+        remember: bool,
     ) -> bool {
         self.approvals
-            .resolve(&session_id, &thread_id, &call_id, approved)
+            .resolve(&session_id, &thread_id, &call_id, approved, remember)
     }
 }
 
@@ -223,6 +224,7 @@ impl CodescribeAgent {
         let provider = codescribe::agent::create_default_provider()?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
+        registry.set_granted(codescribe_core::agent::tool_grants::load_granted());
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
         let approvals = Arc::clone(&self.approvals);
         let approval_handler: ToolApprovalHandler =
@@ -394,9 +396,16 @@ struct ApprovalKey {
     call_id: String,
 }
 
+struct PendingApproval {
+    tx: tokio::sync::oneshot::Sender<bool>,
+    /// `(server, upstream_tool)` for MCP tools — the "remember" write target.
+    /// Native tools never persist grants.
+    grant_target: Option<(String, String)>,
+}
+
 #[derive(Default)]
 struct ApprovalBroker {
-    pending: Mutex<HashMap<ApprovalKey, tokio::sync::oneshot::Sender<bool>>>,
+    pending: Mutex<HashMap<ApprovalKey, PendingApproval>>,
 }
 
 impl ApprovalBroker {
@@ -404,6 +413,13 @@ impl ApprovalBroker {
         self: &Arc<Self>,
         request: ToolApprovalRequest,
     ) -> codescribe_core::agent::ToolApprovalFuture {
+        let grant_target = match &request.origin {
+            ToolOrigin::Mcp {
+                server,
+                upstream_tool,
+            } => Some((server.clone(), upstream_tool.clone())),
+            ToolOrigin::Native => None,
+        };
         let key = ApprovalKey {
             session_id: request.session_id,
             thread_id: request.thread_id,
@@ -413,7 +429,7 @@ impl ApprovalBroker {
         self.pending
             .lock()
             .expect("approval broker lock poisoned")
-            .insert(key.clone(), tx);
+            .insert(key.clone(), PendingApproval { tx, grant_target });
         let broker = Arc::clone(self);
         Box::pin(async move {
             let _guard = PendingApprovalGuard {
@@ -424,17 +440,38 @@ impl ApprovalBroker {
         })
     }
 
-    fn resolve(&self, session_id: &str, thread_id: &str, call_id: &str, approved: bool) -> bool {
+    fn resolve(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        call_id: &str,
+        approved: bool,
+        remember: bool,
+    ) -> bool {
         let key = ApprovalKey {
             session_id: session_id.to_string(),
             thread_id: thread_id.to_string(),
             call_id: call_id.to_string(),
         };
-        self.pending
+        let Some(entry) = self
+            .pending
             .lock()
             .expect("approval broker lock poisoned")
             .remove(&key)
-            .is_some_and(|tx| tx.send(approved).is_ok())
+        else {
+            return false;
+        };
+        // Persist BEFORE resuming the call so a granted tool never races its
+        // own next invocation against the write. Grant failure downgrades to
+        // allow-once (the approval itself was explicit), never to a deny.
+        if approved
+            && remember
+            && let Some((server, upstream_tool)) = &entry.grant_target
+            && let Err(error) = codescribe_core::agent::tool_grants::grant(server, upstream_tool)
+        {
+            tracing::warn!(%error, server, upstream_tool, "tool grant persist failed; allowing once");
+        }
+        entry.tx.send(approved).is_ok()
     }
 
     fn cancel_thread(&self, thread_id: &str) {
@@ -1162,9 +1199,9 @@ mod tests {
             paths: vec!["/workspace/file".to_string()],
         };
         let pending = broker.begin(request);
-        assert!(!broker.resolve("session-exact", "wrong-thread", "call-exact", true));
-        assert!(!broker.resolve("wrong-session", "thread-exact", "call-exact", true));
-        assert!(broker.resolve("session-exact", "thread-exact", "call-exact", true));
+        assert!(!broker.resolve("session-exact", "wrong-thread", "call-exact", true, false));
+        assert!(!broker.resolve("wrong-session", "thread-exact", "call-exact", true, false));
+        assert!(broker.resolve("session-exact", "thread-exact", "call-exact", true, false));
         assert!(pending.await);
     }
 

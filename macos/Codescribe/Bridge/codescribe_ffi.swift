@@ -634,7 +634,7 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
      */
     func isAvailable()  -> Bool
 
-    func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool)  -> Bool
+    func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool)  -> Bool
 
     /**
      * Stream one agent reply for `text` on the conversation identified by
@@ -805,14 +805,15 @@ open func isAvailable() -> Bool  {
 })
 }
 
-open func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool) -> Bool  {
+open func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool) -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeagent_resolve_tool_approval(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(sessionId),
         FfiConverterString.lower(threadId),
         FfiConverterString.lower(callId),
-        FfiConverterBool.lower(approved),$0
+        FfiConverterBool.lower(approved),
+        FfiConverterBool.lower(remember),$0
     )
 })
 }
@@ -11887,7 +11888,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 64879) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 41667) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 49762) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply() != 57150) {

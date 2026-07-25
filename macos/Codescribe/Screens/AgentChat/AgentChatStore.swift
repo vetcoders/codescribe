@@ -62,14 +62,18 @@ protocol AgentChatEngine: AnyObject {
         _ handler: @escaping @MainActor (PendingToolApproval) -> Void
     )
     @discardableResult
-    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool
+    func resolveToolApproval(
+        _ request: PendingToolApproval, approved: Bool, remember: Bool
+    ) -> Bool
 }
 
 extension AgentChatEngine {
     func installToolApprovalHandler(
         _ handler: @escaping @MainActor (PendingToolApproval) -> Void
     ) {}
-    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool { false }
+    func resolveToolApproval(
+        _ request: PendingToolApproval, approved: Bool, remember: Bool
+    ) -> Bool { false }
 }
 
 /// Source-specific adapter for hotkey/voice turns owned by the shared controller
@@ -626,8 +630,10 @@ final class AgentChatStore: ObservableObject {
         return pendingToolApprovals.filter { $0.threadID == backendID }
     }
 
-    func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) {
-        _ = engine?.resolveToolApproval(request, approved: approved)
+    func resolveToolApproval(
+        _ request: PendingToolApproval, approved: Bool, remember: Bool = false
+    ) {
+        _ = engine?.resolveToolApproval(request, approved: approved, remember: remember)
         pendingToolApprovals.removeAll { $0.id == request.id }
     }
 

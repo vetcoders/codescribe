@@ -53,7 +53,10 @@ private struct ThreadDetail: View {
                 ToolApprovalCard(
                     request: request,
                     reject: { store.resolveToolApproval(request, approved: false) },
-                    allowOnce: { store.resolveToolApproval(request, approved: true) }
+                    allowOnce: { store.resolveToolApproval(request, approved: true) },
+                    allowAlways: {
+                        store.resolveToolApproval(request, approved: true, remember: true)
+                    }
                 )
                 .padding(.horizontal, 20)
                 .padding(.bottom, 10)
@@ -164,6 +167,7 @@ private struct ToolApprovalCard: View {
     let request: PendingToolApproval
     let reject: () -> Void
     let allowOnce: () -> Void
+    let allowAlways: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -206,6 +210,7 @@ private struct ToolApprovalCard: View {
             HStack {
                 Spacer()
                 Button("Odrzuć", role: .cancel, action: reject)
+                Button("Zawsze zezwalaj", action: allowAlways)
                 Button("Zezwól raz", action: allowOnce)
                     .buttonStyle(.borderedProminent)
             }

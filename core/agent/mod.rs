@@ -7,6 +7,7 @@ pub mod thread_delivery;
 pub mod thread_export;
 pub mod thread_index;
 pub mod thread_store;
+pub mod tool_grants;
 mod tool_output;
 pub mod types;
 

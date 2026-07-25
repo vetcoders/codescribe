@@ -29,6 +29,9 @@ pub type ToolInputValidator =
 
 pub struct ToolRegistry {
     tools: HashMap<String, RegisteredTool>,
+    /// Persisted "always allow" grant keys (`server:upstream_tool`), loaded
+    /// once per session by the embedder. Never consulted for Destructive risk.
+    granted: std::collections::HashSet<String>,
 }
 
 struct RegisteredTool {
@@ -126,7 +129,15 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            granted: std::collections::HashSet::new(),
         }
+    }
+
+    /// Install the operator's persisted "always allow" grant keys
+    /// (see [`crate::agent::tool_grants`]). Loaded once at session build;
+    /// an empty set means every gated tool asks.
+    pub fn set_granted(&mut self, granted: std::collections::HashSet<String>) {
+        self.granted = granted;
     }
 
     pub fn register(&mut self, definition: ToolDefinition, handler: ToolHandler) -> Result<()> {
@@ -191,8 +202,9 @@ impl ToolRegistry {
             None => ToolCallPreview::default(),
         };
 
+        // Destructive stays a hard deny — no approval and no grant can lift it.
         if matches!(tool.policy.origin, ToolOrigin::Mcp { .. })
-            && matches!(tool.policy.risk, ToolRisk::Unknown | ToolRisk::Destructive)
+            && tool.policy.risk == ToolRisk::Destructive
         {
             return ToolDecision::Deny(format!(
                 "External tool '{name}' is denied by policy ({})",
@@ -200,7 +212,23 @@ impl ToolRegistry {
             ));
         }
 
-        if tool.policy.requires_approval {
+        // Unknown risk asks instead of denying: a freshly added upstream tool
+        // is unusable until a human looks at it, but a human CAN look at it.
+        let needs_gate = tool.policy.requires_approval
+            || (matches!(tool.policy.origin, ToolOrigin::Mcp { .. })
+                && tool.policy.risk == ToolRisk::Unknown);
+
+        if needs_gate {
+            if let ToolOrigin::Mcp {
+                server,
+                upstream_tool,
+            } = &tool.policy.origin
+                && self
+                    .granted
+                    .contains(&crate::agent::tool_grants::grant_key(server, upstream_tool))
+            {
+                return ToolDecision::Allow;
+            }
             return ToolDecision::RequireApproval(Box::new(ToolApprovalRequest {
                 call_id: call_id.to_string(),
                 session_id: session_id.to_string(),
@@ -276,44 +304,73 @@ mod tests {
         );
     }
 
+    fn register_external(registry: &mut ToolRegistry, name: &str, risk: ToolRisk) {
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: name.to_string(),
+                    description: "gated external tool".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                ToolExecutionPolicy {
+                    origin: ToolOrigin::Mcp {
+                        server: "desktop-commander".to_string(),
+                        upstream_tool: name.to_string(),
+                    },
+                    risk,
+                    requires_approval: false,
+                },
+                None,
+            )
+            .expect("register external tool");
+    }
+
     #[test]
-    fn external_unknown_and_destructive_tools_are_denied_before_dispatch() {
-        for risk in [ToolRisk::Unknown, ToolRisk::Destructive] {
-            let mut registry = ToolRegistry::new();
-            registry
-                .register_with_policy(
-                    ToolDefinition {
-                        name: format!("external_{}", risk.as_str()),
-                        description: "must never execute".to_string(),
-                        input_schema: json!({"type": "object"}),
-                    },
-                    Box::new(|_| {
-                        Box::pin(async {
-                            panic!("denied handler must never start");
-                        })
-                    }),
-                    ToolExecutionPolicy {
-                        origin: ToolOrigin::Mcp {
-                            server: "desktop-commander".to_string(),
-                            upstream_tool: "future_tool".to_string(),
-                        },
-                        risk,
-                        requires_approval: false,
-                    },
-                    None,
-                )
-                .expect("register external tool");
-            assert!(matches!(
-                registry.decide(
-                    &format!("external_{}", risk.as_str()),
-                    &json!({}),
-                    "call",
-                    "session",
-                    "thread"
-                ),
-                ToolDecision::Deny(_)
-            ));
-        }
+    fn external_destructive_tool_is_denied_even_when_granted() {
+        let mut registry = ToolRegistry::new();
+        register_external(&mut registry, "wipe_disk", ToolRisk::Destructive);
+        registry.set_granted(std::collections::HashSet::from([
+            crate::agent::tool_grants::grant_key("desktop-commander", "wipe_disk"),
+        ]));
+        assert!(matches!(
+            registry.decide("wipe_disk", &json!({}), "call", "session", "thread"),
+            ToolDecision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn external_unknown_tool_asks_instead_of_denying() {
+        let mut registry = ToolRegistry::new();
+        register_external(&mut registry, "future_tool", ToolRisk::Unknown);
+        let ToolDecision::RequireApproval(request) =
+            registry.decide("future_tool", &json!({}), "call", "session", "thread")
+        else {
+            panic!("unknown external tool must ask, not deny or allow");
+        };
+        assert_eq!(request.risk, ToolRisk::Unknown);
+        assert_eq!(request.tool, "future_tool");
+    }
+
+    #[test]
+    fn granted_external_tool_skips_the_approval_gate() {
+        let mut registry = ToolRegistry::new();
+        register_external(&mut registry, "future_tool", ToolRisk::Unknown);
+        registry.set_granted(std::collections::HashSet::from([
+            crate::agent::tool_grants::grant_key("Desktop-Commander", "future_tool"),
+        ]));
+        assert_eq!(
+            registry.decide("future_tool", &json!({}), "call", "session", "thread"),
+            ToolDecision::Allow
+        );
+        // A grant for a DIFFERENT tool changes nothing.
+        registry.set_granted(std::collections::HashSet::from([
+            crate::agent::tool_grants::grant_key("desktop-commander", "other_tool"),
+        ]));
+        assert!(matches!(
+            registry.decide("future_tool", &json!({}), "call", "session", "thread"),
+            ToolDecision::RequireApproval(_)
+        ));
     }
 
     #[test]

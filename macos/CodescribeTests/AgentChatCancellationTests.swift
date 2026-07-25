@@ -53,6 +53,7 @@ final class AgentChatCancellationTests: XCTestCase {
         let state = LockedState()
         var approvalHandler: (@MainActor (PendingToolApproval) -> Void)?
         var resolvedApprovals: [(PendingToolApproval, Bool)] = []
+        var rememberedApprovals: [Bool] = []
 
         init(firstStreamStarted: XCTestExpectation, emitPartialAndTool: Bool = false) {
             self.firstStreamStarted = firstStreamStarted
@@ -105,8 +106,11 @@ final class AgentChatCancellationTests: XCTestCase {
             approvalHandler = handler
         }
 
-        func resolveToolApproval(_ request: PendingToolApproval, approved: Bool) -> Bool {
+        func resolveToolApproval(
+            _ request: PendingToolApproval, approved: Bool, remember: Bool
+        ) -> Bool {
             resolvedApprovals.append((request, approved))
+            rememberedApprovals.append(remember)
             return true
         }
 
@@ -233,8 +237,15 @@ final class AgentChatCancellationTests: XCTestCase {
         XCTAssertEqual(engine.resolvedApprovals.count, 1)
         XCTAssertEqual(engine.resolvedApprovals.first?.0, exact)
         XCTAssertEqual(engine.resolvedApprovals.first?.1, true)
+        // Default resolve is allow-once: remember must stay false unless the
+        // operator explicitly presses "Zawsze zezwalaj".
+        XCTAssertEqual(engine.rememberedApprovals, [false])
         XCTAssertTrue(store.currentToolApprovals.isEmpty)
         XCTAssertEqual(store.pendingToolApprovals, [other])
+
+        store.resolveToolApproval(other, approved: true, remember: true)
+        XCTAssertEqual(engine.rememberedApprovals, [false, true])
+        XCTAssertTrue(store.pendingToolApprovals.isEmpty)
     }
 
     func testComposerActionProjectsThinkingStreamingAndCancelling() {
