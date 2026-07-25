@@ -26,6 +26,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 DEVICE="${BLACKHOLE_DEVICE:-BlackHole 2ch}"
+# The Rust test carrying the capture assertions. Does not exist yet — it will be
+# written once the loopback is verified to carry signal end to end; until then
+# the run fails loudly rather than reporting a vacuous pass.
+CAPTURE_TEST="${CAPTURE_TEST:-e2e_device_capture_dictation}"
 FIXTURE="${1:-tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cs-bh-e2e.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -110,7 +114,7 @@ export CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1
 PLAYER=$!
 
 cargo test --test e2e_overlay_delivery_parity \
-  e2e_device_capture_dictation -- --nocapture >"$WORK/test.log" 2>&1
+  "$CAPTURE_TEST" -- --nocapture >"$WORK/test.log" 2>&1
 STATUS=$?
 kill $PLAYER 2>/dev/null
 
@@ -119,5 +123,14 @@ if [ $STATUS -ne 0 ]; then
   fail "dictation test failed (exit $STATUS); full log: $WORK/test.log"
 fi
 
-info "PASS — capture path transcribed the fixture"
+# `cargo test <name>` exits 0 when the filter matches NOTHING ("0 passed").
+# Trusting the exit code alone would report a green run that executed no
+# assertions at all — the exact failure this harness exists to catch.
+PASSED="$(awk '/^test result:/ {for (i = 1; i <= NF; i++) if ($i ~ /^passed/) print $(i - 1)}' \
+  "$WORK/test.log" | head -1)"
+if [ "${PASSED:-0}" -lt 1 ]; then
+  fail "no test matched '$CAPTURE_TEST' — the capture assertions do not exist yet, so this run proved nothing. Write that test (or pass CAPTURE_TEST=<name>) before trusting a pass."
+fi
+
+info "PASS — capture path transcribed the fixture ($PASSED test(s))"
 grep -E "^(transcript|chars|coverage)" "$WORK/test.log" 2>/dev/null || true
