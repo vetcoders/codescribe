@@ -116,6 +116,7 @@ pub fn list() -> Result<Vec<(String, String)>> {
 }
 
 fn read_for_mutation(path: &Path) -> Result<GrantsFile> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- The only production caller passes `default_tool_grants_path()` ($HOME/.codescribe/tool_grants.json); tests pass a tempdir. Grant identity (server, tool) becomes a JSON KEY, never a path component — see `grant_key`.
     match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw).with_context(|| {
             format!(
@@ -137,6 +138,7 @@ fn write_atomic(path: &Path, file: &GrantsFile) -> Result<()> {
     let serialized = serde_json::to_string_pretty(file)?;
     let tmp = path.with_extension("json.tmp");
     {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- `tmp` is the same fixed path with a ".tmp" extension; see the note on `read_for_mutation`.
         let mut handle = std::fs::File::create(&tmp)
             .with_context(|| format!("Failed to create {}", tmp.display()))?;
         handle.write_all(serialized.as_bytes())?;

@@ -343,6 +343,7 @@ fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
         let from = src.join(name);
         let to = dest.join(name);
         if from.exists() && !to.exists() {
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from the REQUIRED_MODEL_FILES compile-time constant, and the only caller passes the HF cache snapshot dir and `ModelManager::get_model_path(DEFAULT_MODEL)`. No caller-supplied path component reaches here.
             fs::copy(&from, &to)
                 .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
         }
@@ -351,6 +352,7 @@ fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
         let from = src.join(name);
         let to = dest.join(name);
         if from.exists() && !to.exists() {
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Same as above: `name` is a REQUIRED_MODEL_WEIGHTS constant, both dirs are derived from DEFAULT_MODEL.
             fs::copy(&from, &to)
                 .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
         }
@@ -403,6 +405,7 @@ where
     if let Some(parent) = partial.parent() {
         fs::create_dir_all(parent)?;
     }
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- `partial` is `dest` with a ".partial" suffix on its own file name; `dest` is built from ModelManager::get_model_path(DEFAULT_MODEL) plus REQUIRED_MODEL_* constants, never from request data. The URL is remote, the path is not.
     let mut file = fs::File::create(&partial)
         .with_context(|| format!("create partial {}", partial.display()))?;
 
