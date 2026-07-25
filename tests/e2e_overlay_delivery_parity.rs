@@ -583,40 +583,13 @@ fn coverage_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn e2e_device_capture_dictation() {
-    if std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
-        eprintln!(
-            "skip: set CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1 (run via scripts/e2e-blackhole-dictation.sh)"
-        );
-        return;
-    }
-    let device = std::env::var("AUDIO_INPUT_DEVICE")
-        .expect("device-capture run requires AUDIO_INPUT_DEVICE (the loopback device name)");
-
-    let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav")
-        });
-    let reference_path = clip.with_file_name(format!(
-        "{}_human_transcription.txt",
-        clip.file_stem().unwrap().to_string_lossy()
-    ));
-    let reference = std::fs::read_to_string(&reference_path).unwrap_or_else(|e| {
-        panic!(
-            "device-capture verdict needs ground truth beside the fixture: {} ({e})",
-            reference_path.display()
-        )
-    });
-
+/// Full device-capture run: arm the recorder, play `clip` into `device` in
+/// real time, return (events, assembled transcript, clip seconds). Shared by
+/// the coverage test and the apple-live parity test — the CAPTURE ROAD must be
+/// byte-identical between them or their verdicts measure different products.
+async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>, String, f32) {
     let (samples, sample_rate) =
-        audio::load_audio_file(&clip).unwrap_or_else(|e| panic!("load {}: {e}", clip.display()));
+        audio::load_audio_file(clip).unwrap_or_else(|e| panic!("load {}: {e}", clip.display()));
     let clip_seconds = samples.len() as f32 / sample_rate as f32;
     eprintln!(
         "device-capture: {:.1}s fixture through '{device}' (engine: {})",
@@ -642,8 +615,8 @@ async fn e2e_device_capture_dictation() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/audio-play-to-device.swift");
     let mut player = std::process::Command::new("swift")
         .arg(&player_script)
-        .arg(&device)
-        .arg(&clip)
+        .arg(device)
+        .arg(clip)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -677,7 +650,6 @@ async fn e2e_device_capture_dictation() {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     recorder.stop().await.expect("stop capture session");
 
-    // 4) Verdicts against the human reference.
     let events = sink.0.lock().expect("collector lock").clone();
     let live = assemble_live_from_events(&events);
     let transcript = {
@@ -714,6 +686,42 @@ async fn e2e_device_capture_dictation() {
         }
     }
     eprintln!("── transcript ──\n{transcript}\n── end ──");
+    (events, transcript, clip_seconds)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_device_capture_dictation() {
+    if std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        eprintln!(
+            "skip: set CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1 (run via scripts/e2e-blackhole-dictation.sh)"
+        );
+        return;
+    }
+    let device = std::env::var("AUDIO_INPUT_DEVICE")
+        .expect("device-capture run requires AUDIO_INPUT_DEVICE (the loopback device name)");
+
+    let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav")
+        });
+    let reference_path = clip.with_file_name(format!(
+        "{}_human_transcription.txt",
+        clip.file_stem().unwrap().to_string_lossy()
+    ));
+    let reference = std::fs::read_to_string(&reference_path).unwrap_or_else(|e| {
+        panic!(
+            "device-capture verdict needs ground truth beside the fixture: {} ({e})",
+            reference_path.display()
+        )
+    });
+
+    let (_events, transcript, clip_seconds) = capture_clip_via_device(&device, &clip).await;
 
     assert!(
         !transcript.trim().is_empty(),
@@ -748,5 +756,123 @@ async fn e2e_device_capture_dictation() {
         head_hit,
         "none of the first reference tokens {head_tokens:?} appear — \
          the head of the stream was dropped (the exact July regression)"
+    );
+}
+
+// ─── Reversed TDD: apple-live parity ────────────────────────────────────────
+//
+// The spec is not synthetic: `05_apple-live-parity.wav` is the operator's own
+// speech, and `_apple_live_reference.txt` is VERBATIM what the SYSTEM Apple
+// live dictation wrote from that same audio (see data_assets/README.md). Same
+// neural engine, same audio — so anything short of the same text is OUR
+// plumbing: per-request WAV windowing, seal head-drop, merge garbling.
+//
+// The bar is normalized EXACT MATCH (whitespace collapsed; case and
+// punctuation kept — letter-level is the operator's bar). This test is RED by
+// design until the streaming bridge v2 path reproduces the system engine's
+// output; every run prints token similarity + a word-level diff so each
+// grinding iteration has numbers, and the diff doubles as Teacher material
+// (what our path loses/garbles against a same-engine reference).
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_apple_live_parity() {
+    if std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        eprintln!("skip: run via `make test-engine-parity` (needs the BlackHole loopback)");
+        return;
+    }
+    let device = std::env::var("AUDIO_INPUT_DEVICE")
+        .expect("parity run requires AUDIO_INPUT_DEVICE (the loopback device name)");
+
+    let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/assets/data_assets/05_apple-live-parity.wav")
+        });
+    let reference_path = clip.with_file_name(format!(
+        "{}_apple_live_reference.txt",
+        clip.file_stem().unwrap().to_string_lossy()
+    ));
+    let reference = std::fs::read_to_string(&reference_path).unwrap_or_else(|e| {
+        panic!(
+            "parity needs the system-engine reference beside the fixture: {} ({e})",
+            reference_path.display()
+        )
+    });
+
+    let (_events, transcript, clip_seconds) = capture_clip_via_device(&device, &clip).await;
+    assert!(
+        !transcript.trim().is_empty(),
+        "capture path produced NO text from {clip_seconds:.1}s of speech"
+    );
+
+    let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ours = normalize(&transcript);
+    let target = normalize(&reference);
+
+    // Word-level diff via the Teacher aligner — the same instrument the
+    // product uses for live↔whisper diffs, here diffing target↔ours.
+    use codescribe_core::quality::teacher::{AlignOp, align_words, tokenize};
+    let target_tokens = tokenize(&target);
+    let our_tokens = tokenize(&ours);
+    let ops = align_words(&target_tokens, &our_tokens);
+    let equal = ops
+        .iter()
+        .filter(|op| matches!(op, AlignOp::Equal { .. }))
+        .count();
+    let similarity = equal as f32 / target_tokens.len().max(our_tokens.len()).max(1) as f32;
+    eprintln!(
+        "parity similarity {equal}/{} = {similarity:.3} (bar: exact match)",
+        target_tokens.len().max(our_tokens.len())
+    );
+    {
+        let mut diff = String::new();
+        for op in &ops {
+            match op {
+                AlignOp::Equal { .. } => {}
+                AlignOp::DeleteA { a } => {
+                    diff.push_str(&format!("  -ref  {}\n", target_tokens[*a].surface));
+                }
+                AlignOp::InsertB { b } => {
+                    diff.push_str(&format!("  +ours {}\n", our_tokens[*b].surface));
+                }
+                AlignOp::Substitute { a, b } => {
+                    diff.push_str(&format!(
+                        "  ~     {} → {}\n",
+                        target_tokens[*a].surface, our_tokens[*b].surface
+                    ));
+                }
+            }
+        }
+        if diff.is_empty() {
+            eprintln!("word diff: none");
+        } else {
+            eprintln!("── word diff (ref → ours) ──\n{diff}── end diff ──");
+        }
+    }
+
+    // Confrontation: what our pipeline produced from this same speech on the
+    // night of the recording (machine-local evidence; absent elsewhere).
+    if let Some(home) = std::env::var_os("HOME") {
+        let that_night = Path::new(&home)
+            .join(".codescribe/transcriptions/2026-07-25/015148_zrobic-teraz-zrobic_raw.txt");
+        if let Ok(before) = std::fs::read_to_string(&that_night) {
+            eprintln!(
+                "── that night (015148, {} chars from 417s of speech) ──\n{}\n── end ──",
+                before.chars().count(),
+                before.trim()
+            );
+        }
+    }
+
+    assert_eq!(
+        ours, target,
+        "our capture path must reproduce the system Apple live output \
+         (similarity {similarity:.3}) — see the word diff above; the reference's \
+         own artefacts are part of the spec (data_assets/README.md)"
     );
 }

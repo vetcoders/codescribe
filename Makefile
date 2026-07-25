@@ -407,10 +407,36 @@ engine-auth: $(ENGINE_BRIDGE)
 	@printf '{"protocolVersion":1,"command":"probe","locale":"pl-PL","audioPath":null,"allowDownload":false}\n' \
 		| CODESCRIBE_BRIDGE_DISCLAIM=1 $(ENGINE_BRIDGE_APP)/Contents/MacOS/codescribe-stt-bridge
 
-# Real mic-sim path: Apple live multi-seal freezed+append + Whisper file final.
-# Needs Speech Recognition authorized for the bridge process (once).
-# Verbose live log: RUST_LOG + line-buffered tee (see ENGINE_RUST_LOG / ENGINE_CARGO_TEST_LIVE).
+# Reversed-TDD parity bar: our capture path must reproduce the SYSTEM Apple
+# live output for the same audio (tests/assets/data_assets/README.md). RED
+# until streaming bridge v2 lands — that is the point, not a flake. Every run
+# prints token similarity + a word-level diff for the grinding loop.
+.PHONY: test-engine-parity
+test-engine-parity: $(ENGINE_BRIDGE)
+	@CAPTURE_TEST=e2e_apple_live_parity \
+	  ./scripts/e2e-blackhole-dictation.sh tests/assets/data_assets/05_apple-live-parity.wav
+
+# Apple live through REAL CoreAudio (operator directive 2026-07-25): with
+# ENGINE_ALL_CLIPS=1 every clip travels player → BlackHole → cpal as a PCM
+# stream — not a WAV fed down a channel — then the parity bar runs last.
+# Without the flag this stays the fast single-clip channel path (below).
 test-engine-apple: $(ENGINE_BRIDGE)
+	@if [ "$(ENGINE_ALL_CLIPS)" = "1" ]; then \
+	  set -e; \
+	  for clip in tests/assets/data_assets/0[1-4]_*.wav; do \
+	    echo "=== BlackHole device capture: $$clip ==="; \
+	    ./scripts/e2e-blackhole-dictation.sh "$$clip"; \
+	  done; \
+	  $(MAKE) test-engine-parity; \
+	else \
+	  $(MAKE) test-engine-apple-channel; \
+	fi
+
+# Channel-injection mic-sim (fast, no loopback device): Apple live multi-seal
+# freezed+append + Whisper file final. Proves decoder+pipeline, NOT capture.
+# Verbose live log: RUST_LOG + line-buffered tee (see ENGINE_RUST_LOG / ENGINE_CARGO_TEST_LIVE).
+.PHONY: test-engine-apple-channel
+test-engine-apple-channel: $(ENGINE_BRIDGE)
 	@$(TEST_SETUP); \
 	set -o pipefail; \
 	echo "=== Core engine Apple live (multi-utterance freezed+append) ===" | tee -a "$$LOG"; \
