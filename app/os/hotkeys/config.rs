@@ -255,12 +255,25 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
 }
 
 pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
-    set_mode_hotkey_bindings(config.mode_bindings);
-    set_exclusive_mode(config.hold_exclusive);
-    set_hold_arm_modifier(config.hold_arm_modifier);
-    set_hold_start_delay_ms(config.hold_start_delay_ms);
-    set_double_tap_interval_ms(config.double_tap_interval_ms);
-    set_deferred_insert_shortcut(config.deferred_insert_shortcut);
+    // Normalize before diffing: the double-tap setter clamps on store, so an
+    // out-of-range settings value must not read as "changed" on every apply.
+    let normalized = HotkeyRuntimeConfig {
+        double_tap_interval_ms: config.double_tap_interval_ms.clamp(100, 450),
+        ..config
+    };
+    // Every settings write funnels through this apply (update_config /
+    // update_config_many), including non-hotkey keys and per-tick slider drags
+    // (~60 Hz). Unchanged hotkey state must be a silent no-op — the per-setter
+    // INFO logs were flooding codescribe.log with identical binding blocks.
+    if get_hotkey_runtime_config() == normalized {
+        return;
+    }
+    set_mode_hotkey_bindings(normalized.mode_bindings);
+    set_exclusive_mode(normalized.hold_exclusive);
+    set_hold_arm_modifier(normalized.hold_arm_modifier);
+    set_hold_start_delay_ms(normalized.hold_start_delay_ms);
+    set_double_tap_interval_ms(normalized.double_tap_interval_ms);
+    set_deferred_insert_shortcut(normalized.deferred_insert_shortcut);
 }
 
 pub fn apply_hotkey_config(config: &Config) {
@@ -335,5 +348,33 @@ mod tests {
             get_deferred_insert_shortcut(),
             runtime.deferred_insert_shortcut
         );
+    }
+
+    #[test]
+    fn test_apply_hotkey_runtime_config_is_idempotent_after_clamp() {
+        let _guard = HOTKEY_ATOMICS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // Out-of-range double-tap: first apply clamps on store; a second apply
+        // of the same raw config must be a no-op diff, not a perpetual "changed".
+        let runtime = HotkeyRuntimeConfig {
+            mode_bindings: ModeHotkeyBindings {
+                dictation: ShortcutBinding::HoldFn,
+                formatting: ShortcutBinding::DoubleLeftOption,
+                assistive: ShortcutBinding::DoubleRightOption,
+            },
+            hold_exclusive: false,
+            hold_arm_modifier: HoldArmModifier::Shift,
+            hold_start_delay_ms: 800,
+            double_tap_interval_ms: 999,
+            deferred_insert_shortcut: DeferredInsertShortcut::CommandOptionV,
+        };
+        apply_hotkey_runtime_config(runtime);
+        let after_first = get_hotkey_runtime_config();
+        assert_eq!(after_first.double_tap_interval_ms, 450);
+
+        apply_hotkey_runtime_config(runtime);
+        assert_eq!(get_hotkey_runtime_config(), after_first);
     }
 }

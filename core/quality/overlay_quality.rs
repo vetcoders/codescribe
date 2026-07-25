@@ -221,8 +221,14 @@ pub fn save_quality_record(record: &QualityRecord) -> Result<PathBuf> {
         .append(true)
         .open(&path)
         .with_context(|| format!("open quality log {}", path.display()))?;
-    let line = serde_json::to_string(record).context("serialize quality record")?;
-    writeln!(f, "{}", line).context("write quality record line")?;
+    // One write_all per record: `writeln!` on an unbuffered File issues multiple
+    // write() syscalls, and concurrent appenders interleave mid-line (observed as
+    // "trailing characters" parse skips). O_APPEND + a single write keeps each
+    // JSONL line atomic.
+    let mut line = serde_json::to_string(record).context("serialize quality record")?;
+    line.push('\n');
+    f.write_all(line.as_bytes())
+        .context("write quality record line")?;
     Ok(path)
 }
 
