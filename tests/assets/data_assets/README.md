@@ -7,20 +7,27 @@ vocabulary-coverage reference by the engine e2e tests.
 ## 05_apple-live-parity — the reversed-TDD parity spec
 
 Source: `Screen_Recording_2026-07-25_at_01.09.14.mov` (operator's evidence
-recording; audio stream 0:1, aac 48 kHz stereo). Cut `[124.3 s – 274.0 s]`:
+recording; audio stream 0:1, aac 48 kHz stereo). Cut `[133.15 s – 274.0 s]`:
 
 ```
-ffmpeg -ss 124.3 -to 274.0 -i Screen_Recording_2026-07-25_at_01.09.14.mov \
-  -vn -ac 1 -ar 44100 -af "afade=t=in:st=0:d=0.3,afade=t=out:st=149.1:d=0.6" \
+ffmpeg -ss 133.15 -to 274.0 -i Screen_Recording_2026-07-25_at_01.09.14.mov \
+  -vn -ac 1 -ar 44100 -af "afade=t=in:st=0:d=0.15,afade=t=out:st=140.25:d=0.6" \
   -c:a pcm_s16le 05_apple-live-parity.wav
 ```
 
-The window `[124.3, 274.0]` is exactly the span heard by the SYSTEM Apple
-live dictation running in the left editor window of the recording: 124.3 s is
-where dictation was armed mid-sentence (its transcript starts at "I z filmem
-równie…"), 274.0 s is the screenshot moment (`05_bug_04-34.jpg`, cursor after
-"Apple"). Trimming to this window is load-bearing — audio outside it was never
-seen by the reference engine, so any wider cut makes exact parity impossible.
+The window is exactly the span heard by the SYSTEM Apple live dictation
+running in the left editor window: it was armed mid-sentence — its transcript
+opens on "I z filmem równie…" — and 274.0 s is the screenshot moment
+(`05_bug_04-34.jpg`, cursor after "Apple"). Trimming to this window is
+load-bearing: audio outside it was never seen by the reference engine, so a
+wider cut hands us words the reference cannot contain and makes exact parity
+unreachable.
+
+The 133.15 s start is MEASURED, not guessed. A wider first cut (124.3 s) was
+run through the streaming bridge, whose phrase finals carry timestamps: the
+"i" of "nagrywaniem i z filmem" lands at ~9.0 s into that cut
+(124.3 + 9.0 ≈ 133.3), with 0.15 s of headroom so the word survives the
+fade-in. Re-derive the same way if the reference is ever re-cut.
 
 Two references, two different truths:
 

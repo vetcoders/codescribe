@@ -1015,7 +1015,19 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
                 acc.commitFinal(text: text, segments: segments)
                 emitStreamEvent(StreamEventOut(event: "final", text: text, segments: segments))
             } else {
-                acc.storePartial(text: text, segments: segments)
+                // A partial that collapses to an unrelated hypothesis means
+                // SFSpeech restarted its phrase (measured: 13 restarts vs ONE
+                // isFinal over 150s of Polish). The accumulator already folds
+                // the frozen phrase into its snapshot; emitting it here is what
+                // makes the EVENT stream complete and disjoint. Without it the
+                // consumer sees only overlapping partials and re-derives phrase
+                // boundaries wrongly — the duplicated span + dropped span in
+                // the 0.777 parity run.
+                if let frozen = acc.storePartial(text: text, segments: segments) {
+                    emitStreamEvent(
+                        StreamEventOut(
+                            event: "final", text: frozen.text, segments: frozen.segments))
+                }
                 emitStreamEvent(StreamEventOut(event: "partial", text: text, segments: segments))
             }
         }
@@ -1065,6 +1077,14 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settleGrace) {
                 if gate.isSettled() { return }
                 gate.cancelTask()
+                // The stream ends mid-phrase: freeze and EMIT the open
+                // hypothesis, or the last phrase reaches only the summary and
+                // the consumer's transcript loses its tail.
+                if let frozen = acc.freezeOpenPhrase() {
+                    emitStreamEvent(
+                        StreamEventOut(
+                            event: "final", text: frozen.text, segments: frozen.segments))
+                }
                 if let payload = acc.snapshotPayload() {
                     settle(.success(payload))
                 } else {
@@ -1105,10 +1125,24 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         partialSegments = []
     }
 
-    fileprivate func storePartial(text: String, segments: [BridgeSegment]) {
+    /// A hypothesis the accumulator just froze — the streaming path emits it as
+    /// a `final` event so the Rust side receives DISJOINT phrases instead of
+    /// having to re-derive phrase boundaries from raw partials.
+    struct FrozenPhrase {
+        let text: String
+        let segments: [BridgeSegment]
+    }
+
+    /// Store the current hypothesis; returns the previous one when SFSpeech
+    /// restarted its phrase (measured on a 150s Polish fixture: 13 restarts,
+    /// ONE `isFinal`). Callers that ignore the return value keep the old
+    /// behaviour — the phrase is still folded into `snapshotPayload`.
+    @discardableResult
+    fileprivate func storePartial(text: String, segments: [BridgeSegment]) -> FrozenPhrase? {
         lock.lock()
         defer { lock.unlock() }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var frozen: FrozenPhrase? = nil
         // Detect SFSpeech phrase restart without isFinal: new partial neither
         // extends nor is a prefix of the previous hypothesis → freeze prior.
         if !partialText.isEmpty && !t.isEmpty {
@@ -1118,10 +1152,27 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
             if collapsed && !extends {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
+                frozen = FrozenPhrase(text: prev, segments: partialSegments)
             }
         }
         partialText = t
         partialSegments = segments
+        return frozen
+    }
+
+    /// Freeze whatever hypothesis is still open (stream ended mid-phrase).
+    /// Without this the LAST phrase reaches only `snapshotPayload`, never the
+    /// event stream — the tail-drop seen in the parity run.
+    fileprivate func freezeOpenPhrase() -> FrozenPhrase? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !partialText.isEmpty else { return nil }
+        let frozen = FrozenPhrase(text: partialText, segments: partialSegments)
+        finals.append(partialText)
+        finalSegments.append(contentsOf: partialSegments)
+        partialText = ""
+        partialSegments = []
+        return frozen
     }
 
     fileprivate func snapshotPayload() -> TranscriptionPayload? {
