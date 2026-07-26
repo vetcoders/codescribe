@@ -2,7 +2,11 @@
 
 > Status: operator truth map · 2026-07-24 · branch `feat/operator-feedback-wave9`
 > Goal: every UI/hotkey entry is one line to one handler; settings truth is one place.
-> **Operator lock: Apple STT is MUST-HAVE for live.** Whisper = final-pass / recovery only — not the primary product escape hatch.
+> **Operator lock: Apple STT is MUST-HAVE for live.** Whisper is never the primary live engine.
+> **Superseded on Whisper's role (2026-07-26, `AGENTS.md` — THE ONE RULE):** the target shape is
+> Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only. The
+> stop-time file final-pass below remains the accepted interim, but it is a stepping stone, not
+> the destination. Lexicon substitution is the FINAL automated layer, after Whisper.
 > Planning report: `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0724/plans/stt-apple-must-have/00_PLANNING_REPORT.md`
 
 ---

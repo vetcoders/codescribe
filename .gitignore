@@ -43,7 +43,6 @@ temp/
 /.gemini-clipboard
 .codescribe.lock
 /.fastembed_cache
-CLAUDE.md
 /.loctree
 /.ai-agents
 .output.txt
@@ -79,9 +78,13 @@ docs/runtime-diagnosis.md
 !.ai-context/share/
 !.ai-context/share/summary.md
 !.ai-context/share/timeline.md
-AGENTS.md
 /.vibecrafted
 /*test*.rs
+
+# Per-repo agent law is tracked (AGENTS.md canonical, CLAUDE.md mirror) —
+# negations must win over the *claude* wildcard above.
+!/AGENTS.md
+!/CLAUDE.md
 *.zip
 
 # Astro build cache (generated)

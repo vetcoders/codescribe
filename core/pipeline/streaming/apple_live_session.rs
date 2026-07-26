@@ -7,8 +7,10 @@
 //! - open partial on stop → sealed as a last final when non-empty
 //!
 //! Whisper stays the file final-pass / emergency fill (controller stop path),
-//! not the live engine. Escape hatch: `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`
-//! restores the legacy VAD+scheduler path.
+//! not the live engine. INTERIM: per AGENTS.md (THE ONE RULE) Whisper's target
+//! role is transcribing partials on the go to fill canvas gaps — never a
+//! stop-time full-text authority. Escape hatch:
+//! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` restores the legacy VAD+scheduler path.
 //!
 //! The bridge global lock + child process live on a **dedicated OS thread**
 //! (MutexGuard is `!Send`); the async session only shuttles PCM in and
