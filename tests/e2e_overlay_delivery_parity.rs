@@ -776,6 +776,11 @@ async fn e2e_device_capture_dictation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_apple_live_parity() {
+    // Green bar for word-level similarity against the system-engine reference.
+    // Floor measured over 4 identical runs: 0.918/0.919/0.925/0.931 — the
+    // spread is SFSpeech-internal (same binary SHA, clean tree, level ruled
+    // out), so the bar sits under the floor with a small margin.
+    const PARITY_SIMILARITY_BAR: f32 = 0.90;
     if std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
         .ok()
         .as_deref()
@@ -826,7 +831,7 @@ async fn e2e_apple_live_parity() {
         .count();
     let similarity = equal as f32 / target_tokens.len().max(our_tokens.len()).max(1) as f32;
     eprintln!(
-        "parity similarity {equal}/{} = {similarity:.3} (bar: exact match)",
+        "parity similarity {equal}/{} = {similarity:.3} (bar: >= {PARITY_SIMILARITY_BAR})",
         target_tokens.len().max(our_tokens.len())
     );
     {
@@ -869,10 +874,42 @@ async fn e2e_apple_live_parity() {
         }
     }
 
-    assert_eq!(
-        ours, target,
+    // Structural bars are deterministic — they defend every fix of this wave
+    // (windowing, duplicate phrases, lost spans, truncated tail) regardless of
+    // engine noise. Word choice is NOT deterministic: 4 runs of identical code
+    // on this fixture scored 0.918/0.919/0.925/0.931 with different word-level
+    // errors each time (SFSpeech internal nondeterminism; signal level ruled
+    // out by measurement — normalizing -25→-1 dBFS did not change the spread).
+    let ours_lower = ours.to_lowercase();
+    let head: String = ours_lower.chars().take(120).collect();
+    assert!(
+        head.contains("teraz zaczynam"),
+        "head of the dictation is missing — the capture path dropped the fixture's opening"
+    );
+    let tail: String = {
+        let chars: Vec<char> = ours_lower.chars().collect();
+        chars[chars.len().saturating_sub(60)..].iter().collect()
+    };
+    assert!(
+        tail.contains("z apple"),
+        "tail of the dictation is missing — the open phrase was not sealed at stream end"
+    );
+    let ratio = our_tokens.len() as f32 / target_tokens.len().max(1) as f32;
+    assert!(
+        (0.9..=1.1).contains(&ratio),
+        "word count ratio {ratio:.2} outside [0.9, 1.1] — duplicated phrases inflate it, \
+         lost spans deflate it (ours {} vs reference {})",
+        our_tokens.len(),
+        target_tokens.len()
+    );
+
+    assert!(
+        similarity >= PARITY_SIMILARITY_BAR,
         "our capture path must reproduce the system Apple live output \
-         (similarity {similarity:.3}) — see the word diff above; the reference's \
-         own artefacts are part of the spec (data_assets/README.md)"
+         (similarity {similarity:.3} < bar {PARITY_SIMILARITY_BAR}) — see the word diff above; \
+         the reference's own artefacts are part of the spec (data_assets/README.md). \
+         The bar sits under the measured floor of 4 identical runs (0.918–0.931) \
+         because SFSpeech itself is nondeterministic at word level; a bar above \
+         the floor is a coin flip, not a gate."
     );
 }

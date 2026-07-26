@@ -150,6 +150,36 @@ guard status == noErr else {
 
 engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
 
+// Normalize to a fixed peak before playback. A microphone feeding the system
+// engine goes through analog gain + AGC; a digital loopback does not, so a
+// quiet fixture reaches recognition 25 dB below full scale (measured:
+// 05_apple-live-parity peaks at -25 dBFS vs -16.7 for 02). Low SNR is where
+// recognition starts to GUESS — the same fixture scored 0.918 and 0.931 on two
+// identical runs. Fixing the level makes the input deterministic instead of
+// handicapped, without touching the fixture, which is evidence and must stay
+// byte-identical.
+let targetPeakDb: Float = -1.0
+var filePeak: Float = 0
+if let probe = AVAudioPCMBuffer(
+    pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+    (try? file.read(into: probe)) != nil, let data = probe.floatChannelData
+{
+    for channel in 0..<Int(probe.format.channelCount) {
+        for frame in 0..<Int(probe.frameLength) {
+            filePeak = max(filePeak, abs(data[channel][frame]))
+        }
+    }
+    file.framePosition = 0
+}
+if filePeak > 0.0001 {
+    let target = pow(10, targetPeakDb / 20)
+    player.volume = min(target / filePeak, 32)
+    FileHandle.standardError.write(
+        Data(
+            "normalizing: peak \(String(format: "%.1f", 20 * log10(filePeak))) dBFS → \(targetPeakDb) dBFS (gain ×\(String(format: "%.2f", player.volume)))\n"
+                .utf8))
+}
+
 // Self-diagnosis: RMS tap on the mixer. A run that "completes" while the
 // engine renders silence would pass every exit-code check and still prove
 // nothing — the tap makes that state visible and fatal.
