@@ -370,16 +370,23 @@ test-engine:
 # asks for Speech Recognition without a usage description
 # (__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__), so without it the standalone
 # bridge can never be authorized — and every engine test reports
-# speech_auth_not_determined forever. Ad-hoc signing keeps the TCC identity
-# stable across rebuilds, so the grant is not asked for again each time.
+# speech_auth_not_determined forever.
+#
+# Signing identity matters for TCC persistence: an AD-HOC signature keys the
+# grant to the cdhash, so EVERY rebuild invalidates it (measured 2026-07-25 —
+# the grind loop would need a re-auth click per rebuild). A real identity
+# (Developer ID) keys it to the certificate's designated requirement, which is
+# stable across rebuilds. Prefer it when present; fall back to ad-hoc.
+BRIDGE_SIGN_ID ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),-)
 $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_stt/bridge-Info.plist
 	@echo "Building codescribe-stt-bridge → $(ENGINE_BRIDGE)"
 	@mkdir -p $(dir $(ENGINE_BRIDGE))
 	@swiftc -O -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift \
 		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
 		-Xlinker core/stt/apple_stt/bridge-Info.plist
-	@codesign --force --sign - --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE) 2>/dev/null || \
-		echo "  (codesign skipped — TCC may re-prompt after each rebuild)"
+	@codesign --force --sign "$(BRIDGE_SIGN_ID)" --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE) 2>/dev/null || \
+		{ codesign --force --sign - --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE) 2>/dev/null; \
+		  echo "  (ad-hoc signed — TCC grant will NOT survive rebuilds)"; }
 	@# TCC attributes a privacy prompt to a BUNDLE, not to a loose executable: an
 	@# embedded __info_plist alone still aborts the process. Mirroring the binary
 	@# into a minimal .app gives it a bundle identity, so `make engine-auth` can
@@ -388,7 +395,8 @@ $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_
 	@mkdir -p $(ENGINE_BRIDGE_APP)/Contents/MacOS
 	@cp core/stt/apple_stt/bridge-Info.plist $(ENGINE_BRIDGE_APP)/Contents/Info.plist
 	@cp $(ENGINE_BRIDGE) $(ENGINE_BRIDGE_APP)/Contents/MacOS/codescribe-stt-bridge
-	@codesign --force --sign - --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE_APP) 2>/dev/null || true
+	@codesign --force --sign "$(BRIDGE_SIGN_ID)" --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE_APP) 2>/dev/null || \
+		codesign --force --sign - --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE_APP) 2>/dev/null || true
 
 # One-time: raise the macOS Speech Recognition dialog for the standalone bridge.
 # Needed before `make test-engine-apple` or scripts/e2e-blackhole-dictation.sh

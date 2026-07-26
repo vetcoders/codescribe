@@ -31,6 +31,16 @@ struct BridgeSegment: Codable {
     let text: String
     let startTs: Double
     let endTs: Double
+    /// `SFTranscriptionSegment.confidence` (0…1) — populated on finals in the
+    /// streaming path (0 on partials, per Apple semantics). Absent elsewhere.
+    let confidence: Double?
+
+    init(text: String, startTs: Double, endTs: Double, confidence: Double? = nil) {
+        self.text = text
+        self.startTs = startTs
+        self.endTs = endTs
+        self.confidence = confidence
+    }
 }
 
 struct BridgeResponse: Codable {
@@ -191,16 +201,21 @@ private func readRequest() throws -> BridgeRequest {
         )
     }
 
-    let input = FileHandle.standardInput.readDataToEndOfFile()
-    guard !input.isEmpty else {
+    // ONE newline-terminated JSON line — never drain the rest of stdin.
+    // Streaming v2 (`command: "stream"`) needs the bytes after this line for
+    // the PCM header + raw f32le frames. `readDataToEndOfFile` would swallow
+    // them and leave the stream path with an empty pipe. Non-stream callers
+    // already write a single compact JSON line and close stdin, so the
+    // line-oriented contract is a pure win.
+    guard let lineData = readRawStdinLine(), !lineData.isEmpty else {
         throw BridgeError.invalidInput("empty stdin")
     }
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     do {
-        return try decoder.decode(BridgeRequest.self, from: input)
+        return try decoder.decode(BridgeRequest.self, from: lineData)
     } catch {
-        let text = String(data: input, encoding: .utf8) ?? "<non-utf8>"
+        let text = String(data: lineData, encoding: .utf8) ?? "<non-utf8>"
         throw BridgeError.invalidInput("decode failed: \(error). payload=\(text)")
     }
 }
@@ -240,6 +255,29 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
             localeSupported: true,
             localeInstalled: true,
             backend: transcription.backend.rawValue,
+            error: nil,
+            speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+        )
+    case "stream":
+        // Streaming v2: ONE long-lived SFSpeechAudioBufferRecognitionRequest
+        // fed raw PCM from stdin — the same shape the SYSTEM dictation uses,
+        // and the reason it beats our per-request WAV path (which replays each
+        // window at 1× realtime through a muted AVAudioEngine and loses
+        // cross-window context). Emits NDJSON partial/final events on stdout
+        // as recognition progresses; the closing summary line is a normal
+        // BridgeResponse. Protocol: first stdin line = JSON header
+        // {"rate":48000,"channels":1}, then raw interleaved f32le frames, EOF
+        // ends the stream.
+        try await ensureSpeechAuthorizedForSfSpeech()
+        let payload = try await transcribeStreaming(locale: locale)
+        return BridgeResponse(
+            ok: true,
+            status: "ok",
+            text: payload.text,
+            segments: payload.segments,
+            localeSupported: true,
+            localeInstalled: true,
+            backend: payload.backend.rawValue,
             error: nil,
             speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
         )
@@ -820,6 +858,221 @@ private func recognizeSfSpeechBufferWindow(
             settle(.failure(BridgeError.runtime(
                 "sf_speech_buffer: engine start failed: \(error.localizedDescription)"
             )))
+        }
+    }
+}
+
+// MARK: - Streaming v2 (one long-lived request, PCM from stdin)
+
+/// One NDJSON progress event on stdout. Every line the Rust client reads has
+/// either an `event` key (progress) or a `status` key (the closing summary
+/// BridgeResponse) — that disjunction IS the framing.
+private struct StreamEventOut: Codable {
+    let event: String
+    var text: String? = nil
+    var segments: [BridgeSegment]? = nil
+    var message: String? = nil
+}
+
+/// Static holder: globals in a main file initialize in top-level source order
+/// (this one sits after `dispatchMain()` and would NEVER run) — a `static let`
+/// is lazily initialized on first use instead.
+private enum StreamOut {
+    static let lock = NSLock()
+}
+
+private func emitStreamEvent(_ event: StreamEventOut) {
+    let encoder = JSONEncoder()
+    encoder.keyEncodingStrategy = .convertToSnakeCase
+    guard let data = try? encoder.encode(event), let newline = "\n".data(using: .utf8) else {
+        return
+    }
+    StreamOut.lock.lock()
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(newline)
+    StreamOut.lock.unlock()
+}
+
+/// Read one `\n`-terminated line from raw stdin without libc stdio buffering —
+/// the bytes after this line are binary PCM and must not be swallowed by a
+/// lookahead buffer.
+private func readRawStdinLine(maxBytes: Int = 4096) -> Data? {
+    var line = Data()
+    var byte: UInt8 = 0
+    while line.count < maxBytes {
+        let n = read(0, &byte, 1)
+        if n <= 0 { return line.isEmpty ? nil : line }
+        if byte == UInt8(ascii: "\n") { return line }
+        line.append(byte)
+    }
+    return line
+}
+
+private struct StreamHeader: Codable {
+    let rate: Double
+    let channels: Int
+}
+
+/// Streaming v2 session: header line → raw f32le PCM until EOF, ONE
+/// long-lived `SFSpeechAudioBufferRecognitionRequest` for the whole stream.
+///
+/// This is the system-dictation shape: phrase-level `isFinal` results arrive
+/// mid-stream while audio keeps flowing into the SAME request, so the engine
+/// keeps full context — no window seams to drop heads at, no 1× realtime
+/// replay. Partials become `partial` events, phrase finals become `final`
+/// events (with `SFTranscriptionSegment.confidence`), EOF ends audio and the
+/// accumulated text is returned as the summary payload.
+private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPayload {
+    guard let headerData = readRawStdinLine(),
+        let header = try? {
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(StreamHeader.self, from: headerData)
+        }()
+    else {
+        throw BridgeError.invalidInput("stream: missing/invalid header line {rate, channels}")
+    }
+    guard header.rate > 0, (1...16).contains(header.channels) else {
+        throw BridgeError.invalidInput(
+            "stream: unsupported format rate=\(header.rate) channels=\(header.channels)")
+    }
+    guard
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: header.rate,
+            channels: AVAudioChannelCount(header.channels),
+            interleaved: true
+        )
+    else {
+        throw BridgeError.runtime("stream: AVAudioFormat init failed")
+    }
+    guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+        throw BridgeError.runtime("stream: SFSpeechRecognizer init failed for \(locale.identifier)")
+    }
+    recognizer.defaultTaskHint = .dictation
+
+    let request = SFSpeechAudioBufferRecognitionRequest()
+    request.requiresOnDeviceRecognition = true
+    request.shouldReportPartialResults = true
+    request.taskHint = .dictation
+
+    emitStreamEvent(StreamEventOut(event: "ready"))
+
+    return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
+        let gate = SfSpeechSettleGate()
+        let acc = SfSpeechPhraseAccumulator(timeOffset: 0)
+        let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
+            guard gate.trySettle() else { return }
+            request.endAudio()
+            switch outcome {
+            case .success(let payload):
+                emitStreamEvent(StreamEventOut(event: "end"))
+                continuation.resume(returning: payload)
+            case .failure(let error):
+                emitStreamEvent(
+                    StreamEventOut(event: "error", message: String(describing: error)))
+                continuation.resume(throwing: error)
+            }
+        }
+
+        let task = recognizer.recognitionTask(with: request) { result, error in
+            if gate.isSettled() { return }
+            if let error {
+                if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
+                    settle(.success(payload))
+                    return
+                }
+                let ns = error as NSError
+                // Cancel / no-speech after endAudio — empty success, not a failure.
+                if ns.domain == "kAFAssistantErrorDomain" || ns.code == 216 || ns.code == 1 {
+                    settle(.success(
+                        TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
+                    ))
+                    return
+                }
+                settle(.failure(BridgeError.runtime(
+                    "stream: \(error.localizedDescription) (domain=\(ns.domain) code=\(ns.code))"
+                )))
+                return
+            }
+            guard let result else { return }
+            let text = result.bestTranscription.formattedString
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let segments = result.bestTranscription.segments.compactMap { segment -> BridgeSegment? in
+                let segText = segment.substring.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !segText.isEmpty else { return nil }
+                let start = segment.timestamp
+                let end = segment.timestamp + segment.duration
+                guard start.isFinite, end.isFinite, end >= start else { return nil }
+                return BridgeSegment(
+                    text: segText,
+                    startTs: start,
+                    endTs: end,
+                    confidence: Double(segment.confidence)
+                )
+            }
+            if result.isFinal {
+                acc.commitFinal(text: text, segments: segments)
+                emitStreamEvent(StreamEventOut(event: "final", text: text, segments: segments))
+            } else {
+                acc.storePartial(text: text, segments: segments)
+                emitStreamEvent(StreamEventOut(event: "partial", text: text, segments: segments))
+            }
+        }
+        gate.storeTask(task)
+
+        // Blocking PCM pump on a background queue: read stdin → append buffers.
+        // The recognizer's callbacks land on its own queue; nothing here blocks
+        // them. EOF → endAudio → settle grace → snapshot.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let bytesPerFrame = 4 * header.channels
+            let chunkBytes = 32768
+            var carry = Data()
+            var raw = [UInt8](repeating: 0, count: chunkBytes)
+            var fedFrames: Int64 = 0
+            while true {
+                let n = read(0, &raw, chunkBytes)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    break
+                }
+                if n == 0 { break }  // EOF — sender closed the stream.
+                carry.append(contentsOf: raw[0..<n])
+                let frames = carry.count / bytesPerFrame
+                if frames == 0 { continue }
+                let usable = frames * bytesPerFrame
+                guard
+                    let buffer = AVAudioPCMBuffer(
+                        pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))
+                else { continue }
+                buffer.frameLength = AVAudioFrameCount(frames)
+                carry.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+                    if let dst = buffer.floatChannelData?[0], let base = src.baseAddress {
+                        memcpy(dst, base, usable)
+                    }
+                }
+                carry.removeSubrange(0..<usable)
+                fedFrames += Int64(frames)
+                request.append(buffer)
+            }
+
+            if gate.isSettled() { return }
+            request.endAudio()
+            // Settle grace scaled to how much audio flowed (same shape as the
+            // window path) — SFSpeech needs a beat to flush its last final.
+            let fedSeconds = Double(fedFrames) / header.rate
+            let settleGrace = max(1.5, min(6.0, fedSeconds * 0.05 + 1.5))
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settleGrace) {
+                if gate.isSettled() { return }
+                gate.cancelTask()
+                if let payload = acc.snapshotPayload() {
+                    settle(.success(payload))
+                } else {
+                    settle(.success(
+                        TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
+                    ))
+                }
+            }
         }
     }
 }

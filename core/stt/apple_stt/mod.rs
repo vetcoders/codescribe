@@ -8,8 +8,12 @@
 //!
 //! Runtime fallback to Candle Whisper is handled in `core/stt/mod.rs`.
 //!
-//! Bridge protocol: JSON request on stdin, JSON response on stdout (protocol v1;
-//! optional `backend` field is additive).
+//! Bridge protocol (v1):
+//! - Most commands: one JSON request line on stdin, one JSON response on stdout.
+//! - `stream` (live): request line → PCM header line → raw f32le frames → EOF;
+//!   NDJSON progress events on stdout, closing line is a normal `BridgeResponse`.
+//!
+//! Optional `backend` field is additive.
 
 use std::fs;
 use std::io::{Read as _, Write};
@@ -328,9 +332,35 @@ fn transcribe_via_bridge(
 
     init()?;
 
-    // Live path: write a short temp WAV only as a *sample source*, then ask the
-    // bridge for `transcribe_live` (SFSpeechAudioBuffer / virtual-mic engine).
-    // Final-pass still uses `transcribe` → SFSpeechURL on the real file path.
+    // Live path = streaming v2: one long-lived SFSpeechAudioBuffer request fed
+    // raw PCM (system-dictation shape). The old `transcribe_live` WAV window
+    // path measured 0.228 parity against system Apple live — streaming exists
+    // to close that gap. Final-pass still uses `transcribe` → SFSpeechURL.
+    // Escape hatch for A/B: CODESCRIBE_APPLE_STT_LIVE_MODE=wav|stream (default stream).
+    let live_mode =
+        std::env::var("CODESCRIBE_APPLE_STT_LIVE_MODE").unwrap_or_else(|_| "stream".into());
+    if live_mode.eq_ignore_ascii_case("wav") || live_mode.eq_ignore_ascii_case("transcribe_live") {
+        return transcribe_via_bridge_wav_live(audio, sample_rate, language);
+    }
+
+    let locale = resolved_locale(language);
+    let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
+    // Stream settle grace on the bridge side is up to ~6s after EOF; keep
+    // host timeout above audio wall-clock + settle + probe margin.
+    let timeout = Duration::from_secs_f64((audio_secs + 30.0).clamp(45.0, 240.0));
+    let response = run_bridge_stream(audio, sample_rate, &locale, timeout)
+        .context("Apple STT bridge stream (long-lived AudioBuffer) failed")?;
+
+    Ok(raw_transcript_from_bridge_response(response))
+}
+
+/// Legacy live path: temp WAV + `transcribe_live` (per-request windowed engine).
+/// Kept as A/B escape hatch; product default is `stream`.
+fn transcribe_via_bridge_wav_live(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+) -> Result<RawTranscript> {
     let wav = TempWavFile::write(audio, sample_rate)?;
     let audio_path = wav.path().display().to_string();
     let locale = resolved_locale(language);
@@ -341,14 +371,143 @@ fn transcribe_via_bridge(
         audio_path: Some(audio_path.as_str()),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
     };
-    // Buffer-live can take ~audio_len + margin; reuse long timeout (30s default
-    // is tight for multi-minute utterances — compute from sample count).
     let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
-    let timeout = std::time::Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
+    let timeout = Duration::from_secs_f64((audio_secs + 20.0).clamp(30.0, 180.0));
     let response = run_bridge_with_timeout(&request, Some(timeout))
         .context("Apple STT bridge transcribe_live (virtual mic / AudioBuffer) failed")?;
-
     Ok(raw_transcript_from_bridge_response(response))
+}
+
+/// Streaming v2 client: feed raw PCM into a long-lived bridge recognition task.
+///
+/// Wire protocol (stdin):
+/// 1. JSON `BridgeRequest` line — `command: "stream"`, locale, no audio_path
+/// 2. JSON PCM header line — `{"rate":<hz>,"channels":1}`
+/// 3. interleaved f32le frames until stdin EOF
+///
+/// Wire protocol (stdout): NDJSON progress (`{"event":...}`) then a final
+/// `BridgeResponse` line (has `status`/`ok`, no `event` key).
+fn run_bridge_stream(
+    audio: &[f32],
+    sample_rate: u32,
+    locale: &str,
+    timeout: Duration,
+) -> Result<BridgeResponse> {
+    let _guard = bridge_global_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let bridge_bin = bridge_binary();
+    let mut child = Command::new(&bridge_bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn Apple STT bridge '{}'",
+                bridge_bin.display()
+            )
+        })?;
+
+    let write_result = (|| -> Result<()> {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .context("Apple STT bridge stdin unavailable")?;
+
+        let request = BridgeRequest {
+            protocol_version: 1,
+            command: "stream",
+            locale,
+            audio_path: None,
+            allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
+        };
+        let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
+        stdin
+            .write_all(&req_payload)
+            .context("write stream request")?;
+        stdin.write_all(b"\n").context("write stream request EOL")?;
+
+        // Header must be compact one-liner; bridge reads with convertFromSnakeCase
+        // but we emit the canonical short keys the Swift StreamHeader expects.
+        let header = format!("{{\"rate\":{},\"channels\":1}}\n", sample_rate as f64);
+        stdin
+            .write_all(header.as_bytes())
+            .context("write stream PCM header")?;
+
+        // Interleaved f32le mono — matches bridge AVAudioFormat(interleaved: true).
+        let mut pcm = Vec::with_capacity(audio.len() * 4);
+        for &sample in audio {
+            pcm.extend_from_slice(&sample.to_le_bytes());
+        }
+        stdin.write_all(&pcm).context("write stream PCM frames")?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
+    // EOF ends the stream session on the bridge side.
+    drop(child.stdin.take());
+
+    let output = wait_with_timeout(&mut child, timeout)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if detail.is_empty() {
+            bail!(
+                "Apple STT bridge (stream) exited with status {}",
+                output.status
+            );
+        }
+        bail!(
+            "Apple STT bridge (stream) exited with status {}: {}",
+            output.status,
+            detail
+        );
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("bridge stdout is not UTF-8")?;
+    let response =
+        parse_stream_bridge_response(&stdout).context("parse Apple STT bridge stream response")?;
+    if !response.is_ok() {
+        let message = response
+            .error
+            .unwrap_or_else(|| "bridge stream returned error without message".to_string());
+        bail!("{message}");
+    }
+    Ok(response)
+}
+
+/// Pick the closing `BridgeResponse` from a stream session stdout.
+/// Progress lines carry `"event"`; the summary is a normal response (no event).
+fn parse_stream_bridge_response(stdout: &str) -> Result<BridgeResponse> {
+    let mut last_response: Option<BridgeResponse> = None;
+    let mut last_parse_err: Option<String> = None;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Progress NDJSON — skip without treating as failure.
+        if trimmed.contains("\"event\"") {
+            continue;
+        }
+        match serde_json::from_str::<BridgeResponse>(trimmed) {
+            Ok(resp) => last_response = Some(resp),
+            Err(e) => last_parse_err = Some(format!("{e}: {trimmed}")),
+        }
+    }
+    if let Some(resp) = last_response {
+        return Ok(resp);
+    }
+    if let Some(err) = last_parse_err {
+        bail!("no BridgeResponse in stream stdout; last parse error: {err}");
+    }
+    bail!("Apple STT bridge stream returned no response lines")
 }
 
 fn raw_transcript_from_bridge_response(response: BridgeResponse) -> RawTranscript {
@@ -909,6 +1068,32 @@ impl Drop for TempWavFile {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn parse_stream_bridge_response_skips_events_keeps_summary() {
+        let stdout = r#"
+{"event":"ready"}
+{"event":"partial","text":"cześć"}
+{"event":"final","text":"cześć świecie","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4,"confidence":0.9}]}
+{"event":"end"}
+{"ok":true,"status":"ok","text":"cześć świecie","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4},{"text":"świecie","start_ts":0.4,"end_ts":0.9}],"backend":"sf_speech_recognizer","speech_auth":"authorized"}
+"#;
+        let resp = parse_stream_bridge_response(stdout).expect("summary line");
+        assert!(resp.is_ok());
+        assert_eq!(resp.text, "cześć świecie");
+        assert_eq!(resp.segments.len(), 2);
+        assert_eq!(resp.backend.as_deref(), Some("sf_speech_recognizer"));
+    }
+
+    #[test]
+    fn parse_stream_bridge_response_errors_when_only_events() {
+        let stdout = "{\"event\":\"ready\"}\n{\"event\":\"end\"}\n";
+        let err = parse_stream_bridge_response(stdout).unwrap_err();
+        assert!(
+            err.to_string().contains("no response"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     #[serial]
