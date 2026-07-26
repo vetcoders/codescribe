@@ -1145,11 +1145,18 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         var frozen: FrozenPhrase? = nil
         // Detect SFSpeech phrase restart without isFinal: new partial neither
         // extends nor is a prefix of the previous hypothesis → freeze prior.
+        //
+        // A RESTART collapses the hypothesis to a few words; a REVISION keeps
+        // most of it and only rewords the middle. Measured on the parity
+        // fixture: all 13 restarts landed at ≤12 chars (from 47…191), while a
+        // revision shrank 95 → 79 — and the old "shorter by 12+" rule froze
+        // that revision as a phrase, sealing the same span twice (the residual
+        // duplication at similarity 0.872).
         if !partialText.isEmpty && !t.isEmpty {
             let prev = partialText
             let extends = t.hasPrefix(prev) || prev.hasPrefix(t) || t.contains(prev) || prev.contains(t)
-            let collapsed = t.count + 12 < prev.count
-            if collapsed && !extends {
+            let restarted = (t.count * 3 < prev.count) || (t.count <= 15 && prev.count >= 25)
+            if restarted && !extends {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
                 frozen = FrozenPhrase(text: prev, segments: partialSegments)
