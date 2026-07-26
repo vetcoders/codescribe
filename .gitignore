@@ -89,3 +89,4 @@ docs/runtime-diagnosis.md
 
 # Astro build cache (generated)
 site/.astro/
+*.sha256
