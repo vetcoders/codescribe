@@ -7,6 +7,7 @@
 //! Decomposed into responsibility modules; this facade preserves the original
 //! `pipeline::streaming::*` import surface for all external consumers.
 
+pub(crate) mod apple_live_session;
 pub(crate) mod correction;
 pub(crate) mod emitter;
 pub mod live_assembly;

@@ -266,11 +266,29 @@ fn emit_session_finalised(
 /// The engine processes audio → VAD → Whisper → PostProcess and emits
 /// `EngineEvent`s. No presentation logic (typing animation, buffer delay,
 /// etc.) — that's the consumer's responsibility.
+///
+/// When the active STT engine is Apple and progressive stream mode is on
+/// (default; escape hatch `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`), the session
+/// takes the system-dictation path: one long-lived SFSpeech stream whose
+/// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
+/// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
 pub(crate) async fn transcription_session(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
     config: SessionConfig,
 ) {
+    // Apple progressive stream branch — must run before the VAD/scheduler path
+    // consumes the receiver.
+    if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
+        super::apple_live_session::apple_stream_transcription_session(
+            chunk_receiver,
+            event_sink,
+            config,
+        )
+        .await;
+        return;
+    }
+
     let SessionConfig {
         sample_rate,
         language,
