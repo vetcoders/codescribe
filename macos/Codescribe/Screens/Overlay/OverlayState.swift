@@ -362,7 +362,16 @@ final class OverlayState: ObservableObject {
     var metaText: String {
         if isFinalPass { return "final pass · formatting" }
         switch mode {
-        case .listening: return transcribing ? "finalizing · transcript" : "live preview · raw"
+        case .listening:
+            if transcribing { return "finalizing · transcript" }
+            // Honesty (operator 2026-07-27): never claim "live preview" while the
+            // canvas is still empty. Apple may be shy (letter-level confidence) or
+            // Previews may not have drained yet — badge must not assert streaming
+            // text the user cannot see. Claim live preview only once interim or
+            // committed text is on the canvas.
+            let canvas = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if canvas.isEmpty { return "listening · canvas open" }
+            return "live preview · raw"
         case .formatted: return "final · transcript"
         case .noSpeech: return "no speech · nothing captured"
         case .error: return "error · recording stopped"

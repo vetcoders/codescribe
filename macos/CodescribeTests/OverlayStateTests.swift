@@ -317,6 +317,27 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.liveText, "first utterance second utterance")
     }
 
+    /// Product honesty: badge must not say "live preview · raw" while the body
+    /// is only the empty-canvas placeholder ("listening…"). Claim live preview
+    /// only after `applyPreview` / `applyFinal` put text on the canvas.
+    func testMetaTextClaimsLivePreviewOnlyWhenCanvasHasText() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+
+        XCTAssertEqual(state.metaText, "listening · canvas open")
+        XCTAssertTrue(state.liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        state.applyPreview("apple partial")
+        XCTAssertEqual(state.metaText, "live preview · raw")
+        XCTAssertEqual(state.liveText, "apple partial")
+
+        state.applyFinal(utteranceId: 1, "apple partial sealed")
+        // Canvas still non-empty after seal (committed text remains).
+        XCTAssertEqual(state.metaText, "live preview · raw")
+        XCTAssertEqual(state.liveText, "apple partial sealed")
+    }
+
     func testSessionFinalisedStartsFinalPassUntilControllerStops() {
         let state = OverlayState()
         state.handleRecordingPreparing()
