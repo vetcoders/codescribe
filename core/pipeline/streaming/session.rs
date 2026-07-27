@@ -273,7 +273,7 @@ fn emit_session_finalised(
 /// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
 /// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
 pub(crate) async fn transcription_session(
-    mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
+    chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
     config: SessionConfig,
 ) {
@@ -289,6 +289,19 @@ pub(crate) async fn transcription_session(
         return;
     }
 
+    vad_transcription_session(chunk_receiver, event_sink, config).await;
+}
+
+/// Legacy VAD + per-window scheduler session body. Tests that assert the
+/// VAD-path contract (`vad_no_speech_detected`, final Stats) target this
+/// directly: routing in [`transcription_session`] reads process-global engine
+/// state, which sibling engine-selection tests mutate via `set_var` — going
+/// through the router makes the contract dependent on test scheduling.
+pub(crate) async fn vad_transcription_session(
+    mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
+    event_sink: Arc<dyn EventSink>,
+    config: SessionConfig,
+) {
     let SessionConfig {
         sample_rate,
         language,

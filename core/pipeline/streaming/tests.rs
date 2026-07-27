@@ -1363,7 +1363,9 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
     let (tx, rx) = mpsc::channel::<Vec<f32>>(1);
     drop(tx);
     let sink = Arc::new(CollectorEventSink::new());
-    transcription_session(
+    // VAD-path contract test — call the VAD body directly. The router reads
+    // process-global engine env that sibling tests mutate concurrently.
+    vad_transcription_session(
         rx,
         sink.clone(),
         SessionConfig {
@@ -1667,7 +1669,9 @@ async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() 
     });
 
     let sink = Arc::new(CollectorEventSink::new());
-    transcription_session(
+    // VAD-path contract test — call the VAD body directly (see empty-input
+    // test above for the router/env-race rationale).
+    vad_transcription_session(
         rx,
         sink.clone(),
         SessionConfig {

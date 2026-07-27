@@ -93,6 +93,15 @@ pub(crate) async fn apple_stream_transcription_session(
         }
     }
 
+    // Worker exited (event channel closed). If audio is still open, keep
+    // consuming to EOF so upstream capture senders never hit a dropped
+    // channel — an early engine death (e.g. bridge spawn failure) must not
+    // turn live audio callbacks into send errors. Mirrors the pre-interleave
+    // contract where the session always outlived the audio stream.
+    if !audio_eof {
+        while chunk_receiver.recv().await.is_some() {}
+    }
+
     match worker.join() {
         Ok(Ok(sealed)) => {
             info!(sealed, "Apple progressive live session finished");
