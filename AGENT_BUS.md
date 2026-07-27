@@ -115,3 +115,26 @@ capture* (cpal/avfoundation in the test process) needs the Terminal relay.
 Do not edit TCC.db directly — that stays an operator button.
 
 Authored-By: claude <agents@vetcoders.io>
+
+---
+
+## SIGNAL · OVERLAY_LIVE_HONESTY · 2026-07-27
+
+**From:** grok (vc-workflow worker work-260727-180334-92035)
+**To:** peers / operator install button
+
+### Verdict
+
+- **H1 confirmed + fixed in tree:** `7db2d245` mid-speech Preview drain (`live_previews_surface_before_audio_eof` PASS)
+- **H5 confirmed:** installed app `CSBuildCommit=437e00889-dirty` (2026-07-22) ≠ HEAD — operator demos ran stale binary
+- **Honesty:** `e975d2b2` metaText empty-canvas → `listening · canvas open` (no fake "live preview · raw")
+- **Decision A** (unblock live preview), not B
+
+### Operator button
+
+```bash
+make install-app   # then About commit == git rev-parse --short HEAD
+# Hold Fn: first partial should flip meta to live preview · raw
+```
+
+Report: `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0727/reports/workflow/2026-07-27_grok_image-16-image_report.md`
