@@ -424,19 +424,30 @@ test-engine-parity: $(ENGINE_BRIDGE)
 	@CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh tests/assets/data_assets/05_apple-live-parity.wav
 
-# Apple live through REAL CoreAudio (operator directive 2026-07-25): with
-# ENGINE_ALL_CLIPS=1 every clip travels player → BlackHole → cpal as a PCM
-# stream — not a WAV fed down a channel — then the parity bar runs last.
-# Without the flag this stays the fast single-clip channel path (below).
+# Apple live engine proof.
+#
+# SEPARATION: daily Codescribe (mic + speakers + teacher) is independent of
+# this target. ENGINE_ALL_CLIPS=1 uses BlackHole ONLY inside the harness
+# (play/capture by device name); system Sound defaults are snapshotted and
+# restored so daily input/output is never left on BlackHole.
+#
+# Without ENGINE_ALL_CLIPS: channel path (WAV→session) — no BlackHole, fine
+# while using the app for real dictation on the same machine.
+#
+# With ENGINE_ALL_CLIPS=1: player → BlackHole → cpal for each 01–04 clip, then
+# the parity bar. Requires brew blackhole-2ch + terminal Microphone TCC +
+# `make engine-auth` (bridge Speech). Do NOT set BH as system default.
 test-engine-apple: $(ENGINE_BRIDGE)
 	@if [ "$(ENGINE_ALL_CLIPS)" = "1" ]; then \
 	  set -e; \
+	  echo "=== harness path (BlackHole isolated; daily Sound defaults restored on exit) ==="; \
 	  for clip in tests/assets/data_assets/0[1-4]_*.wav; do \
 	    echo "=== BlackHole device capture: $$clip ==="; \
 	    ./scripts/e2e-blackhole-dictation.sh "$$clip"; \
 	  done; \
 	  $(MAKE) test-engine-parity; \
 	else \
+	  echo "=== channel path (no BlackHole; safe alongside daily Codescribe) ==="; \
 	  $(MAKE) test-engine-apple-channel; \
 	fi
 
