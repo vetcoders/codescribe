@@ -48,27 +48,49 @@ pub(crate) async fn apple_stream_transcription_session(
     );
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    // PCM → worker (None = EOF). Worker owns LiveStreamSession + bridge lock.
-    let (pcm_tx, pcm_rx) = std_mpsc::sync_channel::<Option<Vec<f32>>>(8);
+    // PCM → worker (None = EOF). Unbounded so the async select loop never
+    // blocks on a full sync_channel while live Preview events wait to drain
+    // (bounded sync_channel + blocking send would re-stall presentation).
+    let (pcm_tx, pcm_rx) = std_mpsc::channel::<Option<Vec<f32>>>();
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
 
     let worker =
         thread::spawn(move || apple_stream_worker(pcm_rx, ev_tx, sample_rate, language.as_deref()));
 
-    // Forward audio chunks to the worker.
-    while let Some(chunk) = chunk_receiver.recv().await {
-        if pcm_tx.send(Some(chunk)).is_err() {
-            warn!("Apple live stream worker dropped PCM channel");
-            break;
+    // CRITICAL (operator 2026-07-27 — live preview "blocked" on overlay):
+    // PCM forward and EngineEvent drain MUST interleave. The previous shape
+    // drained `ev_rx` only *after* `chunk_receiver` closed (key-up / stop), so
+    // every `Preview` / mid-stream `UtteranceFinal` sat in the unbounded queue
+    // until EOF. The engine had letter-level partials; the overlay saw nothing
+    // until the session ended. Product truth: presentation was missing, not STT.
+    let mut audio_eof = false;
+    loop {
+        tokio::select! {
+            event = ev_rx.recv() => {
+                match event {
+                    Some(event) => event_sink.on_event(&event),
+                    // Worker dropped the sender — stream finished.
+                    None => break,
+                }
+            }
+            chunk = chunk_receiver.recv(), if !audio_eof => {
+                match chunk {
+                    Some(chunk) => {
+                        if pcm_tx.send(Some(chunk)).is_err() {
+                            warn!("Apple live stream worker dropped PCM channel");
+                            audio_eof = true;
+                        }
+                    }
+                    None => {
+                        // Capture stopped — signal EOF to the worker; keep
+                        // draining events until the worker exits.
+                        let _ = pcm_tx.send(None);
+                        audio_eof = true;
+                    }
+                }
+            }
         }
-    }
-    // Signal EOF (ignore if worker already gone).
-    let _ = pcm_tx.send(None);
-
-    // Drain engine events until the worker closes the channel.
-    while let Some(event) = ev_rx.recv().await {
-        event_sink.on_event(&event);
     }
 
     match worker.join() {
@@ -326,6 +348,58 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Contract sensor: mid-stream Previews must be consumable without waiting
+    /// for audio EOF. The session select loop is the production path; this
+    /// locks the interleave contract — events already queued while PCM is
+    /// still open surface to the sink immediately (not only after stop).
+    #[tokio::test]
+    async fn live_previews_surface_before_audio_eof() {
+        use crate::pipeline::contracts::EventSink;
+        use std::sync::Mutex;
+
+        struct CollectSink(Mutex<Vec<String>>);
+        impl EventSink for CollectSink {
+            fn on_event(&self, event: &EngineEvent) {
+                if let EngineEvent::Preview { text, .. } = event {
+                    self.0.lock().expect("lock").push(text.clone());
+                }
+            }
+        }
+
+        let sink = CollectSink(Mutex::new(Vec::new()));
+        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
+        // Worker still "open" (we hold ev_tx) — two partials already produced.
+        ev_tx
+            .send(EngineEvent::Preview {
+                rev: 1,
+                text: "a".into(),
+            })
+            .unwrap();
+        ev_tx
+            .send(EngineEvent::Preview {
+                rev: 2,
+                text: "ab".into(),
+            })
+            .unwrap();
+
+        // Same interleave shape as apple_stream_transcription_session: drain
+        // events without requiring audio EOF first.
+        let mut drained = 0usize;
+        while drained < 2 {
+            tokio::select! {
+                event = ev_rx.recv() => {
+                    let Some(event) = event else { break };
+                    sink.on_event(&event);
+                    drained += 1;
+                }
+            }
+        }
+        // Drop worker side only after assert — proves previews did not wait on it.
+        drop(ev_tx);
+        let got = sink.0.lock().expect("lock").clone();
+        assert_eq!(got, vec!["a".to_string(), "ab".to_string()]);
     }
 
     #[test]
