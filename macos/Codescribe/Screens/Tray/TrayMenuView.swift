@@ -27,7 +27,7 @@ struct TrayMenuView: View {
                 primaryActions
 
                 TrayDivider()
-                quickToggles
+                quickSettingsGroup
 
                 notesGroup
                 diagnosticsGroup
@@ -164,7 +164,30 @@ struct TrayMenuView: View {
         }
     }
 
-    // MARK: - Quick config toggles
+    // MARK: - Quick config toggles (collapsed by default)
+
+    /// Seven day-to-day toggles live under one disclosure so the cold-open tray
+    /// stays short: primary actions first, preferences on demand.
+    private var quickSettingsGroup: some View {
+        VStack(spacing: 0) {
+            TrayRow(
+                icon: .settings,
+                title: "Quick settings",
+                disclosureExpanded: viewModel.quickSettingsExpanded,
+                style: viewModel.quickSettingsExpanded ? .raised : .plain
+            ) {
+                withAnimation(TrayDisclosureChevron.animation) {
+                    viewModel.quickSettingsExpanded.toggle()
+                }
+            }
+
+            if viewModel.quickSettingsExpanded {
+                TrayDisclosureChildren {
+                    quickToggles
+                }
+            }
+        }
+    }
 
     private var quickToggles: some View {
         VStack(spacing: 0) {

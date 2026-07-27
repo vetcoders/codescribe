@@ -127,6 +127,16 @@ final class TrayViewModelTests: XCTestCase {
         XCTAssertEqual(TrayDisclosureChevron.rotationDegrees(expanded: true), 90)
     }
 
+    /// Cold-open tray must not dump Notes / Quick settings / History open —
+    /// product grew a wall of rows; default is collapsed-on-demand.
+    func testTrayDisclosuresDefaultCollapsed() {
+        let model = TrayViewModel()
+        XCTAssertFalse(model.notesExpanded)
+        XCTAssertFalse(model.diagnosticsExpanded)
+        XCTAssertFalse(model.historyExpanded)
+        XCTAssertFalse(model.quickSettingsExpanded)
+    }
+
     func testStatusDotCompositesInsideGlyphBottomRightCorner() throws {
         let size = NSSize(width: 20, height: 20)
         let bounds = NSRect(origin: .zero, size: size)

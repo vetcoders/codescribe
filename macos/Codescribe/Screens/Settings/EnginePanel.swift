@@ -9,6 +9,11 @@ import SwiftUI
 struct EnginePanel: View {
     @ObservedObject var model: SettingsViewModel
     @State private var advancedTimingExpanded = false
+    /// Secondary blocks start collapsed — cold open shows runtime + engine only.
+    @State private var whisperModelExpanded = false
+    @State private var previewTimingExpanded = false
+    @State private var silenceExpanded = false
+    @State private var permissionsExpanded = false
 
     private let matrixOrder: [PermissionKind] = [
         .microphone, .accessibility, .inputMonitoring, .screenRecording,
@@ -52,33 +57,41 @@ struct EnginePanel: View {
             engineControls
                 .padding(.top, 11)
 
-            SettingsSectionLabel("Local Whisper model")
-                .padding(.top, 22)
-            whisperDownloadSection
-                .padding(.top, 11)
+            collapsibleSection(
+                title: "Local Whisper model",
+                isExpanded: $whisperModelExpanded
+            ) {
+                whisperDownloadSection
+            }
 
-            SettingsSectionLabel("Preview timing")
-                .padding(.top, 22)
-            previewTimingSection
-                .padding(.top, 11)
+            collapsibleSection(
+                title: "Preview timing",
+                isExpanded: $previewTimingExpanded
+            ) {
+                previewTimingSection
+            }
 
-            SettingsSectionLabel("Hands-free silence")
-                .padding(.top, 22)
-            silenceSection
-                .padding(.top, 11)
+            collapsibleSection(
+                title: "Hands-free silence",
+                isExpanded: $silenceExpanded
+            ) {
+                silenceSection
+            }
 
-            SettingsSectionLabel("Permission matrix")
-                .padding(.top, 22)
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(matrixOrder) { kind in
-                    PermissionMatrixCell(
-                        kind: kind,
-                        state: model.permissions.state(kind),
-                        onStateChanged: { model.refresh() }
-                    )
+            collapsibleSection(
+                title: "Permission matrix",
+                isExpanded: $permissionsExpanded
+            ) {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(matrixOrder) { kind in
+                        PermissionMatrixCell(
+                            kind: kind,
+                            state: model.permissions.state(kind),
+                            onStateChanged: { model.refresh() }
+                        )
+                    }
                 }
             }
-            .padding(.top, 11)
 
             HStack(spacing: 8) {
                 Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
@@ -90,6 +103,22 @@ struct EnginePanel: View {
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
+    }
+
+    /// Section chrome: label is the disclosure chevron host; body mounts only when open.
+    private func collapsibleSection<Content: View>(
+        title: String,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            content()
+                .padding(.top, 11)
+        } label: {
+            SettingsSectionLabel(title)
+        }
+        .tint(CSColor.chromeAccent)
+        .padding(.top, 22)
     }
 
     // MARK: Runtime key/value rows (STT truth only — LLM truth lives in Providers)

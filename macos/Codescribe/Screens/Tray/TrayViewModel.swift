@@ -23,11 +23,14 @@ final class TrayViewModel: ObservableObject {
     @Published var startInAssistive: Bool = false
     @Published var holdBadgeOption: HoldBadgeOption = .twelve
 
-    // Disclosure state for the nested groups. Notes is expanded by default to
-    // match the static mock; Diagnostics and History are collapsed.
-    @Published var notesExpanded: Bool = true
+    // Disclosure state for nested groups. Default ALL collapsed — the tray
+    // grew into a wall of toggles; open only what the user asks for.
+    // (Historical: Notes started expanded for the static mock; that made every
+    // cold open feel non-collapsed / "rozrośnięte".)
+    @Published var notesExpanded: Bool = false
     @Published var diagnosticsExpanded: Bool = false
     @Published var historyExpanded: Bool = false
+    @Published var quickSettingsExpanded: Bool = false
 
     // Transient result banner for the Notes actions ("Save selection" / "Save
     // last transcript"). Rendered inside the still-open popover so the user gets
