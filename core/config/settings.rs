@@ -710,6 +710,7 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.mode.as_ref())
+                .filter(|mode| !mode.trim().is_empty())
                 .map(|mode| mode == "local_whisper"),
             local_model: v2
                 .speech
