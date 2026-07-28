@@ -129,6 +129,16 @@ echo "  ✓ Stapled to ${APP_NAME}.app"
 xcrun stapler staple "$DMG_FILE"
 echo "  ✓ Stapled to ${DMG_FILE}"
 
+# Stapling rewrites the DMG bytes, so the .sha256 build-dmg.sh wrote at create
+# time no longer matches — refresh it or the published checksum is a lie.
+if [ -f "${DMG_FILE}.sha256" ]; then
+  (
+    cd "$(dirname "$DMG_FILE")"
+    shasum -a 256 "$(basename "$DMG_FILE")" > "$(basename "$DMG_FILE").sha256"
+  )
+  echo "  ✓ Refreshed ${DMG_FILE}.sha256 (post-staple bytes)"
+fi
+
 # Step 4: Verify Gatekeeper acceptance
 echo ""
 echo "▶ Verifying Gatekeeper acceptance..."
