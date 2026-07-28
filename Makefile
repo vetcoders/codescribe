@@ -674,7 +674,20 @@ release-dmgs: release-standard release-full
 notarize:
 	@if ls Codescribe_*.dmg 1> /dev/null 2>&1; then \
 		DMG=$$(ls -t Codescribe_*.dmg | head -1); \
-		./scripts/notarize.sh "$$DMG"; \
+		HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
+		case "$$DMG" in \
+		*"$$HEAD_SHA"*) ./scripts/notarize.sh "$$DMG";; \
+		*) if [ "$(FORCE_NOTARIZE)" = "1" ]; then \
+			echo "FORCE_NOTARIZE=1 — notarizing '$$DMG' despite HEAD mismatch ($$HEAD_SHA)"; \
+			./scripts/notarize.sh "$$DMG"; \
+		else \
+			echo "REFUSING: newest DMG '$$DMG' was not cut from HEAD ($$HEAD_SHA)."; \
+			echo "Stapling a stale artifact is how you end up testing a two-day-old build."; \
+			echo "Run 'make dmg-signed' first (it names the DMG after the commit it was cut"; \
+			echo "from), or override consciously with FORCE_NOTARIZE=1."; \
+			exit 1; \
+		fi;; \
+		esac; \
 	else \
 		echo "No DMG found. Run 'make dmg-signed' first."; \
 	fi

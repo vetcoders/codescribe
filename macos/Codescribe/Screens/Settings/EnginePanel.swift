@@ -109,7 +109,7 @@ struct EnginePanel: View {
     private func collapsibleSection<Content: View>(
         title: String,
         isExpanded: Binding<Bool>,
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         DisclosureGroup(isExpanded: isExpanded) {
             content()

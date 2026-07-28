@@ -404,6 +404,7 @@ enum ComposerDictationPhase: Equatable {
 /// (`RealComposerDictation`, Core layer) wraps the `CodescribeDictation` bridge;
 /// kept bridge-free here so the view-model + #Preview stay standalone (nil = mic
 /// is a no-op, e.g. in previews).
+@MainActor
 protocol ComposerDictating: AnyObject {
     /// Start recording when idle, stop-and-insert when recording.
     func toggle()
