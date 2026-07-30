@@ -2,8 +2,7 @@ import XCTest
 @testable import Codescribe
 
 /// Pure scroll logic behind the chat message list: the follow-tail decision
-/// (`followTailAfterScroll`, slack boundary) and the "↓ Latest" pill visibility
-/// matrix (`showLatestPill`).
+/// (`followTailAfterScroll`, slack boundary) and the bounded tail signature.
 @MainActor
 final class MessageListFollowTailTests: XCTestCase {
     // MARK: followTailAfterScroll boundaries (viewport 600, slack 40 → edge 640)
@@ -42,24 +41,6 @@ final class MessageListFollowTailTests: XCTestCase {
         XCTAssertFalse(MessageList.followTailAfterScroll(
             contentBottom: 640.5, viewportHeight: 600
         ))
-    }
-
-    // MARK: showLatestPill matrix (4 cases)
-
-    func testPillHiddenWhileFollowingDuringStream() {
-        XCTAssertFalse(MessageList.showLatestPill(followTail: true, isStreaming: true))
-    }
-
-    func testPillHiddenWhileFollowingIdle() {
-        XCTAssertFalse(MessageList.showLatestPill(followTail: true, isStreaming: false))
-    }
-
-    func testPillShownWhenDetachedDuringStream() {
-        XCTAssertTrue(MessageList.showLatestPill(followTail: false, isStreaming: true))
-    }
-
-    func testPillHiddenWhenDetachedOverSettledThread() {
-        XCTAssertFalse(MessageList.showLatestPill(followTail: false, isStreaming: false))
     }
 
     // MARK: tailSignature (the auto-scroll trigger)

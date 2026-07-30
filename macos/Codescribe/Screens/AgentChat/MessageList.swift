@@ -1,10 +1,52 @@
 import SwiftUI
 import AppKit
 
+enum StreamScrollFollowAction: Equatable {
+    case none
+    case scrollToLiveEdge
+}
+
+/// Explicit state machine for the message viewport. Content growth is allowed
+/// to move the viewport only while the operator is following the live edge.
+struct StreamScrollFollowState: Equatable {
+    enum Event: Equatable {
+        case contentChanged
+        case userScrollBegan
+        case userViewportChanged(isAtLiveEdge: Bool)
+        case jumpToCurrent
+        case threadChanged
+        case streamFinished
+    }
+
+    private(set) var followingLive = true
+    var showsJumpToCurrent: Bool { !followingLive }
+
+    mutating func handle(_ event: Event) -> StreamScrollFollowAction {
+        switch event {
+        case .contentChanged:
+            return followingLive ? .scrollToLiveEdge : .none
+        case .userScrollBegan:
+            followingLive = false
+            return .none
+        case let .userViewportChanged(isAtLiveEdge):
+            if isAtLiveEdge {
+                followingLive = true
+            }
+            return .none
+        case .jumpToCurrent, .threadChanged:
+            followingLive = true
+            return .scrollToLiveEdge
+        case .streamFinished:
+            return .none
+        }
+    }
+}
+
 /// Scrolling turn list: You (terracotta bubble, right) · Tool activity
 /// (DisclosureGroup, mono) · Assistant (amber "reasoned · Xs" chip + body,
 /// last turn streams with a blink caret). Auto-scrolls to the newest turn.
 struct MessageList: View {
+    let threadID: UUID
     let messages: [ChatMessage]
     /// Flips a bubble between raw mono and rich markdown. State lives in the
     /// store (per-message `renderMode`), never in this view.
@@ -14,7 +56,7 @@ struct MessageList: View {
     /// to the newest turn only while the user is already at the bottom. Scrolling up
     /// during a stream pauses the follow; returning to the bottom resumes it, so the
     /// view stops fighting the user's manual scroll on a long streamed message.
-    @State private var followTail = true
+    @State private var followState = StreamScrollFollowState()
     private let scrollSpace = "chatMessageScroll"
     private let bottomAnchor = "chatMessageBottom"
 
@@ -41,6 +83,13 @@ struct MessageList: View {
                             )
                         }
                     )
+                    // Lives inside the document view so `enclosingScrollView`
+                    // resolves to this message list rather than an outer pane.
+                    .background(
+                        ChatLiveScrollObserver { event in
+                            _ = followState.handle(event)
+                        }
+                    )
                 }
                 .coordinateSpace(name: scrollSpace)
                 .scrollContentBackground(.hidden)
@@ -49,28 +98,32 @@ struct MessageList: View {
                 // context menu below.
                 .textSelection(.enabled)
                 .onPreferenceChange(ChatBottomKey.self) { contentBottom in
-                    followTail = Self.followTailAfterScroll(
+                    let isAtLiveEdge = Self.followTailAfterScroll(
                         contentBottom: contentBottom,
                         viewportHeight: viewport.size.height
                     )
+                    _ = followState.handle(.userViewportChanged(isAtLiveEdge: isAtLiveEdge))
                 }
                 .onChange(of: Self.tailSignature(messages)) { _, _ in
-                    guard followTail else { return }
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    perform(followState.handle(.contentChanged), with: proxy)
+                }
+                .onChange(of: messages.last?.isStreaming == true) { wasStreaming, isStreaming in
+                    if wasStreaming, !isStreaming {
+                        _ = followState.handle(.streamFinished)
                     }
                 }
+                .onChange(of: threadID) { _, _ in
+                    perform(followState.handle(.threadChanged), with: proxy)
+                }
+                .onAppear {
+                    perform(.scrollToLiveEdge, with: proxy, animated: false)
+                }
                 .overlay(alignment: .bottom) {
-                    let pillVisible = Self.showLatestPill(
-                        followTail: followTail,
-                        isStreaming: messages.last?.isStreaming == true
-                    )
+                    let pillVisible = followState.showsJumpToCurrent
                     ZStack {
                         if pillVisible {
-                            LatestPill {
-                                withAnimation(.easeOut(duration: 0.25)) {
-                                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                                }
+                            JumpToCurrentButton {
+                                perform(followState.handle(.jumpToCurrent), with: proxy)
                             }
                             .padding(.bottom, 10)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -82,6 +135,21 @@ struct MessageList: View {
         }
     }
 
+    private func perform(
+        _ action: StreamScrollFollowAction,
+        with proxy: ScrollViewProxy,
+        animated: Bool = true
+    ) {
+        guard action == .scrollToLiveEdge else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+    }
+
     // MARK: Pure scroll/pill logic (XCTest-covered, see MessageListFollowTailTests)
 
     /// At-bottom decision: the content's bottom edge sits within `slack` of the
@@ -89,12 +157,6 @@ struct MessageList: View {
     static func followTailAfterScroll(contentBottom: CGFloat, viewportHeight: CGFloat,
                                       slack: CGFloat = 40) -> Bool {
         contentBottom <= viewportHeight + slack
-    }
-
-    /// The "↓ Latest" pill shows only while the user is detached from the bottom
-    /// AND the newest turn is still streaming — never over a settled thread.
-    static func showLatestPill(followTail: Bool, isStreaming: Bool) -> Bool {
-        !followTail && isStreaming
     }
 
     /// Changes whenever a new turn lands or the streaming tail grows — the
@@ -128,10 +190,9 @@ struct MessageList: View {
     }
 }
 
-/// Floating "↓ Latest" pill over the bottom edge: appears when the user scrolls
-/// away mid-stream; click jumps to the tail (follow-tail re-engages naturally via
-/// the bottom-edge preference). Styled after the composer chip pill pattern.
-private struct LatestPill: View {
+/// Floating return affordance. It remains available after a stream settles:
+/// finishing generation never takes the operator's chosen reading position.
+private struct JumpToCurrentButton: View {
     let action: () -> Void
     @State private var hovering = false
 
@@ -140,7 +201,7 @@ private struct LatestPill: View {
             HStack(spacing: 5) {
                 CSIconView(icon: .chevronDown, size: 9, weight: .semibold,
                            color: CSColor.chromeAccent)
-                Text("Latest")
+                Text("Current")
                     .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(hovering ? CSColor.textHigh : CSColor.textBody)
             }
@@ -156,7 +217,8 @@ private struct LatestPill: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Jump to the latest reply")
+        .accessibilityLabel("Jump to current")
+        .help("Jump to the current reply")
     }
 }
 
@@ -166,6 +228,108 @@ private struct ChatBottomKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+/// macOS 14-compatible user-intent detector. SwiftUI's geometry preference
+/// reports position but cannot distinguish a wheel/trackpad/scrollbar gesture
+/// from `ScrollViewProxy.scrollTo`; AppKit live-scroll notifications can.
+private struct ChatLiveScrollObserver: NSViewRepresentable {
+    let onEvent: (StreamScrollFollowState.Event) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onEvent: onEvent)
+    }
+
+    func makeNSView(context: Context) -> AttachmentView {
+        let view = AttachmentView()
+        view.onAttach = { [weak coordinator = context.coordinator] scrollView in
+            coordinator?.attach(to: scrollView)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: AttachmentView, context: Context) {
+        context.coordinator.onEvent = onEvent
+        nsView.attachWhenReady()
+    }
+
+    static func dismantleNSView(_ nsView: AttachmentView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class AttachmentView: NSView {
+        var onAttach: ((NSScrollView) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            attachWhenReady()
+        }
+
+        func attachWhenReady() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let scrollView = enclosingScrollView else { return }
+                onAttach?(scrollView)
+            }
+        }
+    }
+
+    final class Coordinator {
+        var onEvent: (StreamScrollFollowState.Event) -> Void
+        private weak var scrollView: NSScrollView?
+        private var observers: [NSObjectProtocol] = []
+
+        init(onEvent: @escaping (StreamScrollFollowState.Event) -> Void) {
+            self.onEvent = onEvent
+        }
+
+        func attach(to scrollView: NSScrollView) {
+            guard self.scrollView !== scrollView else { return }
+            detach()
+            self.scrollView = scrollView
+            let center = NotificationCenter.default
+            observers = [
+                center.addObserver(
+                    forName: NSScrollView.willStartLiveScrollNotification,
+                    object: scrollView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.onEvent(.userScrollBegan)
+                },
+                center.addObserver(
+                    forName: NSScrollView.didLiveScrollNotification,
+                    object: scrollView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.reportViewport()
+                },
+                center.addObserver(
+                    forName: NSScrollView.didEndLiveScrollNotification,
+                    object: scrollView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.reportViewport()
+                },
+            ]
+        }
+
+        func detach() {
+            let center = NotificationCenter.default
+            observers.forEach(center.removeObserver)
+            observers.removeAll()
+            scrollView = nil
+        }
+
+        private func reportViewport() {
+            guard let scrollView, let documentView = scrollView.documentView else { return }
+            let visibleBottom = scrollView.contentView.documentVisibleRect.maxY
+            let distanceFromLiveEdge = documentView.bounds.maxY - visibleBottom
+            onEvent(.userViewportChanged(isAtLiveEdge: distanceFromLiveEdge <= 40))
+        }
+
+        deinit {
+            detach()
+        }
     }
 }
 
