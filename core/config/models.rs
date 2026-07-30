@@ -100,12 +100,15 @@ impl ModelManager {
                 .context("Failed to canonicalize bundled models path");
         }
 
-        // 2. Development: exe in target/debug/ -> ../../models/
-        let dev_path = exe_dir.join("../../models");
-        if dev_path.exists() {
-            return dev_path
-                .canonicalize()
-                .context("Failed to canonicalize dev models path");
+        // 2. Development: exe in target/debug/ -> ../../models/, or a test
+        //    binary in target/debug/deps/ -> ../../../models/
+        for dev_candidate in ["../../models", "../../../models"] {
+            let dev_path = exe_dir.join(dev_candidate);
+            if dev_path.exists() {
+                return dev_path
+                    .canonicalize()
+                    .context("Failed to canonicalize dev models path");
+            }
         }
 
         // 3. Direct ./models/ (running from repo root)
