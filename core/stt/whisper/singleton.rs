@@ -7,11 +7,19 @@
 //! ## Idle unload
 //!
 //! The Whisper model lives on the GPU (Metal) and is by far the largest single
-//! memory consumer (~3 GB resident). Keeping it loaded across long idle periods
-//! wastes that memory, so the engine is held in a *resettable* slot: after a
-//! configurable idle period with no transcription a background reaper drops it,
-//! returning the GPU/host memory to the system, and the next call transparently
-//! reloads it. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to disable.
+//! memory consumer (~3–7 GB resident after a good pass). Keeping it loaded
+//! across long idle periods wastes that memory, so the engine is held in a
+//! *resettable* slot: after a configurable idle period with no transcription a
+//! background reaper drops the **weights** (the `LocalWhisperEngine`), and the
+//! next call transparently reloads them.
+//!
+//! The Candle Metal `Device` is **not** recreated on reload — it is process-
+//! cached in `engine::process_device` so unload→reload does not leak
+//! IOAccelerator Mach ports / dispatch threads (the reason idle-unload was
+//! previously disabled with `DEFAULT_IDLE_UNLOAD_SECS = 0`).
+//!
+//! Default TTL is 45 minutes. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
+//! keep weights resident for the whole process life.
 
 // This entire module is a public API for library consumers
 
@@ -33,13 +41,13 @@ use super::params::DecodingParams;
 /// Default model name (for dev/fallback mode)
 pub use crate::config::models::DEFAULT_MODEL;
 
-/// Default idle period after which the Whisper engine is unloaded to free GPU
-/// memory. Disabled by default (0): each idle-unload→reload recreates the Metal
-/// device (`Device::new_metal`), leaking IOAccelerator Mach ports + dispatch
-/// threads per cycle and forcing a ~20-30s cold reload after the idle gap.
-/// Keeping the engine resident (~3GB GPU floor) matches the old always-warm
-/// daemon. Re-enable per machine via `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=<secs>`.
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 0;
+/// Default idle period after which Whisper **weights** are unloaded.
+///
+/// 45 minutes balances the operator-measured ~7.5 GB resident floor against
+/// reload cost. Metal `Device` stays process-cached (see engine module), so
+/// reloads after TTL reuse the same device. Override with
+/// `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (`0` disables unload).
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 2700;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -167,12 +175,13 @@ fn reaper_loop() {
             Err(_) => continue,
         };
         if guard.engine.is_some() && guard.last_used.elapsed() >= threshold {
-            // Drop the engine (and its Metal device) while holding the lock so
-            // no transcription can be mid-flight, then return freed pages.
+            // Drop weights only (LocalWhisperEngine). The process-cached Metal
+            // Device in engine::process_device stays alive so the next cold load
+            // reuses it — no Device::new_metal churn / port leak.
             guard.engine = None;
             drop(guard);
             info!(
-                "Whisper engine unloaded after {}s idle; releasing GPU/host memory",
+                "Whisper weights unloaded after {}s idle (Metal device retained); releasing host heap",
                 threshold.as_secs()
             );
             crate::memory::release_freed_heap();
@@ -424,9 +433,8 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "120") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(120)));
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
-        // DEFAULT_IDLE_UNLOAD_SECS is now 0 (idle-unload disabled by default),
-        // so with no override the reaper is off.
-        assert!(idle_unload_after().is_none());
+        // Default is 45 min weight-only unload (Metal device stays process-cached).
+        assert_eq!(idle_unload_after(), Some(Duration::from_secs(2700)));
     }
 
     #[test]

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::env;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -43,6 +44,25 @@ use super::params::DecodingParams;
 
 /// Callback for streaming chunk results (called after each chunk is transcribed)
 pub type ChunkCallback<'a> = &'a dyn Fn(&str);
+
+/// Process-lifetime Candle device for Whisper.
+///
+/// Cached so idle-unload can drop model weights without calling
+/// `Device::new_metal` again. Recreating Metal devices leaks IOAccelerator
+/// Mach ports + dispatch threads and forces a multi-second cold reload.
+///
+/// `Device` is `Clone` (Metal backend shares Arc'd queues/buffer maps); the
+/// cached value keeps the underlying MTL device alive for the process life.
+fn process_device() -> Device {
+    static DEVICE: OnceLock<Device> = OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+            tracing::info!("Whisper process device acquired once: {device:?}");
+            device
+        })
+        .clone()
+}
 
 /// Average decoder tokens per spoken word (BPE subwords + punctuation). Used to
 /// convert the words-per-second cap into a token budget for the runaway
@@ -255,7 +275,7 @@ pub struct LocalWhisperEngine {
 
 impl LocalWhisperEngine {
     pub fn new(model_path: &Path) -> Result<Self> {
-        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        let device = process_device();
         tracing::debug!("LocalWhisperEngine using device: {:?}", device);
 
         let config_path = model_path.join("config.json");
@@ -421,7 +441,7 @@ impl LocalWhisperEngine {
     /// Model data is `include_bytes!` from binary at compile time.
     /// At runtime: bytes → tensors → GPU. No temp files, no extraction.
     pub fn from_embedded(embedded: &EmbeddedModel) -> Result<Self> {
-        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        let device = process_device();
         tracing::info!(
             "Loading embedded Whisper model ({:.1} MB) to {:?}",
             embedded.total_size() as f64 / 1_000_000.0,

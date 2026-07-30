@@ -418,11 +418,11 @@ category = "stt"
 description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
 
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
-default = "300"
+default = "2700"
 type = "u64"
 reload = "hot"
 category = "stt"
-description = "Unload idle Whisper engine after this many seconds (0 disables)"
+description = "Unload idle Whisper weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained. 0 disables unload (weights stay resident)."
 
 [vars.WHISPER_INITIAL_PROMPT]
 default = ""
@@ -739,11 +739,11 @@ category = "embedder"
 description = "HF repo for E5 embedder (used for embedding at build/runtime)"
 
 [vars.CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS]
-default = "300"
+default = "2700"
 type = "u64"
 reload = "hot"
 category = "embedder"
-description = "Unload idle embedder engine after this many seconds (0 disables)"
+description = "Unload idle embedder weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained. 0 disables unload."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM / AI Formatting

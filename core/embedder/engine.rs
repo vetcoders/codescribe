@@ -4,6 +4,7 @@
 //! No runtime downloads; model must be embedded or present on disk.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, Tensor};
@@ -18,6 +19,19 @@ use crate::{hf_cache, safe_path};
 const DEFAULT_MAX_LENGTH: usize = 512;
 const DEFAULT_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
 const ENV_EMBEDDER_REPO: &str = "CODESCRIBE_EMBEDDER_REPO";
+
+/// Process-lifetime Candle device for the embedder (same Metal-leak rationale as
+/// Whisper: idle-unload must not call `Device::new_metal` again).
+fn process_device() -> Device {
+    static DEVICE: OnceLock<Device> = OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+            info!("Embedder process device acquired once: {device:?}");
+            device
+        })
+        .clone()
+}
 
 /// Configuration for the embedder
 #[derive(Debug, Clone)]
@@ -78,7 +92,7 @@ impl EmbedderEngine {
 
     /// Create with custom configuration
     pub fn with_config(mut config: EmbedderConfig) -> Result<Self> {
-        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        let device = process_device();
         debug!("Embedder using device: {:?}", device);
 
         // Explicit overrides disable embedded usage.

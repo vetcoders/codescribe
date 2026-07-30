@@ -79,9 +79,19 @@ final class RealComposerDictation: ComposerDictating {
             self.listener = listener
             dictation.setListener(listener: listener)
             do {
+                // Optional Whisper warm: Apple-live must start even when weights are
+                // missing (gap-fill degraded for the session). Bridge initModel is
+                // soft-fail for Apple; keep recording start unblocked either way.
                 if !modelReady {
-                    try await dictation.initModel()
-                    modelReady = true
+                    do {
+                        try await dictation.initModel()
+                        modelReady = true
+                    } catch {
+                        dictationLog.warning(
+                            "composer dictation: Whisper warm skipped (degraded gap-fill): \(error.localizedDescription, privacy: .public)"
+                        )
+                        // Leave modelReady false so a later session can retry.
+                    }
                 }
                 try await dictation.startRecording(language: nil)  // auto-detect language
                 store.setDictationPhase(.recording)

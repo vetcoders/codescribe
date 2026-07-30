@@ -615,16 +615,29 @@ impl CodescribeDictation {
         }
     }
 
-    /// Load the Whisper engine (idempotent). Runs on a blocking thread because
-    /// model load touches the GPU and can take seconds.
-    /// Wraps `whisper::init` (stt/whisper/singleton.rs:199).
+    /// Optionally warm Whisper weights. Runs on a blocking thread because model
+    /// load touches the GPU and can take seconds.
+    ///
+    /// When the live engine is Apple, Whisper is **gap-fill only** (file final /
+    /// emergency recovery). Missing weights must never refuse recording start —
+    /// we log an honest degraded-mode note and return `Ok(())`. Candle-live
+    /// still requires a model and surfaces load errors.
+    /// Wraps `whisper::init` (stt/whisper/singleton.rs).
     pub async fn init_model(&self) -> Result<(), CsError> {
-        tokio::task::spawn_blocking(whisper::init)
+        let apple_live = codescribe::stt::active_engine_is_apple();
+        let result = tokio::task::spawn_blocking(whisper::init)
             .await
             .map_err(|e| CsError::Recording {
                 msg: format!("init_model task join error: {e}"),
-            })?
-            .map_err(|e| CsError::Recording { msg: e.to_string() })
+            })?;
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) if apple_live => {
+                tracing::warn!("no Whisper gap fill this session (Apple live continues): {e:#}");
+                Ok(())
+            }
+            Err(e) => Err(CsError::Recording { msg: e.to_string() }),
+        }
     }
 
     /// True when the Whisper engine is currently loaded. May flip back to

@@ -345,32 +345,62 @@ const WARMUP_SAMPLE_RATE: u32 = 16_000;
 /// kernel-compilation latency, and (for the Apple path) neither the bridge
 /// spawn nor the SpeechAnalyzer asset/probe readiness.
 ///
-/// This is deliberately routed through the exact same `transcribe_long_with_segments`
-/// path the live pipeline uses, so whichever engine actually serves transcripts
-/// at runtime gets warmed: on macOS 26+ the router selects Apple SpeechAnalyzer
-/// and transparently falls back to Candle when the bridge is unavailable
-/// ([`run_apple_or_whisper`]). Warming the hardcoded Candle singleton alone (the
-/// previous behaviour) missed the active engine whenever Apple routing won, and
-/// even on the Candle path it only loaded weights without compiling kernels —
-/// both leaving the first dictation cold.
+/// **Apple live invariant:** when the selected engine is Apple, this path must
+/// **never** load Whisper. Gap-fill / file final-pass lazy-load Candle on first
+/// use. Touching Whisper here re-introduces the multi-GB resident floor at app
+/// start and can refuse recording when the Whisper model is absent.
 ///
-/// Best-effort: the warmup transcription's result is intentionally discarded and
-/// its errors are logged, never propagated, so a cold-path hiccup can never block
-/// recording readiness. `init_active_engine` failures (e.g. no model on disk) are
-/// surfaced so callers can log them.
+/// Candle path still warms weights + kernels via the real transcribe route.
+///
+/// Best-effort: warmup transcription errors are logged, never propagated, so a
+/// cold-path hiccup can never block recording readiness.
 pub fn prewarm_active_engine() -> anyhow::Result<()> {
-    init_active_engine()?;
-
-    // Push a short synthetic utterance through the real routing so the serving
-    // engine compiles its kernels / spins up its bridge before the user dictates.
     let warmup = synthetic_warmup_audio();
-    match transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en")) {
-        Ok(_) => tracing::info!("STT active-engine warmup inference complete"),
-        Err(error) => {
-            tracing::warn!("STT active-engine warmup inference failed (non-fatal): {error:#}")
+
+    match selected_engine() {
+        SttEngine::Apple => {
+            // Init + warm Apple only. Do not fall through to Whisper on failure
+            // (that would load multi-GB weights at startup and block when the
+            // model is missing). Emergency Whisper recovery stays on live audio.
+            apple_stt::init().map_err(|err| {
+                anyhow::anyhow!("Apple STT prewarm init failed (Whisper not substituted): {err:#}")
+            })?;
+            match apple_stt::transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en"))
+            {
+                Ok(_) => tracing::info!(
+                    "STT active-engine warmup inference complete (apple; whisper not loaded)"
+                ),
+                Err(error) => tracing::warn!(
+                    "STT Apple warmup inference failed (non-fatal; whisper stays lazy): {error:#}"
+                ),
+            }
+            Ok(())
+        }
+        SttEngine::Onnx => {
+            onnx_adapter::init()?;
+            match onnx_adapter::transcribe_long_with_segments(
+                &warmup,
+                WARMUP_SAMPLE_RATE,
+                Some("en"),
+            ) {
+                Ok(_) => tracing::info!("STT active-engine warmup inference complete (onnx)"),
+                Err(error) => {
+                    tracing::warn!("STT ONNX warmup inference failed (non-fatal): {error:#}")
+                }
+            }
+            Ok(())
+        }
+        SttEngine::Candle => {
+            whisper::init()?;
+            match candle_transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en")) {
+                Ok(_) => tracing::info!("STT active-engine warmup inference complete (candle)"),
+                Err(error) => {
+                    tracing::warn!("STT Candle warmup inference failed (non-fatal): {error:#}")
+                }
+            }
+            Ok(())
         }
     }
-    Ok(())
 }
 
 /// One second of very low-amplitude tone at 16 kHz. Non-silent (so the full

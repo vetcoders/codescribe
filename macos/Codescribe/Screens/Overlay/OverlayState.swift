@@ -518,7 +518,18 @@ final class OverlayState: ObservableObject {
         errorMessage = nil
         recording = true
         do {
-            if !engine.isModelLoaded() { try await engine.initModel() }
+            // Whisper is optional gap-fill when Apple is live. initModel soft-fails
+            // in the bridge for that path; never treat a missing Whisper model as
+            // a start refusal — recording must still run (degraded: no final gap fill).
+            if !engine.isModelLoaded() {
+                do {
+                    try await engine.initModel()
+                } catch {
+                    // Candle-live still surfaces via startRecording / later final-pass.
+                    // Apple-live continues; bridge already degrades quietly when it can.
+                    NSLog("codescribe: optional Whisper warm skipped: \(error)")
+                }
+            }
             try await engine.startRecording(language: language)
         } catch {
             await handleStartFailure(error, language: language)
