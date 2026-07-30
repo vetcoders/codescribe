@@ -1571,8 +1571,15 @@ fn bench_entry_id(path: &std::path::Path) -> String {
 #[tokio::test]
 #[ignore = "env-driven STT bench probe invoked by scripts/bench-stt.sh"]
 async fn bench_stt_scheduler_latency_probe_from_env() -> Result<()> {
-    let manifest_path = std::env::var("BENCH_STT_LATENCY_MANIFEST")?;
-    let output_path = std::env::var("BENCH_STT_LATENCY_OUT")?;
+    let (Ok(manifest_path), Ok(output_path)) = (
+        std::env::var("BENCH_STT_LATENCY_MANIFEST"),
+        std::env::var("BENCH_STT_LATENCY_OUT"),
+    ) else {
+        eprintln!(
+            "Skipping bench probe (set BENCH_STT_LATENCY_MANIFEST + BENCH_STT_LATENCY_OUT to enable)"
+        );
+        return Ok(());
+    };
     let language = std::env::var("BENCH_STT_LANGUAGE").ok();
     let audio_paths = bench_manifest_audio_paths(&manifest_path)?;
 
