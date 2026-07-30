@@ -182,13 +182,21 @@ fn reaper_loop() {
 
 /// Run `f` with the engine, loading it on demand and refreshing the idle clock.
 fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Result<R> {
+    let lock_started = Instant::now();
     let mut guard = slot()
         .lock()
         .map_err(|e| anyhow!("Failed to lock engine: {}", e))?;
-    if guard.engine.is_none() {
+    let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
+    let mut model_load_ms = 0u64;
+    let cold_load = guard.engine.is_none();
+    if cold_load {
+        let load_started = Instant::now();
         guard.engine = Some(load_engine()?);
+        model_load_ms = load_started.elapsed().as_millis() as u64;
+        info!("whisper_engine_cold_load model_load_ms={model_load_ms}");
         ensure_reaper();
     }
+    super::timing::record_engine_acquire(lock_wait_ms, model_load_ms, cold_load);
     guard.last_used = Instant::now();
     let engine = guard
         .engine
@@ -220,10 +228,17 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
     let mut guard = slot()
         .try_lock()
         .map_err(|_| anyhow!("Whisper engine busy, skipping correction"))?;
-    if guard.engine.is_none() {
+    let mut model_load_ms = 0u64;
+    let cold_load = guard.engine.is_none();
+    if cold_load {
+        let load_started = Instant::now();
         guard.engine = Some(load_engine()?);
+        model_load_ms = load_started.elapsed().as_millis() as u64;
+        info!("whisper_engine_cold_load model_load_ms={model_load_ms}");
         ensure_reaper();
     }
+    // try_lock never waits, so lock_wait is 0 by construction.
+    super::timing::record_engine_acquire(0, model_load_ms, cold_load);
     guard.last_used = Instant::now();
     let engine = guard
         .engine

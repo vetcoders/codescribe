@@ -427,6 +427,57 @@ fn test_stop_path_budget_line_format() {
     );
 }
 
+#[test]
+fn test_final_pass_stages_line_format_and_coverage() {
+    let stages = FinalPassStages {
+        queue_ms: 12,
+        model_load_ms: 21_000,
+        cold_load: true,
+        inference_ms: 4_500,
+        postprocess_ms: 180,
+        delivery_ms: 95,
+        final_pass_total_ms: 26_100,
+    };
+    let line = format_final_pass_stages_line(stages);
+    assert!(
+        line.starts_with("final_pass_stages "),
+        "unexpected stage line: {line}"
+    );
+    assert!(line.contains("queue_ms=12"));
+    assert!(line.contains("model_load_ms=21000"));
+    assert!(line.contains("cold_load=true"));
+    assert!(line.contains("inference_ms=4500"));
+    assert!(line.contains("engine_overhead_ms=588"));
+    assert!(line.contains("postprocess_ms=180"));
+    assert!(line.contains("delivery_ms=95"));
+    assert!(line.contains("final_pass_total_ms=26100"));
+    // queue + model_load + inference + engine_overhead cover the final-pass
+    // wall exactly — the split may never invent or lose time.
+    assert_eq!(
+        stages.queue_ms + stages.model_load_ms + stages.inference_ms + stages.engine_overhead_ms(),
+        stages.final_pass_total_ms
+    );
+}
+
+#[test]
+fn test_final_pass_stages_overhead_saturates_never_negative() {
+    // Rounding jitter can make sub-stage sums exceed the wall total by a few
+    // ms; the remainder must clamp to 0 instead of underflowing.
+    let stages = FinalPassStages {
+        queue_ms: 10,
+        model_load_ms: 0,
+        cold_load: false,
+        inference_ms: 1_000,
+        postprocess_ms: 0,
+        delivery_ms: 0,
+        final_pass_total_ms: 1_005,
+    };
+    assert_eq!(stages.engine_overhead_ms(), 0);
+    let line = format_final_pass_stages_line(stages);
+    assert!(line.contains("engine_overhead_ms=0"), "{line}");
+    assert!(line.contains("cold_load=false"), "{line}");
+}
+
 /// Stop-path harness (automatic lane): execute the REAL production pipeline
 /// and read the delivery span from its outcome — no sleeps, no invented sums.
 /// If the delivery timer moves out of `process_transcript_text_pipeline`,

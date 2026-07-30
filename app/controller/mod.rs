@@ -1416,6 +1416,47 @@ pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &s
     format!("assistive_delivery_budget: total={total_secs:.3}s outcome={outcome}")
 }
 
+/// Per-stage split of the stop-path final pass (A2 latency truth).
+///
+/// `queue_ms` = spawn_blocking queue wait + engine mutex wait. The first three
+/// stages plus `engine_overhead_ms` (audio load + VAD + silero + lexicon,
+/// computed as remainder) cover `final_pass_total_ms` exactly; postprocess and
+/// delivery are the downstream pipeline stages of the same stop.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct FinalPassStages {
+    pub queue_ms: u64,
+    pub model_load_ms: u64,
+    pub cold_load: bool,
+    pub inference_ms: u64,
+    pub postprocess_ms: u64,
+    pub delivery_ms: u64,
+    pub final_pass_total_ms: u64,
+}
+
+impl FinalPassStages {
+    /// Final-pass wall time not attributed to queue/load/inference: audio file
+    /// load, VAD, silero tail filter, lexicon final pass.
+    pub(crate) fn engine_overhead_ms(self) -> u64 {
+        self.final_pass_total_ms
+            .saturating_sub(self.queue_ms + self.model_load_ms + self.inference_ms)
+    }
+}
+
+/// Single INFO line carrying the final-pass stage split for one stop.
+pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
+    format!(
+        "final_pass_stages queue_ms={queue} model_load_ms={load} cold_load={cold} inference_ms={inf} engine_overhead_ms={overhead} postprocess_ms={pp} delivery_ms={del} final_pass_total_ms={total}",
+        queue = stages.queue_ms,
+        load = stages.model_load_ms,
+        cold = stages.cold_load,
+        inf = stages.inference_ms,
+        overhead = stages.engine_overhead_ms(),
+        pp = stages.postprocess_ms,
+        del = stages.delivery_ms,
+        total = stages.final_pass_total_ms,
+    )
+}
+
 /// Skip full local STT re-pass according to routing mode + completeness.
 ///
 /// File final is always **Whisper** (Apple is live-only). Apple live
@@ -3877,6 +3918,7 @@ impl RecordingController {
             routing_mode
         };
         let mut final_pass_secs = 0.0;
+        let mut final_pass_stages = FinalPassStages::default();
 
         if run_local_final_pass {
             let session_snap = snapshot_session_telemetry(&self.session_telemetry);
@@ -3957,15 +3999,32 @@ impl RecordingController {
 
                 let final_pass_started = std::time::Instant::now();
                 match tokio::task::spawn_blocking(move || {
+                    // Queue wait = time between spawn and this closure actually
+                    // starting on a blocking-pool thread.
+                    let queue_wait_ms = final_pass_started.elapsed().as_millis() as u64;
                     // File final is always Whisper. Apple is live-only (AudioBuffer);
                     // SFSpeechURL full-file pass collapses long pl dictation and is
                     // not a product final path (2026-07-24 operator + data_assets/02).
-                    codescribe_core::stt::transcribe_file_verdict(&wav_path, lang.as_deref())
+                    let verdict =
+                        codescribe_core::stt::transcribe_file_verdict(&wav_path, lang.as_deref());
+                    // Same-thread take: lock wait + cold load (singleton) and pure
+                    // decode span (engine) recorded during the call above.
+                    let timing = codescribe_core::stt::whisper::take_final_pass_timing();
+                    (verdict, queue_wait_ms, timing)
                 })
                 .await
                 {
-                    Ok(Ok(verdict)) => {
+                    Ok((Ok(verdict), queue_wait_ms, timing)) => {
                         final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages = FinalPassStages {
+                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                            model_load_ms: timing.model_load_ms,
+                            cold_load: timing.cold_load,
+                            inference_ms: timing.inference_ms,
+                            postprocess_ms: 0,
+                            delivery_ms: 0,
+                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                        };
                         info!(
                             "Final-pass verdict captured ({} chars, engine={} mode={} speech_pct={:?}, avg_logprob={:?}, elapsed={:?})",
                             verdict.text.len(),
@@ -3977,12 +4036,23 @@ impl RecordingController {
                         );
                         local_final_pass_verdict = Some(verdict);
                     }
-                    Ok(Err(e)) => {
+                    Ok((Err(e), queue_wait_ms, timing)) => {
                         final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages = FinalPassStages {
+                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                            model_load_ms: timing.model_load_ms,
+                            cold_load: timing.cold_load,
+                            inference_ms: timing.inference_ms,
+                            postprocess_ms: 0,
+                            delivery_ms: 0,
+                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                        };
                         warn!("Final-pass transcription failed: {}", e);
                     }
                     Err(e) => {
                         final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages.final_pass_total_ms =
+                            (final_pass_secs * 1000.0).round() as u64;
                         warn!("Final-pass transcription task failed: {}", e);
                     }
                 }
@@ -4190,6 +4260,9 @@ impl RecordingController {
                     write_truth_sidecar_logged(&audio_saved_path, &truth_metadata);
                 }
 
+                // No-speech stops still paid the final pass — keep the stage
+                // receipt so latency truth covers every real stop.
+                info!("{}", format_final_pass_stages_line(final_pass_stages));
                 return Ok(ProcessRecordingOutcome::no_speech(reason));
             }
         };
@@ -4230,6 +4303,12 @@ impl RecordingController {
                 skip_user_bubble: false,
             })
             .await?;
+
+        final_pass_stages.postprocess_ms =
+            ((pipeline_outcome.postproc_secs + pipeline_outcome.format_secs) * 1000.0).round()
+                as u64;
+        final_pass_stages.delivery_ms = (pipeline_outcome.delivery_secs * 1000.0).round() as u64;
+        info!("{}", format_final_pass_stages_line(final_pass_stages));
 
         Ok(ProcessRecordingOutcome {
             no_speech_reason: None,

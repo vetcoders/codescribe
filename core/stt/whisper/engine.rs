@@ -570,7 +570,9 @@ impl LocalWhisperEngine {
         // result still comes from the full recording. Trimming down to
         // `speech_samples` changed the behavior of the historical "raw file
         // transcription" path and regressed canonical transcripts.
+        let inference_started = std::time::Instant::now();
         let raw = self.transcribe_long_with_language_segments(&samples, sample_rate, language)?;
+        super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
         let vad_config = crate::vad::VadConfig::default();
         let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
 
