@@ -463,10 +463,28 @@ pub fn is_sensible_lexicon_candidate(variant: &str, canonical: &str) -> bool {
     if !v.chars().any(|ch| ch.is_alphabetic()) || !c.chars().any(|ch| ch.is_alphabetic()) {
         return false;
     }
+    if is_function_word(v) {
+        return false;
+    }
     if levenshtein_chars(v, c) > MAX_PAIR_EDIT_DELTA_CHARS {
         return false;
     }
     true
+}
+
+/// Bare high-frequency Polish/English function words never form a sane
+/// mispronunciation variant on their own: a rule keyed on one of these fires
+/// on virtually every utterance (the "jest" -> "rozwiązanie dostępne"
+/// poisoning). Multi-word variants containing them remain allowed.
+fn is_function_word(variant: &str) -> bool {
+    const FUNCTION_WORDS: &[&str] = &[
+        "a", "ale", "być", "by", "co", "czy", "do", "go", "i", "jak", "jest", "jestem", "jesteś",
+        "już", "ma", "mam", "mi", "na", "nie", "no", "o", "od", "po", "się", "są", "tak", "tam",
+        "ten", "te", "to", "tu", "w", "z", "za", "że", "the", "a", "an", "is", "are", "was", "it",
+        "and", "or", "of", "in", "on", "to",
+    ];
+    let folded: String = variant.chars().flat_map(char::to_lowercase).collect();
+    FUNCTION_WORDS.contains(&folded.as_str())
 }
 
 /// Unicode-aware case equality (Polish ż/Ż must count as case-only).
@@ -1358,6 +1376,34 @@ mod tests {
 
         assert_eq!(cands, vec![("luks tri mapa".into(), "Loctree map".into())]);
         assert!(is_sensible_lexicon_candidate(&cands[0].0, &cands[0].1));
+    }
+
+    #[test]
+    fn test_candidate_policy_rejects_bare_function_word_variants() {
+        // The 2026-07-30 lexicon poisoning: a rule keyed on bare "jest" fired
+        // on virtually every Polish utterance. Function words never form a
+        // sane variant on their own, regardless of the paired term.
+        assert!(!is_sensible_lexicon_candidate(
+            "jest",
+            "rozwiązanie dostępne"
+        ));
+        assert!(!is_sensible_lexicon_candidate("to", "Loctree"));
+        assert!(!is_sensible_lexicon_candidate("The", "Vibecrafted"));
+        // ...but a multi-word variant CONTAINING a function word stays legal.
+        assert!(is_sensible_lexicon_candidate(
+            "jest w kurted",
+            "jest w iCurt"
+        ));
+    }
+
+    #[test]
+    fn test_candidate_policy_keeps_arbitrary_substitutions_legal() {
+        // Deliberate product behavior: non-phonetic substitutions are a
+        // feature ("zaznaczenie" -> "selection"), so only the function-word
+        // guard and the absolute edit cap bound the pair space.
+        assert!(is_sensible_lexicon_candidate("zaznaczenie", "selection"));
+        assert!(is_sensible_lexicon_candidate("Wycrafted", "Vibecrafted"));
+        assert!(is_sensible_lexicon_candidate("Bonarki", "binarki"));
     }
 
     #[test]
