@@ -646,6 +646,9 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var voiceLabReadError: String?
     @Published private(set) var voiceLabEditPending: Set<String> = []
     @Published private(set) var voiceLabEditErrors: [String: String] = [:]
+    /// Honest per-row save note: "Saved — N rules learned" or the zero/failed
+    /// variants. The save itself succeeded whenever a note is present.
+    @Published private(set) var voiceLabEditNotes: [String: String] = [:]
     @Published private(set) var voiceLabTeachPending: Bool = false
     @Published private(set) var voiceLabTeachMessage: String?
     @Published private(set) var audioInput: CsAudioInputSnapshot
@@ -1400,9 +1403,11 @@ final class SettingsViewModel: ObservableObject {
 
         voiceLabEditPending.insert(id)
         voiceLabEditErrors[id] = nil
+        voiceLabEditNotes[id] = nil
         defer { voiceLabEditPending.remove(id) }
         do {
-            _ = try engine.finalizeVoiceLabCorrection(id: id, canonical: canonical)
+            let outcome = try engine.finalizeVoiceLabCorrection(id: id, canonical: canonical)
+            voiceLabEditNotes[id] = Self.voiceLabSaveNote(outcome)
             refreshVoiceLab()
             return voiceLabReadError == nil
         } catch {
@@ -1410,6 +1415,19 @@ final class SettingsViewModel: ObservableObject {
             voiceLabEditErrors[id] = message
             lastError = message
             return false
+        }
+    }
+
+    /// The revision is persisted whenever the engine returns — the note only
+    /// tells the truth about what the dictionary derived from the edit.
+    static func voiceLabSaveNote(_ outcome: CsVoiceLabSaveResult) -> String {
+        if let lexiconError = outcome.lexiconError {
+            return "Saved — dictionary learning failed: \(lexiconError)"
+        }
+        switch outcome.pairsLearned {
+        case 0: return "Saved; no dictionary rule derived"
+        case 1: return "Saved — 1 rule learned"
+        default: return "Saved — \(outcome.pairsLearned) rules learned"
         }
     }
 

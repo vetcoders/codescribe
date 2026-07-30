@@ -226,6 +226,12 @@ struct VoiceLabPanel: View {
                                 .font(CSFont.ui(10.5))
                                 .foregroundStyle(CSColor.terracottaLight)
                         }
+                        if let note = model.voiceLabEditNotes[row.id] {
+                            Text(note)
+                                .font(CSFont.ui(10.5))
+                                .foregroundStyle(CSColor.oliveLight)
+                                .accessibilityLabel("Correction saved. \(note)")
+                        }
                         HStack(spacing: 7) {
                             Text(row.action)
                                 .foregroundStyle(CSColor.oliveLight)

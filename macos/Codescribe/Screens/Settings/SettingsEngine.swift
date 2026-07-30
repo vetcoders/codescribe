@@ -41,7 +41,7 @@ protocol SettingsEngine {
     // Voice Lab quality truth (JSONL stays behind the Rust bridge)
     func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
     func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
-    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult
     func teachDictionaryFromStore() throws -> CsDictionaryTeachResult
 
     // Keychain-backed API keys — presence booleans only, secrets never read back
@@ -119,7 +119,7 @@ final class RealSettingsEngine: SettingsEngine {
     func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
         try lexiconCustomEntries()
     }
-    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord {
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
         try qualityFinalizeCorrection(correctionId: id, canonical: canonical)
     }
     func teachDictionaryFromStore() throws -> CsDictionaryTeachResult {
@@ -212,7 +212,7 @@ struct MockSettingsEngine: SettingsEngine {
     var settingsLoader: (() -> CsSettings)?
     var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
     var resetAudioInputDeviceObserver: (() throws -> Void)?
-    var voiceLabEditObserver: ((String, String) throws -> CsQualityRecord)?
+    var voiceLabEditObserver: ((String, String) throws -> CsVoiceLabSaveResult)?
     // Keep the long-standing config observer last so existing trailing-closure
     // call sites continue to bind to config writes, not Voice Lab edits.
     var updateConfigObserver: ((String, String) throws -> Void)?
@@ -240,24 +240,28 @@ struct MockSettingsEngine: SettingsEngine {
     func loadLexiconCustomEntries() throws -> [CsLexiconEntry] {
         try lexiconEntriesLoader?() ?? lexiconEntries
     }
-    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsQualityRecord {
+    func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult {
         if let voiceLabEditObserver {
             return try voiceLabEditObserver(id, canonical)
         }
         guard let record = qualityRecords.first(where: { $0.id == id }) else {
             throw NSError(domain: "VoiceLab", code: 404)
         }
-        return CsQualityRecord(
-            id: record.id,
-            revision: record.revision + 1,
-            rawText: record.rawText,
-            variant: record.variant,
-            editedText: canonical,
-            action: "edit",
-            timestampMs: record.timestampMs,
-            avgLogprob: nil,
-            speechPct: nil,
-            confidenceFlags: []
+        return CsVoiceLabSaveResult(
+            record: CsQualityRecord(
+                id: record.id,
+                revision: record.revision + 1,
+                rawText: record.rawText,
+                variant: record.variant,
+                editedText: canonical,
+                action: "edit",
+                timestampMs: record.timestampMs,
+                avgLogprob: nil,
+                speechPct: nil,
+                confidenceFlags: []
+            ),
+            pairsLearned: 0,
+            lexiconError: nil
         )
     }
     func teachDictionaryFromStore() throws -> CsDictionaryTeachResult {

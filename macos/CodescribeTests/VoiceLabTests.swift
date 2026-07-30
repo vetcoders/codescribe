@@ -130,7 +130,7 @@ final class VoiceLabTests: XCTestCase {
                 calls.append((id, canonical))
                 records = [revised]
                 lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: canonical, source: "correction")]
-                return revised
+                return CsVoiceLabSaveResult(record: revised, pairsLearned: 1, lexiconError: nil)
             }
         )
         let model = SettingsViewModel(engine: engine)
@@ -142,6 +142,40 @@ final class VoiceLabTests: XCTestCase {
         XCTAssertEqual(model.customLexiconEntries, lexicon)
         XCTAssertTrue(model.voiceLabEditPending.isEmpty)
         XCTAssertNil(model.voiceLabEditErrors[original.id])
+        XCTAssertEqual(model.voiceLabEditNotes[original.id], "Saved — 1 rule learned")
+    }
+
+    func testVoiceLabSaveNoteTellsTheLearningTruth() {
+        let record = CsQualityRecord(
+            id: "correction-1",
+            revision: 2,
+            rawText: "raw",
+            variant: "variant",
+            editedText: "edited",
+            action: "edit",
+            timestampMs: 1,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
+        )
+        XCTAssertEqual(
+            SettingsViewModel.voiceLabSaveNote(
+                CsVoiceLabSaveResult(record: record, pairsLearned: 0, lexiconError: nil)
+            ),
+            "Saved; no dictionary rule derived"
+        )
+        XCTAssertEqual(
+            SettingsViewModel.voiceLabSaveNote(
+                CsVoiceLabSaveResult(record: record, pairsLearned: 3, lexiconError: nil)
+            ),
+            "Saved — 3 rules learned"
+        )
+        XCTAssertEqual(
+            SettingsViewModel.voiceLabSaveNote(
+                CsVoiceLabSaveResult(record: record, pairsLearned: 0, lexiconError: "disk broke")
+            ),
+            "Saved — dictionary learning failed: disk broke"
+        )
     }
 
     func testFailedVoiceLabEditKeepsOldCanonicalVisibleAndSurfacesError() {
@@ -217,6 +251,12 @@ final class VoiceLabTests: XCTestCase {
         )
         let model = SettingsViewModel(engine: engine)
         model.teachDictionaryFromStore()
+        // Teach hops global -> main queues; pump the main run loop until the
+        // completion lands (synchronous unwrap can never observe it).
+        let deadline = Date().addingTimeInterval(2)
+        while model.voiceLabTeachMessage == nil, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
         let msg = try XCTUnwrap(model.voiceLabTeachMessage)
         XCTAssertTrue(msg.contains("live rules"), "expected live-rules count, got: \(msg)")
         XCTAssertTrue(msg.hasPrefix("Taught"), "expected Taught status, got: \(msg)")
