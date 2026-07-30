@@ -460,6 +460,20 @@ reload = "restart"
 category = "stt"
 description = "Directory containing all models"
 
+[vars.CODESCRIBE_EMBED_MODEL]
+default = ""
+type = "string"
+reload = "rebuild"
+category = "stt"
+description = "Whisper model name embedded at build time (core/build.rs fat SKU path)"
+
+[vars.CODESCRIBE_ONNX_MODEL_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Override path to the ONNX Whisper model directory (onnx engine)"
+
 [vars.CODESCRIBE_STT_ENGINE]
 default = "auto"
 type = "string"

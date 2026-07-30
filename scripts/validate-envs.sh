@@ -101,10 +101,10 @@ ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3" | sort -u | grep 
 # Check each code var against registry
 UNREGISTERED=""
 for var in $ALL_CODE_VARS; do
-    if echo "$IGNORE_VARS" | grep -qw "$var"; then
+    if grep -qw "$var" <<< "$IGNORE_VARS"; then
         continue
     fi
-    if ! echo "$REGISTERED" | grep -qx "$var"; then
+    if ! grep -qx "$var" <<< "$REGISTERED"; then
         UNREGISTERED="$UNREGISTERED$var\n"
         ERRORS=$((ERRORS + 1))
     fi
@@ -147,7 +147,7 @@ if [[ $CHECK_EXAMPLE -eq 1 || -n "$EMIT_ENV_PATH" ]]; then
     EXAMPLE_VARS=$(grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u || true)
     UNREGISTERED_EXAMPLE=""
     for var in $EXAMPLE_VARS; do
-        if ! echo "$REGISTERED" | grep -qx "$var"; then
+        if ! grep -qx "$var" <<< "$REGISTERED"; then
             UNREGISTERED_EXAMPLE="$UNREGISTERED_EXAMPLE$var\n"
             EXAMPLE_ERRORS=$((EXAMPLE_ERRORS + 1))
         fi
