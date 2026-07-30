@@ -176,16 +176,15 @@ impl CodescribeMcpAdmin {
         // chosen an explicit setting.
         if spec.endpoint.is_some() {
             let policy = AgentPermissions::load();
-            if !policy.servers.contains_key(&server.name) {
-                if let Err(error) =
+            if !policy.servers.contains_key(&server.name)
+                && let Err(error) =
                     AgentPermissions::set_server_level(&server.name, PermissionLevel::Ask)
-                {
-                    let _ = remove_server(&server.name);
-                    if let Some(account) = stored_account {
-                        let _ = delete_key(&account);
-                    }
-                    return Err(config_err(error));
+            {
+                let _ = remove_server(&server.name);
+                if let Some(account) = stored_account {
+                    let _ = delete_key(&account);
                 }
+                return Err(config_err(error));
             }
         }
         Ok(())
