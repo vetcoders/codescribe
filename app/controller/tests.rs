@@ -483,6 +483,7 @@ fn test_final_pass_stages_overhead_saturates_never_negative() {
 /// If the delivery timer moves out of `process_transcript_text_pipeline`,
 /// `outcome.delivery_secs` collapses to 0.0 and this fails.
 #[tokio::test]
+#[serial]
 async fn test_stop_path_harness_executes_production_pipeline_delivery_span() {
     let controller = RecordingController::new();
     let stop_start = std::time::Instant::now();
