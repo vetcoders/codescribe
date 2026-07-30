@@ -224,7 +224,11 @@ impl CodescribeAgent {
         let provider = codescribe::agent::create_default_provider()?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
-        registry.set_granted(codescribe_core::agent::tool_grants::load_granted());
+        // settings.json agent.permissions + legacy tool_grants (always-allow).
+        registry.set_policy(
+            codescribe_core::agent::permissions::AgentPermissions::load()
+                .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
+        );
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
         let approvals = Arc::clone(&self.approvals);
         let approval_handler: ToolApprovalHandler =
@@ -464,10 +468,17 @@ impl ApprovalBroker {
         // Persist BEFORE resuming the call so a granted tool never races its
         // own next invocation against the write. Grant failure downgrades to
         // allow-once (the approval itself was explicit), never to a deny.
+        // Persist BEFORE resuming so a remembered grant never races the next
+        // identical call. Writes settings.json agent.permissions.tools[key]
+        // (product source of truth) and dual-writes tool_grants.json.
         if approved
             && remember
             && let Some((server, upstream_tool)) = &entry.grant_target
-            && let Err(error) = codescribe_core::agent::tool_grants::grant(server, upstream_tool)
+            && let Err(error) =
+                codescribe_core::agent::permissions::AgentPermissions::remember_allow(
+                    server,
+                    upstream_tool,
+                )
         {
             tracing::warn!(%error, server, upstream_tool, "tool grant persist failed; allowing once");
         }

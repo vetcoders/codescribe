@@ -135,6 +135,64 @@ fn test_setup_done_blocks_onboarding_even_with_resume_checkpoint() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// Settings: Agent tool permissions (B2 gateway)
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+#[serial]
+fn test_agent_permissions_roundtrip_and_remember_allow() {
+    use codescribe_core::agent::permissions::{AgentPermissions, PermissionLevel};
+    use std::collections::BTreeMap;
+
+    let _tmp = setup_test_env();
+
+    // Fresh install: defaults apply at resolve time (section may be absent).
+    let loaded = UserSettings::load();
+    assert!(
+        loaded.agent_permissions.is_none(),
+        "fresh settings.json must not invent agent.permissions"
+    );
+
+    let mut tools = BTreeMap::new();
+    tools.insert(
+        "desktop-commander:write_file".to_string(),
+        PermissionLevel::Allow,
+    );
+    let mut servers = BTreeMap::new();
+    servers.insert("desktop-commander".to_string(), PermissionLevel::Ask);
+    let perms = AgentPermissions {
+        default: PermissionLevel::Ask,
+        read_only_default: PermissionLevel::Allow,
+        side_effect_default: PermissionLevel::Ask,
+        tools,
+        servers,
+    };
+    let settings = UserSettings {
+        agent_permissions: Some(perms.clone()),
+        ..Default::default()
+    };
+    settings.save().expect("save agent permissions");
+
+    let reloaded = UserSettings::load();
+    assert_eq!(reloaded.agent_permissions.as_ref(), Some(&perms));
+
+    // remember_allow writes settings.json with the same identity the gate checks.
+    AgentPermissions::remember_allow("Desktop-Commander", "edit_block").expect("remember");
+    let after = UserSettings::load()
+        .agent_permissions
+        .expect("permissions present after remember");
+    assert_eq!(
+        after.tools.get("desktop-commander:edit_block"),
+        Some(&PermissionLevel::Allow)
+    );
+    // Previous tool preference preserved.
+    assert_eq!(
+        after.tools.get("desktop-commander:write_file"),
+        Some(&PermissionLevel::Allow)
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
 // Settings: Keys Tab persistence
 // ═══════════════════════════════════════════════════════════
 

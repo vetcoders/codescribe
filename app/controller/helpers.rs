@@ -334,6 +334,12 @@ fn load_thread_messages_from(
 fn initialize_agent_runtime() -> Result<AgentRuntime> {
     let mut registry = ToolRegistry::new();
     crate::agent::tools::register_all_tools(&mut registry);
+    // B2: same policy load as the UniFFI bridge path — settings.json
+    // agent.permissions + legacy tool_grants always-allow keys.
+    registry.set_policy(
+        codescribe_core::agent::permissions::AgentPermissions::load()
+            .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
+    );
 
     let provider = crate::agent::create_default_provider()
         .context("Failed to create default agent provider")?;

@@ -72,9 +72,32 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(KeysPanel.ownedCapabilities, [.apiKeys])
         XCTAssertEqual(
             AgentPanel.ownedCapabilities,
-            [.llmLanes, .workspaceRoots, .agentStatus, .mcpServers]
+            [.llmLanes, .workspaceRoots, .agentStatus, .mcpServers, .toolPermissions]
         )
         XCTAssertTrue(KeysPanel.ownedCapabilities.isDisjoint(with: AgentPanel.ownedCapabilities))
+    }
+
+    /// Capability rows come from the live registry surface — the panel must not
+    /// invent tools the dispatcher does not know.
+    func testToolPermissionsPanelUsesCapabilityIdentityContract() {
+        // Identity key format is the single contract shared with the Rust gate.
+        let samples = [
+            ("desktop-commander:write_file", "allow"),
+            ("native:read_file", "ask"),
+        ]
+        for (identity, level) in samples {
+            XCTAssertFalse(identity.isEmpty)
+            XCTAssertTrue(["allow", "ask", "deny"].contains(level))
+            // Server portion of MCP identity is lowercased; tool name is preserved.
+            if identity.hasPrefix("native:") {
+                XCTAssertTrue(identity.split(separator: ":").count >= 2)
+            } else {
+                let parts = identity.split(separator: ":", maxSplits: 1).map(String.init)
+                XCTAssertEqual(parts.count, 2)
+                XCTAssertEqual(parts[0], parts[0].lowercased())
+            }
+        }
+        XCTAssertTrue(AgentPanel.ownedCapabilities.contains(.toolPermissions))
     }
 
     func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {

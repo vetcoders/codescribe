@@ -9,6 +9,7 @@ struct AgentPanel: View {
         .workspaceRoots,
         .agentStatus,
         .mcpServers,
+        .toolPermissions,
     ]
 
     @ObservedObject var model: SettingsViewModel
@@ -22,7 +23,7 @@ struct AgentPanel: View {
                 .foregroundStyle(CSColor.textHigh)
                 .padding(.top, 6)
 
-            Text("Request lanes, workspace roots, and MCP servers — the runtime configuration behind agent work.")
+            Text("Request lanes, workspace roots, tool permissions, and MCP servers — the runtime configuration behind agent work.")
                 .font(CSFont.ui(12.5))
                 .lineSpacing(2)
                 .foregroundStyle(CSColor.textMutedAlt)
@@ -40,6 +41,9 @@ struct AgentPanel: View {
                 .padding(.top, 30)
 
             AgentStatusSection(model: model)
+                .padding(.top, 30)
+
+            ToolPermissionsSection(model: model)
                 .padding(.top, 30)
 
             MCPServersSection(model: model)

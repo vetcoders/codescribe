@@ -19,6 +19,13 @@ protocol MCPAdminEngine {
     func listToolGrants() throws -> [CsToolGrant]
     /// Revoke one grant so that tool asks for approval again.
     func revokeToolGrant(key: String) throws
+    /// Durable agent.permissions snapshot.
+    func getPermissionPolicy() -> CsPermissionPolicy
+    func setPermissionDefaults(defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String) throws
+    func setToolPermission(identity: String, level: String) throws
+    func setServerPermission(server: String, level: String) throws
+    /// Live capabilities from the same registry the dispatcher uses.
+    func listToolCapabilities() -> [CsToolCapability]
 }
 
 extension MCPAdminEngine {
@@ -26,6 +33,19 @@ extension MCPAdminEngine {
     // keep compiling; the live engine below overrides both.
     func listToolGrants() throws -> [CsToolGrant] { [] }
     func revokeToolGrant(key: String) throws {}
+    func getPermissionPolicy() -> CsPermissionPolicy {
+        CsPermissionPolicy(
+            defaultLevel: "ask",
+            readOnlyDefault: "allow",
+            sideEffectDefault: "ask",
+            tools: [],
+            servers: []
+        )
+    }
+    func setPermissionDefaults(defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String) throws {}
+    func setToolPermission(identity: String, level: String) throws {}
+    func setServerPermission(server: String, level: String) throws {}
+    func listToolCapabilities() -> [CsToolCapability] { [] }
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -41,6 +61,21 @@ final class RealMCPAdminEngine: MCPAdminEngine {
     func removeServer(name: String) throws { try admin.removeServer(name: name) }
     func listToolGrants() throws -> [CsToolGrant] { try admin.listToolGrants() }
     func revokeToolGrant(key: String) throws { try admin.revokeToolGrant(key: key) }
+    func getPermissionPolicy() -> CsPermissionPolicy { admin.getPermissionPolicy() }
+    func setPermissionDefaults(defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String) throws {
+        try admin.setPermissionDefaults(
+            defaultLevel: defaultLevel,
+            readOnlyDefault: readOnlyDefault,
+            sideEffectDefault: sideEffectDefault
+        )
+    }
+    func setToolPermission(identity: String, level: String) throws {
+        try admin.setToolPermission(identity: identity, level: level)
+    }
+    func setServerPermission(server: String, level: String) throws {
+        try admin.setServerPermission(server: server, level: level)
+    }
+    func listToolCapabilities() -> [CsToolCapability] { admin.listToolCapabilities() }
 
     // Spawning + handshaking a server can take up to ~10s; run it off the main
     // actor so the Settings window never freezes. A fresh stateless handle is

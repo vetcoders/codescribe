@@ -219,6 +219,13 @@ pub struct UserSettings {
     /// default (`~/Git`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_workspace_roots: Option<Vec<String>>,
+
+    // ── Agent tool permissions (B2 gateway) ──
+    /// Global allow/ask/deny policy for agent tools. Stored under
+    /// `agent.permissions` in settings.json. `None` means migration defaults
+    /// (read-only → allow, side-effectful → ask) applied at resolve time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_permissions: Option<crate::agent::permissions::AgentPermissions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -237,6 +244,17 @@ struct SettingsV2 {
     features: Option<FeaturesV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<SystemV2>,
+    /// Agent runtime preferences (tool permissions gateway, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<AgentV2>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct AgentV2 {
+    /// Tool permission policy: global + per-server + per-tool allow/ask/deny.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permissions: Option<crate::agent::permissions::AgentPermissions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -600,6 +618,9 @@ impl UserSettings {
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
                 anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
             }),
+            agent: self.agent_permissions.clone().map(|permissions| AgentV2 {
+                permissions: Some(permissions),
+            }),
         }
     }
 
@@ -804,6 +825,7 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.initial_prompt_enabled),
+            agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
         }
     }
 
@@ -1481,6 +1503,48 @@ mod tests {
         assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
         assert!(is_promoted_key("CODESCRIBE_STT_ENGINE"));
         assert!(is_promoted_key("FINAL_PASS_MODE"));
+    }
+
+    #[test]
+    #[serial]
+    fn agent_permissions_roundtrip_under_agent_section() {
+        use crate::agent::permissions::{AgentPermissions, PermissionLevel};
+        let _tmp = setup_isolated_data_dir();
+        let mut perms = AgentPermissions::default();
+        perms.default = PermissionLevel::Ask;
+        perms.read_only_default = PermissionLevel::Allow;
+        perms.side_effect_default = PermissionLevel::Deny;
+        perms.tools.insert(
+            "desktop-commander:write_file".into(),
+            PermissionLevel::Allow,
+        );
+        perms
+            .servers
+            .insert("desktop-commander".into(), PermissionLevel::Ask);
+        let settings = UserSettings {
+            agent_permissions: Some(perms.clone()),
+            ..Default::default()
+        };
+        settings.save().expect("save settings");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.agent_permissions.as_ref(), Some(&perms));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        assert_eq!(
+            persisted
+                .pointer("/agent/permissions/tools/desktop-commander:write_file")
+                .and_then(|v| v.as_str()),
+            Some("allow")
+        );
+        assert_eq!(
+            persisted
+                .pointer("/agent/permissions/side_effect_default")
+                .and_then(|v| v.as_str()),
+            Some("deny")
+        );
     }
 
     #[test]

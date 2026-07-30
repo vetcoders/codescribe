@@ -169,6 +169,7 @@ enum SettingsPanelCapability: Hashable {
     case workspaceRoots
     case agentStatus
     case mcpServers
+    case toolPermissions
 }
 
 // Every rail section declares its product truth explicitly. The raw value is a
@@ -630,6 +631,14 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpServers: [CsMcpServer] = []
     @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
     @Published private(set) var mcpTestPending: Set<String> = []
+    @Published private(set) var toolCapabilities: [CsToolCapability] = []
+    @Published private(set) var permissionPolicy: CsPermissionPolicy = CsPermissionPolicy(
+        defaultLevel: "ask",
+        readOnlyDefault: "allow",
+        sideEffectDefault: "ask",
+        tools: [],
+        servers: []
+    )
     @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
     @Published private(set) var keyProbePending: Set<String> = []
     @Published private(set) var qualityRecords: [CsQualityRecord] = []
@@ -914,6 +923,54 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             lastError = String(describing: error)
             mcpServers = []
+        }
+    }
+
+    // MARK: - Tool permissions (B2 gateway)
+
+    enum PermissionDefaultKind {
+        case global
+        case readOnly
+        case sideEffect
+    }
+
+    /// Reload durable policy + live capability list from the same registry the
+    /// agent dispatcher builds.
+    func reloadToolPermissions() {
+        guard let mcpAdmin else { return }
+        permissionPolicy = mcpAdmin.getPermissionPolicy()
+        toolCapabilities = mcpAdmin.listToolCapabilities()
+    }
+
+    func setPermissionDefault(kind: PermissionDefaultKind, level: String) {
+        guard let mcpAdmin else { return }
+        var defaultLevel = permissionPolicy.defaultLevel
+        var readOnly = permissionPolicy.readOnlyDefault
+        var sideEffect = permissionPolicy.sideEffectDefault
+        switch kind {
+        case .global: defaultLevel = level
+        case .readOnly: readOnly = level
+        case .sideEffect: sideEffect = level
+        }
+        do {
+            try mcpAdmin.setPermissionDefaults(
+                defaultLevel: defaultLevel,
+                readOnlyDefault: readOnly,
+                sideEffectDefault: sideEffect
+            )
+            reloadToolPermissions()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    func setToolPermission(identity: String, level: String) {
+        guard let mcpAdmin else { return }
+        do {
+            try mcpAdmin.setToolPermission(identity: identity, level: level)
+            reloadToolPermissions()
+        } catch {
+            lastError = String(describing: error)
         }
     }
 

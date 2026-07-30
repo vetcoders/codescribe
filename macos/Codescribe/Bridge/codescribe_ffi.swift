@@ -2063,9 +2063,14 @@ public func FfiConverterTypeCodescribeConfig_lower(_ value: CodescribeConfig) ->
 public protocol CodescribeDictationProtocol: AnyObject, Sendable {
 
     /**
-     * Load the Whisper engine (idempotent). Runs on a blocking thread because
-     * model load touches the GPU and can take seconds.
-     * Wraps `whisper::init` (stt/whisper/singleton.rs:199).
+     * Optionally warm Whisper weights. Runs on a blocking thread because model
+     * load touches the GPU and can take seconds.
+     *
+     * When the live engine is Apple, Whisper is **gap-fill only** (file final /
+     * emergency recovery). Missing weights must never refuse recording start —
+     * we log an honest degraded-mode note and return `Ok(())`. Candle-live
+     * still requires a model and surfaces load errors.
+     * Wraps `whisper::init` (stt/whisper/singleton.rs).
      */
     func initModel() async throws
 
@@ -2211,9 +2216,14 @@ public convenience init() {
 
 
     /**
-     * Load the Whisper engine (idempotent). Runs on a blocking thread because
-     * model load touches the GPU and can take seconds.
-     * Wraps `whisper::init` (stt/whisper/singleton.rs:199).
+     * Optionally warm Whisper weights. Runs on a blocking thread because model
+     * load touches the GPU and can take seconds.
+     *
+     * When the live engine is Apple, Whisper is **gap-fill only** (file final /
+     * emergency recovery). Missing weights must never refuse recording start —
+     * we log an honest degraded-mode note and return `Ok(())`. Candle-live
+     * still requires a model and surfaces load errors.
+     * Wraps `whisper::init` (stt/whisper/singleton.rs).
      */
 open func initModel()async throws   {
     return
@@ -3197,9 +3207,20 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func addServer(server: CsMcpServerInput) throws
 
     /**
+     * Snapshot of durable `agent.permissions` (settings.json).
+     */
+    func getPermissionPolicy()  -> CsPermissionPolicy
+
+    /**
      * List configured servers (sorted). A missing `mcp.json` is an empty list.
      */
     func listServers() throws  -> [CsMcpServer]
+
+    /**
+     * Live capability list from the same registry the agent dispatcher builds.
+     * Unregistered tools cannot appear.
+     */
+    func listToolCapabilities()  -> [CsToolCapability]
 
     /**
      * List persisted "always allow" tool grants, newest write last. Each key is
@@ -3215,9 +3236,24 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     /**
      * Revoke one grant so the tool asks again on its next call. Revoking a key
      * that is not granted succeeds — the caller's intent (this tool must ask)
-     * already holds.
+     * already holds. Also clears the matching settings.json tool preference.
      */
     func revokeToolGrant(key: String) throws
+
+    /**
+     * Set global risk-class defaults (`allow` | `ask` | `deny`).
+     */
+    func setPermissionDefaults(defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String) throws
+
+    /**
+     * Set durable per-MCP-server preference.
+     */
+    func setServerPermission(server: String, level: String) throws
+
+    /**
+     * Set durable per-tool preference. Identity is `server:tool` or `native:name`.
+     */
+    func setToolPermission(identity: String, level: String) throws
 
     /**
      * Spawn the named server, run the `initialize` + `tools/list` handshake, and
@@ -3300,11 +3336,34 @@ open func addServer(server: CsMcpServerInput)throws   {try rustCallWithError(Ffi
 }
 
     /**
+     * Snapshot of durable `agent.permissions` (settings.json).
+     */
+open func getPermissionPolicy() -> CsPermissionPolicy  {
+    return try!  FfiConverterTypeCsPermissionPolicy_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_get_permission_policy(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * List configured servers (sorted). A missing `mcp.json` is an empty list.
      */
 open func listServers()throws  -> [CsMcpServer]  {
     return try  FfiConverterSequenceTypeCsMcpServer.lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_list_servers(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Live capability list from the same registry the agent dispatcher builds.
+     * Unregistered tools cannot appear.
+     */
+open func listToolCapabilities() -> [CsToolCapability]  {
+    return try!  FfiConverterSequenceTypeCsToolCapability.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_list_tool_capabilities(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -3336,12 +3395,49 @@ open func removeServer(name: String)throws   {try rustCallWithError(FfiConverter
     /**
      * Revoke one grant so the tool asks again on its next call. Revoking a key
      * that is not granted succeeds — the caller's intent (this tool must ask)
-     * already holds.
+     * already holds. Also clears the matching settings.json tool preference.
      */
 open func revokeToolGrant(key: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribemcpadmin_revoke_tool_grant(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(key),$0
+    )
+}
+}
+
+    /**
+     * Set global risk-class defaults (`allow` | `ask` | `deny`).
+     */
+open func setPermissionDefaults(defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_set_permission_defaults(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(defaultLevel),
+        FfiConverterString.lower(readOnlyDefault),
+        FfiConverterString.lower(sideEffectDefault),$0
+    )
+}
+}
+
+    /**
+     * Set durable per-MCP-server preference.
+     */
+open func setServerPermission(server: String, level: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_set_server_permission(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(server),
+        FfiConverterString.lower(level),$0
+    )
+}
+}
+
+    /**
+     * Set durable per-tool preference. Identity is `server:tool` or `native:name`.
+     */
+open func setToolPermission(identity: String, level: String)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribemcpadmin_set_tool_permission(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(identity),
+        FfiConverterString.lower(level),$0
     )
 }
 }
@@ -8157,6 +8253,85 @@ public func FfiConverterTypeCsPasteResult_lower(_ value: CsPasteResult) -> RustB
 
 
 /**
+ * Durable permission policy snapshot for Settings.
+ */
+public struct CsPermissionPolicy: Equatable, Hashable {
+    public var defaultLevel: String
+    public var readOnlyDefault: String
+    public var sideEffectDefault: String
+    /**
+     * `identity=level` pairs (e.g. `desktop-commander:write_file=allow`).
+     */
+    public var tools: [String]
+    /**
+     * `server=level` pairs.
+     */
+    public var servers: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String,
+        /**
+         * `identity=level` pairs (e.g. `desktop-commander:write_file=allow`).
+         */tools: [String],
+        /**
+         * `server=level` pairs.
+         */servers: [String]) {
+        self.defaultLevel = defaultLevel
+        self.readOnlyDefault = readOnlyDefault
+        self.sideEffectDefault = sideEffectDefault
+        self.tools = tools
+        self.servers = servers
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsPermissionPolicy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsPermissionPolicy: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsPermissionPolicy {
+        return
+            try CsPermissionPolicy(
+                defaultLevel: FfiConverterString.read(from: &buf),
+                readOnlyDefault: FfiConverterString.read(from: &buf),
+                sideEffectDefault: FfiConverterString.read(from: &buf),
+                tools: FfiConverterSequenceString.read(from: &buf),
+                servers: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsPermissionPolicy, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.defaultLevel, into: &buf)
+        FfiConverterString.write(value.readOnlyDefault, into: &buf)
+        FfiConverterString.write(value.sideEffectDefault, into: &buf)
+        FfiConverterSequenceString.write(value.tools, into: &buf)
+        FfiConverterSequenceString.write(value.servers, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPermissionPolicy_lift(_ buf: RustBuffer) throws -> CsPermissionPolicy {
+    return try FfiConverterTypeCsPermissionPolicy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPermissionPolicy_lower(_ value: CsPermissionPolicy) -> RustBuffer {
+    return FfiConverterTypeCsPermissionPolicy.lower(value)
+}
+
+
+/**
  * UI-safe view of one base prompt. Content is included because this surface is
  * the prompt editor itself; audit records never include it.
  */
@@ -9538,6 +9713,93 @@ public func FfiConverterTypeCsToolApprovalRequest_lift(_ buf: RustBuffer) throws
 #endif
 public func FfiConverterTypeCsToolApprovalRequest_lower(_ value: CsToolApprovalRequest) -> RustBuffer {
     return FfiConverterTypeCsToolApprovalRequest.lower(value)
+}
+
+
+/**
+ * One tool capability from the live registry + effective permission level.
+ */
+public struct CsToolCapability: Equatable, Hashable {
+    public var name: String
+    /**
+     * Canonical identity (`server:upstream` or `native:name`).
+     */
+    public var identity: String
+    public var origin: String
+    public var server: String
+    public var risk: String
+    /**
+     * Effective level: `allow` | `ask` | `deny`.
+     */
+    public var effective: String
+    public var requiresApprovalFlag: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String,
+        /**
+         * Canonical identity (`server:upstream` or `native:name`).
+         */identity: String, origin: String, server: String, risk: String,
+        /**
+         * Effective level: `allow` | `ask` | `deny`.
+         */effective: String, requiresApprovalFlag: Bool) {
+        self.name = name
+        self.identity = identity
+        self.origin = origin
+        self.server = server
+        self.risk = risk
+        self.effective = effective
+        self.requiresApprovalFlag = requiresApprovalFlag
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsToolCapability: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsToolCapability: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsToolCapability {
+        return
+            try CsToolCapability(
+                name: FfiConverterString.read(from: &buf),
+                identity: FfiConverterString.read(from: &buf),
+                origin: FfiConverterString.read(from: &buf),
+                server: FfiConverterString.read(from: &buf),
+                risk: FfiConverterString.read(from: &buf),
+                effective: FfiConverterString.read(from: &buf),
+                requiresApprovalFlag: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsToolCapability, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.identity, into: &buf)
+        FfiConverterString.write(value.origin, into: &buf)
+        FfiConverterString.write(value.server, into: &buf)
+        FfiConverterString.write(value.risk, into: &buf)
+        FfiConverterString.write(value.effective, into: &buf)
+        FfiConverterBool.write(value.requiresApprovalFlag, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsToolCapability_lift(_ buf: RustBuffer) throws -> CsToolCapability {
+    return try FfiConverterTypeCsToolCapability.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsToolCapability_lower(_ value: CsToolCapability) -> RustBuffer {
+    return FfiConverterTypeCsToolCapability.lower(value)
 }
 
 
@@ -11734,6 +11996,31 @@ fileprivate struct FfiConverterSequenceTypeCsThreadSummary: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsToolCapability: FfiConverterRustBuffer {
+    typealias SwiftType = [CsToolCapability]
+
+    public static func write(_ value: [CsToolCapability], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsToolCapability.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsToolCapability] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsToolCapability]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsToolCapability.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsToolGrant: FfiConverterRustBuffer {
     typealias SwiftType = [CsToolGrant]
 
@@ -12148,7 +12435,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_config_many() != 23821) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_init_model() != 17289) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_init_model() != 36342) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribedictation_is_model_loaded() != 16019) {
@@ -12259,7 +12546,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_add_server() != 12098) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_get_permission_policy() != 8244) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_list_servers() != 32749) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_list_tool_capabilities() != 6497) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_list_tool_grants() != 60648) {
@@ -12268,7 +12561,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_remove_server() != 40619) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_revoke_tool_grant() != 5854) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_revoke_tool_grant() != 2195) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_set_permission_defaults() != 45090) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_set_server_permission() != 47082) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_set_tool_permission() != 12294) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribemcpadmin_test_server() != 19902) {

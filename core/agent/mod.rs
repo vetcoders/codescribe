@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod event;
+pub mod permissions;
 pub mod provider;
 pub mod registry;
 pub mod session;
@@ -13,6 +14,7 @@ pub mod types;
 
 pub use assets::AgentAssetStore;
 pub use event::{AgentEvent, AgentUiEvent};
+pub use permissions::{AgentPermissions, PermissionLevel, ToolCapability, tool_identity};
 pub use provider::{AgentProvider, StreamOptions};
 pub use registry::{
     ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,
