@@ -10124,6 +10124,78 @@ public func FfiConverterTypeCsTrayToggles_lower(_ value: CsTrayToggles) -> RustB
 
 
 /**
+ * Result of a Voice Lab save: the human revision is persisted whenever this
+ * crosses the bridge as `Ok`; learning telemetry never gates the save.
+ */
+public struct CsVoiceLabSaveResult: Equatable, Hashable {
+    public var record: CsQualityRecord
+    /**
+     * Word pairs actually upserted into the custom lexicon (0 is honest).
+     */
+    public var pairsLearned: UInt32
+    /**
+     * Set when the revision saved but the lexicon write failed (I/O only).
+     */
+    public var lexiconError: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(record: CsQualityRecord,
+        /**
+         * Word pairs actually upserted into the custom lexicon (0 is honest).
+         */pairsLearned: UInt32,
+        /**
+         * Set when the revision saved but the lexicon write failed (I/O only).
+         */lexiconError: String?) {
+        self.record = record
+        self.pairsLearned = pairsLearned
+        self.lexiconError = lexiconError
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsVoiceLabSaveResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsVoiceLabSaveResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsVoiceLabSaveResult {
+        return
+            try CsVoiceLabSaveResult(
+                record: FfiConverterTypeCsQualityRecord.read(from: &buf),
+                pairsLearned: FfiConverterUInt32.read(from: &buf),
+                lexiconError: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsVoiceLabSaveResult, into buf: inout [UInt8]) {
+        FfiConverterTypeCsQualityRecord.write(value.record, into: &buf)
+        FfiConverterUInt32.write(value.pairsLearned, into: &buf)
+        FfiConverterOptionString.write(value.lexiconError, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsVoiceLabSaveResult_lift(_ buf: RustBuffer) throws -> CsVoiceLabSaveResult {
+    return try FfiConverterTypeCsVoiceLabSaveResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsVoiceLabSaveResult_lower(_ value: CsVoiceLabSaveResult) -> RustBuffer {
+    return FfiConverterTypeCsVoiceLabSaveResult.lower(value)
+}
+
+
+/**
  * Whether local Whisper weights are ready (embedded or on-disk). Used by
  * Settings → Dictation so users can download the model without a fat DMG.
  */
@@ -12172,11 +12244,11 @@ public func micPermissionGranted() -> Bool  {
 })
 }
 /**
- * Finalize one correction through the core's revision + atomic lexicon
- * transaction and return the refreshed resolved record.
+ * Finalize one correction: the revision always saves; word-level lexicon
+ * pairs are derived and gated individually. `Err` means the SAVE failed.
  */
-public func qualityFinalizeCorrection(correctionId: String, canonical: String)throws  -> CsQualityRecord  {
-    return try  FfiConverterTypeCsQualityRecord_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+public func qualityFinalizeCorrection(correctionId: String, canonical: String)throws  -> CsVoiceLabSaveResult  {
+    return try  FfiConverterTypeCsVoiceLabSaveResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_quality_finalize_correction(
         FfiConverterString.lower(correctionId),
         FfiConverterString.lower(canonical),$0
@@ -12261,7 +12333,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_mic_permission_granted() != 26303) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 50653) {
+    if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 53355) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_recent_records() != 51586) {

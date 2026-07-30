@@ -1179,14 +1179,34 @@ pub fn teach_dictionary_from_store() -> Result<DictionaryTeachResult> {
     })
 }
 
-/// Finalize the canonical value of one learned correction. The variant and
-/// immutable audit fields come from the latest resolved revision. The custom
-/// dictionary is atomically replaced first; only then is the superseding
-/// revision appended and exposed by the Voice Lab projection.
+/// Outcome of one Voice Lab save. When this is `Ok`, the human revision is
+/// persisted — learning telemetry rides alongside, it never gates the save.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceLabSaveOutcome {
+    /// The resolved revision now exposed by the Voice Lab projection.
+    pub record: QualityRecord,
+    /// Word-level pairs actually upserted into the custom lexicon.
+    pub pairs_learned: u32,
+    /// Set when the revision saved but the lexicon write failed (I/O only).
+    /// A failed pair derivation must never veto the human's text.
+    pub lexicon_error: Option<String>,
+}
+
+/// Finalize the canonical value of one learned correction. Two separate
+/// transactions, in human-authority order:
+///
+/// 1. The superseding revision is appended unconditionally (validation is
+///    ID shape + non-empty canonical only — saving a human edit is not a
+///    lexicon candidacy question).
+/// 2. Word-level pairs are derived from `delivered_text -> canonical`
+///    (aligned replace runs), each individually gated by
+///    [`is_sensible_lexicon_candidate`], and the survivors upserted in one
+///    atomic lexicon rewrite. A failed rewrite leaves the previous lexicon
+///    bytes intact and is reported via `lexicon_error`, never as `Err`.
 pub fn finalize_voice_lab_correction(
     correction_id: &str,
     canonical: &str,
-) -> Result<QualityRecord> {
+) -> Result<VoiceLabSaveOutcome> {
     let correction_id = correction_id.trim();
     let canonical = canonical.trim();
     anyhow::ensure!(
@@ -1209,30 +1229,13 @@ pub fn finalize_voice_lab_correction(
         .filter(|(_, record)| record.logical_id() == correction_id)
         .max_by_key(|(index, record)| (record.revision, *index))
         .context("correction ID was not found")?;
-    anyhow::ensure!(
-        is_sensible_lexicon_candidate(&current.delivered_text, canonical),
-        "canonical correction does not satisfy the existing lexicon safety policy"
-    );
     if current.edited_text.trim() == canonical {
-        return Ok(current.clone());
+        return Ok(VoiceLabSaveOutcome {
+            record: current.clone(),
+            pairs_learned: 0,
+            lexicon_error: None,
+        });
     }
-
-    // Serialize the lexicon snapshot, rewrite, audit append, and rollback as
-    // one process-local transaction so simultaneous edits cannot lose rules.
-    let _write_guard = CUSTOM_LEXICON_WRITE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| anyhow::anyhow!("custom lexicon write lock was poisoned"))?;
-    let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
-    let previous_lexicon = match fs::read(&lexicon_path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("read custom lexicon {}", lexicon_path.display()));
-        }
-    };
-    upsert_correction_in_custom_lexicon_unlocked(&current.delivered_text, canonical)?;
 
     let mut revision = current.clone();
     revision.correction_id = correction_id.to_string();
@@ -1247,32 +1250,39 @@ pub fn finalize_voice_lab_correction(
         "action": "edit",
         "supersedes_revision": current.revision,
     });
+    save_quality_record(&revision).context("append finalized correction revision")?;
 
-    if let Err(error) = save_quality_record(&revision) {
-        let rollback = match previous_lexicon {
-            Some(bytes) => {
-                atomic_write_with_rename(&lexicon_path, &bytes, |from, to| fs::rename(from, to))
+    let pairs = derive_lexicon_pairs(&current.delivered_text, canonical);
+    let mut pairs_learned = 0u32;
+    let mut lexicon_error = None;
+    if !pairs.is_empty() {
+        let borrowed: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(variant, canonical)| (variant.as_str(), canonical.as_str()))
+            .collect();
+        match upsert_corrections_in_custom_lexicon(&borrowed) {
+            Ok(()) => pairs_learned = borrowed.len() as u32,
+            Err(error) => {
+                tracing::error!(
+                    "quality: voice lab lexicon learn failed after revision save: {error:#}"
+                );
+                lexicon_error = Some(format!("{error:#}"));
             }
-            None => match fs::remove_file(&lexicon_path) {
-                Ok(()) => Ok(()),
-                Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(remove_error) => Err(remove_error).with_context(|| {
-                    format!(
-                        "remove rolled-back custom lexicon {}",
-                        lexicon_path.display()
-                    )
-                }),
-            },
-        };
-        if let Err(rollback_error) = rollback {
-            tracing::error!(
-                "quality: lexicon rollback failed after revision append error: {rollback_error:#}"
-            );
         }
-        return Err(error).context("append finalized correction revision");
     }
 
-    Ok(revision)
+    Ok(VoiceLabSaveOutcome {
+        record: revision,
+        pairs_learned,
+        lexicon_error,
+    })
+}
+
+/// Word-level lexicon pairs for one human revision: aligned replace runs of
+/// `delivered -> canonical`, each pair individually gated. Delegates to
+/// [`extract_lexicon_candidates`] — same aligner, same per-pair policy.
+pub fn derive_lexicon_pairs(delivered: &str, canonical: &str) -> Vec<(String, String)> {
+    extract_lexicon_candidates(delivered, canonical)
 }
 
 #[cfg(test)]
@@ -2052,8 +2062,11 @@ mod tests {
         .expect("append stale duplicate");
         drop(duplicate);
 
-        let revised = finalize_voice_lab_correction(&id, "Junie Prime")
+        let outcome = finalize_voice_lab_correction(&id, "Junie Prime")
             .expect("finalize canonical correction");
+        assert_eq!(outcome.pairs_learned, 1);
+        assert_eq!(outcome.lexicon_error, None);
+        let revised = outcome.record;
         assert_eq!(revised.correction_id, id);
         assert_eq!(revised.revision, original.revision + 1);
         assert_eq!(revised.delivered_text, "uni agentka");
@@ -2076,6 +2089,141 @@ mod tests {
             .collect();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].canonical, "Junie Prime");
+    }
+
+    /// One committed record inside an isolated data dir; returns its logical ID.
+    fn seed_voice_lab_record(delivered: &str, edited: &str) -> String {
+        commit_overlay_correction(delivered, delivered, edited, "overlay", None, Some("copy"))
+            .expect("seed correction");
+        recent_quality_records(1).expect("seed projection")[0].logical_id()
+    }
+
+    fn audit_line_count() -> usize {
+        fs::read_to_string(quality_dir().join("corrections.jsonl"))
+            .expect("read audit")
+            .lines()
+            .count()
+    }
+
+    #[test]
+    #[serial]
+    fn paragraph_length_edit_always_saves_the_human_revision() {
+        // The 2026-07-28 failing shape: a ~500-char delivered text with a
+        // slightly longer human revision died on the whole-edit lexicon gate
+        // before anything was persisted. Saving is not learning.
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let filler = "w badaniu klinicznym stwierdzono prawidłowy stan ogólny oraz dobrą kondycję pacjenta po zabiegu ";
+        let delivered = format!(
+            "{}pansiwe pozostaje lekiem pierwszego wyboru",
+            filler.repeat(5)
+        );
+        let canonical = format!(
+            "{}Pensieve pozostaje lekiem pierwszego wyboru u tego pacjenta",
+            filler.repeat(5)
+        );
+        assert!(
+            delivered.chars().count() >= 500,
+            "failing shape is paragraph-length"
+        );
+        assert!(canonical.chars().count() > delivered.chars().count());
+
+        let id = seed_voice_lab_record(&delivered, &delivered);
+        let outcome = finalize_voice_lab_correction(&id, &canonical)
+            .expect("paragraph-length human revision must save");
+
+        assert_eq!(outcome.record.edited_text, canonical.trim());
+        assert_eq!(outcome.lexicon_error, None);
+        assert_eq!(
+            outcome.pairs_learned, 1,
+            "pansiwe -> Pensieve is the one sensible pair"
+        );
+        assert_eq!(audit_line_count(), 2, "revision appended, nothing replaced");
+        assert_eq!(
+            recent_quality_records(1).unwrap()[0].edited_text,
+            canonical.trim()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn pairs_are_gated_individually_not_as_one_edit() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let insane = "a".repeat(90); // above MAX_CANDIDATE_CHARS — rejected per-pair
+        let delivered = "pacjent otrzymał pansiwe rano a wieczorem podano mu chaoswort przed kolejnym badaniem kontrolnym";
+        let canonical = format!(
+            "pacjent otrzymał Pensieve rano a wieczorem podano mu {insane} przed kolejnym badaniem kontrolnym"
+        );
+
+        let id = seed_voice_lab_record(delivered, delivered);
+        let outcome =
+            finalize_voice_lab_correction(&id, &canonical).expect("mixed edit still saves");
+
+        assert_eq!(outcome.pairs_learned, 1);
+        let entries = custom_lexicon_entries().expect("lexicon projection");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].variant, "pansiwe");
+        assert_eq!(entries[0].canonical, "Pensieve");
+    }
+
+    #[test]
+    #[serial]
+    fn whitespace_only_edit_saves_with_zero_pairs_and_untouched_lexicon() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let id = seed_voice_lab_record("uni agentka", "uni agentka");
+        let outcome = finalize_voice_lab_correction(&id, "uni  agentka")
+            .expect("whitespace-only revision saves");
+
+        assert_eq!(outcome.pairs_learned, 0);
+        assert_eq!(outcome.lexicon_error, None);
+        assert_eq!(audit_line_count(), 2);
+        assert!(
+            !Config::config_dir().join("lexicon.custom.jsonl").exists(),
+            "zero-pair edit must not touch the lexicon"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn lexicon_write_failure_never_vetoes_the_human_save() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let id = seed_voice_lab_record("uni agentka", "uni agentka");
+        // Injected lexicon failure: a directory where the JSONL file must be
+        // makes the upsert's read fail while the revision append still works.
+        fs::create_dir_all(Config::config_dir().join("lexicon.custom.jsonl"))
+            .expect("occupy lexicon path");
+
+        let outcome = finalize_voice_lab_correction(&id, "Junie")
+            .expect("human save must survive a lexicon write failure");
+
+        assert_eq!(outcome.record.edited_text, "Junie");
+        assert_eq!(outcome.pairs_learned, 0);
+        assert!(outcome.lexicon_error.is_some(), "failure reported honestly");
+        assert_eq!(audit_line_count(), 2);
+        assert_eq!(recent_quality_records(1).unwrap()[0].edited_text, "Junie");
     }
 
     #[test]

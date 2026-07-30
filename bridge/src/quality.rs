@@ -10,7 +10,7 @@
 
 use codescribe_core::quality::overlay_quality::{
     CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, QualityRecord,
-    commit_overlay_correction_with_confidence, custom_lexicon_entries,
+    VoiceLabSaveOutcome, commit_overlay_correction_with_confidence, custom_lexicon_entries,
     finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store,
 };
 
@@ -75,13 +75,34 @@ impl From<QualityRecord> for CsQualityRecord {
     }
 }
 
-/// Finalize one correction through the core's revision + atomic lexicon
-/// transaction and return the refreshed resolved record.
+/// Result of a Voice Lab save: the human revision is persisted whenever this
+/// crosses the bridge as `Ok`; learning telemetry never gates the save.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsVoiceLabSaveResult {
+    pub record: CsQualityRecord,
+    /// Word pairs actually upserted into the custom lexicon (0 is honest).
+    pub pairs_learned: u32,
+    /// Set when the revision saved but the lexicon write failed (I/O only).
+    pub lexicon_error: Option<String>,
+}
+
+impl From<VoiceLabSaveOutcome> for CsVoiceLabSaveResult {
+    fn from(outcome: VoiceLabSaveOutcome) -> Self {
+        Self {
+            record: outcome.record.into(),
+            pairs_learned: outcome.pairs_learned,
+            lexicon_error: outcome.lexicon_error,
+        }
+    }
+}
+
+/// Finalize one correction: the revision always saves; word-level lexicon
+/// pairs are derived and gated individually. `Err` means the SAVE failed.
 #[uniffi::export]
 pub fn quality_finalize_correction(
     correction_id: String,
     canonical: String,
-) -> Result<CsQualityRecord, CsError> {
+) -> Result<CsVoiceLabSaveResult, CsError> {
     finalize_voice_lab_correction(&correction_id, &canonical)
         .map(Into::into)
         .map_err(|error| CsError::Quality {

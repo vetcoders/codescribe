@@ -1325,13 +1325,14 @@ mod tests {
         );
 
         std::thread::sleep(std::time::Duration::from_millis(50));
-        let revision = crate::quality::overlay_quality::finalize_voice_lab_correction(
+        let outcome = crate::quality::overlay_quality::finalize_voice_lab_correction(
             &correction_id,
             "Junie Prime",
         )
         .expect("finalize Voice Lab correction");
-        assert_eq!(revision.revision, record.revision + 1);
-        assert_eq!(revision.edited_text, "Junie Prime");
+        assert_eq!(outcome.pairs_learned, 1);
+        assert_eq!(outcome.record.revision, record.revision + 1);
+        assert_eq!(outcome.record.edited_text, "Junie Prime");
 
         lexicon.maybe_reload();
         assert_eq!(lexicon.custom_rules.len(), 1);
