@@ -278,9 +278,11 @@ mod tests {
 
     #[test]
     fn precedence_thread_over_tool_over_server_over_risk() {
-        let mut policy = AgentPermissions::default();
-        policy.side_effect_default = PermissionLevel::Ask;
-        policy.read_only_default = PermissionLevel::Allow;
+        let mut policy = AgentPermissions {
+            side_effect_default: PermissionLevel::Ask,
+            read_only_default: PermissionLevel::Allow,
+            ..Default::default()
+        };
         policy
             .servers
             .insert("desktop-commander".into(), PermissionLevel::Deny);

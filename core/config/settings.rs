@@ -1510,10 +1510,12 @@ mod tests {
     fn agent_permissions_roundtrip_under_agent_section() {
         use crate::agent::permissions::{AgentPermissions, PermissionLevel};
         let _tmp = setup_isolated_data_dir();
-        let mut perms = AgentPermissions::default();
-        perms.default = PermissionLevel::Ask;
-        perms.read_only_default = PermissionLevel::Allow;
-        perms.side_effect_default = PermissionLevel::Deny;
+        let mut perms = AgentPermissions {
+            default: PermissionLevel::Ask,
+            read_only_default: PermissionLevel::Allow,
+            side_effect_default: PermissionLevel::Deny,
+            ..Default::default()
+        };
         perms.tools.insert(
             "desktop-commander:write_file".into(),
             PermissionLevel::Allow,

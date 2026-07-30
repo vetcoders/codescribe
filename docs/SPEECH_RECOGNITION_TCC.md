@@ -7,10 +7,10 @@ Apple live dictation uses `SFSpeechRecognizer` inside the bundled
 
 Speech Recognition is a **per-app TCC identity** (`com.vetcoders.codescribe`).
 
-| Context | Who gets the grant |
-|---------|-------------------|
+| Context              | Who gets the grant               |
+| -------------------- | -------------------------------- |
 | CLI / terminal tests | Terminal app (Ghostty, iTerm, …) |
-| Codescribe.app | `com.vetcoders.codescribe` |
+| Codescribe.app       | `com.vetcoders.codescribe`       |
 
 Granting Speech for the terminal does **not** authorize the app. That is why
 CLI can probe `speech_auth: authorized` while the installed app fails live
@@ -52,4 +52,4 @@ invalidate `setup_done` so the wizard re-opens.
 - Whisper = file final-pass / gap fill; never full-replace live (merge fill).
 - Gaps in Apple live are fill canvas for Teacher / Whisper, not pure WER failure.
 
-_Vibecrafted. with AI Agents by VetCoders (c)2024-2026 The LibraxisAI Team_
+_Vibecrafted. with AI Agents by Vetcoders (c)2024-2026 The LibraxisAI Team_

@@ -63,12 +63,12 @@ JSON stdin request / JSON stdout response, `protocol_version: 1`.
 
 Commands:
 
-| command | Engine surface | Use |
-| --- | --- | --- |
-| `probe` | ST → SF capability | locale readiness + honest `speech_auth` |
-| `request_auth` | `SFSpeechRecognizer.requestAuthorization` | force TCC dialog / inspect auth |
-| `transcribe_live` | **Virtual mic**: `AVAudioEngine` → mixer tap → `SFSpeechAudioBufferRecognitionRequest` (multi-phrase accumulate, >55s chunked) | **Live dictation** (product + Teacher live leg) |
-| `transcribe` | `SFSpeechURLRecognitionRequest` | File final-pass only (known collapse on long pl) |
+| command           | Engine surface                                                                                                                 | Use                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `probe`           | ST → SF capability                                                                                                             | locale readiness + honest `speech_auth`          |
+| `request_auth`    | `SFSpeechRecognizer.requestAuthorization`                                                                                      | force TCC dialog / inspect auth                  |
+| `transcribe_live` | **Virtual mic**: `AVAudioEngine` → mixer tap → `SFSpeechAudioBufferRecognitionRequest` (multi-phrase accumulate, >55s chunked) | **Live dictation** (product + Teacher live leg)  |
+| `transcribe`      | `SFSpeechURLRecognitionRequest`                                                                                                | File final-pass only (known collapse on long pl) |
 
 Additive fields (no wire version bump):
 
