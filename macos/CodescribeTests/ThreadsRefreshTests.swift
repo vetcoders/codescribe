@@ -113,7 +113,7 @@ final class ThreadsRefreshTests: XCTestCase {
 
     // MARK: C2 — in-window turn completion still refreshes (regression)
 
-    func testVoiceTurnCompletionRefreshesRail() {
+    func testVoiceTurnCompletionRefreshesRailWithoutStealingSelection() {
         let provider = StubThreadsProvider([("t_old", "Old thread")])
         let store = AgentChatStore(threadsProvider: provider)
 
@@ -132,8 +132,8 @@ final class ThreadsRefreshTests: XCTestCase {
             "turn completion must reload the persisted thread list"
         )
         XCTAssertEqual(
-            store.currentThread?.backendId, "t_voice",
-            "turn completion keeps the finished thread selected"
+            store.currentThread?.backendId, "t_old",
+            "turn completion must preserve the thread the user was already reading"
         )
     }
 

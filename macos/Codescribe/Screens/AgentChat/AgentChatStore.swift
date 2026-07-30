@@ -1242,9 +1242,11 @@ final class AgentChatStore: ObservableObject {
     // first-turn title sibling (`generateThreadTitle`), which carries no
     // conversation state and never touches the thread's response chain.
 
-    /// Open a voice turn: bind (or create) a thread for the core `backendId`,
-    /// insert the You-bubble + an assistant placeholder, and select it so the live
-    /// reply is visible. Subsequent `ingestVoice*` calls target this turn.
+    /// Open a voice turn: bind (or create) a thread for the core `backendId`
+    /// and insert the You-bubble + an assistant placeholder. Delivery events
+    /// never change the rail selection: a matching active thread renders live,
+    /// while a turn for another thread updates in the background. Only explicit
+    /// user actions (`select`, `newThread`, delete fallback) move selection.
     func ingestVoiceTurn(threadId backendId: String, userText: String) {
         // Defensive: a new voice turn can open before the previous one closed
         // (rapid double-press / a fresh session). Finalize the stale assistant
@@ -1286,8 +1288,6 @@ final class AgentChatStore: ObservableObject {
             threadID = thread.id
             isFirstExchange = true
         }
-        selectedThreadID = threadID
-
         // A skeleton turn can carry context with an empty instruction (e.g. a
         // clipped dictation) — the bubble still renders for the chip.
         if !userTurn.text.isEmpty || userTurn.wireText != nil {
@@ -1785,10 +1785,13 @@ final class AgentChatStore: ObservableObject {
         }
 
         threads = next.isEmpty && !allowEmpty ? [ChatThread(title: "New thread", meta: "now", messages: [])] : next
-        if let backendId, let match = threads.first(where: { $0.backendId == backendId }) {
-            selectedThreadID = match.id
-        } else if let previousSelectedID, threads.contains(where: { $0.id == previousSelectedID }) {
+        // Selection is user-owned. A completion refresh may reorder or replace
+        // rail rows, but it must preserve the thread the user is reading. The
+        // completed backend is only a fallback when that selection disappeared.
+        if let previousSelectedID, threads.contains(where: { $0.id == previousSelectedID }) {
             selectedThreadID = previousSelectedID
+        } else if let backendId, let match = threads.first(where: { $0.backendId == backendId }) {
+            selectedThreadID = match.id
         } else {
             selectedThreadID = threads.first?.id
         }

@@ -578,6 +578,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice early title")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
 
         engine.completeTitle(.success("Voice title state"))
@@ -606,6 +607,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice late title")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
 
         provider.markFirstTurnPersisted()
@@ -628,6 +630,7 @@ final class AgentThreadTitleTests: XCTestCase {
         provider.forceGeneratedFailure = true
         let store = makeStore(engine: engine, provider: provider)
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice persistence failure")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         engine.completeTitle(.success("Cannot persist"))
         await waitUntil { provider.events.filter { $0 == .generated("Cannot persist") }.count == 1 }
@@ -645,6 +648,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice rename before generation")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
 
         store.rename(store.currentThread!, to: "My durable voice title")
@@ -667,6 +671,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice late generated then rename")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         provider.markFirstTurnPersisted()
         store.ingestVoiceDone()
@@ -685,6 +690,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "delete this voice turn")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         let deletedID = store.currentThread!.id
 
@@ -713,6 +719,7 @@ final class AgentThreadTitleTests: XCTestCase {
         defer { _ = canceller }
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice cancel race")
+        selectVoiceThread(provider.backendID, in: store)
         store.ingestVoiceDelta("Partial voice answer")
         await waitUntil { engine.titleCalls.count == 1 }
 
@@ -733,6 +740,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let provider = TitleThreadsProvider()
         let store = makeStore(engine: engine, provider: provider)
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice fallback title")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         engine.completeTitle(outcome)
         provider.markFirstTurnPersisted()
@@ -744,6 +752,19 @@ final class AgentThreadTitleTests: XCTestCase {
             if case .generated = $0 { return true }
             return false
         }.isEmpty)
+    }
+
+    private func selectVoiceThread(
+        _ backendID: String,
+        in store: AgentChatStore,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let threadID = store.threads.first(where: { $0.backendId == backendID })?.id else {
+            XCTFail("Expected a local voice thread for \(backendID)", file: file, line: line)
+            return
+        }
+        store.select(threadID)
     }
 
     private func makeStore(
