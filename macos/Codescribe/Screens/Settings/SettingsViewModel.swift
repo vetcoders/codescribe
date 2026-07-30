@@ -979,11 +979,17 @@ final class SettingsViewModel: ObservableObject {
 
     /// Add a server from the form. `args` is already split into tokens. On success
     /// the list + readiness re-probe so the panel reflects the new state.
-    func addMcpServer(name: String, command: String, args: [String]) {
+    func addMcpServer(
+        name: String, command: String, args: [String],
+        endpoint: String = "", token: String = ""
+    ) {
         guard let mcpAdmin else { return }
         do {
             try mcpAdmin.addServer(
-                CsMcpServerInput(name: name, command: command, args: args, enabled: true)
+                CsMcpServerInput(
+                    name: name, command: command, args: args, enabled: true,
+                    endpoint: endpoint, authRef: "", token: token
+                )
             )
             reloadMcpServers()
             refreshAgentStatus()
@@ -1000,7 +1006,8 @@ final class SettingsViewModel: ObservableObject {
                 name: server.name,
                 input: CsMcpServerInput(
                     name: server.name, command: server.command,
-                    args: server.args, enabled: !server.enabled
+                    args: server.args, enabled: !server.enabled,
+                    endpoint: server.endpoint, authRef: server.authRef, token: ""
                 )
             )
             reloadMcpServers()

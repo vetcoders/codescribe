@@ -7674,15 +7674,21 @@ public struct CsMcpServer: Equatable, Hashable {
     public var args: [String]
     public var envKeys: [String]
     public var enabled: Bool
+    public var transport: String
+    public var endpoint: String
+    public var authRef: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(name: String, command: String, args: [String], envKeys: [String], enabled: Bool) {
+    public init(name: String, command: String, args: [String], envKeys: [String], enabled: Bool, transport: String, endpoint: String, authRef: String) {
         self.name = name
         self.command = command
         self.args = args
         self.envKeys = envKeys
         self.enabled = enabled
+        self.transport = transport
+        self.endpoint = endpoint
+        self.authRef = authRef
     }
 
 
@@ -7703,7 +7709,10 @@ public struct FfiConverterTypeCsMcpServer: FfiConverterRustBuffer {
                 command: FfiConverterString.read(from: &buf),
                 args: FfiConverterSequenceString.read(from: &buf),
                 envKeys: FfiConverterSequenceString.read(from: &buf),
-                enabled: FfiConverterBool.read(from: &buf)
+                enabled: FfiConverterBool.read(from: &buf),
+                transport: FfiConverterString.read(from: &buf),
+                endpoint: FfiConverterString.read(from: &buf),
+                authRef: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -7713,6 +7722,9 @@ public struct FfiConverterTypeCsMcpServer: FfiConverterRustBuffer {
         FfiConverterSequenceString.write(value.args, into: &buf)
         FfiConverterSequenceString.write(value.envKeys, into: &buf)
         FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterString.write(value.transport, into: &buf)
+        FfiConverterString.write(value.endpoint, into: &buf)
+        FfiConverterString.write(value.authRef, into: &buf)
     }
 }
 
@@ -7741,14 +7753,40 @@ public struct CsMcpServerInput: Equatable, Hashable {
     public var command: String
     public var args: [String]
     public var enabled: Bool
+    /**
+     * Empty for local stdio; http(s) URL for a remote Streamable HTTP server.
+     */
+    public var endpoint: String
+    /**
+     * Existing Keychain account to preserve during update/toggle.
+     */
+    public var authRef: String
+    /**
+     * Write-only bearer token. It is saved straight to Keychain and never
+     * serialized into mcp.json or returned by `list_servers`.
+     */
+    public var token: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(name: String, command: String, args: [String], enabled: Bool) {
+    public init(name: String, command: String, args: [String], enabled: Bool,
+        /**
+         * Empty for local stdio; http(s) URL for a remote Streamable HTTP server.
+         */endpoint: String,
+        /**
+         * Existing Keychain account to preserve during update/toggle.
+         */authRef: String,
+        /**
+         * Write-only bearer token. It is saved straight to Keychain and never
+         * serialized into mcp.json or returned by `list_servers`.
+         */token: String) {
         self.name = name
         self.command = command
         self.args = args
         self.enabled = enabled
+        self.endpoint = endpoint
+        self.authRef = authRef
+        self.token = token
     }
 
 
@@ -7768,7 +7806,10 @@ public struct FfiConverterTypeCsMcpServerInput: FfiConverterRustBuffer {
                 name: FfiConverterString.read(from: &buf),
                 command: FfiConverterString.read(from: &buf),
                 args: FfiConverterSequenceString.read(from: &buf),
-                enabled: FfiConverterBool.read(from: &buf)
+                enabled: FfiConverterBool.read(from: &buf),
+                endpoint: FfiConverterString.read(from: &buf),
+                authRef: FfiConverterString.read(from: &buf),
+                token: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -7777,6 +7818,9 @@ public struct FfiConverterTypeCsMcpServerInput: FfiConverterRustBuffer {
         FfiConverterString.write(value.command, into: &buf)
         FfiConverterSequenceString.write(value.args, into: &buf)
         FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterString.write(value.endpoint, into: &buf)
+        FfiConverterString.write(value.authRef, into: &buf)
+        FfiConverterString.write(value.token, into: &buf)
     }
 }
 

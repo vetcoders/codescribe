@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use codescribe_core::agent::{AgentPermissions, PermissionLevel, ToolRegistry, tool_grants};
+use codescribe_core::config::keychain::{delete_key, save_key};
 use codescribe_core::mcp::{
     McpServerSpec, McpServerSummary, add_server, list_servers, probe_server_blocking,
     remove_server, update_server,
@@ -35,6 +36,9 @@ pub struct CsMcpServer {
     pub args: Vec<String>,
     pub env_keys: Vec<String>,
     pub enabled: bool,
+    pub transport: String,
+    pub endpoint: String,
+    pub auth_ref: String,
 }
 
 impl From<McpServerSummary> for CsMcpServer {
@@ -45,6 +49,13 @@ impl From<McpServerSummary> for CsMcpServer {
             args: summary.args,
             env_keys: summary.env_keys,
             enabled: summary.enabled,
+            transport: if summary.endpoint.is_some() {
+                "remote".to_string()
+            } else {
+                "stdio".to_string()
+            },
+            endpoint: summary.endpoint.unwrap_or_default(),
+            auth_ref: summary.auth_ref.unwrap_or_default(),
         }
     }
 }
@@ -57,6 +68,13 @@ pub struct CsMcpServerInput {
     pub command: String,
     pub args: Vec<String>,
     pub enabled: bool,
+    /// Empty for local stdio; http(s) URL for a remote Streamable HTTP server.
+    pub endpoint: String,
+    /// Existing Keychain account to preserve during update/toggle.
+    pub auth_ref: String,
+    /// Write-only bearer token. It is saved straight to Keychain and never
+    /// serialized into mcp.json or returned by `list_servers`.
+    pub token: String,
 }
 
 impl From<&CsMcpServerInput> for McpServerSpec {
@@ -66,6 +84,8 @@ impl From<&CsMcpServerInput> for McpServerSpec {
             command: input.command.clone(),
             args: input.args.clone(),
             enabled: input.enabled,
+            endpoint: (!input.endpoint.trim().is_empty()).then(|| input.endpoint.clone()),
+            auth_ref: (!input.auth_ref.trim().is_empty()).then(|| input.auth_ref.clone()),
         }
     }
 }
@@ -140,17 +160,58 @@ impl CodescribeMcpAdmin {
 
     /// Add a new server. Errors if the name already exists or is invalid.
     pub fn add_server(&self, server: CsMcpServerInput) -> Result<(), CsError> {
-        add_server(&McpServerSpec::from(&server)).map_err(config_err)
+        let mut spec = McpServerSpec::from(&server);
+        let stored_account = store_connector_token(&server.name, &server.token)?;
+        if stored_account.is_some() {
+            spec.auth_ref = stored_account.clone();
+        }
+        if let Err(error) = add_server(&spec) {
+            if let Some(account) = stored_account {
+                let _ = delete_key(&account);
+            }
+            return Err(config_err(error));
+        }
+        // Remote connectors enter B2 through the same server policy registry.
+        // Pin the server default to Ask only when the operator has not already
+        // chosen an explicit setting.
+        if spec.endpoint.is_some() {
+            let policy = AgentPermissions::load();
+            if !policy.servers.contains_key(&server.name) {
+                if let Err(error) =
+                    AgentPermissions::set_server_level(&server.name, PermissionLevel::Ask)
+                {
+                    let _ = remove_server(&server.name);
+                    if let Some(account) = stored_account {
+                        let _ = delete_key(&account);
+                    }
+                    return Err(config_err(error));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Update the named server's spawn shape, preserving its env + unknown fields.
     pub fn update_server(&self, name: String, server: CsMcpServerInput) -> Result<(), CsError> {
-        update_server(&name, &McpServerSpec::from(&server)).map_err(config_err)
+        let mut spec = McpServerSpec::from(&server);
+        if let Some(account) = store_connector_token(&server.name, &server.token)? {
+            spec.auth_ref = Some(account);
+        }
+        update_server(&name, &spec).map_err(config_err)
     }
 
     /// Remove the named server. Errors if it does not exist.
     pub fn remove_server(&self, name: String) -> Result<(), CsError> {
-        remove_server(&name).map_err(config_err)
+        let auth_ref = list_servers()
+            .map_err(config_err)?
+            .into_iter()
+            .find(|server| server.name == name)
+            .and_then(|server| server.auth_ref);
+        remove_server(&name).map_err(config_err)?;
+        if let Some(account) = auth_ref {
+            delete_key(&account).map_err(config_err)?;
+        }
+        Ok(())
     }
 
     /// List persisted "always allow" tool grants, newest write last. Each key is
@@ -279,4 +340,24 @@ fn config_err(error: anyhow::Error) -> CsError {
     CsError::Config {
         msg: error.to_string(),
     }
+}
+
+fn store_connector_token(name: &str, token: &str) -> Result<Option<String>, CsError> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Ok(None);
+    }
+    let normalized: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let account = format!("MCP_CONNECTOR_{normalized}_TOKEN");
+    save_key(&account, token).map_err(config_err)?;
+    Ok(Some(account))
 }

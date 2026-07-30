@@ -99,7 +99,9 @@ final class MockMCPAdminEngine: MCPAdminEngine {
         servers.append(
             CsMcpServer(
                 name: input.name, command: input.command, args: input.args,
-                envKeys: [], enabled: input.enabled
+                envKeys: [], enabled: input.enabled,
+                transport: input.endpoint.isEmpty ? "stdio" : "remote",
+                endpoint: input.endpoint, authRef: input.authRef
             )
         )
     }
@@ -108,7 +110,9 @@ final class MockMCPAdminEngine: MCPAdminEngine {
         guard let index = servers.firstIndex(where: { $0.name == name }) else { return }
         servers[index] = CsMcpServer(
             name: input.name, command: input.command, args: input.args,
-            envKeys: servers[index].envKeys, enabled: input.enabled
+            envKeys: servers[index].envKeys, enabled: input.enabled,
+            transport: input.endpoint.isEmpty ? "stdio" : "remote",
+            endpoint: input.endpoint, authRef: input.authRef
         )
     }
 
@@ -130,8 +134,8 @@ final class MockMCPAdminEngine: MCPAdminEngine {
 
 extension CsMcpServer {
     static let samples: [CsMcpServer] = [
-        CsMcpServer(name: "loctree-mcp", command: "loctree-mcp", args: ["mcp"], envKeys: [], enabled: true),
-        CsMcpServer(name: "aicx-mcp", command: "aicx", args: ["mcp"], envKeys: ["AICX_TOKEN"], enabled: true),
-        CsMcpServer(name: "prview", command: "prview", args: ["mcp"], envKeys: [], enabled: false)
+        CsMcpServer(name: "loctree-mcp", command: "loctree-mcp", args: ["mcp"], envKeys: [], enabled: true, transport: "stdio", endpoint: "", authRef: ""),
+        CsMcpServer(name: "aicx-mcp", command: "aicx", args: ["mcp"], envKeys: ["AICX_TOKEN"], enabled: true, transport: "stdio", endpoint: "", authRef: ""),
+        CsMcpServer(name: "slack", command: "", args: [], envKeys: [], enabled: true, transport: "remote", endpoint: "https://connector.example/mcp", authRef: "MCP_CONNECTOR_SLACK_TOKEN")
     ]
 }

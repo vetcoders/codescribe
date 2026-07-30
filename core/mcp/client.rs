@@ -14,6 +14,7 @@ use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::agent::ToolResultContent;
+use crate::config::keychain::runtime_key;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -29,6 +30,8 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(200);
 /// Max characters of collapsed stderr carried into a WARN line.
 const STDERR_LOG_MAX_CHARS: usize = 200;
+const REMOTE_RECONNECT_ATTEMPTS: usize = 3;
+const REMOTE_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
 const FALLBACK_PATHS: &[&str] = &[
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -64,6 +67,7 @@ impl McpConfigFile {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpServerConfig {
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -73,6 +77,14 @@ pub struct McpServerConfig {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// Streamable HTTP endpoint. When present, this server uses remote transport
+    /// instead of spawning `command`.
+    #[serde(default, alias = "endpoint")]
+    pub url: Option<String>,
+    /// Keychain account containing the bearer token. The token itself is never
+    /// serialized into mcp.json.
+    #[serde(default)]
+    pub auth_ref: Option<String>,
 }
 
 impl McpServerConfig {
@@ -177,6 +189,16 @@ impl McpClient {
     /// wrapper that keeps only the tools; the Settings health probe uses the full
     /// result to surface real handshake data next to a server.
     pub async fn probe(&self) -> Result<McpProbe> {
+        if self.config.url.is_some() {
+            return self
+                .remote_with_backoff(|mut connection| async move {
+                    let handshake = connection.initialize().await?;
+                    let response = connection.request("tools/list", json!({})).await?;
+                    let tools = parse_tools_list(response)?;
+                    Ok(McpProbe { handshake, tools })
+                })
+                .await;
+        }
         let mut connection =
             match StdioConnection::spawn(&self.config, self.timeout, self.initialize_timeout).await
             {
@@ -208,6 +230,27 @@ impl McpClient {
     }
 
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Vec<ToolResultContent>> {
+        if self.config.url.is_some() {
+            return self
+                .remote_with_backoff(|mut connection| {
+                    let name = name.to_string();
+                    let arguments = arguments.clone();
+                    async move {
+                        connection.initialize().await?;
+                        let response = connection
+                            .request(
+                                "tools/call",
+                                json!({
+                                    "name": name,
+                                    "arguments": arguments,
+                                }),
+                            )
+                            .await?;
+                        parse_tool_call_result(response)
+                    }
+                })
+                .await;
+        }
         let mut connection =
             match StdioConnection::spawn(&self.config, self.timeout, self.initialize_timeout).await
             {
@@ -244,6 +287,238 @@ impl McpClient {
         }
         result
     }
+
+    /// Remote calls are isolated from the agent session. A transient connector
+    /// failure retries with bounded exponential backoff; exhausting retries
+    /// returns a typed connector error to the tool/UI without killing the
+    /// session that invoked it.
+    async fn remote_with_backoff<T, F, Fut>(&self, operation: F) -> Result<T>
+    where
+        F: Fn(RemoteConnection) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut last_error = None;
+        for attempt in 0..REMOTE_RECONNECT_ATTEMPTS {
+            let connection =
+                RemoteConnection::connect(&self.config, self.timeout, self.initialize_timeout)?;
+            match operation(connection).await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    warn!(
+                        "Remote MCP connector '{}' attempt {}/{} failed: {}",
+                        self.config.url.as_deref().unwrap_or("<missing>"),
+                        attempt + 1,
+                        REMOTE_RECONNECT_ATTEMPTS,
+                        error.root_cause()
+                    );
+                    last_error = Some(error);
+                    if attempt + 1 < REMOTE_RECONNECT_ATTEMPTS {
+                        let multiplier = 1_u32 << attempt;
+                        tokio::time::sleep(REMOTE_RECONNECT_BASE_DELAY * multiplier).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("remote MCP connector failed")))
+    }
+}
+
+/// One Streamable HTTP MCP exchange. We deliberately create this per probe/tool
+/// call: the registry contract remains identical to stdio while a dead remote
+/// connector cannot own or terminate the surrounding agent session.
+struct RemoteConnection {
+    client: reqwest::Client,
+    endpoint: String,
+    bearer_token: Option<String>,
+    session_id: Option<String>,
+    next_id: u64,
+    response_timeout: Duration,
+    initialize_timeout: Duration,
+}
+
+impl RemoteConnection {
+    fn connect(
+        config: &McpServerConfig,
+        response_timeout: Duration,
+        initialize_timeout: Duration,
+    ) -> Result<Self> {
+        let endpoint = config
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .context("Remote MCP endpoint is empty")?;
+        let parsed = reqwest::Url::parse(endpoint)
+            .with_context(|| format!("Invalid remote MCP endpoint: {endpoint}"))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            bail!("Remote MCP endpoint must use http or https");
+        }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            bail!("Remote MCP credentials must be stored in Keychain, not in the endpoint URL");
+        }
+        let bearer_token = match config.auth_ref.as_deref() {
+            Some(account) => Some(
+                runtime_key(account)
+                    .with_context(|| format!("Missing Keychain token for auth ref '{account}'"))?,
+            ),
+            None => None,
+        };
+        let client = reqwest::Client::builder()
+            .timeout(response_timeout)
+            .build()
+            .context("Failed to build remote MCP HTTP client")?;
+        Ok(Self {
+            client,
+            endpoint: endpoint.to_string(),
+            bearer_token,
+            session_id: None,
+            next_id: 1,
+            response_timeout,
+            initialize_timeout,
+        })
+    }
+
+    async fn initialize(&mut self) -> Result<McpHandshake> {
+        let result = self
+            .request_with_timeout(
+                self.initialize_timeout,
+                "initialize",
+                json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "codescribe",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                }),
+            )
+            .await?;
+        self.notification("notifications/initialized", json!({}))
+            .await?;
+        let handshake = serde_json::from_value(result).unwrap_or_default();
+        Ok(handshake)
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        self.request_with_timeout(self.response_timeout, method, params)
+            .await
+    }
+
+    async fn request_with_timeout(
+        &mut self,
+        response_timeout: Duration,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let response = timeout(response_timeout, self.post(&message))
+            .await
+            .with_context(|| {
+                format!("Timed out waiting for remote MCP response to '{method}'")
+            })??;
+        parse_remote_response(response, id, method)
+    }
+
+    async fn notification(&mut self, method: &str, params: Value) -> Result<()> {
+        let message = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        let _ = self.post(&message).await?;
+        Ok(())
+    }
+
+    async fn post(&mut self, message: &Value) -> Result<RemoteResponse> {
+        let mut request = self
+            .client
+            .post(&self.endpoint)
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            )
+            .json(message);
+        if let Some(token) = &self.bearer_token {
+            request = request.bearer_auth(token);
+        }
+        if let Some(session_id) = &self.session_id {
+            request = request.header("Mcp-Session-Id", session_id);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("Remote MCP connector '{}' is unreachable", self.endpoint))?;
+        let status = response.status();
+        if let Some(session_id) = response
+            .headers()
+            .get("Mcp-Session-Id")
+            .and_then(|value| value.to_str().ok())
+        {
+            self.session_id = Some(session_id.to_string());
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let body = response
+            .text()
+            .await
+            .context("Failed reading remote MCP response body")?;
+        if !status.is_success() {
+            bail!(
+                "Remote MCP connector '{}' returned HTTP {}",
+                self.endpoint,
+                status.as_u16()
+            );
+        }
+        Ok(RemoteResponse { content_type, body })
+    }
+}
+
+struct RemoteResponse {
+    content_type: String,
+    body: String,
+}
+
+fn parse_remote_response(response: RemoteResponse, id: u64, method: &str) -> Result<Value> {
+    let messages: Vec<Value> = if response.content_type.contains("text/event-stream") {
+        response
+            .body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                serde_json::from_str(line)
+                    .with_context(|| format!("Malformed remote MCP SSE data: {line}"))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        if response.body.trim().is_empty() {
+            bail!("Remote MCP server returned an empty response to '{method}'");
+        }
+        vec![
+            serde_json::from_str(response.body.trim())
+                .with_context(|| format!("Malformed remote MCP JSON response to '{method}'"))?,
+        ]
+    };
+    let message = messages
+        .into_iter()
+        .find(|message| message.get("id").and_then(Value::as_u64) == Some(id))
+        .with_context(|| format!("Remote MCP response to '{method}' omitted request id {id}"))?;
+    if let Some(error) = message.get("error") {
+        bail!("MCP request '{method}' failed: {error}");
+    }
+    Ok(message.get("result").cloned().unwrap_or(Value::Null))
 }
 
 /// Emit a WARN for a spawn-survived-but-handshake/call-failed MCP exchange,
@@ -671,6 +946,8 @@ mod tests {
             env: Default::default(),
             enabled: Some(true),
             timeout_seconds: Some(5),
+            url: None,
+            auth_ref: None,
         }
     }
 
@@ -695,6 +972,154 @@ mod tests {
                 "required": ["message"]
             })
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_lists_tools_over_remote_streamable_http() {
+        use mockito::Matcher;
+
+        let mut server = mockito::Server::new_async().await;
+        let initialize = server
+            .mock("POST", "/mcp")
+            .match_body(Matcher::PartialJson(json!({"method": "initialize"})))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_header("Mcp-Session-Id", "codescribe-test-session")
+            .with_body(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": "2025-06-18",
+                        "serverInfo": {"name": "remote-mock", "version": "1.0"}
+                    }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let initialized = server
+            .mock("POST", "/mcp")
+            .match_header("Mcp-Session-Id", "codescribe-test-session")
+            .match_body(Matcher::PartialJson(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .with_status(202)
+            .create_async()
+            .await;
+        let list = server
+            .mock("POST", "/mcp")
+            .match_header("Mcp-Session-Id", "codescribe-test-session")
+            .match_body(Matcher::PartialJson(json!({"method": "tools/list"})))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(
+                "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"remote_search\",\"inputSchema\":{\"type\":\"object\"}}]}}\n\n",
+            )
+            .create_async()
+            .await;
+
+        let client = McpClient::new(McpServerConfig {
+            command: String::new(),
+            args: vec![],
+            env: Default::default(),
+            enabled: Some(true),
+            timeout_seconds: Some(2),
+            url: Some(format!("{}/mcp", server.url())),
+            auth_ref: None,
+        });
+        let probe = client.probe().await.expect("remote MCP probe");
+        assert_eq!(
+            probe.handshake.server_name().as_deref(),
+            Some("remote-mock")
+        );
+        assert_eq!(probe.tools[0].name, "remote_search");
+        initialize.assert_async().await;
+        initialized.assert_async().await;
+        list.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn remote_mcp_reconnects_with_backoff_without_losing_the_call() {
+        use tiny_http::{Header, Response, Server, StatusCode};
+
+        let server = Server::http("127.0.0.1:0").expect("bind mock MCP");
+        let endpoint = format!("http://{}/mcp", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            // Simulate the connector being down for two initialize attempts,
+            // then coming back inside the client's bounded backoff window.
+            for _ in 0..2 {
+                let request = server.recv().expect("failed initialize request");
+                request
+                    .respond(Response::empty(StatusCode(503)))
+                    .expect("503 response");
+            }
+
+            let request = server.recv().expect("reconnected initialize");
+            let response = Response::from_string(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": "2025-06-18",
+                        "serverInfo": {"name": "reconnected"}
+                    }
+                })
+                .to_string(),
+            )
+            .with_header(
+                Header::from_bytes("content-type", "application/json").expect("content type"),
+            )
+            .with_header(
+                Header::from_bytes("Mcp-Session-Id", "reconnected-session")
+                    .expect("session header"),
+            );
+            request.respond(response).expect("initialize response");
+
+            let request = server.recv().expect("initialized notification");
+            request
+                .respond(Response::empty(StatusCode(202)))
+                .expect("notification response");
+
+            let request = server.recv().expect("tools/list");
+            request
+                .respond(
+                    Response::from_string(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "result": {
+                                "tools": [{
+                                    "name": "after_restart",
+                                    "inputSchema": {"type": "object"}
+                                }]
+                            }
+                        })
+                        .to_string(),
+                    )
+                    .with_header(
+                        Header::from_bytes("content-type", "application/json")
+                            .expect("content type"),
+                    ),
+                )
+                .expect("tools response");
+        });
+
+        let client = McpClient::new(McpServerConfig {
+            command: String::new(),
+            args: vec![],
+            env: Default::default(),
+            enabled: Some(true),
+            timeout_seconds: Some(2),
+            url: Some(endpoint),
+            auth_ref: None,
+        });
+        let tools = client
+            .list_tools()
+            .await
+            .expect("connector should recover during backoff");
+        assert_eq!(tools[0].name, "after_restart");
+        worker.join().expect("mock server thread");
     }
 
     #[tokio::test]
@@ -769,6 +1194,8 @@ mod tests {
             env: Default::default(),
             enabled: Some(true),
             timeout_seconds: Some(2),
+            url: None,
+            auth_ref: None,
         };
         let client = McpClient::new(config);
 
