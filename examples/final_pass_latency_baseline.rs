@@ -52,5 +52,37 @@ fn main() -> anyhow::Result<()> {
             verdict.text.len(),
         );
     }
+
+    // A1 TTL proof window: with BASELINE_IDLE_PROBE_SECS set, stay idle past
+    // the reaper TTL and print RSS every 30 s so the weight-drop shows up as a
+    // real resident-memory delta (not just a dropped reference).
+    if let Some(probe_secs) = std::env::var("BASELINE_IDLE_PROBE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        let started = Instant::now();
+        println!("idle_probe_start rss_mb={}", rss_mb());
+        while started.elapsed().as_secs() < probe_secs {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            println!(
+                "idle_probe t={}s rss_mb={}",
+                started.elapsed().as_secs(),
+                rss_mb()
+            );
+        }
+    }
     Ok(())
+}
+
+/// Resident set size of this process in MiB via `ps` (portable enough for a
+/// macOS-only harness; phys_footprint needs entitlements `ps` does not).
+fn rss_mb() -> u64 {
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|kb| kb / 1024)
+        .unwrap_or(0)
 }
