@@ -53,15 +53,24 @@ pub type ChunkCallback<'a> = &'a dyn Fn(&str);
 ///
 /// `Device` is `Clone` (Metal backend shares Arc'd queues/buffer maps); the
 /// cached value keeps the underlying MTL device alive for the process life.
+static PROCESS_DEVICE: OnceLock<Device> = OnceLock::new();
+
 fn process_device() -> Device {
-    static DEVICE: OnceLock<Device> = OnceLock::new();
-    DEVICE
+    PROCESS_DEVICE
         .get_or_init(|| {
             let device = Device::new_metal(0).unwrap_or(Device::Cpu);
             tracing::info!("Whisper process device acquired once: {device:?}");
             device
         })
         .clone()
+}
+
+/// The cached process device, if one was ever created — without creating it.
+///
+/// The idle reaper uses this to prune the Metal free-buffer pool after a
+/// weight unload; a `None` means no engine ever loaded, so nothing to prune.
+pub(super) fn cached_process_device() -> Option<Device> {
+    PROCESS_DEVICE.get().cloned()
 }
 
 /// Average decoder tokens per spoken word (BPE subwords + punctuation). Used to

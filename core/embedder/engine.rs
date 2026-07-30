@@ -22,15 +22,22 @@ const ENV_EMBEDDER_REPO: &str = "CODESCRIBE_EMBEDDER_REPO";
 
 /// Process-lifetime Candle device for the embedder (same Metal-leak rationale as
 /// Whisper: idle-unload must not call `Device::new_metal` again).
+static PROCESS_DEVICE: OnceLock<Device> = OnceLock::new();
+
 fn process_device() -> Device {
-    static DEVICE: OnceLock<Device> = OnceLock::new();
-    DEVICE
+    PROCESS_DEVICE
         .get_or_init(|| {
             let device = Device::new_metal(0).unwrap_or(Device::Cpu);
             info!("Embedder process device acquired once: {device:?}");
             device
         })
         .clone()
+}
+
+/// The cached process device, if one was ever created — without creating it.
+/// Used by the idle reaper to prune the Metal free-buffer pool after unload.
+pub(super) fn cached_process_device() -> Option<Device> {
+    PROCESS_DEVICE.get().cloned()
 }
 
 /// Configuration for the embedder

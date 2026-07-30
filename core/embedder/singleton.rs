@@ -101,9 +101,14 @@ fn reaper_loop() {
         if guard.engine.is_some() && guard.last_used.elapsed() >= threshold {
             // Weights only — process Metal device retained (see engine::process_device).
             guard.engine = None;
+            // Force candle's free-pool prune so the dropped buffers leave RSS
+            // now, not at the next inference (same mechanism as Whisper).
+            if let Some(device) = super::engine::cached_process_device() {
+                crate::memory::reclaim_metal_buffer_pool(&device);
+            }
             drop(guard);
             info!(
-                "Embedder weights unloaded after {}s idle (Metal device retained); releasing host heap",
+                "Embedder weights unloaded after {}s idle (Metal device retained, buffer pool pruned); releasing host heap",
                 threshold.as_secs()
             );
             crate::memory::release_freed_heap();

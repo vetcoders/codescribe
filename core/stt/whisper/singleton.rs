@@ -18,6 +18,11 @@
 //! IOAccelerator Mach ports / dispatch threads (the reason idle-unload was
 //! previously disabled with `DEFAULT_IDLE_UNLOAD_SECS = 0`).
 //!
+//! Dropping the weights alone is not enough: their `MTLBuffer`s return to the
+//! `MetalDevice` free-buffer pool, which candle only prunes during the next
+//! inference. The reaper therefore forces that prune right after the drop
+//! (`memory::reclaim_metal_buffer_pool`) so RSS actually falls while idle.
+//!
 //! Default TTL is 45 minutes. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
 //! keep weights resident for the whole process life.
 
@@ -179,9 +184,16 @@ fn reaper_loop() {
             // Device in engine::process_device stays alive so the next cold load
             // reuses it — no Device::new_metal churn / port leak.
             guard.engine = None;
+            // Dropped weight buffers only return to the MetalDevice free-buffer
+            // pool; force candle's prune or the multi-GB stays resident until
+            // the NEXT inference. Done under the slot lock so a concurrent
+            // reload cannot interleave with the pool sweep.
+            if let Some(device) = super::engine::cached_process_device() {
+                crate::memory::reclaim_metal_buffer_pool(&device);
+            }
             drop(guard);
             info!(
-                "Whisper weights unloaded after {}s idle (Metal device retained); releasing host heap",
+                "Whisper weights unloaded after {}s idle (Metal device retained, buffer pool pruned); releasing host heap",
                 threshold.as_secs()
             );
             crate::memory::release_freed_heap();

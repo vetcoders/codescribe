@@ -422,7 +422,21 @@ default = "2700"
 type = "u64"
 reload = "hot"
 category = "stt"
-description = "Unload idle Whisper weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained. 0 disables unload (weights stay resident)."
+description = "Unload idle Whisper weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 disables unload (weights stay resident)."
+
+[vars.CANDLE_METAL_COMPUTE_PER_BUFFER]
+default = "50"
+type = "u64"
+reload = "restart"
+category = "stt"
+description = "Candle-owned tuning knob (read by candle-metal-kernels at device creation): compute encoders per Metal command buffer before rotation. Codescribe mirror-reads it to bound the forced free-pool prune after idle unload (memory::reclaim_metal_buffer_pool)."
+
+[vars.CANDLE_METAL_COMMAND_POOL_SIZE]
+default = "5"
+type = "u64"
+reload = "restart"
+category = "stt"
+description = "Candle-owned tuning knob (read by candle-metal-kernels at device creation): Metal command-buffer pool size. Codescribe mirror-reads it to bound the forced free-pool prune after idle unload (memory::reclaim_metal_buffer_pool)."
 
 [vars.WHISPER_INITIAL_PROMPT]
 default = ""
