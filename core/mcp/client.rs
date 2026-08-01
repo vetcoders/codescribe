@@ -357,10 +357,21 @@ impl RemoteConnection {
             bail!("Remote MCP credentials must be stored in Keychain, not in the endpoint URL");
         }
         let bearer_token = match config.auth_ref.as_deref() {
-            Some(account) => Some(
-                runtime_key(account)
-                    .with_context(|| format!("Missing Keychain token for auth ref '{account}'"))?,
-            ),
+            Some(account) => {
+                // A Keychain secret must never leave the machine in cleartext:
+                // plain http would put the bearer on the wire (review P2-17).
+                if parsed.scheme() != "https" {
+                    bail!(
+                        "Remote MCP endpoint with auth_ref must use https — refusing to send the \
+                         Keychain bearer token over plaintext http"
+                    );
+                }
+                Some(
+                    runtime_key(account).with_context(|| {
+                        format!("Missing Keychain token for auth ref '{account}'")
+                    })?,
+                )
+            }
             None => None,
         };
         let client = reqwest::Client::builder()
@@ -1037,6 +1048,30 @@ mod tests {
         initialize.assert_async().await;
         initialized.assert_async().await;
         list.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn remote_mcp_refuses_bearer_over_plaintext_http() {
+        // review P2-17: a Keychain secret must not be sent in cleartext. The
+        // failure must land before the token is even read from the Keychain.
+        let client = McpClient::new(McpServerConfig {
+            command: String::new(),
+            args: vec![],
+            env: Default::default(),
+            enabled: Some(true),
+            timeout_seconds: Some(2),
+            url: Some("http://mcp.example.invalid/mcp".to_string()),
+            auth_ref: Some("codescribe-test-account".to_string()),
+        });
+        let error = client
+            .probe()
+            .await
+            .expect_err("http + auth_ref must be refused");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("https"),
+            "error must name the https requirement, got: {rendered}"
+        );
     }
 
     #[tokio::test]

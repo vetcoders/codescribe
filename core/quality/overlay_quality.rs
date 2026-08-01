@@ -477,11 +477,13 @@ pub fn is_sensible_lexicon_candidate(variant: &str, canonical: &str) -> bool {
 /// on virtually every utterance (the "jest" -> "rozwiązanie dostępne"
 /// poisoning). Multi-word variants containing them remain allowed.
 fn is_function_word(variant: &str) -> bool {
+    // One flat set — "a" and "to" are shared between Polish and English, so
+    // splitting the list by language duplicates them (review P3-02).
     const FUNCTION_WORDS: &[&str] = &[
-        "a", "ale", "być", "by", "co", "czy", "do", "go", "i", "jak", "jest", "jestem", "jesteś",
-        "już", "ma", "mam", "mi", "na", "nie", "no", "o", "od", "po", "się", "są", "tak", "tam",
-        "ten", "te", "to", "tu", "w", "z", "za", "że", "the", "a", "an", "is", "are", "was", "it",
-        "and", "or", "of", "in", "on", "to",
+        "a", "ale", "an", "and", "are", "być", "by", "co", "czy", "do", "go", "i", "in", "is",
+        "it", "jak", "jest", "jestem", "jesteś", "już", "ma", "mam", "mi", "na", "nie", "no", "o",
+        "od", "of", "on", "or", "po", "się", "są", "tak", "tam", "te", "ten", "the", "to", "tu",
+        "w", "was", "z", "za", "że",
     ];
     let folded: String = variant.chars().flat_map(char::to_lowercase).collect();
     FUNCTION_WORDS.contains(&folded.as_str())

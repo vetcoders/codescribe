@@ -762,6 +762,12 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    deinit {
+        if let holdBadgeObserver {
+            NotificationCenter.default.removeObserver(holdBadgeObserver)
+        }
+    }
+
     /// Re-read live state (permissions can change while the window is open).
     func refresh() {
         permissions = permissionProbe.snapshot()

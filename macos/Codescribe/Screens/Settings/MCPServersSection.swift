@@ -155,10 +155,9 @@ private struct MCPServerRow: View {
             }
 
             if server.name == "desktop-commander" {
-                Text("Codescribe policy · 15 allowed · 10 approval · 1 denied · 1 unknown")
-                    .font(CSFont.mono(10, .semibold))
-                    .foregroundStyle(CSColor.oliveLight)
-                    .textSelection(.enabled)
+                // No hardcoded per-level counts here: the Permissions panel
+                // renders them from the live registry. A frozen literal drifts
+                // from the policy it claims to describe (review P2-12).
                 Text("Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots.")
                     .font(CSFont.ui(11, .regular))
                     .foregroundStyle(CSColor.amber)
