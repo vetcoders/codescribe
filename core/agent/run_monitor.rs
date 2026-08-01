@@ -20,6 +20,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::util::safe_path::{safe_canonicalize, safe_read_to_string};
+
 /// Default seconds between polls of one monitored run.
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 15;
 /// Default seconds of meta.json silence before a live run is declared stale.
@@ -356,8 +358,12 @@ pub fn classify_run_state(
 /// Observe one record against the filesystem. Errors mean the meta surface is
 /// unreadable — the caller owns the failure counter and `Blocked` escalation.
 pub fn observe_record(record: &RunMonitorRecord, now: DateTime<Utc>) -> Result<RunObservation> {
-    let metadata = fs::metadata(&record.meta_path)
-        .with_context(|| format!("Failed to stat {}", record.meta_path.display()))?;
+    // Canonicalize + capability-open the control-plane meta (defense in depth
+    // against a durable record whose path was rewritten off-root).
+    let meta_path = safe_canonicalize(&record.meta_path)
+        .with_context(|| format!("Failed to canonicalize {}", record.meta_path.display()))?;
+    let metadata = fs::metadata(&meta_path)
+        .with_context(|| format!("Failed to stat {}", meta_path.display()))?;
     let meta_len = metadata.len();
     let age_secs = metadata
         .modified()
@@ -368,21 +374,23 @@ pub fn observe_record(record: &RunMonitorRecord, now: DateTime<Utc>) -> Result<R
         })
         .unwrap_or(0);
 
-    let raw = fs::read_to_string(&record.meta_path)
-        .with_context(|| format!("Failed to read {}", record.meta_path.display()))?;
+    let raw = safe_read_to_string(&meta_path)
+        .with_context(|| format!("Failed to read {}", meta_path.display()))?;
     let snapshot: RunMetaSnapshot = serde_json::from_str(&raw)
-        .with_context(|| format!("Failed to parse {}", record.meta_path.display()))?;
+        .with_context(|| format!("Failed to parse {}", meta_path.display()))?;
 
     let report_path = record
         .report_path
         .clone()
-        .or_else(|| snapshot.report.as_deref().map(PathBuf::from));
-    let report_present = report_path.as_deref().is_some_and(|path| path.exists());
+        .or_else(|| snapshot.report.as_deref().map(PathBuf::from))
+        .and_then(|path| safe_canonicalize(&path).ok());
+    let report_present = report_path.as_deref().is_some_and(|path| path.is_file());
 
     let transcript_len = record
         .transcript_path
         .clone()
         .or_else(|| snapshot.transcript.as_deref().map(PathBuf::from))
+        .and_then(|path| safe_canonicalize(&path).ok())
         .and_then(|path| fs::metadata(path).ok())
         .map(|meta| meta.len())
         .unwrap_or(0);

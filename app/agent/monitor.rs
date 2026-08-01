@@ -251,8 +251,11 @@ pub fn register_run_monitor_in(
 
     // Prefill artifact paths from the meta snapshot when present; the observer
     // re-reads them every poll anyway, this only seeds the record.
+    // meta_path is constructed as control_plane/runtime_runs/<validated-run-id>/meta.json
+    // (not attacker-controlled); still go through safe_read_to_string for
+    // canonicalize + cap_std open (same path-traversal discipline as tools).
     let snapshot: codescribe_core::agent::run_monitor::RunMetaSnapshot =
-        std::fs::read_to_string(&meta_path)
+        codescribe_core::util::safe_path::safe_read_to_string(&meta_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
