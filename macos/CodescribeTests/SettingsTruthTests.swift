@@ -100,6 +100,67 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertTrue(AgentPanel.ownedCapabilities.contains(.toolPermissions))
     }
 
+    /// P0-9 residual: permissions hierarchy groups server→tool, filters by query,
+    /// and keeps `native` first without inventing tools.
+    func testToolPermissionGroupingHierarchyAndSearch() {
+        let items = [
+            ToolPermissionItem(
+                name: "write_file",
+                identity: "desktop-commander:write_file",
+                server: "desktop-commander",
+                origin: "mcp",
+                risk: "side_effect",
+                effective: "ask"
+            ),
+            ToolPermissionItem(
+                name: "read_file",
+                identity: "native:read_file",
+                server: "native",
+                origin: "builtin",
+                risk: "read_only",
+                effective: "allow"
+            ),
+            ToolPermissionItem(
+                name: "search",
+                identity: "brave-search:search",
+                server: "brave-search",
+                origin: "mcp",
+                risk: "read_only",
+                effective: "allow"
+            ),
+            ToolPermissionItem(
+                name: "list_dir",
+                identity: "desktop-commander:list_dir",
+                server: "desktop-commander",
+                origin: "mcp",
+                risk: "read_only",
+                effective: "allow"
+            ),
+        ]
+
+        XCTAssertEqual(
+            ToolPermissionGrouping.groupKey(server: "", identity: "native:read_file"),
+            "native"
+        )
+        XCTAssertEqual(
+            ToolPermissionGrouping.groupKey(server: "desktop-commander", identity: "x:y"),
+            "desktop-commander"
+        )
+
+        let all = ToolPermissionGrouping.groups(from: items, query: "")
+        XCTAssertEqual(all.map(\.server), ["native", "brave-search", "desktop-commander"])
+        XCTAssertEqual(all[0].items.map(\.name), ["read_file"])
+        XCTAssertEqual(all[2].items.map(\.name), ["list_dir", "write_file"])
+
+        let filtered = ToolPermissionGrouping.groups(from: items, query: "write")
+        XCTAssertEqual(filtered.count, 1)
+        XCTAssertEqual(filtered[0].server, "desktop-commander")
+        XCTAssertEqual(filtered[0].items.map(\.identity), ["desktop-commander:write_file"])
+
+        XCTAssertTrue(ToolPermissionGrouping.matches(items[2], query: "brave"))
+        XCTAssertFalse(ToolPermissionGrouping.matches(items[1], query: "zzz"))
+    }
+
     func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
         SettingsDeepLink.pendingSection = nil
         defer { SettingsDeepLink.pendingSection = nil }

@@ -837,21 +837,17 @@ private struct WrapLayout: Layout {
 
 // MARK: - Tool activity
 
-/// One tool-activity line. Any settled line carrying result context becomes a
-/// compact disclosure: the row is tappable and reveals the full tool summary,
-/// collapsed by default so the list stays scannable. Both the verb/detail row and
-/// the revealed reason are text-selectable.
+/// One tool-activity line. Settled lines with summary, call id, or duration
+/// become a compact disclosure: tappable row → structured inspect panel
+/// (status, duration, call id, result/error, copy technical). Collapsed by
+/// default so the list stays scannable.
 private struct ToolLineRow: View {
     let line: ToolLine
-    @State private var showReason = false
-
-    private var reason: String? {
-        guard let reason = line.reason, !reason.isEmpty else { return nil }
-        return reason
-    }
+    @State private var showInspect = false
 
     private var isRunning: Bool { line.state == .running }
     private var isQuiet: Bool { line.state == .unknown || line.state == .cancelled }
+    private var canInspect: Bool { line.hasInspectPayload }
     private var rowColor: Color {
         switch line.state {
         case .running:
@@ -866,10 +862,9 @@ private struct ToolLineRow: View {
     }
 
     var body: some View {
-        let hasDetail = reason != nil
         VStack(alignment: .leading, spacing: 4) {
             Button {
-                if hasDetail { showReason.toggle() }
+                if canInspect { showInspect.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if isRunning {
@@ -881,9 +876,14 @@ private struct ToolLineRow: View {
                         .lineSpacing(4)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if hasDetail {
+                    if let duration = ToolInspectPresentation.durationLabel(ms: line.durationMs), !showInspect {
+                        Text(duration)
+                            .font(CSFont.mono(10, .medium))
+                            .foregroundStyle(CSColor.textFaintAlt)
+                    }
+                    if canInspect {
                         CSIconView(
-                            icon: showReason ? .chevronDown : .chevronRight,
+                            icon: showInspect ? .chevronDown : .chevronRight,
                             size: 8,
                             weight: .semibold,
                             color: rowColor.opacity(0.75)
@@ -893,18 +893,84 @@ private struct ToolLineRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!hasDetail)
+            .disabled(!canInspect)
 
-            if hasDetail, showReason, let reason {
-                Text(reason)
-                    .font(CSFont.mono(10.5, .medium))
-                    .foregroundStyle(line.state == .failed ? CSColor.terracottaLight : CSColor.textBodyAlt)
-                    .textSelection(.enabled)
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if canInspect, showInspect {
+                ToolInspectPanel(line: line)
                     .padding(.leading, 10)
             }
+        }
+    }
+}
+
+/// Expanded inspect surface for one tool call (no chain-of-thought — only
+/// operator-useful fields already present on the UI line).
+private struct ToolInspectPanel: View {
+    let line: ToolLine
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            inspectRow(label: "status", value: ToolInspectPresentation.statusLabel(for: line.state))
+            if let duration = ToolInspectPresentation.durationLabel(ms: line.durationMs) {
+                inspectRow(label: "duration", value: duration)
+            }
+            if let callID = line.callID, !callID.isEmpty {
+                inspectRow(label: "call id", value: callID)
+            }
+            if let reason = line.reason, !reason.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(line.state == .failed ? "error" : "result")
+                        .font(CSFont.mono(9.5, .semibold))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                        .textCase(.uppercase)
+                    Text(reason)
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(line.state == .failed ? CSColor.terracottaLight : CSColor.textBodyAlt)
+                        .textSelection(.enabled)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("No result summary was stored for this call.")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+            }
+            // Honest residual: full request/response bodies and artifact store
+            // links need bridge event fields beyond the current ToolLine contract.
+            HStack(spacing: 10) {
+                CopyMessageButton(text: line.technicalCopyText)
+                Text("request/response bodies not on this event")
+                    .font(CSFont.mono(9.5, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                    .lineLimit(1)
+            }
+            .padding(.top, 2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+        )
+    }
+
+    private func inspectRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(CSFont.mono(9.5, .semibold))
+                .foregroundStyle(CSColor.textFaintAlt)
+                .textCase(.uppercase)
+                .frame(width: 64, alignment: .leading)
+            Text(value)
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.textBodyAlt)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -915,16 +981,9 @@ private struct ToolTurn: View {
     let mode: ChatWidthMode
     @State private var expanded = false
 
-    /// Whole-card plain-text export: one line per tool, `verb detail` for a
-    /// successful line and `verb detail — reason` (full, untruncated) for a
-    /// failed one. Mirrors what the rows render, minus the styling.
+    /// Whole-card plain-text export: one technical block per tool line.
     private var copyText: String {
-        message.toolLines.map { line in
-            if let reason = line.reason, !reason.isEmpty {
-                return "\(line.verb) \(line.detail) — \(reason)"
-            }
-            return "\(line.verb) \(line.detail)"
-        }.joined(separator: "\n")
+        message.toolLines.map(\.technicalCopyText).joined(separator: "\n---\n")
     }
 
     var body: some View {

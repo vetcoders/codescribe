@@ -21,6 +21,51 @@ import XCTest
 final class ChatRenderCostTests: XCTestCase {
     private let ticks = 200
 
+    // MARK: Tool inspect presentation (P0-4 residual)
+
+    func testToolInspectPayloadRequiresSummaryCallIdOrDuration() {
+        XCTAssertFalse(
+            ToolInspectPresentation.hasInspectPayload(reason: nil, callID: nil, durationMs: nil)
+        )
+        XCTAssertFalse(
+            ToolInspectPresentation.hasInspectPayload(reason: "  ", callID: "", durationMs: nil)
+        )
+        XCTAssertTrue(
+            ToolInspectPresentation.hasInspectPayload(reason: "ok", callID: nil, durationMs: nil)
+        )
+        XCTAssertTrue(
+            ToolInspectPresentation.hasInspectPayload(reason: nil, callID: "call_1", durationMs: nil)
+        )
+        XCTAssertTrue(
+            ToolInspectPresentation.hasInspectPayload(reason: nil, callID: nil, durationMs: 12)
+        )
+    }
+
+    func testToolInspectDurationAndTechnicalCopy() {
+        XCTAssertEqual(ToolInspectPresentation.durationLabel(ms: 42), "42 ms")
+        XCTAssertEqual(ToolInspectPresentation.durationLabel(ms: 1500), "1.5 s")
+        XCTAssertEqual(ToolInspectPresentation.durationLabel(ms: 12_000), "12 s")
+        XCTAssertNil(ToolInspectPresentation.durationLabel(ms: nil))
+
+        let line = ToolLine(
+            callID: "tc_9",
+            verb: "ran",
+            detail: "read_file",
+            state: .succeeded,
+            reason: "318 lines",
+            durationMs: 42
+        )
+        XCTAssertTrue(line.hasInspectPayload)
+        let copy = line.technicalCopyText
+        XCTAssertTrue(copy.contains("tool: read_file"))
+        XCTAssertTrue(copy.contains("status: succeeded"))
+        XCTAssertTrue(copy.contains("duration: 42 ms"))
+        XCTAssertTrue(copy.contains("call_id: tc_9"))
+        XCTAssertTrue(copy.contains("summary: 318 lines"))
+        XCTAssertEqual(ToolInspectPresentation.statusLabel(for: .failed), "failed")
+    }
+
+
     // MARK: Fixtures
 
     /// Markdown-shaped assistant text grown to ~`chars` bytes — the 20k stream.

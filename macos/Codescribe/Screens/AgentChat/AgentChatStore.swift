@@ -148,12 +148,16 @@ struct ToolLine: Identifiable, Hashable {
     let id: UUID
     var callID: String?
     var verb: String     // "grep", "read" — rendered olive; "failed" — terracotta
-    let detail: String   // "events/bus.ts · ui/store.ts"
+    let detail: String   // tool name or "events/bus.ts · ui/store.ts"
     var state: ToolLineState
-    /// Failure reason for a `failed` line (from the tool's error output). `nil`
-    /// for successful lines and for reloaded/persisted turns, which do not carry
-    /// the reason. Drives the expandable disclosure in the tool-activity row.
+    /// Result summary for a settled line (success summary or failure reason).
+    /// `nil` for running lines and for reloaded/persisted turns that do not
+    /// carry payload. Drives the expandable inspect panel.
     var reason: String?
+    /// Wall-clock start of the live tool call (UI-only; not persisted).
+    var startedAt: Date?
+    /// Elapsed milliseconds once the call settles (UI-only; not persisted).
+    var durationMs: Int?
 
     init(
         id: UUID = UUID(),
@@ -161,7 +165,9 @@ struct ToolLine: Identifiable, Hashable {
         verb: String,
         detail: String,
         state: ToolLineState = .succeeded,
-        reason: String? = nil
+        reason: String? = nil,
+        startedAt: Date? = nil,
+        durationMs: Int? = nil
     ) {
         self.id = id
         self.callID = callID
@@ -169,6 +175,88 @@ struct ToolLine: Identifiable, Hashable {
         self.detail = detail
         self.state = state
         self.reason = reason
+        self.startedAt = startedAt
+        self.durationMs = durationMs
+    }
+
+    /// True when the row can open an inspect disclosure (summary, call id, or timing).
+    var hasInspectPayload: Bool {
+        ToolInspectPresentation.hasInspectPayload(
+            reason: reason,
+            callID: callID,
+            durationMs: durationMs
+        )
+    }
+
+    /// Plain-text technical dump for copy (name, status, duration, call id, summary).
+    var technicalCopyText: String {
+        ToolInspectPresentation.technicalCopy(
+            verb: verb,
+            detail: detail,
+            state: state,
+            reason: reason,
+            callID: callID,
+            durationMs: durationMs
+        )
+    }
+}
+
+/// Pure presentation helpers for tool-activity inspect (testable without SwiftUI).
+enum ToolInspectPresentation {
+    static func hasInspectPayload(reason: String?, callID: String?, durationMs: Int?) -> Bool {
+        if let reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if let callID, !callID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if let durationMs, durationMs >= 0 { return true }
+        return false
+    }
+
+    static func statusLabel(for state: ToolLineState) -> String {
+        switch state {
+        case .running: return "running"
+        case .succeeded: return "succeeded"
+        case .failed: return "failed"
+        case .cancelled: return "cancelled"
+        case .unknown: return "ended"
+        }
+    }
+
+    static func durationLabel(ms: Int?) -> String? {
+        guard let ms, ms >= 0 else { return nil }
+        if ms < 1000 { return "\(ms) ms" }
+        let seconds = Double(ms) / 1000.0
+        if seconds < 10 {
+            return String(format: "%.1f s", seconds)
+        }
+        return "\(Int(seconds.rounded())) s"
+    }
+
+    static func technicalCopy(
+        verb: String,
+        detail: String,
+        state: ToolLineState,
+        reason: String?,
+        callID: String?,
+        durationMs: Int?
+    ) -> String {
+        var lines: [String] = [
+            "tool: \(detail)",
+            "verb: \(verb)",
+            "status: \(statusLabel(for: state))",
+        ]
+        if let durationLabel = durationLabel(ms: durationMs) {
+            lines.append("duration: \(durationLabel)")
+        }
+        if let callID, !callID.isEmpty {
+            lines.append("call_id: \(callID)")
+        }
+        if let reason, !reason.isEmpty {
+            lines.append("summary: \(reason)")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -1629,7 +1717,13 @@ final class AgentChatStore: ObservableObject {
         let callID = rawCallID.isEmpty ? nil : rawCallID
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
-        let line = ToolLine(callID: callID, verb: "tool", detail: name, state: .running)
+        let line = ToolLine(
+            callID: callID,
+            verb: "tool",
+            detail: name,
+            state: .running,
+            startedAt: Date()
+        )
         if let row = toolRowIndex(before: ai, inThreadAt: ti) {
             if let callID,
                let existing = threads[ti].messages[row].toolLines.firstIndex(where: { $0.callID == callID }) {
@@ -1657,12 +1751,24 @@ final class AgentChatStore: ObservableObject {
         let callID = rawCallID.flatMap { $0.isEmpty ? nil : $0 }
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        var startedAt: Date?
+        var durationMs: Int?
+        if let row = toolRowIndex(before: ai, inThreadAt: ti),
+           let callID,
+           let existing = threads[ti].messages[row].toolLines.firstIndex(where: { $0.callID == callID }) {
+            startedAt = threads[ti].messages[row].toolLines[existing].startedAt
+            if let startedAt {
+                durationMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+            }
+        }
         let line = ToolLine(
             callID: callID,
             verb: isError ? "failed" : "ran",
             detail: name,
             state: isError ? .failed : .succeeded,
-            reason: reason.isEmpty ? nil : reason
+            reason: reason.isEmpty ? nil : reason,
+            startedAt: startedAt,
+            durationMs: durationMs
         )
         if let row = toolRowIndex(before: ai, inThreadAt: ti) {
             if let callID,
