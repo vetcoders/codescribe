@@ -3,6 +3,7 @@ pub mod event;
 pub mod permissions;
 pub mod provider;
 pub mod registry;
+pub mod run_monitor;
 pub mod session;
 pub mod thread_delivery;
 pub mod thread_export;
@@ -20,6 +21,10 @@ pub use registry::{
     ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,
     ToolFuture, ToolHandler, ToolInputValidator, ToolOrigin, ToolRegistry, ToolResultContent,
     ToolRisk,
+};
+pub use run_monitor::{
+    HeartbeatKind, RunMonitorRecord, RunMonitorRegistration, RunMonitorState, RunMonitorStore,
+    RunObservation,
 };
 pub use session::{AgentSession, ImageAttachment, ToolApprovalFuture, ToolApprovalHandler};
 pub use thread_delivery::{

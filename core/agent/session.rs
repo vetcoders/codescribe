@@ -92,6 +92,13 @@ impl AgentSession {
         self.thread_id.as_deref()
     }
 
+    /// Bind the durable thread identity used for approval requests and
+    /// thread-context tool dispatch. The voice lane has no approval handler, so
+    /// this is its only way to attach the ThreadStore id to tool execution.
+    pub fn bind_execution_thread(&mut self, thread_id: impl Into<String>) {
+        self.execution_thread_id = thread_id.into();
+    }
+
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -449,7 +456,11 @@ impl AgentSession {
                         },
                     )
                     .await;
-                    match self.tools.dispatch(&tool_name, arguments).await {
+                    match self
+                        .tools
+                        .dispatch_in_thread(&tool_name, arguments, &self.execution_thread_id)
+                        .await
+                    {
                         Ok(outputs) => outputs,
                         Err(error) => {
                             warn!(

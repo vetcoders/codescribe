@@ -546,7 +546,7 @@ fn is_assistive_wire_label(line: &str) -> bool {
     .any(|prefix| lower.starts_with(prefix))
 }
 
-fn app_data_dir() -> PathBuf {
+pub(crate) fn app_data_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
         return PathBuf::from(shellexpand::tilde(&custom).into_owned());
     }

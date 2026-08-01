@@ -39,6 +39,10 @@ pub struct ToolRegistry {
     policy_loader: Option<Arc<dyn Fn() -> AgentPermissions + Send + Sync>>,
     /// Per-thread tool-identity overrides for the active turn (not durable).
     thread_overrides: HashMap<String, PermissionLevel>,
+    /// Tools that opted into receiving the durable thread id in their input
+    /// (injected as `_thread_id` by [`Self::dispatch_in_thread`]). Opt-in only:
+    /// MCP tools must never see harness-internal keys.
+    thread_context_tools: std::collections::HashSet<String>,
 }
 
 struct RegisteredTool {
@@ -139,7 +143,13 @@ impl ToolRegistry {
             policy: AgentPermissions::default(),
             policy_loader: None,
             thread_overrides: HashMap::new(),
+            thread_context_tools: std::collections::HashSet::new(),
         }
+    }
+
+    /// Opt a native tool into `_thread_id` injection on dispatch.
+    pub fn enable_thread_context(&mut self, name: impl Into<String>) {
+        self.thread_context_tools.insert(name.into());
     }
 
     /// Install the full permission policy (settings + legacy grants).
@@ -384,6 +394,27 @@ impl ToolRegistry {
             .get(name)
             .with_context(|| format!("Tool '{}' is not registered", name))?;
         Ok((tool.handler)(input).await)
+    }
+
+    /// Dispatch with the caller's durable thread id. For tools registered via
+    /// [`Self::enable_thread_context`] the id is injected as `_thread_id` so a
+    /// handler can bind side effects (e.g. run-monitor heartbeats) back to the
+    /// exact thread that asked. All other tools see their input untouched.
+    pub async fn dispatch_in_thread(
+        &self,
+        name: &str,
+        mut input: serde_json::Value,
+        thread_id: &str,
+    ) -> Result<Vec<ToolResultContent>> {
+        if self.thread_context_tools.contains(name)
+            && let Some(object) = input.as_object_mut()
+        {
+            object.insert(
+                "_thread_id".to_string(),
+                serde_json::Value::String(thread_id.to_string()),
+            );
+        }
+        self.dispatch(name, input).await
     }
 }
 
