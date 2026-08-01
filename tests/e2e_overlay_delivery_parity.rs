@@ -689,18 +689,20 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
     (events, transcript, clip_seconds)
 }
 
+// `#[ignore]`, not an early `return`: a silent skip is reported by libtest as
+// `ok`, so the doctrine bar looked green in every CI run while executing zero
+// assertions (review P1-01). Ignored shows up as `ignored` in `test result:`.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the BlackHole loopback — run via scripts/e2e-blackhole-dictation.sh"]
 async fn e2e_device_capture_dictation() {
-    if std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
-        eprintln!(
-            "skip: set CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1 (run via scripts/e2e-blackhole-dictation.sh)"
-        );
-        return;
-    }
+    assert_eq!(
+        std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
+            .ok()
+            .as_deref(),
+        Some("1"),
+        "device-capture run needs CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1 \
+         (run via scripts/e2e-blackhole-dictation.sh) — refusing to report a pass without capture"
+    );
     let device = std::env::var("AUDIO_INPUT_DEVICE")
         .expect("device-capture run requires AUDIO_INPUT_DEVICE (the loopback device name)");
 
@@ -774,21 +776,24 @@ async fn e2e_device_capture_dictation() {
 // grinding iteration has numbers, and the diff doubles as Teacher material
 // (what our path loses/garbles against a same-engine reference).
 
+// See `e2e_device_capture_dictation`: ignored rather than silently skipped, so
+// the AGENTS.md doctrine bar can never be mistaken for a passing gate (P1-01).
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the BlackHole loopback — run via `make test-engine-parity`"]
 async fn e2e_apple_live_parity() {
     // Green bar for word-level similarity against the system-engine reference.
     // Floor measured over 4 identical runs: 0.918/0.919/0.925/0.931 — the
     // spread is SFSpeech-internal (same binary SHA, clean tree, level ruled
     // out), so the bar sits under the floor with a small margin.
     const PARITY_SIMILARITY_BAR: f32 = 0.90;
-    if std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
-        eprintln!("skip: run via `make test-engine-parity` (needs the BlackHole loopback)");
-        return;
-    }
+    assert_eq!(
+        std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
+            .ok()
+            .as_deref(),
+        Some("1"),
+        "parity run needs CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1 (run via `make test-engine-parity`) \
+         — refusing to report a pass without capture"
+    );
     let device = std::env::var("AUDIO_INPUT_DEVICE")
         .expect("parity run requires AUDIO_INPUT_DEVICE (the loopback device name)");
 

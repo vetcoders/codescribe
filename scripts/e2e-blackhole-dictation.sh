@@ -272,8 +272,10 @@ fi
 cargo test --test e2e_overlay_delivery_parity --no-run >"$WORK/build.log" 2>&1 ||
   { tail -20 "$WORK/build.log" >&2; fail "test build failed" 2; }
 
+# --ignored: the capture tests are `#[ignore]` so a plain `cargo test` cannot
+# report them as passing without a loopback (review P1-01).
 cargo test --test e2e_overlay_delivery_parity \
-  "$CAPTURE_TEST" -- --nocapture >"$WORK/test.log" 2>&1
+  "$CAPTURE_TEST" -- --ignored --nocapture >"$WORK/test.log" 2>&1
 STATUS=$?
 
 if [ $STATUS -ne 0 ]; then
