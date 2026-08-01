@@ -236,13 +236,12 @@ pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<
         // No `PathBuf::from(user)` / `Path::new(user)` / `push(user_segment)`
         // on the raw token — Semgrep tainted-path and the real sandbox both
         // require that boundary (review P1-05).
-        if let Some(absolute) = sanitize_command_path_token(candidate, &cwd)? {
-            if validate_existing(&absolute, roots)
+        if let Some(absolute) = sanitize_command_path_token(candidate, &cwd)?
+            && validate_existing(&absolute, roots)
                 .or_else(|_| validate_new_target(&absolute, roots))
                 .is_err()
-            {
-                bail!("Command references a path outside configured workspace roots: {candidate}");
-            }
+        {
+            bail!("Command references a path outside configured workspace roots: {candidate}");
         }
     }
     Ok(cwd)
