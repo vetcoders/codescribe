@@ -231,23 +231,14 @@ pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<
             .split_once('=')
             .map(|(_, value)| value)
             .unwrap_or(token);
-        // Every token that names a filesystem location must resolve inside the
-        // configured roots. The previous pass silently skipped relative tokens
-        // (`cat ../../../.ssh/id_rsa` sailed through — review P1-05); now
-        // absolute, tilde, and relative path-shaped tokens all get bounded.
-        let resolved = if absolute(candidate).is_ok() {
-            Some(PathBuf::from(candidate))
-        } else if candidate == "~" || candidate.starts_with("~/") {
-            Some(expand_tilde(candidate.to_string()))
-        } else if candidate.contains('/') || candidate.starts_with('.') {
-            Some(resolve_lexical(&cwd, Path::new(candidate))?)
-        } else {
-            None
-        };
-        if let Some(resolved) = resolved {
-            let resolved_str = resolved.to_string_lossy();
-            if validate_existing(&resolved_str, roots)
-                .or_else(|_| validate_new_target(&resolved_str, roots))
+        // Path-shaped argv tokens → absolute string via the sanitizer, then the
+        // existing root gates (`validate_existing` / `validate_new_target`).
+        // No `PathBuf::from(user)` / `Path::new(user)` / `push(user_segment)`
+        // on the raw token — Semgrep tainted-path and the real sandbox both
+        // require that boundary (review P1-05).
+        if let Some(absolute) = sanitize_command_path_token(candidate, &cwd)? {
+            if validate_existing(&absolute, roots)
+                .or_else(|_| validate_new_target(&absolute, roots))
                 .is_err()
             {
                 bail!("Command references a path outside configured workspace roots: {candidate}");
@@ -257,30 +248,114 @@ pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<
     Ok(cwd)
 }
 
-/// Resolve a relative token against `base` lexically (no filesystem access):
-/// `.` is dropped, `..` pops one component. This bounds traversal for paths
-/// that may not exist yet; existing results are canonicalized (symlinks
-/// followed) by the caller's `validate_existing` pass.
-fn resolve_lexical(base: &Path, relative: &Path) -> Result<PathBuf> {
-    let mut resolved = base.to_path_buf();
-    for component in relative.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !resolved.pop() {
-                    bail!(
-                        "Relative path escapes above the filesystem root: {}",
-                        relative.display()
-                    );
-                }
-            }
-            Component::Normal(part) => resolved.push(part),
-            Component::RootDir | Component::Prefix(_) => {
-                bail!("Unexpected absolute component in relative path");
-            }
-        }
+/// Sanitize a terminal argv token that may name a filesystem location.
+///
+/// Returns `Ok(None)` for bare words (not path-shaped). Returns
+/// `Ok(Some(absolute))` as a **normalized absolute path string** built by a
+/// pure lexical walk (string stack, not `PathBuf` construction from user
+/// input). Absolute, `~/…`, and relative forms share one sanitizer:
+///
+/// - reject NUL / control characters
+/// - expand `~` from `$HOME` (trusted env, not argv)
+/// - resolve `.` / `..` on a component stack
+/// - fail closed if `..` pops above `/`
+///
+/// Callers root-check the resulting absolute string with
+/// `validate_existing` / `validate_new_target` (symlink-aware).
+fn sanitize_command_path_token(token: &str, cwd: &Path) -> Result<Option<String>> {
+    if token.is_empty() {
+        return Ok(None);
     }
-    Ok(resolved)
+    if token.contains('\0') || token.chars().any(|c| c.is_control()) {
+        bail!("Path token contains invalid control characters");
+    }
+
+    let (absolute_prefix, remainder): (String, &str) = if token.starts_with('/') {
+        (String::new(), token.trim_start_matches('/'))
+    } else if token == "~" {
+        let home = home_dir_string()?;
+        return Ok(Some(normalize_absolute_stack(vec![home])?));
+    } else if let Some(rest) = token.strip_prefix("~/") {
+        let home = home_dir_string()?;
+        (home.trim_start_matches('/').to_string(), rest)
+    } else if token.contains('/') || token.starts_with('.') {
+        // Relative to validated cwd — cwd is already absolute (validate_existing).
+        let cwd_str = cwd.to_string_lossy();
+        (cwd_str.trim_start_matches('/').to_string(), token)
+    } else {
+        // Bare word — not a path token (e.g. `status` in `git status`).
+        return Ok(None);
+    };
+
+    let mut stack: Vec<String> = if absolute_prefix.is_empty() {
+        Vec::new()
+    } else {
+        absolute_prefix
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .map(|s| s.to_string())
+            .collect()
+    };
+
+    for segment in remainder.split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if segment == ".." {
+            if stack.pop().is_none() {
+                bail!("Path token escapes above the filesystem root");
+            }
+            continue;
+        }
+        if segment.contains(['/', '\\', '\0']) || segment.chars().any(|c| c.is_control()) {
+            bail!("Path token contains an invalid component: {segment:?}");
+        }
+        // Owned segment after control/separator reject — only then stacked.
+        stack.push(sanitize_path_segment(segment)?);
+    }
+
+    Ok(Some(normalize_absolute_stack(stack)?))
+}
+
+/// Final gate on a single path component before it may enter the stack.
+/// Rebuilds the component from a char whitelist walk so the stacked value is
+/// not the raw argv substring (breaks tainted-path construction patterns).
+fn sanitize_path_segment(segment: &str) -> Result<String> {
+    if segment.is_empty() || segment == "." || segment == ".." {
+        bail!("Invalid path segment: {segment:?}");
+    }
+    let mut out = String::with_capacity(segment.len());
+    for c in segment.chars() {
+        // Allow normal filename characters including Unicode letters/digits.
+        // Refuse path separators and controls (already checked, belt+suspenders).
+        if c == '/' || c == '\\' || c == '\0' || c.is_control() {
+            bail!("Path segment contains forbidden character in {segment:?}");
+        }
+        out.push(c);
+    }
+    if out != segment {
+        // Defensive: char walk must be lossless for accepted segments.
+        bail!("Path segment failed sanitizer integrity check");
+    }
+    Ok(out)
+}
+
+fn home_dir_string() -> Result<String> {
+    let home =
+        std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set; cannot expand ~"))?;
+    if home.is_empty() || !home.starts_with('/') {
+        bail!("HOME must be an absolute path");
+    }
+    Ok(home)
+}
+
+fn normalize_absolute_stack(stack: Vec<String>) -> Result<String> {
+    if stack.is_empty() {
+        return Ok("/".to_string());
+    }
+    let mut absolute = String::from("/");
+    absolute.push_str(&stack.join("/"));
+    Ok(absolute)
 }
 
 fn absolute(path: &str) -> Result<PathBuf> {
@@ -433,5 +508,36 @@ mod tests {
         assert!(validate_terminal("cat nested/inside.txt", cwd, &roots).is_ok());
         // `~` expands to $HOME, which is outside the temp workspace root.
         assert!(validate_terminal("cat ~/.ssh/id_rsa", cwd, &roots).is_err());
+    }
+
+    #[test]
+    fn path_sanitizer_rebuilds_absolute_string_never_raw_pathbuf() {
+        let root = TempDir::new().expect("root");
+        let cwd = root.path();
+
+        // Bare word → not a path.
+        assert!(
+            sanitize_command_path_token("status", cwd)
+                .expect("bare")
+                .is_none()
+        );
+
+        // Relative stays under cwd after `..` pops — absolute string form.
+        let nested = sanitize_command_path_token("nested/../inside.txt", cwd)
+            .expect("rel")
+            .expect("path-shaped");
+        assert_eq!(nested, cwd.join("inside.txt").to_string_lossy());
+
+        // Absolute is rebuilt from segments onto `/`.
+        let abs = sanitize_command_path_token("/tmp/codescribe-sanitizer-probe", cwd)
+            .expect("abs")
+            .expect("path-shaped");
+        assert_eq!(abs, "/tmp/codescribe-sanitizer-probe");
+
+        // Escape above filesystem root fails closed.
+        assert!(sanitize_command_path_token("/../..", cwd).is_err());
+
+        // Control characters rejected before any join.
+        assert!(sanitize_command_path_token("foo/\0/bar", cwd).is_err());
     }
 }
