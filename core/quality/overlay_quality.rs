@@ -968,8 +968,15 @@ pub fn commit_overlay_correction_with_confidence(
 
     let mut pairs_learned = 0u32;
     if teaches {
+        // Learn what the recognizer actually heard, not punctuation/casing or
+        // rewrites introduced by the formatter/parser between STT and overlay.
+        let learning_source = if raw_text.trim().is_empty() {
+            delivered_text
+        } else {
+            raw_text
+        };
         // Word-level extraction may yield several pairs; upsert each.
-        for (variant, canonical) in extract_lexicon_candidates(delivered_text, edited_text) {
+        for (variant, canonical) in extract_lexicon_candidates(learning_source, edited_text) {
             if is_sensible_lexicon_candidate(&variant, &canonical) {
                 match upsert_correction_in_custom_lexicon(&variant, &canonical) {
                     Ok(()) => {
@@ -1737,7 +1744,7 @@ mod tests {
         }
 
         let commit = commit_overlay_correction(
-            "raw raw",
+            "uni agentka here",
             "uni agentka here",
             "Junie here",
             "overlay",
@@ -1770,7 +1777,7 @@ mod tests {
         let rec: QualityRecord =
             serde_json::from_str(last_line).expect("parse quality record jsonl");
         assert_eq!(
-            rec.raw_text, "raw raw",
+            rec.raw_text, "uni agentka here",
             "D-05/D-02: raw_text must be wired and recorded"
         );
         assert_eq!(rec.delivered_text, "uni agentka here");
@@ -1976,12 +1983,12 @@ mod tests {
             lexicon,
             vec![
                 CustomLexiconEntry {
-                    variant: "uni agentka".into(),
+                    variant: "raw one".into(),
                     canonical: "Junie".into(),
                     source: LEXICON_SOURCE_CORRECTION.into(),
                 },
                 CustomLexiconEntry {
-                    variant: "luks tri mapa".into(),
+                    variant: "raw two".into(),
                     canonical: "Loctree map".into(),
                     source: LEXICON_SOURCE_CORRECTION.into(),
                 },
@@ -2071,6 +2078,39 @@ mod tests {
         assert_eq!(candidates.len(), 1, "only Correction emits a candidate");
         assert_eq!(candidates[0].variant, "korrvariant");
         assert_eq!(candidates[0].canonical, "CorrCanonical");
+    }
+
+    #[test]
+    #[serial]
+    fn correction_learning_uses_raw_stt_not_formatted_delivery() {
+        let temp_dir = tempfile::tempdir().expect("temp quality root");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        let outcome = commit_overlay_correction_with_level(
+            "rawvariant",
+            "formattervariant",
+            "RawCanonical",
+            "overlay",
+            None,
+            Some("copy"),
+            Some("correction"),
+        )
+        .expect("raw-source quality commit");
+
+        assert_eq!(outcome.pairs_learned, 1);
+        let entries = custom_lexicon_entries().expect("custom lexicon");
+        assert!(
+            entries.iter().any(|entry| {
+                entry.variant == "rawvariant" && entry.canonical == "RawCanonical"
+            })
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.variant == "formattervariant")
+        );
     }
 
     #[test]

@@ -53,6 +53,7 @@ struct TrayMenuView: View {
         }
         .frame(width: 300)
         .onAppear { viewModel.refreshStatus() }
+        .onDisappear { viewModel.collapseDisclosures() }
     }
 
     // MARK: - Header (wordmark + runtime-bound status pill)

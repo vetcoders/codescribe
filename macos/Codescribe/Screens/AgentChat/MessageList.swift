@@ -13,6 +13,7 @@ struct StreamScrollFollowState: Equatable {
         case contentChanged
         case userScrollBegan
         case userViewportChanged(isAtLiveEdge: Bool)
+        case userScrollEnded(isAtLiveEdge: Bool)
         case jumpToCurrent
         case threadChanged
         case streamFinished
@@ -28,10 +29,13 @@ struct StreamScrollFollowState: Equatable {
         case .userScrollBegan:
             followingLive = false
             return .none
-        case let .userViewportChanged(isAtLiveEdge):
-            if isAtLiveEdge {
-                followingLive = true
-            }
+        case .userViewportChanged:
+            // Geometry changes during an active gesture may still report the
+            // old live-edge position. Never let that stale signal steal the
+            // viewport back from the operator.
+            return .none
+        case let .userScrollEnded(isAtLiveEdge):
+            followingLive = isAtLiveEdge
             return .none
         case .jumpToCurrent, .threadChanged:
             followingLive = true
@@ -301,7 +305,7 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
                     object: scrollView,
                     queue: .main
                 ) { [weak self] _ in
-                    self?.reportViewport()
+                    self?.reportViewport(asScrollEnd: true)
                 },
                 center.addObserver(
                     forName: NSScrollView.didEndLiveScrollNotification,
@@ -320,11 +324,14 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
             scrollView = nil
         }
 
-        private func reportViewport() {
+        private func reportViewport(asScrollEnd: Bool = false) {
             guard let scrollView, let documentView = scrollView.documentView else { return }
             let visibleBottom = scrollView.contentView.documentVisibleRect.maxY
             let distanceFromLiveEdge = documentView.bounds.maxY - visibleBottom
-            onEvent(.userViewportChanged(isAtLiveEdge: distanceFromLiveEdge <= 40))
+            let isAtLiveEdge = distanceFromLiveEdge <= 40
+            onEvent(asScrollEnd
+                ? .userScrollEnded(isAtLiveEdge: isAtLiveEdge)
+                : .userViewportChanged(isAtLiveEdge: isAtLiveEdge))
         }
 
         deinit {
@@ -402,7 +409,7 @@ private struct YouTurn: View {
                 }
             }
         }
-        .frame(maxWidth: 510, alignment: .trailing)
+        .frame(maxWidth: 760, alignment: .trailing)
     }
 }
 
@@ -469,7 +476,12 @@ private struct AttachmentChip: View {
     @State private var thumbnail: NSImage?
 
     var body: some View {
-        HStack(spacing: 6) {
+        Button {
+            if let url = attachment.url {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            HStack(spacing: 6) {
             if let thumbnail {
                 Image(nsImage: thumbnail)
                     .resizable()
@@ -485,15 +497,19 @@ private struct AttachmentChip: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 160)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(CSColor.surfaceRaised(0.05))
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(CSColor.surfaceRaised(0.05))
-        .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+        .buttonStyle(.plain)
+        .disabled(attachment.url == nil)
+        .help(attachment.url == nil ? "Original attachment is unavailable" : "Open attachment")
         .onAppear {
             if thumbnail == nil, let url = attachment.url {
                 thumbnail = NSImage(contentsOf: url)
@@ -551,9 +567,8 @@ private struct WrapLayout: Layout {
 
 // MARK: - Tool activity
 
-/// One tool-activity line. A successful line is static (`verb detail`). A failed
-/// line that carries a reason becomes a compact disclosure: the row is tappable
-/// and reveals the full failure cause (mono, terracotta, wrapping to any length),
+/// One tool-activity line. Any settled line carrying result context becomes a
+/// compact disclosure: the row is tappable and reveals the full tool summary,
 /// collapsed by default so the list stays scannable. Both the verb/detail row and
 /// the revealed reason are text-selectable.
 private struct ToolLineRow: View {
@@ -581,10 +596,10 @@ private struct ToolLineRow: View {
     }
 
     var body: some View {
-        let failed = line.state == .failed && reason != nil
+        let hasDetail = reason != nil
         VStack(alignment: .leading, spacing: 4) {
             Button {
-                if failed { showReason.toggle() }
+                if hasDetail { showReason.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if isRunning {
@@ -596,24 +611,24 @@ private struct ToolLineRow: View {
                         .lineSpacing(4)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if failed {
+                    if hasDetail {
                         CSIconView(
                             icon: showReason ? .chevronDown : .chevronRight,
                             size: 8,
                             weight: .semibold,
-                            color: CSColor.terracottaLight.opacity(0.75)
+                            color: rowColor.opacity(0.75)
                         )
                     }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!failed)
+            .disabled(!hasDetail)
 
-            if failed, showReason, let reason {
+            if hasDetail, showReason, let reason {
                 Text(reason)
                     .font(CSFont.mono(10.5, .medium))
-                    .foregroundStyle(CSColor.terracottaLight)
+                    .foregroundStyle(line.state == .failed ? CSColor.terracottaLight : CSColor.textBodyAlt)
                     .textSelection(.enabled)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -626,7 +641,7 @@ private struct ToolLineRow: View {
 
 private struct ToolTurn: View {
     let message: ChatMessage
-    @State private var expanded = true
+    @State private var expanded = false
 
     /// Whole-card plain-text export: one line per tool, `verb detail` for a
     /// successful line and `verb detail — reason` (full, untruncated) for a
@@ -684,7 +699,7 @@ private struct ToolTurn: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         }
-        .frame(maxWidth: 560, alignment: .leading)
+        .frame(maxWidth: 900, alignment: .leading)
     }
 }
 
@@ -751,20 +766,21 @@ private struct AssistantTurn: View {
                     if let secs = message.reasonedSeconds {
                         ReasonedChip(seconds: secs)
                     }
-                    // Raw mono is the default (operator decision C2b): the stream
-                    // and the settled turn render IDENTICALLY — no markdown re-parse
-                    // per delta, no visual "bam" on finalize. Rich is per-bubble
-                    // opt-in via the meta-row toggle.
+                    // Stream in the cheap raw view; settled messages render rich
+                    // by default. The per-bubble toggle remains available when
+                    // exact source text is more useful than presentation.
                     if message.wasStopped, message.text == "Stopped" {
                         Text("Stopped")
                             .font(CSFont.mono(11, .medium))
                             .foregroundStyle(CSColor.textFaintAlt)
-                    } else if !message.text.isEmpty || message.isStreaming {
+                    } else if message.isStreaming {
+                        RawText(raw: message.text, showsCaret: true)
+                    } else if !message.text.isEmpty {
                         switch message.renderMode {
                         case .raw:
-                            RawText(raw: message.text, showsCaret: message.isStreaming)
+                            RawText(raw: message.text)
                         case .rich:
-                            MarkdownText(raw: message.text, showsCaret: message.isStreaming)
+                            MarkdownText(raw: message.text)
                         }
                     }
                 }
@@ -787,14 +803,14 @@ private struct AssistantTurn: View {
             ))
             .contextMenu { CopyButton(text: message.text) }
         }
-        .frame(maxWidth: 560, alignment: .leading)
+        .frame(maxWidth: 900, alignment: .leading)
     }
 }
 
 private struct ReasoningDisclosure: View {
     let text: String
     let isLive: Bool
-    @State private var expanded = true
+    @State private var expanded = false
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -815,7 +831,7 @@ private struct ReasoningDisclosure: View {
                     weight: .semibold,
                     color: ChatPalette.thinking.opacity(0.75)
                 )
-                Text(isLive ? "thinking..." : "thinking")
+                Text(isLive ? "thinking..." : "reasoning summary")
                     .font(CSFont.mono(10.5, .semibold))
                     .foregroundStyle(ChatPalette.thinking)
                 Spacer(minLength: 0)
@@ -936,7 +952,7 @@ private struct CopyMessageButton: View {
 private struct ReasonedChip: View {
     let seconds: Double
     var body: some View {
-        Text("reasoned · \(String(format: "%.1f", seconds))s")
+        Text("worked · \(String(format: "%.1f", seconds))s")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.amber)
             .padding(.horizontal, 8)

@@ -33,6 +33,10 @@ pub struct ToolRegistry {
     /// Durable allow/ask/deny policy (settings.json `agent.permissions` +
     /// legacy tool_grants). Single choke point for resolution.
     policy: AgentPermissions,
+    /// Long-lived application registries re-read settings before every
+    /// decision so a Settings change applies to the next tool call, including
+    /// later calls in an already-running agent turn.
+    policy_loader: Option<Arc<dyn Fn() -> AgentPermissions + Send + Sync>>,
     /// Per-thread tool-identity overrides for the active turn (not durable).
     thread_overrides: HashMap<String, PermissionLevel>,
 }
@@ -133,6 +137,7 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             policy: AgentPermissions::default(),
+            policy_loader: None,
             thread_overrides: HashMap::new(),
         }
     }
@@ -140,6 +145,12 @@ impl ToolRegistry {
     /// Install the full permission policy (settings + legacy grants).
     pub fn set_policy(&mut self, policy: AgentPermissions) {
         self.policy = policy;
+    }
+
+    pub fn enable_policy_hot_reload(&mut self) {
+        self.policy_loader = Some(Arc::new(|| {
+            AgentPermissions::load().with_legacy_grants(super::tool_grants::load_granted())
+        }));
     }
 
     /// Install the operator's persisted "always allow" grant keys
@@ -279,10 +290,17 @@ impl ToolRegistry {
             ));
         }
 
+        let live_policy;
+        let policy = if let Some(loader) = &self.policy_loader {
+            live_policy = loader();
+            &live_policy
+        } else {
+            &self.policy
+        };
         let identity = tool_identity(&tool.policy.origin, name);
-        let level = if self.has_explicit_rule(&identity, &tool.policy.origin) {
+        let level = if self.has_explicit_rule(policy, &identity, &tool.policy.origin) {
             // Explicit operator preference (thread / tool / server / grant).
-            self.policy.resolve_for_origin(
+            policy.resolve_for_origin(
                 name,
                 &tool.policy.origin,
                 tool.policy.risk,
@@ -330,18 +348,22 @@ impl ToolRegistry {
         }
     }
 
-    fn has_explicit_rule(&self, identity: &str, origin: &ToolOrigin) -> bool {
+    fn has_explicit_rule(
+        &self,
+        policy: &AgentPermissions,
+        identity: &str,
+        origin: &ToolOrigin,
+    ) -> bool {
         if self.thread_overrides.contains_key(identity) {
             return true;
         }
-        if self.policy.tools.contains_key(identity) {
+        if policy.tools.contains_key(identity) {
             return true;
         }
         if let ToolOrigin::Mcp { server, .. } = origin {
             let key = server.to_ascii_lowercase();
-            if self.policy.servers.contains_key(&key)
-                || self
-                    .policy
+            if policy.servers.contains_key(&key)
+                || policy
                     .servers
                     .keys()
                     .any(|name| name.eq_ignore_ascii_case(server))
@@ -481,6 +503,34 @@ mod tests {
             registry.decide("future_tool", &json!({}), "call", "session", "thread"),
             ToolDecision::RequireApproval(_)
         ));
+    }
+
+    #[test]
+    fn hot_reload_reads_settings_before_each_decision() {
+        let mut registry = ToolRegistry::new();
+        register_external(&mut registry, "write_file", ToolRisk::Mutating);
+        let live_policy = Arc::new(std::sync::RwLock::new(AgentPermissions::default()));
+        let policy_for_loader = Arc::clone(&live_policy);
+        registry.policy_loader = Some(Arc::new(move || {
+            policy_for_loader.read().expect("live policy read").clone()
+        }));
+        assert!(matches!(
+            registry.decide("write_file", &json!({}), "c", "s", "t"),
+            ToolDecision::RequireApproval(_)
+        ));
+
+        live_policy
+            .write()
+            .expect("live policy write")
+            .tools
+            .insert(
+                crate::agent::tool_grants::grant_key("desktop-commander", "write_file"),
+                PermissionLevel::Allow,
+            );
+        assert_eq!(
+            registry.decide("write_file", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
     }
 
     #[test]

@@ -23,9 +23,24 @@ final class StreamScrollFreedomTests: XCTestCase {
     func testReachingBottomManuallyReattaches() {
         var state = detachedState()
 
-        XCTAssertEqual(state.handle(.userViewportChanged(isAtLiveEdge: true)), .none)
+        XCTAssertEqual(state.handle(.userScrollEnded(isAtLiveEdge: true)), .none)
         XCTAssertTrue(state.followingLive)
         XCTAssertFalse(state.showsJumpToCurrent)
+    }
+
+    func testStaleLiveEdgeGeometryDuringGestureDoesNotReattach() {
+        var state = detachedState()
+
+        XCTAssertEqual(state.handle(.userViewportChanged(isAtLiveEdge: true)), .none)
+        XCTAssertFalse(state.followingLive)
+        XCTAssertTrue(state.showsJumpToCurrent)
+    }
+
+    func testEndingManualScrollAwayFromEdgeStaysDetached() {
+        var state = detachedState()
+
+        XCTAssertEqual(state.handle(.userScrollEnded(isAtLiveEdge: false)), .none)
+        XCTAssertFalse(state.followingLive)
     }
 
     func testViewportAwayFromEdgeDoesNotDetachProgrammaticFollow() {

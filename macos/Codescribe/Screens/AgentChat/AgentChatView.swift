@@ -172,7 +172,7 @@ private struct ToolApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Text("Wymagana zgoda")
+                Text("Permission required")
                     .font(CSFont.ui(13, .semibold))
                     .foregroundStyle(CSColor.amber)
                 Spacer()
@@ -209,9 +209,9 @@ private struct ToolApprovalCard: View {
             }
             HStack {
                 Spacer()
-                Button("Odrzuć", role: .cancel, action: reject)
-                Button("Zawsze zezwalaj", action: allowAlways)
-                Button("Zezwól raz", action: allowOnce)
+                Button("Deny", role: .cancel, action: reject)
+                Button("Always allow", action: allowAlways)
+                Button("Allow once", action: allowOnce)
                     .buttonStyle(.borderedProminent)
             }
         }

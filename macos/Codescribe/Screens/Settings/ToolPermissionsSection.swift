@@ -6,6 +6,7 @@ import SwiftUI
 
 struct ToolPermissionsSection: View {
     @ObservedObject var model: SettingsViewModel
+    @State private var toolsExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,15 +25,26 @@ struct ToolPermissionsSection: View {
                 emptyCapabilities
                     .padding(.top, 12)
             } else {
-                VStack(spacing: 6) {
-                    ForEach(model.toolCapabilities, id: \.identity) { cap in
-                        ToolCapabilityRow(
-                            capability: cap,
-                            onLevel: { model.setToolPermission(identity: cap.identity, level: $0) }
-                        )
+                DisclosureGroup(
+                    "Tool overrides · \(model.toolCapabilities.count)",
+                    isExpanded: $toolsExpanded
+                ) {
+                    ScrollView {
+                        LazyVStack(spacing: 6) {
+                            ForEach(model.toolCapabilities, id: \.identity) { cap in
+                                ToolCapabilityRow(
+                                    capability: cap,
+                                    onLevel: { model.setToolPermission(identity: cap.identity, level: $0) }
+                                )
+                            }
+                        }
                     }
+                    .frame(maxHeight: 360)
+                    .padding(.top, 8)
                 }
                 .padding(.top, 12)
+                .font(CSFont.ui(12.5, .semibold))
+                .foregroundStyle(CSColor.textBody)
             }
         }
         .onAppear { model.reloadToolPermissions() }

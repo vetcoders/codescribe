@@ -137,6 +137,21 @@ final class TrayViewModelTests: XCTestCase {
         XCTAssertFalse(model.quickSettingsExpanded)
     }
 
+    func testTrayDisclosuresCollapseWhenPopoverCloses() {
+        let model = TrayViewModel()
+        model.notesExpanded = true
+        model.diagnosticsExpanded = true
+        model.historyExpanded = true
+        model.quickSettingsExpanded = true
+
+        model.collapseDisclosures()
+
+        XCTAssertFalse(model.notesExpanded)
+        XCTAssertFalse(model.diagnosticsExpanded)
+        XCTAssertFalse(model.historyExpanded)
+        XCTAssertFalse(model.quickSettingsExpanded)
+    }
+
     func testStatusDotCompositesInsideGlyphBottomRightCorner() throws {
         let size = NSSize(width: 20, height: 20)
         let bounds = NSRect(origin: .zero, size: size)

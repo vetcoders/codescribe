@@ -229,6 +229,7 @@ impl CodescribeAgent {
             codescribe_core::agent::permissions::AgentPermissions::load()
                 .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
         );
+        registry.enable_policy_hot_reload();
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
         let approvals = Arc::clone(&self.approvals);
         let approval_handler: ToolApprovalHandler =

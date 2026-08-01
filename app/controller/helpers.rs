@@ -340,6 +340,7 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
         codescribe_core::agent::permissions::AgentPermissions::load()
             .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
     );
+    registry.enable_policy_hot_reload();
 
     let provider = crate::agent::create_default_provider()
         .context("Failed to create default agent provider")?;

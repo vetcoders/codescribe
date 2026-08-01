@@ -100,6 +100,15 @@ final class TrayViewModel: ObservableObject {
 
     func onShowAgent() { onIntent(.openChat) }
 
+    /// A popover is a short-lived surface. Do not carry an expanded wall of
+    /// history/settings into the operator's next tray visit.
+    func collapseDisclosures() {
+        notesExpanded = false
+        diagnosticsExpanded = false
+        historyExpanded = false
+        quickSettingsExpanded = false
+    }
+
     // MARK: - Derived status (mock copy + palette)
 
     /// Olive "Idle" when stopped, terracotta "Recording" when live.

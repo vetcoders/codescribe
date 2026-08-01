@@ -207,7 +207,7 @@ struct ChatMessage: Identifiable {
     var isStreaming: Bool = false     // word-reveal in progress (shows caret)
     var wasStopped: Bool = false      // cancelled terminal; partial text remains intact
     var reasoning: String = ""        // streamed model reasoning, rendered separately
-    var renderMode: MessageRenderMode = .raw  // raw default (C2b); rich = opt-in
+    var renderMode: MessageRenderMode = .rich
 }
 
 /// An image the user staged in the composer but has not sent yet. Referenced by
@@ -1546,6 +1546,7 @@ final class AgentChatStore: ObservableObject {
     private struct PersistedAttachmentMetadata: Codable, Hashable {
         let name: String
         let type: String
+        let path: String?
     }
 
     private struct PersistedAttachmentTurn: Codable, Hashable {
@@ -1566,7 +1567,9 @@ final class AgentChatStore: ObservableObject {
         turns.removeAll { $0.userTurnIndex == userTurnIndex }
         turns.append(PersistedAttachmentTurn(
             userTurnIndex: userTurnIndex,
-            attachments: attachments.map { PersistedAttachmentMetadata(name: $0.name, type: $0.type) }
+            attachments: attachments.map {
+                PersistedAttachmentMetadata(name: $0.name, type: $0.type, path: $0.url?.path)
+            }
         ))
         sidecar[backendId] = turns.sorted { $0.userTurnIndex < $1.userTurnIndex }
         writeAttachmentMetadataSidecar(sidecar)
@@ -1588,7 +1591,8 @@ final class AgentChatStore: ObservableObject {
         for index in restored.indices where restored[index].role == .you {
             if let metadata = byUserTurn[userTurnIndex], !metadata.isEmpty {
                 restored[index].attachments = metadata.map {
-                    MessageAttachment(name: $0.name, url: nil, type: $0.type)
+                    let url = $0.path.map(URL.init(fileURLWithPath:))
+                    return MessageAttachment(name: $0.name, url: url, type: $0.type)
                 }
             }
             userTurnIndex += 1
@@ -1658,7 +1662,7 @@ final class AgentChatStore: ObservableObject {
             verb: isError ? "failed" : "ran",
             detail: name,
             state: isError ? .failed : .succeeded,
-            reason: (isError && !reason.isEmpty) ? reason : nil
+            reason: reason.isEmpty ? nil : reason
         )
         if let row = toolRowIndex(before: ai, inThreadAt: ti) {
             if let callID,
