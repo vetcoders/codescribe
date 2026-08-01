@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use codescribe_core::config::Config;
 use serde_json::{Value, json};
 
@@ -21,9 +21,10 @@ const MAX_PROJECTS: usize = 100;
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             list_projects_definition(),
             Box::new(|input| Box::pin(handle_list_projects(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register list_projects tool");
 }

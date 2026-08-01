@@ -6,16 +6,19 @@
 //! the durable replacement for pretending a transient `tail -f` will be
 //! revisited.
 
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
 pub const MONITOR_RUN_TOOL: &str = "monitor_run";
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             monitor_run_definition(),
             Box::new(|input| Box::pin(handle_monitor_run(input))),
+            // Registration only observes a control-plane run; the side effect
+            // is an in-app heartbeat into the caller's own thread.
+            ToolRisk::ReadOnly,
         )
         .expect("register monitor_run tool");
     registry.enable_thread_context(MONITOR_RUN_TOOL);

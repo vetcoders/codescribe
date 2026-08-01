@@ -2,7 +2,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use codescribe_core::util::safe_path::safe_open_bounded;
 use serde_json::{Value, json};
 
@@ -13,9 +13,10 @@ const MAX_TEXT_CHARS: usize = 40_000;
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             read_file_definition(),
             Box::new(|input| Box::pin(handle_read_file(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register read_file tool");
 }

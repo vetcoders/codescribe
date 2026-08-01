@@ -496,8 +496,14 @@ fn agent_ui_event_to_delivery(event: &AgentUiEvent) -> AgentDeliveryEvent {
             name: name.clone(),
             id: id.clone(),
         },
+        // The voice lane has no approval card, so a tool that asks is refused
+        // rather than silently allowed. Since native side-effectful tools now
+        // reach the gate (review P1-06), reaching this arm is expected for e.g.
+        // `type_text` — the operator lifts it durably in
+        // Settings → Permissions (`agent.permissions.tools["native:type_text"]`),
+        // which outranks the risk default.
         AgentUiEvent::ToolApprovalRequested(request) => AgentDeliveryEvent::Error(format!(
-            "Tool approval is unavailable for voice turn {} ({})",
+            "Tool approval is unavailable for voice turn {} ({}) — allow it in Settings → Permissions to use it hands-free",
             request.call_id, request.tool
         )),
         AgentUiEvent::ToolResult {
@@ -2116,7 +2122,7 @@ mod tests {
         let tool_started_for_handler = Arc::clone(&tool_started);
         let side_effect_for_handler = Arc::clone(&side_effect);
         tools
-            .register(
+            .register_native(
                 ToolDefinition {
                     name: "slow_side_effect".to_string(),
                     description: "delayed observable side effect".to_string(),
@@ -2132,6 +2138,12 @@ mod tests {
                         vec![ToolResultContent::Text("side effect fired".to_string())]
                     })
                 }),
+                // Classified read-only so the permission gate stays out of the
+                // way: this test is about cancel dropping an in-flight tool
+                // future, and the voice lane has no approval broker (see
+                // `agent_ui_event_to_delivery`). The "side effect" is the
+                // handler's own observable flag, not a risk class.
+                codescribe_core::agent::ToolRisk::ReadOnly,
             )
             .expect("slow tool should register");
 
