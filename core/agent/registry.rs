@@ -92,12 +92,21 @@ pub struct ToolExecutionPolicy {
 }
 
 impl ToolExecutionPolicy {
-    pub fn native_compatible() -> Self {
+    /// Native tool with a declared risk class. Risk drives the migration
+    /// default (read-only → allow, side-effectful → ask); an explicit operator
+    /// rule still outranks it.
+    pub fn native(risk: ToolRisk) -> Self {
         Self {
             origin: ToolOrigin::Native,
-            risk: ToolRisk::Unknown,
+            risk,
             requires_approval: false,
         }
+    }
+
+    /// Unclassified native tool. Resolves to `Ask` — classify the tool with
+    /// [`Self::native`] instead of leaving it here (review P1-06).
+    pub fn native_unclassified() -> Self {
+        Self::native(ToolRisk::Unknown)
     }
 }
 
@@ -225,13 +234,26 @@ impl ToolRegistry {
         caps
     }
 
+    /// Register an unclassified native tool. Resolves to `Ask` until it
+    /// declares a risk class via [`Self::register_native`].
     pub fn register(&mut self, definition: ToolDefinition, handler: ToolHandler) -> Result<()> {
         self.register_with_policy(
             definition,
             handler,
-            ToolExecutionPolicy::native_compatible(),
+            ToolExecutionPolicy::native_unclassified(),
             None,
         )
+    }
+
+    /// Register a native tool with its risk class — the permission gateway
+    /// resolves side-effectful natives to `Ask` (review P1-06).
+    pub fn register_native(
+        &mut self,
+        definition: ToolDefinition,
+        handler: ToolHandler,
+        risk: ToolRisk,
+    ) -> Result<()> {
+        self.register_with_policy(definition, handler, ToolExecutionPolicy::native(risk), None)
     }
 
     pub fn register_with_policy(
@@ -317,24 +339,26 @@ impl ToolRegistry {
                 &self.thread_overrides,
             )
         } else {
-            // Migration defaults when no preference is stored:
-            // - requires_approval flag or MCP Unknown risk → ask
-            // - read-only (no gate flag) → allow
-            // - native tools without gate flag → allow (prior runtime contract)
-            // - other side-effectful classifications → ask
-            match (
-                tool.policy.requires_approval,
-                tool.policy.risk,
-                &tool.policy.origin,
-            ) {
-                (true, _, _) => PermissionLevel::Ask,
-                (false, ToolRisk::Unknown, ToolOrigin::Mcp { .. }) => PermissionLevel::Ask,
-                (false, ToolRisk::ReadOnly, _) => PermissionLevel::Allow,
-                (false, ToolRisk::Mutating | ToolRisk::ProcessControl | ToolRisk::Network, _) => {
-                    PermissionLevel::Ask
-                }
-                (false, ToolRisk::Unknown, ToolOrigin::Native) => PermissionLevel::Allow,
-                (false, ToolRisk::Destructive, _) => PermissionLevel::Deny,
+            // Migration defaults when no preference is stored. Origin does not
+            // participate: a native tool that injects keystrokes into the
+            // frontmost app is exactly as side-effectful as an MCP one, so the
+            // gate is driven by risk alone (review P1-06). Unknown → ask keeps
+            // an unclassified tool fail-closed.
+            // - requires_approval flag → ask
+            // - read-only → allow
+            // - mutating / process / network / unknown → ask
+            // - destructive → deny
+            match (tool.policy.requires_approval, tool.policy.risk) {
+                (true, _) => PermissionLevel::Ask,
+                (false, ToolRisk::ReadOnly) => PermissionLevel::Allow,
+                (
+                    false,
+                    ToolRisk::Mutating
+                    | ToolRisk::ProcessControl
+                    | ToolRisk::Network
+                    | ToolRisk::Unknown,
+                ) => PermissionLevel::Ask,
+                (false, ToolRisk::Destructive) => PermissionLevel::Deny,
             }
         };
 
@@ -707,5 +731,106 @@ mod tests {
         assert_eq!(request.call_id, "call-write");
         assert_eq!(request.session_id, "session-a");
         assert_eq!(request.thread_id, "thread-a");
+    }
+
+    fn register_native_tool(registry: &mut ToolRegistry, name: &str, risk: ToolRisk) {
+        registry
+            .register_native(
+                ToolDefinition {
+                    name: name.to_string(),
+                    description: "native tool".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                risk,
+            )
+            .expect("register native tool");
+    }
+
+    #[test]
+    fn native_side_effectful_tools_ask_and_read_only_allows() {
+        // review P1-06: the gate used to allow every native tool outright, so
+        // type_text (keystroke injection into the frontmost app) executed with
+        // no approval at all.
+        let mut registry = ToolRegistry::new();
+        register_native_tool(&mut registry, "type_text", ToolRisk::Mutating);
+        register_native_tool(&mut registry, "fetch_github_file", ToolRisk::Network);
+        register_native_tool(&mut registry, "read_file", ToolRisk::ReadOnly);
+
+        for gated in ["type_text", "fetch_github_file"] {
+            let ToolDecision::RequireApproval(request) =
+                registry.decide(gated, &json!({}), "c", "s", "t")
+            else {
+                panic!("side-effectful native tool '{gated}' must ask before running");
+            };
+            assert_eq!(request.tool, gated);
+            assert_eq!(request.origin, ToolOrigin::Native);
+        }
+        assert_eq!(
+            registry.decide("read_file", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
+    }
+
+    #[test]
+    fn unclassified_native_tool_is_fail_closed() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(
+                ToolDefinition {
+                    name: "future_native".into(),
+                    description: "unclassified".into(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+            )
+            .expect("register");
+        assert!(matches!(
+            registry.decide("future_native", &json!({}), "c", "s", "t"),
+            ToolDecision::RequireApproval(_)
+        ));
+        // The operator can still lift it explicitly.
+        let mut policy = AgentPermissions::default();
+        policy
+            .tools
+            .insert("native:future_native".into(), PermissionLevel::Allow);
+        registry.set_policy(policy);
+        assert_eq!(
+            registry.decide("future_native", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
+    }
+
+    #[test]
+    fn server_allow_does_not_lift_unknown_risk_tools() {
+        // review P2-16: a blanket server grant covers the tools the operator
+        // saw, not one the server adds afterwards.
+        let mut registry = ToolRegistry::new();
+        register_external(&mut registry, "future_tool", ToolRisk::Unknown);
+        register_external(&mut registry, "write_file", ToolRisk::Mutating);
+        let mut policy = AgentPermissions::default();
+        policy
+            .servers
+            .insert("desktop-commander".into(), PermissionLevel::Allow);
+        registry.set_policy(policy);
+
+        assert!(matches!(
+            registry.decide("future_tool", &json!({}), "c", "s", "t"),
+            ToolDecision::RequireApproval(_)
+        ));
+        // A classified tool still honours the server grant.
+        assert_eq!(
+            registry.decide("write_file", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
+        // An explicit per-tool grant remains the operator's escape hatch.
+        registry.set_thread_override(
+            crate::agent::tool_grants::grant_key("desktop-commander", "future_tool"),
+            PermissionLevel::Allow,
+        );
+        assert_eq!(
+            registry.decide("future_tool", &json!({}), "c", "s", "t"),
+            ToolDecision::Allow
+        );
     }
 }

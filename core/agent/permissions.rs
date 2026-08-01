@@ -133,16 +133,22 @@ impl AgentPermissions {
         }
         if let Some(server) = server {
             let server_key = server.to_ascii_lowercase();
-            if let Some(level) = self.servers.get(&server_key) {
-                return *level;
-            }
-            // Tolerate mixed-case keys written by hand.
-            if let Some((_, level)) = self
-                .servers
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(server))
-            {
-                return *level;
+            let server_level = self.servers.get(&server_key).copied().or_else(|| {
+                // Tolerate mixed-case keys written by hand.
+                self.servers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(server))
+                    .map(|(_, level)| *level)
+            });
+            if let Some(level) = server_level {
+                // A blanket server Allow covers the tools the operator saw when
+                // they granted it — not a tool the server grows later. Unknown
+                // risk means "we have never classified this", so it still asks
+                // (review P2-16). Deny/Ask stay authoritative.
+                return match (level, risk) {
+                    (PermissionLevel::Allow, ToolRisk::Unknown) => PermissionLevel::Ask,
+                    _ => level,
+                };
             }
         }
         match risk {
