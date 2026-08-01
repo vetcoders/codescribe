@@ -95,8 +95,13 @@ CODE_VARS3=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'env_flag\("([A-Z_]+)"' core/ 2>/d
     sed 's/env_flag("\([^"]*\)"/\1/' | \
     sort -u || true)
 
+# Config loader wrappers (review P2-10: these bypassed the env::var regex)
+CODE_VARS4=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'config_(runtime_env_var|init_set_env_if_missing)\("([A-Z_]+)"' core/ app/ bin/ 2>/dev/null | \
+    sed 's/.*("\([^"]*\)".*/\1/' | \
+    sort -u || true)
+
 # Combine all found vars
-ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3" | sort -u | grep -v '^$' || true)
+ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3\n$CODE_VARS4" | sort -u | grep -v '^$' || true)
 
 # Check each code var against registry
 UNREGISTERED=""

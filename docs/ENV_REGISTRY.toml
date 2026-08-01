@@ -960,6 +960,20 @@ reload = "restart"
 category = "hotkeys"
 description = "Delay before hold recording starts (ms)"
 
+[vars.HOLD_ARM_MODIFIER]
+default = "shift"
+type = "string"
+reload = "restart"
+category = "hotkeys"
+description = "Modifier arming assistive chat on the dictation hold base (shift|cmd)"
+
+[vars.CODESCRIBE_DEFERRED_INSERT_SHORTCUT]
+default = "disabled"
+type = "string"
+reload = "restart"
+category = "hotkeys"
+description = "Global one-shot chord delivering the armed transcript at the caret (disabled|command_option_v|command_shift_v|command_control_v). Opt-in: listen-only tap cannot swallow the chord, so host-app collisions are possible"
+
 [vars.DOUBLE_TAP_INTERVAL_MS]
 default = "200"
 type = "u64"

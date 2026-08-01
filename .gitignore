@@ -77,13 +77,22 @@ docs/runtime-diagnosis.md
 !.ai-context/share/timeline.md
 /.vibecrafted
 /*test*.rs
-!/AGENTS.md
-!/CLAUDE.md
 
 *.zip
 
 # Astro build cache (generated)
 site/.astro/
 *.sha256
+
+# Root-level stray notes: ignore new root .md/.txt, keep the canonical doc set.
+# Negations must come AFTER the wildcard (last match wins).
 /*.md
-*.txt
+!/AGENTS.md
+!/AGENT_BUS.md
+!/CHANGELOG.md
+!/CLAUDE.md
+!/CODE_OF_CONDUCT.md
+!/CONTRIBUTING.md
+!/README.md
+!/SECURITY.md
+/*.txt
