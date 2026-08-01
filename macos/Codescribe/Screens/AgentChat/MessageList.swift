@@ -6,6 +6,99 @@ enum StreamScrollFollowAction: Equatable {
     case scrollToLiveEdge
 }
 
+/// Operator-facing chat column density. Persisted via `ChatLayoutPolicy.defaultsKey`.
+///
+/// Plan P0-1: Comfortable / Wide / Full with remembered choice. Width still
+/// derives from the viewport (not a static pt constant); the mode only changes
+/// how aggressively the column fills available space and when the prose cap
+/// kicks in so code fences / tables can claim room on wide monitors.
+enum ChatWidthMode: String, CaseIterable, Identifiable {
+    case comfortable
+    case wide
+    case full
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .comfortable: return "Comfortable"
+        case .wide: return "Wide"
+        case .full: return "Full"
+        }
+    }
+
+    /// You-bubble share of usable width (chat-style trailing bubble).
+    var youFraction: CGFloat {
+        switch self {
+        case .comfortable: return 0.58
+        case .wide: return 0.72
+        case .full: return 0.88
+        }
+    }
+
+    /// Soft upper bound for leading (assistant/tool) prose. `nil` = fill usable.
+    var proseComfortCap: CGFloat? {
+        switch self {
+        case .comfortable: return 720
+        case .wide: return 920
+        case .full: return nil
+        }
+    }
+
+    static func resolve(_ raw: String) -> ChatWidthMode {
+        ChatWidthMode(rawValue: raw) ?? .wide
+    }
+}
+
+/// Container-relative bubble widths for AgentChat.
+///
+/// Wave 8ccf141a raised fixed caps (510→760 / ~900) but left a middle column on
+/// wide windows. Plan step 1 wants width from the *viewport*, not a static pt
+/// constant: You stays a readable bubble; assistant/tool use the full usable
+/// column (subject to `ChatWidthMode`) so code fences and tables stop clipping.
+enum ChatLayoutPolicy {
+    /// `UserDefaults` / `@AppStorage` key for the operator width preference.
+    static let defaultsKey = "codescribe.chatWidthMode"
+    /// Horizontal padding applied by `MessageList` around the LazyVStack.
+    static let listPadding: CGFloat = 20
+    /// Minimum readable bubble width on a narrow window.
+    static let minimumReadable: CGFloat = 280
+    /// Default mode when the preference is missing or unknown.
+    static let defaultMode: ChatWidthMode = .wide
+
+    /// Usable content width after list padding (both sides).
+    static func contentWidth(for containerWidth: CGFloat) -> CGFloat {
+        max(0, containerWidth - listPadding * 2)
+    }
+
+    /// Max width for a You bubble given the scroll viewport width.
+    static func youBubbleMaxWidth(
+        containerWidth: CGFloat,
+        mode: ChatWidthMode = defaultMode
+    ) -> CGFloat {
+        let usable = contentWidth(for: containerWidth)
+        guard usable > 0 else { return minimumReadable }
+        let proportional = usable * mode.youFraction
+        return max(minimumReadable, min(usable, proportional))
+    }
+
+    /// Max width for assistant / tool turns. Fills the column up to the mode's
+    /// prose comfort cap (Full has no cap) so ultrawide windows do not produce
+    /// unreadable body lines while still giving code/tables more room than the
+    /// old 900pt hard cap on typical laptop widths.
+    static func leadingColumnMaxWidth(
+        containerWidth: CGFloat,
+        mode: ChatWidthMode = defaultMode
+    ) -> CGFloat {
+        let usable = contentWidth(for: containerWidth)
+        guard usable > 0 else { return minimumReadable }
+        guard let cap = mode.proseComfortCap else {
+            return max(minimumReadable, usable)
+        }
+        return max(minimumReadable, min(usable, cap))
+    }
+}
+
 /// Explicit state machine for the message viewport. Content growth is allowed
 /// to move the viewport only while the operator is following the live edge.
 struct StreamScrollFollowState: Equatable {
@@ -61,16 +154,21 @@ struct MessageList: View {
     /// during a stream pauses the follow; returning to the bottom resumes it, so the
     /// view stops fighting the user's manual scroll on a long streamed message.
     @State private var followState = StreamScrollFollowState()
+    /// Operator width density — shared with the header picker via `@AppStorage`.
+    @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode.rawValue
     private let scrollSpace = "chatMessageScroll"
     private let bottomAnchor = "chatMessageBottom"
 
+    private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
+
     var body: some View {
         GeometryReader { viewport in
+            let containerWidth = viewport.size.width
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 16) {
                         ForEach(messages) { message in
-                            turn(message)
+                            turn(message, containerWidth: containerWidth, mode: widthMode)
                                 .frame(maxWidth: .infinity, alignment: alignment(message.role))
                                 .id(message.id)
                         }
@@ -78,7 +176,7 @@ struct MessageList: View {
                             .frame(height: 1)
                             .id(bottomAnchor)
                     }
-                    .padding(20)
+                    .padding(ChatLayoutPolicy.listPadding)
                     .background(
                         GeometryReader { content in
                             Color.clear.preference(
@@ -185,11 +283,23 @@ struct MessageList: View {
     }
 
     @ViewBuilder
-    private func turn(_ message: ChatMessage) -> some View {
+    private func turn(
+        _ message: ChatMessage,
+        containerWidth: CGFloat,
+        mode: ChatWidthMode
+    ) -> some View {
         switch message.role {
-        case .you: YouTurn(message: message)
-        case .tool: ToolTurn(message: message)
-        case .assistant: AssistantTurn(message: message, onToggleRenderMode: onToggleRenderMode)
+        case .you:
+            YouTurn(message: message, containerWidth: containerWidth, mode: mode)
+        case .tool:
+            ToolTurn(message: message, containerWidth: containerWidth, mode: mode)
+        case .assistant:
+            AssistantTurn(
+                message: message,
+                containerWidth: containerWidth,
+                mode: mode,
+                onToggleRenderMode: onToggleRenderMode
+            )
         }
     }
 }
@@ -344,6 +454,8 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
 
 private struct YouTurn: View {
     let message: ChatMessage
+    let containerWidth: CGFloat
+    let mode: ChatWidthMode
 
     /// Copies the raw prompt text; for a text-less image turn falls back to the
     /// attachment filenames so the button still does something useful.
@@ -409,7 +521,13 @@ private struct YouTurn: View {
                 }
             }
         }
-        .frame(maxWidth: 760, alignment: .trailing)
+        .frame(
+            maxWidth: ChatLayoutPolicy.youBubbleMaxWidth(
+                containerWidth: containerWidth,
+                mode: mode
+            ),
+            alignment: .trailing
+        )
     }
 }
 
@@ -471,15 +589,16 @@ private struct ContextChip: View {
 /// style (icon/thumbnail + mono filename), minus the remove button. Shows a
 /// small inline thumbnail when the source image still loads; otherwise falls
 /// back to a photo glyph. Loaded once on appear so scrolling doesn't re-decode.
+/// Click opens an in-app preview sheet (metadata + zoom + Reveal/Copy path);
+/// restored turns with a nil URL surface an honest missing-asset state.
 private struct AttachmentChip: View {
     let attachment: MessageAttachment
     @State private var thumbnail: NSImage?
+    @State private var showPreview = false
 
     var body: some View {
         Button {
-            if let url = attachment.url {
-                NSWorkspace.shared.open(url)
-            }
+            showPreview = true
         } label: {
             HStack(spacing: 6) {
             if let thumbnail {
@@ -508,13 +627,164 @@ private struct AttachmentChip: View {
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(attachment.url == nil)
-        .help(attachment.url == nil ? "Original attachment is unavailable" : "Open attachment")
+        .help(attachment.url == nil ? "Preview attachment (original file may be missing)" : "Preview attachment")
         .onAppear {
             if thumbnail == nil, let url = attachment.url {
                 thumbnail = NSImage(contentsOf: url)
             }
         }
+        .sheet(isPresented: $showPreview) {
+            AttachmentPreviewSheet(attachment: attachment)
+        }
+    }
+}
+
+/// In-app attachment inspector: image zoom when bytes still load, honest
+/// fallback when the source path is gone (restored threads), plus Reveal in
+/// Finder / Copy path / Open with default app.
+private struct AttachmentPreviewSheet: View {
+    let attachment: MessageAttachment
+    @Environment(\.dismiss) private var dismiss
+    @State private var image: NSImage?
+    @State private var zoom: CGFloat = 1.0
+
+    private var pathText: String {
+        attachment.url?.path ?? "(no source path — restored turn keeps name only)"
+    }
+
+    private var fileExists: Bool {
+        guard let url = attachment.url else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(attachment.name)
+                        .font(CSFont.mono(13, .semibold))
+                        .foregroundStyle(CSColor.textBodyAlt)
+                        .textSelection(.enabled)
+                    Text(attachment.type)
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                }
+                Spacer(minLength: 8)
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            Group {
+                if let image {
+                    ScrollView([.horizontal, .vertical]) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(
+                                width: max(240, image.size.width * zoom),
+                                height: max(160, image.size.height * zoom)
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .frame(minHeight: 280, maxHeight: 480)
+                    .background(CSColor.surfaceRaised(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+
+                    HStack(spacing: 10) {
+                        Text("Zoom")
+                            .font(CSFont.mono(10.5, .medium))
+                            .foregroundStyle(CSColor.textFaintAlt)
+                        Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
+                        Text(String(format: "%.0f%%", zoom * 100))
+                            .font(CSFont.mono(10.5, .medium))
+                            .foregroundStyle(CSColor.textMuted)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                } else if attachment.url == nil {
+                    missingBanner(
+                        title: "Original file not available",
+                        detail: "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk."
+                    )
+                } else if !fileExists {
+                    missingBanner(
+                        title: "File missing on disk",
+                        detail: pathText
+                    )
+                } else {
+                    missingBanner(
+                        title: "No inline preview",
+                        detail: "This type is not rendered in-app. Use Open to hand it to the system default app."
+                    )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Path")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                Text(pathText)
+                    .font(CSFont.mono(10.5))
+                    .foregroundStyle(CSColor.textBodyAlt)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CSColor.surfaceRaised(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+
+            HStack(spacing: 10) {
+                Button("Copy path") {
+                    chatCopy(pathText)
+                }
+                .disabled(attachment.url == nil)
+
+                Button("Reveal in Finder") {
+                    if let url = attachment.url {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                }
+                .disabled(!fileExists)
+
+                Button("Open") {
+                    if let url = attachment.url {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .disabled(!fileExists)
+                .keyboardShortcut(.defaultAction)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 520, idealWidth: 640, minHeight: 420)
+        .onAppear {
+            if image == nil, let url = attachment.url, fileExists {
+                image = NSImage(contentsOf: url)
+            }
+        }
+    }
+
+    private func missingBanner(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(CSFont.mono(12, .semibold))
+                .foregroundStyle(CSColor.terracottaLight)
+            Text(detail)
+                .font(CSFont.mono(11))
+                .foregroundStyle(CSColor.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
+        .background(CSColor.surfaceRaised(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }
 }
 
@@ -641,6 +911,8 @@ private struct ToolLineRow: View {
 
 private struct ToolTurn: View {
     let message: ChatMessage
+    let containerWidth: CGFloat
+    let mode: ChatWidthMode
     @State private var expanded = false
 
     /// Whole-card plain-text export: one line per tool, `verb detail` for a
@@ -699,7 +971,13 @@ private struct ToolTurn: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         }
-        .frame(maxWidth: 900, alignment: .leading)
+        .frame(
+            maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
+                containerWidth: containerWidth,
+                mode: mode
+            ),
+            alignment: .leading
+        )
     }
 }
 
@@ -729,6 +1007,8 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
 
 private struct AssistantTurn: View {
     let message: ChatMessage
+    let containerWidth: CGFloat
+    let mode: ChatWidthMode
     let onToggleRenderMode: (UUID) -> Void
 
     var body: some View {
@@ -803,7 +1083,13 @@ private struct AssistantTurn: View {
             ))
             .contextMenu { CopyButton(text: message.text) }
         }
-        .frame(maxWidth: 900, alignment: .leading)
+        .frame(
+            maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
+                containerWidth: containerWidth,
+                mode: mode
+            ),
+            alignment: .leading
+        )
     }
 }
 

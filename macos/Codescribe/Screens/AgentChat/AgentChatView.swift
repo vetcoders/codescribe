@@ -37,6 +37,10 @@ private struct ThreadDetail: View {
     @Environment(\.openSettings) private var openSettings
     @State private var isRenaming = false
     @State private var renameText = ""
+    /// Shared with `MessageList` via `ChatLayoutPolicy.defaultsKey`.
+    @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode.rawValue
+
+    private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,12 +78,14 @@ private struct ThreadDetail: View {
         }
     }
 
-    // Header: live status pill · Settings · thread menu (⋯ wired in the menu section)
+    // Header: live status pill · width density · Settings · thread menu
     private var header: some View {
         HStack(spacing: 12) {
             StaticStatusPill(text: status.label, color: status.color)
             Spacer()
             HStack(spacing: 14) {
+                widthModeMenu
+
                 Button(action: { openSettings() }) {
                     CSIconView(icon: .settings, size: 16)
                 }
@@ -95,6 +101,33 @@ private struct ThreadDetail: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
         }
+    }
+
+    /// Comfortable / Wide / Full — persists via `ChatLayoutPolicy.defaultsKey`.
+    private var widthModeMenu: some View {
+        Menu {
+            ForEach(ChatWidthMode.allCases) { mode in
+                Button {
+                    widthModeRaw = mode.rawValue
+                } label: {
+                    if mode == widthMode {
+                        Label(mode.label, systemImage: "checkmark")
+                    } else {
+                        Text(mode.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                CSIconView(icon: .setupWizard, size: 12)
+                Text(widthMode.label)
+                    .font(CSFont.mono(10, .medium))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Chat column width: Comfortable, Wide, or Full")
     }
 
     // Current-thread actions. Export entries appear only for persisted threads
