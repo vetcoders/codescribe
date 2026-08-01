@@ -51,16 +51,13 @@ temp/
 CONFIG_AUDIT.md
 /target
 /.claude
-nohup.out
-nohup.out.backup
+*.out*
 /.ai
 /.junie
 /.ai-archive
 /.ai-context
 /.aiassistant
 /.tools
-*claude*
-*codex*
 /agents
 
 # Codescribe
@@ -80,13 +77,13 @@ docs/runtime-diagnosis.md
 !.ai-context/share/timeline.md
 /.vibecrafted
 /*test*.rs
-
-# Per-repo agent law is tracked (AGENTS.md canonical, CLAUDE.md mirror) —
-# negations must win over the *claude* wildcard above.
 !/AGENTS.md
 !/CLAUDE.md
+
 *.zip
 
 # Astro build cache (generated)
 site/.astro/
 *.sha256
+/*.md
+*.txt

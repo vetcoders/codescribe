@@ -49,7 +49,7 @@ mod tok_tests {
 
     #[test]
     fn normalize_strips_punct_and_case() {
-        assert_eq!(normalize_token("CodeScribe."), "codescribe");
+        assert_eq!(normalize_token("Codescribe."), "codescribe");
         assert_eq!(normalize_token("Loctree,"), "loctree");
     }
 }

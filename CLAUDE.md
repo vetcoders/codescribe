@@ -27,4 +27,4 @@ Committed overlay text is immutable. Replacement — by any engine, with any
 "better" text — is a doctrine violation. Full details, anti-patterns, and the
 measured bars guarding this live in `AGENTS.md`.
 
-𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
