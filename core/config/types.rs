@@ -138,11 +138,16 @@ impl FromStr for ShortcutBinding {
 /// Global command chord used to deliver an armed transcript at the current
 /// caret. This is intentionally separate from the modifier-only work-mode
 /// bindings: it is a one-shot delivery command, not a recording gesture.
+/// Default is Disabled (opt-in): the CGEventTap runs listen-only, so the chord
+/// cannot be swallowed — a host app that also binds it (Finder ⌘⌥V = "Move
+/// Items Here") would see BOTH actions fire. The conflict detector only scans
+/// system symbolic hotkeys, never per-app menus, so a default-on chord ships
+/// silent collisions (review P1-04).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum DeferredInsertShortcut {
-    Disabled,
     #[default]
+    Disabled,
     CommandOptionV,
     CommandShiftV,
     CommandControlV,
@@ -649,10 +654,12 @@ mod tests {
     }
 
     #[test]
-    fn deferred_insert_shortcut_round_trips_and_defaults_to_command_option_v() {
+    fn deferred_insert_shortcut_round_trips_and_defaults_to_disabled() {
+        // Opt-in by design: listen-only tap cannot swallow the chord, so a
+        // default-on binding double-fires in apps that also bind it (P1-04).
         assert_eq!(
             Config::default().deferred_insert_shortcut,
-            DeferredInsertShortcut::CommandOptionV
+            DeferredInsertShortcut::Disabled
         );
 
         let configured = Config {

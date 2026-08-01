@@ -155,7 +155,9 @@ const DEFERRED_INSERT_COMMAND_OPTION_V: u8 = 1;
 const DEFERRED_INSERT_COMMAND_SHIFT_V: u8 = 2;
 const DEFERRED_INSERT_COMMAND_CONTROL_V: u8 = 3;
 
-static DEFERRED_INSERT_SHORTCUT: AtomicU8 = AtomicU8::new(DEFERRED_INSERT_COMMAND_OPTION_V);
+// Boot default matches `DeferredInsertShortcut::default()` (Disabled, P1-04):
+// between tap start and config apply the chord must not be armed.
+static DEFERRED_INSERT_SHORTCUT: AtomicU8 = AtomicU8::new(DEFERRED_INSERT_DISABLED);
 
 fn encode_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) -> u8 {
     match shortcut {
