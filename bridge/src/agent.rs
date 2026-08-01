@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
@@ -403,14 +403,64 @@ struct ApprovalKey {
 
 struct PendingApproval {
     tx: tokio::sync::oneshot::Sender<bool>,
-    /// `(server, upstream_tool)` for MCP tools — the "remember" write target.
-    /// Native tools never persist grants.
-    grant_target: Option<(String, String)>,
+    /// Where an "always allow" for this call is persisted.
+    grant_target: GrantTarget,
+}
+
+/// Durable target for the approval card's "remember" checkbox. Native tools now
+/// reach the gate too (review P1-06), so they need a persist path of their own —
+/// otherwise "always allow" would silently do nothing and re-ask every turn.
+enum GrantTarget {
+    /// MCP: writes `agent.permissions.tools[server:tool]` and dual-writes
+    /// `tool_grants.json` so the existing revoke UI stays truthful.
+    Mcp {
+        server: String,
+        upstream_tool: String,
+    },
+    /// Native: writes `agent.permissions.tools[native:<name>]` only — there is
+    /// no upstream server to grant against.
+    Native { identity: String },
+}
+
+impl GrantTarget {
+    fn persist(&self) -> anyhow::Result<()> {
+        use codescribe_core::agent::permissions::{AgentPermissions, PermissionLevel};
+        match self {
+            Self::Mcp {
+                server,
+                upstream_tool,
+            } => AgentPermissions::remember_allow(server, upstream_tool),
+            Self::Native { identity } => {
+                AgentPermissions::set_tool_level(identity, PermissionLevel::Allow)
+            }
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Mcp {
+                server,
+                upstream_tool,
+            } => format!("{server}:{upstream_tool}"),
+            Self::Native { identity } => identity.clone(),
+        }
+    }
 }
 
 #[derive(Default)]
 struct ApprovalBroker {
     pending: Mutex<HashMap<ApprovalKey, PendingApproval>>,
+}
+
+/// Recover a poisoned lock instead of unwinding across the FFI boundary. A
+/// panicking `expect` here aborts the whole SwiftUI host — for bookkeeping maps
+/// whose worst-case damage is a stale entry, that trade is wrong (review
+/// P3-11). Recovery is also fail-closed for safety: a lost pending approval
+/// resolves to "not approved", never to an implicit allow.
+fn recover<'a, T>(
+    result: Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>>,
+) -> MutexGuard<'a, T> {
+    result.unwrap_or_else(PoisonError::into_inner)
 }
 
 impl ApprovalBroker {
@@ -422,8 +472,16 @@ impl ApprovalBroker {
             ToolOrigin::Mcp {
                 server,
                 upstream_tool,
-            } => Some((server.clone(), upstream_tool.clone())),
-            ToolOrigin::Native => None,
+            } => GrantTarget::Mcp {
+                server: server.clone(),
+                upstream_tool: upstream_tool.clone(),
+            },
+            ToolOrigin::Native => GrantTarget::Native {
+                identity: codescribe_core::agent::permissions::tool_identity(
+                    &request.origin,
+                    &request.tool,
+                ),
+            },
         };
         let key = ApprovalKey {
             session_id: request.session_id,
@@ -431,10 +489,7 @@ impl ApprovalBroker {
             call_id: request.call_id,
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.pending
-            .lock()
-            .expect("approval broker lock poisoned")
-            .insert(key.clone(), PendingApproval { tx, grant_target });
+        recover(self.pending.lock()).insert(key.clone(), PendingApproval { tx, grant_target });
         let broker = Arc::clone(self);
         Box::pin(async move {
             let _guard = PendingApprovalGuard {
@@ -458,12 +513,7 @@ impl ApprovalBroker {
             thread_id: thread_id.to_string(),
             call_id: call_id.to_string(),
         };
-        let Some(entry) = self
-            .pending
-            .lock()
-            .expect("approval broker lock poisoned")
-            .remove(&key)
-        else {
+        let Some(entry) = recover(self.pending.lock()).remove(&key) else {
             return false;
         };
         // Persist BEFORE resuming the call so a granted tool never races its
@@ -474,20 +524,19 @@ impl ApprovalBroker {
         // (product source of truth) and dual-writes tool_grants.json.
         if approved
             && remember
-            && let Some((server, upstream_tool)) = &entry.grant_target
-            && let Err(error) =
-                codescribe_core::agent::permissions::AgentPermissions::remember_allow(
-                    server,
-                    upstream_tool,
-                )
+            && let Err(error) = entry.grant_target.persist()
         {
-            tracing::warn!(%error, server, upstream_tool, "tool grant persist failed; allowing once");
+            tracing::warn!(
+                %error,
+                target = entry.grant_target.label(),
+                "tool grant persist failed; allowing once"
+            );
         }
         entry.tx.send(approved).is_ok()
     }
 
     fn cancel_thread(&self, thread_id: &str) {
-        let mut pending = self.pending.lock().expect("approval broker lock poisoned");
+        let mut pending = recover(self.pending.lock());
         let keys = pending
             .keys()
             .filter(|key| key.thread_id == thread_id)
@@ -506,11 +555,7 @@ struct PendingApprovalGuard {
 
 impl Drop for PendingApprovalGuard {
     fn drop(&mut self) {
-        self.broker
-            .pending
-            .lock()
-            .expect("approval broker lock poisoned")
-            .remove(&self.key);
+        recover(self.broker.pending.lock()).remove(&self.key);
     }
 }
 
@@ -536,9 +581,7 @@ impl TurnRegistry {
     /// abort-on-drop semantics and the registry entry's lifetime.
     fn register(self: &Arc<Self>, thread_id: &str, abort: AbortHandle) -> TurnGuard {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-        self.turns
-            .lock()
-            .expect("turn registry lock poisoned")
+        recover(self.turns.lock())
             .entry(thread_id.to_string())
             .or_default()
             .push(TurnEntry {
@@ -554,7 +597,7 @@ impl TurnRegistry {
     }
 
     fn deregister(&self, thread_id: &str, token: u64) {
-        let mut turns = self.turns.lock().expect("turn registry lock poisoned");
+        let mut turns = recover(self.turns.lock());
         if let Some(entries) = turns.get_mut(thread_id) {
             entries.retain(|entry| entry.token != token);
             if entries.is_empty() {
@@ -568,7 +611,7 @@ impl TurnRegistry {
     /// `drive_turn` future unwinds (aborting an already-finished task is a
     /// no-op, so a turn that completed just before this call is unaffected).
     fn cancel(&self, thread_id: &str) -> bool {
-        let turns = self.turns.lock().expect("turn registry lock poisoned");
+        let turns = recover(self.turns.lock());
         let Some(entries) = turns.get(thread_id) else {
             return false;
         };
@@ -929,7 +972,7 @@ mod tests {
     fn slow_tool_registry(side_effect: Arc<AtomicBool>, delay: Duration) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry
-            .register(
+            .register_native(
                 ToolDefinition {
                     name: "slow_side_effect".to_string(),
                     description: "test tool with a delayed side effect".to_string(),
@@ -943,6 +986,10 @@ mod tests {
                         vec![ToolResultContent::Text("side effect done".to_string())]
                     })
                 }),
+                // Read-only keeps the permission gate out of the way: these
+                // tests prove cancel drops an in-flight tool future, and the
+                // prepared session has no approval handler attached.
+                codescribe_core::agent::ToolRisk::ReadOnly,
             )
             .expect("registering the test tool must succeed");
         registry
