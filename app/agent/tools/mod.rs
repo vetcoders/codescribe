@@ -3,6 +3,7 @@ pub mod doctrine;
 pub mod filesystem;
 pub mod github;
 pub mod mcp;
+pub mod monitor_run;
 mod path_policy;
 pub mod screenshot;
 pub mod search_threads;
@@ -25,6 +26,7 @@ fn register_native_tools(registry: &mut ToolRegistry) {
     filesystem::register(registry);
     typing::register(registry);
     github::register(registry);
+    monitor_run::register(registry);
     search_threads::register(registry);
     transcribe_audio::register(registry);
     workspace::register(registry);
@@ -53,6 +55,7 @@ mod tests {
                 "get_frontmost_app".to_string(),
                 "get_selected_text".to_string(),
                 "list_projects".to_string(),
+                "monitor_run".to_string(),
                 "read_clipboard".to_string(),
                 "read_file".to_string(),
                 "search_threads".to_string(),

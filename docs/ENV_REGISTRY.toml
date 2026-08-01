@@ -1119,6 +1119,13 @@ reload = "restart"
 category = "storage"
 description = "Override data directory (default: ~/.codescribe)"
 
+[vars.VIBECRAFTED_CONTROL_PLANE_DIR]
+default = ""
+type = "string"
+reload = "hot"
+category = "storage"
+description = "Override Vibecrafted control-plane root for run monitors (default: ~/.vibecrafted/control_plane)"
+
 [vars.CODESCRIBE_DISABLE_KEYCHAIN]
 default = "0"
 type = "bool"

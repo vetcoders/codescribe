@@ -215,6 +215,14 @@ impl AgentRuntimeState {
                     self.thread_store_id = Some(runtime.thread_store_id.clone());
                 }
             }
+            if let Some(thread_store_id) = &self.thread_store_id {
+                // Voice lane has no approval-handler builder, so bind the
+                // durable thread id here for thread-context tool dispatch
+                // (run-monitor heartbeats re-enter this exact thread).
+                runtime
+                    .session
+                    .bind_execution_thread(thread_store_id.clone());
+            }
             self.runtime = Some(runtime);
             if self.runtime_degraded {
                 self.runtime_degraded = false;

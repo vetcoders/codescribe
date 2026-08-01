@@ -423,6 +423,11 @@ impl CodescribeConfig {
     pub fn new() -> Self {
         codescribe::logging::init_logging();
         bootstrap_audio_input_runtime();
+        // Resume any run monitors persisted by a previous app process so a
+        // watched Vibecrafted run keeps heartbeating after restart.
+        if !cfg!(test) {
+            codescribe::agent::monitor::resume_monitors_on_startup();
+        }
         Self {}
     }
 
