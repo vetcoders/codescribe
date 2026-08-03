@@ -1,5 +1,23 @@
 import AppKit
+import OSLog
 import SwiftUI
+
+/// Agent-surface performance breadcrumbs (app bootstrap, first agent open,
+/// thread index load, selected thread load, tool catalog load). Filter with:
+///   log show --predicate 'category == "agent-perf"' --info
+enum AgentPerf {
+    static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+        category: "agent-perf"
+    )
+
+    static func log(_ label: String, since start: Date, detail: String = "") {
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        logger.info(
+            "\(label, privacy: .public): \(ms, privacy: .public)ms \(detail, privacy: .public)"
+        )
+    }
+}
 
 /// Owns the app's long-lived view-models + engines so they can reference each
 /// other without @StateObject init-order pain.
@@ -16,7 +34,16 @@ final class AppModel: ObservableObject {
     let chatTextScale = TextScaleController(key: "AgentChat.textScale.v1")
 
     init() {
-        let chat = AgentChatStore(engine: RealChatEngine(), threadsProvider: RealThreadsEngine())
+        let bootstrapStart = Date()
+        // Shell-first agent bootstrap: the store starts as a light event sink
+        // (voice delivery works immediately); the persisted thread index loads
+        // asynchronously OFF the main actor and merges in when ready. No disk
+        // I/O or thread-history parsing happens on this MainActor init path.
+        let chat = AgentChatStore(
+            engine: RealChatEngine(),
+            threadsProvider: RealThreadsEngine(),
+            loadsThreadIndexEagerly: false
+        )
         chat.paletteSource = RealComposerPaletteSource(
             settings: RealSettingsEngine(),
             mcpAdmin: RealMCPAdminEngine()
@@ -27,6 +54,7 @@ final class AppModel: ObservableObject {
         // Composer voice-note dictation (independent recorder; disabled while a
         // hotkey/overlay session owns the mic — see OverlayController hooks).
         chat.dictation = RealComposerDictation(store: chat)
+        AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
     }
 }
 
