@@ -38,13 +38,14 @@ Grant in: System Settings > Privacy & Security
 
 ## Hotkeys
 
-| Key                         | Action                         | AI Mode               |
-| --------------------------- | ------------------------------ | --------------------- |
-| Hold **Fn**                 | Record → paste raw transcript  | ALWAYS RAW (no AI)    |
-| Hold **Fn+Shift**           | Record → AI assistant response | ALWAYS Assistive      |
-| Hold **Fn+Cmd**             | Send selection + transcript    | Assistive (selection) |
-| Double-tap **Left Option**  | Hands‑free toggle (normal)     | Respects AI toggle    |
-| Double-tap **Right Option** | Hands‑free toggle (assistive)  | Assistive             |
+| Key                             | Action                                    | AI Mode               |
+| ------------------------------- | ----------------------------------------- | --------------------- |
+| Hold **Fn**                     | Record → paste raw transcript             | ALWAYS RAW (no AI)    |
+| Hold **Fn+Shift** (default arm) | Record → agent voice chat                 | ALWAYS Assistive      |
+| Hold **Fn+Cmd** (arm alt)       | Same arm when Cmd is selected in Settings | ALWAYS Assistive      |
+| Armed hold **with selection**   | Selection transform lane                  | Assistive (selection) |
+| Double-tap **Left Option**      | Hands‑free toggle (normal)                | Respects AI toggle    |
+| Double-tap **Right Option**     | Hands‑free toggle (assistive)             | Assistive             |
 
 ### Mode Behavior
 
@@ -52,8 +53,9 @@ Grant in: System Settings > Privacy & Security
   Ignores AI_FORMATTING_ENABLED setting.
 - **Toggle mode (Double Option)**: Respects the AI Formatting toggle. If enabled, sends to AI
   for formatting. If disabled, pastes raw.
-- **Assistive mode (Fn+Shift)**: Full AI assistant. Model can answer questions, expand ideas,
-  or pass through dictation based on detected intent (KURIER/ASYSTENT system).
+- **Assistive arm (default Fn+Shift; optional Cmd in Settings)**: Sends voice to the agent.
+  Without a selection this is voice-chat (spoken text, agent persona). With a selection it
+  is act-on-selection (assistive skeleton + `assistive.txt`).
 
 ## Model
 

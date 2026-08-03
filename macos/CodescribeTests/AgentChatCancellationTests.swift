@@ -51,6 +51,9 @@ final class AgentChatCancellationTests: XCTestCase {
         let firstStreamStarted: XCTestExpectation
         let emitPartialAndTool: Bool
         let state = LockedState()
+        var approvalHandler: (@MainActor (PendingToolApproval) -> Void)?
+        var resolvedApprovals: [(PendingToolApproval, Bool)] = []
+        var rememberedApprovals: [Bool] = []
 
         init(firstStreamStarted: XCTestExpectation, emitPartialAndTool: Bool = false) {
             self.firstStreamStarted = firstStreamStarted
@@ -95,6 +98,25 @@ final class AgentChatCancellationTests: XCTestCase {
             state.record(.rustCancel(threadId))
             state.cancelSuspendedCall()
             return true
+        }
+
+        func installToolApprovalHandler(
+            _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+        ) {
+            approvalHandler = handler
+        }
+
+        func resolveToolApproval(
+            _ request: PendingToolApproval, approved: Bool, remember: Bool
+        ) -> Bool {
+            resolvedApprovals.append((request, approved))
+            rememberedApprovals.append(remember)
+            return true
+        }
+
+        @MainActor
+        func emitApproval(_ request: PendingToolApproval) {
+            approvalHandler?(request)
         }
     }
 
@@ -177,7 +199,64 @@ final class AgentChatCancellationTests: XCTestCase {
         XCTAssertFalse(recovered.isStreaming)
     }
 
+    func testApprovalUiResumesExactPendingCall() {
+        let engine = SpyEngine(
+            firstStreamStarted: XCTestExpectation(description: "unused stream")
+        )
+        let store = makeStore(engine: engine, backendID: "backend-approval")
+        let exact = PendingToolApproval(
+            callID: "call-exact",
+            sessionID: "session-exact",
+            threadID: "backend-approval",
+            tool: "mcp__desktop-commander__write_file",
+            server: "desktop-commander",
+            risk: "mutating",
+            summary: "write file",
+            command: nil,
+            cwd: nil,
+            paths: ["/workspace/file"]
+        )
+        let other = PendingToolApproval(
+            callID: "call-other",
+            sessionID: "session-other",
+            threadID: "other-thread",
+            tool: "mcp__desktop-commander__write_file",
+            server: "desktop-commander",
+            risk: "mutating",
+            summary: "write other file",
+            command: nil,
+            cwd: nil,
+            paths: ["/workspace/other"]
+        )
+
+        engine.emitApproval(other)
+        engine.emitApproval(exact)
+        XCTAssertEqual(store.currentToolApprovals, [exact])
+
+        store.resolveToolApproval(exact, approved: true)
+        XCTAssertEqual(engine.resolvedApprovals.count, 1)
+        XCTAssertEqual(engine.resolvedApprovals.first?.0, exact)
+        XCTAssertEqual(engine.resolvedApprovals.first?.1, true)
+        // Default resolve is allow-once: remember must stay false unless the
+        // operator explicitly presses "Zawsze zezwalaj".
+        XCTAssertEqual(engine.rememberedApprovals, [false])
+        XCTAssertTrue(store.currentToolApprovals.isEmpty)
+        XCTAssertEqual(store.pendingToolApprovals, [other])
+
+        store.resolveToolApproval(other, approved: true, remember: true)
+        XCTAssertEqual(engine.rememberedApprovals, [false, true])
+        XCTAssertTrue(store.pendingToolApprovals.isEmpty)
+    }
+
     func testComposerActionProjectsThinkingStreamingAndCancelling() {
+        XCTAssertEqual(
+            ComposerActionVisualState.resolve(canSend: false, activePhase: nil),
+            .send(enabled: false)
+        )
+        XCTAssertEqual(
+            ComposerActionVisualState.resolve(canSend: true, activePhase: nil),
+            .send(enabled: true)
+        )
         XCTAssertEqual(
             ComposerActionVisualState.resolve(canSend: false, activePhase: .thinking),
             .stop
@@ -193,6 +272,16 @@ final class AgentChatCancellationTests: XCTestCase {
         XCTAssertFalse(ComposerActionVisualState.stopping.isEnabled)
         XCTAssertEqual(ComposerActionVisualState.stop.accessibilityLabel, "Stop response")
         XCTAssertEqual(ComposerActionAccessibility.identifier, "agent-composer-primary-action")
+    }
+
+    func testComposerSendUsesSystemCircleAndSharedControlGeometry() {
+        guard case .sf(let symbolName) = ComposerActionVisualState.send(enabled: true).icon.backend else {
+            return XCTFail("Composer send action must use an SF Symbol")
+        }
+
+        XCTAssertEqual(symbolName, "arrow.up.circle.fill")
+        XCTAssertEqual(ComposerControlMetrics.glyphSize, 15)
+        XCTAssertEqual(ComposerControlMetrics.hitTargetSize, 22)
     }
 
     func testVoiceStopRoutesOnlyToVoiceAdapterPreservesPartialAndRecovers() throws {

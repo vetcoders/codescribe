@@ -8,10 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
+use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
+use codescribe::os::{clipboard, notifications};
 use codescribe_core::config::{
     Config, FormattingPolicy, ModeBinding, ShortcutBinding, UserSettings, WorkMode,
 };
@@ -61,12 +63,14 @@ fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
         .map(Arc::clone)
 }
 
-fn route_hotkey_event<F>(
+fn route_hotkey_event<F, G>(
     event: HotkeyEvent,
     app_action_listener: Option<Arc<dyn CsAppActionListener>>,
     dispatch_recording: F,
+    dispatch_deferred_insert: G,
 ) where
     F: FnOnce(HotkeyEvent),
+    G: FnOnce(),
 {
     match event {
         HotkeyEvent::ShowAgent => {
@@ -75,7 +79,24 @@ fn route_hotkey_event<F>(
                 listener.on_show_agent();
             }
         }
+        HotkeyEvent::InsertHere => dispatch_deferred_insert(),
         recording_event => dispatch_recording(recording_event),
+    }
+}
+
+fn deliver_deferred_insert_and_notify() {
+    match clipboard::deliver_deferred_insert() {
+        Ok(clipboard::DeferredInsertDelivery::Delivered) => {
+            tracing::info!("Deferred transcript delivered and clipboard restore scheduled");
+        }
+        Ok(
+            clipboard::DeferredInsertDelivery::NothingToInsert
+            | clipboard::DeferredInsertDelivery::Expired,
+        ) => notifications::notify("Codescribe", "Nothing to insert"),
+        Err(error) => {
+            tracing::warn!(%error, "Deferred transcript delivery failed");
+            notifications::notify("Codescribe", "Couldn't insert the armed transcript");
+        }
     }
 }
 
@@ -195,6 +216,9 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             _ => {}
         },
         IpcEventPayload::FinalTranscript { text } => listener.on_final_transcript_ready(text),
+        IpcEventPayload::ContextMarker { position, marker } => {
+            listener.on_context_marker(position, marker);
+        }
         IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
@@ -207,8 +231,16 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 ..
             } => listener.on_correction(text, previous_text),
             EngineEventWire::UtteranceFinal {
-                utterance_id, text, ..
-            } => listener.on_final(utterance_id, text),
+                utterance_id,
+                text,
+                avg_logprob,
+                vad_speech_pct,
+                confidence_flags,
+                ..
+            } => {
+                let flags: Vec<String> = confidence_flags.iter().map(ToString::to_string).collect();
+                listener.on_final(utterance_id, text, avg_logprob, vad_speech_pct, flags);
+            }
             EngineEventWire::ReplaceRange {
                 utterance_id,
                 start,
@@ -292,6 +324,16 @@ async fn optimistically_show_overlay(event: &HotkeyEvent) {
         // Arm the compensator BEFORE the direct call so the terminal guarantee
         // holds even if the dispatch that follows never transitions state.
         PREPARING_PENDING.store(true, Ordering::Release);
+        let indicator_mode = match event {
+            HotkeyEvent::ToggleAssistive
+            | HotkeyEvent::Hold {
+                mode: HoldMode::Chat | HoldMode::Selection,
+                ..
+            } => BadgeMode::Assistive,
+            HotkeyEvent::ToggleNormal | HotkeyEvent::ToggleRaw => BadgeMode::Toggle,
+            _ => BadgeMode::Hold,
+        };
+        tray_status::set_tray_indicator_mode(indicator_mode);
         tray_status::update_tray_status(TrayStatus::Starting);
         listener.on_recording_preparing();
     }
@@ -399,6 +441,7 @@ impl CodescribeHotkeys {
                             }
                         });
                     },
+                    deliver_deferred_insert_and_notify,
                 );
             }
         });
@@ -554,15 +597,28 @@ impl CodescribeHotkeys {
     }
 
     /// Paste edited overlay text back into the app that was frontmost before the
-    /// overlay. Returns the honest delivery outcome: `Pasted`, or
-    /// `CopiedToClipboard` when the controller's self-paste guard degraded the
-    /// action to a tagged clipboard copy.
-    pub async fn paste_text(&self, text: String) -> Result<CsPasteOutcome, CsError> {
+    /// overlay. The result includes delivery truth and the app names observed
+    /// at the exact delivery boundary so Swift can explain every degradation.
+    pub async fn paste_text(&self, text: String) -> Result<CsPasteResult, CsError> {
         let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
         controller
             .paste_text_from_overlay(text)
             .await
-            .map(CsPasteOutcome::from)
+            .map(CsPasteResult::from)
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+    }
+
+    /// Arm an edited overlay transcript directly when Swift knows the caret is
+    /// still inside Codescribe. The controller owns tagging and the W1-A copy
+    /// fallback when Paste Here registration is unavailable.
+    pub async fn defer_text(&self, text: String) -> Result<CsPasteResult, CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .defer_text_from_overlay(text)
+            .await
+            .map(CsPasteResult::from)
             .map_err(|error| CsError::Recording {
                 msg: error.to_string(),
             })
@@ -586,6 +642,18 @@ impl CodescribeHotkeys {
     pub async fn paste_target_app_name(&self) -> Option<String> {
         let controller = current_controller(&shared_controller())?;
         normalize_paste_target_app_name(controller.paste_target_app_name().await)
+    }
+
+    /// Deliver an assistive transcript from the editable overlay. The
+    /// controller attaches the trigger-time selection and accepts this once.
+    pub async fn send_assistive_transcript(&self, text: String) -> Result<bool, CsError> {
+        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+        controller
+            .deliver_pending_assistive_transcript(text)
+            .await
+            .map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
     }
 
     /// Stop the global hotkey listener if it is active.
@@ -614,6 +682,8 @@ impl CodescribeHotkeys {
 pub enum CsPasteOutcome {
     Pasted,
     CopiedToClipboard,
+    AccessibilityPermissionNeeded,
+    DeferredInsertArmed,
     Noop,
 }
 
@@ -624,7 +694,34 @@ impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
             codescribe::controller::OverlayPasteDelivery::CopiedToClipboard => {
                 Self::CopiedToClipboard
             }
+            codescribe::controller::OverlayPasteDelivery::AccessibilityPermissionNeeded => {
+                Self::AccessibilityPermissionNeeded
+            }
+            codescribe::controller::OverlayPasteDelivery::DeferredInsertArmed => {
+                Self::DeferredInsertArmed
+            }
             codescribe::controller::OverlayPasteDelivery::Noop => Self::Noop,
+        }
+    }
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsPasteResult {
+    pub outcome: CsPasteOutcome,
+    pub target_app_name: Option<String>,
+    pub frontmost_app_name: Option<String>,
+    pub deferred_insert_shortcut: Option<String>,
+    pub deferred_insert_failure: Option<String>,
+}
+
+impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
+    fn from(value: codescribe::controller::OverlayPasteResult) -> Self {
+        Self {
+            outcome: value.delivery.into(),
+            target_app_name: value.target_app_name,
+            frontmost_app_name: value.frontmost_app_name,
+            deferred_insert_shortcut: value.deferred_insert_shortcut,
+            deferred_insert_failure: value.deferred_insert_failure,
         }
     }
 }
@@ -644,14 +741,10 @@ async fn dispatch_recording_hotkey_event(
     controller: Arc<RecordingController>,
 ) -> anyhow::Result<()> {
     match event {
-        HotkeyEvent::ShowAgent => {
-            unreachable!("ShowAgent must be routed before recording dispatch")
+        HotkeyEvent::ShowAgent | HotkeyEvent::InsertHere => {
+            unreachable!("UI-only commands must be routed before recording dispatch")
         }
-        HotkeyEvent::Hold {
-            action,
-            mode,
-            force_ai,
-        } => {
+        HotkeyEvent::Hold { action, mode } => {
             let mapped_action = match action {
                 HoldAction::Down => HotkeyAction::Down,
                 HoldAction::Up => HotkeyAction::Up,
@@ -661,19 +754,19 @@ async fn dispatch_recording_hotkey_event(
                 action: mapped_action,
                 assistive: !matches!(mode, HoldMode::Raw),
                 hold_mode: mode,
-                force_raw: matches!(mode, HoldMode::Raw) && !force_ai,
-                force_ai,
+                force_raw: false,
+                force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
         }
-        HotkeyEvent::HoldUpdate { mode, force_ai } => {
+        HotkeyEvent::HoldUpdate { mode } => {
             let input = HotkeyInput {
                 key_type: HotkeyType::Hold,
                 action: HotkeyAction::Press,
                 assistive: !matches!(mode, HoldMode::Raw),
                 hold_mode: mode,
-                force_raw: matches!(mode, HoldMode::Raw) && !force_ai,
-                force_ai,
+                force_raw: false,
+                force_ai: false,
             };
             controller.handle_hotkey_event(input).await?;
         }
@@ -711,12 +804,16 @@ async fn dispatch_recording_hotkey_event(
             controller.handle_hotkey_event(input).await?;
         }
         HotkeyEvent::DoubleTapBlocked { gesture, reason } => {
+            // Detector is the single owner of the stable
+            // `blocked_double_tap gesture=… reason=…` INFO line (W11-C).
+            // Bridge must not re-emit that token — only optional human prose.
             let body = format!(
                 "{} was detected, but {}.",
                 gesture.label(),
                 reason.message()
             );
-            eprintln!("Hotkey double-tap blocked: {body}");
+            tracing::debug!("Hotkey double-tap blocked: {body}");
+            let _ = reason; // keep reason available for future Diagnostics UI
         }
     }
 
@@ -808,9 +905,14 @@ mod app_action_tests {
         let recording_calls = Arc::new(AtomicUsize::new(0));
         let recording_calls_for_route = Arc::clone(&recording_calls);
 
-        route_hotkey_event(HotkeyEvent::ShowAgent, Some(listener.clone()), move |_| {
-            recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
-        });
+        route_hotkey_event(
+            HotkeyEvent::ShowAgent,
+            Some(listener.clone()),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+            || panic!("show agent must not dispatch deferred insert"),
+        );
 
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 0);
@@ -823,9 +925,23 @@ mod app_action_tests {
             move |_| {
                 recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
+            || panic!("recording command must not dispatch deferred insert"),
         );
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
+
+        let deferred_calls = Arc::new(AtomicUsize::new(0));
+        let deferred_calls_for_route = Arc::clone(&deferred_calls);
+        route_hotkey_event(
+            HotkeyEvent::InsertHere,
+            Some(listener.clone()),
+            |_| panic!("deferred insert must not enter recording dispatch"),
+            move || {
+                deferred_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(deferred_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -1064,6 +1180,21 @@ impl CodescribeHotkeys {
         mode: CsWorkMode,
         binding: CsShortcutBinding,
     ) -> Result<(), CsError> {
+        if mode == CsWorkMode::Assistive
+            && matches!(
+                binding,
+                CsShortcutBinding::HoldFn
+                    | CsShortcutBinding::HoldCtrl
+                    | CsShortcutBinding::HoldCtrlAlt
+                    | CsShortcutBinding::HoldCtrlShift
+                    | CsShortcutBinding::HoldCtrlCmd
+            )
+        {
+            return Err(CsError::Config {
+                msg: "Assistive hold uses the dictation hold plus Shift; a second hold binding is released"
+                    .to_string(),
+            });
+        }
         let mut settings = UserSettings::load();
         settings.set_mode_binding(mode.into(), binding.into());
         reload_hotkey_runtime_after_write();
@@ -1270,7 +1401,8 @@ mod mode_binding_tests {
 
 #[cfg(test)]
 mod paste_target_mapping_tests {
-    use super::normalize_paste_target_app_name;
+    use super::{CsPasteOutcome, CsPasteResult, normalize_paste_target_app_name};
+    use codescribe::controller::{OverlayPasteDelivery, OverlayPasteResult};
 
     #[test]
     fn bridge_mapping_keeps_present_app_name() {
@@ -1287,6 +1419,24 @@ mod paste_target_mapping_tests {
             normalize_paste_target_app_name(Some("   ".to_string())),
             None
         );
+    }
+
+    #[test]
+    fn accessibility_denial_maps_with_delivery_app_truth() {
+        let result = CsPasteResult::from(OverlayPasteResult {
+            delivery: OverlayPasteDelivery::AccessibilityPermissionNeeded,
+            target_app_name: Some("Pensieve".to_string()),
+            frontmost_app_name: Some("Pensieve".to_string()),
+            deferred_insert_shortcut: None,
+            deferred_insert_failure: None,
+        });
+
+        assert_eq!(
+            result.outcome,
+            CsPasteOutcome::AccessibilityPermissionNeeded
+        );
+        assert_eq!(result.target_app_name.as_deref(), Some("Pensieve"));
+        assert_eq!(result.frontmost_app_name.as_deref(), Some("Pensieve"));
     }
 }
 
@@ -1323,6 +1473,7 @@ mod preparing_compensation_tests {
         stopped: AtomicUsize,
         finalising: AtomicUsize,
         audio_levels: StdMutex<Vec<f32>>,
+        context_markers: StdMutex<Vec<(u64, String)>>,
     }
 
     impl RecordingLifecycleListener {
@@ -1344,6 +1495,12 @@ mod preparing_compensation_tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
         }
+        fn context_markers(&self) -> Vec<(u64, String)> {
+            self.context_markers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
     }
 
     impl CsTranscriptionListener for RecordingLifecycleListener {
@@ -1361,7 +1518,15 @@ mod preparing_compensation_tests {
         }
         fn on_preview(&self, _text: String) {}
         fn on_correction(&self, _text: String, _previous_text: String) {}
-        fn on_final(&self, _utterance_id: u64, _text: String) {}
+        fn on_final(
+            &self,
+            _utterance_id: u64,
+            _text: String,
+            _avg_logprob: Option<f32>,
+            _speech_pct: Option<f32>,
+            _confidence_flags: Vec<String>,
+        ) {
+        }
         fn on_replace_range(
             &self,
             _utterance_id: u64,
@@ -1378,6 +1543,12 @@ mod preparing_compensation_tests {
             _text: String,
             _kind: CsAnnotationKind,
         ) {
+        }
+        fn on_context_marker(&self, position: u64, marker: String) {
+            self.context_markers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((position, marker));
         }
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
@@ -1423,6 +1594,22 @@ mod preparing_compensation_tests {
             Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
         );
         assert_eq!(listener.audio_levels(), vec![0.125]);
+    }
+
+    #[test]
+    fn context_marker_payload_forwards_position_and_label() {
+        let listener = Arc::new(RecordingLifecycleListener::default());
+        forward_event_to_listener(
+            IpcEventPayload::ContextMarker {
+                position: 7,
+                marker: "{selection_3}".to_string(),
+            },
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+        assert_eq!(
+            listener.context_markers(),
+            vec![(7, "{selection_3}".to_string())]
+        );
     }
 
     /// Paths 1 & 2 (quick hold-release cancel, start-failure reset): preparing was

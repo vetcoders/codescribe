@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{AgentAssetStore, ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{
+    AgentAssetStore, ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk,
+};
 use codescribe_core::{audio, stt::whisper, vad};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -11,9 +13,10 @@ use serde_json::{Value, json};
 /// available, typically via `CODESCRIBE_MODEL_PATH`.
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             transcribe_audio_definition(),
             Box::new(|input| Box::pin(handle_transcribe_audio(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register transcribe_audio tool");
 }

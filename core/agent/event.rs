@@ -43,6 +43,7 @@ pub enum AgentUiEvent {
         name: String,
         id: String,
     },
+    ToolApprovalRequested(super::ToolApprovalRequest),
     ToolResult {
         name: String,
         id: String,

@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -168,5 +170,74 @@ final class ThreadRailSectionTests: XCTestCase {
             model: nil, tokens: nil, updatedAt: date(2026, 7, 8, 9, 30),
             now: now, calendar: calendar)
         XCTAssertEqual(subtitle, "Jul 8")
+    }
+
+    func testPlaceholderRowUsesPresentedFirstMessageExcerpt() {
+        let wire = "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nCompare insulin protocols\n>\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n"
+        let thread = ChatThread(
+            title: "<<<",
+            meta: "today 11:45",
+            messages: [ChatMessage(role: .you, timestamp: "11:45", text: wire)],
+            updatedAt: date(2026, 7, 16, 11, 45)
+        )
+
+        let title = ThreadRowTitle.displayTitle(for: thread, now: now, calendar: calendar)
+
+        XCTAssertEqual(title, "Compare insulin protocols")
+        XCTAssertFalse(title.contains("<<<"))
+    }
+
+    func testPlaceholderRowWithoutLoadedMessagesUsesRelativeDateLabel() {
+        let thread = ChatThread(
+            title: "<<<",
+            meta: "today 11:45",
+            updatedAt: date(2026, 7, 16, 11, 45)
+        )
+
+        XCTAssertEqual(
+            ThreadRowTitle.displayTitle(for: thread, now: now, calendar: calendar),
+            "Today 11:45"
+        )
+        XCTAssertNil(ThreadTitlePolicy.normalized("<<<"))
+        XCTAssertNil(ThreadTitlePolicy.normalized("<<< 2026-07-20"))
+    }
+}
+
+@MainActor
+final class AccentColorTokenTests: XCTestCase {
+    func testChromeAccentResolvesToSystemAccentInLightAndDarkAppearances() throws {
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            appearance.performAsCurrentDrawingAppearance {
+                assertSameColor(
+                    NSColor(CSColor.chromeAccent),
+                    NSColor.controlAccentColor,
+                    message: "chrome accent must follow macOS in \(name.rawValue)"
+                )
+            }
+        }
+    }
+
+    func testModeTokensRemainAppSemanticColors() {
+        assertSameColor(NSColor(CSColor.modeDictation), NSColor(CSColor.terracotta))
+        assertSameColor(NSColor(CSColor.modeRecording), NSColor(CSColor.modeDictation))
+        assertSameColor(NSColor(CSColor.modeAgent), NSColor(CSColor.assistive))
+    }
+
+    private func assertSameColor(
+        _ actual: NSColor,
+        _ expected: NSColor,
+        message: String = ""
+    ) {
+        guard let actualRGB = actual.usingColorSpace(.deviceRGB),
+              let expectedRGB = expected.usingColorSpace(.deviceRGB)
+        else {
+            XCTFail("Colors must resolve in device RGB. \(message)")
+            return
+        }
+        XCTAssertEqual(actualRGB.redComponent, expectedRGB.redComponent, accuracy: 0.001, message)
+        XCTAssertEqual(actualRGB.greenComponent, expectedRGB.greenComponent, accuracy: 0.001, message)
+        XCTAssertEqual(actualRGB.blueComponent, expectedRGB.blueComponent, accuracy: 0.001, message)
+        XCTAssertEqual(actualRGB.alphaComponent, expectedRGB.alphaComponent, accuracy: 0.001, message)
     }
 }

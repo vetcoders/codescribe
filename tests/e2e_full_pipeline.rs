@@ -15,6 +15,8 @@
 
 use std::path::PathBuf;
 
+use serial_test::serial;
+
 use codescribe::whisper::LocalWhisperEngine;
 use codescribe_core::audio::load_audio_file;
 use codescribe_core::pipeline::contracts::{
@@ -211,7 +213,12 @@ fn routing_quality_probe(
 // Stage 1: Raw Whisper on all 4 canonical recordings
 // ═══════════════════════════════════════════════════════════
 
+// Whisper-loading stage tests are #[serial]: since A1 all LocalWhisperEngine
+// instances share one process-cached Metal Device, and concurrent decodes on
+// separate engines corrupt each other's output (production serializes via the
+// singleton mutex; these tests build their own engines).
 #[test]
+#[serial]
 fn e2e_stage1_raw_whisper_canonical() {
     if !is_e2e_stt_enabled() {
         eprintln!("Skipping (set CODESCRIBE_E2E_STT=1)");
@@ -381,6 +388,7 @@ fn e2e_stage3_delta_backspace() {
 // ═══════════════════════════════════════════════════════════
 
 #[test]
+#[serial]
 fn e2e_stage4_full_pipeline() {
     if !is_e2e_stt_enabled() {
         eprintln!("Skipping full pipeline (set CODESCRIBE_E2E_STT=1)");
@@ -614,6 +622,7 @@ fn vad_gate_audio(samples: &[f32], sample_rate: u32) -> Vec<f32> {
 }
 
 #[test]
+#[serial]
 fn e2e_stage7_whisper_hallucination_vs_vad_gated() {
     if !is_e2e_stt_enabled() {
         eprintln!("Skipping (set CODESCRIBE_E2E_STT=1)");

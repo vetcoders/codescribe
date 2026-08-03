@@ -104,7 +104,7 @@ struct OnboardingProgressBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(CSColor.surfaceRaised(0.05))
                 Capsule()
-                    .fill(CSColor.terracotta.opacity(0.85))
+                    .fill(CSColor.chromeAccent.opacity(0.85))
                     .frame(width: max(6, geo.size.width * fraction))
             }
         }
@@ -141,13 +141,13 @@ struct OnboardingButton: View {
     }
 
     private var foreground: Color {
-        kind == .primary ? CSColor.terracottaLight : CSColor.textMutedAlt
+        kind == .primary ? CSColor.chromeAccent : CSColor.textMutedAlt
     }
     private var fill: Color {
-        kind == .primary ? CSColor.terracotta.opacity(0.16) : CSColor.surfaceRaised(0.03)
+        kind == .primary ? CSColor.chromeAccent.opacity(0.16) : CSColor.surfaceRaised(0.03)
     }
     private var border: Color {
-        kind == .primary ? CSColor.terracotta.opacity(0.30) : CSColor.hairline(0.08)
+        kind == .primary ? CSColor.chromeAccent.opacity(0.30) : CSColor.hairline(0.08)
     }
 }
 
@@ -187,7 +187,7 @@ struct OnboardingButton: View {
 
 #Preview("Onboarding — Language") {
     OnboardingView(model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 7),
+        engine: MockOnboardingEngine(progress: 8),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted)))
@@ -197,7 +197,7 @@ struct OnboardingButton: View {
 
 #Preview("Onboarding — API key") {
     OnboardingView(model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 8),
+        engine: MockOnboardingEngine(progress: 9),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted)))
@@ -207,7 +207,7 @@ struct OnboardingButton: View {
 
 #Preview("Onboarding — Hotkeys") {
     OnboardingView(model: OnboardingViewModel(
-        engine: MockOnboardingEngine(progress: 9),
+        engine: MockOnboardingEngine(progress: 10),
         hotkeys: MockHotkeysEngine(),
         agentStatus: MockAgentStatusEngine(),
         probe: MockPermissionProbe(.allGranted)))
@@ -216,7 +216,7 @@ struct OnboardingButton: View {
 }
 
 #Preview("Onboarding — Agentic readiness") {
-    let engine = MockOnboardingEngine(progress: 10)
+    let engine = MockOnboardingEngine(progress: 11)
     engine.mode = "agentic"
     return OnboardingView(model: OnboardingViewModel(
         engine: engine,

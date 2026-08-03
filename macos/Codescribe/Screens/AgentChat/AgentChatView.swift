@@ -23,6 +23,7 @@ struct AgentChatView: View {
             ThreadDetail(store: store)
         }
         .navigationSplitViewStyle(.balanced)
+        .csFocusPolicy()
         .background(CSColor.glassBase)
         .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
         .task { store.startDemoStreamIfNeeded() }
@@ -36,17 +37,33 @@ private struct ThreadDetail: View {
     @Environment(\.openSettings) private var openSettings
     @State private var isRenaming = false
     @State private var renameText = ""
+    /// Shared with `MessageList` via `ChatLayoutPolicy.defaultsKey`.
+    @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode.rawValue
+
+    private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             titleBar
             if let thread = store.currentThread {
-                MessageList(messages: thread.messages) { messageID in
+                MessageList(threadID: thread.id, messages: thread.messages) { messageID in
                     store.toggleRenderMode(messageID: messageID, in: thread.id)
                 }
             } else {
                 Spacer()
+            }
+            ForEach(store.currentToolApprovals) { request in
+                ToolApprovalCard(
+                    request: request,
+                    reject: { store.resolveToolApproval(request, approved: false) },
+                    allowOnce: { store.resolveToolApproval(request, approved: true) },
+                    allowAlways: {
+                        store.resolveToolApproval(request, approved: true, remember: true)
+                    }
+                )
+                .padding(.horizontal, 20)
+                .padding(.bottom, 10)
             }
             Composer(store: store)
         }
@@ -61,12 +78,14 @@ private struct ThreadDetail: View {
         }
     }
 
-    // Header: live status pill · Settings · thread menu (⋯ wired in the menu section)
+    // Header: live status pill · width density · Settings · thread menu
     private var header: some View {
         HStack(spacing: 12) {
             StaticStatusPill(text: status.label, color: status.color)
             Spacer()
             HStack(spacing: 14) {
+                widthModeMenu
+
                 Button(action: { openSettings() }) {
                     CSIconView(icon: .settings, size: 16)
                 }
@@ -82,6 +101,33 @@ private struct ThreadDetail: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
         }
+    }
+
+    /// Comfortable / Wide / Full — persists via `ChatLayoutPolicy.defaultsKey`.
+    private var widthModeMenu: some View {
+        Menu {
+            ForEach(ChatWidthMode.allCases) { mode in
+                Button {
+                    widthModeRaw = mode.rawValue
+                } label: {
+                    if mode == widthMode {
+                        Label(mode.label, systemImage: "checkmark")
+                    } else {
+                        Text(mode.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                CSIconView(icon: .setupWizard, size: 12)
+                Text(widthMode.label)
+                    .font(CSFont.mono(10, .medium))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Chat column width: Comfortable, Wide, or Full")
     }
 
     // Current-thread actions. Export entries appear only for persisted threads
@@ -148,6 +194,68 @@ private struct ThreadDetail: View {
     }
 
     private var turnCount: Int { store.currentThread?.messages.count ?? 0 }
+}
+
+private struct ToolApprovalCard: View {
+    let request: PendingToolApproval
+    let reject: () -> Void
+    let allowOnce: () -> Void
+    let allowAlways: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text("Permission required")
+                    .font(CSFont.ui(13, .semibold))
+                    .foregroundStyle(CSColor.amber)
+                Spacer()
+                Text(request.risk.replacingOccurrences(of: "_", with: " "))
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+            }
+            Text("\(request.server) · \(request.tool)")
+                .font(CSFont.mono(11.5, .semibold))
+                .foregroundStyle(CSColor.textHigh)
+                .textSelection(.enabled)
+            if !request.summary.isEmpty {
+                Text(request.summary)
+                    .font(CSFont.ui(12, .regular))
+                    .foregroundStyle(CSColor.textBody)
+            }
+            if let command = request.command {
+                Text("$ \(command)")
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(CSColor.terracottaLight)
+                    .textSelection(.enabled)
+            }
+            if let cwd = request.cwd {
+                Text("cwd: \(cwd)")
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                    .textSelection(.enabled)
+            }
+            ForEach(request.paths, id: \.self) { path in
+                Text(path)
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button("Deny", role: .cancel, action: reject)
+                Button("Always allow", action: allowAlways)
+                Button("Allow once", action: allowOnce)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(14)
+        .background(CSColor.surfaceRaised(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    }
 }
 
 // MARK: - Preview (standalone — mock engine + seeded threads)

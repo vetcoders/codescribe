@@ -3,7 +3,9 @@ use std::ptr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use codescribe_core::agent::{AgentAssetStore, ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{
+    AgentAssetStore, ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk,
+};
 
 use crate::os::permissions::{self, PermissionStatus};
 use core_foundation::base::{CFRelease, CFType, TCFType, kCFAllocatorDefault};
@@ -37,9 +39,10 @@ enum CaptureRegion {
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             screenshot_definition(),
             Box::new(|input| Box::pin(handle_take_screenshot(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register take_screenshot tool");
 }

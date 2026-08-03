@@ -588,6 +588,7 @@ mod tests {
     #[serial]
     fn lane_models_use_fresh_settings_and_lane_defaults() {
         let _lane = EnvGuard::set("LLM_ASSISTIVE_MODEL", "stale-bootstrap-model");
+        let _formatting = EnvGuard::remove("LLM_FORMATTING_MODEL");
         let _shared = EnvGuard::remove("LLM_MODEL");
         let settings = UserSettings {
             llm_assistive_model: Some("fresh-assistive-model".to_string()),

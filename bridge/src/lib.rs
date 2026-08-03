@@ -35,8 +35,8 @@ pub use agent_delivery::CsAgentDeliveryListener;
 pub use hotkeys::CodescribeHotkeys;
 pub use hotkeys::CsAppActionListener;
 pub use quality::{
-    CsLexiconEntry, CsQualityRecord, commit_overlay_quality_record, lexicon_custom_entries,
-    quality_finalize_correction, quality_recent_records,
+    CsLexiconEntry, CsQualityCommitResult, CsQualityRecord, commit_overlay_quality_record,
+    lexicon_custom_entries, quality_finalize_correction, quality_recent_records,
 };
 pub use tray_status::{
     CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,

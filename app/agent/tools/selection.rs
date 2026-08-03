@@ -1,17 +1,19 @@
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             get_selected_text_definition(),
             Box::new(|input| Box::pin(handle_get_selected_text(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register get_selected_text tool");
     registry
-        .register(
+        .register_native(
             get_frontmost_app_definition(),
             Box::new(|input| Box::pin(handle_get_frontmost_app(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register get_frontmost_app tool");
 }

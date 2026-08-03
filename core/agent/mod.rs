@@ -1,19 +1,32 @@
 pub mod assets;
 pub mod event;
+pub mod permissions;
 pub mod provider;
 pub mod registry;
+pub mod run_monitor;
 pub mod session;
 pub mod thread_delivery;
 pub mod thread_export;
 pub mod thread_index;
 pub mod thread_store;
+pub mod tool_grants;
+mod tool_output;
 pub mod types;
 
 pub use assets::AgentAssetStore;
 pub use event::{AgentEvent, AgentUiEvent};
+pub use permissions::{AgentPermissions, PermissionLevel, ToolCapability, tool_identity};
 pub use provider::{AgentProvider, StreamOptions};
-pub use registry::{ToolDefinition, ToolFuture, ToolHandler, ToolRegistry, ToolResultContent};
-pub use session::{AgentSession, ImageAttachment};
+pub use registry::{
+    ToolApprovalRequest, ToolCallPreview, ToolDecision, ToolDefinition, ToolExecutionPolicy,
+    ToolFuture, ToolHandler, ToolInputValidator, ToolOrigin, ToolRegistry, ToolResultContent,
+    ToolRisk,
+};
+pub use run_monitor::{
+    HeartbeatKind, RunMonitorRecord, RunMonitorRegistration, RunMonitorState, RunMonitorStore,
+    RunObservation,
+};
+pub use session::{AgentSession, ImageAttachment, ToolApprovalFuture, ToolApprovalHandler};
 pub use thread_delivery::{
     ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource,
 };

@@ -483,6 +483,27 @@ mod tests {
     }
 
     #[test]
+    fn stored_tool_output_reference_exports_honestly_without_inline_body() {
+        let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
+        let tool_result = super::super::thread_store::ThreadMessage {
+            role: "user".to_string(),
+            content: vec![serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": "call_large",
+                "content": [{"type": "text", "text": reference}],
+                "is_error": false
+            })],
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+
+        let md = thread_to_markdown(&thread(vec![tool_result]), false);
+
+        assert!(md.contains(reference));
+        assert!(!md.contains("monster inline body"));
+    }
+
+    #[test]
     fn assistant_only_drops_tool_results_carried_by_user() {
         // Tool results live in user-role messages, so assistant_only export
         // (legacy "assistant replies only") must not include them.

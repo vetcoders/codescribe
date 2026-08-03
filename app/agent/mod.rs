@@ -5,6 +5,7 @@ use codescribe_core::llm::lane_truth;
 use codescribe_core::llm::provider::ProviderKind;
 
 pub mod anthropic_provider;
+pub mod monitor;
 pub mod openai_provider;
 #[cfg(target_os = "macos")]
 pub mod tools;

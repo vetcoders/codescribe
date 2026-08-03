@@ -36,6 +36,8 @@ pub struct McpServerSummary {
     pub args: Vec<String>,
     pub env_keys: Vec<String>,
     pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub auth_ref: Option<String>,
 }
 
 /// Desired spawn shape when adding / updating a server through the UI. Env is not
@@ -47,6 +49,8 @@ pub struct McpServerSpec {
     pub command: String,
     pub args: Vec<String>,
     pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub auth_ref: Option<String>,
 }
 
 /// List every configured server (sorted by name) from the canonical config path
@@ -72,6 +76,8 @@ fn list_servers_at(path: &Path) -> Result<Vec<McpServerSummary>> {
                 args: cfg.args,
                 env_keys,
                 enabled: cfg.enabled.unwrap_or(true),
+                endpoint: cfg.url,
+                auth_ref: cfg.auth_ref,
             }
         })
         .collect();
@@ -88,7 +94,7 @@ pub fn add_server(spec: &McpServerSpec) -> Result<()> {
 
 fn add_server_at(path: &Path, spec: &McpServerSpec) -> Result<()> {
     validate_name(&spec.name)?;
-    validate_command(&spec.command)?;
+    validate_server_spec(spec)?;
 
     let mut root = load_value(path)?;
     {
@@ -109,7 +115,7 @@ pub fn update_server(name: &str, spec: &McpServerSpec) -> Result<()> {
 }
 
 fn update_server_at(path: &Path, name: &str, spec: &McpServerSpec) -> Result<()> {
-    validate_command(&spec.command)?;
+    validate_server_spec(spec)?;
 
     let mut root = load_value(path)?;
     {
@@ -120,8 +126,7 @@ fn update_server_at(path: &Path, name: &str, spec: &McpServerSpec) -> Result<()>
         let obj = entry
             .as_object_mut()
             .with_context(|| format!("MCP server \"{name}\" is not a JSON object"))?;
-        obj.insert("command".to_string(), Value::String(spec.command.clone()));
-        obj.insert("args".to_string(), args_value(&spec.args));
+        write_server_shape(obj, spec);
         obj.insert("enabled".to_string(), Value::Bool(spec.enabled));
     }
     write_atomic(path, &root)
@@ -209,10 +214,36 @@ fn run_probe_blocking(server: McpServerConfig, timeout: Duration) -> Result<McpP
 
 fn server_object(spec: &McpServerSpec) -> Value {
     let mut obj = Map::new();
-    obj.insert("command".to_string(), Value::String(spec.command.clone()));
-    obj.insert("args".to_string(), args_value(&spec.args));
+    write_server_shape(&mut obj, spec);
     obj.insert("enabled".to_string(), Value::Bool(spec.enabled));
     Value::Object(obj)
+}
+
+fn write_server_shape(obj: &mut Map<String, Value>, spec: &McpServerSpec) {
+    if let Some(endpoint) = &spec.endpoint {
+        obj.remove("command");
+        obj.remove("args");
+        obj.insert("url".to_string(), Value::String(endpoint.clone()));
+        obj.insert(
+            "transport".to_string(),
+            Value::String("streamable_http".to_string()),
+        );
+        match &spec.auth_ref {
+            Some(auth_ref) => {
+                obj.insert("auth_ref".to_string(), Value::String(auth_ref.clone()));
+            }
+            None => {
+                obj.remove("auth_ref");
+            }
+        }
+    } else {
+        obj.remove("url");
+        obj.remove("endpoint");
+        obj.remove("transport");
+        obj.remove("auth_ref");
+        obj.insert("command".to_string(), Value::String(spec.command.clone()));
+        obj.insert("args".to_string(), args_value(&spec.args));
+    }
 }
 
 fn args_value(args: &[String]) -> Value {
@@ -326,6 +357,26 @@ fn validate_command(command: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_server_spec(spec: &McpServerSpec) -> Result<()> {
+    match spec.endpoint.as_deref() {
+        Some(endpoint) => {
+            let parsed = reqwest::Url::parse(endpoint)
+                .with_context(|| format!("Invalid remote MCP endpoint: {endpoint}"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                bail!("Remote MCP endpoint must use http or https");
+            }
+            if !parsed.username().is_empty() || parsed.password().is_some() {
+                bail!("Remote MCP credentials must be stored in Keychain, not in the endpoint URL");
+            }
+            if !spec.command.trim().is_empty() || !spec.args.is_empty() {
+                bail!("Remote MCP server must not also define a local command");
+            }
+        }
+        None => validate_command(&spec.command)?,
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -340,6 +391,8 @@ mod tests {
             command: command.to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
             enabled: true,
+            endpoint: None,
+            auth_ref: None,
         }
     }
 
@@ -365,6 +418,33 @@ mod tests {
         assert_eq!(servers[1].command, "loctree-mcp");
         assert_eq!(servers[1].args, vec!["mcp".to_string()]);
         assert!(servers[1].enabled);
+    }
+
+    #[test]
+    fn remote_server_persists_only_endpoint_and_keychain_reference() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+        let token_fragment = "super-secret-token-fragment";
+        let spec = McpServerSpec {
+            name: "slack".to_string(),
+            command: String::new(),
+            args: vec![],
+            enabled: true,
+            endpoint: Some("https://connector.example/mcp".to_string()),
+            auth_ref: Some("MCP_CONNECTOR_SLACK_TOKEN".to_string()),
+        };
+        add_server_at(&path, &spec).expect("add remote");
+
+        let raw = std::fs::read_to_string(&path).expect("read config");
+        assert!(raw.contains("https://connector.example/mcp"));
+        assert!(raw.contains("MCP_CONNECTOR_SLACK_TOKEN"));
+        assert!(!raw.contains(token_fragment));
+        assert!(!raw.contains("\"token\""));
+
+        let listed = list_servers_at(&path).expect("list remote");
+        assert_eq!(listed[0].endpoint.as_deref(), spec.endpoint.as_deref());
+        assert_eq!(listed[0].auth_ref.as_deref(), spec.auth_ref.as_deref());
+        assert!(listed[0].command.is_empty());
     }
 
     #[test]
@@ -412,6 +492,7 @@ mod tests {
                     "enabled": true,
                     "env": { "TOKEN": "keepme" },
                     "timeout_seconds": 42,
+                    "codescribePolicy": { "profile": "desktop-commander-v1" },
                     "weird": [1, 2, 3]
                 }
             }
@@ -429,6 +510,10 @@ mod tests {
         // Preserved untouched.
         assert_eq!(raw["mcpServers"]["srv"]["env"]["TOKEN"], json!("keepme"));
         assert_eq!(raw["mcpServers"]["srv"]["timeout_seconds"], json!(42));
+        assert_eq!(
+            raw["mcpServers"]["srv"]["codescribePolicy"]["profile"],
+            json!("desktop-commander-v1")
+        );
         assert_eq!(raw["mcpServers"]["srv"]["weird"], json!([1, 2, 3]));
     }
 

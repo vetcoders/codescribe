@@ -27,7 +27,7 @@ first_line=$(
   ' "$MSG_FILE"
 )
 
-agent_pattern='(claude|codex|gemini|maciej|monika)'
+agent_pattern='(claude|codex|gemini|grok|maciej|monika)'
 workflow_pattern='vc-[a-z0-9][a-z0-9-]*'
 agent_commit_pattern="^\\[${agent_pattern}/${workflow_pattern}\\] .+"
 human_commit_pattern='^\[ok-commit\] .+'
@@ -48,7 +48,7 @@ echo "  Merge commit:     Merge branch 'feature' into develop" >&2
 echo "  Squash commit:    Squashed commit of the following:" >&2
 echo "" >&2
 echo "  Format: [<agent>/vc-<workflow>] <description>" >&2
-echo "  Agents: claude, codex, gemini, maciej, monika" >&2
+echo "  Agents: claude, codex, gemini, grok, maciej, monika" >&2
 echo "  Workflows: any vc-* workflow, e.g. vc-marbles, vc-justdo, vc-workflow, vc-ownership, vc-manual" >&2
 echo "" >&2
 echo "  Current first line: ${first_line:-<empty>}" >&2

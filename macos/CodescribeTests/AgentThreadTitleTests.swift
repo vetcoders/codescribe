@@ -399,6 +399,104 @@ final class AgentThreadTitleTests: XCTestCase {
         XCTAssertEqual(provider.events.filter { $0 == .generated("Cannot persist") }.count, 1)
     }
 
+    func testComposerAndAssistiveRejectDelimiterOnlyGeneratedTitles() async {
+        do {
+            let engine = ControllableEngine()
+            let provider = TitleThreadsProvider()
+            let store = makeStore(engine: engine, provider: provider)
+            store.draft = "keyboard title fallback"
+            store.send()
+            await waitUntil { engine.titleCalls.count == 1 && engine.streamCalls.count == 1 }
+
+            engine.completeTitle(.success("<<<"))
+            provider.markFirstTurnPersisted()
+            engine.completeStream(.success("Keyboard reply"))
+            await waitUntil { store.activeComposerTurn == nil }
+
+            XCTAssertEqual(store.currentThread?.title, "Heuristic slug")
+            XCTAssertTrue(provider.events.allSatisfy {
+                if case .generated = $0 { return false }
+                return true
+            })
+        }
+
+        do {
+            let engine = ControllableEngine()
+            let provider = TitleThreadsProvider()
+            let store = makeStore(engine: engine, provider: provider)
+            store.ingestVoiceTurn(
+                threadId: provider.backendID,
+                userText: voiceWire(instruction: "assistive title fallback")
+            )
+            await waitUntil { engine.titleCalls.count == 1 }
+
+            engine.completeTitle(.success("<<<"))
+            provider.markFirstTurnPersisted()
+            store.ingestVoiceDone()
+            await waitUntil { provider.events.contains(.list) }
+
+            XCTAssertEqual(store.currentThread?.title, "Heuristic slug")
+            XCTAssertTrue(provider.events.allSatisfy {
+                if case .generated = $0 { return false }
+                return true
+            })
+            XCTAssertTrue(engine.streamCalls.isEmpty)
+        }
+    }
+
+    // MARK: - Title marker strip (bucket markers never reach a derived title)
+
+    func testNormalizedStripsContextMarkerAndRejoinsSplitWord() {
+        // Incident input, verbatim: the capture landed mid-word and the overlay
+        // space-padded the marker inside "mnie".
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized(
+                "Chciałbym Ci przedstawić taką jedną rzecz, która mn {selection_1} ie bardzo drażni..."
+            ),
+            "Chciałbym Ci przedstawić taką jedną rzecz, która mnie bardzo drażni..."
+        )
+    }
+
+    func testNormalizedStripsWordBoundaryMarkersWithSingleSpace() {
+        XCTAssertEqual(ThreadTitlePolicy.normalized("say {selection_1} then"), "say then")
+        XCTAssertEqual(ThreadTitlePolicy.normalized("look {image_1} here"), "look here")
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("stack {selection_1} {selection_2} them"),
+            "stack them"
+        )
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("{selection_1} leading and trailing {image_2}"),
+            "leading and trailing"
+        )
+        XCTAssertNil(ThreadTitlePolicy.normalized("{selection_1}"), "a marker-only line is not a title")
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("keep {selection_} literal"),
+            "keep {selection_} literal",
+            "index-less braces are not bucket markers"
+        )
+    }
+
+    func testNormalizedGluesUnpaddedMidWordMarkersLosslessly() {
+        // The overlay inserts mid-word markers without padding, so adjacency
+        // itself signals the split — vowels no longer matter.
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("która mn{selection_1}ie bardzo drażni"),
+            "która mnie bardzo drażni"
+        )
+        XCTAssertEqual(
+            ThreadTitlePolicy.normalized("bard{selection_1}zo lubię pieguski"),
+            "bardzo lubię pieguski"
+        )
+    }
+
+    func testNormalizedMarkerStripStillClipsAtLimit() {
+        let padding = String(repeating: "x", count: 100)
+        let title = ThreadTitlePolicy.normalized("mn {selection_1} ie \(padding)")
+        XCTAssertEqual(title?.count, 72)
+        XCTAssertEqual(title?.hasPrefix("mnie x"), true)
+        XCTAssertEqual(title?.contains("selection"), false)
+    }
+
     private func assertGenerationFallback(_ outcome: Result<String?, Error>) async {
         let engine = ControllableEngine()
         let provider = TitleThreadsProvider()
@@ -480,6 +578,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice early title")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
 
         engine.completeTitle(.success("Voice title state"))
@@ -508,6 +607,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice late title")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
 
         provider.markFirstTurnPersisted()
@@ -530,6 +630,7 @@ final class AgentThreadTitleTests: XCTestCase {
         provider.forceGeneratedFailure = true
         let store = makeStore(engine: engine, provider: provider)
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice persistence failure")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         engine.completeTitle(.success("Cannot persist"))
         await waitUntil { provider.events.filter { $0 == .generated("Cannot persist") }.count == 1 }
@@ -547,6 +648,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice rename before generation")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
 
         store.rename(store.currentThread!, to: "My durable voice title")
@@ -569,6 +671,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice late generated then rename")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         provider.markFirstTurnPersisted()
         store.ingestVoiceDone()
@@ -587,6 +690,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let store = makeStore(engine: engine, provider: provider)
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "delete this voice turn")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         let deletedID = store.currentThread!.id
 
@@ -615,6 +719,7 @@ final class AgentThreadTitleTests: XCTestCase {
         defer { _ = canceller }
 
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice cancel race")
+        selectVoiceThread(provider.backendID, in: store)
         store.ingestVoiceDelta("Partial voice answer")
         await waitUntil { engine.titleCalls.count == 1 }
 
@@ -635,6 +740,7 @@ final class AgentThreadTitleTests: XCTestCase {
         let provider = TitleThreadsProvider()
         let store = makeStore(engine: engine, provider: provider)
         store.ingestVoiceTurn(threadId: provider.backendID, userText: "voice fallback title")
+        selectVoiceThread(provider.backendID, in: store)
         await waitUntil { engine.titleCalls.count == 1 }
         engine.completeTitle(outcome)
         provider.markFirstTurnPersisted()
@@ -646,6 +752,19 @@ final class AgentThreadTitleTests: XCTestCase {
             if case .generated = $0 { return true }
             return false
         }.isEmpty)
+    }
+
+    private func selectVoiceThread(
+        _ backendID: String,
+        in store: AgentChatStore,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let threadID = store.threads.first(where: { $0.backendId == backendID })?.id else {
+            XCTFail("Expected a local voice thread for \(backendID)", file: file, line: line)
+            return
+        }
+        store.select(threadID)
     }
 
     private func makeStore(

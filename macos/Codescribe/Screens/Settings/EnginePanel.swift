@@ -9,9 +9,15 @@ import SwiftUI
 struct EnginePanel: View {
     @ObservedObject var model: SettingsViewModel
     @State private var advancedTimingExpanded = false
+    /// Secondary blocks start collapsed — cold open shows runtime + engine only.
+    @State private var whisperModelExpanded = false
+    @State private var previewTimingExpanded = false
+    @State private var silenceExpanded = false
+    @State private var permissionsExpanded = false
 
     private let matrixOrder: [PermissionKind] = [
-        .microphone, .accessibility, .inputMonitoring, .screenRecording
+        .microphone, .accessibility, .inputMonitoring, .screenRecording,
+        .speechRecognition
     ]
     private let columns = [
         GridItem(.flexible(), spacing: 8),
@@ -51,24 +57,41 @@ struct EnginePanel: View {
             engineControls
                 .padding(.top, 11)
 
-            SettingsSectionLabel("Preview timing")
-                .padding(.top, 22)
-            previewTimingSection
-                .padding(.top, 11)
+            collapsibleSection(
+                title: "Local Whisper model",
+                isExpanded: $whisperModelExpanded
+            ) {
+                whisperDownloadSection
+            }
 
-            SettingsSectionLabel("Hands-free silence")
-                .padding(.top, 22)
-            silenceSection
-                .padding(.top, 11)
+            collapsibleSection(
+                title: "Preview timing",
+                isExpanded: $previewTimingExpanded
+            ) {
+                previewTimingSection
+            }
 
-            SettingsSectionLabel("Permission matrix")
-                .padding(.top, 22)
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(matrixOrder) { kind in
-                    PermissionMatrixCell(kind: kind, state: model.permissions.state(kind))
+            collapsibleSection(
+                title: "Hands-free silence",
+                isExpanded: $silenceExpanded
+            ) {
+                silenceSection
+            }
+
+            collapsibleSection(
+                title: "Permission matrix",
+                isExpanded: $permissionsExpanded
+            ) {
+                LazyVGrid(columns: columns, spacing: 8) {
+                    ForEach(matrixOrder) { kind in
+                        PermissionMatrixCell(
+                            kind: kind,
+                            state: model.permissions.state(kind),
+                            onStateChanged: { model.refresh() }
+                        )
+                    }
                 }
             }
-            .padding(.top, 11)
 
             HStack(spacing: 8) {
                 Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
@@ -80,6 +103,22 @@ struct EnginePanel: View {
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
+    }
+
+    /// Section chrome: label is the disclosure chevron host; body mounts only when open.
+    private func collapsibleSection<Content: View>(
+        title: String,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        DisclosureGroup(isExpanded: isExpanded) {
+            content()
+                .padding(.top, 11)
+        } label: {
+            SettingsSectionLabel(title)
+        }
+        .tint(CSColor.chromeAccent)
+        .padding(.top, 22)
     }
 
     // MARK: Runtime key/value rows (STT truth only — LLM truth lives in Providers)
@@ -116,6 +155,12 @@ struct EnginePanel: View {
         ("whisper", "Whisper (Candle)"),
     ]
 
+    private static let finalPassModeOptions: [(id: String, label: String)] = [
+        ("always", "Always"),
+        ("smart", "Smart"),
+        ("off", "Off"),
+    ]
+
     private var layeredBinding: Binding<Bool> {
         Binding(get: { model.layeredTranscriptionEnabled },
                 set: { model.setLayeredTranscription($0) })
@@ -123,8 +168,17 @@ struct EnginePanel: View {
 
     private var engineControls: some View {
         VStack(spacing: 8) {
+            // Preferred live engine is Apple (must-have). Whisper is final-pass /
+            // recovery / offline — not the silent dual-brain lottery.
+            if let note = model.sttEngineTruthNote {
+                Text(note)
+                    .font(CSFont.ui(11.5))
+                    .foregroundStyle(CSColor.amber)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 2)
+            }
             SettingsControlRow(title: "STT engine",
-                               subtitle: "Auto prefers Apple live speech, else Whisper") {
+                               subtitle: "Apple = live speech (product default). Whisper = final pass / offline.") {
                 Menu {
                     ForEach(Self.sttEngineOptions, id: \.id) { option in
                         Button {
@@ -144,14 +198,112 @@ struct EnginePanel: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
             }
+            SettingsControlRow(title: "Final pass",
+                               subtitle: "Smart skips full re-pass when streaming is complete; Off keeps repetition cleanup") {
+                Menu {
+                    ForEach(Self.finalPassModeOptions, id: \.id) { option in
+                        Button {
+                            model.setFinalPassMode(option.id)
+                        } label: {
+                            if option.id == model.finalPassModeId {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
+                        }
+                    }
+                } label: {
+                    SettingsMenuLabel(text: model.finalPassModeLabel)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
             SettingsControlRow(title: "Layered transcription",
                                subtitle: "Experimental: Apple live layer + Whisper tail patches") {
                 Toggle("", isOn: layeredBinding)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .tint(CSColor.terracotta)
+                    .tint(CSColor.chromeAccent)
             }
         }
+    }
+
+    // MARK: Local Whisper download (public DMG is slim — model is opt-in)
+
+    private var whisperDownloadSection: some View {
+        let status = model.localWhisperStatus
+        return VStack(alignment: .leading, spacing: 10) {
+            SettingsControlRow(
+                title: "Install state",
+                subtitle: whisperInstallSubtitle(status)
+            ) {
+                Text(whisperInstallLabel(status))
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(status.available ? CSColor.oliveLight : CSColor.amber)
+            }
+
+            if model.whisperDownloadInFlight {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let fraction = model.whisperDownloadFraction {
+                        ProgressView(value: fraction)
+                            .progressViewStyle(.linear)
+                            .tint(CSColor.chromeAccent)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(model.whisperDownloadDetail ?? "Downloading…")
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(CSColor.textFaint)
+                        .lineLimit(2)
+                }
+            } else if !status.available {
+                SettingsControlRow(
+                    title: "Download Whisper",
+                    subtitle: "Optional local Candle model (\(status.sizeHint)). Apple STT works without it."
+                ) {
+                    Button("Download") {
+                        model.startWhisperDownload()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(CSColor.chromeAccent)
+                }
+            } else if !status.embedded {
+                // On-disk / cache — offer re-check, not re-download spam.
+                SettingsControlRow(
+                    title: "Local path",
+                    subtitle: status.path ?? status.modelId
+                ) {
+                    Button("Recheck") {
+                        model.refreshWhisperModelStatus()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            } else {
+                Text("This build embeds Whisper (fat SKU). Runtime download is not required.")
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+            }
+        }
+    }
+
+    private func whisperInstallLabel(_ status: CsWhisperModelStatus) -> String {
+        if status.embedded { return "Embedded" }
+        if status.available { return "Installed" }
+        return "Not installed"
+    }
+
+    private func whisperInstallSubtitle(_ status: CsWhisperModelStatus) -> String {
+        if status.embedded {
+            return "Baked into this fat build · \(status.modelId)"
+        }
+        if status.available {
+            return "Ready for Whisper engine · \(status.modelId)"
+        }
+        return "Needed only when STT engine is Whisper or layered tail patches"
     }
 
     // MARK: Preview timing (overlay pacing — writes the existing promoted keys)
@@ -213,7 +365,7 @@ struct EnginePanel: View {
                     .font(CSFont.ui(12.5, .semibold))
                     .foregroundStyle(CSColor.textBody)
             }
-            .tint(CSColor.terracottaLight)
+            .tint(CSColor.chromeAccent)
         }
         .padding(15)
         .background(card)
@@ -294,7 +446,7 @@ struct EnginePanel: View {
                     .foregroundStyle(CSColor.textBody)
             }
             Slider(value: value, in: range, step: step)
-                .tint(CSColor.terracotta)
+                .tint(CSColor.chromeAccent)
         }
     }
 
@@ -317,7 +469,7 @@ struct EnginePanel: View {
                     .foregroundStyle(CSColor.textBody)
             }
             Slider(value: silenceBinding, in: 0.5 ... 30, step: 0.5)
-                .tint(CSColor.terracotta)
+                .tint(CSColor.chromeAccent)
                 .accessibilityLabel("Hands-free silence duration")
                 .accessibilityValue(String(format: "%.1f seconds", model.settings.toggleSilenceSec))
         }
@@ -348,6 +500,8 @@ struct EnginePanel: View {
 private struct PermissionMatrixCell: View {
     let kind: PermissionKind
     let state: PermissionState
+    /// Re-probe hook fired after an in-app permission request resolves.
+    var onStateChanged: (() -> Void)? = nil
 
     private var granted: Bool { state.isGranted }
     private var accent: Color { granted ? CSColor.olive : CSColor.terracotta }
@@ -375,7 +529,20 @@ private struct PermissionMatrixCell: View {
                 .strokeBorder(accent.opacity(0.2), lineWidth: 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture { if !granted { kind.openSystemSettings() } }
+        .onTapGesture {
+            guard !granted else { return }
+            // Speech Recognition can be requested straight from the app while
+            // undetermined — the system dialog grants the app's own TCC
+            // identity, which the bridge child inherits. Once determined,
+            // macOS never re-prompts, so fall through to the deep link.
+            // Same grant path as onboarding: in-app dialog while undetermined,
+            // System Settings deep-link once macOS will no longer re-prompt.
+            if state == .notDetermined, kind.supportsInAppPermissionRequest {
+                kind.requestInApp { _ in onStateChanged?() }
+            } else {
+                kind.openSystemSettings()
+            }
+        }
     }
 }
 

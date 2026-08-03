@@ -21,9 +21,12 @@ pub use codescribe_core::{
 // ═══════════════════════════════════════════════════════════
 
 pub mod agent;
+
 pub mod agent_delivery;
 pub mod logging;
 pub mod os;
+#[cfg(test)]
+pub(crate) mod test_env;
 
 #[cfg(target_os = "macos")]
 pub mod controller;

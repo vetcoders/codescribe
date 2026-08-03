@@ -1,34 +1,36 @@
 import Foundation
 
 // Canonical first-run wizard step flow. This mirrors the excised AppKit wizard's
-// `STEP_FLOW` (git 37efe51^:app/ui/onboarding/steps.rs) AND the Rust setup
-// sentinel in app/os/onboarding.rs (`WIZARD_STEPS_BEFORE_PERMISSIONS = 2`,
-// `PERMISSION_STEP_ORDER` = mic → accessibility → input → screen → full-disk).
+// `STEP_FLOW` AND the Rust setup sentinel in app/os/onboarding.rs
+// (`WIZARD_STEPS_BEFORE_PERMISSIONS = 2`, `PERMISSION_STEP_ORDER` = mic →
+// accessibility → input → screen → speech → full-disk).
 //
-// The order and the 12 fixed indices are load-bearing: the resume marker
-// persisted through `save_onboarding_progress` is a raw index into `flow`, and
-// the Rust `setup_done_refresh_target` computes resume steps from the same
-// offsets. Do NOT reorder or drop steps — B3a stubs `mode` / `language` /
-// `hotkeyMode` / `agenticReadiness` as placeholders (see OnboardingSteps.swift),
-// but they MUST keep their slots so indices stay stable across B3b.
+// The order and the step indices are load-bearing: the resume marker persisted
+// through `save_onboarding_progress` is a raw index into `flow`, and the Rust
+// `setup_done_refresh_target` computes resume steps from the same offsets.
+// Do NOT reorder or drop steps without updating `TOTAL_ONBOARDING_STEPS` and
+// `PERMISSION_STEP_ORDER` in app/os/onboarding.rs in lockstep.
+//
+// Speech Recognition is a first-class permission step (Apple live dictation
+// TCC). It sits after Screen Recording and before optional Full Disk Access.
 
 /// One step of the first-run onboarding wizard.
 enum OnboardingStep: Equatable {
     case welcome
-    /// Basic vs Agentic operating lane. Stubbed in B3a — filled in B3b.
+    /// Basic vs Agentic operating lane.
     case mode
-    /// One of the five privacy scopes, in `PERMISSION_STEP_ORDER`.
+    /// Privacy scopes in `PERMISSION_STEP_ORDER` (mic → … → speech → full-disk).
     case permission(PermissionKind)
-    /// Dictation language choice. Stubbed in B3a — filled in B3b.
+    /// Dictation language choice.
     case language
     case apiKey
-    /// Hold / toggle / hybrid hotkey lane. Stubbed in B3a — filled in B3b.
+    /// Hold / toggle / hybrid hotkey lane.
     case hotkeyMode
-    /// Agentic-lane readiness verdict. Stubbed in B3a — filled in B3b.
+    /// Agentic-lane readiness verdict.
     case agenticReadiness
     case done
 
-    /// Fixed 12-step flow. Indices are the persisted resume contract — see the
+    /// Fixed 13-step flow. Indices are the persisted resume contract — see the
     /// file header. Permission order matches `PERMISSION_STEP_ORDER`.
     static let flow: [OnboardingStep] = [
         .welcome,
@@ -37,6 +39,7 @@ enum OnboardingStep: Equatable {
         .permission(.accessibility),
         .permission(.inputMonitoring),
         .permission(.screenRecording),
+        .permission(.speechRecognition),
         .permission(.fullDiskAccess),
         .language,
         .apiKey,
@@ -45,7 +48,7 @@ enum OnboardingStep: Equatable {
         .done,
     ]
 
-    /// Total number of steps (12). Kept in sync with the Rust
+    /// Total number of steps (13). Kept in sync with the Rust
     /// `TOTAL_ONBOARDING_STEPS` clamp in app/os/onboarding.rs.
     static var count: Int { flow.count }
 

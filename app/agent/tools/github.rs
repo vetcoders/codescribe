@@ -1,11 +1,14 @@
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             fetch_github_file_definition(),
             Box::new(|input| Box::pin(handle_fetch_github_file(input))),
+            // Outbound request to an agent-chosen URL, carrying a token when
+            // one is configured.
+            ToolRisk::Network,
         )
         .expect("register fetch_github_file tool");
 }

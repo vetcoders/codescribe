@@ -17,7 +17,10 @@ final class VoiceLabTests: XCTestCase {
                 variant: "uni agentka",
                 editedText: "Junie",
                 action: "copy",
-                timestampMs: 42
+                timestampMs: 42,
+                avgLogprob: nil,
+                speechPct: nil,
+                confidenceFlags: []
             ),
         ])
         XCTAssertEqual(
@@ -36,11 +39,11 @@ final class VoiceLabTests: XCTestCase {
         )
 
         let lexicon = customLexiconRows([
-            CsLexiconEntry(variant: "luks tri", canonical: "Loctree"),
+            CsLexiconEntry(variant: "luks tri", canonical: "Loctree", source: "correction"),
         ])
         XCTAssertEqual(
             lexicon,
-            [VoiceLabLexiconRow(id: 0, variant: "luks tri", canonical: "Loctree")]
+            [VoiceLabLexiconRow(id: 0, variant: "luks tri", canonical: "Loctree", source: "correction")]
         )
     }
 
@@ -52,9 +55,12 @@ final class VoiceLabTests: XCTestCase {
             variant: "before",
             editedText: "after",
             action: "send",
-            timestampMs: 84
+            timestampMs: 84,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
-        let entry = CsLexiconEntry(variant: "before", canonical: "after")
+        let entry = CsLexiconEntry(variant: "before", canonical: "after", source: "correction")
         let engine = MockSettingsEngine(
             qualityRecords: [record],
             lexiconEntries: [entry]
@@ -97,7 +103,10 @@ final class VoiceLabTests: XCTestCase {
             variant: "uni agentka",
             editedText: "Junie",
             action: "copy",
-            timestampMs: 42
+            timestampMs: 42,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
         let revised = CsQualityRecord(
             id: "correction-1",
@@ -106,10 +115,13 @@ final class VoiceLabTests: XCTestCase {
             variant: "uni agentka",
             editedText: "Junie Prime",
             action: "edit",
-            timestampMs: 84
+            timestampMs: 84,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
         var records = [original]
-        var lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: "Junie")]
+        var lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: "Junie", source: "correction")]
         var calls: [(String, String)] = []
         let engine = MockSettingsEngine(
             qualityRecordsLoader: { records },
@@ -117,8 +129,8 @@ final class VoiceLabTests: XCTestCase {
             voiceLabEditObserver: { id, canonical in
                 calls.append((id, canonical))
                 records = [revised]
-                lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: canonical)]
-                return revised
+                lexicon = [CsLexiconEntry(variant: "uni agentka", canonical: canonical, source: "correction")]
+                return CsVoiceLabSaveResult(record: revised, pairsLearned: 1, lexiconError: nil)
             }
         )
         let model = SettingsViewModel(engine: engine)
@@ -130,6 +142,40 @@ final class VoiceLabTests: XCTestCase {
         XCTAssertEqual(model.customLexiconEntries, lexicon)
         XCTAssertTrue(model.voiceLabEditPending.isEmpty)
         XCTAssertNil(model.voiceLabEditErrors[original.id])
+        XCTAssertEqual(model.voiceLabEditNotes[original.id], "Saved — 1 rule learned")
+    }
+
+    func testVoiceLabSaveNoteTellsTheLearningTruth() {
+        let record = CsQualityRecord(
+            id: "correction-1",
+            revision: 2,
+            rawText: "raw",
+            variant: "variant",
+            editedText: "edited",
+            action: "edit",
+            timestampMs: 1,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
+        )
+        XCTAssertEqual(
+            SettingsViewModel.voiceLabSaveNote(
+                CsVoiceLabSaveResult(record: record, pairsLearned: 0, lexiconError: nil)
+            ),
+            "Saved; no dictionary rule derived"
+        )
+        XCTAssertEqual(
+            SettingsViewModel.voiceLabSaveNote(
+                CsVoiceLabSaveResult(record: record, pairsLearned: 3, lexiconError: nil)
+            ),
+            "Saved — 3 rules learned"
+        )
+        XCTAssertEqual(
+            SettingsViewModel.voiceLabSaveNote(
+                CsVoiceLabSaveResult(record: record, pairsLearned: 0, lexiconError: "disk broke")
+            ),
+            "Saved — dictionary learning failed: disk broke"
+        )
     }
 
     func testFailedVoiceLabEditKeepsOldCanonicalVisibleAndSurfacesError() {
@@ -140,7 +186,10 @@ final class VoiceLabTests: XCTestCase {
             variant: "uni agentka",
             editedText: "Junie",
             action: "copy",
-            timestampMs: 42
+            timestampMs: 42,
+            avgLogprob: nil,
+            speechPct: nil,
+            confidenceFlags: []
         )
         let engine = MockSettingsEngine(
             qualityRecords: [original],
@@ -156,5 +205,60 @@ final class VoiceLabTests: XCTestCase {
         XCTAssertNotNil(model.voiceLabEditErrors[original.id])
         XCTAssertNotNil(model.lastError)
         XCTAssertTrue(model.voiceLabEditPending.isEmpty)
+    }
+
+    func testDictionaryHeadlineHonestyForCorrectionSource() {
+        XCTAssertEqual(
+            dictionaryHeadline(correctionsRecorded: 0, rulesLearned: 0),
+            "0 corrections recorded · 0 rules in dictionary"
+        )
+        XCTAssertEqual(
+            dictionaryHeadline(correctionsRecorded: 74, rulesLearned: 3),
+            "74 corrections recorded · 3 rules in dictionary"
+        )
+        XCTAssertTrue(
+            dictionarySubtitle(
+                correctionsRecorded: 74,
+                rulesLearned: 3,
+                taughtFromCorrections: 3,
+                totalEntries: 5
+            )
+            .contains("3 with correction provenance")
+        )
+        XCTAssertEqual(
+            dictionarySubtitle(
+                correctionsRecorded: 10,
+                rulesLearned: 0,
+                taughtFromCorrections: 0,
+                totalEntries: 0
+            ),
+            "10 corrections on disk · dictionary empty — press Teach to mine rules from the store."
+        )
+        XCTAssertFalse(
+            dictionaryHeadline(correctionsRecorded: 1, rulesLearned: 0)
+                .contains("voice taught")
+        )
+    }
+
+    func testTeachDictionarySurfacesHonestMessage() throws {
+        // Product: Teach is a real Settings surface, not a decorative button.
+        // Mock returns a zero-delta teach result; ViewModel still writes a
+        // non-empty status line with live-rule counts.
+        let engine = MockSettingsEngine(
+            lexiconEntries: [
+                CsLexiconEntry(variant: "luks tri", canonical: "Loctree", source: "correction"),
+            ]
+        )
+        let model = SettingsViewModel(engine: engine)
+        model.teachDictionaryFromStore()
+        // Teach hops global -> main queues; pump the main run loop until the
+        // completion lands (synchronous unwrap can never observe it).
+        let deadline = Date().addingTimeInterval(2)
+        while model.voiceLabTeachMessage == nil, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        let msg = try XCTUnwrap(model.voiceLabTeachMessage)
+        XCTAssertTrue(msg.contains("live rules"), "expected live-rules count, got: \(msg)")
+        XCTAssertTrue(msg.hasPrefix("Taught"), "expected Taught status, got: \(msg)")
     }
 }

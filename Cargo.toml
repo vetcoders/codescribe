@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "core", "bridge"]
 
 [workspace.package]
-version = "0.13.0"
+version = "0.13.2"
 edition = "2024"
 authors = ["Vetcoders <hello@vetcoders.io>"]
 
@@ -18,7 +18,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.13.0"
+version = "0.13.2"
 edition = "2024"
 description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"
 authors = ["Vetcoders <hello@vetcoders.io>"]
@@ -36,6 +36,10 @@ path = "bin/qube_report.rs"
 [[bin]]
 name = "qube-daemon"
 path = "bin/qube_daemon.rs"
+
+[[bin]]
+name = "codescribe-teacher"
+path = "bin/codescribe-teacher.rs"
 
 [lib]
 path = "app/lib.rs"

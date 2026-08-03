@@ -43,7 +43,6 @@ temp/
 /.gemini-clipboard
 .codescribe.lock
 /.fastembed_cache
-CLAUDE.md
 /.loctree
 /.ai-agents
 .output.txt
@@ -52,16 +51,13 @@ CLAUDE.md
 CONFIG_AUDIT.md
 /target
 /.claude
-nohup.out
-nohup.out.backup
+*.out*
 /.ai
 /.junie
 /.ai-archive
 /.ai-context
 /.aiassistant
 /.tools
-*claude*
-*codex*
 /agents
 
 # Codescribe
@@ -79,7 +75,24 @@ docs/runtime-diagnosis.md
 !.ai-context/share/
 !.ai-context/share/summary.md
 !.ai-context/share/timeline.md
-AGENTS.md
 /.vibecrafted
 /*test*.rs
+
 *.zip
+
+# Astro build cache (generated)
+site/.astro/
+*.sha256
+
+# Root-level stray notes: ignore new root .md/.txt, keep the canonical doc set.
+# Negations must come AFTER the wildcard (last match wins).
+/*.md
+!/AGENTS.md
+!/AGENT_BUS.md
+!/CHANGELOG.md
+!/CLAUDE.md
+!/CODE_OF_CONDUCT.md
+!/CONTRIBUTING.md
+!/README.md
+!/SECURITY.md
+/*.txt

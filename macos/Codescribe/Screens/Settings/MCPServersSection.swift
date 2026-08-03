@@ -38,8 +38,11 @@ struct MCPServersSection: View {
                 .padding(.top, 11)
             }
 
-            MCPAddServerForm { name, command, args in
-                model.addMcpServer(name: name, command: command, args: args)
+            MCPAddServerForm { name, command, args, endpoint, token in
+                model.addMcpServer(
+                    name: name, command: command, args: args,
+                    endpoint: endpoint, token: token
+                )
             }
             .padding(.top, 12)
 
@@ -101,10 +104,18 @@ private struct MCPServerRow: View {
     let onTest: () -> Void
     let onRemove: () -> Void
 
-    private var accent: Color { server.enabled ? CSColor.olive : CSColor.textFaint }
+    private var accent: Color {
+        guard server.enabled else { return CSColor.textFaint }
+        if pending { return CSColor.amber }
+        if let result { return result.ok ? CSColor.olive : CSColor.terracottaLight }
+        return CSColor.textFaint
+    }
 
     private var commandLine: String {
-        server.args.isEmpty ? server.command : "\(server.command) \(server.args.joined(separator: " "))"
+        if server.transport == "remote" { return server.endpoint }
+        return server.args.isEmpty
+            ? server.command
+            : "\(server.command) \(server.args.joined(separator: " "))"
     }
 
     var body: some View {
@@ -135,11 +146,32 @@ private struct MCPServerRow: View {
                     .truncationMode(.middle)
             }
 
+            if server.transport == "remote" {
+                Text(server.authRef.isEmpty
+                    ? "remote · no authentication · policy: ask"
+                    : "remote · token in Keychain · policy: ask")
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(CSColor.oliveLight)
+            }
+
+            if server.name == "desktop-commander" {
+                // No hardcoded per-level counts here: the Permissions panel
+                // renders them from the live registry. A frozen literal drifts
+                // from the policy it claims to describe (review P2-12).
+                Text("Terminal and process tools always require Allow once. Commands and paths remain constrained to Agent workspace roots.")
+                    .font(CSFont.ui(11, .regular))
+                    .foregroundStyle(CSColor.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if pending {
-                resultLine(text: "testing…", color: CSColor.amber)
+                resultLine(text: "connecting…", color: CSColor.amber)
             } else if let result {
                 if result.ok {
-                    resultLine(text: "ok — \(result.toolCount) tool(s)", color: CSColor.oliveLight)
+                    resultLine(
+                        text: "connected — \(result.toolCount) tool(s)",
+                        color: CSColor.oliveLight
+                    )
                     if let identity = Self.handshakeIdentity(result) {
                         Text(identity)
                             .font(CSFont.mono(10, .medium))
@@ -148,8 +180,16 @@ private struct MCPServerRow: View {
                             .truncationMode(.middle)
                     }
                 } else {
-                    resultLine(text: "failed: \(result.error)", color: CSColor.terracottaLight)
+                    resultLine(
+                        text: "degraded — \(result.error)",
+                        color: CSColor.terracottaLight
+                    )
                 }
+            } else {
+                resultLine(
+                    text: server.enabled ? "disconnected — not tested" : "disconnected — disabled",
+                    color: CSColor.textFaint
+                )
             }
         }
         .padding(.horizontal, 15)
@@ -244,15 +284,23 @@ private struct MCPServerRow: View {
 // MARK: - Add-server form
 
 private struct MCPAddServerForm: View {
-    let onAdd: (_ name: String, _ command: String, _ args: [String]) -> Void
+    let onAdd: (
+        _ name: String, _ command: String, _ args: [String],
+        _ endpoint: String, _ token: String
+    ) -> Void
 
+    @State private var remote = false
     @State private var name: String = ""
     @State private var command: String = ""
     @State private var argsText: String = ""
+    @State private var endpoint: String = ""
+    @State private var token: String = ""
 
     private var canAdd: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && !command.trimmingCharacters(in: .whitespaces).isEmpty
+            && (remote
+                ? endpoint.trimmingCharacters(in: .whitespaces).hasPrefix("http")
+                : !command.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     var body: some View {
@@ -262,9 +310,29 @@ private struct MCPAddServerForm: View {
                 .tracking(0.5)
                 .foregroundStyle(CSColor.textMuted)
 
+            Picker("Transport", selection: $remote) {
+                Text("Local process").tag(false)
+                Text("Remote HTTP").tag(true)
+            }
+            .pickerStyle(.segmented)
+
             field(placeholder: "name (e.g. prview)", text: $name, mono: true)
-            field(placeholder: "command (e.g. prview)", text: $command, mono: true)
-            field(placeholder: "args, space-separated (e.g. mcp)", text: $argsText, mono: true)
+            if remote {
+                field(placeholder: "endpoint (https://…/mcp)", text: $endpoint, mono: true)
+                SecureField("bearer token (optional, saved in Keychain)", text: $token)
+                    .textFieldStyle(.plain)
+                    .font(CSFont.mono(12, .regular))
+                    .foregroundStyle(CSColor.textBody)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .fill(CSColor.surfaceRaised(0.03))
+                    )
+            } else {
+                field(placeholder: "command (e.g. prview)", text: $command, mono: true)
+                field(placeholder: "args, space-separated (e.g. mcp)", text: $argsText, mono: true)
+            }
 
             HStack {
                 Spacer(minLength: 0)
@@ -324,11 +392,15 @@ private struct MCPAddServerForm: View {
             .map(String.init)
         onAdd(
             name.trimmingCharacters(in: .whitespaces),
-            command.trimmingCharacters(in: .whitespaces),
-            args
+            remote ? "" : command.trimmingCharacters(in: .whitespaces),
+            remote ? [] : args,
+            remote ? endpoint.trimmingCharacters(in: .whitespaces) : "",
+            remote ? token : ""
         )
         name = ""
         command = ""
         argsText = ""
+        endpoint = ""
+        token = ""
     }
 }

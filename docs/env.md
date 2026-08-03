@@ -30,13 +30,14 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 **Hotkeys / UI / zachowanie podstawowe**
 
 - mode bindings (`Dictation`, `Formatting`, `Assistive`) – konfigurowane w `settings.json` przez GUI
-- `HOLD_EXCLUSIVE` – domyślnie `0` (RESTART NEEDED) — `1` robi Fn-hold RAW-only i wyłącza modyfikatory Fn+Shift→Chat / Fn+Cmd→Selection
+- `HOLD_EXCLUSIVE` – domyślnie `0` (RESTART NEEDED) — `1` robi Fn-hold RAW-only i wyłącza arm modifier (domyślnie Shift→Chat; Cmd jako alternatywa w Settings)
+- `HOLD_ARM_MODIFIER` – domyślnie `shift` — `cmd` ustawia Command jako modifier armujący assistive (W10-B)
 - `HOLD_START_DELAY_MS` – domyślnie `800` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` – domyślnie `200` (RESTART NEEDED)
 - `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (RESTART NEEDED)
 - `SHOW_TRAY_GLYPH` – domyślnie `1` (RESTART NEEDED)
-- `HOLD_INDICATOR` – domyślnie `1` (RESTART NEEDED)
-- `HOLD_BADGE_SIZE` – domyślnie `8` (RESTART NEEDED)
+- `HOLD_INDICATOR` – domyślnie `1` (HOT — next badge show; K3 W10-E, no live redraw of visible badge)
+- `HOLD_BADGE_SIZE` – domyślnie `8` (HOT — next badge show; K3 W10-E)
 - `HOLD_BADGE_OFFSET_X` – domyślnie `10` (RESTART NEEDED)
 - `HOLD_BADGE_OFFSET_Y` – domyślnie `-10` (RESTART NEEDED)
 - `OVERLAY_POSITION_MODE` – domyślnie `snapped_top_right` (RESTART NEEDED)
@@ -163,6 +164,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
+- `FINAL_PASS_MODE` (HOT RELOADED; `always|smart|off`; default `smart`; alias `CODESCRIBE_FINAL_PASS_MODE`) — routing final passu na stopie: `smart` pomija pełny re-pass gdy adjudykator ma kompletny streaming (tylko tail-patch), `always` = zawsze pełny re-pass, `off` = werdykt streamingu jest finalny (guardrail powtórzeń zostaje aktywny). Settings → Dictation → "Final pass". Legacy `CODESCRIBE_TOGGLE_FINAL_PASS`: falsey→`off`, truthy→`always`.
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
 - `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
 
@@ -205,8 +207,8 @@ i runtime nie może znaleźć Whispera przez cache / config:
 ### UI / Overlay / Feedback
 
 - `SHOW_TRAY_GLYPH` (RESTART NEEDED)
-- `HOLD_INDICATOR` (RESTART NEEDED)
-- `HOLD_BADGE_SIZE` (RESTART NEEDED)
+- `HOLD_INDICATOR` (HOT — persisted immediately; next badge show, no live redraw)
+- `HOLD_BADGE_SIZE` (HOT — persisted immediately; next badge show, no live redraw)
 - `HOLD_BADGE_OFFSET_X` (RESTART NEEDED)
 - `HOLD_BADGE_OFFSET_Y` (RESTART NEEDED)
 - `OVERLAY_POSITION_MODE`, `OVERLAY_CUSTOM_X`, `OVERLAY_CUSTOM_Y` (RESTART NEEDED)

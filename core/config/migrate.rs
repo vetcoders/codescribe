@@ -4,7 +4,7 @@
 //! macOS Keychain. This is an import path, not an ongoing precedence rule.
 
 use super::keychain;
-use super::settings::{FormattingPolicy, UserSettings};
+use super::settings::{FormattingPolicy, UserSettings, parse_agent_workspace_roots};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
@@ -189,6 +189,36 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
     info!("Migrated config to settings.json + Keychain");
 }
 
+/// Backfill the workspace roots from the legacy `.env` store even when an
+/// unrelated `settings.json` already exists. This targeted migration is needed
+/// because older Settings builds wrote only `AGENT_WORKSPACE_ROOTS=.env`; the
+/// general migration correctly stops once settings.json exists.
+pub fn migrate_agent_workspace_roots_if_needed(file_env: Option<&HashMap<String, String>>) {
+    let Some(value) = migrated_value(file_env, "AGENT_WORKSPACE_ROOTS") else {
+        return;
+    };
+    let roots = parse_agent_workspace_roots(&value);
+    if roots.is_empty() {
+        return;
+    }
+
+    let mut settings = UserSettings::load();
+    if settings
+        .agent_workspace_roots
+        .as_ref()
+        .is_some_and(|existing| !existing.is_empty())
+    {
+        return;
+    }
+
+    settings.agent_workspace_roots = Some(roots);
+    if let Err(error) = settings.save() {
+        tracing::warn!("Migration: failed to persist agent workspace roots: {error}");
+    } else {
+        info!("Migrated AGENT_WORKSPACE_ROOTS into settings.json");
+    }
+}
+
 fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
     file_env.and_then(|vars| vars.get(key).cloned())
 }
@@ -304,6 +334,54 @@ mod tests {
             "runtime env value must not leak into migrated settings.json"
         );
 
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn existing_settings_backfills_legacy_workspace_roots_once() {
+        let _tmp = setup_isolated_data_dir();
+        UserSettings {
+            whisper_language: Some("pl".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("seed existing settings");
+        let mut file_env = HashMap::new();
+        file_env.insert(
+            "AGENT_WORKSPACE_ROOTS".to_string(),
+            "~/Git:/Volumes/work".to_string(),
+        );
+
+        migrate_agent_workspace_roots_if_needed(Some(&file_env));
+
+        assert_eq!(
+            UserSettings::load().agent_workspace_roots,
+            Some(vec!["~/Git".to_string(), "/Volumes/work".to_string()])
+        );
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn existing_workspace_roots_outrank_legacy_env() {
+        let _tmp = setup_isolated_data_dir();
+        let expected = vec!["/Volumes/current".to_string()];
+        UserSettings {
+            agent_workspace_roots: Some(expected.clone()),
+            ..Default::default()
+        }
+        .save()
+        .expect("seed current roots");
+        let mut file_env = HashMap::new();
+        file_env.insert(
+            "AGENT_WORKSPACE_ROOTS".to_string(),
+            "/Volumes/stale".to_string(),
+        );
+
+        migrate_agent_workspace_roots_if_needed(Some(&file_env));
+
+        assert_eq!(UserSettings::load().agent_workspace_roots, Some(expected));
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 

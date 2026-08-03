@@ -20,6 +20,8 @@ pub enum ThreadDeliverySource {
     VoiceAssistive,
     Composer,
     LegacyFallback,
+    /// Resident run-monitor heartbeat re-entering an existing thread.
+    Monitor,
 }
 
 impl ThreadDeliverySource {
@@ -28,6 +30,7 @@ impl ThreadDeliverySource {
             Self::VoiceAssistive => "voice-assistive",
             Self::Composer => "composer",
             Self::LegacyFallback => "legacy-fallback",
+            Self::Monitor => "run-monitor",
         }
     }
 }

@@ -9,6 +9,9 @@ final class Printer: CsAgentListener, @unchecked Sendable {
     func onTextDone(text: String) {}
     func onReasoningDelta(delta: String) {}
     func onToolExecuting(name: String, id: String) { print("\n[tool: \(name)]") }
+    func onToolApprovalRequested(request: CsToolApprovalRequest) {
+        print("\n[approval required: \(request.server)/\(request.tool) \(request.risk)]")
+    }
     func onToolResult(name: String, id: String, summary: String, isError: Bool) {
         print("\n[tool result: \(name) error=\(isError)] \(summary.prefix(80))")
     }

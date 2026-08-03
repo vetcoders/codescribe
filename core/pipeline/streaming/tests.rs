@@ -1363,7 +1363,9 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
     let (tx, rx) = mpsc::channel::<Vec<f32>>(1);
     drop(tx);
     let sink = Arc::new(CollectorEventSink::new());
-    transcription_session(
+    // VAD-path contract test — call the VAD body directly. The router reads
+    // process-global engine env that sibling tests mutate concurrently.
+    vad_transcription_session(
         rx,
         sink.clone(),
         SessionConfig {
@@ -1569,8 +1571,15 @@ fn bench_entry_id(path: &std::path::Path) -> String {
 #[tokio::test]
 #[ignore = "env-driven STT bench probe invoked by scripts/bench-stt.sh"]
 async fn bench_stt_scheduler_latency_probe_from_env() -> Result<()> {
-    let manifest_path = std::env::var("BENCH_STT_LATENCY_MANIFEST")?;
-    let output_path = std::env::var("BENCH_STT_LATENCY_OUT")?;
+    let (Ok(manifest_path), Ok(output_path)) = (
+        std::env::var("BENCH_STT_LATENCY_MANIFEST"),
+        std::env::var("BENCH_STT_LATENCY_OUT"),
+    ) else {
+        eprintln!(
+            "Skipping bench probe (set BENCH_STT_LATENCY_MANIFEST + BENCH_STT_LATENCY_OUT to enable)"
+        );
+        return Ok(());
+    };
     let language = std::env::var("BENCH_STT_LANGUAGE").ok();
     let audio_paths = bench_manifest_audio_paths(&manifest_path)?;
 
@@ -1667,7 +1676,9 @@ async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() 
     });
 
     let sink = Arc::new(CollectorEventSink::new());
-    transcription_session(
+    // VAD-path contract test — call the VAD body directly (see empty-input
+    // test above for the router/env-race rationale).
+    vad_transcription_session(
         rx,
         sink.clone(),
         SessionConfig {
@@ -1769,6 +1780,26 @@ fn test_apply_final_boundary_text_replaces_preview_with_cleaned_final() {
     let has_content = apply_final_boundary_text(&mut accumulated, "  finalny tekst  ");
     assert!(has_content);
     assert_eq!(accumulated, "finalny tekst");
+}
+
+#[test]
+fn test_apply_final_boundary_text_keeps_preview_when_commit_collapses() {
+    // Core engine: Apple commit of long window returned a short tail; freezed
+    // must keep the richer live preview, not seal the collapse.
+    let mut accumulated =
+        "Kubernetes wymaga konfiguracji po grze SQL jako bazy danych. Podajemy amoksycylinę w dawce."
+            .to_string();
+    let collapsed = "o Esterna przepisze krople";
+    let has_content = apply_final_boundary_text(&mut accumulated, collapsed);
+    assert!(has_content);
+    assert!(
+        accumulated.contains("Kubernetes"),
+        "must keep stream-floor preview, got: {accumulated}"
+    );
+    assert!(
+        !accumulated.eq(collapsed),
+        "must not replace with collapsed commit tail"
+    );
 }
 
 #[test]

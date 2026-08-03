@@ -7,11 +7,11 @@
 //!
 //! Like Whisper, the MiniLM embedder lives on the GPU (Metal, candle BertModel)
 //! and its multilingual tokenizer is a large host-side structure — together a
-//! few hundred MB held for the whole process. The engine is therefore held in a
-//! *resettable* slot: after a configurable idle period with no embedding a
-//! background reaper drops it, returning GPU/host memory to the system, and the
-//! next call transparently reloads it. Set
-//! `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS=0` to disable.
+//! few hundred MB held for the whole process. The engine is held in a
+//! *resettable* slot: after a configurable idle period a background reaper drops
+//! **weights** only. The Candle Metal `Device` is process-cached so reload does
+//! not recreate `Device::new_metal` (IOAccelerator port leak). Default TTL is
+//! 45 minutes. Set `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS=0` to disable.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -21,11 +21,10 @@ use tracing::{info, warn};
 
 use super::engine::{EmbedderConfig, EmbedderEngine};
 
-/// Default idle period after which the embedder is unloaded to free GPU memory.
-/// Disabled by default (0): like the Whisper engine, idle-unload recreates the
-/// Metal device on reload and leaks IOAccelerator ports/threads per cycle.
-/// Re-enable per machine via `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS=<secs>`.
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 0;
+/// Default idle period after which embedder **weights** are unloaded (45 min).
+/// Metal `Device` stays process-cached. Override with
+/// `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (`0` disables).
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 2700;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -100,10 +99,16 @@ fn reaper_loop() {
             Err(_) => continue,
         };
         if guard.engine.is_some() && guard.last_used.elapsed() >= threshold {
+            // Weights only — process Metal device retained (see engine::process_device).
             guard.engine = None;
+            // Force candle's free-pool prune so the dropped buffers leave RSS
+            // now, not at the next inference (same mechanism as Whisper).
+            if let Some(device) = super::engine::cached_process_device() {
+                crate::memory::reclaim_metal_buffer_pool(&device);
+            }
             drop(guard);
             info!(
-                "Embedder engine unloaded after {}s idle; releasing GPU/host memory",
+                "Embedder weights unloaded after {}s idle (Metal device retained, buffer pool pruned); releasing host heap",
                 threshold.as_secs()
             );
             crate::memory::release_freed_heap();
@@ -203,9 +208,8 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS", "90") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(90)));
         unsafe { std::env::remove_var("CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS") };
-        // DEFAULT_IDLE_UNLOAD_SECS is now 0 (idle-unload disabled by default),
-        // so with no override the reaper is off.
-        assert!(idle_unload_after().is_none());
+        // Default is 45 min weight-only unload (Metal device stays process-cached).
+        assert_eq!(idle_unload_after(), Some(Duration::from_secs(2700)));
     }
 
     // Note: Full embedding tests require model download and are in integration tests

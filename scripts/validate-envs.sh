@@ -95,16 +95,21 @@ CODE_VARS3=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'env_flag\("([A-Z_]+)"' core/ 2>/d
     sed 's/env_flag("\([^"]*\)"/\1/' | \
     sort -u || true)
 
+# Config loader wrappers (review P2-10: these bypassed the env::var regex)
+CODE_VARS4=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'config_(runtime_env_var|init_set_env_if_missing)\("([A-Z_]+)"' core/ app/ bin/ 2>/dev/null | \
+    sed 's/.*("\([^"]*\)".*/\1/' | \
+    sort -u || true)
+
 # Combine all found vars
-ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3" | sort -u | grep -v '^$' || true)
+ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3\n$CODE_VARS4" | sort -u | grep -v '^$' || true)
 
 # Check each code var against registry
 UNREGISTERED=""
 for var in $ALL_CODE_VARS; do
-    if echo "$IGNORE_VARS" | grep -qw "$var"; then
+    if grep -qw "$var" <<< "$IGNORE_VARS"; then
         continue
     fi
-    if ! echo "$REGISTERED" | grep -qx "$var"; then
+    if ! grep -qx "$var" <<< "$REGISTERED"; then
         UNREGISTERED="$UNREGISTERED$var\n"
         ERRORS=$((ERRORS + 1))
     fi
@@ -147,7 +152,7 @@ if [[ $CHECK_EXAMPLE -eq 1 || -n "$EMIT_ENV_PATH" ]]; then
     EXAMPLE_VARS=$(grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u || true)
     UNREGISTERED_EXAMPLE=""
     for var in $EXAMPLE_VARS; do
-        if ! echo "$REGISTERED" | grep -qx "$var"; then
+        if ! grep -qx "$var" <<< "$REGISTERED"; then
             UNREGISTERED_EXAMPLE="$UNREGISTERED_EXAMPLE$var\n"
             EXAMPLE_ERRORS=$((EXAMPLE_ERRORS + 1))
         fi

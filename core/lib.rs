@@ -23,7 +23,7 @@
 //!
 //! ## Architecture
 //!
-//! - **whisper** - Embedded-first local Whisper with runtime fallback when embedding is disabled
+//! - **whisper** - Local Whisper (runtime/cache by default; optional fat embed)
 //! - **tts** - Text-to-speech with optional embedded assets depending on build policy
 //! - **vad** - Voice activity detection using Silero VAD neural network
 //! - **embedder** - Text embeddings using MiniLM model (offline)

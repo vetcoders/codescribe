@@ -20,8 +20,18 @@ struct CreatorPanel: View {
             SettingsSectionLabel("Permission checklist")
                 .padding(.top, 22)
             VStack(spacing: 8) {
-                ForEach([PermissionKind.microphone, .accessibility, .inputMonitoring, .screenRecording]) { kind in
-                    PermissionChecklistRow(kind: kind, state: model.permissions.state(kind))
+                ForEach([
+                    PermissionKind.microphone,
+                    .accessibility,
+                    .inputMonitoring,
+                    .screenRecording,
+                    .speechRecognition,
+                ]) { kind in
+                    PermissionChecklistRow(
+                        kind: kind,
+                        state: model.permissions.state(kind),
+                        onStateChanged: { model.refresh() }
+                    )
                 }
             }
             .padding(.top, 11)
@@ -35,7 +45,7 @@ struct CreatorPanel: View {
                     Toggle("", isOn: formattingEnabledBinding)
                         .toggleStyle(.switch)
                         .labelsHidden()
-                        .tint(CSColor.terracotta)
+                        .tint(CSColor.chromeAccent)
                 }
                 SettingsControlRow(title: "Auto Format",
                                    subtitle: "Correction only, balanced editing, or maximum polish") {
@@ -173,7 +183,7 @@ private struct LanguageIdentityPicker: View {
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1.5)
                                 .background(
-                                    Capsule().fill(CSColor.terracotta.opacity(0.16))
+                                    Capsule().fill(CSColor.chromeAccent.opacity(0.16))
                                 )
                         } else {
                             Text("Automatic detection")
@@ -186,12 +196,12 @@ private struct LanguageIdentityPicker: View {
                     .padding(.horizontal, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? CSColor.terracotta.opacity(0.12) : Color.clear)
+                            .fill(isSelected ? CSColor.chromeAccent.opacity(0.12) : Color.clear)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(
-                                isSelected ? CSColor.terracotta.opacity(0.5) : CSColor.hairline(0.07),
+                                isSelected ? CSColor.chromeAccent.opacity(0.5) : CSColor.hairline(0.07),
                                 lineWidth: 1
                             )
                     )
@@ -246,6 +256,8 @@ struct SettingsControlRow<Control: View>: View {
 private struct PermissionChecklistRow: View {
     let kind: PermissionKind
     let state: PermissionState
+    /// Re-probe after an in-app request (Speech Recognition dialog).
+    var onStateChanged: (() -> Void)? = nil
 
     private var granted: Bool { state.isGranted }
 
@@ -262,9 +274,17 @@ private struct PermissionChecklistRow: View {
                     .foregroundStyle(CSColor.oliveLight)
             } else {
                 Button {
-                    kind.openSystemSettings()
+                    if state == .notDetermined, kind.supportsInAppPermissionRequest {
+                        kind.requestInApp { _ in onStateChanged?() }
+                    } else {
+                        kind.openSystemSettings()
+                    }
                 } label: {
-                    Text("open System Settings")
+                    Text(
+                        state == .notDetermined && kind.supportsInAppPermissionRequest
+                            ? "allow \(kind.rawValue)"
+                            : "open System Settings"
+                    )
                         .font(CSFont.mono(11, .semibold))
                         .foregroundStyle(CSColor.terracottaLight)
                 }

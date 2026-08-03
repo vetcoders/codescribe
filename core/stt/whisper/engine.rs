@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::env;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -43,6 +44,34 @@ use super::params::DecodingParams;
 
 /// Callback for streaming chunk results (called after each chunk is transcribed)
 pub type ChunkCallback<'a> = &'a dyn Fn(&str);
+
+/// Process-lifetime Candle device for Whisper.
+///
+/// Cached so idle-unload can drop model weights without calling
+/// `Device::new_metal` again. Recreating Metal devices leaks IOAccelerator
+/// Mach ports + dispatch threads and forces a multi-second cold reload.
+///
+/// `Device` is `Clone` (Metal backend shares Arc'd queues/buffer maps); the
+/// cached value keeps the underlying MTL device alive for the process life.
+static PROCESS_DEVICE: OnceLock<Device> = OnceLock::new();
+
+fn process_device() -> Device {
+    PROCESS_DEVICE
+        .get_or_init(|| {
+            let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+            tracing::info!("Whisper process device acquired once: {device:?}");
+            device
+        })
+        .clone()
+}
+
+/// The cached process device, if one was ever created — without creating it.
+///
+/// The idle reaper uses this to prune the Metal free-buffer pool after a
+/// weight unload; a `None` means no engine ever loaded, so nothing to prune.
+pub(super) fn cached_process_device() -> Option<Device> {
+    PROCESS_DEVICE.get().cloned()
+}
 
 /// Average decoder tokens per spoken word (BPE subwords + punctuation). Used to
 /// convert the words-per-second cap into a token budget for the runaway
@@ -255,7 +284,7 @@ pub struct LocalWhisperEngine {
 
 impl LocalWhisperEngine {
     pub fn new(model_path: &Path) -> Result<Self> {
-        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        let device = process_device();
         tracing::debug!("LocalWhisperEngine using device: {:?}", device);
 
         let config_path = model_path.join("config.json");
@@ -421,7 +450,7 @@ impl LocalWhisperEngine {
     /// Model data is `include_bytes!` from binary at compile time.
     /// At runtime: bytes → tensors → GPU. No temp files, no extraction.
     pub fn from_embedded(embedded: &EmbeddedModel) -> Result<Self> {
-        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        let device = process_device();
         tracing::info!(
             "Loading embedded Whisper model ({:.1} MB) to {:?}",
             embedded.total_size() as f64 / 1_000_000.0,
@@ -570,7 +599,9 @@ impl LocalWhisperEngine {
         // result still comes from the full recording. Trimming down to
         // `speech_samples` changed the behavior of the historical "raw file
         // transcription" path and regressed canonical transcripts.
+        let inference_started = std::time::Instant::now();
         let raw = self.transcribe_long_with_language_segments(&samples, sample_rate, language)?;
+        super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
         let vad_config = crate::vad::VadConfig::default();
         let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
 

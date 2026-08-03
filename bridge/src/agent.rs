@@ -4,11 +4,12 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
-    ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolRegistry,
+    ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolApprovalHandler,
+    ToolApprovalRequest, ToolOrigin, ToolRegistry,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::llm::lane_truth::assistive_identity;
@@ -43,6 +44,22 @@ pub struct CsAgentAvailability {
     pub detail: String,
 }
 
+/// Approval payload forwarded as one typed FFI record, preserving the exact
+/// call/session/thread identity used by the Rust execution gateway.
+#[derive(uniffi::Record)]
+pub struct CsToolApprovalRequest {
+    pub call_id: String,
+    pub session_id: String,
+    pub thread_id: String,
+    pub tool: String,
+    pub server: String,
+    pub risk: String,
+    pub summary: String,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub paths: Vec<String>,
+}
+
 /// Foreign callback trait — agent streaming events forwarded to Swift.
 /// Mirrors `AgentUiEvent`; the Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
@@ -51,6 +68,7 @@ pub trait CsAgentListener: Send + Sync {
     fn on_text_done(&self, text: String);
     fn on_reasoning_delta(&self, delta: String);
     fn on_tool_executing(&self, name: String, id: String);
+    fn on_tool_approval_requested(&self, request: CsToolApprovalRequest);
     fn on_tool_result(&self, name: String, id: String, summary: String, is_error: bool);
     fn on_done(&self);
     fn on_error(&self, message: String);
@@ -63,6 +81,7 @@ pub struct CodescribeAgent {
     /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
     /// itself even while the FFI object stays borrowed by other calls.
     turns: Arc<TurnRegistry>,
+    approvals: Arc<ApprovalBroker>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -171,7 +190,20 @@ impl CodescribeAgent {
     /// NOT persisted — the thread on disk keeps its last completed-turn state,
     /// so the next turn on the same thread restores clean history.
     pub fn cancel_turn(&self, thread_id: String) -> bool {
+        self.approvals.cancel_thread(&thread_id);
         self.turns.cancel(&thread_id)
+    }
+
+    pub fn resolve_tool_approval(
+        &self,
+        session_id: String,
+        thread_id: String,
+        call_id: String,
+        approved: bool,
+        remember: bool,
+    ) -> bool {
+        self.approvals
+            .resolve(&session_id, &thread_id, &call_id, approved, remember)
     }
 }
 
@@ -192,8 +224,18 @@ impl CodescribeAgent {
         let provider = codescribe::agent::create_default_provider()?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
+        // settings.json agent.permissions + legacy tool_grants (always-allow).
+        registry.set_policy(
+            codescribe_core::agent::permissions::AgentPermissions::load()
+                .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
+        );
+        registry.enable_policy_hot_reload();
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
-        let mut session = AgentSession::new(provider, Arc::new(registry), ui_tx);
+        let approvals = Arc::clone(&self.approvals);
+        let approval_handler: ToolApprovalHandler =
+            Arc::new(move |request| approvals.begin(request));
+        let mut session = AgentSession::new(provider, Arc::new(registry), ui_tx)
+            .with_tool_approval(thread_id.clone(), approval_handler);
 
         // Restore prior turns for cross-turn memory. ThreadStore does blocking
         // fs I/O, so the load runs on a blocking pool thread and is awaited
@@ -309,6 +351,24 @@ async fn drive_turn(
             }
             AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
             AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
+            AgentUiEvent::ToolApprovalRequested(request) => {
+                let server = match &request.origin {
+                    ToolOrigin::Native => "native".to_string(),
+                    ToolOrigin::Mcp { server, .. } => server.clone(),
+                };
+                listener.on_tool_approval_requested(CsToolApprovalRequest {
+                    call_id: request.call_id,
+                    session_id: request.session_id,
+                    thread_id: request.thread_id,
+                    tool: request.tool,
+                    server,
+                    risk: request.risk.as_str().to_string(),
+                    summary: request.summary,
+                    command: request.command,
+                    cwd: request.cwd,
+                    paths: request.paths,
+                });
+            }
             AgentUiEvent::ToolResult {
                 name,
                 id,
@@ -334,6 +394,171 @@ async fn drive_turn(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ApprovalKey {
+    session_id: String,
+    thread_id: String,
+    call_id: String,
+}
+
+struct PendingApproval {
+    tx: tokio::sync::oneshot::Sender<bool>,
+    /// Where an "always allow" for this call is persisted.
+    grant_target: GrantTarget,
+}
+
+/// Durable target for the approval card's "remember" checkbox. Native tools now
+/// reach the gate too (review P1-06), so they need a persist path of their own —
+/// otherwise "always allow" would silently do nothing and re-ask every turn.
+enum GrantTarget {
+    /// MCP: writes `agent.permissions.tools[server:tool]` and dual-writes
+    /// `tool_grants.json` so the existing revoke UI stays truthful.
+    Mcp {
+        server: String,
+        upstream_tool: String,
+    },
+    /// Native: writes `agent.permissions.tools[native:<name>]` only — there is
+    /// no upstream server to grant against.
+    Native { identity: String },
+}
+
+impl GrantTarget {
+    fn persist(&self) -> anyhow::Result<()> {
+        use codescribe_core::agent::permissions::{AgentPermissions, PermissionLevel};
+        match self {
+            Self::Mcp {
+                server,
+                upstream_tool,
+            } => AgentPermissions::remember_allow(server, upstream_tool),
+            Self::Native { identity } => {
+                AgentPermissions::set_tool_level(identity, PermissionLevel::Allow)
+            }
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Self::Mcp {
+                server,
+                upstream_tool,
+            } => format!("{server}:{upstream_tool}"),
+            Self::Native { identity } => identity.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ApprovalBroker {
+    pending: Mutex<HashMap<ApprovalKey, PendingApproval>>,
+}
+
+/// Recover a poisoned lock instead of unwinding across the FFI boundary. A
+/// panicking `expect` here aborts the whole SwiftUI host — for bookkeeping maps
+/// whose worst-case damage is a stale entry, that trade is wrong (review
+/// P3-11). Recovery is also fail-closed for safety: a lost pending approval
+/// resolves to "not approved", never to an implicit allow.
+fn recover<'a, T>(
+    result: Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>>,
+) -> MutexGuard<'a, T> {
+    result.unwrap_or_else(PoisonError::into_inner)
+}
+
+impl ApprovalBroker {
+    fn begin(
+        self: &Arc<Self>,
+        request: ToolApprovalRequest,
+    ) -> codescribe_core::agent::ToolApprovalFuture {
+        let grant_target = match &request.origin {
+            ToolOrigin::Mcp {
+                server,
+                upstream_tool,
+            } => GrantTarget::Mcp {
+                server: server.clone(),
+                upstream_tool: upstream_tool.clone(),
+            },
+            ToolOrigin::Native => GrantTarget::Native {
+                identity: codescribe_core::agent::permissions::tool_identity(
+                    &request.origin,
+                    &request.tool,
+                ),
+            },
+        };
+        let key = ApprovalKey {
+            session_id: request.session_id,
+            thread_id: request.thread_id,
+            call_id: request.call_id,
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        recover(self.pending.lock()).insert(key.clone(), PendingApproval { tx, grant_target });
+        let broker = Arc::clone(self);
+        Box::pin(async move {
+            let _guard = PendingApprovalGuard {
+                broker: Arc::clone(&broker),
+                key: key.clone(),
+            };
+            rx.await.unwrap_or(false)
+        })
+    }
+
+    fn resolve(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        call_id: &str,
+        approved: bool,
+        remember: bool,
+    ) -> bool {
+        let key = ApprovalKey {
+            session_id: session_id.to_string(),
+            thread_id: thread_id.to_string(),
+            call_id: call_id.to_string(),
+        };
+        let Some(entry) = recover(self.pending.lock()).remove(&key) else {
+            return false;
+        };
+        // Persist BEFORE resuming the call so a granted tool never races its
+        // own next invocation against the write. Grant failure downgrades to
+        // allow-once (the approval itself was explicit), never to a deny.
+        // Persist BEFORE resuming so a remembered grant never races the next
+        // identical call. Writes settings.json agent.permissions.tools[key]
+        // (product source of truth) and dual-writes tool_grants.json.
+        if approved
+            && remember
+            && let Err(error) = entry.grant_target.persist()
+        {
+            tracing::warn!(
+                %error,
+                target = entry.grant_target.label(),
+                "tool grant persist failed; allowing once"
+            );
+        }
+        entry.tx.send(approved).is_ok()
+    }
+
+    fn cancel_thread(&self, thread_id: &str) {
+        let mut pending = recover(self.pending.lock());
+        let keys = pending
+            .keys()
+            .filter(|key| key.thread_id == thread_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            pending.remove(&key);
+        }
+    }
+}
+
+struct PendingApprovalGuard {
+    broker: Arc<ApprovalBroker>,
+    key: ApprovalKey,
+}
+
+impl Drop for PendingApprovalGuard {
+    fn drop(&mut self) {
+        recover(self.broker.pending.lock()).remove(&self.key);
+    }
+}
+
 /// In-flight turn bookkeeping behind [`CodescribeAgent::cancel_turn`].
 ///
 /// One thread id can briefly hold several entries (the composer allows firing a
@@ -356,9 +581,7 @@ impl TurnRegistry {
     /// abort-on-drop semantics and the registry entry's lifetime.
     fn register(self: &Arc<Self>, thread_id: &str, abort: AbortHandle) -> TurnGuard {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-        self.turns
-            .lock()
-            .expect("turn registry lock poisoned")
+        recover(self.turns.lock())
             .entry(thread_id.to_string())
             .or_default()
             .push(TurnEntry {
@@ -374,7 +597,7 @@ impl TurnRegistry {
     }
 
     fn deregister(&self, thread_id: &str, token: u64) {
-        let mut turns = self.turns.lock().expect("turn registry lock poisoned");
+        let mut turns = recover(self.turns.lock());
         if let Some(entries) = turns.get_mut(thread_id) {
             entries.retain(|entry| entry.token != token);
             if entries.is_empty() {
@@ -388,7 +611,7 @@ impl TurnRegistry {
     /// `drive_turn` future unwinds (aborting an already-finished task is a
     /// no-op, so a turn that completed just before this call is unaffected).
     fn cancel(&self, thread_id: &str) -> bool {
-        let turns = self.turns.lock().expect("turn registry lock poisoned");
+        let turns = recover(self.turns.lock());
         let Some(entries) = turns.get(thread_id) else {
             return false;
         };
@@ -733,6 +956,7 @@ mod tests {
         fn on_tool_executing(&self, _name: String, _id: String) {
             self.tool_started.store(true, Ordering::SeqCst);
         }
+        fn on_tool_approval_requested(&self, _request: CsToolApprovalRequest) {}
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
         fn on_done(&self) {
             self.done_count.fetch_add(1, Ordering::SeqCst);
@@ -748,7 +972,7 @@ mod tests {
     fn slow_tool_registry(side_effect: Arc<AtomicBool>, delay: Duration) -> ToolRegistry {
         let mut registry = ToolRegistry::new();
         registry
-            .register(
+            .register_native(
                 ToolDefinition {
                     name: "slow_side_effect".to_string(),
                     description: "test tool with a delayed side effect".to_string(),
@@ -762,6 +986,10 @@ mod tests {
                         vec![ToolResultContent::Text("side effect done".to_string())]
                     })
                 }),
+                // Read-only keeps the permission gate out of the way: these
+                // tests prove cancel drops an in-flight tool future, and the
+                // prepared session has no approval handler attached.
+                codescribe_core::agent::ToolRisk::ReadOnly,
             )
             .expect("registering the test tool must succeed");
         registry
@@ -1009,6 +1237,53 @@ mod tests {
         // Same through the FFI surface object (no panic, returns false).
         let agent = CodescribeAgent::default();
         assert!(!agent.cancel_turn("idle-thread".to_string()));
+    }
+
+    #[tokio::test]
+    async fn approval_broker_resumes_only_the_exact_session_thread_and_call() {
+        let broker = Arc::new(ApprovalBroker::default());
+        let request = ToolApprovalRequest {
+            call_id: "call-exact".to_string(),
+            session_id: "session-exact".to_string(),
+            thread_id: "thread-exact".to_string(),
+            tool: "mcp__desktop-commander__write_file".to_string(),
+            origin: ToolOrigin::Mcp {
+                server: "desktop-commander".to_string(),
+                upstream_tool: "write_file".to_string(),
+            },
+            risk: codescribe_core::agent::ToolRisk::Mutating,
+            summary: "write workspace file".to_string(),
+            command: None,
+            cwd: None,
+            paths: vec!["/workspace/file".to_string()],
+        };
+        let pending = broker.begin(request);
+        assert!(!broker.resolve("session-exact", "wrong-thread", "call-exact", true, false));
+        assert!(!broker.resolve("wrong-session", "thread-exact", "call-exact", true, false));
+        assert!(broker.resolve("session-exact", "thread-exact", "call-exact", true, false));
+        assert!(pending.await);
+    }
+
+    #[tokio::test]
+    async fn cancelling_thread_rejects_pending_approval() {
+        let broker = Arc::new(ApprovalBroker::default());
+        let pending = broker.begin(ToolApprovalRequest {
+            call_id: "call-cancel".to_string(),
+            session_id: "session-cancel".to_string(),
+            thread_id: "thread-cancel".to_string(),
+            tool: "mcp__desktop-commander__write_file".to_string(),
+            origin: ToolOrigin::Mcp {
+                server: "desktop-commander".to_string(),
+                upstream_tool: "write_file".to_string(),
+            },
+            risk: codescribe_core::agent::ToolRisk::Mutating,
+            summary: "write workspace file".to_string(),
+            command: None,
+            cwd: None,
+            paths: vec!["/workspace/file".to_string()],
+        });
+        broker.cancel_thread("thread-cancel");
+        assert!(!pending.await);
     }
 
     #[tokio::test]

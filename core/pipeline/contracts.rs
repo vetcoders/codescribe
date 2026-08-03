@@ -164,6 +164,10 @@ pub enum TranscriptionConfidenceFlag {
     /// AI formatting pass ran but the emitted text is effectively the
     /// raw input (no edit applied) — status should not read "Applied".
     AiNoopDetected,
+    /// File-level final pass produced text that catastrophically regressed
+    /// versus the live streaming assembly (e.g. Apple SFSpeech 12 chars vs
+    /// multi-utterance stream). Adjudicator kept the stream as floor of truth.
+    FinalPassLengthRegression,
 }
 
 impl std::fmt::Display for TranscriptionConfidenceFlag {
@@ -185,8 +189,34 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
             Self::UnverifiedStream => write!(f, "unverified_stream"),
             Self::CloudPrimaryMissing => write!(f, "cloud_primary_missing"),
             Self::AiNoopDetected => write!(f, "ai_noop_detected"),
+            Self::FinalPassLengthRegression => write!(f, "final_pass_length_regression"),
         }
     }
+}
+
+/// Whether a non-empty final-pass transcript is a catastrophic length regression
+/// vs the live streaming assembly.
+///
+/// Product rule (div0 log 2026-07-23): Apple file STT can return ~12 chars on a
+/// ~98s recording while the live assembly held a longer stream. Streaming is the
+/// floor of truth; final may only replace it when it is not a collapse.
+///
+/// - Streams shorter than [`FINAL_PASS_REGRESSION_MIN_STREAM_CHARS`] never trigger
+///   regression (preserves cold-start recovery when live was empty/thin).
+/// - Otherwise final wins only if it keeps at least 40% of stream char count.
+pub const FINAL_PASS_REGRESSION_MIN_STREAM_CHARS: usize = 24;
+
+pub fn final_pass_is_length_regression(final_text: &str, streaming_text: &str) -> bool {
+    let final_chars = final_text.trim().chars().count();
+    let stream_chars = streaming_text.trim().chars().count();
+    if stream_chars < FINAL_PASS_REGRESSION_MIN_STREAM_CHARS {
+        return false;
+    }
+    if final_chars == 0 {
+        return true;
+    }
+    // final < 0.4 * stream  ⇔  final * 5 < stream * 2
+    final_chars.saturating_mul(5) < stream_chars.saturating_mul(2)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -330,12 +360,15 @@ impl std::fmt::Display for TranscriptionSource {
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptionEngine {
     Whisper,
+    /// Apple on-device speech (SpeechTranscriber and/or SFSpeechRecognizer).
+    Apple,
 }
 
 impl std::fmt::Display for TranscriptionEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Whisper => write!(f, "whisper"),
+            Self::Apple => write!(f, "apple"),
         }
     }
 }
@@ -346,6 +379,10 @@ impl std::fmt::Display for TranscriptionEngine {
 pub enum TranscriptionEngineMode {
     EmbeddedDefault,
     RuntimeFallback,
+    /// Apple SpeechAnalyzer / SpeechTranscriber path (locales ST supports).
+    SpeechTranscriber,
+    /// Apple SFSpeechRecognizer on-device path (locales ST lacks, e.g. pl-PL).
+    SfSpeechOnDevice,
 }
 
 impl std::fmt::Display for TranscriptionEngineMode {
@@ -353,6 +390,8 @@ impl std::fmt::Display for TranscriptionEngineMode {
         match self {
             Self::EmbeddedDefault => write!(f, "embedded_default"),
             Self::RuntimeFallback => write!(f, "runtime_fallback"),
+            Self::SpeechTranscriber => write!(f, "speech_transcriber"),
+            Self::SfSpeechOnDevice => write!(f, "sf_speech_on_device"),
         }
     }
 }
@@ -371,6 +410,14 @@ impl TranscriptionEngineVerdict {
             engine: TranscriptionEngine::Whisper,
             mode,
             fallback_used: matches!(mode, TranscriptionEngineMode::RuntimeFallback),
+        }
+    }
+
+    pub const fn apple(mode: TranscriptionEngineMode) -> Self {
+        Self {
+            engine: TranscriptionEngine::Apple,
+            mode,
+            fallback_used: false,
         }
     }
 }
@@ -1325,6 +1372,7 @@ mod tests {
         assert_eq!(TranscriptionSource::Cloud.to_string(), "cloud");
         assert_eq!(TranscriptionSource::Fallback.to_string(), "fallback");
         assert_eq!(TranscriptionEngine::Whisper.to_string(), "whisper");
+        assert_eq!(TranscriptionEngine::Apple.to_string(), "apple");
         assert_eq!(
             TranscriptionEngineMode::EmbeddedDefault.to_string(),
             "embedded_default"
@@ -1332,6 +1380,14 @@ mod tests {
         assert_eq!(
             TranscriptionEngineMode::RuntimeFallback.to_string(),
             "runtime_fallback"
+        );
+        assert_eq!(
+            TranscriptionEngineMode::SpeechTranscriber.to_string(),
+            "speech_transcriber"
+        );
+        assert_eq!(
+            TranscriptionEngineMode::SfSpeechOnDevice.to_string(),
+            "sf_speech_on_device"
         );
     }
 
@@ -1779,6 +1835,7 @@ mod tests {
             TranscriptionConfidenceFlag::UnverifiedStream,
             TranscriptionConfidenceFlag::CloudPrimaryMissing,
             TranscriptionConfidenceFlag::AiNoopDetected,
+            TranscriptionConfidenceFlag::FinalPassLengthRegression,
         ];
         for flag in cases {
             let json = serde_json::to_string(&flag).expect("serialize flag");
@@ -1859,12 +1916,42 @@ mod tests {
                 "\"ai_noop_detected\"",
                 TranscriptionConfidenceFlag::AiNoopDetected,
             ),
+            (
+                "\"final_pass_length_regression\"",
+                TranscriptionConfidenceFlag::FinalPassLengthRegression,
+            ),
         ];
         for (json, expected) in legacy_tokens {
             let restored: TranscriptionConfidenceFlag = serde_json::from_str(json)
                 .unwrap_or_else(|e| panic!("legacy token {json} must deserialize: {e}"));
             assert_eq!(restored, expected, "legacy token {json}");
         }
+    }
+
+    #[test]
+    fn final_pass_length_regression_div0_apple_file_collapse() {
+        // div0 2026-07-23: ~98s audio, stream 56 chars, Apple file final 12 chars.
+        let stream = "Im wystarczy i jeszcze troche z live assembly stream";
+        assert!(stream.chars().count() >= FINAL_PASS_REGRESSION_MIN_STREAM_CHARS);
+        assert!(final_pass_is_length_regression("Im wystarczy", stream));
+    }
+
+    #[test]
+    fn final_pass_length_regression_spares_cold_start_and_comparable_finals() {
+        // Empty/thin live → final must still recover (cold Whisper / cold Apple).
+        assert!(!final_pass_is_length_regression(
+            "poczatek wypowiedzi z zimnego startu",
+            ""
+        ));
+        assert!(!final_pass_is_length_regression(
+            "krotki final",
+            "krotki stream"
+        ));
+        // Comparable length: final may win even if not identical.
+        assert!(!final_pass_is_length_regression(
+            "czysty final pass tekst dlugi wystarczajaco",
+            "powtarzajacy sie streaming preview tekst"
+        ));
     }
 
     #[test]

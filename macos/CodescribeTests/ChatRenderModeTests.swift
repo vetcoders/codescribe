@@ -2,7 +2,7 @@ import XCTest
 @testable import Codescribe
 
 /// Per-bubble raw↔rich rendering policy: the pure `nextRenderMode` toggle, the
-/// raw default (operator decision C2b — stream and settled turn identical), and
+/// rich settled-message default, and
 /// the store mutation path that owns the state (never the view).
 @MainActor
 final class ChatRenderModeTests: XCTestCase {
@@ -14,10 +14,9 @@ final class ChatRenderModeTests: XCTestCase {
         XCTAssertEqual(MessageRenderMode.nextRenderMode(after: .rich), .raw)
     }
 
-    func testDefaultRenderModeIsRaw() {
-        // C2b: raw mono is the default; rich is opt-in. Do not flip this.
+    func testDefaultRenderModeIsRich() {
         let message = ChatMessage(role: .assistant, timestamp: "now", text: "hi")
-        XCTAssertEqual(message.renderMode, .raw)
+        XCTAssertEqual(message.renderMode, .rich)
     }
 
     func testStoreToggleFlipsOnlyTheTargetMessage() {
@@ -29,11 +28,11 @@ final class ChatRenderModeTests: XCTestCase {
 
         store.toggleRenderMode(messageID: second.id, in: thread.id)
 
-        XCTAssertEqual(store.threads[0].messages[0].renderMode, .raw)
-        XCTAssertEqual(store.threads[0].messages[1].renderMode, .rich)
+        XCTAssertEqual(store.threads[0].messages[0].renderMode, .rich)
+        XCTAssertEqual(store.threads[0].messages[1].renderMode, .raw)
 
         store.toggleRenderMode(messageID: second.id, in: thread.id)
-        XCTAssertEqual(store.threads[0].messages[1].renderMode, .raw)
+        XCTAssertEqual(store.threads[0].messages[1].renderMode, .rich)
     }
 
     func testStoreToggleUnknownMessageIsNoOp() {
@@ -43,6 +42,6 @@ final class ChatRenderModeTests: XCTestCase {
 
         store.toggleRenderMode(messageID: UUID(), in: thread.id)
 
-        XCTAssertEqual(store.threads[0].messages[0].renderMode, .raw)
+        XCTAssertEqual(store.threads[0].messages[0].renderMode, .rich)
     }
 }

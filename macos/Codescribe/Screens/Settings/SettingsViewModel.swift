@@ -33,6 +33,47 @@ func transcriptTagTemplateAppendWarning(_ template: String) -> String? {
         : "Missing {text}; delivered transcript will be appended after the template."
 }
 
+/// Runtime serving truth for the Active STT row (not configured preference).
+struct LastServingVerdict: Equatable {
+    let engine: String
+    let routingMode: String
+    let disposition: String?
+    let fallbackUsed: Bool
+}
+
+/// Format Active STT from the last serving verdict. Config projection is forbidden.
+func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
+    guard let verdict = lastServing else {
+        return "Not yet served"
+    }
+    let engine: String
+    switch verdict.engine {
+    case "local_apple":
+        engine = "Apple on-device"
+    case "local_whisper":
+        engine = verdict.fallbackUsed ? "Whisper (fallback)" : "Whisper"
+    case "streaming_whisper":
+        engine = "Streaming Whisper"
+    case "cloud_stt":
+        engine = "Cloud"
+    default:
+        engine = verdict.engine.isEmpty ? "Unknown" : verdict.engine
+    }
+    let mode: String
+    switch verdict.routingMode.lowercased() {
+    case "always":
+        mode = "Always final pass"
+    case "off":
+        mode = "Off final pass"
+    default:
+        mode = "Smart final pass"
+    }
+    if let disposition = verdict.disposition, !disposition.isEmpty {
+        return "\(engine) · \(mode) · \(disposition)"
+    }
+    return "\(engine) · \(mode)"
+}
+
 enum SettingsSectionAvailability: Equatable {
     case available
     case hidden
@@ -67,17 +108,68 @@ enum FormattingPolicyOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
+    case off
+    case four
+    case eight
+    case twelve
+
+    var id: String { visibleName }
+    var visibleName: String {
+        guard let size else { return "Off" }
+        return "\(size)px"
+    }
+    var size: UInt32? {
+        switch self {
+        case .off: return nil
+        case .four: return 4
+        case .eight: return 8
+        case .twelve: return 12
+        }
+    }
+
+    init(indicatorEnabled: Bool, size: UInt32) {
+        guard indicatorEnabled else {
+            self = .off
+            return
+        }
+        switch size {
+        case 4: self = .four
+        case 8: self = .eight
+        default: self = .twelve
+        }
+    }
+
+    var next: Self {
+        let all = Self.allCases
+        let index = all.firstIndex(of: self) ?? all.startIndex
+        return all[(index + 1) % all.count]
+    }
+}
+
 /// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
 /// map exhaustively, so routing stays testable without rendering.
 enum SettingsPanelDestination: Equatable {
     case creator
     case shortcuts
     case providers
+    case agent
     case prompts
     case dictation
     case audio
     case dictionary
     case user
+}
+
+/// Testable ownership contract for the two settings surfaces that used to be
+/// mixed together. This is UI metadata only; it never participates in storage.
+enum SettingsPanelCapability: Hashable {
+    case apiKeys
+    case llmLanes
+    case workspaceRoots
+    case agentStatus
+    case mcpServers
+    case toolPermissions
 }
 
 // Every rail section declares its product truth explicitly. The raw value is a
@@ -88,6 +180,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case creator
     case shortcuts
     case keys
+    case agent
     case prompts
     case engine
     case audio
@@ -101,6 +194,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .creator: return "Creator"
         case .shortcuts: return "Hotkeys"
         case .keys: return "Providers"
+        case .agent: return "Agent"
         case .prompts: return "Prompts"
         case .engine: return "Dictation"
         case .audio: return "Audio"
@@ -114,6 +208,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .creator: return .creator
         case .shortcuts: return .shortcuts
         case .keys: return .providers
+        case .agent: return .agent
         case .prompts: return .prompts
         case .engine: return .dictation
         case .audio: return .audio
@@ -124,7 +219,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var availability: SettingsSectionAvailability {
         switch self {
-        case .creator, .shortcuts, .keys, .prompts, .engine, .audio, .voiceLab, .user:
+        case .creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .user:
             return .available
         }
     }
@@ -232,6 +327,7 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
 @MainActor
 enum SettingsDeepLink {
     static let pendingSectionDidChange = Notification.Name("codescribe.settingsDeepLink.pendingSectionDidChange")
+    static let agentConfigurationSection: SettingsSection = .agent
 
     static var pendingSection: SettingsSection? {
         didSet {
@@ -469,6 +565,56 @@ private struct BackgroundSettingsEngine: @unchecked Sendable {
     let engine: SettingsEngine
 }
 
+extension CsWhisperModelStatus {
+    /// Placeholder for canvas / engine-less previews (no network, no disk probe).
+    static let sampleUnavailable = CsWhisperModelStatus(
+        available: false,
+        embedded: false,
+        path: nil,
+        modelId: "whisper-large-v3-turbo-mlx-q8",
+        repo: "LibraxisAI/whisper-large-v3-turbo-mlx-q8",
+        sizeHint: "~900 MB"
+    )
+}
+
+/// Bridges UniFFI download callbacks onto the main-actor SettingsViewModel.
+final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked Sendable {
+    weak var model: SettingsViewModel?
+
+    init(model: SettingsViewModel) {
+        self.model = model
+    }
+
+    func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
+        let fraction: Double?
+        if bytesTotal > 0 {
+            fraction = min(1.0, Double(bytesDone) / Double(bytesTotal))
+        } else {
+            fraction = nil
+        }
+        let mbDone = Double(bytesDone) / 1_048_576.0
+        let detail: String
+        if bytesTotal > 0 {
+            let mbTotal = Double(bytesTotal) / 1_048_576.0
+            detail = String(format: "%@ · %.0f / %.0f MB", file, mbDone, mbTotal)
+        } else {
+            detail = String(format: "%@ · %.0f MB", file, mbDone)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.model?.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
+        }
+    }
+
+    func onComplete(path: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.model?.applyWhisperDownloadProgress(
+                detail: "Saved · \(path)",
+                fraction: 1.0
+            )
+        }
+    }
+}
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var section: SettingsSection = .creator
@@ -485,6 +631,14 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var mcpServers: [CsMcpServer] = []
     @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
     @Published private(set) var mcpTestPending: Set<String> = []
+    @Published private(set) var toolCapabilities: [CsToolCapability] = []
+    @Published private(set) var permissionPolicy: CsPermissionPolicy = CsPermissionPolicy(
+        defaultLevel: "ask",
+        readOnlyDefault: "allow",
+        sideEffectDefault: "ask",
+        tools: [],
+        servers: []
+    )
     @Published private(set) var keyProbeResults: [String: CsApiKeyProbeResult] = [:]
     @Published private(set) var keyProbePending: Set<String> = []
     @Published private(set) var qualityRecords: [CsQualityRecord] = []
@@ -492,6 +646,11 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var voiceLabReadError: String?
     @Published private(set) var voiceLabEditPending: Set<String> = []
     @Published private(set) var voiceLabEditErrors: [String: String] = [:]
+    /// Honest per-row save note: "Saved — N rules learned" or the zero/failed
+    /// variants. The save itself succeeded whenever a note is present.
+    @Published private(set) var voiceLabEditNotes: [String: String] = [:]
+    @Published private(set) var voiceLabTeachPending: Bool = false
+    @Published private(set) var voiceLabTeachMessage: String?
     @Published private(set) var audioInput: CsAudioInputSnapshot
     @Published private(set) var audioInputReadError: String?
     @Published private(set) var resetPreview: CsResetPreview
@@ -502,6 +661,19 @@ final class SettingsViewModel: ObservableObject {
     /// "failed" …) — honest status for the row without raising a modal error.
     @Published private(set) var accountLoginNotices: [String: String] = [:]
     @Published var lastError: String?
+
+    // MARK: - Local Whisper download (Settings → Dictation)
+
+    /// Live availability of default Whisper weights (embedded or on disk).
+    /// Named `localWhisperStatus` so it does not shadow UniFFI free functions
+    /// `whisperModelStatus()` / `downloadWhisperModel(...)`.
+    @Published private(set) var localWhisperStatus: CsWhisperModelStatus = .sampleUnavailable
+    @Published private(set) var whisperDownloadInFlight = false
+    /// Human status under the download control (file name + progress).
+    @Published private(set) var whisperDownloadDetail: String?
+    /// 0...1 when Content-Length is known; nil for indeterminate.
+    @Published private(set) var whisperDownloadFraction: Double?
+    private var whisperDownloadSink: WhisperDownloadProgressSink?
 
     // MARK: - Hotkeys (mode bindings)
 
@@ -531,6 +703,7 @@ final class SettingsViewModel: ObservableObject {
         providerId: String,
         modelEditGeneration: Int
     )?
+    private var holdBadgeObserver: NSObjectProtocol?
 
     init(
         engine: SettingsEngine? = nil,
@@ -541,6 +714,15 @@ final class SettingsViewModel: ObservableObject {
         buildInfo: AppBuildInfo = .current(),
         laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
             laneTruthSnapshot(lane: lane)
+        },
+        servingStatusProvider: @escaping () -> LastServingVerdict? = {
+            guard let verdict = currentServingVerdict() else { return nil }
+            return LastServingVerdict(
+                engine: verdict.engine,
+                routingMode: verdict.routingMode,
+                disposition: verdict.disposition,
+                fallbackUsed: verdict.fallbackUsed
+            )
         }
     ) {
         self.engine = engine
@@ -550,6 +732,7 @@ final class SettingsViewModel: ObservableObject {
         self.hotkeys = hotkeys
         self.buildInfo = buildInfo
         self.laneTruthProvider = laneTruthProvider
+        self.servingStatusProvider = servingStatusProvider
 
         // Keep construction side-effect free. SwiftUI may instantiate the
         // Settings scene at app launch; live config/keychain reads happen in
@@ -566,11 +749,29 @@ final class SettingsViewModel: ObservableObject {
         self.audioInput = .sample
         self.audioInputReadError = nil
         self.resetPreview = .sample
+        // K4: tray cycles arrive on the bus; reload Settings badge display.
+        // Register after every stored property is initialized (Swift init order).
+        holdBadgeObserver = NotificationCenter.default.addObserver(
+            forName: ConfigChangeBus.holdBadgeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reloadHoldBadgeFromDisk()
+            }
+        }
+    }
+
+    deinit {
+        if let holdBadgeObserver {
+            NotificationCenter.default.removeObserver(holdBadgeObserver)
+        }
     }
 
     /// Re-read live state (permissions can change while the window is open).
     func refresh() {
         permissions = permissionProbe.snapshot()
+        refreshServingStatus()
         // A permission granted while Settings is open (e.g. via the checklist's
         // "Open System Settings") should bring hotkeys live without an app
         // restart. Idempotent bridge call — a no-op once the tap is already armed.
@@ -585,9 +786,53 @@ final class SettingsViewModel: ObservableObject {
             refreshVoiceLab()
             refreshAudioInput()
         }
+        refreshWhisperModelStatus()
         refreshAgentStatus()
         reloadMcpServers()
         loadHotkeys()
+    }
+
+    /// Re-probe Whisper install state (embedded / on-disk / missing).
+    func refreshWhisperModelStatus() {
+        // Live UniFFI path; sample mode (engine == nil in pure previews) keeps
+        // the static placeholder so canvas previews stay offline-safe.
+        guard engine != nil else { return }
+        localWhisperStatus = whisperModelStatus()
+    }
+
+    /// Called from UniFFI download callbacks (main-queue hopped).
+    fileprivate func applyWhisperDownloadProgress(detail: String, fraction: Double?) {
+        whisperDownloadDetail = detail
+        whisperDownloadFraction = fraction
+    }
+
+    /// Download default Whisper into `~/.codescribe/models/…` (idempotent).
+    func startWhisperDownload() {
+        guard engine != nil else { return }
+        guard !whisperDownloadInFlight else { return }
+        whisperDownloadInFlight = true
+        whisperDownloadDetail = "Starting download…"
+        whisperDownloadFraction = nil
+        lastError = nil
+        let sink = WhisperDownloadProgressSink(model: self)
+        whisperDownloadSink = sink
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let status = try await downloadWhisperModel(listener: sink)
+                self.localWhisperStatus = status
+                self.whisperDownloadDetail = status.available
+                    ? "Ready · \(status.path ?? status.modelId)"
+                    : "Download finished but model still unavailable"
+                self.whisperDownloadFraction = status.available ? 1.0 : nil
+            } catch {
+                self.lastError = String(describing: error)
+                self.whisperDownloadDetail = "Download failed"
+                self.whisperDownloadFraction = nil
+            }
+            self.whisperDownloadInFlight = false
+            self.whisperDownloadSink = nil
+        }
     }
 
     /// Re-probe just the agent substrate (readiness + MCP status). Cheap on-disk
@@ -690,13 +935,67 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Tool permissions (B2 gateway)
+
+    enum PermissionDefaultKind {
+        case global
+        case readOnly
+        case sideEffect
+    }
+
+    /// Reload durable policy + live capability list from the same registry the
+    /// agent dispatcher builds.
+    func reloadToolPermissions() {
+        guard let mcpAdmin else { return }
+        permissionPolicy = mcpAdmin.getPermissionPolicy()
+        toolCapabilities = mcpAdmin.listToolCapabilities()
+    }
+
+    func setPermissionDefault(kind: PermissionDefaultKind, level: String) {
+        guard let mcpAdmin else { return }
+        var defaultLevel = permissionPolicy.defaultLevel
+        var readOnly = permissionPolicy.readOnlyDefault
+        var sideEffect = permissionPolicy.sideEffectDefault
+        switch kind {
+        case .global: defaultLevel = level
+        case .readOnly: readOnly = level
+        case .sideEffect: sideEffect = level
+        }
+        do {
+            try mcpAdmin.setPermissionDefaults(
+                defaultLevel: defaultLevel,
+                readOnlyDefault: readOnly,
+                sideEffectDefault: sideEffect
+            )
+            reloadToolPermissions()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
+    func setToolPermission(identity: String, level: String) {
+        guard let mcpAdmin else { return }
+        do {
+            try mcpAdmin.setToolPermission(identity: identity, level: level)
+            reloadToolPermissions()
+        } catch {
+            lastError = String(describing: error)
+        }
+    }
+
     /// Add a server from the form. `args` is already split into tokens. On success
     /// the list + readiness re-probe so the panel reflects the new state.
-    func addMcpServer(name: String, command: String, args: [String]) {
+    func addMcpServer(
+        name: String, command: String, args: [String],
+        endpoint: String = "", token: String = ""
+    ) {
         guard let mcpAdmin else { return }
         do {
             try mcpAdmin.addServer(
-                CsMcpServerInput(name: name, command: command, args: args, enabled: true)
+                CsMcpServerInput(
+                    name: name, command: command, args: args, enabled: true,
+                    endpoint: endpoint, authRef: "", token: token
+                )
             )
             reloadMcpServers()
             refreshAgentStatus()
@@ -713,7 +1012,8 @@ final class SettingsViewModel: ObservableObject {
                 name: server.name,
                 input: CsMcpServerInput(
                     name: server.name, command: server.command,
-                    args: server.args, enabled: !server.enabled
+                    args: server.args, enabled: !server.enabled,
+                    endpoint: server.endpoint, authRef: server.authRef, token: ""
                 )
             )
             reloadMcpServers()
@@ -753,8 +1053,11 @@ final class SettingsViewModel: ObservableObject {
     func select(_ target: SettingsSection) {
         guard target.availability == .available else { return }
         section = target
-        if target == .keys {
+        if target == .agent {
             refreshAssistiveModelDiscovery()
+        }
+        if target == .engine {
+            refreshServingStatus()
         }
     }
 
@@ -807,8 +1110,23 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Engine-panel derived values (runtime truth)
 
+    /// Last serving verdict published by the runtime owner (not config).
+    /// Tests inject directly; live path refreshes via `servingStatusProvider`
+    /// (UniFFI `currentServingVerdict()`) in `refresh()` and on panel entry.
+    var lastServingVerdict: LastServingVerdict?
+
+    /// Runtime serving-truth source — defaults to the UniFFI bridge snapshot.
+    let servingStatusProvider: () -> LastServingVerdict?
+
+    /// Pull the latest stop-path serving verdict from the runtime owner.
+    func refreshServingStatus() {
+        lastServingVerdict = servingStatusProvider()
+    }
+
+    /// Active STT row — consumes runtime serving truth only.
+    /// Configured engine/mode are preference controls, not this label.
     var activeSTT: String {
-        settings.useLocalStt ? "Local · final verdict" : "Cloud · streaming"
+        formatActiveSTT(lastServing: lastServingVerdict)
     }
 
     /// STT is "healthy" (olive dot) when a local model is configured, or when a
@@ -1053,6 +1371,43 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Mine corrections.jsonl + proposed lexicon into the live custom dictionary.
+    /// Teach replays the whole correction store and rewrites the lexicon — real
+    /// disk I/O whose cost scales with the corpus. Running it inline froze
+    /// Settings for the duration; it now runs off the main actor like the key
+    /// probe above, with `voiceLabTeachPending` keeping the button honest until
+    /// the result lands.
+    func teachDictionaryFromStore() {
+        guard let engine, !voiceLabTeachPending else { return }
+        voiceLabTeachPending = true
+        voiceLabTeachMessage = nil
+        let backgroundEngine = BackgroundSettingsEngine(engine: engine)
+
+        DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine] in
+            let outcome: Result<CsDictionaryTeachResult, Error>
+            do {
+                outcome = .success(try backgroundEngine.engine.teachDictionaryFromStore())
+            } catch {
+                outcome = .failure(error)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.voiceLabTeachPending = false
+                switch outcome {
+                case .success(let result):
+                    self.voiceLabTeachMessage =
+                        "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
+                    self.refreshVoiceLab()
+                case .failure(let error):
+                    let message = String(describing: error)
+                    self.voiceLabTeachMessage = "Teach failed: \(message)"
+                    self.lastError = message
+                }
+            }
+        }
+    }
+
     @discardableResult
     func finalizeVoiceLabCorrection(id: String, canonical: String) -> Bool {
         guard let engine else { return false }
@@ -1061,9 +1416,11 @@ final class SettingsViewModel: ObservableObject {
 
         voiceLabEditPending.insert(id)
         voiceLabEditErrors[id] = nil
+        voiceLabEditNotes[id] = nil
         defer { voiceLabEditPending.remove(id) }
         do {
-            _ = try engine.finalizeVoiceLabCorrection(id: id, canonical: canonical)
+            let outcome = try engine.finalizeVoiceLabCorrection(id: id, canonical: canonical)
+            voiceLabEditNotes[id] = Self.voiceLabSaveNote(outcome)
             refreshVoiceLab()
             return voiceLabReadError == nil
         } catch {
@@ -1071,6 +1428,19 @@ final class SettingsViewModel: ObservableObject {
             voiceLabEditErrors[id] = message
             lastError = message
             return false
+        }
+    }
+
+    /// The revision is persisted whenever the engine returns — the note only
+    /// tells the truth about what the dictionary derived from the edit.
+    static func voiceLabSaveNote(_ outcome: CsVoiceLabSaveResult) -> String {
+        if let lexiconError = outcome.lexiconError {
+            return "Saved — dictionary learning failed: \(lexiconError)"
+        }
+        switch outcome.pairsLearned {
+        case 0: return "Saved; no dictionary rule derived"
+        case 1: return "Saved — 1 rule learned"
+        default: return "Saved — \(outcome.pairsLearned) rules learned"
         }
     }
 
@@ -1146,21 +1516,81 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - STT engine / layered transcription (Engine panel controls)
 
-    /// Selected STT engine id ("auto" | "apple" | "whisper"); absent → auto policy.
-    var sttEngineId: String { settings.sttEngine ?? "auto" }
+    /// Selected STT engine id ("auto" | "apple" | "whisper"); empty → product default Apple.
+    var sttEngineId: String {
+        let raw = (settings.sttEngine ?? "apple").lowercased()
+        switch raw {
+        case "auto", "apple", "whisper", "candle", "onnx": return raw == "candle" ? "whisper" : raw
+        default: return "apple"
+        }
+    }
 
     /// Display label for the current STT engine selection.
     var sttEngineLabel: String {
         switch sttEngineId {
         case "apple": return "Apple (live)"
         case "whisper", "candle": return "Whisper (Candle)"
-        default: return "Auto"
+        case "auto": return "Auto (Apple-first)"
+        default: return "Apple (live)"
         }
     }
 
+    /// Honest dual-brain note when preference and Active STT last run diverge.
+    var sttEngineTruthNote: String? {
+        let pref = sttEngineId
+        let active = activeSTT.lowercased()
+        if active.contains("not yet") || active.isEmpty { return nil }
+        // Preference Apple but last run was Whisper recovery / file pass is OK
+        // to mention once when the chip is clearly whisper while user picked apple.
+        if pref == "apple", active.contains("whisper") {
+            return "Preference: Apple live · last take used Whisper (final/recovery). Live partials stay Apple."
+        }
+        if pref == "whisper" || pref == "candle", active.contains("apple") {
+            return "Preference: Whisper · last take was Apple live — check env override or restart."
+        }
+        return nil
+    }
+
     func setSttEngine(_ id: String) {
-        settings.sttEngine = id
-        persist("CODESCRIBE_STT_ENGINE", id)
+        let normalized: String
+        switch id.lowercased() {
+        case "auto": normalized = "auto"
+        case "whisper", "candle": normalized = "whisper"
+        case "onnx": normalized = "onnx"
+        default: normalized = "apple"
+        }
+        settings.sttEngine = normalized
+        // Persist promotes to settings.json AND reconciles process env + .env
+        // (single brain — no CODESCRIBE_STT_ENGINE lottery).
+        persist("CODESCRIBE_STT_ENGINE", normalized)
+    }
+
+    /// Final-pass routing: always | smart | off (default smart).
+    var finalPassModeId: String {
+        let raw = (settings.finalPassMode ?? "smart").lowercased()
+        switch raw {
+        case "always", "off": return raw
+        default: return "smart"
+        }
+    }
+
+    var finalPassModeLabel: String {
+        switch finalPassModeId {
+        case "always": return "Always"
+        case "off": return "Off"
+        default: return "Smart"
+        }
+    }
+
+    func setFinalPassMode(_ id: String) {
+        let normalized: String
+        switch id.lowercased() {
+        case "always": normalized = "always"
+        case "off": normalized = "off"
+        default: normalized = "smart"
+        }
+        settings.finalPassMode = normalized
+        persist("FINAL_PASS_MODE", normalized)
     }
 
     /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); anything
@@ -1176,6 +1606,55 @@ final class SettingsViewModel: ObservableObject {
         let value = on ? "phase1" : "off"
         settings.layeredTranscription = value
         persist("CODESCRIBE_LAYERED_TRANSCRIPTION", value)
+    }
+
+    var holdBadgeOption: HoldBadgeOption {
+        HoldBadgeOption(
+            indicatorEnabled: settings.holdIndicator,
+            size: settings.holdBadgeSize
+        )
+    }
+
+    /// Off changes visibility only, preserving the stored size. A concrete size
+    /// enables the indicator and writes both existing keys atomically.
+    ///
+    /// K3 (W10-E): persists immediately; takes effect at the *next* badge show
+    /// (no live redraw of a visible caret badge).
+    /// K4: posts `ConfigChangeBus.holdBadgeDidChange` so the tray reflects it.
+    func setHoldBadgeOption(_ option: HoldBadgeOption) {
+        guard let size = option.size else {
+            settings.holdIndicator = false
+            persist("HOLD_INDICATOR", "0")
+            ConfigChangeBus.postHoldBadgeChanged()
+            return
+        }
+        settings.holdIndicator = true
+        settings.holdBadgeSize = size
+        persistMany([
+            CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
+            CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
+        ])
+        ConfigChangeBus.postHoldBadgeChanged()
+    }
+
+    /// Reload badge fields from the engine after a peer surface (tray) wrote them.
+    func reloadHoldBadgeFromDisk() {
+        guard let engine else { return }
+        settings = engine.loadSettings()
+        objectWillChange.send()
+    }
+
+    /// Assistive-arm modifier on the hold base: `"shift"` (default) or `"cmd"`.
+    var holdArmModifier: String {
+        let raw = settings.holdArmModifier.lowercased()
+        return (raw == "cmd" || raw == "command") ? "cmd" : "shift"
+    }
+
+    func setHoldArmModifier(_ value: String) {
+        let normalized = (value.lowercased() == "cmd" || value.lowercased() == "command")
+            ? "cmd" : "shift"
+        settings.holdArmModifier = normalized
+        persist("HOLD_ARM_MODIFIER", normalized)
     }
 
     // MARK: - Agent workspace roots (list_projects tool)

@@ -60,6 +60,7 @@ mod macos {
     const K_VK_RIGHT_CONTROL: i64 = 62; // Right Control
     const K_VK_FUNCTION: i64 = 63; // Fn (Globe)
     const K_VK_SPACE: i64 = 49;
+    const K_VK_V: i64 = 9;
 
     // CGEventTap constants
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
@@ -359,6 +360,7 @@ mod macos {
             K_VK_RIGHT_CONTROL => HotkeyPhysicalKey::RightControl,
             K_VK_FUNCTION => HotkeyPhysicalKey::Fn,
             K_VK_SPACE => HotkeyPhysicalKey::Space,
+            K_VK_V => HotkeyPhysicalKey::V,
             _ => HotkeyPhysicalKey::Other,
         }
     }

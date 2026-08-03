@@ -55,6 +55,29 @@ impl FormattingPolicy {
     }
 }
 
+/// Built-in workspace root used only when no user-managed roots exist.
+pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
+
+/// Trim workspace-root entries and discard empty rows while preserving the
+/// operator's order. This is the canonical normalization boundary shared by
+/// persistence, the agent tools, and readiness.
+pub fn normalize_agent_workspace_roots<I, S>(roots: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    roots
+        .into_iter()
+        .map(|root| root.as_ref().trim().to_string())
+        .filter(|root| !root.is_empty())
+        .collect()
+}
+
+/// Parse the colon-joined UniFFI/env wire representation used by Settings.
+pub fn parse_agent_workspace_roots(value: &str) -> Vec<String> {
+    normalize_agent_workspace_roots(value.split(':'))
+}
+
 /// Regular-user settings (JSON, GUI-managed).
 /// All fields are Option — None means "use default or .env override".
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -64,6 +87,9 @@ pub struct UserSettings {
     pub whisper_language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hold_exclusive: Option<bool>,
+    /// Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_arm_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_bindings: Option<Vec<ModeBinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,6 +128,11 @@ pub struct UserSettings {
     /// dev-only fallback when this is unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai_oauth_client_id: Option<String>,
+    /// Same contract as `openai_oauth_client_id`, for Anthropic account login.
+    /// `None` ⇒ "awaiting app registration"; env
+    /// `CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID` is the dev-only fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,6 +196,11 @@ pub struct UserSettings {
     /// `onboarding_mode`). `None`/absent means the built-in auto policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_engine: Option<String>,
+    /// Final-pass routing mode (`always` | `smart` | `off`).
+    /// Seeds `FINAL_PASS_MODE` (alias `CODESCRIBE_FINAL_PASS_MODE`). Default
+    /// Smart when absent. Distinct from lexicon `FinalPassMode` in contracts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_pass_mode: Option<String>,
     /// Layered incremental transcription phase ("off" | "phase1").
     /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`; anything other than
     /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
@@ -177,12 +213,19 @@ pub struct UserSettings {
 
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
-    /// project name to an absolute path. Seeds `AGENT_WORKSPACE_ROOTS`
-    /// (colon-joined); `None`/absent means the built-in default (`~/Git`).
-    /// Env-managed (NOT promoted), same rationale as the F1 STT knobs: a manual
-    /// `~/.codescribe/.env` line keeps winning.
+    /// project name to an absolute path. The Settings UI sends the
+    /// `AGENT_WORKSPACE_ROOTS` wire key, but this field in durable
+    /// `settings.json` is the source of truth. `None`/absent means the built-in
+    /// default (`~/Git`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_workspace_roots: Option<Vec<String>>,
+
+    // ── Agent tool permissions (B2 gateway) ──
+    /// Global allow/ask/deny policy for agent tools. Stored under
+    /// `agent.permissions` in settings.json. `None` means migration defaults
+    /// (read-only → allow, side-effectful → ask) applied at resolve time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_permissions: Option<crate::agent::permissions::AgentPermissions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -201,6 +244,17 @@ struct SettingsV2 {
     features: Option<FeaturesV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<SystemV2>,
+    /// Agent runtime preferences (tool permissions gateway, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<AgentV2>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct AgentV2 {
+    /// Tool permission policy: global + per-server + per-tool allow/ask/deny.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permissions: Option<crate::agent::permissions::AgentPermissions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -239,6 +293,8 @@ struct TriggerV2 {
 struct HoldV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     exclusive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arm_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     start_delay_ms: Option<u64>,
 }
@@ -281,6 +337,8 @@ struct SpeechEngineV2 {
     // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
     #[serde(skip_serializing_if = "Option::is_none")]
     stt_engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_pass_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     layered_transcription: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -389,6 +447,9 @@ struct SystemV2 {
     // "Sign in with ChatGPT" OAuth client id (non-secret app identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     openai_oauth_client_id: Option<String>,
+    // Anthropic account-login OAuth client id (non-secret app identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anthropic_oauth_client_id: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -405,6 +466,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
     "HOLD_EXCLUSIVE",
+    "HOLD_ARM_MODIFIER",
     // AI / Formatting
     "AI_FORMATTING_ENABLED",
     "AUTO_PASTE_ENABLED",
@@ -427,9 +489,10 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "LLM_ASSISTIVE_PROVIDER",
     "LLM_FORMATTING_ENDPOINT",
     "LLM_FORMATTING_MODEL",
-    // "Sign in with ChatGPT" OAuth client id — non-secret app identity, so it
-    // lives in settings.json (NOT the Keychain); env stays the dev fallback.
+    // Account-login OAuth client ids — non-secret app identities, so they live
+    // in settings.json (NOT the Keychain); env stays the dev fallback.
     "LLM_OPENAI_OAUTH_CLIENT_ID",
+    "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
     // Promoted from .env
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
@@ -443,6 +506,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
     "ONBOARDING_MODE",
+    "AGENT_WORKSPACE_ROOTS",
     // Voice Lab survivors
     "CODESCRIBE_BUFFER_DELAY_MS",
     "CODESCRIBE_TYPING_CPS",
@@ -450,10 +514,15 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_BUFFERED_INTERIM_SEC",
     "WHISPER_MODEL",
     "BACKEND_MAX_UPLOAD_MB",
-    // NOTE (F1/W2-G): CODESCRIBE_STT_ENGINE / CODESCRIBE_LAYERED_TRANSCRIPTION /
-    // CODESCRIBE_STT_INITIAL_PROMPT_ENABLED are deliberately NOT promoted — they
-    // stay env-managed so an existing ~/.codescribe/.env line keeps winning.
-    // settings.json only seeds them when the env var is absent (loader.rs).
+    // STT contract (2026-07-24): engine + final-pass are product settings.
+    // UI writes land in settings.json; process env is reconciled on write so
+    // a stale ~/.codescribe/.env line cannot silently lottery the live path.
+    "CODESCRIBE_STT_ENGINE",
+    "FINAL_PASS_MODE",
+    "CODESCRIBE_FINAL_PASS_MODE",
+    // Still env-seedable when unset; not full dual-brain for STT engine:
+    // "CODESCRIBE_LAYERED_TRANSCRIPTION",
+    // "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
 ];
 
 /// Check if a key is a promoted (settings.json) setting.
@@ -473,6 +542,7 @@ impl UserSettings {
                 }),
                 hold: Some(HoldV2 {
                     exclusive: self.hold_exclusive,
+                    arm_modifier: self.hold_arm_modifier.clone(),
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 mode_bindings: Some(normalized_mode_bindings),
@@ -491,6 +561,7 @@ impl UserSettings {
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
                     stt_engine: self.stt_engine.clone(),
+                    final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
                 }),
@@ -545,6 +616,10 @@ impl UserSettings {
                 onboarding_mode: self.onboarding_mode.clone(),
                 agent_workspace_roots: self.agent_workspace_roots.clone(),
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
+                anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
+            }),
+            agent: self.agent_permissions.clone().map(|permissions| AgentV2 {
+                permissions: Some(permissions),
             }),
         }
     }
@@ -557,6 +632,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|i| i.hold.as_ref())
                 .and_then(|h| h.exclusive),
+            hold_arm_modifier: v2
+                .interaction
+                .as_ref()
+                .and_then(|i| i.hold.as_ref())
+                .and_then(|h| h.arm_modifier.clone()),
             mode_bindings: v2
                 .interaction
                 .as_ref()
@@ -651,6 +731,7 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.mode.as_ref())
+                .filter(|mode| !mode.trim().is_empty())
                 .map(|mode| mode == "local_whisper"),
             local_model: v2
                 .speech
@@ -683,6 +764,10 @@ impl UserSettings {
                 .system
                 .as_ref()
                 .and_then(|s| s.openai_oauth_client_id.clone()),
+            anthropic_oauth_client_id: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.anthropic_oauth_client_id.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
@@ -714,11 +799,22 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.cloud_max_upload_mb),
+            // Product default: Apple live (must-have). Empty `speech.engine: {}`
+            // used to leave stt_engine=None → env/auto lottery; pin apple.
             stt_engine: v2
                 .speech
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.stt_engine.clone()),
+                .and_then(|e| e.stt_engine.clone())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| Some("apple".to_string())),
+            final_pass_mode: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.final_pass_mode.clone())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| Some("smart".to_string())),
             layered_transcription: v2
                 .speech
                 .as_ref()
@@ -729,6 +825,7 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.initial_prompt_enabled),
+            agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
         }
     }
 
@@ -971,6 +1068,10 @@ impl UserSettings {
                 let trimmed = value.trim();
                 self.openai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
             }
+            "LLM_ANTHROPIC_OAUTH_CLIENT_ID" => {
+                let trimmed = value.trim();
+                self.anthropic_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
             "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
                 Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),
                 Err(error) => {
@@ -989,20 +1090,34 @@ impl UserSettings {
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
             "CODESCRIBE_STT_ENGINE" => self.stt_engine = Some(value.to_owned()),
+            "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
+                let normalized = value.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "always" | "smart" | "off" => {
+                        self.final_pass_mode = Some(normalized);
+                    }
+                    _ => {
+                        warn!(
+                            "Rejected final_pass_mode write (expected always|smart|off): {value}"
+                        );
+                        return;
+                    }
+                }
+            }
             "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
                 self.layered_transcription = Some(value.to_owned())
             }
             "AGENT_WORKSPACE_ROOTS" => {
-                // Colon-separated on the wire (PATH-style); empty → None so the
-                // core falls back to the built-in default (`~/Git`).
-                let roots: Vec<String> = value
-                    .split(':')
-                    .map(str::trim)
-                    .filter(|segment| !segment.is_empty())
-                    .map(str::to_owned)
-                    .collect();
+                let roots = parse_agent_workspace_roots(value);
                 self.agent_workspace_roots = (!roots.is_empty()).then_some(roots);
             }
+            "HOLD_ARM_MODIFIER" => match value.parse::<crate::config::HoldArmModifier>() {
+                Ok(arm) => self.hold_arm_modifier = Some(arm.as_str().to_string()),
+                Err(error) => {
+                    warn!("Rejected hold arm modifier write: {error}");
+                    return;
+                }
+            },
             other => {
                 warn!("Unknown string setting key: {other}");
                 return;
@@ -1335,6 +1450,7 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let settings = UserSettings {
             stt_engine: Some("apple".to_string()),
+            final_pass_mode: Some("smart".to_string()),
             layered_transcription: Some("phase1".to_string()),
             stt_initial_prompt_enabled: Some(true),
             ..Default::default()
@@ -1343,18 +1459,94 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.stt_engine.as_deref(), Some("apple"));
+        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
         assert_eq!(loaded.layered_transcription.as_deref(), Some("phase1"));
         assert_eq!(loaded.stt_initial_prompt_enabled, Some(true));
 
-        // Setters route all three keys (settings.json stays a valid seed source).
+        // Setters route keys (settings.json stays a valid seed source).
         let mut mutated = loaded;
         mutated.set_string("CODESCRIBE_STT_ENGINE", "whisper");
+        mutated.set_string("FINAL_PASS_MODE", "off");
         mutated.set_string("CODESCRIBE_LAYERED_TRANSCRIPTION", "off");
         mutated.set_bool("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", false);
         let reloaded = UserSettings::load();
         assert_eq!(reloaded.stt_engine.as_deref(), Some("whisper"));
+        assert_eq!(reloaded.final_pass_mode.as_deref(), Some("off"));
         assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
         assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
+    }
+
+    #[test]
+    #[serial]
+    fn empty_speech_engine_defaults_to_apple_live_product() {
+        // MacGyver lottery shape: schema v3 with speech.engine: {} left stt_engine
+        // unset and .env=auto won. Product must pin Apple live + smart final.
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(
+            &path,
+            r#"{
+  "schema_version": 3,
+  "speech": {
+    "language": "pl",
+    "engine": {}
+  }
+}"#,
+        )
+        .expect("write empty engine settings");
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.stt_engine.as_deref(),
+            Some("apple"),
+            "empty speech.engine must pin Apple live, not leave None/auto lottery"
+        );
+        assert_eq!(loaded.final_pass_mode.as_deref(), Some("smart"));
+        assert!(is_promoted_key("CODESCRIBE_STT_ENGINE"));
+        assert!(is_promoted_key("FINAL_PASS_MODE"));
+    }
+
+    #[test]
+    #[serial]
+    fn agent_permissions_roundtrip_under_agent_section() {
+        use crate::agent::permissions::{AgentPermissions, PermissionLevel};
+        let _tmp = setup_isolated_data_dir();
+        let mut perms = AgentPermissions {
+            default: PermissionLevel::Ask,
+            read_only_default: PermissionLevel::Allow,
+            side_effect_default: PermissionLevel::Deny,
+            ..Default::default()
+        };
+        perms.tools.insert(
+            "desktop-commander:write_file".into(),
+            PermissionLevel::Allow,
+        );
+        perms
+            .servers
+            .insert("desktop-commander".into(), PermissionLevel::Ask);
+        let settings = UserSettings {
+            agent_permissions: Some(perms.clone()),
+            ..Default::default()
+        };
+        settings.save().expect("save settings");
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.agent_permissions.as_ref(), Some(&perms));
+
+        let path = UserSettings::settings_path();
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        assert_eq!(
+            persisted
+                .pointer("/agent/permissions/tools/desktop-commander:write_file")
+                .and_then(|v| v.as_str()),
+            Some("allow")
+        );
+        assert_eq!(
+            persisted
+                .pointer("/agent/permissions/side_effect_default")
+                .and_then(|v| v.as_str()),
+            Some("deny")
+        );
     }
 
     #[test]
