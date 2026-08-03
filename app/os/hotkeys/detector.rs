@@ -1270,6 +1270,65 @@ mod tests {
     }
 
     #[test]
+    fn detector_right_option_double_tap_emits_toggle_assistive() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+
+        // First tap: press then release right Option.
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::RightOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(1),
+                    key: HotkeyPhysicalKey::RightOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            None
+        );
+
+        // Second tap within the double-tap window: press then release again.
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(100),
+                    key: HotkeyPhysicalKey::RightOption,
+                    modifiers: mods(false, true, false, false, false),
+                },
+                config,
+            ),
+            None
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(101),
+                    key: HotkeyPhysicalKey::RightOption,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::ToggleAssistive)
+        );
+    }
+
+    #[test]
     fn detector_reports_disabled_option_double_tap() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
