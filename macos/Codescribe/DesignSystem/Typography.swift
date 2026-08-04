@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // Typography — Space Grotesk (display/UI) + JetBrains Mono (mono/eyebrows/code).
@@ -11,6 +12,12 @@ enum CSFont {
     // Code / eyebrows / meta — JetBrains Mono
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         Font.custom(FontLoader.jetBrainsMono, size: size).weight(weight)
+    }
+    // AppKit twin of `mono` for NSTextView-backed surfaces (oversized bubble
+    // payloads); same face, graceful system-mono fallback.
+    static func nsMono(_ size: CGFloat) -> NSFont {
+        NSFont(name: FontLoader.jetBrainsMono, size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     // Named ramps from the handoff

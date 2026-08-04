@@ -99,6 +99,44 @@ enum ChatLayoutPolicy {
     }
 }
 
+/// Render disposition for one bubble's text (bolączka #3 residual, hang report
+/// 2026-08-04): SwiftUI's shared `SelectionOverlay` livelocks the main thread
+/// over unbounded transcript text, so a bubble past `OversizedBubblePolicy
+/// .inlineUTF8Cap` must degrade to a head preview whose full text lives in a
+/// contained text view with its own selection — never under the list-wide
+/// `.textSelection(.enabled)`.
+enum BubbleTextDisposition: Equatable {
+    /// Full text inline, sharing the list selection surface.
+    case inline
+    /// Oversized: render only the first `headUTF8` bytes inline; full text
+    /// behind an explicit reveal in a selection-contained view.
+    case headPreview(headUTF8: Int)
+
+    /// Whether this bubble's text participates in the list-wide selection
+    /// overlay — the mechanism the 2026-08-04 hang livelocked on.
+    var sharesListSelectionOverlay: Bool {
+        switch self {
+        case .inline: return true
+        case .headPreview: return false
+        }
+    }
+}
+
+enum OversizedBubblePolicy {
+    /// UTF-8 length past which a bubble stops rendering inline. 64 KiB: four
+    /// times the agent tool-output spill limit, well below the 100k paste that
+    /// reproduced the livelock.
+    static let inlineUTF8Cap = 65_536
+    /// UTF-8 length of the head shown inline for an oversized bubble.
+    static let headPreviewUTF8 = 16_384
+
+    static func disposition(utf8Count: Int) -> BubbleTextDisposition {
+        utf8Count <= inlineUTF8Cap
+            ? .inline
+            : .headPreview(headUTF8: headPreviewUTF8)
+    }
+}
+
 /// Explicit state machine for the message viewport. Content growth is allowed
 /// to move the viewport only while the operator is following the live edge.
 struct StreamScrollFollowState: Equatable {
@@ -484,7 +522,16 @@ private struct YouTurn: View {
                     }
                 }
                 if !message.text.isEmpty {
-                    MarkdownText(raw: message.text, bodyColor: ChatPalette.nameActive)
+                    // Oversized paste (bolączka #3): fold above the display
+                    // budget so the list's selection overlay never carries the
+                    // whole payload. Copy above still exports the full text.
+                    if OversizedBubblePolicy.isOversized(message.text) {
+                        OversizedMessageBody(fullText: message.text) { head in
+                            MarkdownText(raw: head, bodyColor: ChatPalette.nameActive)
+                        }
+                    } else {
+                        MarkdownText(raw: message.text, bodyColor: ChatPalette.nameActive)
+                    }
                 }
                 if hasContext {
                     ContextChip(
@@ -1113,13 +1160,33 @@ private struct AssistantTurn: View {
                             .font(CSFont.mono(11, .medium))
                             .foregroundStyle(CSColor.textFaintAlt)
                     } else if message.isStreaming {
-                        RawText(raw: message.text, showsCaret: true)
+                        // A runaway stream keeps only its live tail in the
+                        // SwiftUI text stack — bounds both the per-delta
+                        // re-layout and the shared selection overlay.
+                        if OversizedBubblePolicy.isOversized(message.text) {
+                            StreamWindowNote(fullText: message.text)
+                        }
+                        RawText(
+                            raw: OversizedBubblePolicy.streamingWindow(message.text),
+                            showsCaret: true
+                        )
                     } else if !message.text.isEmpty {
-                        switch message.renderMode {
-                        case .raw:
-                            RawText(raw: message.text)
-                        case .rich:
-                            MarkdownText(raw: message.text)
+                        if OversizedBubblePolicy.isOversized(message.text) {
+                            OversizedMessageBody(fullText: message.text) { head in
+                                switch message.renderMode {
+                                case .raw:
+                                    RawText(raw: head)
+                                case .rich:
+                                    MarkdownText(raw: head)
+                                }
+                            }
+                        } else {
+                            switch message.renderMode {
+                            case .raw:
+                                RawText(raw: message.text)
+                            case .rich:
+                                MarkdownText(raw: message.text)
+                            }
                         }
                     }
                 }
@@ -1159,15 +1226,19 @@ private struct ReasoningDisclosure: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            Text(text)
-                .font(CSFont.mono(10.5, .medium))
-                .foregroundStyle(ChatPalette.thinking.opacity(0.86))
-                .textSelection(.enabled)
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 9)
+            // Reasoning shares the display budget: long chains fold like any
+            // other oversized body instead of feeding the selection overlay.
+            Group {
+                if OversizedBubblePolicy.isOversized(text) {
+                    OversizedMessageBody(fullText: text) { head in
+                        reasoningBody(head)
+                    }
+                } else {
+                    reasoningBody(text)
+                }
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 9)
         } label: {
             HStack(spacing: 7) {
                 CSIconView(
@@ -1192,6 +1263,16 @@ private struct ReasoningDisclosure: View {
                 .strokeBorder(CSColor.hairline(0.055), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    }
+
+    private func reasoningBody(_ content: String) -> some View {
+        Text(content)
+            .font(CSFont.mono(10.5, .medium))
+            .foregroundStyle(ChatPalette.thinking.opacity(0.86))
+            .textSelection(.enabled)
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

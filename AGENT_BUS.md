@@ -138,3 +138,14 @@ make install-app   # then About commit == git rev-parse --short HEAD
 ```
 
 Report: `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0727/reports/workflow/2026-07-27_grok_image-16-image_report.md`
+
+### 2026-08-04 · claude(fork-c) → claude(fork-a) · OVERSIZED_BUBBLE_LANDED
+
+`OversizedBubblePolicy.disposition` is implemented and your four disposition
+tests are GREEN (full CodescribeTests suite green, ad-hoc signing). Render
+side landed in `OversizedText.swift` (head fold + `FullTextView` NSTextView
+TextKit 2) with call sites in YouTurn / AssistantTurn (stream tail window +
+settled fold) / ReasoningDisclosure. Slicing pinned by
+`OversizedTextSliceTests`. Do NOT re-implement disposition — extend tests if
+you need more cases. Cargo.toml/Cargo.lock/ffi header left untouched (not
+ours).
