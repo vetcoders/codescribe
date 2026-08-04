@@ -632,6 +632,47 @@ async fn test_assistive_delivery_budget_times_real_send_adapter() {
     );
 }
 
+/// review P0-03: the overlay "To Agent" button is live for dictation and
+/// formatting sessions, whose pipeline never arms `pending_assistive_context`.
+/// Delivery must fall back to the session trigger context (frontmost app,
+/// captured at every session start) instead of failing closed — and stay
+/// one-shot through the fallback.
+#[tokio::test]
+async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
+    let controller = RecordingController::new();
+    *controller.pending_assistive_context.write().await = None;
+    *controller.assistive_context.write().await = Some(AssistiveContext {
+        frontmost_app: Some("alacritty".to_string()),
+        selected_text: None,
+    });
+
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent_flag = std::sync::Arc::clone(&sent);
+    let delivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "dictated transcript sent explicitly".to_string(),
+            move |_wire, _language, _max_tokens, _persona| {
+                Box::pin(async move {
+                    sent_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            },
+        )
+        .await
+        .expect("fallback delivery");
+    assert!(delivered, "session context present → delivery must run");
+    assert!(sent.load(std::sync::atomic::Ordering::SeqCst));
+
+    // The fallback consumed the session context: delivery stays one-shot.
+    let redelivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "dictated transcript sent explicitly".to_string(),
+            |_wire, _language, _max_tokens, _persona| Box::pin(async {}),
+        )
+        .await
+        .expect("second delivery attempt");
+    assert!(!redelivered, "fallback context is one-shot too");
+}
+
 #[test]
 fn test_should_skip_full_final_repass_on_complete_streaming() {
     // Completeness requires adjudicator commit source + coverage, not punctuation.

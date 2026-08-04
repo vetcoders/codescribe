@@ -1927,6 +1927,23 @@ impl RecordingController {
         }
     }
 
+    /// Capture the assistive trigger context (selection + frontmost app) for a
+    /// session whose microphone is owned by the Agent composer. The controller
+    /// start paths (`schedule_hold_start` / `start_toggle_recording`) never run
+    /// on that route, so without this arm the HOTKEYS_CONTRACT line "Selection
+    /// is captured in the trigger handler, never at send time" had no executor
+    /// on the primary assistive path and auto-send delivered the spoken text
+    /// alone (review P0-02). The bridge calls this exactly when a NEW agent
+    /// capture is about to start (capture owner still none).
+    pub async fn arm_assistive_trigger_context(&self) {
+        let context = tokio::task::spawn_blocking(capture_assistive_context)
+            .await
+            .unwrap_or_default();
+        *self.pre_overlay_frontmost_app.write().await = context.frontmost_app.clone();
+        *self.assistive_context.write().await = Some(context.clone());
+        *self.pending_assistive_context.write().await = Some(context);
+    }
+
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
@@ -1969,15 +1986,28 @@ impl RecordingController {
             );
             return Ok(false);
         }
-        let Some(context) = self.pending_assistive_context.write().await.take() else {
-            info!(
-                "{}",
-                format_assistive_delivery_budget_line(
-                    delivery_started.elapsed().as_secs_f64(),
-                    "no_pending_context",
-                )
-            );
-            return Ok(false);
+        // Dictation/formatting sessions never run the assistive pipeline branch
+        // that arms `pending_assistive_context`, so the overlay's explicit
+        // "To Agent" used to fail closed behind a live button (review P0-03).
+        // The session trigger context (frontmost app, captured at every session
+        // start) is truthful for an explicit send; taking it keeps delivery
+        // one-shot either way.
+        let pending = self.pending_assistive_context.write().await.take();
+        let context = match pending {
+            Some(context) => context,
+            None => match self.assistive_context.write().await.take() {
+                Some(context) => context,
+                None => {
+                    info!(
+                        "{}",
+                        format_assistive_delivery_budget_line(
+                            delivery_started.elapsed().as_secs_f64(),
+                            "no_pending_context",
+                        )
+                    );
+                    return Ok(false);
+                }
+            },
         };
         let config = self.config.read().await.clone();
         let delivery = {

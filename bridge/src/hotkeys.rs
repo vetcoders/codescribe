@@ -154,14 +154,16 @@ fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
         .map(Arc::clone)
 }
 
-fn route_hotkey_event<F, G>(
+fn route_hotkey_event<F, G, H>(
     event: HotkeyEvent,
     app_action_listener: Option<Arc<dyn CsAppActionListener>>,
     dispatch_recording: F,
     dispatch_deferred_insert: G,
+    arm_assistive_trigger: H,
 ) where
     F: FnOnce(HotkeyEvent),
     G: FnOnce(),
+    H: FnOnce(),
 {
     if let Some(fallback) = overlay_owned_assistive_hold_fallback(&event) {
         if matches!(event, HotkeyEvent::HoldUpdate { .. }) {
@@ -178,6 +180,14 @@ fn route_hotkey_event<F, G>(
             ?command,
             "Assistive command: dispatching Agent-owned capture"
         );
+        // HOTKEYS_CONTRACT: "Selection is captured in the trigger handler,
+        // never at send time." A capture owner of NONE means this command is
+        // about to START a new agent capture — arm the trigger context now,
+        // before the composer mic takes over. Stop/toggle-stop commands find
+        // the owner already AGENT and must not re-capture at send time.
+        if CAPTURE_OWNER.load(Ordering::Acquire) == CAPTURE_OWNER_NONE {
+            arm_assistive_trigger();
+        }
         if let Some(listener) = app_action_listener {
             listener.on_agent_capture(command);
         } else {
@@ -544,8 +554,11 @@ impl CodescribeHotkeys {
         std::thread::spawn(move || {
             for event in rx {
                 let spawn_handle = handle.clone();
+                let arm_handle = handle.clone();
                 let controller_handle = handle.clone();
+                let arm_controller_handle = handle.clone();
                 let controller_store = Arc::clone(&controller_store);
+                let arm_controller_store = Arc::clone(&controller_store);
                 route_hotkey_event(
                     event,
                     current_app_action_listener(),
@@ -568,6 +581,13 @@ impl CodescribeHotkeys {
                         });
                     },
                     deliver_deferred_insert_and_notify,
+                    move || {
+                        arm_handle.spawn(async move {
+                            let controller =
+                                ensure_controller(&arm_controller_store, arm_controller_handle);
+                            controller.arm_assistive_trigger_context().await;
+                        });
+                    },
                 );
             }
         });
@@ -1153,14 +1173,18 @@ mod app_action_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn show_agent_routes_without_recording_or_preparing_payload() {
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+        CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
         let listener = Arc::new(CountingAppActionListener {
             show_agent_calls: AtomicUsize::new(0),
             capture_calls: AtomicUsize::new(0),
         });
         let recording_calls = Arc::new(AtomicUsize::new(0));
+        let arm_calls = Arc::new(AtomicUsize::new(0));
         let recording_calls_for_route = Arc::clone(&recording_calls);
+        let arm_calls_for_route = Arc::clone(&arm_calls);
 
         route_hotkey_event(
             HotkeyEvent::ShowAgent,
@@ -1169,14 +1193,19 @@ mod app_action_tests {
                 recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
             || panic!("show agent must not dispatch deferred insert"),
+            move || {
+                arm_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
         );
 
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 0);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
         assert!(!PREPARING_PENDING.load(Ordering::SeqCst));
 
         let recording_calls_for_route = Arc::clone(&recording_calls);
+        let arm_calls_for_route = Arc::clone(&arm_calls);
         route_hotkey_event(
             HotkeyEvent::ToggleNormal,
             Some(listener.clone()),
@@ -1184,11 +1213,16 @@ mod app_action_tests {
                 recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
             || panic!("recording command must not dispatch deferred insert"),
+            move || {
+                arm_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
         );
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
 
         let recording_calls_for_route = Arc::clone(&recording_calls);
+        let arm_calls_for_route = Arc::clone(&arm_calls);
         route_hotkey_event(
             HotkeyEvent::ToggleAssistive,
             Some(listener.clone()),
@@ -1196,9 +1230,14 @@ mod app_action_tests {
                 recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
             || panic!("assistive command must not dispatch deferred insert"),
+            move || {
+                arm_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
         );
         assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
+        // Capture owner was NONE → a new agent capture starts → trigger armed.
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 1);
 
         let deferred_calls = Arc::new(AtomicUsize::new(0));
         let deferred_calls_for_route = Arc::clone(&deferred_calls);
@@ -1209,9 +1248,34 @@ mod app_action_tests {
             move || {
                 deferred_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
+            || panic!("deferred insert must not arm assistive trigger"),
         );
         assert_eq!(deferred_calls.load(Ordering::SeqCst), 1);
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn assistive_stop_does_not_recapture_at_send_time() {
+        // Owner already AGENT → this command stops an active capture; the
+        // contract forbids capturing selection at send time.
+        CAPTURE_OWNER.store(CAPTURE_OWNER_AGENT, Ordering::SeqCst);
+        let listener = Arc::new(CountingAppActionListener {
+            show_agent_calls: AtomicUsize::new(0),
+            capture_calls: AtomicUsize::new(0),
+        });
+        route_hotkey_event(
+            HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Chat,
+            },
+            Some(listener.clone()),
+            |_| panic!("assistive stop must not enter recording dispatch"),
+            || panic!("assistive stop must not dispatch deferred insert"),
+            || panic!("assistive stop must not re-arm the trigger context"),
+        );
+        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 1);
+        CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
     }
 }
 

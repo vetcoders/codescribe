@@ -1091,7 +1091,12 @@ final class OverlayState: ObservableObject {
 
     private func deliverAgentTranscript() {
         let text = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard agentSessionArmed, !agentDeliveryStarted, !text.isEmpty, let engine else { return }
+        // No `agentSessionArmed` here: the explicit Send button is live for
+        // every terminal overlay (dictation and formatting included), and the
+        // controller falls back to the session trigger context when no
+        // assistive context was armed (review P0-03). Auto-send remains gated
+        // on the armed latch by its caller.
+        guard !agentDeliveryStarted, !text.isEmpty, let engine else { return }
         agentDeliveryStarted = true
         cancelAutoHide()
         Task { @MainActor [weak self] in

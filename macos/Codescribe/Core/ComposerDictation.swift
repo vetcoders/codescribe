@@ -163,16 +163,35 @@ final class RealComposerDictation: ComposerDictating {
                     store.clearDictationPreview()
                     store.reportDictationFailure("No speech detected.")
                 } else {
-                    store.appendDictatedTranscript(trimmed)
                     store.setDictationPhase(.idle)
+                    var deliveredViaVoiceLane = false
                     if resolution.autoSend {
-                        store.send()
+                        // Voice lane first: the controller attaches the
+                        // trigger-time selection context and the context bucket
+                        // (HOTKEYS_CONTRACT "captured in the trigger handler"),
+                        // and the turn streams as a core-owned voice turn — the
+                        // composer FIFO already skips threads with an active
+                        // voice turn. A plain `store.send()` here delivered the
+                        // spoken text alone (review P0-02).
+                        deliveredViaVoiceLane =
+                            (try? await hotkeys.sendAssistiveTranscript(text: trimmed)) ?? false
+                    }
+                    if deliveredViaVoiceLane {
+                        store.clearDictationPreview()
+                        dictationLog.info(
+                            "composer dictation: assistive turn delivered via voice lane")
+                    } else {
+                        store.appendDictatedTranscript(trimmed)
+                        if resolution.autoSend {
+                            store.send()
+                        }
+                        dictationLog.info(
+                            "composer dictation: inserted \(trimmed.count, privacy: .public) chars")
                     }
                     // Analytics must never delay transcript delivery or agent send.
                     Task { @MainActor in
                         _ = await ActivationPing.shared.recordFirstSuccessfulDictation()
                     }
-                    dictationLog.info("composer dictation: inserted \(trimmed.count, privacy: .public) chars")
                 }
             } catch {
                 dictationLog.error("composer dictation stop failed: \(error.localizedDescription, privacy: .public)")
