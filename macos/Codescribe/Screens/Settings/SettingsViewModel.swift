@@ -632,6 +632,8 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var needsOnboarding: Bool
     @Published private(set) var agentReadiness: CsAgenticReadiness
     @Published private(set) var mcpStatus: CsMcpStatusReport
+    /// Native / enhanced / unavailable rows from `CodescribeAgentStatus.capabilityMatrix()`.
+    @Published private(set) var capabilityMatrix: [CsCapabilityRow] = []
     @Published private(set) var mcpServers: [CsMcpServer] = []
     @Published private(set) var mcpTestResults: [String: CsMcpTestResult] = [:]
     @Published private(set) var mcpTestPending: Set<String> = []
@@ -753,6 +755,7 @@ final class SettingsViewModel: ObservableObject {
         self.needsOnboarding = false
         self.agentReadiness = .sample
         self.mcpStatus = .sample
+        self.capabilityMatrix = CsCapabilityRow.sampleMatrix
         self.voiceLabReadError = nil
         self.audioInput = .sample
         self.audioInputReadError = nil
@@ -860,13 +863,14 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    /// Re-probe just the agent substrate (readiness + MCP status). Cheap on-disk
-    /// reads; used by the Engine panel's "Refresh" action so re-checking MCP does
-    /// not disturb the rest of the panel.
+    /// Re-probe just the agent substrate (readiness + MCP + capability matrix).
+    /// Cheap on-disk reads; used by the Agent panel's "Refresh" action so
+    /// re-checking MCP does not disturb the rest of the panel.
     func refreshAgentStatus() {
         guard let agentStatus else { return }
         agentReadiness = agentStatus.agenticReadiness()
         mcpStatus = agentStatus.mcpStatus()
+        capabilityMatrix = agentStatus.capabilityMatrix()
     }
 
     // MARK: - Hotkeys (mode-binding editor)

@@ -978,6 +978,12 @@ public protocol CodescribeAgentStatusProtocol: AnyObject, Sendable {
     func agenticReadiness()  -> CsAgenticReadiness
 
     /**
+     * Provider-neutral capability matrix: native / enhanced / unavailable + reason.
+     * IntelliJ wrong-project or stale sessions are detected and bypassed.
+     */
+    func capabilityMatrix()  -> [CsCapabilityRow]
+
+    /**
      * Basic-lane MCP status: reads/parses `mcp.json` + merges the last runtime
      * discovery. Missing config → neutral optional row, never an error.
      */
@@ -1052,6 +1058,18 @@ public convenience init() {
 open func agenticReadiness() -> CsAgenticReadiness  {
     return try!  FfiConverterTypeCsAgenticReadiness_lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeagentstatus_agentic_readiness(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Provider-neutral capability matrix: native / enhanced / unavailable + reason.
+     * IntelliJ wrong-project or stale sessions are detected and bypassed.
+     */
+open func capabilityMatrix() -> [CsCapabilityRow]  {
+    return try!  FfiConverterSequenceTypeCsCapabilityRow.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeagentstatus_capability_matrix(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -7119,6 +7137,91 @@ public func FfiConverterTypeCsBindingOption_lower(_ value: CsBindingOption) -> R
 
 
 /**
+ * One row of the native / enhanced / unavailable capability matrix (V9).
+ */
+public struct CsCapabilityRow: Equatable, Hashable {
+    /**
+     * Canonical op id, e.g. `fs.list` / `repo.status`.
+     */
+    public var op: String
+    /**
+     * `native` | `enhanced` | `unavailable`
+     */
+    public var tier: String
+    /**
+     * Fulfilling provider label (not the model-facing contract).
+     */
+    public var provider: String
+    public var nativeTool: String
+    public var reason: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Canonical op id, e.g. `fs.list` / `repo.status`.
+         */op: String,
+        /**
+         * `native` | `enhanced` | `unavailable`
+         */tier: String,
+        /**
+         * Fulfilling provider label (not the model-facing contract).
+         */provider: String, nativeTool: String, reason: String) {
+        self.op = op
+        self.tier = tier
+        self.provider = provider
+        self.nativeTool = nativeTool
+        self.reason = reason
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsCapabilityRow: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsCapabilityRow: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsCapabilityRow {
+        return
+            try CsCapabilityRow(
+                op: FfiConverterString.read(from: &buf),
+                tier: FfiConverterString.read(from: &buf),
+                provider: FfiConverterString.read(from: &buf),
+                nativeTool: FfiConverterString.read(from: &buf),
+                reason: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsCapabilityRow, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.op, into: &buf)
+        FfiConverterString.write(value.tier, into: &buf)
+        FfiConverterString.write(value.provider, into: &buf)
+        FfiConverterString.write(value.nativeTool, into: &buf)
+        FfiConverterString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCapabilityRow_lift(_ buf: RustBuffer) throws -> CsCapabilityRow {
+    return try FfiConverterTypeCsCapabilityRow.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCapabilityRow_lower(_ value: CsCapabilityRow) -> RustBuffer {
+    return FfiConverterTypeCsCapabilityRow.lower(value)
+}
+
+
+/**
  * One config key/value pair for `update_config_many` batch writes. `key` is a
  * router env key (e.g. `"WHISPER_LANGUAGE"`, `"USE_LOCAL_STT"`); `value` is the
  * string form the core parses (bool `"1"`/`"0"`, f32 `"1.00"`, etc.).
@@ -10648,7 +10751,8 @@ public func FfiConverterTypeCsApiKeyProbeStatus_lower(_ value: CsApiKeyProbeStat
 /**
  * Error surfaced across the FFI boundary. One enum for every slice:
  * `Agent` (chat/provider), `Config` (settings/keychain/prompt I/O),
- * `Recording` (STT/audio).
+ * `Recording` (STT/audio), `License` (CSK1 validation), and `Quality`
+ * (overlay quality records).
  */
 public enum CsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -12186,6 +12290,31 @@ fileprivate struct FfiConverterSequenceTypeCsBindingOption: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsCapabilityRow: FfiConverterRustBuffer {
+    typealias SwiftType = [CsCapabilityRow]
+
+    public static func write(_ value: [CsCapabilityRow], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsCapabilityRow.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsCapabilityRow] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsCapabilityRow]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsCapabilityRow.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsConfigEntry: FfiConverterRustBuffer {
     typealias SwiftType = [CsConfigEntry]
 
@@ -12844,6 +12973,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_agentic_readiness() != 27253) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_capability_matrix() != 24926) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_mcp_status() != 53810) {

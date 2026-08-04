@@ -16,6 +16,8 @@ protocol AgentStatusEngine {
     func agenticReadiness() -> CsAgenticReadiness
     /// Basic-lane MCP config + runtime status. Missing mcp.json → neutral row.
     func mcpStatus() -> CsMcpStatusReport
+    /// Provider-neutral capability matrix (native / enhanced / unavailable).
+    func capabilityMatrix() -> [CsCapabilityRow]
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -28,6 +30,7 @@ final class RealAgentStatusEngine: AgentStatusEngine {
 
     func agenticReadiness() -> CsAgenticReadiness { status.agenticReadiness() }
     func mcpStatus() -> CsMcpStatusReport { status.mcpStatus() }
+    func capabilityMatrix() -> [CsCapabilityRow] { status.capabilityMatrix() }
 }
 
 // MARK: - Mock engine (previews)
@@ -36,9 +39,11 @@ final class RealAgentStatusEngine: AgentStatusEngine {
 struct MockAgentStatusEngine: AgentStatusEngine {
     var readiness: CsAgenticReadiness = .sample
     var mcp: CsMcpStatusReport = .sample
+    var matrix: [CsCapabilityRow] = CsCapabilityRow.sampleMatrix
 
     func agenticReadiness() -> CsAgenticReadiness { readiness }
     func mcpStatus() -> CsMcpStatusReport { mcp }
+    func capabilityMatrix() -> [CsCapabilityRow] { matrix }
 }
 
 // MARK: - Bridge value helpers (preview seeds)
@@ -76,4 +81,31 @@ extension CsAgenticReadiness {
             CsMcpStatusRow(label: "PRView integration:", value: "not configured (optional)", tone: .neutral)
         ]
     )
+}
+
+extension CsCapabilityRow {
+    /// Preview seed for Settings → Agent capability matrix.
+    static let sampleMatrix: [CsCapabilityRow] = [
+        CsCapabilityRow(
+            op: "fs.list",
+            tier: "native",
+            provider: "native",
+            nativeTool: "list_directory",
+            reason: "Native workspace-sandboxed list"
+        ),
+        CsCapabilityRow(
+            op: "fs.search",
+            tier: "enhanced",
+            provider: "loctree",
+            nativeTool: "search_files",
+            reason: "Native search + Loctree enrichment preferred when healthy"
+        ),
+        CsCapabilityRow(
+            op: "code.symbols",
+            tier: "unavailable",
+            provider: "unavailable",
+            nativeTool: "",
+            reason: "No native implementation and no healthy MCP provider"
+        ),
+    ]
 }

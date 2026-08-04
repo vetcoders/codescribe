@@ -78,6 +78,23 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertTrue(KeysPanel.ownedCapabilities.isDisjoint(with: AgentPanel.ownedCapabilities))
     }
 
+    /// Capability matrix sample seed used by Settings previews and offline VM
+    /// construction must expose the three tiers the bridge reports.
+    func testCapabilityMatrixSampleExposesNativeEnhancedUnavailableTiers() {
+        let tiers = Set(CsCapabilityRow.sampleMatrix.map(\.tier))
+        XCTAssertTrue(tiers.contains("native"))
+        XCTAssertTrue(tiers.contains("enhanced"))
+        XCTAssertTrue(tiers.contains("unavailable"))
+        for row in CsCapabilityRow.sampleMatrix {
+            XCTAssertFalse(row.op.isEmpty)
+            XCTAssertFalse(row.reason.isEmpty)
+        }
+        let model = SettingsViewModel(agentStatus: MockAgentStatusEngine())
+        model.refreshAgentStatus()
+        XCTAssertEqual(model.capabilityMatrix.count, CsCapabilityRow.sampleMatrix.count)
+        XCTAssertEqual(model.capabilityMatrix.first?.op, "fs.list")
+    }
+
     /// Capability rows come from the live registry surface — the panel must not
     /// invent tools the dispatcher does not know.
     func testToolPermissionsPanelUsesCapabilityIdentityContract() {
