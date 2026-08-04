@@ -1,7 +1,7 @@
 # Release signing secrets runbook
 
-The `Release DMG` GitHub Actions workflow fails closed until all six signing
-and notarization secrets are configured. Only a repository administrator with
+The `Release DMG` GitHub Actions workflow fails closed until the signing,
+notarization, licensing, and Sparkle key inputs below are configured. Only a repository administrator with
 access to the VetCoders Apple Developer account should perform this procedure.
 
 Never paste secret values into issues, pull requests, Actions logs, shell
@@ -103,9 +103,50 @@ gh secret set APPLE_APP_SPECIFIC_PASSWORD --repo vetcoders/codescribe
 Apple displays this password only once. Store it in the operator-approved
 password manager before closing the creation dialog.
 
+## 7. `CODESCRIBE_LICENSE_PUBLIC_KEY_HEX` (repository variable)
+
+Source: the 32-byte Ed25519 public key paired with the operator-owned production
+license signer, encoded as exactly 64 hexadecimal characters. This value is
+public and belongs in an Actions repository variable, not a secret. Never put
+the production private key or seed in this repository or the app build.
+
+```bash
+gh variable set CODESCRIBE_LICENSE_PUBLIC_KEY_HEX --repo vetcoders/codescribe
+```
+
+The Rust release build fails when this variable is missing, malformed, or has
+the checked-in development-key fingerprint. Generating and provisioning the
+production keypair is an operator-owned release action.
+
+## 8. `SPARKLE_ED_PUBLIC_KEY` (repository variable)
+
+Source: the public key printed by Sparkle's `generate_keys`. The app embeds this
+value as `SUPublicEDKey`, so it is intentionally public.
+
+```bash
+gh variable set SPARKLE_ED_PUBLIC_KEY --repo vetcoders/codescribe
+```
+
+The DMG verifier refuses an empty bundle key and compares it with this release
+input. The appcast generator also derives the public key from the private seed
+and refuses a mismatched pair.
+
+## 9. `SPARKLE_ED_PRIVATE_KEY` (secret)
+
+Source: the base64 Ed25519 private seed exported by Sparkle's
+`generate_keys -x`. Store it only as an Actions secret and in the approved
+operator credential store.
+
+```bash
+gh secret set SPARKLE_ED_PRIVATE_KEY --repo vetcoders/codescribe
+```
+
+The workflow passes this value only to `generate_appcast` over standard input.
+It never enters the application bundle or a repository file.
+
 ## Validate configuration
 
-GitHub never returns secret values. Confirm that all six names exist and note
+GitHub never returns secret values. Confirm that all secret names exist and note
 their update timestamps:
 
 ```bash
@@ -120,6 +161,16 @@ The list must include exactly these release inputs:
 - `APPLE_ID`
 - `APPLE_TEAM_ID`
 - `APPLE_APP_SPECIFIC_PASSWORD`
+- `SPARKLE_ED_PRIVATE_KEY`
+
+Confirm the two public repository variables separately:
+
+```bash
+gh variable list --repo vetcoders/codescribe
+```
+
+- `CODESCRIBE_LICENSE_PUBLIC_KEY_HEX`
+- `SPARKLE_ED_PUBLIC_KEY`
 
 Do not trigger a release merely to test secret presence. The next
 operator-authorized tag or manual release run performs its own fail-closed
@@ -137,6 +188,11 @@ the credential may have been exposed, or Apple revokes it. Revoke the old
 password at <https://appleid.apple.com/> after the replacement has been stored
 in GitHub. Reconfirm `APPLE_ID` and `APPLE_TEAM_ID` whenever account ownership
 or team membership changes.
+
+Rotate the Codescribe licensing keypair and the Sparkle keypair as separate
+atomic pairs. Update each public repository variable in the same maintenance
+window as its operator-owned private signer. A public/private mismatch is a
+hard release failure.
 
 After any rotation, use `gh secret list --repo vetcoders/codescribe` to confirm
 fresh update timestamps. A real release run, tag, or publication remains an

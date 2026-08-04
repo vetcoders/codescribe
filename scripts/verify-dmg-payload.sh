@@ -23,6 +23,7 @@
 # Usage:
 #   ./scripts/verify-dmg-payload.sh <dmg> --variant slim|full --version X.Y.Z
 #   ./scripts/verify-dmg-payload.sh <dmg> --variant slim --version X.Y.Z --skip-notary
+#   SPARKLE_ED_PUBLIC_KEY=<expected> ./scripts/verify-dmg-payload.sh ...
 #
 # Exit: 0 = accepted; non-zero = refuse (fail-closed).
 #
@@ -62,6 +63,9 @@ Fail-closed payload gate for Codescribe release DMGs.
   --variant slim|full slim = Silero+MiniLM; full = +Whisper embedded
   --version X.Y.Z     Expected CFBundleShortVersionString
   --skip-notary       Skip stapler + spctl (pre-notarization smoke)
+
+SPARKLE_ED_PUBLIC_KEY, when set, must match the non-empty SUPublicEDKey in the
+mounted app. An empty bundle key is always refused.
 
 Exit 0 only when every assert passes. Detach is always attempted (trap).
 EOF
@@ -286,6 +290,15 @@ if [[ -n "${APP_PATH:-}" ]]; then
       fail "version mismatch: CFBundleShortVersionString='$BUNDLE_VER' expected='$VERSION'"
     else
       ok "CFBundleShortVersionString == $VERSION"
+    fi
+
+    SPARKLE_BUNDLE_KEY=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST" 2>/dev/null || true)
+    if [[ -z "${SPARKLE_BUNDLE_KEY//[[:space:]]/}" ]]; then
+      fail "SUPublicEDKey is empty or missing — Sparkle would reject every update"
+    elif [[ -n "${SPARKLE_ED_PUBLIC_KEY:-}" && "$SPARKLE_BUNDLE_KEY" != "$SPARKLE_ED_PUBLIC_KEY" ]]; then
+      fail "SUPublicEDKey does not match SPARKLE_ED_PUBLIC_KEY used for this release"
+    else
+      ok "SUPublicEDKey is non-empty${SPARKLE_ED_PUBLIC_KEY:+ and matches release input}"
     fi
   fi
 
