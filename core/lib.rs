@@ -46,6 +46,7 @@ pub mod embedded;
 pub mod embedder;
 mod hf_cache;
 pub mod ipc;
+pub mod licensing;
 pub mod llm;
 pub mod mcp;
 pub mod memory;

@@ -425,6 +425,38 @@ private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -7717,6 +7749,82 @@ public func FfiConverterTypeCsLexiconEntry_lower(_ value: CsLexiconEntry) -> Rus
 }
 
 
+public struct CsLicenseStatus: Equatable, Hashable {
+    public var state: CsLicenseState
+    public var daysLeft: UInt8?
+    public var sku: String?
+    public var emailHash: String?
+    public var issued: String?
+    public var updatesUntil: String?
+    public var seatLimit: UInt16?
+    public var agenticEntitled: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(state: CsLicenseState, daysLeft: UInt8?, sku: String?, emailHash: String?, issued: String?, updatesUntil: String?, seatLimit: UInt16?, agenticEntitled: Bool) {
+        self.state = state
+        self.daysLeft = daysLeft
+        self.sku = sku
+        self.emailHash = emailHash
+        self.issued = issued
+        self.updatesUntil = updatesUntil
+        self.seatLimit = seatLimit
+        self.agenticEntitled = agenticEntitled
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsLicenseStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsLicenseStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsLicenseStatus {
+        return
+            try CsLicenseStatus(
+                state: FfiConverterTypeCsLicenseState.read(from: &buf),
+                daysLeft: FfiConverterOptionUInt8.read(from: &buf),
+                sku: FfiConverterOptionString.read(from: &buf),
+                emailHash: FfiConverterOptionString.read(from: &buf),
+                issued: FfiConverterOptionString.read(from: &buf),
+                updatesUntil: FfiConverterOptionString.read(from: &buf),
+                seatLimit: FfiConverterOptionUInt16.read(from: &buf),
+                agenticEntitled: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsLicenseStatus, into buf: inout [UInt8]) {
+        FfiConverterTypeCsLicenseState.write(value.state, into: &buf)
+        FfiConverterOptionUInt8.write(value.daysLeft, into: &buf)
+        FfiConverterOptionString.write(value.sku, into: &buf)
+        FfiConverterOptionString.write(value.emailHash, into: &buf)
+        FfiConverterOptionString.write(value.issued, into: &buf)
+        FfiConverterOptionString.write(value.updatesUntil, into: &buf)
+        FfiConverterOptionUInt16.write(value.seatLimit, into: &buf)
+        FfiConverterBool.write(value.agenticEntitled, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLicenseStatus_lift(_ buf: RustBuffer) throws -> CsLicenseStatus {
+    return try FfiConverterTypeCsLicenseStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLicenseStatus_lower(_ value: CsLicenseStatus) -> RustBuffer {
+    return FfiConverterTypeCsLicenseStatus.lower(value)
+}
+
+
 /**
  * One configured MCP server for the management list. Carries env var NAMES only
  * — secret values never cross the FFI boundary.
@@ -10552,6 +10660,8 @@ public enum CsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
     )
     case Recording(msg: String
     )
+    case License(msg: String
+    )
     case Quality(msg: String
     )
 
@@ -10590,7 +10700,10 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
         case 3: return .Recording(
             msg: try FfiConverterString.read(from: &buf)
             )
-        case 4: return .Quality(
+        case 4: return .License(
+            msg: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .Quality(
             msg: try FfiConverterString.read(from: &buf)
             )
 
@@ -10620,8 +10733,13 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
             FfiConverterString.write(msg, into: &buf)
 
 
-        case let .Quality(msg):
+        case let .License(msg):
             writeInt(&buf, Int32(4))
+            FfiConverterString.write(msg, into: &buf)
+
+
+        case let .Quality(msg):
+            writeInt(&buf, Int32(5))
             FfiConverterString.write(msg, into: &buf)
 
         }
@@ -10880,6 +10998,85 @@ public func FfiConverterTypeCsLayerSource_lift(_ buf: RustBuffer) throws -> CsLa
 #endif
 public func FfiConverterTypeCsLayerSource_lower(_ value: CsLayerSource) -> RustBuffer {
     return FfiConverterTypeCsLayerSource.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum CsLicenseState: Equatable, Hashable {
+
+    case unlicensed
+    case active
+    case graceOffline
+    case expiredUpdates
+
+
+
+}
+
+#if compiler(>=6)
+extension CsLicenseState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsLicenseState: FfiConverterRustBuffer {
+    typealias SwiftType = CsLicenseState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsLicenseState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .unlicensed
+
+        case 2: return .active
+
+        case 3: return .graceOffline
+
+        case 4: return .expiredUpdates
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsLicenseState, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .unlicensed:
+            writeInt(&buf, Int32(1))
+
+
+        case .active:
+            writeInt(&buf, Int32(2))
+
+
+        case .graceOffline:
+            writeInt(&buf, Int32(3))
+
+
+        case .expiredUpdates:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLicenseState_lift(_ buf: RustBuffer) throws -> CsLicenseState {
+    return try FfiConverterTypeCsLicenseState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsLicenseState_lower(_ value: CsLicenseState) -> RustBuffer {
+    return FfiConverterTypeCsLicenseState.lower(value)
 }
 
 
@@ -11626,6 +11823,54 @@ public func FfiConverterTypeCsWorkMode_lower(_ value: CsWorkMode) -> RustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt8: FfiConverterRustBuffer {
+    typealias SwiftType = UInt8?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt8.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt8.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
+    typealias SwiftType = UInt16?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt16.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
     typealias SwiftType = UInt64?
 
@@ -11642,6 +11887,30 @@ fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+    typealias SwiftType = Int64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt64.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -12408,6 +12677,31 @@ public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
 })
 }
 /**
+ * Validate a newly entered signed key. The successful explicit validation is
+ * Active and its timestamp is persisted by `LicenseService` with the key.
+ */
+public func licenseActivate(key: String, nowUnixSeconds: Int64)throws  -> CsLicenseStatus  {
+    return try  FfiConverterTypeCsLicenseStatus_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_license_activate(
+        FfiConverterString.lower(key),
+        FfiConverterInt64.lower(nowUnixSeconds),$0
+    )
+})
+}
+/**
+ * Evaluate persisted local truth at launch. Absence is an honest Unlicensed
+ * state; malformed/tampered persisted data fails closed across the bridge.
+ */
+public func licenseStatus(key: String?, lastOnlineValidationUnixSeconds: Int64?, nowUnixSeconds: Int64)throws  -> CsLicenseStatus  {
+    return try  FfiConverterTypeCsLicenseStatus_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_license_status(
+        FfiConverterOptionString.lower(key),
+        FfiConverterOptionInt64.lower(lastOnlineValidationUnixSeconds),
+        FfiConverterInt64.lower(nowUnixSeconds),$0
+    )
+})
+}
+/**
  * True when microphone permission is already granted.
  * Wraps `os::permissions::check_microphone` (app/os/permissions.rs:135).
  */
@@ -12502,6 +12796,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_license_activate() != 8539) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_license_status() != 13036) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_mic_permission_granted() != 26303) {

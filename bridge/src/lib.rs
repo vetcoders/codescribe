@@ -23,6 +23,7 @@ mod agent_delivery;
 mod agent_status;
 mod config;
 mod hotkeys;
+mod licensing;
 mod mcp_admin;
 mod notes;
 mod quality;
@@ -34,6 +35,7 @@ pub use agent::{CodescribeAgent, CsAgentListener};
 pub use agent_delivery::CsAgentDeliveryListener;
 pub use hotkeys::CodescribeHotkeys;
 pub use hotkeys::CsAppActionListener;
+pub use licensing::{CsLicenseState, CsLicenseStatus};
 pub use quality::{
     CsLexiconEntry, CsQualityCommitResult, CsQualityRecord, commit_overlay_quality_record,
     lexicon_custom_entries, quality_finalize_correction, quality_recent_records,
@@ -45,12 +47,14 @@ pub use tray_status::{
 
 /// Error surfaced across the FFI boundary. One enum for every slice:
 /// `Agent` (chat/provider), `Config` (settings/keychain/prompt I/O),
-/// `Recording` (STT/audio).
+/// `Recording` (STT/audio), `License` (CSK1 validation), and `Quality`
+/// (overlay quality records).
 #[derive(uniffi::Error, Debug)]
 pub enum CsError {
     Agent { msg: String },
     Config { msg: String },
     Recording { msg: String },
+    License { msg: String },
     Quality { msg: String },
 }
 
@@ -60,6 +64,7 @@ impl std::fmt::Display for CsError {
             CsError::Agent { msg }
             | CsError::Config { msg }
             | CsError::Recording { msg }
+            | CsError::License { msg }
             | CsError::Quality { msg } => {
                 write!(f, "{msg}")
             }
