@@ -1,9 +1,9 @@
 //! Local-first CSK1 license verification and entitlement state.
 //!
-//! The public verification key has one owner here. The checked-in key is the
-//! development key used by tests and the `licensing-dev` helper. Before a
-//! production release the operator replaces only `LICENSE_PUBLIC_KEY_BYTES`;
-//! the production private key never enters this repository or the app bundle.
+//! The public verification key is injected by `core/build.rs`. Debug/test
+//! builds default to the development fixture; release builds fail closed unless
+//! the operator supplies a non-development key. The private production key
+//! never enters this repository or the app bundle.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -13,15 +13,30 @@ use chrono::{DateTime, NaiveDate, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+mod key_contract;
+pub use key_contract::{
+    DEV_LICENSE_PUBLIC_KEY_FINGERPRINT, DEV_LICENSE_PUBLIC_KEY_HEX, LICENSE_PUBLIC_KEY_ENV,
+};
+
 pub const LICENSE_PREFIX: &str = "CSK1";
 pub const DEFAULT_AGENTIC_SKU: &str = "agentic-lifetime";
 pub const OFFLINE_GRACE_DAYS: i64 = 30;
 
-/// RFC 8032 test-vector public key. DEVELOPMENT ONLY; replace for production.
-pub const LICENSE_PUBLIC_KEY_BYTES: [u8; 32] = [
-    0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07, 0x3a,
-    0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07, 0x51, 0x1a,
-];
+/// SHA-256 of the RFC 8032 development public key. Release builds compare
+/// against this fingerprint in `build.rs` and refuse to compile when it is
+/// selected.
+pub const LICENSE_PUBLIC_KEY_FINGERPRINT: &str = env!("CODESCRIBE_LICENSE_PUBLIC_KEY_FINGERPRINT");
+
+fn license_public_key_bytes() -> [u8; 32] {
+    let encoded = env!("CODESCRIBE_LICENSE_PUBLIC_KEY_HEX");
+    let mut bytes = [0_u8; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        let start = index * 2;
+        *byte = u8::from_str_radix(&encoded[start..start + 2], 16)
+            .expect("build.rs validates the injected license public key");
+    }
+    bytes
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,7 +146,7 @@ pub fn validate_license_key(key: &str) -> Result<LicenseClaims, LicenseError> {
         .map_err(|_| LicenseError::InvalidSignatureEncoding)?;
     let signature = Signature::from_slice(&signature_bytes)
         .map_err(|_| LicenseError::InvalidSignatureEncoding)?;
-    let verifying_key = VerifyingKey::from_bytes(&LICENSE_PUBLIC_KEY_BYTES)
+    let verifying_key = VerifyingKey::from_bytes(&license_public_key_bytes())
         .map_err(|_| LicenseError::InvalidSignatureEncoding)?;
     verifying_key
         .verify_strict(&payload, &signature)

@@ -99,6 +99,7 @@ serial_test = "3"
 
 [build-dependencies]
 dirs = "6"
+sha2 = "0.10"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)

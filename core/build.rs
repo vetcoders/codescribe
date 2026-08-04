@@ -19,6 +19,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
+#[path = "licensing/key_contract.rs"]
+mod license_key_contract;
+use license_key_contract::{
+    DEV_LICENSE_PUBLIC_KEY_FINGERPRINT, DEV_LICENSE_PUBLIC_KEY_HEX, LICENSE_PUBLIC_KEY_ENV,
+};
+
 /// Default Whisper model to embed
 const DEFAULT_MODEL_NAME: &str = "whisper-large-v3-turbo-mlx-q8";
 const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
@@ -42,10 +50,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBEDDER_REPO");
+    println!("cargo:rerun-if-env-changed={LICENSE_PUBLIC_KEY_ENV}");
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let is_release = profile == "release";
     let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok();
+
+    configure_license_public_key(is_release);
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let codescribe_dir = dirs::home_dir()
@@ -305,6 +316,49 @@ fn main() {
             context_label, whisper_summary, embedder_summary, tts_summary
         );
     }
+}
+
+fn configure_license_public_key(is_release: bool) {
+    if is_release && env::var_os("CARGO_FEATURE_LICENSING_DEV").is_some() {
+        panic!("licensing-dev is forbidden in release builds");
+    }
+
+    let configured = env::var(LICENSE_PUBLIC_KEY_ENV)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let key_hex = match configured {
+        Some(value) => value,
+        None if is_release => panic!(
+            "{LICENSE_PUBLIC_KEY_ENV} is required for release builds; refusing to embed the development license key"
+        ),
+        None => DEV_LICENSE_PUBLIC_KEY_HEX.to_string(),
+    };
+
+    let key_bytes = decode_license_public_key(&key_hex);
+    let fingerprint = format!("{:x}", Sha256::digest(key_bytes));
+    if is_release && fingerprint == DEV_LICENSE_PUBLIC_KEY_FINGERPRINT {
+        panic!(
+            "{LICENSE_PUBLIC_KEY_ENV} has the forbidden development fingerprint {DEV_LICENSE_PUBLIC_KEY_FINGERPRINT}"
+        );
+    }
+
+    println!("cargo:rustc-env=CODESCRIBE_LICENSE_PUBLIC_KEY_HEX={key_hex}");
+    println!("cargo:rustc-env=CODESCRIBE_LICENSE_PUBLIC_KEY_FINGERPRINT={fingerprint}");
+}
+
+fn decode_license_public_key(value: &str) -> [u8; 32] {
+    assert!(
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{LICENSE_PUBLIC_KEY_ENV} must contain exactly 64 hexadecimal characters"
+    );
+    let mut bytes = [0_u8; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        let start = index * 2;
+        *byte = u8::from_str_radix(&value[start..start + 2], 16)
+            .expect("validated license public key hex");
+    }
+    bytes
 }
 
 fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
