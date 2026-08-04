@@ -550,6 +550,11 @@ async fn test_stop_path_harness_executes_production_pipeline_delivery_span() {
 /// emitted `assistive_delivery_budget` receipt measured it. Moving the timer
 /// off the real send makes the captured total shrink below the adapter cost.
 #[tokio::test]
+// Serialized with the fallback test below: each builds its own controller, and
+// a controller constructed on a parallel thread leaks its init tracing events
+// into this test's captured buffer (observed on CI: the budget receipt line
+// vanished behind a foreign audio-recorder line).
+#[serial_test::serial(assistive_delivery)]
 async fn test_assistive_delivery_budget_times_real_send_adapter() {
     #[derive(Clone, Default)]
     struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
@@ -638,6 +643,7 @@ async fn test_assistive_delivery_budget_times_real_send_adapter() {
 /// captured at every session start) instead of failing closed — and stay
 /// one-shot through the fallback.
 #[tokio::test]
+#[serial_test::serial(assistive_delivery)]
 async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
     let controller = RecordingController::new();
     *controller.pending_assistive_context.write().await = None;
