@@ -131,6 +131,7 @@ xcodebuild -project macos/Codescribe.xcodeproj \
   CURRENT_PROJECT_VERSION="$STAMP_BUILD_NUM" \
   CS_BUILD_COMMIT="$STAMP_COMMIT" \
   CS_BUILT_AT="$STAMP_BUILT_AT" \
+  SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"

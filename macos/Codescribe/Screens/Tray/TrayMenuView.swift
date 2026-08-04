@@ -37,6 +37,9 @@ struct TrayMenuView: View {
                     openSettings()
                 }
                 TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
+                TrayRow(icon: .refresh, title: "Check for Updates…") {
+                    viewModel.onCheckForUpdates()
+                }
                 TrayRow(icon: .help, title: "Help") { viewModel.onHelp() }
                 TrayRow(icon: .info, title: "About") { viewModel.onAbout() }
 

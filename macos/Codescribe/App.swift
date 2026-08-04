@@ -147,6 +147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // First-run onboarding wizard host. Presented at launch when the core gate
     // (`shouldShowOnboarding`) reports setup is due.
     private let onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
+    // Sparkle update channel. Created in didFinishLaunching (after the
+    // duplicate-instance/test-host guard) so the XCTest host never starts a
+    // scheduled updater alongside the live app.
+    private var updater: UpdaterService?
 
     /// True when the process is the XCTest host, not a user launch. The unit-test
     /// runner reuses this app as its host: without this gate the duplicate-instance
@@ -200,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.overlay.prepareForRecordingStart()
             model.overlay.showForRecording()
         }
+        updater = UpdaterService()
         wireTrayActions()
         installStatusItem()
         installTextScaleMonitor()
@@ -286,6 +291,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.tray.onHelp = {
             NSWorkspace.shared.open(Self.helpURL)
+        }
+        model.tray.onCheckForUpdates = { [weak self] in
+            self?.updater?.checkForUpdates()
         }
         // Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
         // gate), `present()` always fronts the window — resume when onboarding is
