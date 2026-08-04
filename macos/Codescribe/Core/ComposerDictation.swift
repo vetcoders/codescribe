@@ -168,6 +168,10 @@ final class RealComposerDictation: ComposerDictating {
                     if resolution.autoSend {
                         store.send()
                     }
+                    // Analytics must never delay transcript delivery or agent send.
+                    Task { @MainActor in
+                        _ = await ActivationPing.shared.recordFirstSuccessfulDictation()
+                    }
                     dictationLog.info("composer dictation: inserted \(trimmed.count, privacy: .public) chars")
                 }
             } catch {

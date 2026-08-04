@@ -266,6 +266,27 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.statusText, "recording · ambient")
     }
 
+    func testSuccessfulDictationSignalFiresOnceAndNeverForNoSpeech() {
+        let successful = OverlayState()
+        var successfulSignals = 0
+        successful.onSuccessfulDictation = { successfulSignals += 1 }
+        successful.handleRecordingPreparing()
+        successful.handleRecordingStarted()
+        successful.applyFinal(utteranceId: 1, "activation without payload")
+        successful.finishControllerRecording()
+        successful.finishControllerRecording()
+        XCTAssertEqual(successfulSignals, 1)
+
+        let silent = OverlayState()
+        var silentSignals = 0
+        silent.onSuccessfulDictation = { silentSignals += 1 }
+        silent.handleRecordingPreparing()
+        silent.handleRecordingStarted()
+        silent.applyNoSpeech(reason: "no_speech_detected")
+        silent.finishControllerRecording()
+        XCTAssertEqual(silentSignals, 0)
+    }
+
     func testAudioLevelLifecycleDropsLateSamplesAndResets() {
         let state = OverlayState()
 

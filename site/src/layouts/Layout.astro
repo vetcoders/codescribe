@@ -42,6 +42,11 @@ const baseUrl = new URL(base, site);
 const pathClean = path ? path.replace(/^\//, '').replace(/\/$/, '') + '/' : '';
 const canonical = pathClean ? new URL(pathClean, baseUrl).href : baseUrl.href;
 const ogImage = new URL(base.replace(/\/$/, '') + '/og.png', site).href;
+// B3 has not been approved: no default domain means no analytics request in any
+// normal build. A consented deployment opts in explicitly at build time.
+const plausibleDomain = import.meta.env.PUBLIC_PLAUSIBLE_DOMAIN?.trim();
+const plausibleScriptSrc =
+  import.meta.env.PUBLIC_PLAUSIBLE_SCRIPT_SRC?.trim() || 'https://plausible.io/js/script.js';
 ---
 
 <!doctype html>
@@ -57,6 +62,9 @@ const ogImage = new URL(base.replace(/\/$/, '') + '/og.png', site).href;
     ))}
     <meta name="theme-color" content="#090a0d" />
     <link rel="icon" type="image/png" href={base.replace(/\/$/, '') + '/icon.png'} />
+    {plausibleDomain && (
+      <script is:inline defer data-domain={plausibleDomain} src={plausibleScriptSrc}></script>
+    )}
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />

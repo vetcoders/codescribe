@@ -4,6 +4,7 @@ import SwiftUI
 // reports the running build and local data truth instead of inventing a profile.
 struct UserPanel: View {
     @ObservedObject var model: SettingsViewModel
+    @AppStorage(ActivationPing.optInDefaultsKey) private var activationPingOptIn = false
 
     private static let docsURL = URL(string: "https://github.com/vetcoders/codescribe/tree/develop/docs")!
     /// Public trust pages on the GitHub Pages site (base `/codescribe`).
@@ -47,6 +48,26 @@ struct UserPanel: View {
             .padding(.top, 11)
             .background(card)
             .overlay(cardBorder)
+
+            SettingsSectionLabel("Anonymous activation")
+                .padding(.top, 24)
+            SettingsControlRow(
+                title: "Share anonymous activation ping",
+                subtitle: "Send one content-free event after your first successful dictation"
+            ) {
+                Toggle("", isOn: $activationPingOptIn)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .tint(CSColor.chromeAccent)
+                    .accessibilityLabel("Share anonymous activation ping")
+                    .accessibilityValue(activationPingOptIn ? "On" : "Off")
+            }
+            .padding(.top, 11)
+
+            Text("Off by default. The event contains only the app version and macOS version — never audio or transcript text.")
+                .font(CSFont.mono(10.5, .regular))
+                .foregroundStyle(CSColor.textMutedAlt)
+                .padding(.top, 7)
 
             SettingsSectionLabel("Agent transcript tagging")
                 .padding(.top, 24)

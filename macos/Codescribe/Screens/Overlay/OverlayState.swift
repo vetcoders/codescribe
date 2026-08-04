@@ -222,6 +222,8 @@ final class OverlayState: ObservableObject {
     var onRecordingPreparing: (() -> Void)?
     var onRecordingStarted: (() -> Void)?
     var onRecordingStopped: (() -> Void)?
+    /// Content-free success seam. No transcript crosses this callback.
+    var onSuccessfulDictation: (() -> Void)?
 
     /// Strong ref so the Rust-side callback (held via the UniFFI handle map) and
     /// our hop-to-main bridge stay alive for the lifetime of the overlay.
@@ -1436,7 +1438,12 @@ final class OverlayState: ObservableObject {
         // onAppear poll, so a hotkey stop left it stuck. Gate on the finalize transition
         // so redundant re-finalizes (finishControllerRecording + applySessionFinalised)
         // don't re-fire and churn @Published tray state.
-        if !wasFinalized { onRecordingStopped?() }
+        if !wasFinalized {
+            if !resolvedBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                onSuccessfulDictation?()
+            }
+            onRecordingStopped?()
+        }
 
         // Every terminal outcome gets the same activity-anchored lifetime.
         restartAutoHideCountdown()

@@ -137,6 +137,11 @@ final class OverlayController: ObservableObject {
             AppModel.shared.tray.isStartingDictation = false
             AppModel.shared.chat.dictationBlocked = false
         }
+        state.onSuccessfulDictation = {
+            Task { @MainActor in
+                _ = await ActivationPing.shared.recordFirstSuccessfulDictation()
+            }
+        }
         state.onClose = { [weak self] in self?.hide() }
         state.onSendToAgent = { [weak self] text in
             guard !text.isEmpty else { return }
