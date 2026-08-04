@@ -97,6 +97,14 @@ enum ChatLayoutPolicy {
         }
         return max(minimumReadable, min(usable, cap))
     }
+
+    /// Hard ceiling for any turn's laid-out width inside the scroll document.
+    /// Prevents a single long unbreakable token (or a mis-parsed wire dump)
+    /// from growing the ScrollView's content width past the viewport — the
+    /// class of bug that floats glyphs like `)"` outside the Agent window.
+    static func documentWidth(for containerWidth: CGFloat) -> CGFloat {
+        max(minimumReadable, containerWidth > 0 ? containerWidth : minimumReadable)
+    }
 }
 
 /// Render disposition for one bubble's text (bolączka #3 residual, hang report
@@ -214,7 +222,15 @@ struct MessageList: View {
                             .frame(height: 1)
                             .id(bottomAnchor)
                     }
+                    // Pin the document to the viewport width so a single
+                    // long-line bubble cannot widen the scroll content and
+                    // paint outside the Agent window chrome (R1 collapse).
+                    .frame(
+                        maxWidth: ChatLayoutPolicy.documentWidth(for: containerWidth),
+                        alignment: .topLeading
+                    )
                     .padding(ChatLayoutPolicy.listPadding)
+                    .clipped()
                     .background(
                         GeometryReader { content in
                             Color.clear.preference(
@@ -567,6 +583,9 @@ private struct YouTurn: View {
                     Button("Copy full prompt") { chatCopy(wire) }
                 }
             }
+            // Clip the chrome so markdown/code/selection never paints past the
+            // rounded bubble into the window chrome (R1 `)"` fragment class).
+            .clipped()
         }
         .frame(
             maxWidth: ChatLayoutPolicy.youBubbleMaxWidth(
@@ -575,6 +594,7 @@ private struct YouTurn: View {
             ),
             alignment: .trailing
         )
+        .clipped()
     }
 }
 
@@ -615,20 +635,39 @@ private struct ContextChip: View {
                             .foregroundStyle(CSColor.textMuted)
                     }
                     if let selection {
-                        Text(selection)
-                            .font(CSFont.mono(10.5))
-                            .foregroundStyle(CSColor.textBodyAlt)
-                            .textSelection(.enabled)
-                            .lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(CSColor.surfaceRaised(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+                        // Huge pasted selections (legacy assistive wires) must
+                        // not expand the You bubble unboundedly — fold them
+                        // through the same oversized policy as message bodies.
+                        Group {
+                            if OversizedBubblePolicy.isOversized(selection) {
+                                OversizedMessageBody(fullText: selection) { head in
+                                    Text(head)
+                                        .font(CSFont.mono(10.5))
+                                        .foregroundStyle(CSColor.textBodyAlt)
+                                        .lineSpacing(3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            } else {
+                                Text(selection)
+                                    .font(CSFont.mono(10.5))
+                                    .foregroundStyle(CSColor.textBodyAlt)
+                                    .textSelection(.enabled)
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(8)
+                        .background(CSColor.surfaceRaised(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+                        .clipped()
                     }
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 }
 
@@ -1084,6 +1123,7 @@ private struct ToolTurn: View {
                     .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+            .clipped()
         }
         .frame(
             maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
@@ -1092,6 +1132,7 @@ private struct ToolTurn: View {
             ),
             alignment: .leading
         )
+        .clipped()
     }
 }
 
@@ -1216,6 +1257,7 @@ private struct AssistantTurn: View {
                 style: .continuous
             ))
             .contextMenu { CopyButton(text: message.text) }
+            .clipped()
         }
         .frame(
             maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
@@ -1224,6 +1266,7 @@ private struct AssistantTurn: View {
             ),
             alignment: .leading
         )
+        .clipped()
     }
 }
 
