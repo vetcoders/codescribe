@@ -719,7 +719,7 @@ final class SettingsViewModel: ObservableObject {
         agentStatus: AgentStatusEngine? = nil,
         mcpAdmin: MCPAdminEngine? = nil,
         hotkeys: HotkeysEngine? = nil,
-        licenseService: LicenseService = .preview,
+        licenseService: LicenseService? = nil,
         buildInfo: AppBuildInfo = .current(),
         laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
             laneTruthSnapshot(lane: lane)
@@ -739,7 +739,7 @@ final class SettingsViewModel: ObservableObject {
         self.agentStatus = agentStatus
         self.mcpAdmin = mcpAdmin
         self.hotkeys = hotkeys
-        self.licenseService = licenseService
+        self.licenseService = licenseService ?? .preview
         self.buildInfo = buildInfo
         self.laneTruthProvider = laneTruthProvider
         self.servingStatusProvider = servingStatusProvider
@@ -760,7 +760,7 @@ final class SettingsViewModel: ObservableObject {
         self.audioInput = .sample
         self.audioInputReadError = nil
         self.resetPreview = .sample
-        self.licenseStatus = licenseService.status
+        self.licenseStatus = self.licenseService.status
         // K4: tray cycles arrive on the bus; reload Settings badge display.
         // Register after every stored property is initialized (Swift init order).
         holdBadgeObserver = NotificationCenter.default.addObserver(
