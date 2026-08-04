@@ -1225,7 +1225,8 @@ pub struct VoiceLabSaveOutcome {
 /// 1. The superseding revision is appended unconditionally (validation is
 ///    ID shape + non-empty canonical only — saving a human edit is not a
 ///    lexicon candidacy question).
-/// 2. Word-level pairs are derived from `delivered_text -> canonical`
+/// 2. Word-level pairs are derived from `raw_text -> canonical` (falling back
+///    to delivered text only for legacy records that never captured raw STT)
 ///    (aligned replace runs), each individually gated by
 ///    [`is_sensible_lexicon_candidate`], and the survivors upserted in one
 ///    atomic lexicon rewrite. A failed rewrite leaves the previous lexicon
@@ -1279,7 +1280,15 @@ pub fn finalize_voice_lab_correction(
     });
     save_quality_record(&revision).context("append finalized correction revision")?;
 
-    let pairs = derive_lexicon_pairs(&current.delivered_text, canonical);
+    // Dictionary learning is a WER correction loop, not a formatter-training
+    // loop. Comparing the formatted delivery against the human correction would
+    // teach punctuation/casing/LLM rewrites as if Whisper had heard them.
+    let learning_source = if current.raw_text.trim().is_empty() {
+        &current.delivered_text
+    } else {
+        &current.raw_text
+    };
+    let pairs = derive_lexicon_pairs(learning_source, canonical);
     let mut pairs_learned = 0u32;
     let mut lexicon_error = None;
     if !pairs.is_empty() {
@@ -2117,6 +2126,40 @@ mod tests {
 
     #[test]
     #[serial]
+    fn voice_lab_revision_keeps_raw_stt_as_dictionary_source() {
+        let temp_dir = tempfile::tempdir().expect("temp quality root");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        commit_overlay_correction_with_level(
+            "rawvariant",
+            "formattervariant",
+            "FirstCanonical",
+            "overlay",
+            None,
+            Some("copy"),
+            Some("correction"),
+        )
+        .expect("seed correction");
+        let id = recent_quality_records(1).unwrap()[0].logical_id();
+
+        finalize_voice_lab_correction(&id, "RawCanonical").expect("revise from Voice Lab");
+        let entries = custom_lexicon_entries().expect("custom lexicon");
+        assert!(
+            entries.iter().any(|entry| {
+                entry.variant == "rawvariant" && entry.canonical == "RawCanonical"
+            })
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.variant == "formattervariant")
+        );
+    }
+
+    #[test]
+    #[serial]
     fn finalizing_correction_appends_revision_and_leaves_one_active_mapping() {
         let temp_dir = tempfile::tempdir().expect("temp data dir for Voice Lab edit");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
@@ -2411,17 +2454,17 @@ mod tests {
         fs::write(
             config_dir.join("lexicon.custom.proposed.jsonl"),
             concat!(
-                r#"{"term":"Kubernetes","mispronunciations":["kubernetis","kubernetys"],"source":"correction"}"#,
-                "\n",
-                r#"{"term":"Docker","mispronunciations":["dokier"],"source":"correction"}"#,
-                "\n",
-                "\n",
-                "{ this line is not json\n",
-                r#"{"mispronunciations":["orphan"]}"#,
-                "\n",
+            r#"{"term":"Kubernetes","mispronunciations":["kubernetis","kubernetys"],"source":"correction"}"#,
+            "\n",
+            r#"{"term":"Docker","mispronunciations":["dokier"],"source":"correction"}"#,
+            "\n",
+            "\n",
+            "{ this line is not json\n",
+            r#"{"mispronunciations":["orphan"]}"#,
+            "\n",
             ),
         )
-        .unwrap();
+            .unwrap();
 
         let result = teach_dictionary_from_store().expect("teach");
 
