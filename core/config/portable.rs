@@ -469,16 +469,18 @@ mod tests {
     #[test]
     fn portable_export_strips_absolute_home_paths_and_grants() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let mut settings = UserSettings::default();
-        settings.agent_workspace_roots = Some(vec![format!("{home}/Git"), "/opt/other".into()]);
-        settings.agent_permissions = Some({
-            let mut p = crate::agent::permissions::AgentPermissions::default();
-            p.tools.insert(
-                "desktop-commander:write_file".into(),
-                crate::agent::permissions::PermissionLevel::Allow,
-            );
-            p
-        });
+        let settings = UserSettings {
+            agent_workspace_roots: Some(vec![format!("{home}/Git"), "/opt/other".into()]),
+            agent_permissions: Some({
+                let mut p = crate::agent::permissions::AgentPermissions::default();
+                p.tools.insert(
+                    "desktop-commander:write_file".into(),
+                    crate::agent::permissions::PermissionLevel::Allow,
+                );
+                p
+            }),
+            ..UserSettings::default()
+        };
 
         let profile = export_portable(&settings).expect("export");
         let json = serde_json::to_string(&profile).expect("json");
