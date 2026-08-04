@@ -12,6 +12,9 @@ use codescribe::agent::tools::mcp::{
     AgenticReadinessReport, McpRowTone, McpStatusReport, McpStatusRow, probe_agentic_readiness,
     probe_mcp_status,
 };
+use codescribe_core::agent::{ConnectorHealth, capability_matrix};
+use codescribe_core::config::Config;
+use codescribe_core::mcp::{default_mcp_config_path, list_servers};
 
 /// Visual tone for one status row, mirrored 1:1 from the core [`McpRowTone`] so
 /// the Settings layer maps it to concrete colors without depending on agent
@@ -110,6 +113,19 @@ impl From<AgenticReadinessReport> for CsAgenticReadiness {
     }
 }
 
+/// One row of the native / enhanced / unavailable capability matrix (V9).
+#[derive(uniffi::Record)]
+pub struct CsCapabilityRow {
+    /// Canonical op id, e.g. `fs.list` / `repo.status`.
+    pub op: String,
+    /// `native` | `enhanced` | `unavailable`
+    pub tier: String,
+    /// Fulfilling provider label (not the model-facing contract).
+    pub provider: String,
+    pub native_tool: String,
+    pub reason: String,
+}
+
 /// Read-only handle over the codescribe agent-status probes. Stateless: every
 /// call re-reads config truth so Swift always sees on-disk state.
 #[derive(uniffi::Object, Default)]
@@ -136,6 +152,78 @@ impl CodescribeAgentStatus {
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {
         let _ = codescribe_core::config::Config::load();
         probe_agentic_readiness().into()
+    }
+
+    /// Provider-neutral capability matrix: native / enhanced / unavailable + reason.
+    /// IntelliJ wrong-project or stale sessions are detected and bypassed.
+    pub fn capability_matrix(&self) -> Vec<CsCapabilityRow> {
+        let _ = codescribe_core::config::Config::load();
+        let health = live_connector_health();
+        capability_matrix(&health)
+            .into_iter()
+            .map(|row| CsCapabilityRow {
+                op: row.op,
+                tier: row.tier.as_str().to_string(),
+                provider: row.provider.as_str().to_string(),
+                native_tool: row.native_tool.unwrap_or_default(),
+                reason: row.reason,
+            })
+            .collect()
+    }
+}
+
+fn live_connector_health() -> ConnectorHealth {
+    let servers = list_servers().unwrap_or_default();
+    let mut intellij_healthy = false;
+    let mut intellij_project_path = None;
+    let mut loctree_healthy = false;
+    let mut mcp_servers_with_tools = Vec::new();
+
+    for server in &servers {
+        if !server.enabled {
+            continue;
+        }
+        let name_l = server.name.to_ascii_lowercase();
+        if name_l.contains("loctree") {
+            loctree_healthy = true;
+            mcp_servers_with_tools.push(server.name.clone());
+        }
+        if name_l.contains("intellij") {
+            intellij_healthy = true;
+            mcp_servers_with_tools.push(server.name.clone());
+            // Project path may live in env of the stdio server; list_servers
+            // only exposes env *keys*, so read the config file for the value.
+            if let Ok(path) = default_mcp_config_path()
+                && let Ok(Some(cfg)) = codescribe_core::mcp::McpConfigFile::load_optional(&path)
+                && let Some(server_cfg) = cfg.servers.get(&server.name)
+            {
+                intellij_project_path = server_cfg.env.get("IJ_MCP_SERVER_PROJECT_PATH").cloned();
+            }
+        }
+    }
+
+    let workspace_roots = Config::effective_agent_workspace_roots()
+        .into_iter()
+        .map(|root| {
+            if let Some(rest) = root.strip_prefix("~/") {
+                if let Ok(home) = std::env::var("HOME") {
+                    return format!("{home}/{rest}");
+                }
+            } else if root == "~"
+                && let Ok(home) = std::env::var("HOME")
+            {
+                return home;
+            }
+            root
+        })
+        .collect();
+
+    ConnectorHealth {
+        loctree_healthy,
+        intellij_healthy,
+        intellij_project_path,
+        workspace_roots,
+        mcp_servers_with_tools,
     }
 }
 
