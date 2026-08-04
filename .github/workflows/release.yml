@@ -17,6 +17,11 @@ jobs:
   dmg:
     name: Build, notarize, and publish DMG
     runs-on: macos-14
+    # Deployment gate: `workflow_dispatch` can otherwise be fired by anyone with
+    # write access against any tag. Protection rules (required reviewers,
+    # deployment branches/tags) live on the `release` environment in repo
+    # settings — configure them there; this line is what makes them apply.
+    environment: release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -75,6 +80,10 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH" "${existing_keychains[@]}"
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          # The identity now lives in the keychain; the raw PKCS12 has no
+          # further use. Overwrite-then-unlink so the private key material
+          # never survives on the runner disk (`rm -P` = 3-pass overwrite).
+          rm -P "$CERT_PATH"
 
       - name: Configure Apple notarization profile
         env:
@@ -176,3 +185,13 @@ jobs:
             Codescribe.dmg.sha256
             appcast.xml
           generate_release_notes: true
+
+      - name: Remove signing keychain
+        # Runs on every outcome: a failed build must not leave the imported
+        # Developer ID identity resident on the runner.
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
