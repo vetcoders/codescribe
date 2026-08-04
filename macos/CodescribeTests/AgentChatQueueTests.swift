@@ -214,6 +214,48 @@ final class AgentChatQueueTests: XCTestCase {
         XCTAssertEqual(sidecarCount, 0, "no accepted-turn records may survive the terminals")
     }
 
+    func testEditingQueuedMessageUpdatesDispatchAndDurableCopy() async {
+        let engine = GatedEngine()
+        let store = AgentChatStore(engine: engine, threadsProvider: StubProvider())
+
+        sendMessage("first", in: store)
+        await waitUntil("first turn should start") { engine.state.starts.count == 1 }
+        sendMessage("old queued wording", in: store)
+        let queuedID = try! XCTUnwrap(store.queuedTurns.first?.id)
+
+        XCTAssertTrue(store.editQueuedTurn(queuedID, text: "  corrected queued wording  "))
+        XCTAssertEqual(store.queuedTurns.first?.text, "corrected queued wording")
+        let durableTexts = UserDefaults.standard
+            .data(forKey: AgentChatStore.acceptedTurnsDefaultsKey)
+            .flatMap { try? JSONDecoder().decode([SidecarTextProbe].self, from: $0) }?
+            .map(\.text) ?? []
+        XCTAssertTrue(durableTexts.contains("corrected queued wording"))
+        XCTAssertFalse(durableTexts.contains("old queued wording"))
+
+        engine.state.finishNext("r1")
+        await waitUntil("edited turn should dispatch") { engine.state.starts.count == 2 }
+        XCTAssertEqual(engine.state.starts[1].text, "corrected queued wording")
+        engine.state.finishNext("r2")
+    }
+
+    func testComposerHistoryIncludesQueuedMessagesInFIFOOrder() async {
+        let engine = GatedEngine()
+        let store = AgentChatStore(engine: engine, threadsProvider: StubProvider())
+        let threadID = try! XCTUnwrap(store.selectedThreadID)
+
+        sendMessage("first", in: store)
+        await waitUntil("first turn should start") { engine.state.starts.count == 1 }
+        sendMessage("second", in: store)
+        sendMessage("third", in: store)
+
+        XCTAssertEqual(store.composerHistory(in: threadID), ["first", "second", "third"])
+        engine.state.finishNext("r1")
+        await waitUntil("second should start") { engine.state.starts.count == 2 }
+        engine.state.finishNext("r2")
+        await waitUntil("third should start") { engine.state.starts.count == 3 }
+        engine.state.finishNext("r3")
+    }
+
     /// Simulated app death: the first store accepts two messages (one running,
     /// one queued) and never reaches a terminal. A fresh store — same defaults —
     /// must replay both, in order.
@@ -246,3 +288,4 @@ final class AgentChatQueueTests: XCTestCase {
 
 /// Decoding helper for the sidecar-empty assertion: any element shape counts.
 private struct SidecarProbe: Decodable {}
+private struct SidecarTextProbe: Decodable { let text: String }

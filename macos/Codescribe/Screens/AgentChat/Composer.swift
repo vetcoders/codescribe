@@ -77,6 +77,7 @@ struct Composer: View {
                     height: $fieldHeight,
                     textScale: textScale,
                     isFocused: $fieldFocused,
+                    history: store.selectedThreadID.map { store.composerHistory(in: $0) } ?? [],
                     onSend: { store.send() }
                 )
                 .frame(height: fieldHeight)

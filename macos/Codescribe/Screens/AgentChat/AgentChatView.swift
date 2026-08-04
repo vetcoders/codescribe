@@ -83,7 +83,11 @@ private struct ThreadDetail: View {
             }
             if let thread = store.currentThread {
                 ForEach(store.queuedTurns(in: thread.id)) { queued in
-                    QueuedTurnRow(turn: queued) { store.cancelQueuedTurn(queued.id) }
+                    QueuedTurnRow(
+                        turn: queued,
+                        save: { store.editQueuedTurn(queued.id, text: $0) },
+                        cancel: { store.cancelQueuedTurn(queued.id) }
+                    )
                         .padding(.horizontal, 20)
                         .padding(.bottom, 6)
                 }
@@ -246,19 +250,53 @@ private struct ThreadDetail: View {
 /// is ever sent.
 private struct QueuedTurnRow: View {
     let turn: AgentChatStore.QueuedTurn
+    let save: (String) -> Bool
     let cancel: () -> Void
+    @State private var isEditing = false
+    @State private var editText = ""
 
     var body: some View {
         HStack(spacing: 10) {
             Text("Queued")
                 .font(CSFont.mono(10, .semibold))
                 .foregroundStyle(CSColor.amber)
-            Text(turn.text.isEmpty ? "\(turn.attachments.count) attachment(s)" : turn.text)
-                .font(CSFont.ui(12, .regular))
-                .foregroundStyle(CSColor.textBody)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if isEditing {
+                TextField("Queued message", text: $editText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(CSFont.ui(12, .regular))
+                    .foregroundStyle(CSColor.textHigh)
+                    .lineLimit(1 ... 4)
+                    .onSubmit { commitEdit() }
+                    .onExitCommand { isEditing = false }
+            } else {
+                Text(turn.text.isEmpty ? "\(turn.attachments.count) attachment(s)" : turn.text)
+                    .font(CSFont.ui(12, .regular))
+                    .foregroundStyle(CSColor.textBody)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .textSelection(.enabled)
+                    .onTapGesture(count: 2) { beginEdit() }
+            }
             Spacer()
+            if isEditing {
+                Button("Save") { commitEdit() }
+                    .buttonStyle(.plain)
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(CSColor.oliveLight)
+                Button("Cancel") { isEditing = false }
+                    .buttonStyle(.plain)
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+            } else {
+                Button(action: beginEdit) {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                }
+                .buttonStyle(.plain)
+                .help("Edit queued message")
+                .accessibilityLabel("Edit queued message")
+            }
             Button(action: cancel) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 13))
@@ -276,6 +314,15 @@ private struct QueuedTurnRow: View {
                 .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    }
+
+    private func beginEdit() {
+        editText = turn.text
+        isEditing = true
+    }
+
+    private func commitEdit() {
+        if save(editText) { isEditing = false }
     }
 }
 

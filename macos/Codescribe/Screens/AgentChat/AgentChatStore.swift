@@ -1052,7 +1052,7 @@ final class AgentChatStore: ObservableObject {
         let id: UUID
         let threadID: UUID
         let backendThreadID: String
-        let text: String
+        var text: String
         let attachments: [PendingAttachment]
         let enqueuedAt: Date
     }
@@ -1065,11 +1065,39 @@ final class AgentChatStore: ObservableObject {
         queuedTurns.filter { $0.threadID == threadID }
     }
 
+    /// Terminal-style composer history, oldest → newest. It includes already
+    /// dispatched user turns and accepted queued turns, so Up can recover the
+    /// exact message the operator just queued without cancelling it first.
+    func composerHistory(in threadID: UUID) -> [String] {
+        let sent = threads.first(where: { $0.id == threadID })?.messages
+            .filter { $0.role == .you }
+            .map(\.text) ?? []
+        let queued = queuedTurns(in: threadID).map(\.text)
+        return (sent + queued).reduce(into: [String]()) { result, text in
+            let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, result.last != text else { return }
+            result.append(text)
+        }
+    }
+
     /// Cancel one still-queued (never dispatched) message.
     func cancelQueuedTurn(_ id: UUID) {
         guard queuedTurns.contains(where: { $0.id == id }) else { return }
         queuedTurns.removeAll { $0.id == id }
         removeDurableAcceptedTurn(id: id)
+    }
+
+    /// Edit an accepted turn while it is still queued. The same durable sidecar
+    /// is replaced immediately, so a crash/relaunch cannot resurrect the old
+    /// wording. Attachments and FIFO position stay unchanged.
+    @discardableResult
+    func editQueuedTurn(_ id: UUID, text: String) -> Bool {
+        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return false }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !queuedTurns[index].attachments.isEmpty else { return false }
+        queuedTurns[index].text = text
+        persistDurableAcceptedTurn(queuedTurns[index])
+        return true
     }
 
     // MARK: Send (accept → queue → serialized dispatch)
