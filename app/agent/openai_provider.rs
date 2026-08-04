@@ -160,6 +160,7 @@ impl AgentProvider for OpenAiProvider {
         );
 
         let request = OpenAiResponsesRequest {
+            reasoning: reasoning_summary_request(&model),
             model,
             input: build_request_input_items(messages, previous_response_id.as_deref())?,
             previous_response_id,
@@ -342,6 +343,12 @@ async fn forward_events_and_track_chain(
 #[derive(Debug, Serialize)]
 struct OpenAiResponsesRequest {
     model: String,
+    /// Ask reasoning-capable Responses models for the safe public summary
+    /// stream. Without this field the API may reason internally but emits no
+    /// `response.reasoning_summary_text.*` events, leaving the macOS bubble on
+    /// an opaque "thinking…" placeholder for the whole tool turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenAiReasoningRequest>,
     input: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
@@ -354,6 +361,20 @@ struct OpenAiResponsesRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefinition>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiReasoningRequest {
+    summary: &'static str,
+}
+
+fn reasoning_summary_request(model: &str) -> Option<OpenAiReasoningRequest> {
+    let model = model.trim().to_ascii_lowercase();
+    let supports_reasoning = model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4");
+    supports_reasoning.then_some(OpenAiReasoningRequest { summary: "auto" })
 }
 
 #[derive(Debug, Serialize)]
@@ -631,7 +652,7 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 mod tests {
     use super::{
         OpenAiProvider, build_request_input_items, format_tool_output,
-        forward_events_and_track_chain, request_messages, to_data_uri,
+        forward_events_and_track_chain, reasoning_summary_request, request_messages, to_data_uri,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -642,6 +663,16 @@ mod tests {
     use reqwest::Client;
     use serde_json::json;
     use tokio::sync::{Mutex, mpsc};
+
+    #[test]
+    fn requests_public_reasoning_summaries_only_for_reasoning_models() {
+        let gpt5 = serde_json::to_value(reasoning_summary_request("gpt-5.6").unwrap())
+            .expect("serialize reasoning request");
+        assert_eq!(gpt5, json!({ "summary": "auto" }));
+        assert!(reasoning_summary_request("o3-mini").is_some());
+        assert!(reasoning_summary_request("gpt-4o-mini").is_none());
+        assert!(reasoning_summary_request("llama3.3").is_none());
+    }
 
     #[test]
     fn request_messages_replays_full_history_without_previous_response_id() {
@@ -923,7 +954,7 @@ mod tests {
             "data: [DONE]",
             "",
         ]
-        .join("\n");
+            .join("\n");
         let mock = server
             .mock("POST", "/v1/responses")
             .with_status(200)
@@ -1253,7 +1284,7 @@ mod tests {
             "data: [DONE]",
             "",
         ]
-        .join("\n");
+            .join("\n");
         let mock = server
             .mock("POST", "/v1/responses")
             .with_status(200)

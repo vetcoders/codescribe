@@ -1222,7 +1222,15 @@ private struct AssistantTurn: View {
 private struct ReasoningDisclosure: View {
     let text: String
     let isLive: Bool
-    @State private var expanded = false
+    @State private var expanded: Bool
+
+    init(text: String, isLive: Bool) {
+        self.text = text
+        self.isLive = isLive
+        // A live summary is status, not optional archaeology: show it as soon
+        // as the provider emits it. Settled turns remain compact and reopenable.
+        _expanded = State(initialValue: isLive)
+    }
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -1257,6 +1265,9 @@ private struct ReasoningDisclosure: View {
             .contentShape(Rectangle())
         }
         .disclosureGroupStyle(FlatDisclosureStyle())
+        .onChange(of: isLive) { _, live in
+            if live { expanded = true }
+        }
         .background(CSColor.surfaceRaised(0.018))
         .overlay(
             RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)

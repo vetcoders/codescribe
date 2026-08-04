@@ -120,6 +120,10 @@ struct MarkdownText: View {
                 blockView(block, isLast: index == blocks.count - 1)
             }
         }
+        // Rich rendering must not trade away the platform's basic copy
+        // semantics. Apply at the markdown root so paragraphs, headings, lists,
+        // quotes, tables and code inherit selection by default.
+        .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
             NSWorkspace.shared.open(url)
             return .handled
