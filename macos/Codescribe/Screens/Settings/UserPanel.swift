@@ -6,6 +6,9 @@ struct UserPanel: View {
     @ObservedObject var model: SettingsViewModel
 
     private static let docsURL = URL(string: "https://github.com/vetcoders/codescribe/tree/develop/docs")!
+    /// Public trust pages on the GitHub Pages site (base `/codescribe`).
+    private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
+    private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -126,16 +129,40 @@ struct UserPanel: View {
                 .accessibilityLabel("Transcript tag template preview")
                 .accessibilityValue(model.transcriptTagPreview)
 
-            Link(destination: Self.docsURL) {
-                HStack(spacing: 6) {
-                    Text("Open Codescribe documentation")
-                    Text("↗")
+            SettingsSectionLabel("Legal & docs")
+                .padding(.top, 24)
+            VStack(alignment: .leading, spacing: 10) {
+                Link(destination: Self.privacyURL) {
+                    HStack(spacing: 6) {
+                        Text("Privacy Policy")
+                        Text("↗")
+                    }
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.chromeAccent)
                 }
-                .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.chromeAccent)
+                .accessibilityLabel("Open Privacy Policy")
+
+                Link(destination: Self.termsURL) {
+                    HStack(spacing: 6) {
+                        Text("Terms of Use & EULA")
+                        Text("↗")
+                    }
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.chromeAccent)
+                }
+                .accessibilityLabel("Open Terms of Use and EULA")
+
+                Link(destination: Self.docsURL) {
+                    HStack(spacing: 6) {
+                        Text("Open Codescribe documentation")
+                        Text("↗")
+                    }
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.chromeAccent)
+                }
+                .accessibilityLabel("Open Codescribe documentation")
             }
-            .padding(.top, 18)
-            .accessibilityLabel("Open Codescribe documentation")
+            .padding(.top, 11)
 
             ResetAppDataSection(model: model)
                 .padding(.top, 30)

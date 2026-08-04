@@ -108,6 +108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
     private static let helpURL = URL(string: "https://vetcoders.github.io/codescribe/")!
+    private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
+    private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
 
     private let model = AppModel.shared
     private let trayStatus = TrayStatusStore()
@@ -255,17 +257,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             // Build provenance in the standard About panel (Pensieve-style):
             // version/build come from Info.plist keys stamped by scripts/build-app.sh;
-            // commit + built-at land in the credits block below them.
+            // commit + built-at land in the credits block below them. Privacy /
+            // Terms links open the public trust pages (MoR buyer requirement).
             let info = Bundle.main.infoDictionary ?? [:]
             let commit = info["CSBuildCommit"] as? String ?? "dev"
             let builtAt = info["CSBuiltAt"] as? String ?? "unknown"
-            let credits = NSAttributedString(
-                string: "Commit: \(commit)\nBuilt: \(builtAt)",
-                attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]
+            let mono: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+            let credits = NSMutableAttributedString(
+                string: "Commit: \(commit)\nBuilt: \(builtAt)\n\n",
+                attributes: mono
             )
+            let privacy = NSAttributedString(
+                string: "Privacy Policy",
+                attributes: mono.merging([.link: Self.privacyURL]) { _, new in new }
+            )
+            let terms = NSAttributedString(
+                string: "Terms of Use & EULA",
+                attributes: mono.merging([.link: Self.termsURL]) { _, new in new }
+            )
+            credits.append(privacy)
+            credits.append(NSAttributedString(string: "\n", attributes: mono))
+            credits.append(terms)
             NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
         }
         model.tray.onHelp = {

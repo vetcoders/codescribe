@@ -1,0 +1,79 @@
+---
+import Layout from '../layouts/Layout.astro';
+import LegalPage from '../components/LegalPage.astro';
+import { page } from '../lib/asset';
+---
+
+<Layout
+  title="Support — codescribe"
+  description="Get help with codescribe: email hello@vetcoders.io, GitHub Issues, and honest response times."
+  path="support"
+>
+  <LegalPage title="Support" eyebrow="Trust · Support">
+    <p>
+      Codescribe is a local-first macOS app from VetCoders / LibraxisAI.
+      We keep support human and small-team honest.
+    </p>
+
+    <h2>Contact</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Channel</th>
+          <th>Use for</th>
+          <th>Expected response</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>
+            <strong>Email</strong><br />
+            <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
+          </td>
+          <td>Purchase, refunds, license, private bugs, accessibility</td>
+          <td><strong>Within 2 business days</strong> (Mon–Fri, Europe/Warsaw)</td>
+        </tr>
+        <tr>
+          <td>
+            <strong>GitHub Issues</strong><br />
+            <a href="https://github.com/vetcoders/codescribe/issues" target="_blank" rel="noopener noreferrer">github.com/vetcoders/codescribe/issues</a>
+          </td>
+          <td>Public bugs, feature requests, reproducible crashes</td>
+          <td>Best-effort triage; often same 2 business days when active</td>
+        </tr>
+        <tr>
+          <td>
+            <strong>Docs</strong><br />
+            <a href="https://github.com/vetcoders/codescribe#readme" target="_blank" rel="noopener noreferrer">README &amp; guide</a>
+          </td>
+          <td>Install, hotkeys, privacy posture, troubleshooting</td>
+          <td>Self-serve, always available</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>What to include</h2>
+    <p>For faster help, send:</p>
+    <ul>
+      <li>App version (Tray → About, or Settings → User)</li>
+      <li>macOS version and Apple Silicon machine class</li>
+      <li>What you expected vs what happened</li>
+      <li>Whether the issue is offline Raw mode or an AI/agent path</li>
+      <li>For purchases: order email and order ID (never paste API keys)</li>
+    </ul>
+
+    <h2>Security reports</h2>
+    <p>
+      Please email <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
+      with subject “security” rather than opening a public issue for
+      vulnerabilities that could put users at risk.
+    </p>
+
+    <h2>Policies</h2>
+    <p>
+      <a href={page('privacy')}>Privacy Policy</a>
+      · <a href={page('terms')}>Terms of Use &amp; EULA</a>
+      · <a href={page('refunds')}>Refund Policy</a>
+    </p>
+  </LegalPage>
+</Layout>

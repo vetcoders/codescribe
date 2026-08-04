@@ -1,0 +1,190 @@
+---
+// Shared chrome for trust/legal pages: compact top bar + readable prose body.
+import { asset, page } from '../lib/asset';
+import Footer from './Footer.astro';
+
+interface Props {
+  title: string;
+  eyebrow?: string;
+  updated?: string;
+}
+
+const { title, eyebrow = 'Legal', updated = '2026-08-04' } = Astro.props;
+---
+
+<div class="legal-shell">
+  <header class="legal-top">
+    <a class="legal-brand" href={page('')}>
+      <img src={asset('icon.png')} width="22" height="22" alt="" />
+      <span class="wordmark">codescribe</span>
+    </a>
+    <nav class="legal-nav" aria-label="Trust pages">
+      <a href={page('privacy')}>Privacy</a>
+      <a href={page('terms')}>Terms</a>
+      <a href={page('refunds')}>Refunds</a>
+      <a href={page('support')}>Support</a>
+      <a href={page('')}>Home</a>
+    </nav>
+  </header>
+
+  <main id="main" class="legal-main">
+    <article class="legal-article">
+      <p class="eyebrow">{eyebrow}</p>
+      <h1>{title}</h1>
+      <p class="updated">Last updated: {updated}</p>
+      <div class="prose">
+        <slot />
+      </div>
+    </article>
+  </main>
+
+  <Footer />
+</div>
+
+<style>
+  .legal-shell {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .legal-top {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 14px 28px;
+    background: rgba(9, 10, 13, 0.82);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .legal-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-decoration: none;
+    color: var(--ink);
+  }
+  .wordmark {
+    font: 700 16px var(--font-display);
+    letter-spacing: -0.02em;
+  }
+  .legal-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    font: 500 12px var(--font-mono);
+    color: var(--muted-3);
+  }
+  .legal-nav a {
+    text-decoration: none;
+    color: inherit;
+  }
+  .legal-nav a:hover {
+    color: var(--ink-2);
+  }
+  .legal-main {
+    flex: 1;
+    padding: 48px 24px 72px;
+  }
+  .legal-article {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  h1 {
+    font: 700 clamp(28px, 4vw, 40px) / 1.1 var(--font-display);
+    letter-spacing: -0.03em;
+    color: var(--ink);
+    margin: 10px 0 0;
+  }
+  .updated {
+    margin: 12px 0 0;
+    font: 500 12px var(--font-mono);
+    color: var(--scroll-hint);
+  }
+  .prose {
+    margin-top: 28px;
+    font: 400 15.5px / 1.65 var(--font-display);
+    color: var(--muted);
+  }
+  .prose :global(h2) {
+    font: 600 20px / 1.25 var(--font-display);
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    margin: 32px 0 10px;
+  }
+  .prose :global(h3) {
+    font: 600 16px / 1.3 var(--font-display);
+    color: var(--ink-2);
+    margin: 22px 0 8px;
+  }
+  .prose :global(p),
+  .prose :global(ul),
+  .prose :global(ol),
+  .prose :global(table) {
+    margin: 0 0 14px;
+  }
+  .prose :global(ul),
+  .prose :global(ol) {
+    padding-left: 1.25em;
+  }
+  .prose :global(li) {
+    margin: 0 0 6px;
+  }
+  .prose :global(a) {
+    color: var(--terracotta-ink);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .prose :global(a:hover) {
+    color: var(--ink);
+  }
+  .prose :global(strong) {
+    color: var(--ink-2);
+    font-weight: 600;
+  }
+  .prose :global(table) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .prose :global(th),
+  .prose :global(td) {
+    border: 1px solid var(--stroke);
+    padding: 10px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .prose :global(th) {
+    background: var(--bg-card);
+    color: var(--ink-2);
+    font-weight: 600;
+  }
+  .prose :global(code) {
+    font: 500 12.5px / 1.4 var(--font-mono);
+    background: var(--bg-soft);
+    border: 1px solid var(--stroke);
+    border-radius: 4px;
+    padding: 1px 6px;
+    color: var(--ink-2);
+  }
+  .prose :global(.note) {
+    border-left: 3px solid var(--terracotta);
+    padding: 10px 14px;
+    background: var(--bg-card);
+    color: var(--muted-2);
+    font-size: 14px;
+  }
+  @media (max-width: 560px) {
+    .legal-top {
+      padding: 12px 16px;
+    }
+    .legal-nav {
+      gap: 12px;
+    }
+  }
+</style>
