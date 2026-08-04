@@ -9,22 +9,20 @@ private let dictationLog = Logger(
 )
 
 /// Real composer dictation adapter: a thin driver over the `CodescribeDictation`
-/// UniFFI bridge (the SAME streaming recorder + Whisper the hotkey/tray dictation
-/// uses, exposed through an independent recorder handle). Click-to-start,
-/// click-to-stop; on stop the accumulated transcript is appended to the composer
-/// draft — never auto-sent. Streaming callbacks update a separate live preview
-/// in the composer; `stopRecording()` remains the only source that commits text
-/// into the editable draft.
+/// UniFFI bridge (the SAME streaming recorder + Whisper stack the overlay uses,
+/// on an independent recorder handle). Click-to-start / click-to-stop inserts
+/// into the draft without auto-send. Assistive hotkeys route here via
+/// `handle(_:)` and may auto-send on stop unless the user edits the preview
+/// (`resolveDictationDelivery` cancels auto-send for edited text).
 ///
-/// Deliberately a SEPARATE recorder from `CodescribeHotkeys`: the composer voice
-/// note is an independent product path and must not share the overlay/hotkey
-/// RecordingController. To avoid two recorders fighting over the microphone, a
-/// live hotkey session (surfaced via `store.dictationBlocked`) disables this mic.
+/// Process-wide capture ownership lives in the bridge (`CAPTURE_OWNER`
+/// none/overlay/agent via `setAgentCaptureActive`). Claim fails closed when the
+/// overlay owns the mic; overlay start fails closed while agent owns capture.
+/// `store.dictationBlocked` is an additional UI guard for a live overlay session.
 ///
-/// The final transcript is read from `stopRecording()`'s return value — the
-/// bridge's `CsEventSink` does not emit `onFinalTranscriptReady`, so no
-/// delivery-grade LocalFinalPass formatting is applied on this path; the returned
-/// text is the composed presentation-buffer transcript.
+/// Live partials stream into `dictationPreview`; `stopRecording()` is the only
+/// path that commits into the editable draft. When final text regresses against
+/// a longer live canvas, delivery keeps live and preserves the final alternative.
 @MainActor
 final class RealComposerDictation: ComposerDictating {
     private let dictation = CodescribeDictation()
