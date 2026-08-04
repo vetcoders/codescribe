@@ -312,7 +312,19 @@ fn write_atomic(path: &Path, value: &Value) -> Result<()> {
     };
 
     let write_result = (|| -> Result<()> {
-        let mut file = std::fs::File::create(&tmp_path)
+        // 0o600 before any byte lands: per-server `env` blocks carry secrets, and
+        // rename preserves the temp file's mode — a default-umask create here
+        // would leave mcp.json world-readable (secret_migration.rs sets the same
+        // mode on its writes).
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&tmp_path)
             .with_context(|| format!("Failed to create temp {}", tmp_path.display()))?;
         file.write_all(&bytes)
             .context("Failed to write temp mcp.json")?;
@@ -418,6 +430,26 @@ mod tests {
         assert_eq!(servers[1].command, "loctree-mcp");
         assert_eq!(servers[1].args, vec!["mcp".to_string()]);
         assert!(servers[1].enabled);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_land_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("mcp.json");
+
+        add_server_at(&path, &spec("loctree-mcp", "loctree-mcp", &["mcp"])).expect("add");
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "fresh mcp.json must be owner-only");
+
+        // A pre-existing world-readable config gets replaced by the 0o600 temp on
+        // the next mutation (rename installs the temp's mode).
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        add_server_at(&path, &spec("aicx-mcp", "aicx", &["mcp"])).expect("add second");
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "mutation must tighten a loose mcp.json");
     }
 
     #[test]

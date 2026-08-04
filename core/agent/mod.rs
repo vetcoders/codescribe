@@ -5,6 +5,7 @@ pub mod permissions;
 pub mod provider;
 pub mod registry;
 pub mod run_monitor;
+pub mod secret_paths;
 pub mod session;
 pub mod thread_delivery;
 pub mod thread_export;
