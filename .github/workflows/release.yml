@@ -144,6 +144,27 @@ jobs:
           cp "$DMG" Codescribe.dmg
           shasum -a 256 Codescribe.dmg > Codescribe.dmg.sha256
 
+      - name: Generate signed Sparkle appcast
+        # Runs only when the operator has provisioned the SPARKLE_ED_PRIVATE_KEY
+        # secret (W2-B follow-up). Secrets are unavailable in step `if`
+        # expressions on some contexts, so the gate is an in-script env check —
+        # absence of the key skips the step cleanly instead of failing the lane.
+        # The appcast is attached to the release as provenance; publishing it to
+        # the live feed (site/public/appcast.xml → Pages) stays an operator PR.
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "SPARKLE_ED_PRIVATE_KEY secret absent — skipping appcast generation"
+            exit 0
+          fi
+          mkdir -p appcast-work
+          cp Codescribe_*.dmg appcast-work/
+          scripts/generate-appcast.sh appcast-work \
+            -o appcast.xml \
+            --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/${RELEASE_TAG}/"
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
@@ -153,4 +174,5 @@ jobs:
             Codescribe_*.dmg.sha256
             Codescribe.dmg
             Codescribe.dmg.sha256
+            appcast.xml
           generate_release_notes: true
