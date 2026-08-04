@@ -51,8 +51,9 @@ final class AppModel: ObservableObject {
         self.chat = chat
         self.overlay = OverlayController(store: chat, engine: ControllerDictationEngine())
         self.tray = TrayViewModel(engine: RealTrayEngine())
-        // Composer voice-note dictation (independent recorder; disabled while a
-        // hotkey/overlay session owns the mic — see OverlayController hooks).
+        // AgentChatStore/composer is the sole Assistive route owner. Its existing
+        // dictation adapter is also used by the composer mic button; legacy
+        // Dictation/Formatting stay on RecordingController + overlay.
         chat.dictation = RealComposerDictation(store: chat)
         AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
     }
@@ -64,6 +65,7 @@ final class AppModel: ObservableObject {
 @MainActor
 final class OverlayController: ObservableObject {
     let state: OverlayState
+    private weak var store: AgentChatStore?
     /// Independent text scale for the dictation overlay (⌘+/-/0 while the panel is
     /// key). Separate from the chat scale so a distance-readable transcript and an
     /// up-close chat can be tuned independently.
@@ -96,6 +98,7 @@ final class OverlayController: ObservableObject {
     ) {
         let state = state ?? OverlayState()
         self.state = state
+        self.store = store
         self.overlayEnabledProvider = overlayEnabledProvider
         self.assistiveStatusProvider = assistiveStatusProvider
         self.panelFactory = panelFactory ?? {
@@ -158,6 +161,10 @@ final class OverlayController: ObservableObject {
     /// hiding the overlay never suppresses the paste.
     func showForRecording() {
         refreshAssistiveLatch()
+        guard !agentCaptureOwnsMicrophone, !sessionWasAssistive else {
+            hide()
+            return
+        }
         guard overlayEnabledProvider() else {
             if panel != nil { hide() }
             return
@@ -166,6 +173,10 @@ final class OverlayController: ObservableObject {
     }
 
     func show() {
+        guard !agentCaptureOwnsMicrophone else {
+            hide()
+            return
+        }
         let panel = panel ?? panelFactory(state, textScale)
         self.panel = panel
         // A pending fade-out must not leave a freshly shown panel invisible.
@@ -204,11 +215,12 @@ final class OverlayController: ObservableObject {
         state.finishControllerRecording()
     }
 
-    /// Called by the live TrayStatusStore listener. All indicator surfaces
-    /// consume the same Rust mode transition; agent arm never hides the overlay.
+    /// Called by the live TrayStatusStore listener. Assistive is Agent-owned and
+    /// therefore forces the transcription overlay closed.
     func handleIndicatorModeChange(_ mode: CsIndicatorMode) {
         if mode == .assistive {
             sessionWasAssistive = true
+            hide()
         }
         state.setAutoPasteControlAvailable(!sessionWasAssistive)
         state.applyIndicatorMode(mode)
@@ -220,6 +232,11 @@ final class OverlayController: ObservableObject {
 
     private func refreshAssistiveLatch() {
         handleAssistiveStatusChange(assistiveStatusProvider())
+    }
+
+    private var agentCaptureOwnsMicrophone: Bool {
+        guard let store else { return false }
+        return store.dictationPhase == .preparing || store.dictationPhase == .recording
     }
 
     func hide() {

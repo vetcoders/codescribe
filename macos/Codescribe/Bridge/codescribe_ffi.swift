@@ -2583,6 +2583,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func sendAssistiveTranscript(text: String) async throws  -> Bool
 
     /**
+     * Atomically claim/release the one process-wide capture owner. Returns
+     * false when the legacy overlay already owns the microphone.
+     */
+    func setAgentCaptureActive(active: Bool)  -> Bool
+
+    /**
      * Register the Swift AgentChat listener that renders voice-assistive replies
      * live. Process-global, so it takes effect for the delivery forwarder spawned
      * in `start()` regardless of call order. Swift must keep a strong reference
@@ -2992,6 +2998,19 @@ open func sendAssistiveTranscript(text: String)async throws  -> Bool  {
             liftFunc: FfiConverterBool.lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
+}
+
+    /**
+     * Atomically claim/release the one process-wide capture owner. Returns
+     * false when the legacy overlay already owns the microphone.
+     */
+open func setAgentCaptureActive(active: Bool) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_agent_capture_active(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(active),$0
+    )
+})
 }
 
     /**
@@ -5133,6 +5152,8 @@ public protocol CsAppActionListener: AnyObject, Sendable {
 
     func onShowAgent()
 
+    func onAgentCapture(command: CsAgentCaptureCommand)
+
 }
 /**
  * Foreign callback for UI-only global commands. These actions are deliberately
@@ -5194,6 +5215,14 @@ open func onShowAgent()  {try! rustCall() {
 }
 }
 
+open func onAgentCapture(command: CsAgentCaptureCommand)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_capture(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsAgentCaptureCommand_lower(command),$0
+    )
+}
+}
+
 
 
 }
@@ -5234,6 +5263,30 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onShowAgent(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onAgentCapture: { (
+            uniffiHandle: UInt64,
+            command: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onAgentCapture(
+                     command: try FfiConverterTypeCsAgentCaptureCommand_lift(command)
                 )
             }
 
@@ -10313,6 +10366,83 @@ public func FfiConverterTypeCsWhisperModelStatus_lower(_ value: CsWhisperModelSt
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * UI commands for the Agent-owned composer microphone. Assistive hotkeys are
+ * translated here, before the legacy RecordingController can prepare/show its
+ * overlay, so there is exactly one Assistive capture owner.
+ */
+
+public enum CsAgentCaptureCommand: Equatable, Hashable {
+
+    case start
+    case stop
+    case toggle
+
+
+
+}
+
+#if compiler(>=6)
+extension CsAgentCaptureCommand: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAgentCaptureCommand: FfiConverterRustBuffer {
+    typealias SwiftType = CsAgentCaptureCommand
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAgentCaptureCommand {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .start
+
+        case 2: return .stop
+
+        case 3: return .toggle
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsAgentCaptureCommand, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .start:
+            writeInt(&buf, Int32(1))
+
+
+        case .stop:
+            writeInt(&buf, Int32(2))
+
+
+        case .toggle:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentCaptureCommand_lift(_ buf: RustBuffer) throws -> CsAgentCaptureCommand {
+    return try FfiConverterTypeCsAgentCaptureCommand.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentCaptureCommand_lower(_ value: CsAgentCaptureCommand) -> RustBuffer {
+    return FfiConverterTypeCsAgentCaptureCommand.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * UI-safe API-key liveness bucket. No variant carries secret material.
  */
 
@@ -12629,6 +12759,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_assistive_transcript() != 10588) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_agent_capture_active() != 8943) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_agent_delivery_listener() != 36044) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -12798,6 +12931,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 1037) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_capture() != 53198) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 5878) {

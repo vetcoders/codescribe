@@ -689,8 +689,9 @@ private struct AttachmentChip: View {
 /// In-app attachment inspector: image zoom when bytes still load, honest
 /// fallback when the source path is gone (restored threads), plus Reveal in
 /// Finder / Copy path / Open with default app.
-private struct AttachmentPreviewSheet: View {
+struct AttachmentPreviewSheet: View {
     let attachment: MessageAttachment
+    var onRemove: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage?
     @State private var zoom: CGFloat = 1.0
@@ -782,6 +783,13 @@ private struct AttachmentPreviewSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
             HStack(spacing: 10) {
+                if let onRemove {
+                    Button("Remove", role: .destructive) {
+                        onRemove()
+                        dismiss()
+                    }
+                }
+
                 Button("Copy path") {
                     chatCopy(pathText)
                 }

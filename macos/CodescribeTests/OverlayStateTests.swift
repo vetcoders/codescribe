@@ -974,7 +974,7 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(controller.state.autoPasteControlAvailable)
     }
 
-    func testAgentModesAlwaysOrderOverlayFrontWhenToggleIsOn() {
+    func testAgentModesNeverConstructOrOrderOverlayFront() {
         for mode in ["Chat", "Selection"] {
             var frontCount = 0
             let controller = OverlayController(
@@ -988,12 +988,12 @@ final class OverlayStateTests: XCTestCase {
             )
 
             controller.showForRecording()
-            XCTAssertEqual(frontCount, 1, "\(mode) shares the canonical overlay path")
+            XCTAssertEqual(frontCount, 0, "\(mode) is owned by the Agent composer")
             XCTAssertFalse(controller.state.autoPasteControlAvailable)
         }
     }
 
-    func testMidHoldAssistiveUpgradeKeepsOverlayVisibleAndFlipsSemantics() {
+    func testMidHoldAssistiveUpgradeClosesOverlayAndFlipsSemantics() {
         var frontCount = 0
         var outCount = 0
         let controller = OverlayController(
@@ -1011,7 +1011,7 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(outCount, 0)
 
         controller.handleIndicatorModeChange(.assistive)
-        XCTAssertEqual(outCount, 0)
+        XCTAssertEqual(outCount, 1)
         XCTAssertEqual(controller.state.indicatorMode, .assistive)
         XCTAssertFalse(controller.state.autoPasteControlAvailable)
     }

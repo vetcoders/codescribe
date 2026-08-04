@@ -14,6 +14,7 @@ struct AgentChatView: View {
     /// every change (button, ⌃⌘S, or a native drag-collapse), so no path can
     /// leave the sidebar unrecoverable.
     @AppStorage("AgentChat.sidebarVisible.v1") private var sidebarVisible = true
+    @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     init(store: AgentChatStore) {
@@ -29,11 +30,17 @@ struct AgentChatView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 236, max: 360)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
-            ThreadDetail(store: store, isSidebarVisible: sidebarVisible, toggleSidebar: toggleSidebar)
+            ThreadDetail(
+                store: store,
+                isSidebarVisible: sidebarVisible,
+                isPinned: $isPinned,
+                toggleSidebar: toggleSidebar
+            )
         }
         .navigationSplitViewStyle(.balanced)
         .csFocusPolicy()
         .background(CSColor.glassBase)
+        .background(AgentWindowCapabilities(isPinned: isPinned))
         .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
         .task {
             // Point-in-time marker: correlate with the adjacent "thread index
@@ -54,6 +61,32 @@ struct AgentChatView: View {
     }
 }
 
+/// Applies the persisted pin to the one AppDelegate-owned Agent NSWindow.
+/// Updating level never orders or activates the window.
+enum AgentWindowLevelPolicy {
+    static func level(isPinned: Bool) -> NSWindow.Level {
+        isPinned ? .floating : .normal
+    }
+}
+
+private struct AgentWindowCapabilities: NSViewRepresentable {
+    let isPinned: Bool
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { configure(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { configure(nsView.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
+    }
+}
+
 // MARK: - Detail (header · title bar · messages · composer)
 
 private struct ThreadDetail: View {
@@ -61,6 +94,7 @@ private struct ThreadDetail: View {
     /// Sidebar controls live in the DETAIL header so the toggle stays reachable
     /// while the sidebar itself is collapsed.
     let isSidebarVisible: Bool
+    @Binding var isPinned: Bool
     let toggleSidebar: () -> Void
     @Environment(\.openSettings) private var openSettings
     @State private var isRenaming = false
@@ -134,6 +168,18 @@ private struct ThreadDetail: View {
             Spacer()
             HStack(spacing: 14) {
                 widthModeMenu
+
+                Button {
+                    isPinned.toggle()
+                } label: {
+                    Image(systemName: isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textFaint)
+                }
+                .buttonStyle(.plain)
+                .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
+                .accessibilityLabel(isPinned ? "Agent pinned, disable Always on Top" : "Agent unpinned, enable Always on Top")
+                .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
 
                 Button(action: { openSettings() }) {
                     CSIconView(icon: .settings, size: 16)

@@ -102,9 +102,21 @@ private struct SettingsWindowCapabilities: NSViewRepresentable {
         guard let window else { return }
         window.styleMask.formUnion([.resizable, .miniaturizable, .fullSizeContentView])
         window.collectionBehavior.insert(.fullScreenPrimary)
-        window.minSize = NSSize(width: 880, height: 620)
+        let minimum = NSSize(width: 880, height: 620)
+        window.minSize = minimum
+        window.level = .normal
         window.standardWindowButton(.zoomButton)?.isEnabled = true
         window.standardWindowButton(.miniaturizeButton)?.isEnabled = true
+
+        var frame = window.frame
+        frame.size.width = max(frame.width, minimum.width)
+        frame.size.height = max(frame.height, minimum.height)
+        if let screen = window.screen ?? NSScreen.main {
+            frame = window.constrainFrameRect(frame, to: screen)
+        }
+        if frame != window.frame {
+            window.setFrame(frame, display: false)
+        }
     }
 }
 

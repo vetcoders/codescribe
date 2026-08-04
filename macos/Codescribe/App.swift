@@ -24,15 +24,26 @@ private let notesLog = Logger(
 final class AgentSummonAction {
     private let store: AgentChatStore
     private let showAgent: @MainActor () -> Void
+    private let capture: @MainActor (ComposerCaptureCommand) -> Void
 
-    init(store: AgentChatStore, showAgent: @escaping @MainActor () -> Void) {
+    init(
+        store: AgentChatStore,
+        showAgent: @escaping @MainActor () -> Void,
+        capture: @escaping @MainActor (ComposerCaptureCommand) -> Void = { _ in }
+    ) {
         self.store = store
         self.showAgent = showAgent
+        self.capture = capture
     }
 
     func perform() {
         showAgent()
         store.requestComposerFocus()
+    }
+
+    func performCapture(_ command: ComposerCaptureCommand) {
+        perform()
+        capture(command)
     }
 }
 
@@ -40,15 +51,28 @@ final class AgentSummonAction {
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, @unchecked Sendable {
     private let summonAgent: @MainActor () -> Void
+    private let captureAgent: @MainActor (CsAgentCaptureCommand) -> Void
 
-    init(summonAgent: @escaping @MainActor () -> Void) {
+    init(
+        summonAgent: @escaping @MainActor () -> Void,
+        captureAgent: @escaping @MainActor (CsAgentCaptureCommand) -> Void = { _ in }
+    ) {
         self.summonAgent = summonAgent
+        self.captureAgent = captureAgent
     }
 
     func onShowAgent() {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 self.summonAgent()
+            }
+        }
+    }
+
+    func onAgentCapture(command: CsAgentCaptureCommand) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.captureAgent(command)
             }
         }
     }
@@ -99,9 +123,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // kill live voice-reply rendering. Held for the app's lifetime.
     private var voiceDeliveryListener: VoiceDeliveryListener?
     private var appActionListener: AgentAppActionListener?
-    private lazy var agentSummonAction = AgentSummonAction(store: model.chat) { [weak self] in
-        self?.showAgent()
-    }
+    private lazy var agentSummonAction = AgentSummonAction(
+        store: model.chat,
+        showAgent: { [weak self] in self?.showAgent() },
+        capture: { [weak self] command in
+            guard let self else { return }
+            // A stopped overlay may remain visible for post-capture actions. It
+            // has no authority in Agent mode and is closed before composer capture.
+            if !self.model.chat.dictationBlocked { self.model.overlay.hide() }
+            self.model.chat.handleAssistiveCapture(command)
+        }
+    )
     private var statusItem: NSStatusItem!
     private var hasUnreadAgentUpdate = false
     // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
@@ -590,10 +622,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerAppActions() {
         let action = agentSummonAction
-        let listener = AgentAppActionListener { [weak action] in
-            action?.perform()
-            appLogger.info("Agent summon command handled: window fronted and composer focus requested")
-        }
+        let listener = AgentAppActionListener(
+            summonAgent: { [weak action] in
+                action?.perform()
+                appLogger.info("Agent summon command handled: window fronted and composer focus requested")
+            },
+            captureAgent: { [weak action] command in
+                let mapped: ComposerCaptureCommand
+                switch command {
+                case .start: mapped = .startAssistive
+                case .stop: mapped = .stopAssistive
+                case .toggle: mapped = .toggleAssistive
+                }
+                action?.performCapture(mapped)
+                appLogger.info("Assistive hotkey handled by Agent composer microphone")
+            }
+        )
         appActionListener = listener
         hotkeys.setAppActionListener(listener: listener)
     }

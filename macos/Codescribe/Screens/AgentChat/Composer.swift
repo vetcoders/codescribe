@@ -23,6 +23,8 @@ struct Composer: View {
     /// icons) keeps its intrinsic size.
     @Environment(\.csTextScale) private var textScale
     @State private var fieldHeight = ComposerTextLayout.minimumHeight(fontSize: 13.5)
+    @AppStorage("AgentChat.dictationPreviewExpanded.v1") private var dictationPreviewExpanded = false
+    @State private var previewAttachment: PendingAttachment?
 
     // ⌘V interception. The native text editor consumes `paste:` before any
     // SwiftUI `.onPasteCommand` gets a look-in, so pasting an image needs a local
@@ -373,17 +375,69 @@ struct Composer: View {
     @ViewBuilder
     private var dictationPreview: some View {
         if !store.dictationPreview.isEmpty {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                CSIconView(icon: .mic, size: 10.5, color: CSColor.terracottaLight)
-                Text(store.dictationPreview)
-                    .font(CSFont.ui(12.5 * textScale))
-                    .foregroundStyle(CSColor.textFaint)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 7) {
+                    CSIconView(icon: .mic, size: 10.5, color: CSColor.terracottaLight)
+                    Text(dictationPhaseLabel)
+                    Text(store.dictationVadActive ? "speech" : "silence")
+                        .foregroundStyle(store.dictationVadActive ? CSColor.oliveLight : CSColor.textFaintAlt)
+                    if store.dictationFinalChangedText {
+                        Text("final differs · \(store.dictationDeliverySource.label)")
+                            .foregroundStyle(CSColor.amber)
+                    }
+                    if store.dictationPreviewUserEdited {
+                        Text("edited · auto-send off")
+                            .foregroundStyle(CSColor.chromeAccent)
+                    }
+                    Spacer(minLength: 8)
+                    Button(dictationPreviewExpanded ? "Collapse" : "Expand") {
+                        dictationPreviewExpanded.toggle()
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(dictationPreviewExpanded ? "Collapse transcript preview" : "Expand transcript preview")
+                }
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.textFaintAlt)
+
+                TextEditor(text: Binding(
+                    get: { store.dictationPreview },
+                    set: { store.editDictationPreview($0) }
+                ))
+                .font(CSFont.ui(12.5 * textScale))
+                .foregroundStyle(CSColor.textBodyAlt)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: dictationPreviewExpanded ? 150 : 58,
+                       maxHeight: dictationPreviewExpanded ? 260 : 96)
+                .accessibilityLabel("Live transcript preview")
+
+                if store.dictationFinalChangedText,
+                   let final = store.dictationFinalPreview,
+                   final != store.dictationLivePreview {
+                    DisclosureGroup(store.dictationDeliverySource == .final ? "Live capture" : "Final-pass alternative") {
+                        Text(store.dictationDeliverySource == .final ? store.dictationLivePreview : final)
+                            .font(CSFont.ui(11.5 * textScale))
+                            .foregroundStyle(CSColor.textFaint)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
+                    }
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                }
             }
-            .padding(.leading, 2)
+            .padding(10)
+            .background(CSColor.surfaceRaised(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
             .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    private var dictationPhaseLabel: String {
+        switch store.dictationPhase {
+        case .idle: return "captured"
+        case .preparing: return "preparing"
+        case .recording: return "recording"
+        case .failed: return "stopped"
         }
     }
 
@@ -408,13 +462,21 @@ struct Composer: View {
             HStack(spacing: 8) {
                 ForEach(store.pendingAttachments) { attachment in
                     HStack(spacing: 6) {
-                        CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
-                        Text(attachment.name)
-                            .font(CSFont.mono(10.5, .medium))
-                            .foregroundStyle(CSColor.textBodyAlt)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: 160)
+                        Button {
+                            previewAttachment = attachment
+                        } label: {
+                            HStack(spacing: 6) {
+                                CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
+                                Text(attachment.name)
+                                    .font(CSFont.mono(10.5, .medium))
+                                    .foregroundStyle(CSColor.textBodyAlt)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: 160)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .help("Preview attachment")
                         Button(action: { store.removeAttachment(attachment.id) }) {
                             CSIconView(icon: .close, size: 9, weight: .bold, color: CSColor.textFaint)
                         }
@@ -434,6 +496,15 @@ struct Composer: View {
             .padding(.horizontal, 2)
         }
         .frame(maxHeight: 30)
+        .sheet(item: $previewAttachment) { attachment in
+            AttachmentPreviewSheet(
+                attachment: attachment.previewAttachment,
+                onRemove: {
+                    store.removeAttachment(attachment.id)
+                    previewAttachment = nil
+                }
+            )
+        }
     }
 
     // MARK: Image picker

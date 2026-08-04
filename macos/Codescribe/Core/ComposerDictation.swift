@@ -28,6 +28,7 @@ private let dictationLog = Logger(
 @MainActor
 final class RealComposerDictation: ComposerDictating {
     private let dictation = CodescribeDictation()
+    private let hotkeys = CodescribeHotkeys()
     private weak var store: AgentChatStore?
     /// Strong ref so the foreign listener outlives the Rust-side `Arc` handoff.
     private var listener: ComposerDictationListener?
@@ -35,6 +36,8 @@ final class RealComposerDictation: ComposerDictating {
     private var modelReady = false
     /// Guards against re-entrant toggles while an async start/stop is in flight.
     private var transitioning = false
+    private var autoSendOnStop = false
+    private var pendingStopAfterStart = false
 
     init(store: AgentChatStore) {
         self.store = store
@@ -46,13 +49,34 @@ final class RealComposerDictation: ComposerDictating {
         case .recording:
             stop()
         case .idle, .failed:
-            start()
+            start(autoSend: false)
         case .preparing:
             break  // mid-transition — ignore until it settles
         }
     }
 
-    private func start() {
+    func handle(_ command: ComposerCaptureCommand) {
+        guard let store else { return }
+        if transitioning {
+            switch command {
+            case .stopAssistive, .toggleAssistive:
+                pendingStopAfterStart = true
+            case .startAssistive:
+                break
+            }
+            return
+        }
+        switch command {
+        case .startAssistive:
+            if store.dictationPhase != .recording { start(autoSend: true) }
+        case .stopAssistive:
+            if store.dictationPhase == .recording { stop() }
+        case .toggleAssistive:
+            if store.dictationPhase == .recording { stop() } else { start(autoSend: true) }
+        }
+    }
+
+    private func start(autoSend: Bool) {
         guard let store else { return }
         // Collision guard: a hotkey/tray/overlay dictation session owns the mic.
         if store.dictationBlocked {
@@ -60,11 +84,26 @@ final class RealComposerDictation: ComposerDictating {
             return
         }
         transitioning = true
-        store.clearDictationPreview()
+        autoSendOnStop = autoSend
+        store.beginDictationPreviewSession()
         store.setDictationPhase(.preparing)
+        guard hotkeys.setAgentCaptureActive(active: true) else {
+            transitioning = false
+            store.reportDictationFailure("Transcription overlay already owns the microphone")
+            return
+        }
         Task { @MainActor in
-            defer { transitioning = false }
+            defer {
+                transitioning = false
+                if pendingStopAfterStart {
+                    pendingStopAfterStart = false
+                    if store.dictationPhase == .recording {
+                        Task { @MainActor [weak self] in self?.stop() }
+                    }
+                }
+            }
             guard await Self.ensureMicPermission() else {
+                _ = hotkeys.setAgentCaptureActive(active: false)
                 store.reportDictationFailure(
                     "Microphone access is off — enable it in System Settings › Privacy & Security.")
                 return
@@ -97,6 +136,7 @@ final class RealComposerDictation: ComposerDictating {
                 store.setDictationPhase(.recording)
                 dictationLog.info("composer dictation: recording started")
             } catch {
+                _ = hotkeys.setAgentCaptureActive(active: false)
                 dictationLog.error("composer dictation start failed: \(error.localizedDescription, privacy: .public)")
                 store.clearDictationPreview()
                 store.reportDictationFailure("Couldn't start recording: \(error.localizedDescription)")
@@ -109,10 +149,17 @@ final class RealComposerDictation: ComposerDictating {
         transitioning = true
         store.setDictationPhase(.preparing)
         Task { @MainActor in
-            defer { transitioning = false }
+            defer {
+                transitioning = false
+                _ = hotkeys.setAgentCaptureActive(active: false)
+            }
             do {
                 let transcript = try await dictation.stopRecording()
-                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolution = store.resolveDictationDelivery(
+                    final: transcript,
+                    autoSend: autoSendOnStop
+                )
+                let trimmed = resolution.text
                 if trimmed.isEmpty {
                     dictationLog.info("composer dictation: stopped with empty transcript")
                     store.clearDictationPreview()
@@ -120,6 +167,9 @@ final class RealComposerDictation: ComposerDictating {
                 } else {
                     store.appendDictatedTranscript(trimmed)
                     store.setDictationPhase(.idle)
+                    if resolution.autoSend {
+                        store.send()
+                    }
                     dictationLog.info("composer dictation: inserted \(trimmed.count, privacy: .public) chars")
                 }
             } catch {
@@ -137,7 +187,7 @@ final class RealComposerDictation: ComposerDictating {
 
         transitioning = false
         listener = nil
-        store.dictationBlocked = false
+        _ = hotkeys.setAgentCaptureActive(active: false)
         store.reportDictationFailure("Dictation stopped: \(message)")
     }
 
@@ -197,7 +247,11 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     func onFinalTranscriptReady(text: String) {
         publishFinalPreview(text)
     }
-    func onVadActive(active: Bool) {}
+    func onVadActive(active: Bool) {
+        Task { @MainActor [weak store] in
+            store?.setDictationVadActive(active)
+        }
+    }
     func onAudioLevel(rms: Float) {}
     func onNoSpeech(reason: String) {
         dictationLog.info("composer dictation: no speech (\(reason, privacy: .public))")
@@ -219,7 +273,7 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     private func publishFinalPreview(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { @MainActor [weak store] in
-            store?.updateDictationPreview(trimmed)
+            store?.noteDictationFinalPreview(trimmed)
         }
     }
 

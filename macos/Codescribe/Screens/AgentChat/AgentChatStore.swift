@@ -313,6 +313,7 @@ struct PendingAttachment: Identifiable, Hashable {
     let url: URL
     var name: String { url.lastPathComponent }
     var type: String { MessageAttachment.inferredType(name: name, url: url) }
+    var previewAttachment: MessageAttachment { MessageAttachment(name: name, url: url, type: type) }
 }
 
 /// An attachment carried by a *sent* chat message, surfaced as a chip in the You
@@ -495,6 +496,26 @@ enum ComposerDictationPhase: Equatable {
     case failed(String)
 }
 
+enum ComposerCaptureCommand {
+    case startAssistive
+    case stopAssistive
+    case toggleAssistive
+}
+
+enum DictationDeliverySource: Equatable {
+    case live
+    case final
+    case edited
+
+    var label: String {
+        switch self {
+        case .live: return "live chosen"
+        case .final: return "final chosen"
+        case .edited: return "edited text chosen"
+        }
+    }
+}
+
 /// UI-only seam over the composer dictation controller. The real adapter
 /// (`RealComposerDictation`, Core layer) wraps the `CodescribeDictation` bridge;
 /// kept bridge-free here so the view-model + #Preview stay standalone (nil = mic
@@ -503,6 +524,7 @@ enum ComposerDictationPhase: Equatable {
 protocol ComposerDictating: AnyObject {
     /// Start recording when idle, stop-and-insert when recording.
     func toggle()
+    func handle(_ command: ComposerCaptureCommand)
 }
 
 // MARK: - Store
@@ -516,6 +538,12 @@ final class AgentChatStore: ObservableObject {
     /// deliberately does not mutate the selected thread or staged attachments.
     @Published private(set) var composerFocusRequest: UInt64 = 0
     @Published private(set) var dictationPreview: String = ""
+    @Published private(set) var dictationLivePreview: String = ""
+    @Published private(set) var dictationFinalPreview: String?
+    @Published private(set) var dictationFinalChangedText = false
+    @Published private(set) var dictationVadActive = false
+    @Published private(set) var dictationPreviewUserEdited = false
+    @Published private(set) var dictationDeliverySource: DictationDeliverySource = .live
 
     /// Images staged in the composer for the next message. Cleared when the
     /// message is dispatched.
@@ -543,6 +571,10 @@ final class AgentChatStore: ObservableObject {
     /// Toggle the composer voice note (start ↔ stop-and-insert).
     func toggleDictation() { dictation?.toggle() }
 
+    func handleAssistiveCapture(_ command: ComposerCaptureCommand) {
+        dictation?.handle(command)
+    }
+
     func requestComposerFocus() {
         composerFocusRequest &+= 1
     }
@@ -553,13 +585,70 @@ final class AgentChatStore: ObservableObject {
 
     /// Latest live voice-note preview. This is a snapshot buffer from the STT
     /// listener, not a delta stream, and stays separate from `draft` until stop.
+    func beginDictationPreviewSession() {
+        dictationPreview = ""
+        dictationLivePreview = ""
+        dictationFinalPreview = nil
+        dictationFinalChangedText = false
+        dictationVadActive = false
+        dictationPreviewUserEdited = false
+        dictationDeliverySource = .live
+    }
+
     func updateDictationPreview(_ text: String) {
-        dictationPreview = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        dictationLivePreview = trimmed
+        guard !dictationPreviewUserEdited else { return }
+        dictationPreview = trimmed
+    }
+
+    func editDictationPreview(_ text: String) {
+        dictationPreview = text
+        dictationPreviewUserEdited = true
+        dictationDeliverySource = .edited
+    }
+
+    func noteDictationFinalPreview(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        dictationFinalPreview = trimmed.isEmpty ? nil : trimmed
+        dictationFinalChangedText = !trimmed.isEmpty && trimmed != dictationLivePreview
+    }
+
+    func setDictationVadActive(_ active: Bool) {
+        dictationVadActive = active
+    }
+
+    /// Preserve both hypotheses and explicitly choose the delivery text. A
+    /// materially shorter final pass may fill gaps but must never erase a better
+    /// live canvas. User edits always win and cancel Assistive auto-send.
+    func resolveDictationDelivery(final text: String, autoSend: Bool) -> (text: String, autoSend: Bool) {
+        let final = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        dictationFinalPreview = final.isEmpty ? nil : final
+        dictationFinalChangedText = !final.isEmpty && final != dictationLivePreview
+
+        if dictationPreviewUserEdited {
+            dictationDeliverySource = .edited
+            return (dictationPreview.trimmingCharacters(in: .whitespacesAndNewlines), false)
+        }
+
+        let live = dictationLivePreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        let liveWords = live.split(whereSeparator: \Character.isWhitespace).count
+        let finalWords = final.split(whereSeparator: \Character.isWhitespace).count
+        let finalRegressed = !live.isEmpty && (final.isEmpty || finalWords * 100 < liveWords * 85)
+        let chosen = finalRegressed ? live : final
+        dictationDeliverySource = finalRegressed ? .live : .final
+        dictationPreview = chosen
+        return (chosen, autoSend)
     }
 
     func clearDictationPreview() {
-        guard !dictationPreview.isEmpty else { return }
         dictationPreview = ""
+        dictationLivePreview = ""
+        dictationFinalPreview = nil
+        dictationFinalChangedText = false
+        dictationVadActive = false
+        dictationPreviewUserEdited = false
+        dictationDeliverySource = .live
     }
 
     /// Surface a recoverable dictation failure with a self-clearing inline message
@@ -577,12 +666,11 @@ final class AgentChatStore: ObservableObject {
         }
     }
 
-    /// Append a finished voice-note transcript to the current draft with a natural
-    /// separator (no auto-send — the user decides when to dispatch).
+    /// Append the explicitly resolved voice transcript to the editable draft.
+    /// Preview provenance remains visible until the next capture starts.
     func appendDictatedTranscript(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        clearDictationPreview()
         if draft.isEmpty {
             draft = trimmed
         } else {
