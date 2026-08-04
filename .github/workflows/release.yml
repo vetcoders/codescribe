@@ -61,7 +61,12 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" -P "$CODESIGN_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed s/\"//g)
+          existing_keychains=()
+          while IFS= read -r keychain; do
+            keychain="${keychain//\"/}"
+            [[ -n "$keychain" ]] && existing_keychains+=("$keychain")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "${existing_keychains[@]}"
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
@@ -76,6 +81,12 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD"
 
+      - name: Prepare release models
+        # release-dmgs builds slim before full, while ensure-models is otherwise
+        # only a dependency of release-full. Warm both public-model caches first
+        # so the slim artifact cannot silently compile without MiniLM.
+        run: make ensure-models
+
       - name: Build signed and notarized DMG artifacts
         env:
           CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
@@ -83,15 +94,53 @@ jobs:
           NOTARY_PROFILE: CodescribeNotary
         run: make release-dmgs
 
-      - name: Alias newest DMG as stable Codescribe.dmg
+      - name: Verify DMG payloads
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          test -x scripts/verify-dmg-payload.sh || {
+            echo "Missing executable payload verifier: scripts/verify-dmg-payload.sh"
+            exit 1
+          }
+
+          VERSION="${RELEASE_TAG#v}"
+          test -n "$VERSION" && test "$VERSION" != "$RELEASE_TAG" || {
+            echo "Release tag must have the form vX.Y.Z (got: $RELEASE_TAG)"
+            exit 1
+          }
+
+          shopt -s nullglob
+          dmgs=(Codescribe_*.dmg)
+          ((${#dmgs[@]} > 0)) || {
+            echo "No Codescribe_*.dmg artifacts produced"
+            exit 1
+          }
+
+          for dmg in "${dmgs[@]}"; do
+            variant=slim
+            [[ "$dmg" == *_full.dmg ]] && variant=full
+            echo "Verifying $dmg as $variant for version $VERSION"
+            scripts/verify-dmg-payload.sh \
+              "$dmg" \
+              --variant "$variant" \
+              --version "$VERSION"
+          done
+
+      - name: Alias slim DMG as stable Codescribe.dmg
         # The website pins two asset URLs that must survive the provenance slug
         # (Codescribe_<ver>-<date>-<sha>.dmg): releases/latest/download/Codescribe.dmg
         # and releases/download/v<ver>/Codescribe.dmg. Publish the slug artifact
         # for provenance AND a stable-named copy for the funnel, each with its
         # SHA-256 (bare filename inside, so `shasum -c` works from the download dir).
         run: |
-          DMG=$(ls -t Codescribe_*.dmg | head -1)
-          test -n "$DMG" || { echo "No Codescribe_*.dmg produced"; exit 1; }
+          shopt -s nullglob
+          DMG=""
+          for candidate in Codescribe_*.dmg; do
+            [[ "$candidate" == *_full.dmg ]] && continue
+            DMG="$candidate"
+            break
+          done
+          test -n "$DMG" || { echo "No slim Codescribe_*.dmg produced"; exit 1; }
           cp "$DMG" Codescribe.dmg
           shasum -a 256 Codescribe.dmg > Codescribe.dmg.sha256
 
