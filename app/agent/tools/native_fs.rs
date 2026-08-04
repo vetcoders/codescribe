@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
-use codescribe_core::util::safe_path::safe_write_bounded;
+use codescribe_core::util::safe_path::{safe_read_to_string_bounded, safe_write_bounded};
 use serde_json::{Value, json};
 
 use super::{path_policy, workspace};
@@ -227,13 +227,16 @@ struct DirEntryInfo {
 }
 
 fn collect_entries(dir: &Path, one_level_recurse: bool, out: &mut Vec<DirEntryInfo>) -> Result<()> {
-    let read =
-        fs::read_dir(dir).with_context(|| format!("Failed to list directory {}", dir.display()))?;
+    let roots = workspace_roots();
+    let read = open_dir_under_roots(dir, &roots)?;
     for entry in read.flatten() {
         if out.len() >= MAX_LIST_ENTRIES {
             break;
         }
         let path = entry.path();
+        if !path_stays_under_roots(&path, &roots) {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         if name == ".git" || name == "target" || name == "node_modules" {
             continue;
@@ -251,13 +254,16 @@ fn collect_entries(dir: &Path, one_level_recurse: bool, out: &mut Vec<DirEntryIn
             kind,
         });
         if one_level_recurse && path.is_dir() {
-            let sub = fs::read_dir(&path)
+            let sub = open_dir_under_roots(&path, &roots)
                 .with_context(|| format!("Failed to list subdirectory {}", path.display()))?;
             for child in sub.flatten() {
                 if out.len() >= MAX_LIST_ENTRIES {
                     break;
                 }
                 let child_path = child.path();
+                if !path_stays_under_roots(&child_path, &roots) {
+                    continue;
+                }
                 let child_name = child.file_name().to_string_lossy().to_string();
                 let kind = if child_path.is_dir() {
                     "dir"
@@ -275,6 +281,32 @@ fn collect_entries(dir: &Path, one_level_recurse: bool, out: &mut Vec<DirEntryIn
         }
     }
     Ok(())
+}
+
+/// Open a directory only after re-asserting workspace-root membership.
+///
+/// Callers already validated the top-level path via `path_policy`; this second
+/// gate closes TOCTOU/symlink races on walk entries and keeps the FS open site
+/// on a re-validated absolute path (not the raw agent string).
+fn open_dir_under_roots(dir: &Path, roots: &[PathBuf]) -> Result<fs::ReadDir> {
+    let dir_str = dir
+        .to_str()
+        .with_context(|| format!("Directory path is not valid UTF-8: {}", dir.display()))?;
+    let dir = path_policy::validate_existing(dir_str, roots)?;
+    if !dir.is_dir() {
+        bail!("Path is not a directory: {}", dir.display());
+    }
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path re-validated by path_policy::validate_existing (canonicalize + workspace-root bound) immediately above.
+    fs::read_dir(&dir).with_context(|| format!("Failed to list directory {}", dir.display()))
+}
+
+/// Reject walk children that escape roots via symlink after entry discovery.
+fn path_stays_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    let Ok(canonical) = path.canonicalize() else {
+        // Non-existent / broken symlink: keep the lexical path only if under a root.
+        return roots.iter().any(|root| path.starts_with(root));
+    };
+    roots.iter().any(|root| canonical.starts_with(root))
 }
 
 fn search_files_from_input(input: &Value) -> Result<String> {
@@ -319,7 +351,8 @@ fn walk_search(
     if hits.len() >= MAX_SEARCH_HITS {
         return Ok(());
     }
-    let read = match fs::read_dir(dir) {
+    let roots = workspace_roots();
+    let read = match open_dir_under_roots(dir, &roots) {
         Ok(r) => r,
         Err(_) => return Ok(()),
     };
@@ -328,6 +361,9 @@ fn walk_search(
             break;
         }
         let path = entry.path();
+        if !path_stays_under_roots(&path, &roots) {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         if name == ".git" || name == "target" || name == "node_modules" || name.starts_with('.') {
             continue;
@@ -351,9 +387,12 @@ fn walk_search(
         if meta.len() > MAX_SEARCH_FILE_BYTES {
             continue;
         }
-        let file = match fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        // Open only files still under workspace roots (symlink-safe).
+        let Some(root) = roots.iter().find(|root| path.starts_with(root)) else {
+            continue;
+        };
+        let Ok(file) = codescribe_core::util::safe_path::safe_open_bounded(&path, root) else {
+            continue;
         };
         let reader = BufReader::new(file);
         for (idx, line) in reader.lines().enumerate() {
@@ -416,8 +455,8 @@ fn apply_patch_from_input(input: &Value) -> Result<String> {
         .find(|root| path.starts_with(root))
         .cloned()
         .context("Path is outside configured agent workspace roots")?;
-    let original =
-        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let original = safe_read_to_string_bounded(&path, &root)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let matches = original.matches(old).count();
     if matches == 0 {
         bail!("old_string not found in {}", path.display());

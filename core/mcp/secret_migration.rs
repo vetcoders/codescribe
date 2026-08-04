@@ -19,6 +19,7 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 
 use crate::config::keychain;
+use crate::util::safe_path::{safe_canonicalize, safe_read_to_string};
 
 const SERVERS_KEY: &str = "mcpServers";
 
@@ -80,8 +81,13 @@ pub fn migrate_plaintext_env_secrets(path: &Path, dry_run: bool) -> Result<Secre
         });
     }
 
-    let raw =
-        fs::read_to_string(path).with_context(|| format!("read MCP config {}", path.display()))?;
+    // Operator / CLI path only (default `~/.codescribe/mcp.json` or TempDir in
+    // tests). Canonicalize before read so the open site never uses a relative
+    // or symlink-escaping form of the input path.
+    let path = safe_canonicalize(path)
+        .with_context(|| format!("canonicalize MCP config {}", path.display()))?;
+    let raw = safe_read_to_string(&path)
+        .with_context(|| format!("read MCP config {}", path.display()))?;
     let mut root: Value = serde_json::from_str(&raw)
         .with_context(|| format!("parse MCP config {}", path.display()))?;
 
@@ -190,8 +196,8 @@ pub fn migrate_plaintext_env_secrets(path: &Path, dry_run: bool) -> Result<Secre
         });
     }
 
-    let backup = write_timestamped_backup(path, raw.as_bytes())?;
-    write_atomic(path, &root)?;
+    let backup = write_timestamped_backup(&path, raw.as_bytes())?;
+    write_atomic(&path, &root)?;
 
     Ok(SecretMigrationReport {
         backup_path: Some(backup),

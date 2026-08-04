@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::settings::UserSettings;
+use crate::util::safe_path::{safe_canonicalize, safe_read_to_string};
 
 const PORTABLE_SCHEMA_VERSION: u32 = 1;
 
@@ -134,8 +135,22 @@ pub fn import_portable_dry_run(profile_json: &str, current: &UserSettings) -> Re
 
 /// Apply portable profile to disk with automatic backup + rollback on failure.
 pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result<ImportPlan> {
+    // Operator-supplied settings path: canonicalize when present so backup and
+    // restore operate on a resolved absolute path under the same parent only.
+    let settings_path = if settings_path.exists() {
+        safe_canonicalize(settings_path)?
+    } else if let Some(parent) = settings_path.parent().filter(|p| p.exists()) {
+        let parent = safe_canonicalize(parent)?;
+        let name = settings_path
+            .file_name()
+            .context("settings path must name a file")?;
+        parent.join(name)
+    } else {
+        settings_path.to_path_buf()
+    };
+
     let current = if settings_path.exists() {
-        let raw = fs::read_to_string(settings_path)
+        let raw = safe_read_to_string(&settings_path)
             .with_context(|| format!("read current settings {}", settings_path.display()))?;
         serde_json::from_str::<UserSettings>(&raw).unwrap_or_default()
     } else {
@@ -146,9 +161,12 @@ pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result
     let incoming: UserSettings = serde_json::from_value(plan.settings_preview.clone())
         .context("portable settings failed schema validation before apply")?;
 
-    let backup_path = backup_path(settings_path);
+    let backup_path = backup_path(&settings_path);
     if settings_path.exists() {
-        fs::copy(settings_path, &backup_path).with_context(|| {
+        // Backup is a sibling of the canonical settings file (same parent), not
+        // an agent-supplied path. Copy stays on the resolved absolute path.
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- source is safe_canonicalize'd settings path; dest is sibling .json.bak-* in the same parent directory.
+        fs::copy(&settings_path, &backup_path).with_context(|| {
             format!(
                 "backup settings {} → {}",
                 settings_path.display(),
@@ -162,9 +180,10 @@ pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result
         }
     }
 
-    if let Err(error) = incoming.save_to(settings_path) {
+    if let Err(error) = incoming.save_to(&settings_path) {
         if backup_path.exists() {
-            let _ = fs::copy(&backup_path, settings_path);
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- restore from sibling backup to the same canonicalized settings path; both ends are operator config, not agent input.
+            let _ = fs::copy(&backup_path, &settings_path);
         }
         return Err(error).context("import apply failed; backup restored when available");
     }

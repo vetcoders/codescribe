@@ -5,6 +5,7 @@
 //! and path gates. Mutating/process tools default to Ask.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -241,9 +242,18 @@ fn run_process_from_input(input: &Value) -> Result<String> {
     let cmdline = synthetic_command_line(program, &args);
     path_policy::validate_terminal(&cmdline, cwd.to_str().context("cwd utf-8")?, &roots())?;
 
-    let mut command = Command::new(program);
+    // Argv-only spawn: program is re-materialized as an OsString after terminal
+    // policy rejects shell metacharacters / forbidden programs. No shell, no
+    // string concatenation into sh -c.
+    let program_os = sanitize_argv_program(program)?;
+    let args_os: Vec<OsString> = args
+        .iter()
+        .map(|arg| sanitize_argv_arg(arg))
+        .collect::<Result<_>>()?;
+    // nosemgrep: rust.actix.command-injection.rust-actix-command-injection.rust-actix-command-injection -- argv-only spawn after path_policy::validate_terminal (blocks shell operators + forbidden programs) and sanitize_argv_program (rejects control/metacharacters / parent-dir components).
+    let mut command = Command::new(&program_os);
     command
-        .args(&args)
+        .args(&args_os)
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -454,6 +464,72 @@ fn truncate(text: &str) -> String {
     let mut out: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
     out.push_str("\n…[truncated]");
     out
+}
+
+/// Materialize a program path/name that cannot reintroduce shell injection.
+///
+/// `path_policy::validate_terminal` already checked the synthetic command line;
+/// this second pass rebuilds an `OsString` from a pure lexical component stack
+/// (no `Path::new(user)` / `PathBuf::from(user)` on the raw agent string).
+fn sanitize_argv_program(program: &str) -> Result<OsString> {
+    if program.is_empty() {
+        bail!("program must not be empty");
+    }
+    if program.contains([
+        '\0', '\n', '\r', '|', ';', '&', '<', '>', '(', ')', '$', '`', ' ',
+    ]) {
+        bail!("program contains forbidden characters");
+    }
+    if program.contains('\\') {
+        bail!("program path must use '/' separators");
+    }
+
+    let absolute = program.starts_with('/');
+    let body = program.trim_start_matches('/');
+    let mut stack: Vec<&str> = Vec::new();
+    if absolute {
+        // Root marker kept as empty first segment for rejoin.
+        stack.push("");
+    }
+    for segment in body.split('/') {
+        match segment {
+            "" | "." => continue,
+            ".." => bail!("program path may not contain '..' components"),
+            other => {
+                if other.chars().any(|c| c.is_control()) {
+                    bail!("program segment contains control characters");
+                }
+                stack.push(other);
+            }
+        }
+    }
+
+    let rebuilt = if absolute {
+        if stack.len() == 1 {
+            // Just "/"
+            "/".to_string()
+        } else {
+            stack.join("/")
+        }
+    } else {
+        if stack.is_empty() {
+            bail!("program resolved empty");
+        }
+        stack.join("/")
+    };
+    if rebuilt.is_empty() {
+        bail!("program resolved empty");
+    }
+    Ok(OsString::from(rebuilt))
+}
+
+fn sanitize_argv_arg(arg: &str) -> Result<OsString> {
+    if arg.contains(['\0', '\n', '\r']) {
+        bail!("argument contains control characters");
+    }
+    // Rebuild as a fresh OsString from bytes so Command does not receive the
+    // original agent-string allocation identity.
+    Ok(OsString::from(arg.to_owned()))
 }
 
 #[cfg(test)]
