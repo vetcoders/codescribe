@@ -26,7 +26,7 @@ final class SettingsTruthTests: XCTestCase {
 
     func testSectionAvailabilityKeepsPromisesHonest() {
         for section in [
-            SettingsSection.creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .user,
+            SettingsSection.creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .license, .user,
         ] {
             XCTAssertEqual(section.availability, .available)
             XCTAssertTrue(section.isInteractive)
@@ -34,7 +34,7 @@ final class SettingsTruthTests: XCTestCase {
     }
 
     /// The full route map: stable id, one visible title owner, and the explicit
-    /// panel destination SettingsView's detail switch consumes. All nine rail
+    /// panel destination SettingsView's detail switch consumes. All ten rail
     /// sections, including engine→Dictation, voiceLab→Dictionary,
     /// keys→Providers, and the dedicated Agent destination.
     func testSettingsSectionRoutesTitlesAndDestinationsOwnTheRail() {
@@ -47,6 +47,7 @@ final class SettingsTruthTests: XCTestCase {
             (.engine, "engine", "Dictation", .dictation),
             (.audio, "audio", "Audio", .audio),
             (.voiceLab, "voiceLab", "Dictionary", .dictionary),
+            (.license, "license", "License", .license),
             (.user, "user", "User", .user),
         ]
 

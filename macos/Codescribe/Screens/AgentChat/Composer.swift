@@ -22,6 +22,7 @@ struct Composer: View {
     /// composer input tracks the message bodies. Chrome (chips, affordance hints,
     /// icons) keeps its intrinsic size.
     @Environment(\.csTextScale) private var textScale
+    @Environment(\.openSettings) private var openSettings
     @State private var fieldHeight = ComposerTextLayout.minimumHeight(fontSize: 13.5)
     @AppStorage("AgentChat.dictationPreviewExpanded.v1") private var dictationPreviewExpanded = false
     @State private var previewAttachment: PendingAttachment?
@@ -49,6 +50,8 @@ struct Composer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
+            agenticGate
+
             // Palette sits ABOVE the field: the list grows upward from the
             // caret like every other completion popup on the platform, and the
             // field never jumps down as rows appear.
@@ -174,6 +177,34 @@ struct Composer: View {
             canSend: store.canSend,
             activePhase: store.selectedComposerTurnPhase
         )
+    }
+
+    @ViewBuilder
+    private var agenticGate: some View {
+        if let message = store.agenticBlockMessage {
+            HStack(spacing: 9) {
+                CSIconView(icon: .warning, size: 11, color: CSColor.amber)
+                Text(message)
+                    .font(CSFont.ui(11.5, .medium))
+                    .foregroundStyle(CSColor.textBodyAlt)
+                Spacer(minLength: 8)
+                Button("Enter license") {
+                    SettingsDeepLink.pendingSection = .license
+                    openSettings()
+                }
+                .buttonStyle(.plain)
+                .font(CSFont.mono(10.5, .semibold))
+                .foregroundStyle(CSColor.chromeAccent)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .background(CSColor.surfaceRaised(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                    .strokeBorder(CSColor.amber.opacity(0.28), lineWidth: 1)
+            )
+        }
     }
 
     /// Slash-command palette. Rendered only while the draft parses as a command,

@@ -42,6 +42,7 @@ final class AppModel: ObservableObject {
         let chat = AgentChatStore(
             engine: RealChatEngine(),
             threadsProvider: RealThreadsEngine(),
+            licenseService: LicenseService.shared,
             loadsThreadIndexEagerly: false
         )
         chat.paletteSource = RealComposerPaletteSource(

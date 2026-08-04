@@ -92,7 +92,8 @@ struct CodescribeApp: App {
                 engine: RealSettingsEngine(),
                 agentStatus: RealAgentStatusEngine(),
                 mcpAdmin: RealMCPAdminEngine(),
-                hotkeys: RealHotkeysEngine()
+                hotkeys: RealHotkeysEngine(),
+                licenseService: LicenseService.shared
             ))
         }
         // Make the Settings window user-resizable: the content's `.frame` floor

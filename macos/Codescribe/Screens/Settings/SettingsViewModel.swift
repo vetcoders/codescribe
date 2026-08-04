@@ -158,6 +158,7 @@ enum SettingsPanelDestination: Equatable {
     case dictation
     case audio
     case dictionary
+    case license
     case user
 }
 
@@ -185,6 +186,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case engine
     case audio
     case voiceLab
+    case license
     case user
 
     var id: String { rawValue }
@@ -199,6 +201,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .engine: return "Dictation"
         case .audio: return "Audio"
         case .voiceLab: return "Dictionary"
+        case .license: return "License"
         case .user: return "User"
         }
     }
@@ -213,13 +216,14 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .engine: return .dictation
         case .audio: return .audio
         case .voiceLab: return .dictionary
+        case .license: return .license
         case .user: return .user
         }
     }
 
     var availability: SettingsSectionAvailability {
         switch self {
-        case .creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .user:
+        case .creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .license, .user:
             return .available
         }
     }
@@ -654,6 +658,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var audioInput: CsAudioInputSnapshot
     @Published private(set) var audioInputReadError: String?
     @Published private(set) var resetPreview: CsResetPreview
+    @Published private(set) var licenseStatus: CsLicenseStatus
     /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
     /// local callback server listening). Guards double-clicks.
     @Published private(set) var accountLoginPending: Set<String> = []
@@ -696,6 +701,7 @@ final class SettingsViewModel: ObservableObject {
     private let agentStatus: AgentStatusEngine?
     private let mcpAdmin: MCPAdminEngine?
     private let hotkeys: HotkeysEngine?
+    private let licenseService: LicenseService
     private let laneTruthProvider: (CsLlmLane) -> CsLaneTruthSnapshot
     private var modelDiscoveryGenerations: [String: Int] = [:]
     private var assistiveModelEditGeneration = 0
@@ -711,6 +717,7 @@ final class SettingsViewModel: ObservableObject {
         agentStatus: AgentStatusEngine? = nil,
         mcpAdmin: MCPAdminEngine? = nil,
         hotkeys: HotkeysEngine? = nil,
+        licenseService: LicenseService = .preview,
         buildInfo: AppBuildInfo = .current(),
         laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
             laneTruthSnapshot(lane: lane)
@@ -730,6 +737,7 @@ final class SettingsViewModel: ObservableObject {
         self.agentStatus = agentStatus
         self.mcpAdmin = mcpAdmin
         self.hotkeys = hotkeys
+        self.licenseService = licenseService
         self.buildInfo = buildInfo
         self.laneTruthProvider = laneTruthProvider
         self.servingStatusProvider = servingStatusProvider
@@ -749,6 +757,7 @@ final class SettingsViewModel: ObservableObject {
         self.audioInput = .sample
         self.audioInputReadError = nil
         self.resetPreview = .sample
+        self.licenseStatus = licenseService.status
         // K4: tray cycles arrive on the bus; reload Settings badge display.
         // Register after every stored property is initialized (Swift init order).
         holdBadgeObserver = NotificationCenter.default.addObserver(
@@ -790,6 +799,22 @@ final class SettingsViewModel: ObservableObject {
         refreshAgentStatus()
         reloadMcpServers()
         loadHotkeys()
+        licenseService.refresh()
+        licenseStatus = licenseService.status
+    }
+
+    var licenseError: String? { licenseService.lastError }
+
+    @discardableResult
+    func activateLicense(_ key: String) -> Bool {
+        let activated = licenseService.activate(key)
+        licenseStatus = licenseService.status
+        return activated
+    }
+
+    func removeLicense() {
+        licenseService.removeLicense()
+        licenseStatus = licenseService.status
     }
 
     /// Re-probe Whisper install state (embedded / on-disk / missing).

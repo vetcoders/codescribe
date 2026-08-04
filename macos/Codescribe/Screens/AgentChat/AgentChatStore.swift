@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -774,6 +775,8 @@ final class AgentChatStore: ObservableObject {
     /// cut C): window activation + cross-surface `threadsDidChange`. Removed
     /// on deinit; empty when no threads provider is wired (preview/mock).
     private var externalThreadsObservers: [NSObjectProtocol] = []
+    private let licenseService: LicenseService?
+    private var licenseChangeSink: AnyCancellable?
 
     /// `loadsThreadIndexEagerly: false` (production `AppModel` path) turns init
     /// into a light shell: no disk I/O on the MainActor bootstrap — the real
@@ -784,10 +787,12 @@ final class AgentChatStore: ObservableObject {
          threadsProvider: ChatThreadsProviding? = nil,
          threads: [ChatThread]? = nil,
          voiceTurnCanceller: VoiceTurnCancelling? = nil,
+         licenseService: LicenseService? = nil,
          loadsThreadIndexEagerly: Bool = true) {
         self.engine = engine
         self.threadsProvider = threadsProvider
         self.voiceTurnCanceller = voiceTurnCanceller
+        self.licenseService = licenseService
 
         let seeded: [ChatThread]
         var deferredIndexLoad = false
@@ -816,6 +821,9 @@ final class AgentChatStore: ObservableObject {
             scheduleInitialThreadIndexLoad()
         } else if threadsProvider != nil {
             restoreAcceptedTurnsFromDisk()
+        }
+        licenseChangeSink = licenseService?.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
         }
     }
 
@@ -1127,7 +1135,13 @@ final class AgentChatStore: ObservableObject {
     /// both. Drives the send button's enabled state. A turn already in flight no
     /// longer blocks acceptance — `send()` queues instead of dropping.
     var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty
+        !isAgenticLocked
+            && (!draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty)
+    }
+
+    var isAgenticLocked: Bool { licenseService?.canUseAgentic == false }
+    var agenticBlockMessage: String? {
+        isAgenticLocked ? licenseService?.agenticBlockMessage : nil
     }
 
     // MARK: Turn queue (messages accepted while a turn is in flight)
@@ -1191,6 +1205,7 @@ final class AgentChatStore: ObservableObject {
     // MARK: Send (accept → queue → serialized dispatch)
 
     func send() {
+        guard !isAgenticLocked else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = pendingAttachments
         attachLog.info(

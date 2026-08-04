@@ -61,6 +61,8 @@ struct SettingsView: View {
                     VoiceLabPanel(model: model)
                 case .audio:
                     AudioPanel(model: model)
+                case .license:
+                    LicensePanel(model: model)
                 case .creator:
                     CreatorPanel(model: model)
                 }
