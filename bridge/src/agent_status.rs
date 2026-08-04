@@ -28,7 +28,6 @@ pub enum CsMcpRowTone {
 }
 
 impl From<McpRowTone> for CsMcpRowTone {
-    /// Core tone → UniFFI enum (closed four-tone set, no lossy fallback).
     fn from(tone: McpRowTone) -> Self {
         match tone {
             McpRowTone::Good => CsMcpRowTone::Good,
@@ -48,7 +47,6 @@ pub struct CsMcpStatusRow {
 }
 
 impl From<&McpStatusRow> for CsMcpStatusRow {
-    /// Clone one probe row into the UniFFI record (tone mapped in place).
     fn from(row: &McpStatusRow) -> Self {
         Self {
             label: row.label.clone(),
@@ -72,7 +70,6 @@ pub struct CsMcpStatusReport {
 }
 
 impl From<McpStatusReport> for CsMcpStatusReport {
-    /// Flatten core MCP probe into config path, configured flag, and UI rows.
     fn from(report: McpStatusReport) -> Self {
         let configured = report.configured();
         let rows = report
@@ -101,7 +98,6 @@ pub struct CsAgenticReadiness {
 }
 
 impl From<AgenticReadinessReport> for CsAgenticReadiness {
-    /// Core readiness verdict + summary rows into the Settings card record.
     fn from(report: AgenticReadinessReport) -> Self {
         let ready = report.is_ready();
         let rows = report
@@ -137,8 +133,6 @@ pub struct CodescribeAgentStatus {}
 
 #[uniffi::export]
 impl CodescribeAgentStatus {
-    /// Construct the handle and ensure logging is initialised, since Swift may
-    /// reach this before any other bridge entry point has run.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -178,13 +172,6 @@ impl CodescribeAgentStatus {
     }
 }
 
-/// Derive connector health from the configured MCP servers for the capability
-/// matrix.
-///
-/// Servers are matched by substring on their name, so operator-chosen names like
-/// `loctree-mcp` or `my-intellij` still resolve. IntelliJ's project path needs a
-/// second read of `mcp.json`: `list_servers` exposes env *keys* only, never their
-/// values. Workspace roots are tilde-expanded here so the matrix shows real paths.
 fn live_connector_health() -> ConnectorHealth {
     let servers = list_servers().unwrap_or_default();
     let mut intellij_healthy = false;
@@ -240,13 +227,11 @@ fn live_connector_health() -> ConnectorHealth {
     }
 }
 
-/// UniFFI mapping contracts: tone/row fidelity and probe non-empty degradation.
 #[cfg(test)]
 mod tests {
     use super::*;
     use codescribe::agent::tools::mcp::{McpRowTone, McpStatusRow};
 
-    /// Every core tone maps to the same-named UniFFI variant (no collapse).
     #[test]
     fn tone_maps_one_to_one() {
         assert_eq!(CsMcpRowTone::from(McpRowTone::Good), CsMcpRowTone::Good);
@@ -258,7 +243,6 @@ mod tests {
         );
     }
 
-    /// Label, value, and tone survive the borrow→owned FFI row projection.
     #[test]
     fn row_conversion_preserves_fields() {
         let row = McpStatusRow {
@@ -276,7 +260,6 @@ mod tests {
     // (a present config lists servers; a missing one yields a single neutral
     // "MCP off" row). The FFI mapping must carry that row through with a
     // non-empty config-path label and never collapse to an empty report.
-    /// Probe always yields ≥1 row and a non-empty config path (never empty UI).
     #[test]
     fn mcp_status_report_maps_at_least_one_row() {
         let report = CodescribeAgentStatus::new().mcp_status();
@@ -287,7 +270,6 @@ mod tests {
     // The agentic readiness report always leads with a verdict row plus the
     // per-prerequisite rows, so the FFI view must carry several rows and a
     // boolean verdict without panicking on a bare environment.
-    /// Agentic readiness always carries rows and a wired `ready` bool.
     #[test]
     fn agentic_readiness_report_carries_verdict_and_rows() {
         let report = CodescribeAgentStatus::new().agentic_readiness();

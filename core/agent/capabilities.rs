@@ -39,9 +39,6 @@ pub enum CapabilityOp {
 }
 
 impl CapabilityOp {
-    /// Canonical dotted name (`fs.read`, `repo.status`).
-    ///
-    /// This string is the model-facing contract; provider names are not.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FsList => "fs.list",
@@ -89,7 +86,6 @@ impl CapabilityOp {
         }
     }
 
-    /// Whether fulfilling this op can change workspace state or spawn a process.
     pub fn is_mutating(self) -> bool {
         matches!(
             self,
@@ -104,8 +100,6 @@ impl CapabilityOp {
         )
     }
 
-    /// Every canonical op. This order is the order rows appear in the matrix
-    /// built by [`capability_matrix`].
     pub fn all() -> &'static [CapabilityOp] {
         &[
             Self::FsList,
@@ -129,8 +123,6 @@ impl CapabilityOp {
         ]
     }
 
-    /// Parse a canonical dotted name back into an op; `None` for anything
-    /// this build does not know.
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "fs.list" => Some(Self::FsList),
@@ -168,7 +160,6 @@ pub enum CapabilityProvider {
 }
 
 impl CapabilityProvider {
-    /// Stable lowercase provider token for logs and JSON.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Native => "native",
@@ -193,7 +184,6 @@ pub enum CapabilityTier {
 }
 
 impl CapabilityTier {
-    /// Stable lowercase tier token for logs and JSON.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Native => "native",
@@ -204,10 +194,6 @@ impl CapabilityTier {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// One row of the capability matrix, shaped for JSON and UI consumers.
-///
-/// Carries the op as a dotted string, unlike [`CapabilityResolution`], which
-/// keeps the typed [`CapabilityOp`].
 pub struct CapabilityStatus {
     pub op: String,
     pub tier: CapabilityTier,
@@ -217,11 +203,6 @@ pub struct CapabilityStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Outcome of resolving one op against current connector health.
-///
-/// `provider` records who is *preferred*. Where a native tool exists it stays
-/// the fulfilment surface and enrichment is advisory, so `native_tool` can be
-/// set even when `provider` names an enricher.
 pub struct CapabilityResolution {
     pub op: CapabilityOp,
     pub provider: CapabilityProvider,
@@ -356,8 +337,6 @@ pub fn resolve(op: CapabilityOp, health: &ConnectorHealth) -> CapabilityResoluti
     )
 }
 
-/// Build a resolution no provider can serve, carrying `reason` forward as the
-/// recovery guidance shown to the caller.
 fn unavailable(op: CapabilityOp, reason: impl Into<String>) -> CapabilityResolution {
     CapabilityResolution {
         op,
@@ -424,8 +403,6 @@ pub struct AgentCapabilityPreferences {
 }
 
 impl AgentCapabilityPreferences {
-    /// Whether the user has denied this op. Matches both the canonical dotted
-    /// name and any spelling that [`CapabilityOp::parse`] maps to the same op.
     pub fn is_op_disabled(&self, op: CapabilityOp) -> bool {
         self.disabled_ops
             .iter()
@@ -441,12 +418,10 @@ pub fn matrix_map(health: &ConnectorHealth) -> BTreeMap<String, CapabilityStatus
         .collect()
 }
 
-/// Capability resolution: native ops, IntelliJ match, unavailable tiers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// FS and repo ops resolve to Native tools with no connectors healthy.
     #[test]
     fn native_ops_resolve_without_connectors() {
         let health = ConnectorHealth::default();
@@ -459,7 +434,6 @@ mod tests {
         assert!(commit.op.is_mutating());
     }
 
-    /// IntelliJ path outside workspace roots does not steal native status.
     #[test]
     fn stale_intellij_project_is_bypassed() {
         let health = ConnectorHealth {
@@ -474,7 +448,6 @@ mod tests {
         assert!(!health.intellij_project_matched());
     }
 
-    /// Matched IntelliJ project upgrades ProjectBuild to the IDE provider.
     #[test]
     fn matched_intellij_project_enhances_build() {
         let health = ConnectorHealth {
@@ -489,7 +462,6 @@ mod tests {
         assert_eq!(status.native_tool, Some("project_build"));
     }
 
-    /// CodeSymbols stays Unavailable when no semantic provider is present.
     #[test]
     fn optional_semantics_unavailable_without_providers() {
         let health = ConnectorHealth::default();
@@ -498,7 +470,6 @@ mod tests {
         assert!(status.native_tool.is_none());
     }
 
-    /// capability_matrix emits one row per CapabilityOp with expected tools.
     #[test]
     fn matrix_covers_all_ops() {
         let matrix = capability_matrix(&ConnectorHealth::default());
