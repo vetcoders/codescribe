@@ -200,6 +200,11 @@ struct MessageList: View {
     /// during a stream pauses the follow; returning to the bottom resumes it, so the
     /// view stops fighting the user's manual scroll on a long streamed message.
     @State private var followState = StreamScrollFollowState()
+    /// Hang guard (2026-08-04 livelock): LazyVStack pays O(items) layout phases
+    /// per view-graph transaction, so an unbounded multi-hour thread eventually
+    /// outruns the run loop even with healthy per-item costs. Only the newest
+    /// window renders; "Show earlier" pages the history in on demand.
+    @State private var visibleTurnBudget = MessageList.turnWindow
     /// Operator width density — shared with the header picker via `@AppStorage`.
     @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode.rawValue
     private let scrollSpace = "chatMessageScroll"
@@ -207,13 +212,32 @@ struct MessageList: View {
 
     private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
 
+    /// Newest turns per page of the render window (`visibleTurnBudget` grows by
+    /// this step on every "Show earlier"). Sized so a normal working session
+    /// never sees the affordance while a 49-hour thread stays bounded.
+    static let turnWindow = 120
+
+    /// The rendered slice: newest `visibleTurnBudget` turns.
+    private var visibleMessages: ArraySlice<ChatMessage> {
+        messages.suffix(visibleTurnBudget)
+    }
+
+    private var hiddenTurnCount: Int {
+        max(0, messages.count - visibleTurnBudget)
+    }
+
     var body: some View {
         GeometryReader { viewport in
             let containerWidth = viewport.size.width
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(messages) { message in
+                        if hiddenTurnCount > 0 {
+                            ShowEarlierButton(hiddenCount: hiddenTurnCount) {
+                                visibleTurnBudget += Self.turnWindow
+                            }
+                        }
+                        ForEach(visibleMessages) { message in
                             turn(message, containerWidth: containerWidth, mode: widthMode)
                                 .frame(maxWidth: .infinity, alignment: alignment(message.role))
                                 .id(message.id)
@@ -249,10 +273,13 @@ struct MessageList: View {
                 }
                 .coordinateSpace(name: scrollSpace)
                 .scrollContentBackground(.hidden)
-                // Let the user drag-select message text and Cmd+C it (SwiftUI Text is
-                // not selectable by default). Per-message "Copy" lives in the bubble
-                // context menu below.
-                .textSelection(.enabled)
+                // NO list-wide `.textSelection(.enabled)` here — the shared
+                // SelectionOverlay spanning the whole LazyVStack is the exact
+                // mechanism the 2026-08-04 livelock spun on (every view-graph
+                // flush re-walked the full transcript's selection geometry).
+                // Selection lives per body instead: MarkdownText root, RawText,
+                // tool rows, reasoning and context chips all enable it locally,
+                // so drag-select + Cmd+C keep working inside any bubble.
                 .onPreferenceChange(ChatBottomKey.self) { contentBottom in
                     let isAtLiveEdge = Self.followTailAfterScroll(
                         contentBottom: contentBottom,
@@ -269,6 +296,9 @@ struct MessageList: View {
                     }
                 }
                 .onChange(of: threadID) { _, _ in
+                    // A fresh thread starts back at the bounded window; an
+                    // expanded budget must not leak across conversations.
+                    visibleTurnBudget = Self.turnWindow
                     perform(followState.handle(.threadChanged), with: proxy)
                 }
                 .onAppear {
@@ -355,6 +385,41 @@ struct MessageList: View {
                 onToggleRenderMode: onToggleRenderMode
             )
         }
+    }
+}
+
+/// Top-of-list pager for the bounded render window: names how much history is
+/// folded away and loads one more window per click. Deliberately a plain row,
+/// not infinite scroll — paging must stay an explicit operator action so the
+/// hang guard cannot be defeated by an idle scroll position.
+private struct ShowEarlierButton: View {
+    let hiddenCount: Int
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                CSIconView(icon: .chevronRight, size: 8, weight: .semibold,
+                           color: CSColor.textFaintAlt)
+                Text("Show earlier · \(hiddenCount) turn\(hiddenCount == 1 ? "" : "s")")
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(hovering ? CSColor.textBody : CSColor.textFaintAlt)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(CSColor.surfaceRaised(0.04))
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel("Show earlier messages")
+        .help("Render the previous \(MessageList.turnWindow) turns")
     }
 }
 
@@ -1347,11 +1412,14 @@ private struct RawText: View {
     @Environment(\.csTextScale) private var textScale
 
     var body: some View {
+        // Selection is per-body (the list-wide overlay was the livelock fuel);
+        // raw mode must stay copyable like the markdown render.
         let content = Text(raw)
             .font(CSFont.mono(13 * textScale))
             .foregroundStyle(CSColor.textBodyAlt)
             .lineSpacing(4)
             .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
         if showsCaret {
             HStack(alignment: .bottom, spacing: 2) {
                 content
