@@ -366,13 +366,12 @@ final class OverlayState: ObservableObject {
         switch mode {
         case .listening:
             if transcribing { return "finalizing · transcript" }
-            // Honesty (operator 2026-07-27): never claim "live preview" while the
-            // canvas is still empty. Apple may be shy (letter-level confidence) or
-            // Previews may not have drained yet — badge must not assert streaming
-            // text the user cannot see. Claim live preview only once interim or
-            // committed text is on the canvas.
+            // Honesty (operator 2026-07-27 / mission B): never claim streaming
+            // text the user cannot see. Apple may be shy (letter-level confidence)
+            // or Previews may not have drained yet. Empty canvas = waiting cadence,
+            // not "live preview · raw". Engine chip still reports Apple when live.
             let canvas = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if canvas.isEmpty { return "listening · canvas open" }
+            if canvas.isEmpty { return "live preview · waiting" }
             return "live preview · raw"
         case .formatted: return "final · transcript"
         case .noSpeech: return "no speech · nothing captured"
@@ -386,7 +385,10 @@ final class OverlayState: ObservableObject {
         if mode == .error { return "error" }
         if mode == .listening && transcribing { return "transcribing" }
         if mode == .listening && warmingUp { return "warming up" }
-        if mode == .listening && audioReady && liveText.isEmpty { return "audio live" }
+        if mode == .listening && liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Empty canvas: do not imply a visible preview stream.
+            return audioReady ? "audio live · waiting" : "waiting for audio"
+        }
         return mode == .listening ? "vad-gated preview" : "editable"
     }
 

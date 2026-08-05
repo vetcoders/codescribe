@@ -346,8 +346,12 @@ final class OverlayStateTests: XCTestCase {
         state.handleRecordingPreparing()
         state.handleRecordingStarted()
 
-        XCTAssertEqual(state.metaText, "listening · canvas open")
+        XCTAssertEqual(state.metaText, "live preview · waiting")
         XCTAssertTrue(state.liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        XCTAssertTrue(
+            state.footerRight.contains("waiting"),
+            "empty canvas footer must not claim vad-gated preview: \(state.footerRight)"
+        )
 
         state.applyPreview("apple partial")
         XCTAssertEqual(state.metaText, "live preview · raw")
