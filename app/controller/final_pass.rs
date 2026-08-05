@@ -1,14 +1,20 @@
 //! Stop-path final-pass routing, streaming completeness, and latency receipts.
 //!
 //! Settings / `FINAL_PASS_MODE` is law (operator 2026-08-05):
-//! - **Always** (`on`): full Whisper file re-pass after release.
-//! - **Smart**: skip full re-pass when streaming completeness is adjudicated.
+//! - **Always** (`on`): full Whisper file re-pass after release. The **only**
+//!   mode in which a full-file re-pass is permitted.
+//! - **Smart**: Whisper may final-pass **individual utterances only** — never the
+//!   whole file. When streaming completeness is adjudicated Complete, nothing runs
+//!   at stop. When incomplete, only the uncommitted audio tail (from the last
+//!   committed utterance end) is transcribed and **appended** to the committed
+//!   streaming text; committed text stays immutable (append-only doctrine).
 //!   Pair with `CODESCRIBE_LAYERED_TRANSCRIPTION` (orthogonal toggle) for live
 //!   Whisper tail-patches during hold — Smart does not force layered on.
-//! - **Off**: never run full file re-pass; streaming (+ post-process) is final.
+//! - **Off**: hard off at stop — zero Whisper invocation on the stop path;
+//!   streaming (+ post-process) is final.
 //!
 //! Dictionary / lexicon cleanup is **not** gated by this mode — it always runs
-//! in the transcript post-process pipeline (`StreamPostProcessor`).
+//! in the transcript post-process pipeline (`StreamPostProcessor`), in all modes.
 
 use codescribe_core::pipeline::contracts::FinalPassDisposition;
 
@@ -305,6 +311,49 @@ pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
     )
 }
 
+/// What the stop path must actually do with Whisper — typed, not a lossy bool.
+///
+/// The bool `should_skip_full_final_repass` could not distinguish "run Whisper over
+/// the whole file" from "transcribe only the uncommitted tail and append it"; both
+/// collapsed to `false`. That collapse is what let Smart drift into full-file
+/// re-passes, replacing committed text. This enum makes the two paths distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalPassAction {
+    /// Do not invoke Whisper at stop. Streaming (+ post-process) is final.
+    SkipStreamingFinal,
+    /// Re-transcribe the entire recorded file. **Always mode only.**
+    FullFileRepass,
+    /// Transcribe only the uncommitted audio tail (from the last committed
+    /// utterance end) and APPEND it to the committed streaming text. Committed
+    /// text is immutable.
+    TailGapFill,
+}
+
+/// Canonical stop-path routing decision. Settings / `FINAL_PASS_MODE` is law.
+///
+/// Hard mapping (operator 2026-08-05):
+/// - `Always` → `FullFileRepass`, regardless of completeness.
+/// - `Smart` + `Complete` → `SkipStreamingFinal`.
+/// - `Smart` + `Incomplete{..}` → `TailGapFill` (per-utterance / tail only,
+///   **never** a full-file re-pass).
+/// - `Off` → `SkipStreamingFinal`, regardless of completeness.
+///
+/// `FullFileRepass` is reachable from `Always` and from nowhere else — the live
+/// engine (Apple vs Whisper) must never rewrite the mode.
+pub(crate) fn final_pass_action(
+    mode: FinalPassRoutingMode,
+    completeness: StreamingCompleteness,
+) -> FinalPassAction {
+    match mode {
+        FinalPassRoutingMode::Always => FinalPassAction::FullFileRepass,
+        FinalPassRoutingMode::Off => FinalPassAction::SkipStreamingFinal,
+        FinalPassRoutingMode::Smart => match completeness {
+            StreamingCompleteness::Complete => FinalPassAction::SkipStreamingFinal,
+            StreamingCompleteness::Incomplete { .. } => FinalPassAction::TailGapFill,
+        },
+    }
+}
+
 /// Skip full local STT re-pass according to routing mode + completeness.
 ///
 /// **Honest routing** (operator 2026-08-05): Settings / `FINAL_PASS_MODE` is law.
@@ -318,16 +367,21 @@ pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
 ///
 /// `prefer_apple` is retained for call-site clarity/logging only — it must not
 /// change skip decisions (dishonest Apple→Always was the 2026-07-25 override).
+///
+/// **TRANSITIONAL SHIM.** This delegates to [`final_pass_action`] and flattens the
+/// typed action back to the legacy bool with byte-for-byte unchanged runtime
+/// semantics: `FullFileRepass` → `false`, `SkipStreamingFinal` → `true`,
+/// `TailGapFill` → `false` (Smart+Incomplete currently still lands in the old
+/// re-pass branch). The `TailGapFill → false` collapse is the remaining lie and is
+/// the reason this shim exists: it must be deleted once the stop path consumes
+/// [`FinalPassAction`] directly and grows a real tail-only append path.
 pub(crate) fn should_skip_full_final_repass(
     mode: FinalPassRoutingMode,
     completeness: StreamingCompleteness,
     _prefer_apple: bool,
 ) -> bool {
-    match mode {
-        FinalPassRoutingMode::Always => false,
-        FinalPassRoutingMode::Off => true,
-        FinalPassRoutingMode::Smart => {
-            matches!(completeness, StreamingCompleteness::Complete)
-        }
+    match final_pass_action(mode, completeness) {
+        FinalPassAction::SkipStreamingFinal => true,
+        FinalPassAction::FullFileRepass | FinalPassAction::TailGapFill => false,
     }
 }
