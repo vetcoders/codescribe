@@ -1189,6 +1189,63 @@ fn test_append_tail_gap_joins_with_single_space() {
     );
 }
 
+/// Streaming text can already carry uncommitted preview words for the SAME audio
+/// the tail gap-fill re-transcribes (pending_tail). Appending blindly duplicates
+/// that overlap. The dedup drops the overlapping leading words from the TAIL —
+/// never a character of the streaming side.
+#[test]
+fn test_append_tail_gap_dedups_overlapping_preview_words() {
+    use super::final_pass::append_tail_gap;
+
+    // Partial overlap: the last two streaming words are the tail's first two.
+    assert_eq!(
+        append_tail_gap("Pacjent ma goraczke i", "goraczke i wymioty od rana"),
+        "Pacjent ma goraczke i wymioty od rana",
+        "overlapping preview words must not be duplicated"
+    );
+
+    // Case- and punctuation-insensitive word comparison, ORIGINAL tail words kept.
+    assert_eq!(
+        append_tail_gap("Badanie krwi wykazalo", "Wykazalo, podwyzszone leukocyty"),
+        "Badanie krwi wykazalo podwyzszone leukocyty",
+        "overlap compares words stripped of case and edge punctuation"
+    );
+
+    // Tail fully contained in the streaming suffix → nothing to append.
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie i drugie zdanie", "drugie zdanie"),
+        "Pierwsze zdanie i drugie zdanie",
+        "tail already present in the committed suffix appends nothing"
+    );
+
+    // Longest overlap wins over a shorter accidental one.
+    assert_eq!(
+        append_tail_gap("a b a b", "a b c"),
+        "a b a b c",
+        "longest suffix/prefix overlap is the one removed"
+    );
+
+    // Zero overlap: unchanged join.
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", "Drugie zdanie."),
+        "Pierwsze zdanie. Drugie zdanie.",
+        "no overlap leaves both operands intact"
+    );
+
+    // Doctrine invariant holds through dedup: streaming stays an exact prefix.
+    for (streaming, tail) in [
+        ("Pacjent ma goraczke i", "goraczke i wymioty"),
+        ("Pierwsze zdanie i drugie zdanie", "drugie zdanie"),
+        ("Ćma zażółć gęślą jaźń", "gęślą jaźń ćwierć"),
+    ] {
+        let out = append_tail_gap(streaming, tail);
+        assert!(
+            out.starts_with(streaming.trim()),
+            "committed text mutated by dedup: streaming={streaming:?} tail={tail:?} out={out:?}"
+        );
+    }
+}
+
 #[test]
 #[serial]
 fn test_final_pass_routing_mode_defaults_smart_and_honors_env() {
