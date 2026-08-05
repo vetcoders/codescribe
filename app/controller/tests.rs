@@ -1109,6 +1109,7 @@ fn test_completeness_evidence_from_session_wires_pending_tail() {
         pending_tail: true,
         last_commit_source: Some(CompletenessCommitSource::UtteranceFinal),
         committed_chars: 12,
+        committed_through_secs: None,
     };
     let evidence =
         StreamingCompletenessEvidence::from_session("To jest kompletne zdanie.", &session);
