@@ -354,34 +354,21 @@ pub(crate) fn final_pass_action(
     }
 }
 
-/// Skip full local STT re-pass according to routing mode + completeness.
+/// Append a tail gap-fill to committed streaming text — **append only**.
 ///
-/// **Honest routing** (operator 2026-08-05): Settings / `FINAL_PASS_MODE` is law.
-/// Live engine (Apple vs Whisper) does **not** rewrite the mode:
-/// - **Always** (`on`): never skip — full Whisper file re-pass after release.
-/// - **Smart**: skip when streaming completeness is Complete; live gap-fill is
-///   layered transcription / tail-patch during hold, not a stop-path Always force.
-/// - **Off**: always skip — optional final pass is off; streaming is final.
-///
-/// Dictionary/lexicon is applied always in post-process, independent of this mode.
-///
-/// `prefer_apple` is retained for call-site clarity/logging only — it must not
-/// change skip decisions (dishonest Apple→Always was the 2026-07-25 override).
-///
-/// **TRANSITIONAL SHIM.** This delegates to [`final_pass_action`] and flattens the
-/// typed action back to the legacy bool with byte-for-byte unchanged runtime
-/// semantics: `FullFileRepass` → `false`, `SkipStreamingFinal` → `true`,
-/// `TailGapFill` → `false` (Smart+Incomplete currently still lands in the old
-/// re-pass branch). The `TailGapFill → false` collapse is the remaining lie and is
-/// the reason this shim exists: it must be deleted once the stop path consumes
-/// [`FinalPassAction`] directly and grows a real tail-only append path.
-pub(crate) fn should_skip_full_final_repass(
-    mode: FinalPassRoutingMode,
-    completeness: StreamingCompleteness,
-    _prefer_apple: bool,
-) -> bool {
-    match final_pass_action(mode, completeness) {
-        FinalPassAction::SkipStreamingFinal => true,
-        FinalPassAction::FullFileRepass | FinalPassAction::TailGapFill => false,
+/// The overlay doctrine (CLAUDE.md, THE ONE RULE): committed text is immutable.
+/// Whatever Whisper produced for the uncommitted tail is joined onto the end with
+/// exactly one space; the trimmed streaming text is always an untouched prefix of
+/// the result. Empty/blank tail → streaming unchanged. Empty/blank streaming → the
+/// trimmed tail alone.
+pub(crate) fn append_tail_gap(streaming: &str, tail: &str) -> String {
+    let committed = streaming.trim();
+    let addition = tail.trim();
+    if addition.is_empty() {
+        return committed.to_string();
     }
+    if committed.is_empty() {
+        return addition.to_string();
+    }
+    format!("{committed} {addition}")
 }
