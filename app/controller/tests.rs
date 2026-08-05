@@ -1246,86 +1246,9 @@ fn test_append_tail_gap_dedups_overlapping_preview_words() {
     }
 }
 
-#[test]
-#[serial]
-fn test_final_pass_routing_mode_defaults_smart_and_honors_env() {
-    unsafe {
-        std::env::remove_var("FINAL_PASS_MODE");
-        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
-        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
-    }
-    assert_eq!(final_pass_routing_mode(), FinalPassRoutingMode::Smart);
-
-    for (raw, expected) in [
-        ("always", FinalPassRoutingMode::Always),
-        ("SMART", FinalPassRoutingMode::Smart),
-        ("off", FinalPassRoutingMode::Off),
-    ] {
-        unsafe {
-            std::env::set_var("FINAL_PASS_MODE", raw);
-        }
-        assert_eq!(final_pass_routing_mode(), expected, "FINAL_PASS_MODE={raw}");
-    }
-
-    unsafe {
-        std::env::remove_var("FINAL_PASS_MODE");
-        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "0");
-    }
-    assert_eq!(
-        final_pass_routing_mode(),
-        FinalPassRoutingMode::Off,
-        "legacy LOCAL_STT_FINAL_PASS=0 maps to Off"
-    );
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "1");
-    }
-    assert_eq!(
-        final_pass_routing_mode(),
-        FinalPassRoutingMode::Always,
-        "legacy LOCAL_STT_FINAL_PASS=1 maps to Always"
-    );
-
-    unsafe {
-        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
-        std::env::remove_var("FINAL_PASS_MODE");
-        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
-    }
-}
-
-/// Settings / env string parse: `on` (and aliases) map to Always; smart/auto; off aliases.
-#[test]
-fn test_final_pass_routing_mode_parse_on_maps_to_always() {
-    for raw in ["on", "ON", "1", "true", "yes", "always", " Always "] {
-        assert_eq!(
-            FinalPassRoutingMode::parse(raw),
-            Some(FinalPassRoutingMode::Always),
-            "parse({raw:?}) must be Always"
-        );
-    }
-    for raw in ["smart", "SMART", "auto", "Auto"] {
-        assert_eq!(
-            FinalPassRoutingMode::parse(raw),
-            Some(FinalPassRoutingMode::Smart),
-            "parse({raw:?}) must be Smart"
-        );
-    }
-    for raw in ["off", "OFF", "0", "false", "no"] {
-        assert_eq!(
-            FinalPassRoutingMode::parse(raw),
-            Some(FinalPassRoutingMode::Off),
-            "parse({raw:?}) must be Off"
-        );
-    }
-    assert_eq!(
-        FinalPassRoutingMode::parse("bogus"),
-        None,
-        "unknown tokens must not silently coerce"
-    );
-    assert_eq!(FinalPassRoutingMode::Always.as_str(), "always");
-    assert_eq!(FinalPassRoutingMode::Smart.as_str(), "smart");
-    assert_eq!(FinalPassRoutingMode::Off.as_str(), "off");
-}
+// Env resolution + string parsing of `FinalPassRoutingMode` moved with the type
+// into `codescribe_core::config::final_pass` (one parser for every stop lane);
+// their tests live there too.
 
 #[test]
 fn test_toggle_session_adjudicated_label_is_user_facing() {

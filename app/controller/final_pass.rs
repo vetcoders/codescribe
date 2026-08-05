@@ -20,62 +20,12 @@ use codescribe_core::pipeline::contracts::FinalPassDisposition;
 
 use super::helpers::{CompletenessCommitSource, SessionTelemetrySnapshot};
 
-/// Canonical stop-path final-pass routing (Settings → Final pass / `FINAL_PASS_MODE`).
-/// Distinct from `pipeline::contracts::FinalPassMode` (lexicon cleanup request).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FinalPassRoutingMode {
-    /// Always: full Whisper file re-pass after release (on).
-    Always,
-    /// Smart: tail-patch / layered live path; full re-pass only when incomplete.
-    Smart,
-    /// Off: no full file re-pass; streaming is final (dictionary still applies later).
-    Off,
-}
-
-impl FinalPassRoutingMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Always => "always",
-            Self::Smart => "smart",
-            Self::Off => "off",
-        }
-    }
-
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "always" | "on" | "1" | "true" | "yes" => Some(Self::Always),
-            "smart" | "auto" => Some(Self::Smart),
-            "off" | "0" | "false" | "no" => Some(Self::Off),
-            _ => None,
-        }
-    }
-}
-
-/// Resolve final-pass routing from env/settings. Default: Smart.
-///
-/// Precedence:
-/// 1. `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` (`always|smart|off`)
-/// 2. Legacy `CODESCRIBE_LOCAL_STT_FINAL_PASS` falsey → Off, truthy → Always
-/// 3. Smart
-pub(crate) fn final_pass_routing_mode() -> FinalPassRoutingMode {
-    for key in ["FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
-        if let Ok(raw) = std::env::var(key)
-            && let Some(mode) = FinalPassRoutingMode::parse(&raw)
-        {
-            return mode;
-        }
-    }
-    if let Ok(raw) = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS") {
-        let v = raw.trim().to_ascii_lowercase();
-        if matches!(v.as_str(), "" | "0" | "false" | "no" | "off") {
-            return FinalPassRoutingMode::Off;
-        }
-        if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
-            return FinalPassRoutingMode::Always;
-        }
-    }
-    FinalPassRoutingMode::Smart
-}
+/// Canonical stop-path routing mode + its env resolution now live in core
+/// (`codescribe_core::config::final_pass`) so **every** stop lane — this
+/// controller and the composer voice-note lane in the UniFFI bridge — consults
+/// one parser instead of a per-lane twin. Re-exported at the historic path so
+/// controller call sites and tests stay unchanged.
+pub(crate) use codescribe_core::config::{FinalPassRoutingMode, final_pass_routing_mode};
 
 /// Typed streaming-completeness decision for Smart skip (never "non-empty ⇒ complete").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
