@@ -2706,57 +2706,109 @@ impl RecordingController {
                 local_final_pass_attempted = true;
                 let wav_path = path.as_path().to_path_buf();
                 let lang = language_opt.map(str::to_string);
-                let from_secs = session_snap.committed_through_secs.unwrap_or(0.0);
                 let committed_text = streaming_text.trim().to_string();
-
-                info!(
-                    "Running final-pass tail gap-fill (mode=smart live_engine={} from_secs={:.3}): {}",
-                    if prefer_apple { "apple" } else { "whisper" },
-                    from_secs,
-                    wav_path.display()
+                // A missing / non-positive commit boundary must NOT silently
+                // become `0.0` — that transcribes the whole file and appends it
+                // onto committed text (full-file re-pass in Smart, forbidden).
+                let boundary = codescribe_core::stt::resolve_tail_gap_boundary(
+                    session_snap.committed_through_secs,
+                    committed_text.is_empty(),
                 );
+                let (from_secs, gap_reason) = match boundary {
+                    codescribe_core::stt::TailGapBoundary::From(secs) => (secs, "smart_tail_gap"),
+                    codescribe_core::stt::TailGapBoundary::WholeSessionBootstrap => {
+                        (0.0, "smart_bootstrap_gap_fill")
+                    }
+                    codescribe_core::stt::TailGapBoundary::Skip => (f32::NAN, ""),
+                };
 
-                let final_pass_started = std::time::Instant::now();
-                match tokio::task::spawn_blocking(move || {
-                    let queue_wait_ms = final_pass_started.elapsed().as_millis() as u64;
-                    let tail = codescribe_core::stt::whisper_tail_gap_transcribe_file(
-                        &wav_path,
-                        from_secs,
-                        lang.as_deref(),
+                if matches!(boundary, codescribe_core::stt::TailGapBoundary::Skip) {
+                    // Honest skip: no boundary and a non-empty canvas. Streaming
+                    // (+ post-process) is final; Whisper is never invoked.
+                    info!(
+                        "final_pass_skipped mode={} reason=tail_gap_no_boundary chars={} committed_through=none live_engine={}",
+                        effective_routing.as_str(),
+                        committed_text.len(),
+                        if prefer_apple { "apple" } else { "whisper" },
                     );
-                    let timing = codescribe_core::stt::whisper::take_final_pass_timing();
-                    (tail, queue_wait_ms, timing)
-                })
-                .await
-                {
-                    Ok((Ok(tail), queue_wait_ms, timing)) => {
-                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
-                        final_pass_stages = FinalPassStages {
-                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
-                            model_load_ms: timing.model_load_ms,
-                            cold_load: timing.cold_load,
-                            inference_ms: timing.inference_ms,
-                            postprocess_ms: 0,
-                            delivery_ms: 0,
-                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
-                        };
-                        let appended = tail.text.trim().to_string();
-                        let text = append_tail_gap(&committed_text, &appended);
-                        info!(
-                            "final_pass_tail_gap mode=smart from_secs={:.3} appended_chars={}",
+                    let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                        text: committed_text.clone(),
+                        ..Default::default()
+                    };
+                    let skip_engine = if prefer_apple {
+                        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+                            codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+                        )
+                    } else {
+                        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                            codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                        )
+                    };
+                    local_final_pass_verdict = Some(
+                        codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                            committed_text.clone(),
+                            raw,
+                            None,
+                            codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                            skip_engine,
+                            Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                                mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                                disposition: FinalPassDisposition::Skipped,
+                                reason: Some("tail_gap_no_boundary".to_string()),
+                                lexicon_rewrites: 0,
+                                repetition_cleanups: 0,
+                            }),
+                        ),
+                    );
+                } else {
+                    info!(
+                        "Running final-pass tail gap-fill (mode=smart live_engine={} from_secs={:.3}): {}",
+                        if prefer_apple { "apple" } else { "whisper" },
+                        from_secs,
+                        wav_path.display()
+                    );
+
+                    let final_pass_started = std::time::Instant::now();
+                    match tokio::task::spawn_blocking(move || {
+                        let queue_wait_ms = final_pass_started.elapsed().as_millis() as u64;
+                        let tail = codescribe_core::stt::whisper_tail_gap_transcribe_file(
+                            &wav_path,
                             from_secs,
-                            appended.chars().count(),
+                            lang.as_deref(),
                         );
-                        let disposition = if appended.is_empty() {
-                            FinalPassDisposition::Unchanged
-                        } else {
-                            FinalPassDisposition::Changed
-                        };
-                        let raw = codescribe_core::pipeline::contracts::RawTranscript {
-                            text: text.clone(),
-                            ..Default::default()
-                        };
-                        local_final_pass_verdict = Some(
+                        let timing = codescribe_core::stt::whisper::take_final_pass_timing();
+                        (tail, queue_wait_ms, timing)
+                    })
+                    .await
+                    {
+                        Ok((Ok(tail), queue_wait_ms, timing)) => {
+                            final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                            final_pass_stages = FinalPassStages {
+                                queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                                model_load_ms: timing.model_load_ms,
+                                cold_load: timing.cold_load,
+                                inference_ms: timing.inference_ms,
+                                postprocess_ms: 0,
+                                delivery_ms: 0,
+                                final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            };
+                            let appended = tail.text.trim().to_string();
+                            let text = append_tail_gap(&committed_text, &appended);
+                            info!(
+                                "final_pass_tail_gap mode=smart from_secs={:.3} appended_chars={}",
+                                from_secs,
+                                appended.chars().count(),
+                            );
+                            let disposition = if appended.is_empty() {
+                                FinalPassDisposition::Unchanged
+                            } else {
+                                FinalPassDisposition::Changed
+                            };
+                            let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                                text: text.clone(),
+                                ..Default::default()
+                            };
+                            local_final_pass_verdict = Some(
                             codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
                                 text,
                                 raw,
@@ -2768,31 +2820,32 @@ impl RecordingController {
                                 Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
                                     mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
                                     disposition,
-                                    reason: Some("smart_tail_gap".to_string()),
+                                    reason: Some(gap_reason.to_string()),
                                     lexicon_rewrites: 0,
                                     repetition_cleanups: 0,
                                 }),
                             ),
                         );
-                    }
-                    Ok((Err(e), queue_wait_ms, timing)) => {
-                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
-                        final_pass_stages = FinalPassStages {
-                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
-                            model_load_ms: timing.model_load_ms,
-                            cold_load: timing.cold_load,
-                            inference_ms: timing.inference_ms,
-                            postprocess_ms: 0,
-                            delivery_ms: 0,
-                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
-                        };
-                        warn!("Final-pass tail gap-fill failed: {}", e);
-                    }
-                    Err(e) => {
-                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
-                        final_pass_stages.final_pass_total_ms =
-                            (final_pass_secs * 1000.0).round() as u64;
-                        warn!("Final-pass tail gap-fill task failed: {}", e);
+                        }
+                        Ok((Err(e), queue_wait_ms, timing)) => {
+                            final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                            final_pass_stages = FinalPassStages {
+                                queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                                model_load_ms: timing.model_load_ms,
+                                cold_load: timing.cold_load,
+                                inference_ms: timing.inference_ms,
+                                postprocess_ms: 0,
+                                delivery_ms: 0,
+                                final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            };
+                            warn!("Final-pass tail gap-fill failed: {}", e);
+                        }
+                        Err(e) => {
+                            final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                            final_pass_stages.final_pass_total_ms =
+                                (final_pass_secs * 1000.0).round() as u64;
+                            warn!("Final-pass tail gap-fill task failed: {}", e);
+                        }
                     }
                 }
             } else if let Some(path) = &audio_path {

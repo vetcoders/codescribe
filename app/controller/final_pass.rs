@@ -354,6 +354,28 @@ pub(crate) fn final_pass_action(
     }
 }
 
+/// Comparison key for overlap detection: lowercased, edge punctuation stripped.
+fn overlap_key(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+}
+
+/// Number of leading `tail` words that repeat the trailing `committed` words.
+///
+/// Returns the LONGEST such overlap. Comparison is case-insensitive and ignores
+/// leading/trailing punctuation; only the count is returned — the caller keeps
+/// the tail's original words for whatever remains.
+fn leading_overlap_words(committed: &[String], tail: &[String]) -> usize {
+    let max = committed.len().min(tail.len());
+    for len in (1..=max).rev() {
+        let c_start = committed.len() - len;
+        if committed[c_start..] == tail[..len] {
+            return len;
+        }
+    }
+    0
+}
+
 /// Append a tail gap-fill to committed streaming text — **append only**.
 ///
 /// The overlay doctrine (CLAUDE.md, THE ONE RULE): committed text is immutable.
@@ -361,6 +383,12 @@ pub(crate) fn final_pass_action(
 /// exactly one space; the trimmed streaming text is always an untouched prefix of
 /// the result. Empty/blank tail → streaming unchanged. Empty/blank streaming → the
 /// trimmed tail alone.
+///
+/// **Overlap dedup**: streaming text can already contain uncommitted preview
+/// words for the same audio the tail-gap re-transcribes (`pending_tail`). Before
+/// joining, the longest leading word-run of the tail that repeats the trailing
+/// words of the streaming text is dropped **from the tail**. The streaming side
+/// is never touched — dedup only ever shortens what gets appended.
 pub(crate) fn append_tail_gap(streaming: &str, tail: &str) -> String {
     let committed = streaming.trim();
     let addition = tail.trim();
@@ -370,5 +398,16 @@ pub(crate) fn append_tail_gap(streaming: &str, tail: &str) -> String {
     if committed.is_empty() {
         return addition.to_string();
     }
-    format!("{committed} {addition}")
+
+    let tail_words: Vec<&str> = addition.split_whitespace().collect();
+    let committed_keys: Vec<String> = committed.split_whitespace().map(overlap_key).collect();
+    let tail_keys: Vec<String> = tail_words.iter().map(|w| overlap_key(w)).collect();
+    let overlap = leading_overlap_words(&committed_keys, &tail_keys);
+
+    let remaining = &tail_words[overlap..];
+    if remaining.is_empty() {
+        // The tail is entirely contained in the committed suffix: nothing new.
+        return committed.to_string();
+    }
+    format!("{committed} {}", remaining.join(" "))
 }

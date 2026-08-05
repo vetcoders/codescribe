@@ -288,6 +288,41 @@ fn tail_gap_start_index(total_samples: usize, sample_rate: u32, from_secs: f32) 
     (offset.round() as usize).min(total_samples)
 }
 
+/// Where a Smart-mode tail gap-fill is allowed to start — or whether it is
+/// allowed at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TailGapBoundary {
+    /// Transcribe the audio from this (positive) committed boundary onward.
+    From(f32),
+    /// No boundary, but the streaming canvas is EMPTY — gap-filling the whole
+    /// session into nothing is still an append, so it is legal.
+    WholeSessionBootstrap,
+    /// No boundary and a non-empty canvas: any Whisper pass here would be a
+    /// whole-file re-pass landing on committed text. Honest skip instead.
+    Skip,
+}
+
+/// Resolve the tail gap-fill boundary from session telemetry — the guard that
+/// keeps Smart mode out of full-file re-pass territory.
+///
+/// `committed_through_secs` is the end timestamp of the last committed
+/// utterance; it is `None` (or non-positive/non-finite) whenever the session
+/// produced no usable commit evidence — `no_commit_source`, `no_coverage`,
+/// `empty`. Treating that as `0.0` and calling the tail primitive transcribes
+/// the WHOLE file and appends it to the existing streaming text: exactly the
+/// replacement/duplication the append-only overlay doctrine forbids outside
+/// `FINAL_PASS_MODE=Always`.
+pub fn resolve_tail_gap_boundary(
+    committed_through_secs: Option<f32>,
+    streaming_is_empty: bool,
+) -> TailGapBoundary {
+    match committed_through_secs {
+        Some(secs) if secs.is_finite() && secs > 0.0 => TailGapBoundary::From(secs),
+        _ if streaming_is_empty => TailGapBoundary::WholeSessionBootstrap,
+        _ => TailGapBoundary::Skip,
+    }
+}
+
 /// Transcribe **only the uncommitted tail** of a recording — the Smart-mode
 /// per-utterance gap-fill primitive.
 ///
@@ -750,5 +785,71 @@ mod tests {
             .expect("out-of-range boundary must not error");
         assert!(out.text.is_empty());
         assert!(out.segments.is_empty());
+    }
+
+    /// THE DOCTRINE MATRIX: a missing/zero commit boundary must never turn a
+    /// Smart-mode gap-fill into a whole-file Whisper pass appended onto existing
+    /// streaming text. Bootstrap (empty canvas) is the only legal whole-session
+    /// gap-fill; everything else with no boundary is an honest skip.
+    #[test]
+    fn resolve_tail_gap_boundary_matrix() {
+        // Positive boundary → tail from that boundary, in both canvas states.
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(4.25), false),
+            TailGapBoundary::From(4.25)
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(4.25), true),
+            TailGapBoundary::From(4.25)
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(f32::MIN_POSITIVE), false),
+            TailGapBoundary::From(f32::MIN_POSITIVE)
+        );
+
+        // No boundary + EMPTY canvas → whole-session bootstrap is a legal append.
+        assert_eq!(
+            resolve_tail_gap_boundary(None, true),
+            TailGapBoundary::WholeSessionBootstrap
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(0.0), true),
+            TailGapBoundary::WholeSessionBootstrap
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(-1.0), true),
+            TailGapBoundary::WholeSessionBootstrap
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(f32::NAN), true),
+            TailGapBoundary::WholeSessionBootstrap
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(f32::INFINITY), true),
+            TailGapBoundary::WholeSessionBootstrap
+        );
+
+        // No boundary + NON-EMPTY canvas → skip. A whole-file re-pass appended
+        // onto committed text is forbidden outside Always mode.
+        assert_eq!(
+            resolve_tail_gap_boundary(None, false),
+            TailGapBoundary::Skip
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(0.0), false),
+            TailGapBoundary::Skip
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(-0.001), false),
+            TailGapBoundary::Skip
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(f32::NAN), false),
+            TailGapBoundary::Skip
+        );
+        assert_eq!(
+            resolve_tail_gap_boundary(Some(f32::NEG_INFINITY), false),
+            TailGapBoundary::Skip
+        );
     }
 }
