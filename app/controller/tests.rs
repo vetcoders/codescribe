@@ -997,8 +997,10 @@ fn test_dictionary_always_applies_when_final_pass_mode_off() {
 ///
 /// Structural evidence (single seam, no branch of its own): every action arm writes
 /// `local_final_pass_verdict`, which flows through `adjudicate_recording_truth` →
-/// `truth_verdict.raw_text` (mod.rs:2995) → the one unconditional
-/// `process_transcript_text_pipeline` call (mod.rs:3089). This test pins the text
+/// `truth_verdict.raw_text` → the single unconditional
+/// `process_transcript_text_pipeline` call in `finalize_recording` (mod.rs, one
+/// call site — verify with `loct find --literal process_transcript_text_pipeline`
+/// rather than a line number, which rots). This test pins the text
 /// half: a transcript composed by `append_tail_gap` still gets dictionary rewrites
 /// applied — in both the committed prefix and the appended tail.
 #[test]

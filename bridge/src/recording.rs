@@ -427,6 +427,9 @@ enum ComposerTranscriptSource {
     /// Live floor + whole-WAV Whisper gap-fill (doctrine: never full-replace).
     /// Also covers whisper-only when the stream produced nothing.
     MergedLiveWhisper,
+    /// Smart tail gap-fill APPENDED to the committed streaming floor. The tail is
+    /// a bare fragment, never diffed against committed text (append-only doctrine).
+    TailGapAppend,
     /// Spliced streaming `UtteranceFinal` chunks (final pass unavailable/empty).
     StreamingFallback,
 }
@@ -435,6 +438,7 @@ impl ComposerTranscriptSource {
     fn label(self) -> &'static str {
         match self {
             Self::MergedLiveWhisper => "merged_live_whisper",
+            Self::TailGapAppend => "tail_gap_append",
             Self::StreamingFallback => "streaming_fallback",
         }
     }
@@ -464,6 +468,46 @@ fn select_composer_transcript(
         streaming.to_string(),
         ComposerTranscriptSource::StreamingFallback,
     )
+}
+
+/// Compose the composer return from the planned final pass — the plan decides
+/// HOW the Whisper text is allowed to meet the live floor.
+///
+/// - `TailGap` (Smart): the Whisper text is a **bare tail** of the uncommitted
+///   audio, not a transcript of the whole session. It is APPENDED via the shared
+///   core primitive (`codescribe_core::stt::append_tail_gap`), which keeps the
+///   committed text as an untouched prefix and only dedups repeated preview words
+///   from the tail side. Feeding a bare tail to `merge_live_whisper` (as this lane
+///   used to) turns the boundary Delete+Insert pair into a Substitute that keeps
+///   live and DISCARDS the whisper token — measurable gap-fill word loss.
+/// - `FullFile` (Always): a whole-WAV transcript, which is exactly what
+///   `merge_live_whisper` is built for — merge as gap-fill over the live floor.
+/// - `SkipStreaming` (Off / Smart-without-boundary): no final pass exists;
+///   the streaming splice is the answer.
+fn compose_composer_transcript(
+    plan: ComposerFinalPassPlan,
+    final_pass: Option<&str>,
+    streaming: &str,
+) -> (String, ComposerTranscriptSource) {
+    match plan {
+        ComposerFinalPassPlan::TailGap(_) => {
+            let streaming = streaming.trim();
+            let tail = final_pass.map(str::trim).unwrap_or_default();
+            if tail.is_empty() {
+                return (
+                    streaming.to_string(),
+                    ComposerTranscriptSource::StreamingFallback,
+                );
+            }
+            (
+                codescribe_core::stt::append_tail_gap(streaming, tail),
+                ComposerTranscriptSource::TailGapAppend,
+            )
+        }
+        ComposerFinalPassPlan::FullFile | ComposerFinalPassPlan::SkipStreaming => {
+            select_composer_transcript(final_pass, streaming)
+        }
+    }
 }
 
 /// What the composer stop lane is allowed to run over the saved WAV, per
@@ -540,13 +584,16 @@ async fn run_final_pass(
             )
             .map(|raw| raw.text)
         }
-        // FullFile (Always) — SkipStreaming returned above.
-        _ => whisper::transcribe_file_verdict(
+        // Always — the ONLY mode permitted a whole-file re-pass.
+        ComposerFinalPassPlan::FullFile => whisper::transcribe_file_verdict(
             &path,
             language.as_deref(),
             FileTranscriptionOptions::default(),
         )
         .map(|verdict| verdict.text),
+        // Returned above; kept explicit so a FUTURE plan variant is a compile
+        // error here instead of silently routing into the full-file re-pass.
+        ComposerFinalPassPlan::SkipStreaming => Ok(String::new()),
     });
     match tokio::time::timeout_at(deadline, job).await {
         Ok(Ok(Ok(text))) if !text.trim().is_empty() => Some(text),
@@ -889,11 +936,12 @@ impl CodescribeDictation {
             .map(|t| t.trim().chars().count())
             .unwrap_or(0);
         let (text, source) =
-            select_composer_transcript(final_pass_text.as_deref(), &streaming_text);
+            compose_composer_transcript(plan, final_pass_text.as_deref(), &streaming_text);
 
         info!(
             target: "composer-dictation",
             source = source.label(),
+            plan = plan.label(),
             final_pass_chars,
             streaming_chars = streaming_text.trim().chars().count(),
             "composer voice-note stop composed transcript"
@@ -1309,6 +1357,77 @@ mod tests {
         let (empty_text, empty_source) = select_composer_transcript(Some("   \n "), "raz dwa");
         assert_eq!(empty_text, "raz dwa");
         assert_eq!(empty_source, ComposerTranscriptSource::StreamingFallback);
+    }
+
+    /// THE ONE RULE for the Smart lane: a `TailGap` result is a **bare tail**,
+    /// not a full-file transcript. It must be APPENDED to the immutable
+    /// committed/live streaming text — never diffed against it. `merge_live_whisper`
+    /// is built for full transcripts vs the live floor: on a bare tail it turns the
+    /// boundary DeleteA+InsertB pair into a Substitute that keeps live and DISCARDS
+    /// the whisper token, silently losing gap-fill words.
+    #[test]
+    fn compose_composer_transcript_appends_tail_gap() {
+        let (text, source) = compose_composer_transcript(
+            ComposerFinalPassPlan::TailGap(1.5),
+            Some("trzy cztery"),
+            "raz dwa",
+        );
+        assert_eq!(
+            text, "raz dwa trzy cztery",
+            "tail gap-fill must be appended verbatim, not merged"
+        );
+        assert_eq!(source, ComposerTranscriptSource::TailGapAppend);
+
+        // Function words are the first casualty of the merge path.
+        let (clinical, _) = compose_composer_transcript(
+            ComposerFinalPassPlan::TailGap(2.0),
+            Some("i wymioty od rana"),
+            "Pacjent ma goraczke",
+        );
+        assert_eq!(clinical, "Pacjent ma goraczke i wymioty od rana");
+
+        // Overlapping preview words are deduped word-granularly, committed side untouched.
+        let (deduped, _) = compose_composer_transcript(
+            ComposerFinalPassPlan::TailGap(2.0),
+            Some("goraczke i wymioty od rana"),
+            "Pacjent ma goraczke i",
+        );
+        assert_eq!(deduped, "Pacjent ma goraczke i wymioty od rana");
+    }
+
+    /// `FullFile` (Always) keeps the whole-WAV merge; `SkipStreaming` never has a
+    /// final pass to compose with.
+    #[test]
+    fn compose_composer_transcript_keeps_merge_for_full_file() {
+        let (text, source) = compose_composer_transcript(
+            ComposerFinalPassPlan::FullFile,
+            Some("raz dwa trzy cztery"),
+            "raz dwa",
+        );
+        assert_eq!(text, "raz dwa trzy cztery");
+        assert_eq!(source, ComposerTranscriptSource::MergedLiveWhisper);
+
+        let (skipped, skipped_source) =
+            compose_composer_transcript(ComposerFinalPassPlan::SkipStreaming, None, "  raz dwa  ");
+        assert_eq!(skipped, "raz dwa");
+        assert_eq!(skipped_source, ComposerTranscriptSource::StreamingFallback);
+    }
+
+    /// An empty / absent tail leaves the streaming splice exactly as it stands.
+    #[test]
+    fn compose_composer_transcript_tail_gap_empty_falls_back() {
+        for tail in [None, Some("   \n ")] {
+            let (text, source) = compose_composer_transcript(
+                ComposerFinalPassPlan::TailGap(1.0),
+                tail,
+                "  raz dwa  ",
+            );
+            assert_eq!(
+                text, "raz dwa",
+                "empty tail {tail:?} must not disturb streaming"
+            );
+            assert_eq!(source, ComposerTranscriptSource::StreamingFallback);
+        }
     }
 
     /// An explicit caller language must map to its two-letter Whisper hint, and
