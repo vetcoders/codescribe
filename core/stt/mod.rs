@@ -272,6 +272,58 @@ pub(crate) fn whisper_tail_patch_transcribe(
     candle_transcribe_long_with_segments(&speech, sample_rate, language)
 }
 
+/// First sample index of the uncommitted tail, clamped into `0..=total_samples`.
+///
+/// `from_secs` is the end timestamp of the last **committed** utterance. A
+/// non-positive boundary means nothing is committed yet (whole file); a
+/// boundary past the recording yields `total_samples` (empty tail).
+fn tail_gap_start_index(total_samples: usize, sample_rate: u32, from_secs: f32) -> usize {
+    if sample_rate == 0 || !from_secs.is_finite() || from_secs <= 0.0 {
+        return 0;
+    }
+    let offset = (from_secs as f64) * (sample_rate as f64);
+    if offset >= total_samples as f64 {
+        return total_samples;
+    }
+    (offset.round() as usize).min(total_samples)
+}
+
+/// Transcribe **only the uncommitted tail** of a recording — the Smart-mode
+/// per-utterance gap-fill primitive.
+///
+/// Loads `path`, drops everything before `from_secs` (the end of the last
+/// committed utterance) and runs [`whisper_tail_patch_transcribe`] on that
+/// slice alone. The result is meant to be **appended** to committed streaming
+/// text; committed text is immutable (append-only overlay doctrine).
+///
+/// Boundaries:
+/// - `from_secs <= 0.0` → the whole file (nothing committed yet).
+/// - `from_secs` at/after the recording end → `Ok(RawTranscript::default())`
+///   without touching Whisper.
+///
+/// This must never be handed the full file when a positive boundary exists —
+/// a full-file re-pass is `FINAL_PASS_MODE=Always` territory only.
+pub fn whisper_tail_gap_transcribe_file(
+    path: &std::path::Path,
+    from_secs: f32,
+    language: Option<&str>,
+) -> anyhow::Result<RawTranscript> {
+    let (samples, sample_rate) = crate::audio::load_audio_file(path)?;
+    let start = tail_gap_start_index(samples.len(), sample_rate, from_secs);
+    let tail = &samples[start..];
+    if tail.is_empty() {
+        tracing::debug!(
+            "tail-gap transcribe: nothing uncommitted after {:.3}s in {} ({} samples @ {} Hz)",
+            from_secs,
+            path.display(),
+            samples.len(),
+            sample_rate
+        );
+        return Ok(RawTranscript::default());
+    }
+    whisper_tail_patch_transcribe(tail, sample_rate, language)
+}
+
 #[allow(dead_code)]
 fn candle_try_transcribe_long_with_segments(
     audio: &[f32],
@@ -639,5 +691,64 @@ mod tests {
             "transcribe_file_verdict must not call apple_stt file path (Apple is live-only)"
         );
         let _ = apple_arm;
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // Smart-mode tail-gap primitive (append-only doctrine)
+    // ═══════════════════════════════════════════════════════
+
+    #[test]
+    fn tail_gap_start_index_is_clamped_sample_math() {
+        // Whole file: a non-positive boundary means "nothing committed yet".
+        assert_eq!(tail_gap_start_index(32_000, 16_000, 0.0), 0);
+        assert_eq!(tail_gap_start_index(32_000, 16_000, -3.5), 0);
+
+        // Mid-file boundary: sample_rate × secs.
+        assert_eq!(tail_gap_start_index(32_000, 16_000, 1.0), 16_000);
+        assert_eq!(tail_gap_start_index(32_000, 16_000, 1.5), 24_000);
+        assert_eq!(tail_gap_start_index(96_000, 48_000, 0.5), 24_000);
+
+        // Beyond the audio: clamped to len (empty tail, never a panic).
+        assert_eq!(tail_gap_start_index(32_000, 16_000, 9.0), 32_000);
+        assert_eq!(tail_gap_start_index(0, 16_000, 1.0), 0);
+
+        // Degenerate sample rate cannot produce a bogus offset.
+        assert_eq!(tail_gap_start_index(32_000, 0, 1.0), 0);
+    }
+
+    #[test]
+    fn whisper_tail_gap_transcribe_file_returns_empty_for_silent_tail() {
+        // ~2s of digital silence @16k: VAD finds no speech, so the gap-fill
+        // short-circuits before any Whisper model load.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("silence.wav");
+        let samples = vec![0.0f32; 32_000];
+        crate::tts::AudioPlayer::save_wav(&samples, 16_000, &path).expect("save_wav");
+
+        let out = whisper_tail_gap_transcribe_file(&path, 0.5, Some("pl"))
+            .expect("silent tail must not error");
+        assert!(
+            out.text.trim().is_empty(),
+            "silent tail must yield empty transcript, got {:?}",
+            out.text
+        );
+        assert!(
+            out.segments.is_empty(),
+            "silent tail must yield no segments"
+        );
+    }
+
+    #[test]
+    fn whisper_tail_gap_transcribe_file_beyond_duration_is_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("silence.wav");
+        let samples = vec![0.0f32; 32_000];
+        crate::tts::AudioPlayer::save_wav(&samples, 16_000, &path).expect("save_wav");
+
+        // Boundary past the end of the recording: nothing uncommitted remains.
+        let out = whisper_tail_gap_transcribe_file(&path, 30.0, Some("pl"))
+            .expect("out-of-range boundary must not error");
+        assert!(out.text.is_empty());
+        assert!(out.segments.is_empty());
     }
 }
