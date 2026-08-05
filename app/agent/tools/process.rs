@@ -15,9 +15,8 @@ use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
-use super::{path_policy, workspace};
+use super::{output_guard, path_policy, workspace};
 
-const MAX_OUTPUT_CHARS: usize = 40_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_TIMEOUT_SECS: u64 = 300;
 
@@ -334,7 +333,7 @@ fn run_process_from_input(input: &Value) -> Result<String> {
         }
         text.push_str(&String::from_utf8_lossy(&output.stderr));
     }
-    let text = truncate(&text);
+    let text = output_guard::guard_chunk(&text, &format!("process `{cmdline}`"));
     Ok(json!({
         "ok": output.status.success(),
         "exit_code": output.status.code(),
@@ -495,15 +494,6 @@ fn project_action(input: &Value, kind: &str) -> Result<String> {
         result = value.to_string();
     }
     Ok(result)
-}
-
-fn truncate(text: &str) -> String {
-    if text.chars().count() <= MAX_OUTPUT_CHARS {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
-    out.push_str("\n…[truncated]");
-    out
 }
 
 /// Materialize a program path/name that cannot reintroduce shell injection.

@@ -44,8 +44,13 @@ use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Anthropic requires `max_tokens` on every request; used only when the caller
-/// (assistive lane) leaves `options.max_tokens` unset.
-const DEFAULT_MAX_TOKENS: u32 = 8192;
+/// leaves `options.max_tokens` unset. Doctrine (operator, 2026-08-05): the
+/// agent's output is never capped — bloat protection lives on the tool-INPUT
+/// side (`tools::output_guard`). This is therefore the model-family output
+/// ceiling (128K for opus-4-8/sonnet-4-6, streaming — and we always stream),
+/// not a budget. With adaptive thinking on the wire, thinking tokens count
+/// against this same limit, which made the old 8192 doubly throttling.
+const DEFAULT_MAX_TOKENS: u32 = 128_000;
 
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
@@ -979,6 +984,30 @@ mod tests {
         assert!(
             (sent - 0.3).abs() < 1e-6,
             "Sonnet-4.6 tolerates temperature; expected ~0.3, got {sent}"
+        );
+    }
+
+    #[test]
+    fn adaptive_thinking_true_puts_the_thinking_block_on_the_wire() {
+        let messages = vec![text_message(Role::User, "hi")];
+
+        // The true path is the only branch that changes what reaches the API:
+        // it must emit exactly the adaptive form (a manual budget_tokens would
+        // be a hard 400 on Opus — BudgetTokensPolicy::Hard400).
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, true)
+            .expect("request body should build");
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(
+            body["thinking"].get("budget_tokens").is_none(),
+            "adaptive thinking must never carry a manual budget_tokens"
+        );
+
+        // And the false path must leave the wire untouched — no empty stub.
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, false)
+            .expect("request body should build");
+        assert!(
+            body.get("thinking").is_none(),
+            "thinking must be omitted entirely when adaptive_thinking is off"
         );
     }
 

@@ -18,7 +18,6 @@ const MAX_LIST_ENTRIES: usize = 500;
 const MAX_SEARCH_HITS: usize = 50;
 const MAX_SEARCH_FILE_BYTES: u64 = 512 * 1024;
 const MAX_WRITE_BYTES: usize = 512 * 1024;
-const MAX_RESULT_CHARS: usize = 40_000;
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
@@ -334,12 +333,11 @@ fn search_files_from_input(input: &Value) -> Result<String> {
         "provider": "native",
         "capability": "fs.search",
     });
-    let mut text = serde_json::to_string_pretty(&payload)?;
-    if text.chars().count() > MAX_RESULT_CHARS {
-        text = text.chars().take(MAX_RESULT_CHARS).collect();
-        text.push_str("\n…[truncated]");
-    }
-    Ok(text)
+    let text = serde_json::to_string_pretty(&payload)?;
+    Ok(super::output_guard::guard_chunk(
+        &text,
+        &format!("fs.search '{query}' in {}", root.display()),
+    ))
 }
 
 fn walk_search(

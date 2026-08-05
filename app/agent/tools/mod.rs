@@ -5,6 +5,7 @@ pub mod github;
 pub mod mcp;
 pub mod monitor_run;
 pub mod native_fs;
+mod output_guard;
 mod path_policy;
 pub mod process;
 pub mod repo;
