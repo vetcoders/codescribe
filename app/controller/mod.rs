@@ -66,14 +66,18 @@ use crate::os::selection::{
     wait_for_frontmost_app,
 };
 use crate::os::shortcut_registry;
-use context_bucket::{ContextBucket, ContextMarker};
+use context_bucket::ContextBucket;
+#[cfg(test)]
+pub(crate) use context_bucket::ContextMarker;
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
-use codescribe_core::pipeline::contracts::{FinalPassDisposition, TranscriptionConfidenceFlag};
+use codescribe_core::pipeline::contracts::FinalPassDisposition;
+#[cfg(test)]
+pub(crate) use codescribe_core::pipeline::contracts::TranscriptionConfidenceFlag;
 
 // AssistiveDelivery kept in the pub(crate) surface for crate consumers of the
 // type name; currently only AssistiveLane is named at call sites in this module.
@@ -84,14 +88,17 @@ use assistive_delivery::{
 };
 pub(crate) use final_pass::{
     FinalPassRoutingMode, FinalPassStages, StopPathBudget, StreamingCompleteness,
-    StreamingCompletenessEvidence, assess_streaming_completeness, engine_label_from_verdict,
-    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
+    StreamingCompletenessEvidence, assess_streaming_completeness, final_pass_routing_mode,
+    format_assistive_delivery_budget_line, format_final_pass_stages_line,
     format_stop_path_budget_line, should_skip_full_final_repass,
 };
 #[cfg(test)]
-pub(crate) use final_pass::{assess_streaming_completeness_fields, stop_path_budget_covers_total};
+pub(crate) use final_pass::{
+    assess_streaming_completeness_fields, engine_label_from_verdict, stop_path_budget_covers_total,
+};
 #[cfg(test)]
 use helpers::SessionEngineStats;
+#[cfg(test)]
 pub(crate) use helpers::SessionTelemetrySnapshot;
 #[cfg(test)]
 use helpers::build_image_attachments_from_text;
@@ -120,9 +127,10 @@ use quality_delivery::{
     truth_recording_mode_label,
 };
 pub(crate) use truth::{
-    adjudicate_recording_truth, apply_ai_noop_signal, push_typed_flag, truth_display_status,
-    truth_engine_label, truth_review_trigger,
+    adjudicate_recording_truth, apply_ai_noop_signal, truth_display_status, truth_engine_label,
 };
+#[cfg(test)]
+pub(crate) use truth::{push_typed_flag, truth_review_trigger};
 use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
 };
