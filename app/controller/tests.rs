@@ -864,6 +864,148 @@ fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
     );
 }
 
+/// Every (mode × completeness) cell of the typed routing action.
+///
+/// Operator law (2026-08-05): Always → FullFileRepass regardless of completeness;
+/// Smart+Complete → SkipStreamingFinal; Smart+Incomplete → TailGapFill (per-utterance
+/// gap-fill, never a full-file re-pass); Off → SkipStreamingFinal regardless.
+#[test]
+fn test_final_pass_action_matrix() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
+    let complete = StreamingCompleteness::Complete;
+    let incomplete = StreamingCompleteness::Incomplete {
+        reason: "pending_tail",
+    };
+
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, complete),
+        FinalPassAction::FullFileRepass,
+        "Always+Complete must still full-file re-pass"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, incomplete),
+        FinalPassAction::FullFileRepass,
+        "Always+Incomplete must full-file re-pass"
+    );
+
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Complete: streaming already holds the adjudicated transcript"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, incomplete),
+        FinalPassAction::TailGapFill,
+        "Smart+Incomplete: transcribe only the uncommitted tail and APPEND it"
+    );
+
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off is off — zero Whisper invocation on the stop path"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, incomplete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off is off even when streaming is incomplete"
+    );
+}
+
+/// THE LAW: only FINAL_PASS_MODE=Always may produce a full-file Whisper re-pass.
+///
+/// Smart may final-pass individual utterances (TailGapFill) and Off may not invoke
+/// Whisper at all. A full-file re-pass rewrites committed text wholesale, which is a
+/// direct violation of the append-only overlay doctrine outside Always.
+#[test]
+fn test_only_always_mode_may_full_file_repass() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
+    let modes = [
+        FinalPassRoutingMode::Always,
+        FinalPassRoutingMode::Smart,
+        FinalPassRoutingMode::Off,
+    ];
+    let completenesses = [
+        StreamingCompleteness::Complete,
+        StreamingCompleteness::Incomplete { reason: "empty" },
+        StreamingCompleteness::Incomplete {
+            reason: "no_speech",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "partial_pending",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "no_commit_source",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "no_coverage",
+        },
+    ];
+
+    for mode in modes {
+        for completeness in completenesses {
+            let action = final_pass_action(mode, completeness);
+            if action == FinalPassAction::FullFileRepass {
+                assert_eq!(
+                    mode,
+                    FinalPassRoutingMode::Always,
+                    "FullFileRepass produced by mode={} completeness={completeness:?} — \
+                     only Always may full-file re-pass (operator law 2026-08-05)",
+                    mode.as_str()
+                );
+            }
+            if mode == FinalPassRoutingMode::Always {
+                assert_eq!(
+                    action,
+                    FinalPassAction::FullFileRepass,
+                    "Always must always full-file re-pass, completeness={completeness:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The transitional shim keeps the bool contract byte-for-byte while the stop path
+/// still consumes `should_skip_full_final_repass`.
+#[test]
+fn test_should_skip_shim_agrees_with_typed_action() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
+    let modes = [
+        FinalPassRoutingMode::Always,
+        FinalPassRoutingMode::Smart,
+        FinalPassRoutingMode::Off,
+    ];
+    let completenesses = [
+        StreamingCompleteness::Complete,
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail",
+        },
+    ];
+    for mode in modes {
+        for completeness in completenesses {
+            for prefer_apple in [false, true] {
+                let expected = match final_pass_action(mode, completeness) {
+                    FinalPassAction::SkipStreamingFinal => true,
+                    // Transitional: TailGapFill still routes to the old re-pass
+                    // branch until the stop path consumes actions directly.
+                    FinalPassAction::FullFileRepass | FinalPassAction::TailGapFill => false,
+                };
+                assert_eq!(
+                    should_skip_full_final_repass(mode, completeness, prefer_apple),
+                    expected,
+                    "shim drift: mode={} completeness={completeness:?} prefer_apple={prefer_apple}",
+                    mode.as_str()
+                );
+            }
+        }
+    }
+}
+
 /// Dictionary / lexicon is independent of FINAL_PASS_MODE.
 /// Off skips Whisper full re-pass, but StreamPostProcessor / apply_lexicon still rewrite.
 #[test]
