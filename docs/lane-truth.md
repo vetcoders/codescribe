@@ -72,6 +72,12 @@ Assistive / agent availability is true when any of these is true:
 - an OpenAI Responses lane has ChatGPT account auth on the official OpenAI host,
 - the endpoint is an allowed key-optional non-official host.
 
+**Auth preference at startup (assistive / agent):** when both a stored API key
+and a signed-in ChatGPT OAuth account are present for official OpenAI Responses,
+**OAuth wins**. The API key remains visible to Settings/probe as `key_present`,
+but the send path authenticates with account tokens (fresh bearer per request).
+If the user signs out of ChatGPT, the lane falls back to the stored API key.
+
 Official OpenAI and Anthropic endpoints require credentials. ChatGPT account auth
 is only used for official OpenAI Responses and is intentionally not sent to
 key-optional endpoints.

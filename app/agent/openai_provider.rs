@@ -94,8 +94,10 @@ impl OpenAiProvider {
             .context("Failed to create OpenAI agent HTTP client")?;
 
         info!(
-            "OpenAI agent provider configured (model={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
+            "OpenAI agent provider configured (model={}, account_auth={}, has_api_key={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
             default_model,
+            use_account_auth,
+            !api_key.is_empty(),
             initial_response_timeout.as_secs(),
             inter_chunk_timeout.as_secs(),
             use_previous_response_id
