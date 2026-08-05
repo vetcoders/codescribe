@@ -151,8 +151,8 @@ cd codescribe
 # Install the hook runner once (required for local commit/push gates)
 pipx install pre-commit
 
-# Build the SwiftUI app
-make app PROFILE=release
+# Build an optimized local SwiftUI app
+make app PROFILE=local-release
 
 # Install the app bundle into /Applications
 make install-app
@@ -175,7 +175,7 @@ Tagged builds publish DMGs through GitHub Releases:
 
 ```bash
 make app                # Debug SwiftUI app build
-make app PROFILE=release # Release SwiftUI app build
+make app PROFILE=local-release # Optimized local SwiftUI app build
 make install-app        # Build + install macOS .app into /Applications
 make release-qube       # Build qube CLI tools
 make install            # Install qube CLI tools + repo-local git hooks
@@ -398,7 +398,7 @@ make format         # cargo fmt
 
 ```
 make app              # Debug SwiftUI app build
-make app PROFILE=release # Release SwiftUI app build
+make app PROFILE=local-release # Optimized local SwiftUI app build
 make install-app      # Build + install /Applications/Codescribe.app
 make release-qube     # Build qube CLI tools
 make install          # Install qube CLI tools + repo-local hooks

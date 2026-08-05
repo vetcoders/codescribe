@@ -51,8 +51,8 @@ Current source version: `0.12.2`
    promoting them:
    - `make verify-dmg DMG=Codescribe_<ver>.dmg VARIANT=slim VERSION=<ver>`
    - `make verify-dmg DMG=Codescribe_<ver>_full.dmg VARIANT=full VERSION=<ver>`
-   Refuse any DMG that fails (size floors catch missing MiniLM/Whisper even
-   when the signature is valid).
+     Refuse any DMG that fails (size floors catch missing MiniLM/Whisper even
+     when the signature is valid).
 7. Only then switch the landing CTA from source install to release DMG.
 
 ## Current Known External Gaps

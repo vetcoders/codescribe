@@ -118,6 +118,11 @@ The Rust release build fails when this variable is missing, malformed, or has
 the checked-in development-key fingerprint. Generating and provisioning the
 production keypair is an operator-owned release action.
 
+This variable is for distribution builds, not `make install-app`. Local source
+installs use the optimized `local-release` profile and the checked-in
+development verifier; a UUID or other random identifier is not a substitute
+for the Ed25519 public key.
+
 ## 8. `SPARKLE_ED_PUBLIC_KEY` (repository variable)
 
 Source: the public key printed by Sparkle's `generate_keys`. The app embeds this

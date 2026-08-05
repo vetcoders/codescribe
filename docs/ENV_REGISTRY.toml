@@ -1236,6 +1236,13 @@ reload = "rebuild"
 category = "build"
 description = "Embed TTS model in binary"
 
+[vars.CODESCRIBE_LOCAL_INSTALL]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Build-script marker for optimized local app installs; permits only the checked-in development license verifier and is explicitly removed by distribution builds"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Debug / Test
 # ═══════════════════════════════════════════════════════════════════════════════

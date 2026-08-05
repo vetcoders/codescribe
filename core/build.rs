@@ -40,6 +40,7 @@ const DEFAULT_MIMI_REPO: &str = "kyutai/mimi";
 /// Override with CODESCRIBE_EMBEDDER_REPO for alternative models
 const DEFAULT_EMBEDDER_MODEL_NAME: &str = "minilm-l12-v2";
 const DEFAULT_EMBEDDER_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
+const LOCAL_INSTALL_ENV: &str = "CODESCRIBE_LOCAL_INSTALL";
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -51,12 +52,16 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBEDDER_REPO");
     println!("cargo:rerun-if-env-changed={LICENSE_PUBLIC_KEY_ENV}");
+    println!("cargo:rerun-if-env-changed={LOCAL_INSTALL_ENV}");
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let is_release = profile == "release";
+    let is_local_install = env::var("CODESCRIBE_LOCAL_INSTALL")
+        .ok()
+        .is_some_and(|value| value == "1");
     let no_embed = env::var("CODESCRIBE_NO_EMBED").is_ok();
 
-    configure_license_public_key(is_release);
+    configure_license_public_key(is_release && !is_local_install);
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
         let codescribe_dir = dirs::home_dir()

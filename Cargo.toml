@@ -145,6 +145,14 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Optimized source-install profile. This deliberately has a distinct Cargo
+# profile name so core/build.rs can keep production `release` artifacts
+# fail-closed on the operator-owned license key while local app builds use the
+# checked-in development verifier. Never use this profile for a distributed
+# artifact; scripts/build-dmg.sh and CI use the literal `release` profile.
+[profile.local-release]
+inherits = "release"
+
 # Diagnostic / crash-reproduction profile.
 # Inherits the optimized release build but keeps full debug info (no strip) so
 # the panic-hook backtrace can be symbolized when reproducing crashes. This is

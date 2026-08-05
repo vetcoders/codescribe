@@ -15,7 +15,7 @@ git clone git@github.com:Vetcoders/Codescribe.git
 cd codescribe
 
 # Build and install the SwiftUI app over the Rust UniFFI core
-make app PROFILE=release
+make app PROFILE=local-release
 make install-app
 make start
 ```

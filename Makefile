@@ -34,7 +34,9 @@ CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODE
 CODESCRIBE_DIST_CODESIGN_IDENTITY ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(CODESCRIBE_CODESIGN_IDENTITY))
 CODESCRIBE_APP_NAME ?= Codescribe
 CODESCRIBE_DISPLAY_NAME ?= Codescribe
-# SwiftUI app build profile for `make app` / `make app-bindings` (debug|release)
+# SwiftUI app build profile for `make app` / `make app-bindings`
+# (debug|local-release|release). `release` is distribution-only and requires
+# the operator-owned production license verification key.
 PROFILE ?= debug
 CODESCRIBE_BUNDLE_ID ?= com.vetcoders.codescribe
 CODESCRIBE_MIN_MACOS ?=
@@ -133,11 +135,12 @@ config:
 
 
 install-app:
-	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, release) via scripts/build-app.sh ..."
-	@$(MAKE) --no-print-directory app PROFILE=release
+	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
+	@echo "Local install uses the development license verifier; CODESCRIBE_LICENSE_PUBLIC_KEY_HEX is reserved for distribution builds."
+	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX $(MAKE) --no-print-directory app PROFILE=local-release
 	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
 	if [ ! -d "$$APP_SRC" ]; then \
-		echo "Build product missing: $$APP_SRC — 'make app PROFILE=release' did not produce the app."; \
+		echo "Build product missing: $$APP_SRC — 'make app PROFILE=local-release' did not produce the app."; \
 		exit 1; \
 	fi; \
 	echo "Installing to /Applications ..."; \
