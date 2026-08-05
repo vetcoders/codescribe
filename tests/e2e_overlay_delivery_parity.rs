@@ -158,7 +158,19 @@ fn delivery_from_stream_and_final(stream: &str, final_text: &str) -> (&'static s
     (source, merged.text)
 }
 
+/// Private STT fixtures live OUTSIDE the repo (real operator speech —
+/// deprivatized twice). Resolution: `CODESCRIBE_DATA_ASSETS` →
+/// `~/.codescribe/data_assets` → the gitignored in-repo drop dir.
 fn data_assets_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CODESCRIBE_DATA_ASSETS") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let local = PathBuf::from(home).join(".codescribe/data_assets");
+        if local.is_dir() {
+            return local;
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/data_assets")
 }
 
@@ -273,10 +285,14 @@ fn delivery_prefers_stream_when_file_final_collapses_like_div0_apple() {
 #[test]
 fn data_assets_wav_fixtures_exist() {
     let clips = fixture_clips();
-    assert!(
-        !clips.is_empty(),
-        "expected WAV fixtures under tests/assets/data_assets/"
-    );
+    if clips.is_empty() {
+        // Clean public checkout: private fixtures are local-only by design.
+        eprintln!(
+            "Skipping: no local STT fixtures (set CODESCRIBE_DATA_ASSETS or \
+             populate ~/.codescribe/data_assets — see tests/assets/data_assets/README.md)"
+        );
+        return;
+    }
     for clip in &clips {
         assert!(clip.exists(), "missing fixture {}", clip.display());
         let (samples, rate) =
@@ -799,10 +815,7 @@ async fn e2e_apple_live_parity() {
 
     let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/assets/data_assets/05_apple-live-parity.wav")
-        });
+        .unwrap_or_else(|_| data_assets_dir().join("05_apple-live-parity.wav"));
     let reference_path = clip.with_file_name(format!(
         "{}_apple_live_reference.txt",
         clip.file_stem().unwrap().to_string_lossy()

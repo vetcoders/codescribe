@@ -7,7 +7,7 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only. The
 > stop-time file final-pass below remains the accepted interim, but it is a stepping stone, not
 > the destination. Lexicon substitution is the FINAL automated layer, after Whisper.
-> Planning report: `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0724/plans/stt-apple-must-have/00_PLANNING_REPORT.md`
+> Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
 

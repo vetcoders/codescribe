@@ -1611,7 +1611,7 @@ mod tests {
         let core = CoreReadiness {
             configured_workspace_roots: vec![
                 "~/Git".to_string(),
-                "/Volumes/vc-workspace/vetcoders".to_string(),
+                "/Users/op/workspace/projects".to_string(),
             ],
             tool_workspace_roots: vec!["~/Git".to_string()],
             ..core_ready()

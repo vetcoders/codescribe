@@ -322,7 +322,9 @@ select_historical_pairs() {
 
 select_repo_pairs() {
   : > "$selected_tsv"
-  local assets="$repo_root/tests/assets/data_assets"
+  # Private fixtures are local-only (see tests/assets/data_assets/README.md).
+  local assets="${CODESCRIBE_DATA_ASSETS:-$HOME/.codescribe/data_assets}"
+  [[ -d "$assets" ]] || assets="$repo_root/tests/assets/data_assets"
   local stem wav ref
   for stem in \
     01_no-to-dobra \

@@ -32,7 +32,19 @@ use codescribe_core::vad_api::{
 // Helpers
 // ═══════════════════════════════════════════════════════════
 
+/// Private STT fixtures live OUTSIDE the repo (real operator speech —
+/// deprivatized twice). Resolution: `CODESCRIBE_DATA_ASSETS` →
+/// `~/.codescribe/data_assets` → the gitignored in-repo drop dir.
 fn assets_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("CODESCRIBE_DATA_ASSETS") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let local = PathBuf::from(home).join(".codescribe/data_assets");
+        if local.is_dir() {
+            return local;
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/data_assets")
 }
 

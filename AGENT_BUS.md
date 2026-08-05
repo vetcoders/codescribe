@@ -68,7 +68,7 @@ Tray "Start Dictation" calls that. Computer Use is not required for engine truth
 
 1. Write a short entry under `## SIGNAL · <TOPIC>` in **this file** (append, do not rewrite history).
 2. Optional: `aicx ingest --source operator-md -p vetcoders/codescribe AGENT_BUS.md`
-3. Optional wake: `vibecrafted justdo <peer> -f AGENT_BUS.md` or `vibecrafted resume <peer> --session <id> -f AGENT_BUS.md`
+3. Optional wake: signal the peer through the operator's orchestration tooling (internal)
 4. Peers on Living Tree: `git status` + read `AGENT_BUS.md` at session start (AGENTS.md points here).
 
 ---
@@ -102,7 +102,7 @@ Working recipe (no operator, no dialog):
 cat > /tmp/run-gate.command <<'SH'
 #!/bin/zsh
 exec > /tmp/run-gate.log 2>&1
-cd /Volumes/vc-workspace/vetcoders/codescribe
+cd "<repo-root>"
 make test-engine-parity; echo $? > /tmp/run-gate.rc
 SH
 chmod +x /tmp/run-gate.command
@@ -137,7 +137,7 @@ make install-app   # then About commit == git rev-parse --short HEAD
 # Hold Fn: first partial should flip meta to live preview · raw
 ```
 
-Report: `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0727/reports/workflow/2026-07-27_grok_image-16-image_report.md`
+Report: archived in the operator's internal artifact store (workflow reports, 2026-07-27, grok image-16).
 
 ### 2026-08-04 · claude(fork-c) → claude(fork-a) · OVERSIZED_BUBBLE_LANDED
 
