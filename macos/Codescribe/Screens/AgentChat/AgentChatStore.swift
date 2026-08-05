@@ -596,11 +596,21 @@ final class AgentChatStore: ObservableObject {
         dictationDeliverySource = .live
     }
 
+    /// Idempotent on purpose. Apple live polls partials every ~40 ms, so during a
+    /// pause the SAME text arrives ~25×/s. Publishing an unchanged value still
+    /// fires `objectWillChange`, rebuilding the whole Agent window body — and the
+    /// preview's `TextEditor` is NSTextView-backed, so each rebuild mutates the
+    /// AppKit subtree, invalidates the window's structural regions and re-runs the
+    /// deep `cursorUpdate:` walk (measured 2026-08-05: ~30% of main-thread samples
+    /// in `setCursorForMouseLocation:` → `NSCursor _reallySet`, visible as the
+    /// pointer flickering between I-beam and arrow, plus a PDF cursor-image reload
+    /// per frame). Writing only on real change removes the whole storm at the
+    /// source; see `plans/gtm-closure-260804/evidence/2026-08-05_cursor-storm-sample.txt`.
     func updateDictationPreview(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        dictationLivePreview = trimmed
+        if dictationLivePreview != trimmed { dictationLivePreview = trimmed }
         guard !dictationPreviewUserEdited else { return }
-        dictationPreview = trimmed
+        if dictationPreview != trimmed { dictationPreview = trimmed }
     }
 
     func editDictationPreview(_ text: String) {
@@ -611,11 +621,17 @@ final class AgentChatStore: ObservableObject {
 
     func noteDictationFinalPreview(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        dictationFinalPreview = trimmed.isEmpty ? nil : trimmed
-        dictationFinalChangedText = !trimmed.isEmpty && trimmed != dictationLivePreview
+        let final = trimmed.isEmpty ? nil : trimmed
+        let changed = !trimmed.isEmpty && trimmed != dictationLivePreview
+        if dictationFinalPreview != final { dictationFinalPreview = final }
+        if dictationFinalChangedText != changed { dictationFinalChangedText = changed }
     }
 
+    /// Same idempotence contract as `updateDictationPreview`: the VAD callback
+    /// fires per audio chunk, and republishing an unchanged flag rebuilds the
+    /// window body for nothing.
     func setDictationVadActive(_ active: Bool) {
+        guard dictationVadActive != active else { return }
         dictationVadActive = active
     }
 
