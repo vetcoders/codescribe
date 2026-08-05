@@ -201,9 +201,17 @@ impl LiveStreamSession {
         drop(self.stdin.take());
 
         let fed_secs = self.frames_written as f64 / self.sample_rate.max(1) as f64;
-        // Mirror bridge settle grace upper bound (~6s) + process exit margin.
+        // Hard ceiling for a healthy-but-slow flush (mirror bridge settle grace
+        // upper bound ~6s + process exit margin). A wedged bridge is cut far
+        // earlier by the idle cutoff below, so this never pins a short clip.
         let wait = Duration::from_secs_f64((fed_secs + 30.0).clamp(45.0, 240.0));
         let deadline = std::time::Instant::now() + wait;
+        // A live flush keeps emitting partial/final events; total silence past
+        // the bridge's own settle grace means the child is wedged (alive but
+        // mute). Without this, a 1-second clip waited the full 45s floor with
+        // the overlay stuck in "finalising" and no way to cancel.
+        const IDLE_CUTOFF: Duration = Duration::from_secs(10);
+        let mut last_event_at = std::time::Instant::now();
 
         let mut events = Vec::new();
         loop {
@@ -216,6 +224,7 @@ impl LiveStreamSession {
                 .recv_timeout(remaining.min(Duration::from_millis(200)))
             {
                 Ok(ev) => {
+                    last_event_at = std::time::Instant::now();
                     let is_terminal = matches!(
                         ev,
                         LiveStreamEvent::Summary { .. } | LiveStreamEvent::Error { .. }
@@ -229,6 +238,13 @@ impl LiveStreamSession {
                     // Keep waiting until hard deadline unless reader already exited.
                     if self.reader.as_ref().is_some_and(|h| h.is_finished()) {
                         // Drain any last bits.
+                        events.extend(self.poll_events());
+                        break;
+                    }
+                    if last_event_at.elapsed() >= IDLE_CUTOFF {
+                        // Wedged bridge: give up on the summary, return the
+                        // progressive events already sealed; the kill below
+                        // reaps the mute child.
                         events.extend(self.poll_events());
                         break;
                     }

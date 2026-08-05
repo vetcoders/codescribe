@@ -394,8 +394,9 @@ fn compose_stop_timeout(elapsed: Duration) -> Duration {
 /// Which transcript `stop_recording` returned, for the stop breadcrumb.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposerTranscriptSource {
-    /// Delivery-grade whole-WAV final pass (matches the hotkey/overlay quality).
-    FinalPass,
+    /// Live floor + whole-WAV Whisper gap-fill (doctrine: never full-replace).
+    /// Also covers whisper-only when the stream produced nothing.
+    MergedLiveWhisper,
     /// Spliced streaming `UtteranceFinal` chunks (final pass unavailable/empty).
     StreamingFallback,
 }
@@ -403,7 +404,7 @@ enum ComposerTranscriptSource {
 impl ComposerTranscriptSource {
     fn label(self) -> &'static str {
         match self {
-            Self::FinalPass => "final_pass",
+            Self::MergedLiveWhisper => "merged_live_whisper",
             Self::StreamingFallback => "streaming_fallback",
         }
     }
@@ -411,26 +412,26 @@ impl ComposerTranscriptSource {
 
 /// Pick the composer return.
 ///
-/// Final pass wins when non-empty **and** not a catastrophic length regression
-/// vs the live streaming assembly (stream is the floor of truth). Empty/absent
-/// final, or a collapsing file-STT final (e.g. Apple SFSpeech 12 chars vs a
-/// long stream), falls back to streaming. Both inputs are trimmed.
+/// Overlay doctrine (AGENTS.md law): the live streaming assembly is the floor
+/// of truth — a non-empty whole-WAV final pass never replaces it, it merges as
+/// gap-fill via `merge_live_whisper` (substitution disagreements keep live, so
+/// a collapsing file-STT final can no longer blank or shrink a real stream,
+/// and an inflated stream is never swapped for a shorter Whisper guess).
+/// Empty/absent final falls back to the streaming splice. Both inputs trimmed.
 fn select_composer_transcript(
     final_pass: Option<&str>,
     streaming: &str,
 ) -> (String, ComposerTranscriptSource) {
+    let streaming = streaming.trim();
     if let Some(text) = final_pass {
         let trimmed = text.trim();
-        if !trimmed.is_empty()
-            && !codescribe_core::pipeline::contracts::final_pass_is_length_regression(
-                trimmed, streaming,
-            )
-        {
-            return (trimmed.to_string(), ComposerTranscriptSource::FinalPass);
+        if !trimmed.is_empty() {
+            let merged = codescribe_core::quality::merge_live_whisper(streaming, trimmed);
+            return (merged.text, ComposerTranscriptSource::MergedLiveWhisper);
         }
     }
     (
-        streaming.trim().to_string(),
+        streaming.to_string(),
         ComposerTranscriptSource::StreamingFallback,
     )
 }
@@ -1034,21 +1035,39 @@ mod tests {
         );
     }
 
-    /// A non-empty final pass of comparable length is the delivery-grade winner.
+    /// Whisper excess fills live gaps (InsertB), never replaces the live floor.
     #[test]
-    fn select_composer_transcript_prefers_final_pass() {
-        let (text, source) = select_composer_transcript(Some("  raz dwa trzy  "), "raz dwa tszy");
-        assert_eq!(text, "raz dwa trzy");
-        assert_eq!(source, ComposerTranscriptSource::FinalPass);
+    fn select_composer_transcript_merges_whisper_gap_fill() {
+        let (text, source) = select_composer_transcript(Some("  raz dwa trzy cztery  "), "raz dwa");
+        assert_eq!(text, "raz dwa trzy cztery");
+        assert_eq!(source, ComposerTranscriptSource::MergedLiveWhisper);
     }
 
-    /// Collapsing file-final (Apple SFSpeech short) must not blank a real stream.
+    /// Substitution disagreements keep live (doctrine: floor of truth); the
+    /// Whisper variant is lexicon/human territory, not a silent overwrite.
     #[test]
-    fn select_composer_transcript_rejects_length_regression() {
+    fn select_composer_transcript_keeps_live_on_substitution() {
+        let (text, source) = select_composer_transcript(Some("raz dwa trzy"), "raz dwa tszy");
+        assert_eq!(text, "raz dwa tszy");
+        assert_eq!(source, ComposerTranscriptSource::MergedLiveWhisper);
+    }
+
+    /// Collapsing file-final (Apple SFSpeech short) must not blank or shrink a
+    /// real stream: merge keeps every live token, so the floor survives.
+    #[test]
+    fn select_composer_transcript_collapsing_final_keeps_live_floor() {
         let stream = "Im wystarczy i jeszcze sporo z freezed live assembly utterance dwa";
         let (text, source) = select_composer_transcript(Some("Im wystarczy"), stream);
         assert_eq!(text, stream.trim());
-        assert_eq!(source, ComposerTranscriptSource::StreamingFallback);
+        assert_eq!(source, ComposerTranscriptSource::MergedLiveWhisper);
+    }
+
+    /// With no live stream at all, the whisper final stands alone.
+    #[test]
+    fn select_composer_transcript_whisper_only_when_stream_empty() {
+        let (text, source) = select_composer_transcript(Some("raz dwa"), "   ");
+        assert_eq!(text, "raz dwa");
+        assert_eq!(source, ComposerTranscriptSource::MergedLiveWhisper);
     }
 
     /// An absent or empty/whitespace final pass falls back to the streaming

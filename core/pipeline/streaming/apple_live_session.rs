@@ -28,6 +28,7 @@ use crate::pipeline::contracts::{EngineEvent, EventSink, LayerSummary, Transcrip
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 
 use super::session::SessionConfig;
+use super::stream_log::append_to_stream_log;
 
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
@@ -38,9 +39,20 @@ pub(crate) async fn apple_stream_transcription_session(
     let SessionConfig {
         sample_rate,
         language,
-        stream_log_path: _,
-        utterance_silence_sec: _,
+        stream_log_path,
+        utterance_silence_sec,
     } = config;
+    // SFSpeech owns phrase boundaries in progressive mode, so the VAD-path
+    // silence knob cannot apply. Say so instead of silently differing from
+    // the `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` escape hatch.
+    if let Some(sec) = utterance_silence_sec {
+        warn!(
+            utterance_silence_sec = sec,
+            "Apple progressive live mode ignores utterance_silence_sec \
+             (SFSpeech decides phrase boundaries; use CODESCRIBE_APPLE_STT_LIVE_MODE=wav \
+             for the VAD silence contract)"
+        );
+    }
 
     info!(
         sample_rate,
@@ -69,7 +81,16 @@ pub(crate) async fn apple_stream_transcription_session(
         tokio::select! {
             event = ev_rx.recv() => {
                 match event {
-                    Some(event) => event_sink.on_event(&event),
+                    Some(event) => {
+                        // Same diagnostic artifact the VAD path writes: one
+                        // line per committed utterance (CODESCRIBE_STREAM_LOG).
+                        if let (Some(path), EngineEvent::UtteranceFinal { text, .. }) =
+                            (stream_log_path.as_deref(), &event)
+                        {
+                            let _ = append_to_stream_log(path, text.trim());
+                        }
+                        event_sink.on_event(&event);
+                    }
                     // Worker dropped the sender — stream finished.
                     None => break,
                 }

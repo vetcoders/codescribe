@@ -3301,6 +3301,28 @@ impl RecordingController {
             );
             let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
+            // Apple live must-have: refuse start before audio when Speech is not
+            // ready (empty mid-take death is not an acceptable product mode).
+            // Runs BEFORE the recorder lock and on the blocking pool: the probe
+            // spawns a bridge child and can block on the Speech TCC dialog for
+            // as long as the user takes — holding the recorder mutex (or a
+            // runtime worker) for that window froze stop/tray/second-hotkey.
+            if !cfg!(test) {
+                let preflight =
+                    tokio::task::spawn_blocking(codescribe_core::stt::preflight_apple_live_ready)
+                        .await
+                        .unwrap_or_else(|join| {
+                            Err(anyhow::anyhow!("Apple STT preflight task panicked: {join}"))
+                        });
+                if let Err(e) = preflight {
+                    error!("Hold-start aborted (Apple STT preflight): {e:#}");
+                    *session_id.write().await = None;
+                    set_assistive_session(false);
+                    crate::os::hold_badge::hide_hold_badge();
+                    return;
+                }
+            }
+
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is derived from hardcoded VAD defaults (single source of truth).
             let mut rec_guard = recorder.lock().await;
@@ -3320,18 +3342,6 @@ impl RecordingController {
                 drop(rec_guard);
                 *session_id.write().await = None;
                 set_assistive_session(false);
-                return;
-            }
-            // Apple live must-have: refuse start before audio when Speech is not ready
-            // (empty mid-take death is not an acceptable product mode).
-            if !cfg!(test)
-                && let Err(e) = codescribe_core::stt::preflight_apple_live_ready()
-            {
-                error!("Hold-start aborted (Apple STT preflight): {e}");
-                drop(rec_guard);
-                *session_id.write().await = None;
-                set_assistive_session(false);
-                crate::os::hold_badge::hide_hold_badge();
                 return;
             }
             // Hold-to-talk: the key-down is the source of truth. Don't auto-stop mid-hold.
@@ -3493,6 +3503,26 @@ impl RecordingController {
         let sound_volume = config.sound_volume;
         let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
+        // Apple live must-have preflight, BEFORE the recorder lock and on the
+        // blocking pool: the probe spawns a bridge child and can block on the
+        // Speech TCC dialog indefinitely — holding the recorder mutex (or a
+        // runtime worker) for that window froze every other recorder surface.
+        if !cfg!(test) {
+            let preflight =
+                tokio::task::spawn_blocking(codescribe_core::stt::preflight_apple_live_ready)
+                    .await
+                    .unwrap_or_else(|join| {
+                        Err(anyhow::anyhow!("Apple STT preflight task panicked: {join}"))
+                    });
+            if let Err(e) = preflight {
+                // Must log the actual cause — silent "resetting flags" made padaka undiagnosable.
+                error!("Toggle-start aborted (Apple STT preflight): {e:#}");
+                self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
+                    .await;
+                return Err(e);
+            }
+        }
+
         // Start the recorder
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = match Self::recorder_from_guard_mut(&mut recorder_guard, "Toggle-start") {
@@ -3511,17 +3541,6 @@ impl RecordingController {
                 .await;
             return Err(e);
         }
-        if !cfg!(test)
-            && let Err(e) = codescribe_core::stt::preflight_apple_live_ready()
-        {
-            // Must log the actual cause — silent "resetting flags" made padaka undiagnosable.
-            error!("Toggle-start aborted (Apple STT preflight): {e:#}");
-            drop(recorder_guard);
-            self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
-                .await;
-            return Err(e);
-        }
-
         // Toggle mode: continuous recording; silence only triggers per-utterance send.
         recorder.recorder.config.auto_silence = false;
         recorder.recorder.set_on_vad_stop(|| {});
