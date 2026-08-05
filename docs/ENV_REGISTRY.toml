@@ -1243,6 +1243,13 @@ reload = "rebuild"
 category = "build"
 description = "Build-script marker for optimized local app installs; permits only the checked-in development license verifier and is explicitly removed by distribution builds"
 
+[vars.CODESCRIBE_LICENSE_SIGNER_SEED_HEX]
+default = ""
+type = "string"
+reload = "restart"
+category = "build"
+description = "Offline Ed25519 signing seed (64 hex chars) read ONLY by the `license_signer` example when minting production licenses; the app runtime never reads it and it must never be stored in .env or CI"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Debug / Test
 # ═══════════════════════════════════════════════════════════════════════════════
