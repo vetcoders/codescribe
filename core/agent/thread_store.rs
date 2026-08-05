@@ -18,6 +18,14 @@ const BLOBS_DIR_NAME: &str = "blobs";
 const THREAD_FILE_EXT: &str = "json";
 const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 
+/// Serializes every thread-file read-modify-write in this process. Thread JSON
+/// saves are whole-file rewrites, so two unsynchronized writers lose whichever
+/// lands first — the rail-refresh heal used to rewrite a stale snapshot right
+/// over an agent turn's freshly delivered messages. All writers funnel through
+/// [`ThreadStore::save_thread`]; RMW paths hold this lock across their whole
+/// load→modify→save so their snapshot cannot go stale mid-flight.
+static THREAD_RMW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Thread {
     pub id: String,
@@ -154,6 +162,13 @@ impl ThreadStore {
     }
 
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
+        let _guard = THREAD_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.save_thread_locked(thread)
+    }
+
+    /// Body of [`save_thread`] for callers already holding `THREAD_RMW_LOCK`
+    /// (the lock is not reentrant).
+    fn save_thread_locked(&self, thread: &Thread) -> Result<()> {
         // ThreadStore is the durable title boundary. Source-specific delivery
         // paths may hand us an assistive heredoc delimiter (`<<<`) as their
         // heuristic title; normalize it from the first user message before
@@ -181,7 +196,17 @@ impl ThreadStore {
             // Lazy migration for pre-0.13.0 files. A read remains usable even
             // on a read-only volume; the warning preserves the persistence
             // failure while the caller still receives a safe in-memory title.
-            if let Err(error) = self.save_thread(&thread) {
+            // Persistence re-reads under the RMW lock so this migration can
+            // never write a stale snapshot over a concurrent delivery save.
+            let persist = (|| -> Result<()> {
+                let _guard = THREAD_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let mut fresh = self.load_thread_raw(id)?;
+                if normalize_heuristic_title(&mut fresh) {
+                    self.save_thread_locked(&fresh)?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = persist {
                 warn!(thread_id = %id, %error, "Failed to persist healed thread title");
             }
         }
@@ -204,11 +229,16 @@ impl ThreadStore {
         let mut healed = 0;
         for id in candidate_ids {
             let result = (|| -> Result<bool> {
+                // Hold the RMW lock across load→normalize→save: this runs on
+                // every rail refresh, and an unlocked read-modify-write here
+                // could overwrite an agent turn's freshly delivered messages
+                // with the stale snapshot loaded a moment earlier.
+                let _guard = THREAD_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
                 let mut thread = self.load_thread_raw(&id)?;
                 if !normalize_heuristic_title(&mut thread) {
                     return Ok(false);
                 }
-                self.save_thread(&thread)?;
+                self.save_thread_locked(&thread)?;
                 Ok(true)
             })();
             match result {

@@ -36,9 +36,15 @@ fn classify(text: &str) -> bool {
         return false;
     }
     let lower = trimmed.to_ascii_lowercase();
-    // Credential directories anywhere in the path.
-    const SECRET_DIRS: &[&str] = &["/.ssh/", "/.aws/", "/.gnupg/", "/.kube/"];
-    if SECRET_DIRS.iter().any(|dir| lower.contains(dir)) {
+    // Credential directories anywhere in the path — including the bare
+    // directory itself ("~/.ssh", "/Users/op/.aws", with or without a
+    // trailing slash): listing the directory already leaks the key inventory.
+    const SECRET_DIRS: &[&str] = &["/.ssh", "/.aws", "/.gnupg", "/.kube"];
+    let no_trailing = lower.trim_end_matches('/');
+    if SECRET_DIRS
+        .iter()
+        .any(|dir| no_trailing.ends_with(dir) || lower.contains(&[dir, "/"].concat()))
+    {
         return true;
     }
     let basename = lower.rsplit('/').next().unwrap_or(&lower);
@@ -88,6 +94,10 @@ mod tests {
             "/Users/op/.codescribe/tool_grants.json",
             "~/.ssh/id_rsa",
             "~/.ssh/known_hosts",
+            "~/.ssh",
+            "~/.ssh/",
+            "/Users/op/.aws",
+            "/Users/op/.gnupg/",
             "/Users/op/.aws/credentials",
             "/certs/server.pem",
             "/Users/op/Library/Keychains/login.keychain-db",
@@ -107,6 +117,8 @@ mod tests {
             "~/.codescribe/transcriptions/2026-08-04/raw.txt",
             "/Users/op/project/environment.md",
             "keychain_env_docs.md",
+            "/Users/op/project/notes.ssh.md",
+            "/Users/op/kessh/readme.md",
         ] {
             assert!(
                 find_secret_path(&json!({ "path": path })).is_none(),

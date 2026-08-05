@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Assistive capture ownership** — assistive capture and agent-window controls
   unified under one owner; the capture contract is documented in `AGENTS.md`.
+- **Hold dictation is always raw** (#65) — the detector-level force-AI chord on
+  hold (Ctrl+Option) was removed with the unified pipeline: a plain hold now
+  pastes the raw transcript regardless of the Auto-Format toggle. AI formatting
+  lives in toggle sessions, the double-Option force chord, and the assistive
+  lanes. Previously this change shipped undocumented, so Ctrl+Option hold users
+  saw an unexplained drop in delivered-text formatting.
 - **Release lane is fail-closed** — DMG payload verification gate in the
   release workflow (a DMG missing its model payload aborts the release),
   single version truth across Cargo/site/appcast, 404-proof Pages deploys, and
