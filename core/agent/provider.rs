@@ -26,6 +26,21 @@ pub trait AgentProvider: Send + Sync {
         None
     }
     fn name(&self) -> &str;
+
+    /// Provider-owned Responses-API chain id (`previous_response_id`), if any.
+    ///
+    /// Default: no chain. OpenAI Responses implements this so a user Stop can
+    /// reinstate the pre-turn id instead of wiping continuity.
+    async fn response_chain_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Restore a previously snapshotted chain id (or clear when `None`).
+    ///
+    /// Used after a user Stop: local history rolls back to the pre-turn
+    /// snapshot and the chain must match that history — not a mid-turn id and
+    /// not a forced full-reset.
+    async fn restore_response_chain(&self, _id: Option<String>) {}
 }
 
 #[derive(Debug, Clone, Default)]

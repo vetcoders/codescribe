@@ -118,6 +118,37 @@ impl AgentSession {
         self.thread_id = None;
     }
 
+    /// Snapshot the provider-owned Responses chain id for a later user-Stop restore.
+    pub async fn snapshot_response_chain(&self) -> Option<String> {
+        self.provider.response_chain_id().await
+    }
+
+    /// Roll a cancelled turn back to the pre-turn history **and** reinstate the
+    /// chain ids that belonged to that history.
+    ///
+    /// Operator contract (2026-08-05): Stop aborts only the active stream.
+    /// `previous_response_id` / session thread id are cleared only on a new
+    /// thread or an explicit reset — never as a side effect of Stop. Mid-turn
+    /// chain advances (tool rounds) are discarded with the unfinished turn.
+    pub async fn restore_after_user_stop(
+        &mut self,
+        mut messages_before_turn: Vec<Message>,
+        session_thread_before: Option<String>,
+        provider_chain_before: Option<String>,
+    ) {
+        if let Err(error) = self
+            .tool_output_store
+            .spill_messages(&mut messages_before_turn)
+        {
+            warn!(%error, "Failed to normalize rehydrated tool-output history after user stop");
+        }
+        self.messages = messages_before_turn;
+        self.thread_id = session_thread_before;
+        self.provider
+            .restore_response_chain(provider_chain_before)
+            .await;
+    }
+
     #[cfg(test)]
     fn with_tool_output_store(mut self, tool_output_store: ToolOutputStore) -> Self {
         self.tool_output_store = tool_output_store;
@@ -1019,6 +1050,39 @@ mod tests {
         fn name(&self) -> &str {
             "permanent-failure-provider"
         }
+    }
+
+    #[tokio::test]
+    async fn restore_after_user_stop_keeps_pre_turn_thread_id() {
+        let (ui_tx, _ui_rx) = mpsc::channel(4);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        session.restore_messages(vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("prior".to_string())],
+        )]);
+        session.thread_id = Some("resp_prior".to_string());
+
+        // Simulate mid-turn growth that Stop must discard.
+        session.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text("aborted turn".to_string())],
+        ));
+        session.thread_id = Some("resp_mid_turn".to_string());
+
+        let before = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("prior".to_string())],
+        )];
+        session
+            .restore_after_user_stop(before, Some("resp_prior".to_string()), None)
+            .await;
+
+        assert_eq!(session.messages().len(), 1);
+        assert_eq!(session.thread_id(), Some("resp_prior"));
     }
 
     #[test]

@@ -253,6 +253,30 @@ impl AgentProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai-responses"
     }
+
+    async fn response_chain_id(&self) -> Option<String> {
+        self.previous_response_id.lock().await.clone()
+    }
+
+    async fn restore_response_chain(&self, id: Option<String>) {
+        let mut lock = self.previous_response_id.lock().await;
+        if *lock != id {
+            info!(
+                "Agent provider chain restored after user stop (provider=openai-responses, previous_response_id={})",
+                if id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .is_some()
+                {
+                    "present"
+                } else {
+                    "absent"
+                }
+            );
+            *lock = id;
+        }
+    }
 }
 
 impl OpenAiProvider {
@@ -1033,6 +1057,41 @@ mod tests {
         assert!(
             stored_chain.lock().await.is_none(),
             "reset_chain=true must clear stored previous_response_id"
+        );
+    }
+
+    /// Operator 2026-08-05: user Stop reinstates the pre-turn chain id instead
+    /// of wiping previous_response_id so a queued follow-up keeps continuity.
+    #[tokio::test]
+    async fn restore_response_chain_reinstates_pre_turn_id_after_user_stop() {
+        let stored_chain = Arc::new(Mutex::new(Some("resp_pre_turn".to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
+        };
+
+        // Mid-turn advance (tool round) or dirty cancel would move the live id.
+        *stored_chain.lock().await = Some("resp_mid_turn_cancelled".to_string());
+        assert_eq!(
+            provider.response_chain_id().await.as_deref(),
+            Some("resp_mid_turn_cancelled")
+        );
+
+        provider
+            .restore_response_chain(Some("resp_pre_turn".to_string()))
+            .await;
+
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_pre_turn"),
+            "user Stop must reinstate the pre-turn previous_response_id"
         );
     }
 
