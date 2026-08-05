@@ -9,11 +9,11 @@ import SwiftUI
 /// real streaming chat is a tracked core-change follow-up).
 struct AgentChatView: View {
     @StateObject var store: AgentChatStore
-    /// Collapse state survives window close/reopen and app relaunch. The split
-    /// view's live visibility is derived from this on appear and written back on
-    /// every change (button, ⌃⌘S, or a native drag-collapse), so no path can
-    /// leave the sidebar unrecoverable.
-    @AppStorage("AgentChat.sidebarVisible.v1") private var sidebarVisible = true
+    /// Rail state survives window close/reopen and app relaunch. The rail has
+    /// TWO states — expanded list and compact icon strip — and is never removed
+    /// from the split view, so no path can leave it unrecoverable and no path
+    /// leaves an empty band where the rail used to be.
+    @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
     @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
@@ -23,16 +23,21 @@ struct AgentChatView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            ThreadRail(store: store)
-                // Resizable range (a single fixed width disables drag-resize);
-                // native collapse goes through `columnVisibility`, never through
-                // forcing the width to zero.
-                .navigationSplitViewColumnWidth(min: 200, ideal: 236, max: 360)
+            ThreadRail(store: store, mode: sidebarMode)
+                // Column geometry is owned by the mode: expanded stays
+                // drag-resizable, compact pins the icon strip. The rail view
+                // itself carries no fixed width — a hardcoded 236 inside a
+                // resizable column left a dead band between rail and detail.
+                .navigationSplitViewColumnWidth(
+                    min: sidebarMode.minimumWidth,
+                    ideal: sidebarMode.idealWidth,
+                    max: sidebarMode.maximumWidth
+                )
                 .toolbar(removing: .sidebarToggle)
         } detail: {
             ThreadDetail(
                 store: store,
-                isSidebarVisible: sidebarVisible,
+                isSidebarExpanded: sidebarExpanded,
                 isPinned: $isPinned,
                 toggleSidebar: toggleSidebar
             )
@@ -48,16 +53,38 @@ struct AgentChatView: View {
             AgentPerf.logger.info("agent window shell rendered")
             store.startDemoStreamIfNeeded()
         }
-        .onAppear { columnVisibility = sidebarVisible ? .all : .detailOnly }
-        .onChange(of: columnVisibility) { _, visibility in
-            sidebarVisible = visibility != .detailOnly
-        }
+        // The rail column is always present; only its mode changes.
+        .onAppear { columnVisibility = .all }
+    }
+
+    private var sidebarMode: AgentSidebarMode {
+        sidebarExpanded ? .expanded : .compact
     }
 
     private func toggleSidebar() {
         withAnimation {
-            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            columnVisibility = .all
+            sidebarExpanded = AgentSidebarMode.toggled(sidebarMode).isExpanded
         }
+    }
+}
+
+/// The rail's two presentation states and the column geometry each owns. Pure,
+/// so the widths are unit-testable without rendering a split view.
+enum AgentSidebarMode: Equatable {
+    case expanded
+    case compact
+
+    /// Icon strip width: one hit target plus symmetric padding.
+    static let compactWidth: CGFloat = 56
+
+    var isExpanded: Bool { self == .expanded }
+    var minimumWidth: CGFloat { isExpanded ? 200 : Self.compactWidth }
+    var idealWidth: CGFloat { isExpanded ? 236 : Self.compactWidth }
+    var maximumWidth: CGFloat { isExpanded ? 360 : Self.compactWidth }
+
+    static func toggled(_ mode: AgentSidebarMode) -> AgentSidebarMode {
+        mode == .expanded ? .compact : .expanded
     }
 }
 
@@ -92,8 +119,8 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 private struct ThreadDetail: View {
     @ObservedObject var store: AgentChatStore
     /// Sidebar controls live in the DETAIL header so the toggle stays reachable
-    /// while the sidebar itself is collapsed.
-    let isSidebarVisible: Bool
+    /// while the rail is in its compact icon state.
+    let isSidebarExpanded: Bool
     @Binding var isPinned: Bool
     let toggleSidebar: () -> Void
     @Environment(\.openSettings) private var openSettings
@@ -159,10 +186,11 @@ private struct ThreadDetail: View {
                     .font(.system(size: 14, weight: .medium))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(isSidebarVisible ? CSColor.textBody : CSColor.textFaint)
+            .foregroundStyle(isSidebarExpanded ? CSColor.textBody : CSColor.textFaint)
             .keyboardShortcut("s", modifiers: [.command, .control])
-            .help(isSidebarVisible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
+            .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
             .accessibilityLabel("Toggle Sidebar")
+            .accessibilityValue(isSidebarExpanded ? "Expanded" : "Compact")
 
             StaticStatusPill(text: status.label, color: status.color)
             Spacer()

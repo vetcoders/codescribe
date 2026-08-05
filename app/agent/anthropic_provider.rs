@@ -140,8 +140,16 @@ impl AgentProvider for AnthropicProvider {
             .unwrap_or(self.default_max_tokens);
 
         let system = build_system(options.system_prompt.as_deref(), messages);
-        let body = build_request_body(&model, system, messages, tools, max_tokens, temperature)
-            .context("Failed to build Anthropic Messages request")?;
+        let body = build_request_body(
+            &model,
+            system,
+            messages,
+            tools,
+            max_tokens,
+            temperature,
+            policy.adaptive_thinking,
+        )
+        .context("Failed to build Anthropic Messages request")?;
 
         info!(
             "Anthropic agent request (model={}, messages={}, tools={}, max_tokens={}, temperature={}, timeout={}s)",
@@ -251,11 +259,20 @@ fn build_request_body(
     tools: &[ToolDefinition],
     max_tokens: u32,
     temperature: Option<f32>,
+    adaptive_thinking: bool,
 ) -> Result<Value> {
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), json!(model));
     body.insert("max_tokens".to_string(), json!(max_tokens));
     body.insert("stream".to_string(), json!(true));
+    // Reasoning summaries are OPT-IN on Anthropic: without a \`thinking\` block the
+    // API never emits \`thinking_delta\`, so \`handle_chunk\`'s ReasoningDelta arm was
+    // unreachable and the chat only ever showed the opaque "thinking…" placeholder
+    // (OpenAI got summaries via \`reasoning_summary_request\`). Adaptive form only —
+    // a manual \`budget_tokens\` is a hard 400 on Opus (BudgetTokensPolicy::Hard400).
+    if adaptive_thinking {
+        body.insert("thinking".to_string(), json!({ "type": "adaptive" }));
+    }
     if let Some(system) = system.filter(|value| !value.trim().is_empty()) {
         body.insert("system".to_string(), json!(system));
     }
@@ -907,6 +924,7 @@ mod tests {
             &[],
             4096,
             None,
+            false,
         )
         .expect("request body should build");
 
@@ -928,8 +946,16 @@ mod tests {
 
         let opus = capability_policy(ProviderKind::AnthropicMessages, "claude-opus-4-8");
         let opus_temp = opus.sanitize_temperature(Some(0.7));
-        let opus_body =
-            build_request_body("claude-opus-4-8", None, &messages, &[], 1024, opus_temp).unwrap();
+        let opus_body = build_request_body(
+            "claude-opus-4-8",
+            None,
+            &messages,
+            &[],
+            1024,
+            opus_temp,
+            false,
+        )
+        .unwrap();
         assert!(
             opus_body.get("temperature").is_none(),
             "Opus-4.8 rejects sampling params; temperature must be omitted"
@@ -937,9 +963,16 @@ mod tests {
 
         let sonnet = capability_policy(ProviderKind::AnthropicMessages, "claude-sonnet-4-6");
         let sonnet_temp = sonnet.sanitize_temperature(Some(0.3));
-        let sonnet_body =
-            build_request_body("claude-sonnet-4-6", None, &messages, &[], 1024, sonnet_temp)
-                .unwrap();
+        let sonnet_body = build_request_body(
+            "claude-sonnet-4-6",
+            None,
+            &messages,
+            &[],
+            1024,
+            sonnet_temp,
+            false,
+        )
+        .unwrap();
         let sent = sonnet_body["temperature"]
             .as_f64()
             .expect("Sonnet keeps temperature as a number");
@@ -1078,7 +1111,7 @@ mod tests {
             ],
         )];
 
-        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None)
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, false)
             .expect("request body should build");
 
         assert_eq!(body["messages"][0]["role"], "user");
@@ -1160,7 +1193,7 @@ mod tests {
             ],
         )];
 
-        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None)
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, false)
             .expect("request body should build");
 
         let content = body["messages"][0]["content"]

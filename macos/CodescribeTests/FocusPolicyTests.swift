@@ -19,6 +19,11 @@ final class FocusPolicyTests: XCTestCase {
         let textViewChild = NSView()
         textView.addSubview(textViewChild)
 
+        let scrollView = NSScrollView()
+        let scrolledTextView = NSTextView()
+        scrollView.documentView = scrolledTextView
+        let clipView = scrollView.contentView
+
         XCTAssertFalse(
             CSFocusPolicy.shouldReleaseFocus(for: .pointer, hitView: NSTextField())
         )
@@ -26,9 +31,42 @@ final class FocusPolicyTests: XCTestCase {
             CSFocusPolicy.shouldReleaseFocus(for: .pointer, hitView: textViewChild),
             "clicking inside a text editor must not dismiss its first responder"
         )
+        XCTAssertFalse(
+            CSFocusPolicy.shouldReleaseFocus(for: .pointer, hitView: clipView),
+            "TextEditor scroll/clip layers must preserve the backing text view's focus"
+        )
         XCTAssertTrue(
             CSFocusPolicy.shouldReleaseFocus(for: .pointer, hitView: NSView())
         )
+    }
+
+    // MARK: - Agent sidebar: two states, never a hole
+
+    func testSidebarToggleSwapsModesInsteadOfRemovingTheRail() {
+        XCTAssertEqual(AgentSidebarMode.toggled(.expanded), .compact)
+        XCTAssertEqual(AgentSidebarMode.toggled(.compact), .expanded)
+        XCTAssertEqual(
+            AgentSidebarMode.toggled(AgentSidebarMode.toggled(.expanded)),
+            .expanded,
+            "toggling twice must return to the starting state"
+        )
+    }
+
+    func testCompactRailKeepsAPositiveFixedWidthAndExpandedStaysResizable() {
+        let compact = AgentSidebarMode.compact
+        XCTAssertGreaterThan(
+            compact.minimumWidth, 0,
+            "a collapsed rail must still occupy the column — width 0 is the empty-band bug"
+        )
+        XCTAssertEqual(compact.minimumWidth, compact.maximumWidth, "compact strip is not resizable")
+        XCTAssertEqual(compact.idealWidth, AgentSidebarMode.compactWidth)
+
+        let expanded = AgentSidebarMode.expanded
+        XCTAssertLessThan(
+            expanded.minimumWidth, expanded.maximumWidth,
+            "expanded rail must keep a drag-resizable range"
+        )
+        XCTAssertGreaterThan(expanded.minimumWidth, compact.maximumWidth)
     }
 
     // MARK: - W10-A voice reveal policy
