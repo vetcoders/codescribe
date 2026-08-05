@@ -18,6 +18,7 @@
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
 mod defaults;
+pub mod final_pass;
 pub mod keychain;
 mod loader;
 pub mod migrate;
@@ -38,6 +39,7 @@ pub use types::{
     ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
+pub use final_pass::{FinalPassRoutingMode, final_pass_routing_mode};
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
     write_portable_export,

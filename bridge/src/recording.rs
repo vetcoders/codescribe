@@ -13,10 +13,11 @@ use std::time::{Duration, Instant};
 use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe_core::audio::load_audio_file;
 use codescribe_core::audio::streaming_recorder::StreamingRecorder;
+use codescribe_core::config::FinalPassRoutingMode;
 use codescribe_core::pipeline::contracts::{
     AnnotationKind, EngineEvent, EventSink, FileTranscriptionOptions, LayerSource, LayerSummary,
 };
-use codescribe_core::stt::whisper;
+use codescribe_core::stt::{TailGapBoundary, resolve_tail_gap_boundary, whisper};
 use cpal::traits::{DeviceTrait, HostTrait};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -353,9 +354,38 @@ pub trait CsTranscriptionListener: Send + Sync {
 struct ComposerTranscript {
     text: StdMutex<String>,
     utterances: AtomicU64,
+    /// End timestamp of the last committed utterance — the audio boundary Smart
+    /// mode gap-fills from. Mirrors `SessionTelemetrySink` in the controller lane.
+    committed_through_secs: StdMutex<Option<f32>>,
 }
 
 impl ComposerTranscript {
+    /// Advance the committed audio boundary (monotonic max: an out-of-order
+    /// final never rewinds it). Called for **every** `UtteranceFinal`, including
+    /// empty ones — that audio is adjudicated even when it carried no text, so
+    /// a tail gap-fill must not transcribe it again.
+    fn note_committed_through(&self, end_ts: f32) {
+        if !end_ts.is_finite() {
+            return;
+        }
+        let mut guard = self
+            .committed_through_secs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = Some(match *guard {
+            Some(current) if current >= end_ts => current,
+            _ => end_ts,
+        });
+    }
+
+    /// Committed audio boundary, or `None` when no final sealed any audio yet.
+    fn committed_through_secs(&self) -> Option<f32> {
+        *self
+            .committed_through_secs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Append one finalized utterance (Layer 0 committed text). Empty/whitespace
     /// finals are ignored so trailing silence never widens the transcript.
     fn append_final(&self, text: &str) {
@@ -436,26 +466,91 @@ fn select_composer_transcript(
     )
 }
 
-/// Run the delivery-grade final pass over the saved WAV, mirroring the
-/// controller's toggle-stop adjudicator (`transcribe_file_verdict` with default
-/// options). Blocking Whisper work runs off the async runtime and is bounded by
-/// the shared `deadline`; any failure/timeout/absent-WAV yields `None` so the
-/// caller falls back to the streaming splice.
+/// What the composer stop lane is allowed to run over the saved WAV, per
+/// `FINAL_PASS_MODE` (operator law 2026-08-05).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ComposerFinalPassPlan {
+    /// Always only: re-transcribe the whole file.
+    FullFile,
+    /// Smart: transcribe the uncommitted tail from this boundary and append it.
+    TailGap(f32),
+    /// Off — or Smart without usable commit evidence: no Whisper at all; the
+    /// streaming splice is the answer.
+    SkipStreaming,
+}
+
+impl ComposerFinalPassPlan {
+    fn label(self) -> &'static str {
+        match self {
+            Self::FullFile => "full_file",
+            Self::TailGap(_) => "tail_gap",
+            Self::SkipStreaming => "skip_streaming",
+        }
+    }
+}
+
+/// Route the composer stop lane by mode — the same law the controller lane obeys.
+///
+/// Always is the ONLY mode permitted a full-file re-pass; Off runs zero Whisper
+/// on the stop path; Smart delegates its boundary question to the shared core
+/// guard so a missing boundary can never degrade into a whole-file pass landing
+/// on committed text.
+fn composer_final_pass_plan(
+    mode: FinalPassRoutingMode,
+    committed_through_secs: Option<f32>,
+    streaming_is_empty: bool,
+) -> ComposerFinalPassPlan {
+    match mode {
+        FinalPassRoutingMode::Always => ComposerFinalPassPlan::FullFile,
+        FinalPassRoutingMode::Off => ComposerFinalPassPlan::SkipStreaming,
+        FinalPassRoutingMode::Smart => {
+            match resolve_tail_gap_boundary(committed_through_secs, streaming_is_empty) {
+                TailGapBoundary::From(secs) => ComposerFinalPassPlan::TailGap(secs),
+                TailGapBoundary::WholeSessionBootstrap => ComposerFinalPassPlan::TailGap(0.0),
+                TailGapBoundary::Skip => ComposerFinalPassPlan::SkipStreaming,
+            }
+        }
+    }
+}
+
+/// Run the planned final pass over the saved WAV.
+///
+/// `FullFile` mirrors the controller's toggle-stop adjudicator
+/// (`transcribe_file_verdict` with default options); `TailGap` transcribes only
+/// the uncommitted tail (append-only doctrine); `SkipStreaming` never touches
+/// Whisper. Blocking work runs off the async runtime and is bounded by the
+/// shared `deadline`; any failure/timeout/absent-WAV/empty text yields `None`
+/// so the caller falls back to the streaming splice.
 async fn run_final_pass(
+    plan: ComposerFinalPassPlan,
     audio_path: Option<PathBuf>,
     language: Option<String>,
     deadline: tokio::time::Instant,
 ) -> Option<String> {
+    if matches!(plan, ComposerFinalPassPlan::SkipStreaming) {
+        return None;
+    }
     let path = audio_path?;
-    let job = tokio::task::spawn_blocking(move || {
-        whisper::transcribe_file_verdict(
+    let job = tokio::task::spawn_blocking(move || match plan {
+        ComposerFinalPassPlan::TailGap(from_secs) => {
+            codescribe_core::stt::whisper_tail_gap_transcribe_file(
+                &path,
+                from_secs,
+                language.as_deref(),
+            )
+            .map(|raw| raw.text)
+        }
+        // FullFile (Always) — SkipStreaming returned above.
+        _ => whisper::transcribe_file_verdict(
             &path,
             language.as_deref(),
             FileTranscriptionOptions::default(),
         )
+        .map(|verdict| verdict.text),
     });
     match tokio::time::timeout_at(deadline, job).await {
-        Ok(Ok(Ok(verdict))) => Some(verdict.text),
+        Ok(Ok(Ok(text))) if !text.trim().is_empty() => Some(text),
+        Ok(Ok(Ok(_))) => None,
         Ok(Ok(Err(e))) => {
             warn!(target: "composer-dictation", error = %e, "final pass transcription failed");
             None
@@ -498,6 +593,7 @@ impl EventSink for CsEventSink {
             EngineEvent::UtteranceFinal {
                 utterance_id,
                 text,
+                end_ts,
                 avg_logprob,
                 vad_speech_pct,
                 confidence_flags,
@@ -506,6 +602,7 @@ impl EventSink for CsEventSink {
                 // Compose the composer return here: the streaming recorder's own
                 // transcript buffer is never filled on this path.
                 self.transcript.append_final(text);
+                self.transcript.note_committed_through(*end_ts);
                 let flags: Vec<String> = confidence_flags.iter().map(ToString::to_string).collect();
                 self.listener.on_final(
                     *utterance_id,
@@ -716,11 +813,12 @@ impl CodescribeDictation {
     ///    every `UtteranceFinal` has been emitted synchronously into our
     ///    accumulator), and saves the WAV. So the streaming splice is complete
     ///    once stop returns cleanly.
-    /// 2. A delivery-grade final pass re-transcribes the whole saved WAV, the
-    ///    same `transcribe_file_verdict` adjudicator the hotkey/overlay
-    ///    toggle-stop uses. Decoding the recording as one continuous utterance
-    ///    avoids the mid-word cut artifacts of the spliced streaming chunks, so
-    ///    its text is the quality the overlay delivers.
+    /// 2. The final pass `FINAL_PASS_MODE` permits (`composer_final_pass_plan`,
+    ///    same law as the controller lane): **Always** re-transcribes the whole
+    ///    saved WAV with the `transcribe_file_verdict` adjudicator the
+    ///    hotkey/overlay toggle-stop uses; **Smart** transcribes only the audio
+    ///    after the last committed utterance and merges it as gap-fill;
+    ///    **Off** runs no Whisper at all and streaming is final.
     ///
     /// The final pass wins whenever it yields non-empty text; the streaming
     /// splice is the fallback for a failed/timed-out/empty final pass (or a
@@ -767,10 +865,24 @@ impl CodescribeDictation {
             }
         };
 
-        // Phase 2: delivery-grade final pass over the whole WAV; the streaming
-        // splice remains the fallback authority.
+        // Phase 2: the final pass `FINAL_PASS_MODE` permits — full file under
+        // Always, uncommitted-tail gap-fill under Smart, nothing under Off. The
+        // streaming splice remains the fallback authority in every mode.
         let (streaming_text, _utterances) = transcript.snapshot();
-        let final_pass_text = run_final_pass(audio_path, language_hint, deadline).await;
+        let mode = codescribe_core::config::final_pass_routing_mode();
+        let plan = composer_final_pass_plan(
+            mode,
+            transcript.committed_through_secs(),
+            streaming_text.trim().is_empty(),
+        );
+        info!(
+            target: "composer-dictation",
+            mode = mode.as_str(),
+            plan = plan.label(),
+            committed_through_secs = transcript.committed_through_secs(),
+            "composer voice-note stop final-pass plan"
+        );
+        let final_pass_text = run_final_pass(plan, audio_path, language_hint, deadline).await;
 
         let final_pass_chars = final_pass_text
             .as_deref()
@@ -1003,6 +1115,122 @@ mod tests {
         assert_eq!(
             utterances, 2,
             "empty final must not count toward utterances"
+        );
+    }
+
+    /// Same as [`utterance_final`] but with an explicit commit boundary.
+    fn utterance_final_at(utterance_id: u64, text: &str, end_ts: f32) -> EngineEvent {
+        match utterance_final(utterance_id, text) {
+            EngineEvent::UtteranceFinal {
+                utterance_id,
+                text,
+                raw_text,
+                start_ts,
+                segments,
+                vad_speech_pct,
+                avg_logprob,
+                compression_ratio,
+                quality_gate_dropped,
+                confidence_flags,
+                ..
+            } => EngineEvent::UtteranceFinal {
+                utterance_id,
+                text,
+                raw_text,
+                start_ts,
+                end_ts,
+                segments,
+                vad_speech_pct,
+                avg_logprob,
+                compression_ratio,
+                quality_gate_dropped,
+                confidence_flags,
+            },
+            other => other,
+        }
+    }
+
+    /// Smart mode needs the composer lane's committed audio boundary, exactly as
+    /// the controller's `SessionTelemetrySink` tracks it: a monotonic max fold of
+    /// `UtteranceFinal::end_ts` that an out-of-order final can never rewind, and
+    /// that an empty final still advances (the audio IS adjudicated, it simply
+    /// carried no text — so it must not be gap-filled again).
+    #[test]
+    fn composer_transcript_tracks_committed_through_secs() {
+        let transcript = ComposerTranscript::default();
+        assert_eq!(
+            transcript.committed_through_secs(),
+            None,
+            "no finals yet ⇒ no commit evidence"
+        );
+
+        let listener = Arc::new(CapturingListener::default());
+        let sink = CsEventSink {
+            listener,
+            transcript: Arc::new(ComposerTranscript::default()),
+        };
+        sink.on_event(&utterance_final_at(1, "raz", 2.5));
+        sink.on_event(&utterance_final_at(2, "dwa", 7.25));
+        // Out-of-order final: the boundary must not rewind.
+        sink.on_event(&utterance_final_at(3, "trzy", 4.0));
+        // Empty final still seals its audio.
+        sink.on_event(&utterance_final_at(4, "   ", 9.5));
+
+        assert_eq!(sink.transcript.committed_through_secs(), Some(9.5));
+        assert_eq!(
+            sink.transcript.snapshot().0,
+            "raz dwa trzy",
+            "boundary tracking must not disturb the text accumulator"
+        );
+    }
+
+    /// The composer stop lane must obey `FINAL_PASS_MODE` exactly like the
+    /// controller lane: Always is the ONLY mode allowed a full-file re-pass,
+    /// Smart may only gap-fill the uncommitted tail, Off runs no Whisper at all.
+    #[test]
+    fn composer_final_pass_plan_honours_mode() {
+        // Always: full file, regardless of commit evidence or canvas state.
+        for (committed, empty) in [(None, false), (Some(4.0), false), (None, true)] {
+            assert_eq!(
+                composer_final_pass_plan(FinalPassRoutingMode::Always, committed, empty),
+                ComposerFinalPassPlan::FullFile,
+                "Always must full-file re-pass (committed={committed:?}, empty={empty})"
+            );
+        }
+
+        // Off: zero Whisper on the stop path, streaming is final.
+        for (committed, empty) in [(None, false), (Some(4.0), false), (None, true)] {
+            assert_eq!(
+                composer_final_pass_plan(FinalPassRoutingMode::Off, committed, empty),
+                ComposerFinalPassPlan::SkipStreaming,
+                "Off must never invoke Whisper (committed={committed:?}, empty={empty})"
+            );
+        }
+
+        // Smart with a committed boundary: gap-fill the tail only.
+        assert_eq!(
+            composer_final_pass_plan(FinalPassRoutingMode::Smart, Some(6.5), false),
+            ComposerFinalPassPlan::TailGap(6.5)
+        );
+        // Smart, no commit evidence, empty canvas: whole session is still an append.
+        assert_eq!(
+            composer_final_pass_plan(FinalPassRoutingMode::Smart, None, true),
+            ComposerFinalPassPlan::TailGap(0.0)
+        );
+        // Smart, no commit evidence, non-empty canvas: a whole-file pass would land
+        // on committed text — honest skip instead.
+        assert_eq!(
+            composer_final_pass_plan(FinalPassRoutingMode::Smart, None, false),
+            ComposerFinalPassPlan::SkipStreaming
+        );
+        // Non-finite / non-positive boundaries carry no evidence either.
+        assert_eq!(
+            composer_final_pass_plan(FinalPassRoutingMode::Smart, Some(f32::NAN), false),
+            ComposerFinalPassPlan::SkipStreaming
+        );
+        assert_eq!(
+            composer_final_pass_plan(FinalPassRoutingMode::Smart, Some(0.0), false),
+            ComposerFinalPassPlan::SkipStreaming
         );
     }
 
