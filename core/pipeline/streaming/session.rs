@@ -168,6 +168,11 @@ pub(crate) fn enqueue_pending_utterance(
     }
 }
 
+/// Layer 1 (Whisper tail-patch) gate.
+///
+/// Driven solely by `CODESCRIBE_LAYERED_TRANSCRIPTION` ([`layered_phase`]).
+/// **Orthogonal to** `FINAL_PASS_MODE` / Smart: Smart never enables this, and
+/// enabling layered never changes stop-path full re-pass routing.
 fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
 }
@@ -272,6 +277,11 @@ fn emit_session_finalised(
 /// takes the system-dictation path: one long-lived SFSpeech stream whose
 /// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
 /// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
+///
+/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired only
+/// on the VAD/scheduler path below. Apple progressive live does not yet run
+/// Whisper gap-fill mid-hold; Smart final-pass still only skips/allows the
+/// stop-path full re-pass (orthogonal toggle).
 pub(crate) async fn transcription_session(
     chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
@@ -280,6 +290,17 @@ pub(crate) async fn transcription_session(
     // Apple progressive stream branch — must run before the VAD/scheduler path
     // consumes the receiver.
     if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
+        if let Some(phase) = layered_phase() {
+            // Honesty: Settings may flip layered ON while Apple progressive is
+            // the daily driver — Layer 1 is not attached on this branch yet.
+            warn!(
+                phase,
+                "CODESCRIBE_LAYERED_TRANSCRIPTION=phase{phase} is set, but Apple progressive \
+                 live does not run Layer 1 tail-patch yet; gap-fill requires the VAD path \
+                 (CODESCRIBE_APPLE_STT_LIVE_MODE=wav or non-Apple engine). \
+                 FINAL_PASS_MODE/Smart is independent and still routes stop re-pass only."
+            );
+        }
         super::apple_live_session::apple_stream_transcription_session(
             chunk_receiver,
             event_sink,
@@ -319,8 +340,15 @@ pub(crate) async fn vad_transcription_session(
     };
     let output_sample_rate = session.output_sample_rate();
     let stt_scheduler = SttScheduler::new();
+    // Layer 1 only — not FINAL_PASS_MODE. Smart does not flip this on.
     let tail_patch_enabled = tail_patch_enabled();
     let tail_patch_config = TailPatchConfig::from_env();
+    if tail_patch_enabled {
+        info!(
+            phase = layered_phase().unwrap_or(0),
+            "Layered transcription Layer 1 (Whisper tail-patch) enabled on VAD session path"
+        );
+    }
 
     let mut pipeline = TranscriptionPipeline::new(language);
     let mut preview_rev: u64 = 0;

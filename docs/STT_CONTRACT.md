@@ -108,6 +108,15 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 
 Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPTION`, `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
 
+**Final pass vs layered (orthogonal):**
+
+| Setting | Env | Default | Role |
+| --- | --- | --- | --- |
+| Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: full WAV re-pass routing (`always` / skip-if-complete / `off`) |
+| Layered | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off` | During-hold Layer 1 Whisper tail-patch when phase ≥ 1 (VAD path today) |
+
+Smart does **not** turn layered on. Off final-pass does **not** force Whisper at stop. Layered phase tokens (`phase1`…) are not final-pass tokens (`smart`/`always`/`off`).
+
 ---
 
 ## 3. Front entry → backend handler (STT spine)

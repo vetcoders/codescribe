@@ -1,10 +1,40 @@
 //! Layer 1 — Whisper Tail Patch (diff core).
 //!
 //! Implements the ADR "Layered Incremental Transcription Pipeline" (2026-05-26)
-//! Layer 1 primitive: given the text Layer 0 (Apple live) already committed for
-//! an utterance, and a higher-recall Whisper re-transcription of the *same*
-//! audio slice, produce **bounded** [`EngineEvent::ReplaceRange`] patches that
-//! fill in / correct only the tokens that differ.
+//! Layer 1 primitive: given the text Layer 0 already committed for an utterance,
+//! and a higher-recall Whisper re-transcription of the *same* audio slice,
+//! produce **bounded** [`EngineEvent::ReplaceRange`] patches that fill in /
+//! correct only the tokens that differ.
+//!
+//! # Relationship to Smart final-pass (`FINAL_PASS_MODE`)
+//!
+//! **Orthogonal toggles — no silent coupling.**
+//!
+//! | Control | Env | Default | What it does |
+//! | --- | --- | --- | --- |
+//! | Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: whether to run a full WAV Whisper re-pass after release |
+//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **off** | During-hold gap-fill: Whisper tail patches on sealed utterances |
+//!
+//! - **Smart** = skip full stop re-pass when streaming completeness is
+//!   adjudicated Complete. It does **not** enable layered transcription.
+//! - **Off** = never full stop re-pass. It does **not** force Whisper at stop.
+//! - Layered phase ≥ 1 may run under any final-pass mode when the live session
+//!   path actually wires Layer 1 (see below).
+//!
+//! Product intent: Smart *works with* layered (completeness skip + optional
+//! live gap-fill), but layered stays opt-in until Phase 1 is proven on the
+//! default Apple progressive path.
+//!
+//! # Where Layer 1 is wired today
+//!
+//! - **Wired:** `core/pipeline/streaming/session.rs` → `vad_transcription_session`
+//!   (Whisper/VAD scheduler path, or Apple with `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`).
+//!   Gate: [`layered_phase`] ≥ 1; attaches FINAL audio per work item, spawns
+//!   Whisper re-transcribe + [`compute_tail_patch`], emits
+//!   `ReplaceRange { source: TailPatch }`, counts in `SessionFinalised.layer_summary`.
+//! - **Not wired yet:** Apple progressive live session
+//!   (`apple_stream_transcription_session`). Enabling phase1 with default Apple
+//!   progressive live does not spawn tail patches (session logs a warn).
 //!
 //! # Invariants (from the ADR "Hard invariants")
 //!
@@ -28,13 +58,7 @@
 //! skipped wholesale.
 //!
 //! This module is a **pure** function of its inputs. It performs no audio
-//! capture and no network calls. It IS wired into the streaming hot path:
-//! `core/pipeline/streaming/session.rs` gates it behind
-//! `CODESCRIBE_LAYERED_TRANSCRIPTION` (phase >= 1), attaches the FINAL audio
-//! slice per work item, spawns `compute_tail_patch_job` right after
-//! `EngineEvent::UtteranceFinal`, drains results into
-//! `ReplaceRange { source: TailPatch }` emissions, and reports the count in
-//! `SessionFinalised.layer_summary`.
+//! capture and no network calls.
 //!
 //! Contract: the `committed` argument is byte-identical to the emitted
 //! `UtteranceFinal.text` and is already trimmed by the emitter (single trim
@@ -46,22 +70,38 @@ use crate::pipeline::contracts::{EngineEvent, LayerSource};
 ///
 /// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — defaults to OFF. Returns
 /// the active phase number when set, so callers can gate Layer 1..4 wiring.
-/// Kept here (not in the config hub) so this cut stays isolated; the orchestrator
-/// can promote it to a typed config field when it lands.
+///
+/// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Layered
+/// stays an explicit opt-in (Settings / env). Kept here (not in the config hub)
+/// so this cut stays isolated; the orchestrator can promote it to a typed
+/// config field when it lands.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
 pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO";
 
-/// Active layered-transcription phase, or `None` when the flag is unset/off.
-pub fn layered_phase() -> Option<u8> {
-    let raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok()?;
+/// Parse a layered-transcription phase token (`phase1`..`phase4` or bare `1`..`4`).
+///
+/// Returns `None` for off/empty/garbage — including final-pass tokens
+/// (`smart` / `always` / `off`), so the two env families cannot be confused.
+pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
     let raw = raw.trim().to_ascii_lowercase();
+    if raw.is_empty() || raw == "off" || raw == "0" || raw == "false" || raw == "no" {
+        return None;
+    }
     let digits = raw.strip_prefix("phase").unwrap_or(&raw);
     match digits.parse::<u8>().ok()? {
         n @ 1..=4 => Some(n),
         _ => None,
     }
+}
+
+/// Active layered-transcription phase, or `None` when the flag is unset/off.
+///
+/// Independent of `FINAL_PASS_MODE` / Smart completeness skip.
+pub fn layered_phase() -> Option<u8> {
+    let raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok()?;
+    parse_layered_phase_value(&raw)
 }
 
 /// Tuning for the tail-patch diff.
@@ -499,23 +539,29 @@ mod tests {
 
     #[test]
     fn layered_phase_parses_phase_prefix() {
-        // Pure parse helper exercised without touching process env.
-        assert_eq!(Some(1u8), "phase1".parse::<PhaseProbe>().unwrap().0);
-        assert_eq!(Some(4u8), "4".parse::<PhaseProbe>().unwrap().0);
-        assert_eq!(None, "phase9".parse::<PhaseProbe>().unwrap().0);
-        assert_eq!(None, "off".parse::<PhaseProbe>().unwrap().0);
+        // Pure parse — no process env (suite stays deterministic under parallel exec).
+        assert_eq!(parse_layered_phase_value("phase1"), Some(1));
+        assert_eq!(parse_layered_phase_value("phase2"), Some(2));
+        assert_eq!(parse_layered_phase_value("4"), Some(4));
+        assert_eq!(parse_layered_phase_value("  PHASE3  "), Some(3));
+        assert_eq!(parse_layered_phase_value("phase9"), None);
+        assert_eq!(parse_layered_phase_value("off"), None);
+        assert_eq!(parse_layered_phase_value(""), None);
+        assert_eq!(parse_layered_phase_value("0"), None);
     }
 
-    // Test-only mirror of `layered_phase` parsing, isolated from process env so
-    // the suite stays deterministic under parallel execution.
-    struct PhaseProbe(Option<u8>);
-    impl std::str::FromStr for PhaseProbe {
-        type Err = std::convert::Infallible;
-        fn from_str(raw: &str) -> Result<Self, Self::Err> {
-            let raw = raw.trim().to_ascii_lowercase();
-            let digits = raw.strip_prefix("phase").unwrap_or(&raw);
-            let parsed = digits.parse::<u8>().ok().filter(|n| (1..=4).contains(n));
-            Ok(PhaseProbe(parsed))
+    #[test]
+    fn layered_phase_rejects_final_pass_mode_tokens() {
+        // Orthogonality: FINAL_PASS_MODE vocabulary must never enable Layer 1.
+        // If an operator (or a bug) copies smart/always/off into
+        // CODESCRIBE_LAYERED_TRANSCRIPTION, treat as off — not as a phase.
+        for token in ["smart", "always", "off", "auto", "on", "true", "yes"] {
+            assert_eq!(
+                parse_layered_phase_value(token),
+                None,
+                "final-pass token {token:?} must not parse as a layered phase"
+            );
         }
+        assert_eq!(parse_layered_phase_value("phase1"), Some(1));
     }
 }

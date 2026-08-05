@@ -33,10 +33,13 @@ backends per locale: `SpeechTranscriber` only when supported **and installed**,
 else `SFSpeechRecognizer` on-device (notably pl-PL — measured 0.24–2.3 s final
 pass vs the 20–30 s double-Whisper era). Stop-path final-pass routing is owned
 by `FINAL_PASS_MODE` (`always|smart|off`, Smart default; Settings → Dictation →
-"Final pass"); Smart is layered/tail-patch during hold and skips the full
-re-pass only on a typed, adjudicator-backed completeness decision
-(`StreamingCompleteness`), never on punctuation and never rewritten by live
-engine (Off stays Off). Dictionary/lexicon always runs in postprocess.
+"Final pass"). **Smart only** skips the full stop re-pass on a typed,
+adjudicator-backed completeness decision (`StreamingCompleteness`) — never on
+punctuation and never rewritten by live engine (Off stays Off; Off never forces
+Whisper at stop). Live gap-fill (Layer 1 Whisper tail-patch) is a **separate**
+opt-in via `CODESCRIBE_LAYERED_TRANSCRIPTION` (default off; phase ≥ 1 on the
+VAD/scheduler path today — not yet on Apple progressive live). Smart works
+*with* layered when both are enabled; Smart does not enable layered. Dictionary/lexicon always runs in postprocess.
 
 Two INFO receipts prove the path in `codescribe.log`:
 

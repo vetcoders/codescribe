@@ -199,7 +199,7 @@ struct EnginePanel: View {
                 .fixedSize()
             }
             SettingsControlRow(title: "Final pass",
-                               subtitle: "Always = full re-pass; Smart = layered/tail-patch (skip when complete); Off = off. Dictionary always applies.") {
+                               subtitle: "Always = full re-pass; Smart = skip full re-pass when complete (pair with Layered for live tail-patch); Off = off. Dictionary always applies.") {
                 Menu {
                     ForEach(Self.finalPassModeOptions, id: \.id) { option in
                         Button {

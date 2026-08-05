@@ -2,9 +2,9 @@
 //!
 //! Settings / `FINAL_PASS_MODE` is law (operator 2026-08-05):
 //! - **Always** (`on`): full Whisper file re-pass after release.
-//! - **Smart**: skip full re-pass when streaming completeness is adjudicated;
-//!   live gap-fill belongs to layered transcription / tail-patch, not a silent
-//!   Always override from the live engine.
+//! - **Smart**: skip full re-pass when streaming completeness is adjudicated.
+//!   Pair with `CODESCRIBE_LAYERED_TRANSCRIPTION` (orthogonal toggle) for live
+//!   Whisper tail-patches during hold — Smart does not force layered on.
 //! - **Off**: never run full file re-pass; streaming (+ post-process) is final.
 //!
 //! Dictionary / lexicon cleanup is **not** gated by this mode — it always runs

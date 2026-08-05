@@ -22,9 +22,13 @@
 //! keep a 400ms floor even if settings lower the generic hold delay. This prevents
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
+mod assistive_delivery;
 mod context_bucket;
 mod final_pass;
 mod helpers;
+mod hotkey_policy;
+mod overlay_paste;
+mod quality_delivery;
 pub mod serving_status;
 mod truth;
 mod types;
@@ -33,12 +37,12 @@ pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
     set_assistive_session, set_conversation_session,
 };
+pub use overlay_paste::{OverlayPasteDelivery, OverlayPasteResult};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 
 use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -48,16 +52,16 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use chrono::{DateTime, Local};
-
 use crate::audio::streaming_recorder::StreamingRecorder;
+#[cfg(test)]
+use crate::config::DeferredInsertShortcut;
 use crate::config::models::ModelManager;
-use crate::config::{Config, DeferredInsertShortcut, UserSettings};
+use crate::config::{Config, UserSettings};
 use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
-    AssistiveContext, activate_app_by_name, build_assistive_input, capture_assistive_context,
+    AssistiveContext, activate_app_by_name, capture_assistive_context,
     capture_assistive_context_with_image_with_prior_frontmost, capture_frontmost_app_only,
     wait_for_frontmost_app,
 };
@@ -71,6 +75,13 @@ use codescribe_core::tts::AudioPlayer;
 
 use codescribe_core::pipeline::contracts::{FinalPassDisposition, TranscriptionConfidenceFlag};
 
+// AssistiveDelivery kept in the pub(crate) surface for crate consumers of the
+// type name; currently only AssistiveLane is named at call sites in this module.
+#[allow(unused_imports)]
+pub(crate) use assistive_delivery::{AssistiveDelivery, AssistiveLane};
+use assistive_delivery::{
+    assemble_assistive_delivery_lane, assemble_raw_paste_wire, capture_combo_context_with_image,
+};
 pub(crate) use final_pass::{
     FinalPassRoutingMode, FinalPassStages, StopPathBudget, StreamingCompleteness,
     StreamingCompletenessEvidence, assess_streaming_completeness, engine_label_from_verdict,
@@ -88,6 +99,26 @@ use helpers::{
     CompletenessCommitSource, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
     reset_session_telemetry, send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
 };
+use hotkey_policy::{
+    STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
+    should_block_hotkey_during_agent_send, should_use_toggle_adjudicated_stop,
+    toggle_final_pass_enabled,
+};
+#[cfg(test)]
+use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
+use overlay_paste::{
+    DeferredInsertRegistration, OVERLAY_PASTE_FOCUS_BUDGET, OverlayPasteDisposition,
+    deferred_insert_registration, overlay_paste_disposition,
+};
+#[cfg(test)]
+use quality_delivery::AutomaticDeliverySink;
+use quality_delivery::{
+    ActionQualityProbe, AutoPastePolicyContext, AutoPasteTrigger, AutomaticDeliveryOwner,
+    ClipboardDeliverySink, compose_final_status, evaluate_quality_commit_trigger,
+    maybe_wrap_transcript_for_delivery, maybe_wrap_transcript_for_delivery_with_quality,
+    recording_mode_label, resolve_auto_paste_policy, session_auto_format_enabled,
+    truth_recording_mode_label,
+};
 pub(crate) use truth::{
     adjudicate_recording_truth, apply_ai_noop_signal, push_typed_flag, truth_display_status,
     truth_engine_label, truth_review_trigger,
@@ -101,149 +132,10 @@ const LIVE_PROFILE_TYPING_CPS: f32 = 90.0;
 const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
 const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
-const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
-const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(250);
 /// At most one level sample may wait behind the controller worker. The capture
 /// thread never constructs IPC events or timestamps and never accumulates a
 /// backlog when the bridge/UI is slower than CoreAudio.
 const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
-const AUTOMATIC_DELIVERY_HISTORY_CAPACITY: usize = 32;
-
-fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
-    if assistive {
-        configured_ms.max(ASSISTIVE_HOLD_START_DELAY_FLOOR_MS)
-    } else {
-        configured_ms
-    }
-}
-
-/// Combo capture with optional clipboard-image provider (W10-C).
-/// `image_provider` returns PNG bytes when the pasteboard holds an image.
-/// Tests pass `|| None` when only selection capture is under exercise.
-fn capture_combo_context_with_image(
-    bucket: &mut ContextBucket,
-    position: usize,
-    provider: impl FnOnce() -> AssistiveContext,
-    image_provider: impl FnOnce() -> Option<Vec<u8>>,
-) -> Result<(AssistiveContext, Option<ContextMarker>)> {
-    let mut context = provider();
-    let marker = match context.selected_text.take() {
-        Some(selected_text) => bucket.add_selection(position, selected_text)?,
-        None => None,
-    };
-    if let Some(png) = image_provider() {
-        let _ = bucket.add_image_png(&png)?;
-    }
-    Ok((context, marker))
-}
-
-/// Voice→agent prompt lane (W10-D).
-///
-/// - **VoiceChat**: clean assistive / armed hold without a selection transform.
-///   Wire is spoken text (+ context tags / image markers). No assistive skeleton,
-///   no `assistive.txt` persona.
-/// - **ActOnSelection**: armed with a selection targeting a transformation.
-///   Skeleton + `assistive.txt` persona remain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AssistiveLane {
-    VoiceChat,
-    ActOnSelection,
-}
-
-impl AssistiveLane {
-    pub(crate) fn use_assistive_persona(self) -> bool {
-        matches!(self, Self::ActOnSelection)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AssistiveDelivery {
-    pub wire: String,
-    pub lane: AssistiveLane,
-    pub raw_transcript: String,
-}
-
-fn decide_assistive_lane(context: &AssistiveContext, bucket: &ContextBucket) -> AssistiveLane {
-    // Selection may live on the context (legacy) or already be in the bucket
-    // (capture_combo_context_with takes selected_text into the bucket).
-    let has_inline_selection = context
-        .selected_text
-        .as_ref()
-        .is_some_and(|s| !s.trim().is_empty());
-    if has_inline_selection || bucket.has_selection_items() {
-        AssistiveLane::ActOnSelection
-    } else {
-        AssistiveLane::VoiceChat
-    }
-}
-
-fn assemble_assistive_delivery_lane(
-    transcript: &str,
-    context: &AssistiveContext,
-    bucket: &ContextBucket,
-) -> AssistiveDelivery {
-    let lane = decide_assistive_lane(context, bucket);
-    let raw_transcript = transcript.to_string();
-    let wire = match lane {
-        AssistiveLane::ActOnSelection => {
-            // Skeleton + selection/context fields; bucket tags append after.
-            // The bucket truth flows into the header so the skeleton never
-            // claims "no selection" while <selection_N> tags ride below.
-            bucket.append_to_message(&build_assistive_input(transcript, context, bucket.len()))
-        }
-        AssistiveLane::VoiceChat => {
-            // Spoken text only (+ optional context tags / image markers).
-            // No USER_INSTRUCTION skeleton.
-            bucket.append_to_message(transcript.trim())
-        }
-    };
-    AssistiveDelivery {
-        wire,
-        lane,
-        raw_transcript,
-    }
-}
-
-/// Raw/format paste lane (channel 2): the finalized transcript pasted into the
-/// frontmost app consumes the `ContextBucket` exactly like the assistive lanes
-/// do — selections ride along as `<codescribe_context>` tags (inline under the
-/// byte limit, `PATH:` for oversized spills). Images never enter the text
-/// paste: the vision marker block is an agent contract, so the paste lane
-/// skips it. An empty (or images-only) bucket leaves the transcript
-/// byte-for-byte untouched.
-fn assemble_raw_paste_wire(transcript: &str, bucket: &ContextBucket) -> String {
-    if !bucket.has_selection_items() {
-        return transcript.to_string();
-    }
-    strip_trailing_image_marker_block(&bucket.append_to_message(transcript))
-}
-
-/// Drop the trailing vision-marker block appended by
-/// `ContextBucket::append_to_message` when images share the bucket with
-/// selections. Only a suffix that structurally matches the block (marker
-/// header followed exclusively by `- <path>` lines) is stripped, so selection
-/// payloads keep arbitrary content intact.
-fn strip_trailing_image_marker_block(wire: &str) -> String {
-    let header = format!(
-        "\n\n---\n{}\n",
-        codescribe_core::attachment::IMAGE_PATHS_MARKER
-    );
-    if let Some(idx) = wire.rfind(&header) {
-        let tail = &wire[idx + header.len()..];
-        if !tail.is_empty() && tail.lines().all(|line| line.starts_with("- ")) {
-            return wire[..idx].to_string();
-        }
-    }
-    wire.to_string()
-}
-
-const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
-const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
-
-#[cfg(test)]
-fn toggle_stop_adjudicate_timeout() -> Duration {
-    STOP_TIMEOUT
-}
 
 #[cfg(test)]
 static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
@@ -261,69 +153,6 @@ fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
 impl Drop for ProcessRecordingHangGuard {
     fn drop(&mut self) {
         PROCESS_RECORDING_TEST_HANG.store(false, Ordering::SeqCst);
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ActionQualityProbe {
-    raw_chars: usize,
-    final_chars: usize,
-    raw_final_diff_ratio: f32,
-    correction_ratio: f32,
-    drop_ratio: f32,
-}
-
-fn normalize_for_diff(s: &str) -> String {
-    let trimmed = s.trim_start();
-    // Lowercase first char only (preserving rest of original case)
-    let mut chars = trimmed.chars();
-    match chars.next() {
-        Some(c) => c.to_lowercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-impl ActionQualityProbe {
-    fn from_transcripts(
-        raw_text: &str,
-        final_text: &str,
-        post_stats: &crate::stream_postprocess::StreamPostProcessStats,
-    ) -> Self {
-        let raw_chars = raw_text.chars().count();
-        let final_chars = final_text.chars().count();
-
-        let (backspaces, inserted_chars) =
-            codescribe_core::pipeline::contracts::TranscriptDelta::from_diff(
-                &normalize_for_diff(raw_text),
-                &normalize_for_diff(final_text),
-            )
-            .map(|delta| {
-                let backspaces = delta
-                    .delta
-                    .chars()
-                    .filter(|c| *c == codescribe_core::pipeline::contracts::BACKSPACE)
-                    .count();
-                let inserted = delta.delta.chars().count().saturating_sub(backspaces);
-                (backspaces, inserted)
-            })
-            .unwrap_or((0, 0));
-
-        let span = raw_chars.max(final_chars).max(1);
-        let raw_final_diff_ratio = ((backspaces + inserted_chars) as f32 / span as f32).min(1.0);
-        let correction_ratio = (backspaces as f32 / raw_chars.max(1) as f32).min(1.0);
-        let drop_ratio = if post_stats.input_chunks == 0 {
-            0.0
-        } else {
-            post_stats.dropped_chunks as f32 / post_stats.input_chunks as f32
-        };
-
-        Self {
-            raw_chars,
-            final_chars,
-            raw_final_diff_ratio,
-            correction_ratio,
-            drop_ratio,
-        }
     }
 }
 
@@ -363,353 +192,6 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
     overlay_enabled
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AutoPasteTrigger {
-    Hold,
-    DoubleLeftOption,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AutoPastePolicyContext {
-    trigger: AutoPasteTrigger,
-    persisted_enabled: bool,
-    overlay_enabled: bool,
-    assistive: bool,
-    no_speech: bool,
-    empty_output: bool,
-    notes_save_only: bool,
-    live_stream_session: bool,
-    commit_required: bool,
-}
-
-fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
-    // Trigger and presentation state deliberately do not fork policy. Keeping
-    // the explicit matrix here makes that parity reviewable and testable.
-    let persisted_policy = match (context.trigger, context.overlay_enabled) {
-        (AutoPasteTrigger::Hold, true | false)
-        | (AutoPasteTrigger::DoubleLeftOption, true | false) => context.persisted_enabled,
-    };
-
-    persisted_policy
-        && !context.assistive
-        && !context.no_speech
-        && !context.empty_output
-        && !context.notes_save_only
-        && !context.live_stream_session
-        && !context.commit_required
-}
-
-trait AutomaticDeliverySink: Send + Sync {
-    fn paste(&self, text: &str) -> Result<()>;
-}
-
-struct ClipboardDeliverySink;
-
-impl AutomaticDeliverySink for ClipboardDeliverySink {
-    fn paste(&self, text: &str) -> Result<()> {
-        clipboard::paste_text(text).context("Failed to paste text")
-    }
-}
-
-/// Controller-owned, bounded exactly-once fence. A small ring retains recent
-/// recording timestamps so late duplicate callbacks remain fenced without
-/// process-global or unbounded growth. A failed sink call remains retryable.
-struct AutomaticDeliveryOwner {
-    delivered_timestamps: Mutex<VecDeque<DateTime<Local>>>,
-    sink: Arc<dyn AutomaticDeliverySink>,
-}
-
-impl AutomaticDeliveryOwner {
-    fn new(sink: Arc<dyn AutomaticDeliverySink>) -> Self {
-        Self {
-            delivered_timestamps: Mutex::new(VecDeque::with_capacity(
-                AUTOMATIC_DELIVERY_HISTORY_CAPACITY,
-            )),
-            sink,
-        }
-    }
-
-    async fn deliver_once(&self, timestamp: DateTime<Local>, text: &str) -> Result<bool> {
-        let mut delivered = self.delivered_timestamps.lock().await;
-        if delivered.contains(&timestamp) {
-            return Ok(false);
-        }
-
-        self.sink.paste(text)?;
-        if delivered.len() == AUTOMATIC_DELIVERY_HISTORY_CAPACITY {
-            delivered.pop_front();
-        }
-        delivered.push_back(timestamp);
-        Ok(true)
-    }
-}
-
-fn recording_mode_label(
-    assistive: bool,
-    hold_mode: HoldMode,
-    force_raw: bool,
-    force_ai: bool,
-) -> &'static str {
-    if assistive {
-        match hold_mode {
-            HoldMode::Chat => "chat",
-            HoldMode::Selection => "selection",
-            HoldMode::Raw => "assistive",
-        }
-    } else if force_raw {
-        "raw"
-    } else if force_ai {
-        "format"
-    } else {
-        "toggle"
-    }
-}
-
-fn truth_recording_mode_label(
-    assistive: bool,
-    hold_mode: HoldMode,
-    force_raw: bool,
-    force_ai: bool,
-) -> &'static str {
-    if assistive {
-        "assistive"
-    } else {
-        recording_mode_label(assistive, hold_mode, force_raw, force_ai)
-    }
-}
-
-fn session_auto_format_enabled(
-    config: &Config,
-    _assistive: bool,
-    force_raw: bool,
-    force_ai: bool,
-) -> bool {
-    force_ai || (!force_raw && config.ai_formatting_enabled)
-}
-
-fn maybe_wrap_transcript_for_delivery(text: &str, config: &Config, mode: &str) -> String {
-    maybe_wrap_transcript_for_delivery_with_quality(text, config, mode, None)
-}
-
-fn maybe_wrap_transcript_for_delivery_with_quality(
-    text: &str,
-    config: &Config,
-    mode: &str,
-    metadata: Option<&RecordingTruthMetadata>,
-) -> String {
-    if !config.transcript_tagging_enabled {
-        return text.to_string();
-    }
-
-    let confidence_flags = metadata
-        .map(|metadata| {
-            metadata
-                .confidence_flags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    codescribe_core::transcript_tagging::wrap_transcript_with_quality(
-        text,
-        &config.transcript_tag_template,
-        mode,
-        config.whisper_language.as_str(),
-        metadata.and_then(|metadata| metadata.avg_logprob),
-        &confidence_flags,
-    )
-}
-
-/// Outcome of the overlay Insert action's delivery attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayPasteDelivery {
-    /// Synthetic Cmd+V was posted at the restored target's caret.
-    Pasted,
-    /// Focus never left Codescribe; tagged text was copied instead of pasted.
-    CopiedToClipboard,
-    /// Synthetic event posting is not trusted; tagged text was copied instead.
-    AccessibilityPermissionNeeded,
-    /// Tagged text is armed in process memory for the global Paste Here command.
-    DeferredInsertArmed,
-    /// Nothing to deliver (empty transcript).
-    Noop,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayPasteResult {
-    pub delivery: OverlayPasteDelivery,
-    pub target_app_name: Option<String>,
-    pub frontmost_app_name: Option<String>,
-    pub deferred_insert_shortcut: Option<String>,
-    pub deferred_insert_failure: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DeferredInsertRegistration {
-    Available { shortcut_label: String },
-    Unavailable { reason: String },
-}
-
-fn deferred_insert_registration(
-    shortcut: DeferredInsertShortcut,
-    manager_active: bool,
-    collision: Option<&str>,
-) -> DeferredInsertRegistration {
-    if !shortcut.is_enabled() {
-        return DeferredInsertRegistration::Unavailable {
-            reason: "Paste Here shortcut is disabled".to_string(),
-        };
-    }
-    if !manager_active {
-        return DeferredInsertRegistration::Unavailable {
-            reason: "Paste Here hotkey registration failed".to_string(),
-        };
-    }
-    if let Some(reason) = collision {
-        return DeferredInsertRegistration::Unavailable {
-            reason: reason.to_string(),
-        };
-    }
-    DeferredInsertRegistration::Available {
-        shortcut_label: shortcut.label().to_string(),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverlayPasteDisposition {
-    Paste,
-    CopyTargetUnavailable,
-    CopyFrontmostUnavailable,
-    CopyTargetMismatch,
-    CopyAccessibilityDenied,
-}
-
-fn overlay_paste_disposition(
-    target_app: Option<&str>,
-    frontmost_app: Option<&str>,
-    can_post_events: bool,
-) -> OverlayPasteDisposition {
-    let Some(target) = target_app.map(str::trim).filter(|name| !name.is_empty()) else {
-        return OverlayPasteDisposition::CopyTargetUnavailable;
-    };
-    let Some(frontmost) = frontmost_app.map(str::trim).filter(|name| !name.is_empty()) else {
-        return OverlayPasteDisposition::CopyFrontmostUnavailable;
-    };
-    if frontmost.eq_ignore_ascii_case("codescribe") {
-        return OverlayPasteDisposition::CopyTargetMismatch;
-    }
-    if !frontmost.eq_ignore_ascii_case(target) {
-        return OverlayPasteDisposition::CopyTargetMismatch;
-    }
-    if !can_post_events {
-        return OverlayPasteDisposition::CopyAccessibilityDenied;
-    }
-    OverlayPasteDisposition::Paste
-}
-
-fn toggle_final_pass_enabled() -> bool {
-    std::env::var("CODESCRIBE_TOGGLE_FINAL_PASS")
-        .ok()
-        .map(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "no" | "off"
-            )
-        })
-        .unwrap_or(true)
-}
-
-fn should_use_toggle_adjudicated_stop(
-    current_state: State,
-    assistive: bool,
-    toggle_final_pass: bool,
-) -> bool {
-    current_state == State::RecToggle && !assistive && toggle_final_pass
-}
-
-fn should_apply_incoming_mode_flags(current_state: State, event: &HotkeyInput) -> bool {
-    matches!(event.action, HotkeyAction::Down | HotkeyAction::Press)
-        && !(event.key_type == HotkeyType::Toggle && current_state == State::RecToggle)
-}
-
-fn is_hotkey_start_event(event: &HotkeyInput) -> bool {
-    matches!(
-        (event.key_type, event.action),
-        (HotkeyType::Hold, HotkeyAction::Down)
-            | (HotkeyType::Toggle, HotkeyAction::Press)
-            | (HotkeyType::Conversation, HotkeyAction::Press)
-    )
-}
-
-/// An assistive *start* hotkey — FN+Shift hold-down, an assistive toggle press,
-/// or any start event flagged `assistive` (Chat / Selection / assistive toggle).
-/// These are the "Talk Anytime" inputs the user fires to add a new voice intent
-/// while Emil/the agent is still answering.
-fn is_assistive_start_event(event: &HotkeyInput) -> bool {
-    is_hotkey_start_event(event) && event.assistive
-}
-
-/// Block a *new* hotkey start while a previously-dispatched agent turn is still
-/// streaming. This fires only at `State::Idle` — the controller has already
-/// returned the mic/transcription pipeline; the agent is answering in the
-/// background (a detached `tokio::spawn`, see `send_assistive_with_agent_runtime`).
-///
-/// Exception — **Assistive Talk Anytime**: assistive start events are allowed
-/// through so the user can record a *new* voice intent while the agent answers.
-/// The resulting utterance is captured into the existing pending-follow-up
-/// buffer (`should_capture_pending_followup` → `get_or_create_pending_followup_index`),
-/// not dropped — the living intent grows instead of being ignored. Non-assistive
-/// (raw) dictation starts stay blocked: barging a raw transcript into a live
-/// agent turn is never wanted, and blocking preserves the single-pipeline
-/// guarantee for the dictation path.
-///
-/// `agent_send_in_flight` is passed in (rather than read from the global) so the
-/// decision is a pure function and unit-testable without touching shared state.
-fn should_block_hotkey_during_agent_send(
-    current_state: State,
-    event: &HotkeyInput,
-    agent_send_in_flight: bool,
-) -> bool {
-    current_state == State::Idle
-        && agent_send_in_flight
-        && is_hotkey_start_event(event)
-        && !is_assistive_start_event(event)
-}
-
-fn transcript_output_category(output_kind: crate::state::history::TranscriptKind) -> &'static str {
-    match output_kind {
-        crate::state::history::TranscriptKind::Raw => "Transcript",
-        crate::state::history::TranscriptKind::Cloud => "Cloud transcript",
-        crate::state::history::TranscriptKind::FormattedTranscript => "Formatted transcript",
-        crate::state::history::TranscriptKind::AssistantInterpretation => {
-            "Assistant interpretation"
-        }
-        crate::state::history::TranscriptKind::FormattingFailed => {
-            "Formatting failed, raw preserved"
-        }
-        crate::state::history::TranscriptKind::Failed => "Failed transcript",
-    }
-}
-
-fn compose_final_status(
-    display_status: &str,
-    output_kind: crate::state::history::TranscriptKind,
-) -> String {
-    if display_status.trim().is_empty() {
-        return transcript_output_category(output_kind).to_string();
-    }
-
-    match output_kind {
-        crate::state::history::TranscriptKind::Failed => display_status.to_string(),
-        _ => format!(
-            "{} • {}",
-            display_status,
-            transcript_output_category(output_kind)
-        ),
-    }
-}
-
 fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
     match types::write_truth_sidecar(path, metadata) {
         Ok(sidecar_path) => debug!("Truth sidecar saved: {}", sidecar_path.display()),
@@ -720,12 +202,6 @@ fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthM
         ),
     }
 }
-
-const QUALITY_GATE_MIN_CHARS: usize = 24;
-const SHORT_AI_QUALITY_GATE_MIN_CHARS: usize = 10;
-const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
-const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
-const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
 
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
@@ -781,39 +257,6 @@ fn should_allow_full_user_bubble_rewrite(
 
 fn should_apply_transcription_action_contract(assistive: bool, live_stream_session: bool) -> bool {
     !assistive && !live_stream_session
-}
-
-fn evaluate_quality_commit_trigger(
-    force_raw: bool,
-    quality_probe: &ActionQualityProbe,
-    output_kind: crate::state::history::TranscriptKind,
-) -> Option<&'static str> {
-    let short_ai_formatted = output_kind
-        == crate::state::history::TranscriptKind::FormattedTranscript
-        && quality_probe.raw_chars.max(quality_probe.final_chars)
-            >= SHORT_AI_QUALITY_GATE_MIN_CHARS;
-    if force_raw {
-        return None;
-    }
-    if output_kind == crate::state::history::TranscriptKind::FormattingFailed {
-        return Some("ai_failed_fallback");
-    }
-    if quality_probe.raw_chars < QUALITY_GATE_MIN_CHARS
-        && quality_probe.final_chars < QUALITY_GATE_MIN_CHARS
-        && !short_ai_formatted
-    {
-        return None;
-    }
-    if quality_probe.drop_ratio >= QUALITY_GATE_DROP_RATIO {
-        return Some("high_drop_ratio");
-    }
-    if quality_probe.raw_final_diff_ratio >= QUALITY_GATE_DIFF_RATIO {
-        return Some("high_rewrite_ratio");
-    }
-    if quality_probe.correction_ratio >= QUALITY_GATE_CORRECTION_RATIO {
-        return Some("high_correction_ratio");
-    }
-    None
 }
 
 /// Recording controller managing state machine and lifecycle
