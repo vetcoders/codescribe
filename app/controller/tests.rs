@@ -679,8 +679,12 @@ async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
     assert!(!redelivered, "fallback context is one-shot too");
 }
 
+/// Routing over *real* completeness fixtures (adjudicator evidence, not synthetic
+/// enum values). Ported from the retired `should_skip_full_final_repass` bool.
 #[test]
-fn test_should_skip_full_final_repass_on_complete_streaming() {
+fn test_final_pass_action_on_complete_streaming_evidence() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
     // Completeness requires adjudicator commit source + coverage, not punctuation.
     let complete = assess_streaming_completeness_fields(
         "To jest kompletny streaming transcript.",
@@ -692,22 +696,20 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         1,
     );
     assert_eq!(complete, StreamingCompleteness::Complete);
-    assert!(should_skip_full_final_repass(
-        FinalPassRoutingMode::Smart,
-        complete,
-        false
-    ));
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Always, complete, false),
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Complete: streaming is final"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, complete),
+        FinalPassAction::FullFileRepass,
         "Always never skips"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
-        "Off is off even with Apple live — no silent Always rewrite"
-    );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
-        "Off+non-Apple skips"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off is off — no silent Always rewrite (live engine is not an input at all)"
     );
 
     let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
@@ -715,9 +717,10 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         empty,
         StreamingCompleteness::Incomplete { reason: "empty" }
     ));
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, empty, false),
-        "empty streaming must not skip under Smart"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, empty),
+        FinalPassAction::TailGapFill,
+        "empty streaming under Smart gap-fills the tail (never a full-file re-pass)"
     );
 
     let no_speech = assess_streaming_completeness_fields(
@@ -729,10 +732,20 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         5,
         1,
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, no_speech, false),
-        "no-speech sessions must not skip under Smart"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, no_speech),
+        FinalPassAction::TailGapFill,
+        "no-speech sessions under Smart must not skip — tail gap-fill runs"
     );
+}
+
+/// The live engine (Apple vs Whisper) is not an input to routing at all — the
+/// dishonest Apple→Always override (2026-07-25) is now structurally impossible,
+/// because `final_pass_action` takes only (mode, completeness). This test pins the
+/// behavioural half: identical routing for the fixtures an Apple session produces.
+#[test]
+fn test_final_pass_action_ignores_live_engine() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
 
     let apple_complete = assess_streaming_completeness_fields(
         "To jest kompletny streaming transcript.",
@@ -743,69 +756,30 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         40,
         1,
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
-        "Smart+Apple complete skips full re-pass — tail-patch/layered owns live gap-fill; live engine must not rewrite mode"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, apple_complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Apple complete skips — tail-patch/layered owns live gap-fill"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, apple_complete, true),
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, apple_complete),
+        FinalPassAction::SkipStreamingFinal,
         "Off+Apple complete still skips (Off means Off)"
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Always, apple_complete, true),
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, apple_complete),
+        FinalPassAction::FullFileRepass,
         "Always+Apple still runs full re-pass"
     );
-
-    // prefer_apple must not force a full re-pass when Smart completeness is Complete
-    // (layered/tail-patch owns live gap-fill — operator 2026-08-05).
-    assert_eq!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, true),
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, false),
-        "prefer_apple must not change Smart+Complete skip decision"
-    );
 }
 
-/// Off is Off — full file re-pass is always skipped, independent of completeness
-/// and of prefer_apple (no silent Always rewrite from the live engine).
+/// Smart + Incomplete gap-fills the tail — it must NEVER escalate to a full-file
+/// re-pass, on any incomplete evidence shape. Ported from the retired bool test,
+/// whose expectation ("must run full re-pass") was itself the doctrine violation.
 #[test]
-fn test_should_skip_full_final_repass_off_is_always_off() {
-    let complete = StreamingCompleteness::Complete;
-    let incomplete = StreamingCompleteness::Incomplete { reason: "empty" };
-    for prefer_apple in [false, true] {
-        assert!(
-            should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, prefer_apple),
-            "Off+Complete prefer_apple={prefer_apple} must skip"
-        );
-        assert!(
-            should_skip_full_final_repass(FinalPassRoutingMode::Off, incomplete, prefer_apple),
-            "Off+Incomplete prefer_apple={prefer_apple} must skip"
-        );
-    }
-}
+fn test_smart_incomplete_tail_gap_fills_never_full_repass() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
 
-/// Always is Always — full Whisper file re-pass never skips.
-#[test]
-fn test_should_skip_full_final_repass_always_never_skips() {
-    let complete = StreamingCompleteness::Complete;
-    let incomplete = StreamingCompleteness::Incomplete {
-        reason: "pending_tail",
-    };
-    for prefer_apple in [false, true] {
-        assert!(
-            !should_skip_full_final_repass(FinalPassRoutingMode::Always, complete, prefer_apple),
-            "Always+Complete prefer_apple={prefer_apple} must NOT skip"
-        );
-        assert!(
-            !should_skip_full_final_repass(FinalPassRoutingMode::Always, incomplete, prefer_apple),
-            "Always+Incomplete prefer_apple={prefer_apple} must NOT skip"
-        );
-    }
-}
-
-/// Smart skips only when streaming completeness is Complete; incomplete must re-pass.
-/// prefer_apple does not rewrite Smart into Always when Complete.
-#[test]
-fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
     let incomplete_cases = [
         assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0),
         assess_streaming_completeness_fields(
@@ -826,22 +800,31 @@ fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
             0,
             0,
         ),
+        assess_streaming_completeness_fields(
+            "Czesciowy tekst",
+            None,
+            false,
+            true, // partial stale/dropped
+            Some(CompletenessCommitSource::UtteranceFinal),
+            15,
+            1,
+        ),
     ];
     for completeness in incomplete_cases {
         assert!(
             matches!(completeness, StreamingCompleteness::Incomplete { .. }),
             "fixture must be Incomplete, got {completeness:?}"
         );
-        for prefer_apple in [false, true] {
-            assert!(
-                !should_skip_full_final_repass(
-                    FinalPassRoutingMode::Smart,
-                    completeness,
-                    prefer_apple
-                ),
-                "Smart+Incomplete prefer_apple={prefer_apple} must run full re-pass, got skip for {completeness:?}"
-            );
-        }
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Smart, completeness),
+            FinalPassAction::TailGapFill,
+            "Smart+Incomplete must gap-fill the tail, not re-pass the file: {completeness:?}"
+        );
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Off, completeness),
+            FinalPassAction::SkipStreamingFinal,
+            "Off+Incomplete stays hard off: {completeness:?}"
+        );
     }
 
     let complete = assess_streaming_completeness_fields(
@@ -854,13 +837,10 @@ fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
         1,
     );
     assert_eq!(complete, StreamingCompleteness::Complete);
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, true),
-        "Smart+Complete+prefer_apple still skips — live engine must not force re-pass"
-    );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, false),
-        "Smart+Complete+non-Apple skips"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Complete skips — live engine must not force re-pass"
     );
 }
 
@@ -969,57 +949,27 @@ fn test_only_always_mode_may_full_file_repass() {
     }
 }
 
-/// The transitional shim keeps the bool contract byte-for-byte while the stop path
-/// still consumes `should_skip_full_final_repass`.
-#[test]
-fn test_should_skip_shim_agrees_with_typed_action() {
-    use super::final_pass::{FinalPassAction, final_pass_action};
-
-    let modes = [
-        FinalPassRoutingMode::Always,
-        FinalPassRoutingMode::Smart,
-        FinalPassRoutingMode::Off,
-    ];
-    let completenesses = [
-        StreamingCompleteness::Complete,
-        StreamingCompleteness::Incomplete {
-            reason: "pending_tail",
-        },
-    ];
-    for mode in modes {
-        for completeness in completenesses {
-            for prefer_apple in [false, true] {
-                let expected = match final_pass_action(mode, completeness) {
-                    FinalPassAction::SkipStreamingFinal => true,
-                    // Transitional: TailGapFill still routes to the old re-pass
-                    // branch until the stop path consumes actions directly.
-                    FinalPassAction::FullFileRepass | FinalPassAction::TailGapFill => false,
-                };
-                assert_eq!(
-                    should_skip_full_final_repass(mode, completeness, prefer_apple),
-                    expected,
-                    "shim drift: mode={} completeness={completeness:?} prefer_apple={prefer_apple}",
-                    mode.as_str()
-                );
-            }
-        }
-    }
-}
-
 /// Dictionary / lexicon is independent of FINAL_PASS_MODE.
 /// Off skips Whisper full re-pass, but StreamPostProcessor / apply_lexicon still rewrite.
 #[test]
 fn test_dictionary_always_applies_when_final_pass_mode_off() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
     // Simulate stop-path Off: skip full re-pass, keep streaming text as the transcript base.
     let streaming_with_typo = "Uzywam doker do kontenerow.";
     let complete = StreamingCompleteness::Complete;
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+    let incomplete = StreamingCompleteness::Incomplete {
+        reason: "pending_tail",
+    };
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, complete),
+        FinalPassAction::SkipStreamingFinal,
         "Off skip path: no Whisper final pass required for dictionary"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
-        "Off skip path independent of prefer_apple"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, incomplete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off skip path holds for incomplete streaming too — dictionary still runs"
     );
 
     // Post-process always runs after the skip decision (controller stop path).
@@ -1040,6 +990,35 @@ fn test_dictionary_always_applies_when_final_pass_mode_off() {
     assert!(
         processor.stats().lexicon_rewrites >= 1,
         "lexicon_rewrites counter must tick when a known typo is corrected"
+    );
+}
+
+/// Lexicon is ungated by FINAL_PASS_MODE on the Smart tail-gap path too.
+///
+/// Structural evidence (single seam, no branch of its own): every action arm writes
+/// `local_final_pass_verdict`, which flows through `adjudicate_recording_truth` →
+/// `truth_verdict.raw_text` (mod.rs:2995) → the one unconditional
+/// `process_transcript_text_pipeline` call (mod.rs:3089). This test pins the text
+/// half: a transcript composed by `append_tail_gap` still gets dictionary rewrites
+/// applied — in both the committed prefix and the appended tail.
+#[test]
+fn test_dictionary_applies_to_tail_gap_composed_transcript() {
+    use super::final_pass::append_tail_gap;
+
+    let composed = append_tail_gap("Uzywam doker do kontenerow.", "kubernets tez uzywam");
+    assert!(
+        composed.starts_with("Uzywam doker do kontenerow."),
+        "committed prefix must survive composition: {composed}"
+    );
+
+    let corrected = crate::stream_postprocess::apply_lexicon(&composed);
+    assert!(
+        corrected.contains("Docker"),
+        "lexicon must rewrite the committed prefix on the tail-gap path: {corrected}"
+    );
+    assert!(
+        corrected.contains("Kubernetes"),
+        "lexicon must rewrite the appended tail on the tail-gap path: {corrected}"
     );
 }
 
@@ -1064,9 +1043,10 @@ fn test_smart_skip_rejects_missing_commit_source_even_when_punctuated() {
         ),
         "punctuated text without commit source must be Incomplete, got {punctuated_only:?}"
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, punctuated_only, false),
-        "punctuation alone must not skip full re-pass"
+    assert_eq!(
+        super::final_pass::final_pass_action(FinalPassRoutingMode::Smart, punctuated_only),
+        super::final_pass::FinalPassAction::TailGapFill,
+        "punctuation alone must not skip — Smart gap-fills the uncommitted tail"
     );
 }
 
@@ -1092,9 +1072,10 @@ fn test_punctuated_prefix_with_pending_tail_must_not_skip() {
         ),
         "punctuated prefix + pending tail must be Incomplete, got {pending:?}"
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, pending, false),
-        "pending tail must force full re-pass under Smart"
+    assert_eq!(
+        super::final_pass::final_pass_action(FinalPassRoutingMode::Smart, pending),
+        super::final_pass::FinalPassAction::TailGapFill,
+        "pending tail under Smart transcribes only the tail and appends it"
     );
 }
 
@@ -1127,6 +1108,85 @@ fn test_completeness_evidence_from_session_wires_pending_tail() {
             reason: "pending_tail"
         }
     ));
+}
+
+/// THE DOCTRINE TEST: committed streaming text is immutable. Whatever the tail
+/// gap-fill returns, the trimmed streaming text stays an untouched **prefix** of
+/// the result — append only, never replacement.
+#[test]
+fn test_append_tail_gap_never_mutates_committed_prefix() {
+    use super::final_pass::append_tail_gap;
+
+    let cases = [
+        ("Pierwsze zdanie.", "I ogon."),
+        ("Pierwsze zdanie.", "  I ogon z bialymi znakami  "),
+        ("  Committed z paddingiem  ", "ogon"),
+        ("Zdanie bez kropki", "dalszy ciag"),
+        ("Ćma zażółć gęślą jaźń", "ćwierć"),
+        ("Pierwsze zdanie.", ""),
+        ("Pierwsze zdanie.", "   "),
+    ];
+    for (streaming, tail) in cases {
+        let out = append_tail_gap(streaming, tail);
+        let committed = streaming.trim();
+        assert!(
+            out.starts_with(committed),
+            "committed text mutated: streaming={streaming:?} tail={tail:?} out={out:?}"
+        );
+        assert!(
+            out.len() >= committed.len(),
+            "result shorter than committed prefix: out={out:?}"
+        );
+    }
+}
+
+#[test]
+fn test_append_tail_gap_empty_operands() {
+    use super::final_pass::append_tail_gap;
+
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", ""),
+        "Pierwsze zdanie.",
+        "empty tail leaves streaming unchanged"
+    );
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", "   \n "),
+        "Pierwsze zdanie.",
+        "whitespace-only tail leaves streaming unchanged"
+    );
+    assert_eq!(
+        append_tail_gap("", "sam ogon"),
+        "sam ogon",
+        "empty streaming yields the tail alone"
+    );
+    assert_eq!(
+        append_tail_gap("   ", "  sam ogon  "),
+        "sam ogon",
+        "blank streaming yields the trimmed tail alone"
+    );
+    assert_eq!(append_tail_gap("", ""), "", "both empty yields empty");
+}
+
+#[test]
+fn test_append_tail_gap_joins_with_single_space() {
+    use super::final_pass::append_tail_gap;
+
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", "Drugie zdanie."),
+        "Pierwsze zdanie. Drugie zdanie."
+    );
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.   ", "   Drugie zdanie."),
+        "Pierwsze zdanie. Drugie zdanie.",
+        "exactly one space at the seam regardless of operand padding"
+    );
+    let out = append_tail_gap("A", "B");
+    assert_eq!(out, "A B");
+    assert_eq!(
+        out.matches("  ").count(),
+        0,
+        "no double space introduced at the seam"
+    );
 }
 
 #[test]
