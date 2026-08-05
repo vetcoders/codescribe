@@ -1151,6 +1151,10 @@ pub(crate) struct SessionTelemetrySnapshot {
     pub last_commit_source: Option<CompletenessCommitSource>,
     /// Characters accumulated from UtteranceFinal commits (coverage signal).
     pub committed_chars: usize,
+    /// Audio boundary of committed streaming text: the monotonic max `end_ts`
+    /// across UtteranceFinal events. Smart-mode stop transcribes only the tail
+    /// after this point (append-only doctrine — committed text is immutable).
+    pub committed_through_secs: Option<f32>,
 }
 
 pub(crate) type SharedSessionTelemetry = Arc<StdMutex<SessionTelemetrySnapshot>>;
@@ -1213,12 +1217,17 @@ impl EventSink for SessionTelemetrySink {
             EngineEvent::Preview { .. } | EngineEvent::Correction { .. } => {
                 guard.pending_tail = true;
             }
-            EngineEvent::UtteranceFinal { text, .. } => {
+            EngineEvent::UtteranceFinal { text, end_ts, .. } => {
                 guard.pending_tail = false;
                 guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
                 guard.committed_chars = guard
                     .committed_chars
                     .saturating_add(text.trim().chars().count());
+                // Monotonic max: an out-of-order final never rewinds the boundary.
+                guard.committed_through_secs = Some(match guard.committed_through_secs {
+                    Some(current) if current >= *end_ts => current,
+                    _ => *end_ts,
+                });
             }
             EngineEvent::SessionFinalised { .. } => {
                 guard.pending_tail = false;
@@ -1591,6 +1600,65 @@ mod tests {
         assert_eq!(
             finalised.last_commit_source,
             Some(CompletenessCommitSource::SessionFinalised)
+        );
+    }
+
+    /// Smart-mode tail transcription needs the audio boundary of committed
+    /// streaming text: the monotonic max `end_ts` across UtteranceFinal events.
+    /// Out-of-order finals must never pull the boundary backwards.
+    #[test]
+    fn test_session_telemetry_tracks_committed_through_secs_monotonic_max() {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+
+        assert!(
+            snapshot_session_telemetry(&shared)
+                .committed_through_secs
+                .is_none(),
+            "default snapshot has no committed audio boundary"
+        );
+
+        let utterance_final =
+            |utterance_id: u64, start_ts: f32, end_ts: f32| EngineEvent::UtteranceFinal {
+                utterance_id,
+                text: "zdanie".to_string(),
+                raw_text: "zdanie".to_string(),
+                start_ts,
+                end_ts,
+                segments: vec![],
+                vad_speech_pct: Some(80.0),
+                avg_logprob: None,
+                compression_ratio: None,
+                quality_gate_dropped: false,
+                confidence_flags: vec![],
+            };
+
+        sink.on_event(&utterance_final(1, 0.0, 3.2));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2)
+        );
+
+        sink.on_event(&utterance_final(2, 3.2, 7.9));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(7.9)
+        );
+
+        // Out-of-order final: boundary stays at the max already committed.
+        sink.on_event(&utterance_final(3, 4.0, 5.0));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(7.9),
+            "committed boundary is a monotonic max, not the last value"
+        );
+
+        reset_session_telemetry(&shared);
+        assert!(
+            snapshot_session_telemetry(&shared)
+                .committed_through_secs
+                .is_none(),
+            "reset clears the committed audio boundary"
         );
     }
 
