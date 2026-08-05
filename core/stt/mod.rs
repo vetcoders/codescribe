@@ -323,6 +323,71 @@ pub fn resolve_tail_gap_boundary(
     }
 }
 
+/// Comparison key for overlap detection: lowercased, edge punctuation stripped.
+fn overlap_key(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+}
+
+/// Number of leading `tail` words that repeat the trailing `committed` words.
+///
+/// Returns the LONGEST such overlap. Comparison is case-insensitive and ignores
+/// leading/trailing punctuation; only the count is returned — the caller keeps
+/// the tail's original words for whatever remains.
+fn leading_overlap_words(committed: &[String], tail: &[String]) -> usize {
+    let max = committed.len().min(tail.len());
+    for len in (1..=max).rev() {
+        let c_start = committed.len() - len;
+        if committed[c_start..] == tail[..len] {
+            return len;
+        }
+    }
+    0
+}
+
+/// Append a tail gap-fill to committed streaming text — **append only**.
+///
+/// The canonical composer for whatever [`whisper_tail_gap_transcribe_file`]
+/// returns. Both Smart-mode stop lanes (the controller and the UniFFI composer
+/// voice-note lane) call THIS — a bare tail must never be fed to
+/// `quality::merge_live_whisper`, which is built for full transcripts vs the live
+/// floor and collapses the boundary Delete+Insert pair into a Substitute that
+/// discards the whisper token.
+///
+/// The overlay doctrine (AGENTS.md, THE ONE RULE): committed text is immutable.
+/// Whatever Whisper produced for the uncommitted tail is joined onto the end with
+/// exactly one space; the trimmed streaming text is always an untouched prefix of
+/// the result. Empty/blank tail → streaming unchanged. Empty/blank streaming → the
+/// trimmed tail alone.
+///
+/// **Overlap dedup**: streaming text can already contain uncommitted preview
+/// words for the same audio the tail-gap re-transcribes (`pending_tail`). Before
+/// joining, the longest leading word-run of the tail that repeats the trailing
+/// words of the streaming text is dropped **from the tail**. The streaming side
+/// is never touched — dedup only ever shortens what gets appended.
+pub fn append_tail_gap(streaming: &str, tail: &str) -> String {
+    let committed = streaming.trim();
+    let addition = tail.trim();
+    if addition.is_empty() {
+        return committed.to_string();
+    }
+    if committed.is_empty() {
+        return addition.to_string();
+    }
+
+    let tail_words: Vec<&str> = addition.split_whitespace().collect();
+    let committed_keys: Vec<String> = committed.split_whitespace().map(overlap_key).collect();
+    let tail_keys: Vec<String> = tail_words.iter().map(|w| overlap_key(w)).collect();
+    let overlap = leading_overlap_words(&committed_keys, &tail_keys);
+
+    let remaining = &tail_words[overlap..];
+    if remaining.is_empty() {
+        // The tail is entirely contained in the committed suffix: nothing new.
+        return committed.to_string();
+    }
+    format!("{committed} {}", remaining.join(" "))
+}
+
 /// Transcribe **only the uncommitted tail** of a recording — the Smart-mode
 /// per-utterance gap-fill primitive.
 ///
@@ -851,5 +916,73 @@ mod tests {
             resolve_tail_gap_boundary(Some(f32::NEG_INFINITY), false),
             TailGapBoundary::Skip
         );
+    }
+
+    /// Append-only property: the trimmed streaming text is ALWAYS an untouched
+    /// prefix of the result. No engine, no "better" text, may rewrite it.
+    #[test]
+    fn append_tail_gap_never_mutates_committed_prefix() {
+        let cases = [
+            ("Pacjent ma goraczke", "i wymioty od rana"),
+            ("raz dwa", "trzy cztery"),
+            ("Badanie krwi wykazalo", "Wykazalo, podwyzszone leukocyty"),
+            ("a b a b", "a b c"),
+            ("Pierwsze zdanie.  ", "  Drugie zdanie."),
+        ];
+        for (streaming, tail) in cases {
+            let out = append_tail_gap(streaming, tail);
+            assert!(
+                out.starts_with(streaming.trim()),
+                "committed prefix mutated: streaming={streaming:?} tail={tail:?} out={out:?}"
+            );
+        }
+    }
+
+    /// A bare tail is APPENDED verbatim — the exact regression `merge_live_whisper`
+    /// caused on the composer lane (it dropped the boundary word).
+    #[test]
+    fn append_tail_gap_appends_whole_tail() {
+        assert_eq!(
+            append_tail_gap("raz dwa", "trzy cztery"),
+            "raz dwa trzy cztery"
+        );
+        assert_eq!(
+            append_tail_gap("Pacjent ma goraczke", "i wymioty od rana"),
+            "Pacjent ma goraczke i wymioty od rana"
+        );
+    }
+
+    /// Preview words already on the canvas are deduped from the TAIL side only,
+    /// word-granular, longest run wins.
+    #[test]
+    fn append_tail_gap_dedups_overlapping_preview_words() {
+        assert_eq!(
+            append_tail_gap("Pacjent ma goraczke i", "goraczke i wymioty od rana"),
+            "Pacjent ma goraczke i wymioty od rana"
+        );
+        // Case- and edge-punctuation-insensitive comparison.
+        assert_eq!(
+            append_tail_gap("Badanie krwi wykazalo", "Wykazalo, podwyzszone leukocyty"),
+            "Badanie krwi wykazalo podwyzszone leukocyty"
+        );
+        // Tail fully contained in the committed suffix: nothing new to add.
+        assert_eq!(
+            append_tail_gap("Pierwsze zdanie i drugie zdanie", "drugie zdanie"),
+            "Pierwsze zdanie i drugie zdanie"
+        );
+    }
+
+    /// Empty operands: blank tail leaves streaming alone, blank streaming yields
+    /// the trimmed tail alone, both blank yields empty.
+    #[test]
+    fn append_tail_gap_empty_operands() {
+        assert_eq!(append_tail_gap("Pierwsze zdanie.", ""), "Pierwsze zdanie.");
+        assert_eq!(
+            append_tail_gap("Pierwsze zdanie.", "   \n "),
+            "Pierwsze zdanie."
+        );
+        assert_eq!(append_tail_gap("", "sam ogon"), "sam ogon");
+        assert_eq!(append_tail_gap("   ", "  sam ogon  "), "sam ogon");
+        assert_eq!(append_tail_gap("", ""), "");
     }
 }
