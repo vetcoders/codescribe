@@ -1994,16 +1994,32 @@ final class AgentChatStore: ObservableObject {
     }
 
     private func readDurableAcceptedTurns() -> [DurableAcceptedTurn] {
-        guard let data = UserDefaults.standard.data(forKey: Self.acceptedTurnsDefaultsKey),
-              let decoded = try? JSONDecoder().decode([DurableAcceptedTurn].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: Self.acceptedTurnsDefaultsKey) else {
             return []
         }
-        return decoded
+        do {
+            return try JSONDecoder().decode([DurableAcceptedTurn].self, from: data)
+        } catch {
+            // Corrupt payload is not "empty queue" — quarantine so the next
+            // accept can rewrite a healthy sidecar, and leave an OSLog trail.
+            queueLog.error(
+                "durable accepted-turns decode failed; quarantining payload: \(error.localizedDescription, privacy: .public)"
+            )
+            UserDefaults.standard.removeObject(forKey: Self.acceptedTurnsDefaultsKey)
+            return []
+        }
     }
 
     private func writeDurableAcceptedTurns(_ turns: [DurableAcceptedTurn]) {
-        guard let data = try? JSONEncoder().encode(turns) else { return }
-        UserDefaults.standard.set(data, forKey: Self.acceptedTurnsDefaultsKey)
+        do {
+            let data = try JSONEncoder().encode(turns)
+            UserDefaults.standard.set(data, forKey: Self.acceptedTurnsDefaultsKey)
+        } catch {
+            // Flagship durable queue must never fail silently (PR-68 review).
+            queueLog.error(
+                "durable accepted-turns encode failed (count=\(turns.count, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     /// Re-enqueue messages that were accepted before the last app death but
@@ -2091,16 +2107,29 @@ final class AgentChatStore: ObservableObject {
     }
 
     private func readAttachmentMetadataSidecar() -> [String: [PersistedAttachmentTurn]] {
-        guard let data = UserDefaults.standard.data(forKey: Self.attachmentMetadataDefaultsKey),
-              let decoded = try? JSONDecoder().decode([String: [PersistedAttachmentTurn]].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: Self.attachmentMetadataDefaultsKey) else {
             return [:]
         }
-        return decoded
+        do {
+            return try JSONDecoder().decode([String: [PersistedAttachmentTurn]].self, from: data)
+        } catch {
+            attachLog.error(
+                "attachment metadata decode failed; quarantining payload: \(error.localizedDescription, privacy: .public)"
+            )
+            UserDefaults.standard.removeObject(forKey: Self.attachmentMetadataDefaultsKey)
+            return [:]
+        }
     }
 
     private func writeAttachmentMetadataSidecar(_ sidecar: [String: [PersistedAttachmentTurn]]) {
-        guard let data = try? JSONEncoder().encode(sidecar) else { return }
-        UserDefaults.standard.set(data, forKey: Self.attachmentMetadataDefaultsKey)
+        do {
+            let data = try JSONEncoder().encode(sidecar)
+            UserDefaults.standard.set(data, forKey: Self.attachmentMetadataDefaultsKey)
+        } catch {
+            attachLog.error(
+                "attachment metadata encode failed (threads=\(sidecar.count, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     /// Surface a completed tool call as a `.tool` activity turn placed immediately

@@ -21,6 +21,33 @@ const MAX_OUTPUT_CHARS: usize = 40_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_TIMEOUT_SECS: u64 = 300;
 
+/// Environment keys re-exported into agent-spawned processes after `env_clear`.
+///
+/// Explicit allowlist only — never inherit the parent Codescribe process env,
+/// which holds LLM keys, account tokens, and other secrets (PR-68 S-P0).
+const CHILD_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TERM",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SHELL",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "CARGO_TARGET_DIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+];
+
 struct TrackedProcess {
     child: Child,
     started: Instant,
@@ -210,6 +237,18 @@ fn synthetic_command_line(program: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// Drop every inherited env var, then re-apply a small allowlist of non-secret
+/// OS/build vars. Prevents `printenv` / child tools from exfiltrating
+/// `LLM_*`, account tokens, and other process-seeded secrets.
+fn apply_sanitized_child_env(command: &mut Command) {
+    command.env_clear();
+    for key in CHILD_ENV_ALLOWLIST {
+        if let Ok(value) = std::env::var(key) {
+            command.env(key, value);
+        }
+    }
+}
+
 fn run_process_from_input(input: &Value) -> Result<String> {
     let program = input
         .get("program")
@@ -258,6 +297,7 @@ fn run_process_from_input(input: &Value) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    apply_sanitized_child_env(&mut command);
 
     if background {
         let child = command
@@ -544,6 +584,50 @@ mod tests {
         let cwd = tmp.path().to_str().unwrap();
         assert!(path_policy::validate_terminal("printf ok", cwd, &roots).is_ok());
         assert!(path_policy::validate_terminal("printf a | bash", cwd, &roots).is_err());
+    }
+
+    #[test]
+    fn sanitized_child_env_drops_llm_secrets_but_keeps_path() {
+        let secret_key = "LLM_ASSISTIVE_API_KEY";
+        let secret_value = "super-secret-test-value-pr68";
+        let previous = std::env::var(secret_key).ok();
+        // SAFETY: test-only env mutation, restored before return.
+        unsafe {
+            std::env::set_var(secret_key, secret_value);
+        }
+
+        let mut secret_cmd = Command::new("/usr/bin/printenv");
+        secret_cmd
+            .arg(secret_key)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_sanitized_child_env(&mut secret_cmd);
+        let secret_out = run_with_timeout(secret_cmd, Duration::from_secs(5)).unwrap();
+
+        let mut path_cmd = Command::new("/usr/bin/printenv");
+        path_cmd
+            .arg("PATH")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_sanitized_child_env(&mut path_cmd);
+        let path_out = run_with_timeout(path_cmd, Duration::from_secs(5)).unwrap();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var(secret_key, value) },
+            None => unsafe { std::env::remove_var(secret_key) },
+        }
+
+        let leaked = String::from_utf8_lossy(&secret_out.stdout);
+        assert!(
+            !leaked.contains(secret_value),
+            "child must not inherit parent LLM secrets, got {leaked:?}"
+        );
+        let path = String::from_utf8_lossy(&path_out.stdout);
+        assert!(
+            !path.trim().is_empty(),
+            "PATH must still be present for child tools"
+        );
+        assert!(path_out.status.success());
     }
 
     #[test]
