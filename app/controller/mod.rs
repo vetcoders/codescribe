@@ -23,8 +23,10 @@
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
 mod context_bucket;
+mod final_pass;
 mod helpers;
 pub mod serving_status;
+mod truth;
 mod types;
 
 pub use helpers::{
@@ -67,18 +69,28 @@ use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
-use codescribe_core::pipeline::contracts::{
-    FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
-};
+use codescribe_core::pipeline::contracts::{FinalPassDisposition, TranscriptionConfidenceFlag};
 
+pub(crate) use final_pass::{
+    FinalPassRoutingMode, FinalPassStages, StopPathBudget, StreamingCompleteness,
+    StreamingCompletenessEvidence, assess_streaming_completeness, engine_label_from_verdict,
+    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
+    format_stop_path_budget_line, should_skip_full_final_repass,
+};
+#[cfg(test)]
+pub(crate) use final_pass::{assess_streaming_completeness_fields, stop_path_budget_covers_total};
 #[cfg(test)]
 use helpers::SessionEngineStats;
+pub(crate) use helpers::SessionTelemetrySnapshot;
 #[cfg(test)]
 use helpers::build_image_attachments_from_text;
 use helpers::{
-    CompletenessCommitSource, SessionTelemetrySnapshot, SharedSessionTelemetry,
-    new_session_telemetry, raw_save_enabled, reset_session_telemetry,
-    send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
+    CompletenessCommitSource, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
+    reset_session_telemetry, send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
+};
+pub(crate) use truth::{
+    adjudicate_recording_truth, apply_ai_noop_signal, push_typed_flag, truth_display_status,
+    truth_engine_label, truth_review_trigger,
 };
 use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
@@ -351,10 +363,6 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
     overlay_enabled
 }
 
-fn non_empty_transcript(text: Option<String>) -> Option<String> {
-    text.filter(|text| !text.trim().is_empty())
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoPasteTrigger {
     Hold,
@@ -434,450 +442,6 @@ impl AutomaticDeliveryOwner {
         delivered.push_back(timestamp);
         Ok(true)
     }
-}
-
-#[derive(Debug, Clone, Default)]
-struct RecordingTruthVerdict {
-    raw_text: Option<String>,
-    transcript_source: Option<RecordingTranscriptSource>,
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<String>,
-    speech_pct: Option<f32>,
-    avg_logprob: Option<f32>,
-    /// Typed confidence flags (engine-owned + app-level provenance).
-    /// Stored as the core enum rather than `Vec<String>` so downstream
-    /// consumers do not need to re-parse tokens and new variants surface
-    /// as compile errors instead of silent misses.
-    confidence_flags: Vec<TranscriptionConfidenceFlag>,
-    /// VAD speech sparkline preserved from the core `VadVerdict` so it
-    /// can survive to `truth.json` on disk (previously dropped at the
-    /// app boundary — tracked as Kłamstwo 7).
-    sparkline: Option<String>,
-    /// Disposition of the explicit file-level final pass, when one ran.
-    /// None means no final pass was attempted for this verdict.
-    final_pass_disposition: Option<FinalPassDisposition>,
-    /// Actual serving engine label for sidecar/UI (`local_apple`, `local_whisper`, …).
-    /// Preference-derived labels are forbidden when a verdict is present.
-    engine_label: Option<String>,
-    commit_trigger: Option<String>,
-    display_status: String,
-}
-
-fn push_typed_flag(
-    flags: &mut Vec<TranscriptionConfidenceFlag>,
-    flag: TranscriptionConfidenceFlag,
-) {
-    if !flags.contains(&flag) {
-        flags.push(flag);
-    }
-}
-
-fn apply_ai_noop_signal(
-    assistive: bool,
-    is_ai_noop: bool,
-    confidence_flags: &mut Vec<TranscriptionConfidenceFlag>,
-    commit_trigger: &mut Option<String>,
-) {
-    if !is_ai_noop || assistive {
-        return;
-    }
-
-    push_typed_flag(
-        confidence_flags,
-        TranscriptionConfidenceFlag::AiNoopDetected,
-    );
-    *commit_trigger = Some("ai_noop".to_string());
-}
-
-fn truth_review_trigger(
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<&str>,
-    confidence_flags: &[TranscriptionConfidenceFlag],
-) -> Option<String> {
-    if no_speech_reason.is_some() {
-        return Some("no_reliable_speech".to_string());
-    }
-
-    // Priority order mirrors the original string-based trigger so display
-    // behaviour is unchanged by the type-safety refactor.
-    for priority_flag in [
-        TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-        TranscriptionConfidenceFlag::VeryLowSpeech,
-        TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
-        TranscriptionConfidenceFlag::CloudFallbackUsed,
-    ] {
-        if confidence_flags.contains(&priority_flag) {
-            return Some(priority_flag.to_string());
-        }
-    }
-
-    match fallback_class {
-        Some(RecordingFallbackClass::Acceptable) | None => None,
-        Some(RecordingFallbackClass::Degraded) => Some("degraded_fallback".to_string()),
-        Some(RecordingFallbackClass::Unsafe) => Some("unsafe_fallback".to_string()),
-    }
-}
-
-fn truth_display_status(
-    source: Option<RecordingTranscriptSource>,
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<&str>,
-    confidence_flags: &[TranscriptionConfidenceFlag],
-) -> String {
-    if no_speech_reason.is_some() {
-        return "No reliable speech detected".to_string();
-    }
-
-    if confidence_flags.contains(&TranscriptionConfidenceFlag::PossibleHallucinationLogprob) {
-        return "Possible hallucination".to_string();
-    }
-
-    if confidence_flags.contains(&TranscriptionConfidenceFlag::VeryLowSpeech) {
-        return "Very low speech".to_string();
-    }
-
-    match (source, fallback_class) {
-        (Some(RecordingTranscriptSource::StreamingFallback), _) => "Streaming fallback".to_string(),
-        (Some(source), Some(fallback_class)) => {
-            format!("{} ({})", source.label(), fallback_class.label())
-        }
-        (Some(source), None) => source.label().to_string(),
-        (None, Some(fallback_class)) => fallback_class.label().to_string(),
-        (None, None) => "Transcript ready".to_string(),
-    }
-}
-
-// allow(too_many_arguments): verdict aggregates independent recording-truth
-// signals collected at one call site; a params struct would only restate the
-// same names. Revisit if call sites multiply.
-#[allow(clippy::too_many_arguments)]
-fn build_truth_verdict(
-    raw_text: Option<String>,
-    transcript_source: Option<RecordingTranscriptSource>,
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<String>,
-    speech_pct: Option<f32>,
-    avg_logprob: Option<f32>,
-    confidence_flags: Vec<TranscriptionConfidenceFlag>,
-    sparkline: Option<String>,
-    final_pass_disposition: Option<FinalPassDisposition>,
-    engine_label: Option<String>,
-) -> RecordingTruthVerdict {
-    let commit_trigger = truth_review_trigger(
-        fallback_class,
-        no_speech_reason.as_deref(),
-        &confidence_flags,
-    );
-    let display_status = truth_display_status(
-        transcript_source,
-        fallback_class,
-        no_speech_reason.as_deref(),
-        &confidence_flags,
-    );
-
-    RecordingTruthVerdict {
-        raw_text,
-        transcript_source,
-        fallback_class,
-        no_speech_reason,
-        speech_pct,
-        avg_logprob,
-        confidence_flags,
-        sparkline,
-        final_pass_disposition,
-        engine_label,
-        commit_trigger,
-        display_status,
-    }
-}
-
-fn adjudicate_recording_truth(
-    use_local_stt: bool,
-    local_final_pass_attempted: bool,
-    local_final_pass_verdict: Option<TranscriptionVerdict>,
-    streaming_text: String,
-    cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
-    session_telemetry: &SessionTelemetrySnapshot,
-) -> RecordingTruthVerdict {
-    let streaming_text = non_empty_transcript(Some(streaming_text));
-    let cloud_verdict = cloud_verdict.filter(|verdict| !verdict.text.trim().is_empty());
-    // When file-final collapses vs live assembly (Apple SFSpeech short file
-    // path), keep the stream as floor of truth and mark provenance.
-    let mut final_pass_length_regression = false;
-
-    if use_local_stt && let Some(verdict) = local_final_pass_verdict {
-        let speech_pct = verdict.vad.as_ref().map(|vad| vad.speech_pct);
-        let avg_logprob = verdict.raw.avg_logprob;
-        let fallback_class = if verdict.confidence_flags.iter().any(|flag| {
-            matches!(
-                flag,
-                TranscriptionConfidenceFlag::VeryLowSpeech
-                    | TranscriptionConfidenceFlag::PossibleHallucinationLogprob
-                    | TranscriptionConfidenceFlag::QualityGateDropped
-            )
-        }) {
-            Some(RecordingFallbackClass::Unsafe)
-        } else {
-            None
-        };
-
-        // Preserve the typed confidence flags as-is (no stringification).
-        let confidence_flags = verdict.confidence_flags.clone();
-        let no_speech_reason = verdict
-            .vad
-            .as_ref()
-            .and_then(|vad| vad.no_speech_reason.clone());
-        // Sparkline lives in the VAD sub-verdict. Only surface it when VAD
-        // actually produced one so empty strings don't pollute truth.json.
-        let sparkline = verdict.vad.as_ref().and_then(|vad| {
-            if vad.sparkline.is_empty() {
-                None
-            } else {
-                Some(vad.sparkline.clone())
-            }
-        });
-        // Final-pass disposition is only meaningful when the engine ran
-        // an explicit final pass (hold path). Toggle path leaves this None.
-        let final_pass_disposition = verdict.final_pass.as_ref().map(|fp| fp.disposition);
-        let engine_label = Some(engine_label_from_verdict(
-            &verdict.engine,
-            final_pass_disposition,
-        ));
-
-        let raw_text = if no_speech_reason.is_some() {
-            None
-        } else {
-            non_empty_transcript(Some(verdict.text))
-        };
-
-        // Explicit no-speech from final pass remains authoritative.
-        if no_speech_reason.is_some() {
-            return build_truth_verdict(
-                None,
-                Some(RecordingTranscriptSource::LocalFinalPass),
-                fallback_class,
-                no_speech_reason,
-                speech_pct,
-                avg_logprob,
-                confidence_flags,
-                sparkline,
-                final_pass_disposition,
-                engine_label,
-            );
-        }
-
-        if let Some(final_text) = raw_text.as_ref() {
-            let is_regression = streaming_text.as_ref().is_some_and(|stream| {
-                codescribe_core::pipeline::contracts::final_pass_is_length_regression(
-                    final_text, stream,
-                )
-            });
-            if is_regression {
-                final_pass_length_regression = true;
-                warn!(
-                    final_chars = final_text.chars().count(),
-                    stream_chars = streaming_text
-                        .as_ref()
-                        .map(|s| s.chars().count())
-                        .unwrap_or(0),
-                    "final-pass length regression vs live assembly — keeping stream as floor of truth"
-                );
-                // Fall through to streaming / cloud branches.
-            } else if let Some(stream) = streaming_text.as_ref() {
-                // Product: never full-replace live with Whisper. Merge live floor
-                // + Whisper gap-fill (85% Apple×Whisper thesis; Teacher AlignOp).
-                let merged = codescribe_core::quality::merge_live_whisper(stream, final_text);
-                info!(
-                    mode = ?merged.mode,
-                    equal = merged.equal_tokens,
-                    whisper_fill = merged.whisper_fill_tokens,
-                    live_subs = merged.live_kept_substitutes,
-                    live_chars = stream.chars().count(),
-                    whisper_chars = final_text.chars().count(),
-                    merged_chars = merged.text.chars().count(),
-                    "delivery merge: live floor + whisper fill (not full-replace)"
-                );
-                // Merged path still used a final pass; keep engine label from final
-                // but text is composite live×whisper.
-                let eng = engine_label
-                    .clone()
-                    .map(|e| format!("merged_live_whisper:{e}"))
-                    .or_else(|| Some("merged_live_whisper".to_string()));
-                return build_truth_verdict(
-                    Some(merged.text),
-                    Some(RecordingTranscriptSource::LocalFinalPass),
-                    fallback_class,
-                    None,
-                    speech_pct,
-                    avg_logprob,
-                    confidence_flags,
-                    sparkline,
-                    final_pass_disposition,
-                    eng,
-                );
-            } else {
-                return build_truth_verdict(
-                    Some(final_text.clone()),
-                    Some(RecordingTranscriptSource::LocalFinalPass),
-                    fallback_class,
-                    None,
-                    speech_pct,
-                    avg_logprob,
-                    confidence_flags,
-                    sparkline,
-                    final_pass_disposition,
-                    engine_label,
-                );
-            }
-        }
-        // Empty final text without no_speech → fall through to stream floor.
-    }
-
-    if let Some(reason) = &session_telemetry.no_speech_reason {
-        return build_truth_verdict(
-            None,
-            None,
-            None,
-            Some(reason.clone()),
-            None,
-            None,
-            Vec::new(),
-            None,
-            None,
-            None,
-        );
-    }
-
-    if use_local_stt {
-        let mut confidence_flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
-        if final_pass_length_regression {
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::FinalPassLengthRegression,
-            );
-        } else if local_final_pass_attempted {
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
-            );
-        }
-
-        if let Some(cloud_verdict) = cloud_verdict {
-            let mut fallback_flags = confidence_flags.clone();
-            for flag in &cloud_verdict.confidence_flags {
-                push_typed_flag(&mut fallback_flags, *flag);
-            }
-            push_typed_flag(
-                &mut fallback_flags,
-                TranscriptionConfidenceFlag::CloudFallbackUsed,
-            );
-            return build_truth_verdict(
-                Some(cloud_verdict.text),
-                Some(RecordingTranscriptSource::CloudFallback),
-                Some(RecordingFallbackClass::Degraded), // cloud fallback is no longer "Acceptable" (silent), it must be explicit
-                None,
-                None,
-                None,
-                fallback_flags,
-                None,
-                None,
-                Some("cloud_stt".to_string()),
-            );
-        }
-
-        if let Some(text) = streaming_text {
-            let mut fallback_flags = confidence_flags.clone();
-            push_typed_flag(
-                &mut fallback_flags,
-                TranscriptionConfidenceFlag::UnverifiedStream,
-            );
-            push_typed_flag(
-                &mut fallback_flags,
-                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
-            );
-            // Regression keep-stream is still live assembly truth, not "degraded
-            // because final missing" — label as streaming floor when we rejected
-            // a collapsing final pass.
-            let engine = if final_pass_length_regression {
-                Some("streaming_live_floor".to_string())
-            } else {
-                Some("streaming_whisper".to_string())
-            };
-            return build_truth_verdict(
-                Some(text),
-                Some(RecordingTranscriptSource::StreamingFallback),
-                Some(RecordingFallbackClass::Degraded), // streaming is always degraded as a final verdict
-                None,
-                None,
-                None,
-                fallback_flags,
-                None,
-                None,
-                engine,
-            );
-        }
-    } else {
-        if let Some(cloud_verdict) = cloud_verdict {
-            return build_truth_verdict(
-                Some(cloud_verdict.text),
-                Some(RecordingTranscriptSource::CloudPrimary),
-                None,
-                None,
-                None,
-                None,
-                cloud_verdict.confidence_flags,
-                None,
-                None,
-                Some("cloud_stt".to_string()),
-            );
-        }
-
-        if let Some(text) = streaming_text {
-            let mut confidence_flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::CloudPrimaryMissing,
-            );
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::UnverifiedStream,
-            );
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
-            );
-            return build_truth_verdict(
-                Some(text),
-                Some(RecordingTranscriptSource::StreamingFallback),
-                Some(RecordingFallbackClass::Degraded),
-                None,
-                None,
-                None,
-                confidence_flags,
-                None,
-                None,
-                Some("streaming_whisper".to_string()),
-            );
-        }
-    }
-
-    build_truth_verdict(
-        None,
-        None,
-        None,
-        Some(
-            session_telemetry
-                .no_speech_reason
-                .clone()
-                .unwrap_or_else(|| "empty_transcript_without_no_speech_event".to_string()),
-        ),
-        None,
-        None,
-        Vec::new(),
-        None,
-        None,
-        None,
-    )
 }
 
 fn recording_mode_label(
@@ -1143,345 +707,6 @@ fn compose_final_status(
             display_status,
             transcript_output_category(output_kind)
         ),
-    }
-}
-
-/// Canonical stop-path final-pass routing (Settings → Final pass / `FINAL_PASS_MODE`).
-/// Distinct from `pipeline::contracts::FinalPassMode` (lexicon cleanup request).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FinalPassRoutingMode {
-    /// Always re-run full local STT on the saved WAV.
-    Always,
-    /// Skip full re-pass only when streaming completeness is adjudicated.
-    Smart,
-    /// Streaming (post-processed) is final; keep repetition guardrail only.
-    Off,
-}
-
-impl FinalPassRoutingMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Always => "always",
-            Self::Smart => "smart",
-            Self::Off => "off",
-        }
-    }
-
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "always" | "on" | "1" | "true" | "yes" => Some(Self::Always),
-            "smart" | "auto" => Some(Self::Smart),
-            "off" | "0" | "false" | "no" => Some(Self::Off),
-            _ => None,
-        }
-    }
-}
-
-/// Resolve final-pass routing from env/settings. Default: Smart.
-///
-/// Precedence:
-/// 1. `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` (`always|smart|off`)
-/// 2. Legacy `CODESCRIBE_LOCAL_STT_FINAL_PASS` falsey → Off, truthy → Always
-/// 3. Smart
-pub(crate) fn final_pass_routing_mode() -> FinalPassRoutingMode {
-    for key in ["FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
-        if let Ok(raw) = std::env::var(key)
-            && let Some(mode) = FinalPassRoutingMode::parse(&raw)
-        {
-            return mode;
-        }
-    }
-    if let Ok(raw) = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS") {
-        let v = raw.trim().to_ascii_lowercase();
-        if matches!(v.as_str(), "" | "0" | "false" | "no" | "off") {
-            return FinalPassRoutingMode::Off;
-        }
-        if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
-            return FinalPassRoutingMode::Always;
-        }
-    }
-    FinalPassRoutingMode::Smart
-}
-
-/// Typed streaming-completeness decision for Smart skip (never "non-empty ⇒ complete").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StreamingCompleteness {
-    Complete,
-    Incomplete { reason: &'static str },
-}
-
-/// Recorder/adjudicator evidence for Smart final-pass skip.
-///
-/// Punctuation is never the authority: Completeness requires an adjudicated
-/// commit source, coverage, and a cleared pending tail.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StreamingCompletenessEvidence {
-    pub streaming_text: String,
-    pub no_speech_reason: Option<String>,
-    pub pending_tail: bool,
-    pub partial_stale_or_dropped: bool,
-    pub commit_source: Option<CompletenessCommitSource>,
-    pub committed_chars: usize,
-    pub total_utterances: u64,
-}
-
-impl StreamingCompletenessEvidence {
-    /// Build evidence from the live session snapshot + streaming splice text.
-    pub(crate) fn from_session(streaming_text: &str, session: &SessionTelemetrySnapshot) -> Self {
-        let partial_stale_or_dropped = session
-            .stats
-            .as_ref()
-            .is_some_and(|s| s.partial_stale_count > 0 || s.partial_dropped_count > 0);
-        let total_utterances = session
-            .stats
-            .as_ref()
-            .map(|s| s.total_utterances)
-            .unwrap_or(0);
-        Self {
-            streaming_text: streaming_text.to_string(),
-            no_speech_reason: session.no_speech_reason.clone(),
-            pending_tail: session.pending_tail,
-            partial_stale_or_dropped,
-            commit_source: session.last_commit_source,
-            committed_chars: session.committed_chars,
-            total_utterances,
-        }
-    }
-
-    /// Coverage is present when the adjudicator sealed at least one utterance
-    /// (commit source + committed chars or engine utterance count).
-    pub(crate) fn has_coverage(&self) -> bool {
-        self.committed_chars > 0 || self.total_utterances > 0
-    }
-}
-
-/// Assess whether streaming holds an adjudicator-confirmed complete transcript.
-///
-/// Incomplete when: empty, no-speech, pending tail, partial stale/drop, missing
-/// commit source, or zero coverage. A punctuated prefix with a pending tail is
-/// always Incomplete — punctuation alone never authorizes Complete.
-pub(crate) fn assess_streaming_completeness(
-    evidence: &StreamingCompletenessEvidence,
-) -> StreamingCompleteness {
-    if evidence.no_speech_reason.is_some() {
-        return StreamingCompleteness::Incomplete {
-            reason: "no_speech",
-        };
-    }
-    let text = evidence.streaming_text.trim();
-    if text.is_empty() {
-        return StreamingCompleteness::Incomplete { reason: "empty" };
-    }
-    if evidence.pending_tail {
-        return StreamingCompleteness::Incomplete {
-            reason: "pending_tail",
-        };
-    }
-    if evidence.partial_stale_or_dropped {
-        return StreamingCompleteness::Incomplete {
-            reason: "partial_pending",
-        };
-    }
-    if evidence.commit_source.is_none() {
-        return StreamingCompleteness::Incomplete {
-            reason: "no_commit_source",
-        };
-    }
-    if !evidence.has_coverage() {
-        return StreamingCompleteness::Incomplete {
-            reason: "no_coverage",
-        };
-    }
-    StreamingCompleteness::Complete
-}
-
-/// Convenience for tests that build evidence by field rather than from a session.
-#[cfg(test)]
-pub(crate) fn assess_streaming_completeness_fields(
-    streaming_text: &str,
-    no_speech_reason: Option<&str>,
-    pending_tail: bool,
-    partial_stale_or_dropped: bool,
-    commit_source: Option<CompletenessCommitSource>,
-    committed_chars: usize,
-    total_utterances: u64,
-) -> StreamingCompleteness {
-    assess_streaming_completeness(&StreamingCompletenessEvidence {
-        streaming_text: streaming_text.to_string(),
-        no_speech_reason: no_speech_reason.map(str::to_string),
-        pending_tail,
-        partial_stale_or_dropped,
-        commit_source,
-        committed_chars,
-        total_utterances,
-    })
-}
-
-/// Label from the actual engine verdict (not preference). Apple→Whisper fallback
-/// reports Whisper. When final-pass was **Skipped**, label the **live** lane that
-/// served (not a hardcode `streaming_whisper` — that laundered Apple live into a
-/// Whisper label; report 2026-07-25 / footer-chip doctrine).
-pub(crate) fn engine_label_from_verdict(
-    engine: &codescribe_core::pipeline::contracts::TranscriptionEngineVerdict,
-    final_pass_disposition: Option<FinalPassDisposition>,
-) -> String {
-    use codescribe_core::pipeline::contracts::TranscriptionEngine;
-    if matches!(final_pass_disposition, Some(FinalPassDisposition::Skipped)) {
-        return match engine.engine {
-            TranscriptionEngine::Apple => "live_apple".to_string(),
-            TranscriptionEngine::Whisper => "streaming_whisper".to_string(),
-        };
-    }
-    match engine.engine {
-        TranscriptionEngine::Apple => "local_apple".to_string(),
-        // Fallback-vs-primary provenance travels in verdict mode/disposition;
-        // the label states the engine that actually served.
-        TranscriptionEngine::Whisper => "local_whisper".to_string(),
-    }
-}
-
-fn truth_engine_label(
-    source: Option<RecordingTranscriptSource>,
-    actual_engine_label: Option<&str>,
-) -> Option<String> {
-    if let Some(label) = actual_engine_label {
-        return Some(label.to_string());
-    }
-    source.map(|source| match source {
-        // Preference-derived labels only when no verdict engine is available.
-        RecordingTranscriptSource::LocalFinalPass
-        | RecordingTranscriptSource::ToggleSessionAdjudicated => "local_whisper".to_string(),
-        RecordingTranscriptSource::CloudPrimary | RecordingTranscriptSource::CloudFallback => {
-            "cloud_stt".to_string()
-        }
-        RecordingTranscriptSource::Streaming | RecordingTranscriptSource::StreamingFallback => {
-            "streaming_whisper".to_string()
-        }
-    })
-}
-
-/// Named stop-path phase timings (rec_stop → final_pass → postproc → format → delivery).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct StopPathBudget {
-    pub total_secs: f64,
-    pub rec_stop_secs: f64,
-    pub final_pass_secs: f64,
-    pub postproc_secs: f64,
-    pub format_secs: f64,
-    /// Actual deliver_once / history+paste handoff span (not phase-4 cleanup).
-    pub delivery_secs: f64,
-}
-
-impl StopPathBudget {
-    pub(crate) fn named_sum_secs(self) -> f64 {
-        self.rec_stop_secs
-            + self.final_pass_secs
-            + self.postproc_secs
-            + self.format_secs
-            + self.delivery_secs
-    }
-
-    /// Wall time not attributed to a named phase (adjudication overhead, cleanup, …).
-    pub(crate) fn unclassified_remainder_secs(self) -> f64 {
-        (self.total_secs - self.named_sum_secs()).max(0.0)
-    }
-}
-
-/// Single INFO summary line for stop-path wall time (W11-B budget receipt).
-pub(crate) fn format_stop_path_budget_line(budget: StopPathBudget) -> String {
-    format!(
-        "stop_path_budget: total={total:.3}s phases={{rec_stop={rec:.3}s,final_pass={fp:.3}s,postproc={pp:.3}s,format={fmt:.3}s,delivery={del:.3}s}} remainder={rem:.3}s",
-        total = budget.total_secs,
-        rec = budget.rec_stop_secs,
-        fp = budget.final_pass_secs,
-        pp = budget.postproc_secs,
-        fmt = budget.format_secs,
-        del = budget.delivery_secs,
-        rem = budget.unclassified_remainder_secs(),
-    )
-}
-
-/// Phase sum + remainder must cover total within tolerance (timing noise).
-#[cfg(test)]
-pub(crate) fn stop_path_budget_covers_total(budget: StopPathBudget, tolerance_secs: f64) -> bool {
-    let covered = budget.named_sum_secs() + budget.unclassified_remainder_secs();
-    (covered - budget.total_secs).abs() <= tolerance_secs
-}
-
-/// Correlated assistive-delivery receipt. Receipt boundary (audit F1): the
-/// `stop_path_budget` closes when the stop pipeline returns; assistive overlay
-/// submission is user-triggered *after* that, so its real send gets its own
-/// wall-clock line instead of being folded into a budget that already ended.
-pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &str) -> String {
-    format!("assistive_delivery_budget: total={total_secs:.3}s outcome={outcome}")
-}
-
-/// Per-stage split of the stop-path final pass (A2 latency truth).
-///
-/// `queue_ms` = spawn_blocking queue wait + engine mutex wait. The first three
-/// stages plus `engine_overhead_ms` (audio load + VAD + silero + lexicon,
-/// computed as remainder) cover `final_pass_total_ms` exactly; postprocess and
-/// delivery are the downstream pipeline stages of the same stop.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub(crate) struct FinalPassStages {
-    pub queue_ms: u64,
-    pub model_load_ms: u64,
-    pub cold_load: bool,
-    pub inference_ms: u64,
-    pub postprocess_ms: u64,
-    pub delivery_ms: u64,
-    pub final_pass_total_ms: u64,
-}
-
-impl FinalPassStages {
-    /// Final-pass wall time not attributed to queue/load/inference: audio file
-    /// load, VAD, silero tail filter, lexicon final pass.
-    pub(crate) fn engine_overhead_ms(self) -> u64 {
-        self.final_pass_total_ms
-            .saturating_sub(self.queue_ms + self.model_load_ms + self.inference_ms)
-    }
-}
-
-/// Single INFO line carrying the final-pass stage split for one stop.
-pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
-    format!(
-        "final_pass_stages queue_ms={queue} model_load_ms={load} cold_load={cold} inference_ms={inf} engine_overhead_ms={overhead} postprocess_ms={pp} delivery_ms={del} final_pass_total_ms={total}",
-        queue = stages.queue_ms,
-        load = stages.model_load_ms,
-        cold = stages.cold_load,
-        inf = stages.inference_ms,
-        overhead = stages.engine_overhead_ms(),
-        pp = stages.postprocess_ms,
-        del = stages.delivery_ms,
-        total = stages.final_pass_total_ms,
-    )
-}
-
-/// Skip full local STT re-pass according to routing mode + completeness.
-///
-/// File final is always **Whisper** (Apple is live-only). Apple live
-/// systematically under-gens (report 2026-07-25: 234c / ~417s with Off). So:
-/// - **Always**: never skip.
-/// - **Smart**: skip only when live was **not** Apple and assembly is complete.
-/// - **Off**: skip unless live was Apple — then force Whisper safety-pass
-///   (Off+Apple without fill is silent data-loss; operator 2026-07-25).
-///
-/// `prefer_apple` = live lane was Apple (not "prefer SFSpeechURL file final").
-pub(crate) fn should_skip_full_final_repass(
-    mode: FinalPassRoutingMode,
-    completeness: StreamingCompleteness,
-    prefer_apple: bool,
-) -> bool {
-    if prefer_apple {
-        // Apple live is a thin floor; Whisper fill is mandatory for product truth.
-        return false;
-    }
-    match mode {
-        FinalPassRoutingMode::Always => false,
-        FinalPassRoutingMode::Off => true,
-        FinalPassRoutingMode::Smart => {
-            matches!(completeness, StreamingCompleteness::Complete)
-        }
     }
 }
 
@@ -3949,23 +3174,11 @@ impl RecordingController {
 
         let routing_mode = final_pass_routing_mode();
         let prefer_apple = codescribe_core::stt::active_engine_is_apple();
-        // Off + Apple live is silent data-loss (report 2026-07-25: 234c raw on
-        // 417s). Force Whisper safety-pass; log so operator sees the override.
-        let force_apple_whisper_safety =
-            prefer_apple && matches!(routing_mode, FinalPassRoutingMode::Off);
-        if force_apple_whisper_safety {
-            warn!(
-                "FINAL_PASS_MODE=off with Apple live — forcing Whisper safety-pass \
-                 (Off+Apple without fill is silent data-loss)"
-            );
-        }
-        let run_local_final_pass = use_local_stt
-            && (!matches!(routing_mode, FinalPassRoutingMode::Off) || force_apple_whisper_safety);
-        let effective_routing = if force_apple_whisper_safety {
-            FinalPassRoutingMode::Always
-        } else {
-            routing_mode
-        };
+        // Honest mode: Off never runs a full file re-pass (Apple or not).
+        // Smart/Always decide via should_skip_full_final_repass — no silent rewrite.
+        let run_local_final_pass =
+            use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off);
+        let effective_routing = routing_mode;
         let mut final_pass_secs = 0.0;
         let mut final_pass_stages = FinalPassStages::default();
 
@@ -4109,9 +3322,10 @@ impl RecordingController {
                 warn!("Final-pass local STT skipped: no audio file available");
             }
         } else if use_local_stt && !streaming_text.trim().is_empty() {
-            // Off (non-Apple live): streaming is final; still emit a skipped
-            // LocalFinalPass so adjudication/provenance stay honest.
-            // Apple+Off is handled above via force_apple_whisper_safety.
+            // Off (any live engine): streaming is final; still emit a skipped
+            // LocalFinalPass so adjudication/provenance stay honest. Dictionary
+            // still runs in process_transcript_text_pipeline — mode only gates
+            // the full WAV re-pass, never lexicon application.
             local_final_pass_attempted = true;
             info!(
                 "final_pass_skipped mode=off reason=routing_off chars={} live_engine={}",
@@ -4459,10 +3673,10 @@ impl RecordingController {
         // sessions still land in the decision overlay below, but they must not erase
         // the Settings formatting default by force-routing the transcript to RAW.
 
-        // ALWAYS-ON: Final post-processing pass (lexicon + cleanup + semantic gate)
-        // This ensures ALL output paths receive clean text regardless of mode.
-        // Contract: every chunk/transcript passes through StreamPostProcessor before
-        // reaching overlay, clipboard, augmentation, or dataset.
+        // ALWAYS-ON dictionary: lexicon + cleanup + semantic gate.
+        // Independent of FINAL_PASS_MODE (Always/Smart/Off) — mode only routes the
+        // optional full WAV re-pass / layered tail-patch. Every delivery path still
+        // runs StreamPostProcessor before overlay, clipboard, augmentation, or dataset.
         let postproc_started = std::time::Instant::now();
         let (clean_text, postprocess_stats) = {
             let mut finalizer = StreamPostProcessor::new();

@@ -702,12 +702,12 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         "Always never skips"
     );
     assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
-        "Off+Apple must NOT skip — Whisper safety-pass (report 2026-07-25 silent data-loss)"
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+        "Off is off even with Apple live — no silent Always rewrite"
     );
     assert!(
         should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
-        "Off+non-Apple still skips"
+        "Off+non-Apple skips"
     );
 
     let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
@@ -744,8 +744,16 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         1,
     );
     assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
-        "Smart+Apple must NOT skip Whisper fill (Apple live under-gens; adjudicator complete ≠ body complete)"
+        should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
+        "Smart+Apple complete skips full re-pass — tail-patch/layered owns live gap-fill; live engine must not rewrite mode"
+    );
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, apple_complete, true),
+        "Off+Apple complete still skips (Off means Off)"
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Always, apple_complete, true),
+        "Always+Apple still runs full re-pass"
     );
 }
 

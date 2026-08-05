@@ -33,8 +33,10 @@ backends per locale: `SpeechTranscriber` only when supported **and installed**,
 else `SFSpeechRecognizer` on-device (notably pl-PL — measured 0.24–2.3 s final
 pass vs the 20–30 s double-Whisper era). Stop-path final-pass routing is owned
 by `FINAL_PASS_MODE` (`always|smart|off`, Smart default; Settings → Dictation →
-"Final pass"); Smart skips the full re-pass only on a typed, adjudicator-backed
-completeness decision (`StreamingCompleteness`), never on punctuation.
+"Final pass"); Smart is layered/tail-patch during hold and skips the full
+re-pass only on a typed, adjudicator-backed completeness decision
+(`StreamingCompleteness`), never on punctuation and never rewritten by live
+engine (Off stays Off). Dictionary/lexicon always runs in postprocess.
 
 Two INFO receipts prove the path in `codescribe.log`:
 

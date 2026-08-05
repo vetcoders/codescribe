@@ -199,7 +199,7 @@ struct EnginePanel: View {
                 .fixedSize()
             }
             SettingsControlRow(title: "Final pass",
-                               subtitle: "Smart skips full re-pass when streaming is complete; Off keeps repetition cleanup") {
+                               subtitle: "Always = full re-pass; Smart = layered/tail-patch (skip when complete); Off = off. Dictionary always applies.") {
                 Menu {
                     ForEach(Self.finalPassModeOptions, id: \.id) { option in
                         Button {
