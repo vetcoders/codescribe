@@ -1224,10 +1224,15 @@ impl EventSink for SessionTelemetrySink {
                     .committed_chars
                     .saturating_add(text.trim().chars().count());
                 // Monotonic max: an out-of-order final never rewinds the boundary.
-                guard.committed_through_secs = Some(match guard.committed_through_secs {
-                    Some(current) if current >= *end_ts => current,
-                    _ => *end_ts,
-                });
+                // Non-finite end_ts must never poison it (parity with
+                // ComposerTranscript::note_committed_through): NaN falls through
+                // the `current >= end_ts` arm and would overwrite a valid max.
+                if end_ts.is_finite() {
+                    guard.committed_through_secs = Some(match guard.committed_through_secs {
+                        Some(current) if current >= *end_ts => current,
+                        _ => *end_ts,
+                    });
+                }
             }
             EngineEvent::SessionFinalised { .. } => {
                 guard.pending_tail = false;
@@ -1659,6 +1664,61 @@ mod tests {
                 .committed_through_secs
                 .is_none(),
             "reset clears the committed audio boundary"
+        );
+    }
+
+    /// Parity with `ComposerTranscript::note_committed_through` (PR #69
+    /// review): a non-finite `end_ts` (NaN/±inf) must never poison or advance
+    /// the boundary. NaN falls through the `current >= end_ts` guard and would
+    /// otherwise OVERWRITE a valid max — silently degrading Smart tail
+    /// gap-fill to Skip for the rest of the session.
+    #[test]
+    fn test_session_telemetry_ignores_non_finite_end_ts() {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+
+        let utterance_final =
+            |utterance_id: u64, start_ts: f32, end_ts: f32| EngineEvent::UtteranceFinal {
+                utterance_id,
+                text: "zdanie".to_string(),
+                raw_text: "zdanie".to_string(),
+                start_ts,
+                end_ts,
+                segments: vec![],
+                vad_speech_pct: Some(80.0),
+                avg_logprob: None,
+                compression_ratio: None,
+                quality_gate_dropped: false,
+                confidence_flags: vec![],
+            };
+
+        sink.on_event(&utterance_final(1, 0.0, 3.2));
+        sink.on_event(&utterance_final(2, 3.2, f32::NAN));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2),
+            "NaN end_ts must not overwrite the committed boundary"
+        );
+
+        sink.on_event(&utterance_final(3, 3.2, f32::INFINITY));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2),
+            "+inf end_ts must not advance the boundary"
+        );
+
+        sink.on_event(&utterance_final(4, 3.2, f32::NEG_INFINITY));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2),
+            "-inf end_ts must not disturb the boundary"
+        );
+
+        sink.on_event(&utterance_final(5, 3.2, 4.5));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(4.5),
+            "finite finals keep advancing after non-finite noise"
         );
     }
 

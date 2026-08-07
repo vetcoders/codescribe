@@ -1245,7 +1245,7 @@ description = "Build-script marker for optimized local app installs; permits onl
 
 [vars.CODESCRIBE_LICENSE_SIGNER_SEED_HEX]
 default = ""
-type = "string"
+type = "secret"
 reload = "restart"
 category = "build"
 description = "Offline Ed25519 signing seed (64 hex chars) read ONLY by the `license_signer` example when minting production licenses; the app runtime never reads it and it must never be stored in .env or CI"
