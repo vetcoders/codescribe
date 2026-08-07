@@ -451,18 +451,39 @@ enum ThreadRailMeta {
     }
 
     /// "today HH:mm" / "yesterday" / "MMM d" — same shape the rail always used.
-    private static func relativeTime(_ date: Date, now: Date, calendar: Calendar) -> String {
+    ///
+    /// Formatters are cached: `DateFormatter()` construction is a full ICU
+    /// engine init, and this runs once per rail row per refresh — a fresh
+    /// instance here pinned the main thread for whole refresh storms (sample
+    /// 2026-08-07 10:43, 42/93 samples under NSDateFormatter init). Main
+    /// thread only, like every rail meta path.
+    private static let todayFormatter = makeFormatter("'today' HH:mm")
+    private static let monthDayFormatter = makeFormatter("MMM d")
+
+    private static func makeFormatter(_ format: String) -> DateFormatter {
         let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    private static func relativeTime(_ date: Date, now: Date, calendar: Calendar) -> String {
         switch ThreadSection.section(for: date, now: now, calendar: calendar) {
-        case .today:
-            formatter.dateFormat = "'today' HH:mm"
         case .yesterday:
             return "yesterday"
+        case .today:
+            return string(from: date, via: todayFormatter, calendar: calendar)
         case .thisWeek, .older:
-            formatter.dateFormat = "MMM d"
+            return string(from: date, via: monthDayFormatter, calendar: calendar)
+        }
+    }
+
+    private static func string(from date: Date, via formatter: DateFormatter, calendar: Calendar) -> String {
+        // Reassigning calendar forces an ICU regenerate on next use — only
+        // touch it when a caller (tests inject fixed calendars) differs.
+        if formatter.calendar != calendar {
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
         }
         return formatter.string(from: date)
     }
