@@ -20,7 +20,17 @@ fn canonical_wav_path() -> PathBuf {
             return p;
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/data_assets/01_no-to-dobra.wav")
+    let legacy = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/assets/data_assets/01_no-to-dobra.wav");
+    if legacy.exists() {
+        return legacy;
+    }
+    // Committed synthetic TTS speech (no operator voice — the private fixtures
+    // were deprivatized out of the repo). Real Silero must classify the first
+    // 5 s as speech; the 440 Hz sine fallback below never passes that bar, so
+    // without this file the test is red on every checkout without
+    // ~/.codescribe/data_assets (e.g. CI).
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/synthetic_speech_tts.wav")
 }
 
 fn load_wav(path: &Path) -> (Vec<f32>, u32) {
