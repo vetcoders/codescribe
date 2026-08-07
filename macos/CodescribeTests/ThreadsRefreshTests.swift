@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import XCTest
 
@@ -49,6 +50,17 @@ final class ThreadsRefreshTests: XCTestCase {
         store.threads.compactMap(\.backendId)
     }
 
+    /// Refresh triggers coalesce onto the next main-queue tick (so a popover
+    /// close / window-ordering storm never runs disk re-reads inside the
+    /// notification callout — sample 2026-08-07 10:43, main thread 93/93 in
+    /// `_NSPopoverCloseAndAnimate → refreshThreadsFromExternalChange`).
+    /// Tests drain that tick before asserting.
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2)
+    }
+
     // MARK: C1 — refresh on window activation, and ONLY on a trigger
 
     func testWindowActivationRefreshesRailAndNoTriggerDoesNot() {
@@ -65,10 +77,10 @@ final class ThreadsRefreshTests: XCTestCase {
             "rail refreshed without a trigger — mechanism is not event-driven"
         )
 
-        // Window activation → the rail re-reads disk truth. The observer is
-        // registered on the main queue, so a main-thread post delivers
-        // synchronously.
+        // Window activation → the rail re-reads disk truth on the next
+        // main-queue tick (coalesced out of the notification callout).
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+        drainMainQueue()
         XCTAssertTrue(
             backendIds(store).contains("t_overlay"),
             "window activation must reload the persisted thread list"
@@ -83,6 +95,7 @@ final class ThreadsRefreshTests: XCTestCase {
         XCTAssertFalse(backendIds(store).contains("t_saved_elsewhere"))
 
         ThreadsChangeBus.postThreadsChanged()
+        drainMainQueue()
         XCTAssertTrue(
             backendIds(store).contains("t_saved_elsewhere"),
             "threadsDidChange must reload the persisted thread list"
@@ -101,6 +114,7 @@ final class ThreadsRefreshTests: XCTestCase {
         provider.stubbed.insert(("t_other", "Other"), at: 0)
 
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+        drainMainQueue()
         XCTAssertFalse(
             backendIds(store).contains("t_other"),
             "activation refresh must be a no-op while a turn is in flight"
@@ -146,6 +160,7 @@ final class ThreadsRefreshTests: XCTestCase {
 
         provider.stubbed.insert(("t_fresh", "Fresh overlay reply"), at: 0)
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+        drainMainQueue()
 
         XCTAssertEqual(
             backendIds(store).first, "t_fresh",
@@ -154,6 +169,54 @@ final class ThreadsRefreshTests: XCTestCase {
         XCTAssertEqual(
             store.currentThread?.backendId, "t_old",
             "an activation refresh must not steal the user's selection"
+        )
+    }
+
+    // MARK: C5 — an activation storm collapses to ONE disk re-read
+    //
+    // Every window in the app posts `didBecomeKey` (observer has object: nil),
+    // and AppKit fires it from INSIDE window-ordering operations (popover
+    // close → orderOut → becomeKeyWindow). Sample 2026-08-07 10:43: main
+    // thread pinned 93/93 in that callout chain. The storm must coalesce.
+
+    func testActivationStormCoalescesIntoSingleRefresh() {
+        let provider = StubThreadsProvider([("t_old", "Old thread")])
+        let store = AgentChatStore(threadsProvider: provider)
+        let baseline = provider.listCalls
+
+        for _ in 0..<10 {
+            NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+        }
+        drainMainQueue()
+
+        XCTAssertEqual(
+            provider.listCalls - baseline, 1,
+            "10 activation signals in one tick must collapse to one disk re-read"
+        )
+        XCTAssertEqual(backendIds(store), ["t_old"])
+    }
+
+    // MARK: C6 — identical disk truth must not rebuild the window body
+    //
+    // The 937189fd lesson: publishing an unchanged value still tears down and
+    // rebuilds the whole SwiftUI body. A refresh that finds the same rail
+    // rows must not publish at all.
+
+    func testUnchangedRefreshDoesNotPublish() {
+        let provider = StubThreadsProvider([("t_old", "Old thread")])
+        let store = AgentChatStore(threadsProvider: provider)
+        drainMainQueue()
+
+        var publishes = 0
+        let subscription = store.objectWillChange.sink { _ in publishes += 1 }
+        defer { subscription.cancel() }
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+        drainMainQueue()
+
+        XCTAssertEqual(
+            publishes, 0,
+            "a refresh that re-reads identical rail rows must not publish objectWillChange"
         )
     }
 
