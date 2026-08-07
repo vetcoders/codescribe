@@ -2174,11 +2174,12 @@ public protocol CodescribeDictationProtocol: AnyObject, Sendable {
      * every `UtteranceFinal` has been emitted synchronously into our
      * accumulator), and saves the WAV. So the streaming splice is complete
      * once stop returns cleanly.
-     * 2. A delivery-grade final pass re-transcribes the whole saved WAV, the
-     * same `transcribe_file_verdict` adjudicator the hotkey/overlay
-     * toggle-stop uses. Decoding the recording as one continuous utterance
-     * avoids the mid-word cut artifacts of the spliced streaming chunks, so
-     * its text is the quality the overlay delivers.
+     * 2. The final pass `FINAL_PASS_MODE` permits (`composer_final_pass_plan`,
+     * same law as the controller lane): **Always** re-transcribes the whole
+     * saved WAV with the `transcribe_file_verdict` adjudicator the
+     * hotkey/overlay toggle-stop uses; **Smart** transcribes only the audio
+     * after the last committed utterance and merges it as gap-fill;
+     * **Off** runs no Whisper at all and streaming is final.
      *
      * The final pass wins whenever it yields non-empty text; the streaming
      * splice is the fallback for a failed/timed-out/empty final pass (or a
@@ -2395,11 +2396,12 @@ open func startRecording(language: CsLanguage?)async throws   {
      * every `UtteranceFinal` has been emitted synchronously into our
      * accumulator), and saves the WAV. So the streaming splice is complete
      * once stop returns cleanly.
-     * 2. A delivery-grade final pass re-transcribes the whole saved WAV, the
-     * same `transcribe_file_verdict` adjudicator the hotkey/overlay
-     * toggle-stop uses. Decoding the recording as one continuous utterance
-     * avoids the mid-word cut artifacts of the spliced streaming chunks, so
-     * its text is the quality the overlay delivers.
+     * 2. The final pass `FINAL_PASS_MODE` permits (`composer_final_pass_plan`,
+     * same law as the controller lane): **Always** re-transcribes the whole
+     * saved WAV with the `transcribe_file_verdict` adjudicator the
+     * hotkey/overlay toggle-stop uses; **Smart** transcribes only the audio
+     * after the last committed utterance and merges it as gap-fill;
+     * **Off** runs no Whisper at all and streaming is final.
      *
      * The final pass wins whenever it yields non-empty text; the streaming
      * splice is the fallback for a failed/timed-out/empty final pass (or a
@@ -13134,7 +13136,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribedictation_start_recording() != 14108) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_stop_recording() != 48860) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_stop_recording() != 3278) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribedictation_transcribe_file() != 13892) {

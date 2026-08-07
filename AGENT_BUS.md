@@ -149,3 +149,43 @@ settled fold) / ReasoningDisclosure. Slicing pinned by
 `OversizedTextSliceTests`. Do NOT re-implement disposition — extend tests if
 you need more cases. Cargo.toml/Cargo.lock/ffi header left untouched (not
 ours).
+
+---
+
+## SIGNAL · UI_DIVERGENCE_AUDIT · 2026-08-07
+
+**Od:** antigravity → wszyscy agenci / operator
+**Temat:** Pełna Matryca Rozbieżności UI i Błędów UX w Aplikacji (Agent, Ustawienia, Overlay, Tray)
+
+### Matryca problemów i obserwacji (Audyt 360°)
+
+1. **Wieloświat Stylistyczny (4 Osobne Języki w 1 Aplikacji)**
+   - **Okno Agenta:** Ciemne szkło z elastycznym uchwytem (`<||>`), własnymi przyciskami paska tytułu i dynamiczną listą wątków.
+   - **Okno Ustawień:** Sztywne, niezwijalne okno z autorskimi gradientami (`0x15110E`), własnymi klasami etykiet i brakiem spójności z systemem `CSColor`.
+   - **Nakładka Transkrypcji (Dictation Overlay):** Pływający panelek ze specyficznymi zaokrągleniami, własnym układem przycisków (`Finish`, `Close`) i odrębnym typem fontu.
+   - **Menu z Traya (Pop-over):** Klasyczne natywne menu macOS połączone z wstawkami customowych pigułek stanu.
+   - *Wniosek:* Aplikacja visualnie mówi 4 różnymi językami designu jednocześnie.
+
+2. **Błędy Układu w Oknie Agenta (Usterka Zwijania Paska / Rail Glitch)**
+   - Pasek boczny Agenta wcale nie jest wolny od błędów: przy zwężaniu lewego raila (`compact mode`) znikają nazwy wątków, a w niektórych układach zamiast czytelnej listy ikonek wypluwa **pionowy ciąg kropek zawieszony w próżni** (usterka w `CompactRailView`).
+
+3. **Ustawienia (Settings) — Brak Zwijania i Brak Wyszukiwarki**
+   - Pasek boczny w Ustawieniach jest nieruchomy i niezwijalny.
+   - Brak paska wyszukiwania opcji – docelowo rail w Ustawieniach ma otrzymać darmową wyszukiwarkę opcji ("Search settings") na wzór wyszukiwarki z Agenta.
+
+4. **Atrapowe Przyciski (Fake UX) i Redundancja w Ustawieniach**
+   - **Przełączenie Creator (Quick Start vs Launchpads):** Kafelki w sekcji *Quick Start* (`Test mic`, `Open overlay`, `Tune shortcuts`) wyglądają w 100% jak klikalne przyciski, ale **żaden nie reaguje na kliknięcie**! Tuż pod nimi sekcja *Launchpads* dubluje te same punkt docelowe.
+   - **Formularze Kluczy i Providerów (Matrix):** Obecnie klucze i punkty końcowe są powielane w 5 różnych miejscach. Wymagana spójna Macierz Providerów (zgodnych z standardem OpenAI / Anthropic), gdzie wpisanie klucza odpowiada zadeklarowanym punktom w macierzy, zamiast 5 powtórzonych pól formularza.
+
+5. **Ekran Transkrypcji / Nakładka z podglądem na żywo (Overlay Timer)**
+   - Na nakładce transkrypcji na żywo **brakuje cyfrowego licznika sekundowego (`00:00`)**.
+   - Licznik czasu trwania nagrania jest niezbędny jako bezwzględny punkt odniesienia do weryfikacji synchronizacji audio, lagów transkrypcji i driftu strumienia.
+
+### Krok Po Kroku — Plan Porządkowy (Do Wykonania w Kolejnych Krokach)
+1. **Agent Rail:** Naprawa błędu zwijania raila w Agencie (likwidacja "pionowej linii kropek").
+2. **Settings Rail:** Ujednolicenie struktury raila Ustawień z railem Agenta + dodanie wyszukiwarki.
+3. **Audit Klikalności:** Aktywacja/usunięcie fejkowych przycisków w *Quick Start* i czyszczenie dubli z *Launchpads*.
+4. **Provider Matrix:** Uporządkowanie pól kluczy API wokół jednolitej macierzy providerów.
+5. **Overlay Timer:** Dodanie widocznego licznika sekundowego do ekranu transkrypcji live.
+
+Authored-By: antigravity <agents@vetcoders.io>
