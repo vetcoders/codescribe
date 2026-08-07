@@ -102,3 +102,4 @@ tests/assets/data_assets/*
 !/README.md
 !/SECURITY.md
 /*.txt
+/.aiassistant

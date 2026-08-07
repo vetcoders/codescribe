@@ -320,7 +320,7 @@ pub fn report_to_html(report: &TeacherReport) -> String {
   code {{ color: #fbbf24; }}
   .meta {{ color: #9aa0a6; font-size: 0.85rem; }}
 </style></head><body>
-<h1>Codescribe Teacher — proof of “mam rację i chuj”</h1>
+<h1>Codescribe Teacher</h1>
 <p class="meta">label: {label} · live tokens: {live_n} · whisper tokens: {wh_n} ·
 equal ops: {eq} · whisper errors: {we} · at live-weak: {wl} · hit-rate: {hit}</p>
 <div class="thesis"><strong>Thesis:</strong> {thesis}</div>
