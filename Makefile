@@ -432,9 +432,19 @@ engine-auth: $(ENGINE_BRIDGE)
 # live output for the same audio (tests/assets/data_assets/README.md). RED
 # until streaming bridge v2 lands — that is the point, not a flake. Every run
 # prints token similarity + a word-level diff for the grinding loop.
+#
+# LANE PINNED, not inherited. `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user
+# key (not promoted to settings.json), so `Config::inject_file_env_for_runtime`
+# copies it out of ~/.codescribe/.env into the process environment. An operator
+# running their daily dictation on `phase1` therefore armed Layer 1 *inside this
+# Layer-0 target* — and Layer 1 is supposed to diverge from Apple, so the bar
+# went red for doing its job. Measured 2026-08-08, one binary, consecutive runs:
+# `Other: 1` → 0.931 PASS, then `Other: 22` → 0.833 FAIL. Explicit `off` also
+# blocks the injection at source (it only fills keys absent from the env).
 .PHONY: test-engine-parity
 test-engine-parity: $(ENGINE_BRIDGE)
-	@CAPTURE_TEST=e2e_apple_live_parity \
+	@CODESCRIBE_LAYERED_TRANSCRIPTION=off \
+	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
 # Same bar, Layer 1 armed: Apple live commits, then Whisper re-transcribes each
