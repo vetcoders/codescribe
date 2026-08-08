@@ -8,23 +8,32 @@
 
 ## Layered Incremental Transcription (since 2026-05-26)
 
-Live transcription is no longer a single Whisper stream. Five concurrent layers cooperate, with
-Apple Speech as the live primary and Whisper / lexicon / small LLM / Silero paralingual
-classifier filling in behind it. The overlay (`app/ui/overlay/`) renders the union of layer
-events, never wipes and retypes — _NEVER REWRITE FROM ZERO_ is the operator-mandated invariant.
+Live transcription is no longer a single Whisper stream. The ADR specifies five cooperating
+layers, with Apple Speech as the live primary and Whisper / lexicon / small LLM / Silero
+paralingual classifier filling in behind it. The overlay renders the union of layer events and
+never wipes and retypes — _NEVER REWRITE FROM ZERO_ is the operator-mandated invariant. Since
+the UI moved to Swift, the enforcement point is
+`macos/Codescribe/Screens/Overlay/OverlayState.swift`: `applyReplaceRange` delegates to
+`OverlayTranscriptSegment.replaceRange`, which returns `false` (patch dropped) for any range
+that does not address the committed segment.
 
-| Layer           | Engine                                                  | Module                                                       |
-| --------------- | ------------------------------------------------------- | ------------------------------------------------------------ |
-| 0 — Live        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `core/stt/apple_stt/` + `core/stt/whisper/`                  |
-| 1 — Tail Patch  | Whisper background diff                                 | `core/stt/tail_patcher/` (new, Phase 1)                      |
-| 2 — Polish      | Lexicon + small LLM                                     | `core/lexicon/` + `core/llm/inline_polish.rs` (new, Phase 2) |
-| 3 — Paralingual | Silero classifier head                                  | `core/vad/paralingual_classifier.rs` (new, Phase 3)          |
-| 4 — Final BAM   | Session-end contextual pass                             | `core/pipeline/final_bam.rs` (new, Phase 4)                  |
-| Orchestrator    | —                                                       | `app/controller/layered_orchestrator.rs` (new, Phase 1)      |
+**Two of the five layers execute today, and only behind an opt-in flag.** The table below is
+inventory, not intent — the ADR's
+[Phase delivery status](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md#phase-delivery-status-2026-08-08)
+carries the per-phase detail.
 
-Existing files (`core/stt/whisper/`, `core/audio/streaming_recorder.rs`, `core/vad/silero_ort.rs`,
-`app/ui/overlay/mod.rs`) keep their public APIs — the layered orchestrator reuses them as Layer 1
-and Layer 3 backends. See ADR §"What is shipped today" for the gap analysis.
+| Layer           | Engine                                                  | Status | Where it lives                                                                        |
+| --------------- | ------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------- |
+| 0 — Live        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | ✅ shipped, default | `core/stt/apple_stt/` + `core/stt/whisper/`                                   |
+| 1 — Tail Patch  | Whisper background diff                                 | ✅ delivered, **opt-in** (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`, default off) | `core/stt/tail_patcher/`, wired into `core/pipeline/streaming/session.rs` **and** `core/pipeline/streaming/apple_live_session.rs` |
+| 2 — Lexicon     | Dictionary substitution                                 | ⚠️ partial, different shape | `core/pipeline/stream_postprocess.rs::apply_lexicon`, applied at seal time on the Apple path — not the ADR's debounced `core/lexicon/` module |
+| 2 — LLM polish  | Small inline LLM                                        | ❌ not built | no `core/llm/inline_polish.rs`; stop-path `core/llm/ai_formatting.rs` is a different surface |
+| 3 — Paralingual | Silero classifier head                                  | ❌ not built | `InsertAnnotation` transport exists end-to-end; no producer                            |
+| 4 — Final BAM   | Session-end contextual pass                             | ❌ not built | no `core/pipeline/final_bam.rs`; `FINAL_PASS_MODE` is a different mechanism            |
+| Orchestrator    | —                                                       | ❌ not built, not currently needed | both live paths share the `tail_patcher` gate directly; no `app/controller/layered_orchestrator.rs` |
+
+Existing files (`core/stt/whisper/`, `core/audio/streaming_recorder.rs`, `core/vad/silero_ort.rs`)
+keep their public APIs — Layer 1 reuses them as its backend.
 
 ### Final pass routing & stop-path receipts (since W11, 2026-07-23)
 
@@ -41,9 +50,10 @@ by `FINAL_PASS_MODE` (`always|smart|off`, Smart default; Settings → Dictation 
 adjudicator-backed completeness decision (`StreamingCompleteness`) — never on
 punctuation and never rewritten by live engine (Off stays Off; Off never forces
 Whisper at stop). Live gap-fill (Layer 1 Whisper tail-patch) is a **separate**
-opt-in via `CODESCRIBE_LAYERED_TRANSCRIPTION` (default off; phase ≥ 1 on the
-VAD/scheduler path today — not yet on Apple progressive live). Smart works
-*with* layered when both are enabled; Smart does not enable layered. Dictionary/lexicon always runs in postprocess.
+opt-in via `CODESCRIBE_LAYERED_TRANSCRIPTION` (default off; phase ≥ 1 arms it on
+**both** live paths — VAD/scheduler and the default Apple progressive live, wired
+2026-08-08 in `a6b1233d`). Smart works *with* layered when both are enabled;
+Smart does not enable layered. Dictionary/lexicon always runs in postprocess.
 
 Two INFO receipts prove the path in `codescribe.log`:
 
@@ -63,31 +73,45 @@ runtime truth (including Apple→Whisper fallback), never configured preference.
 flowchart TB
     %% High-level packaging / layers
 
-    subgraph APP[app/ (macOS app)]
+    subgraph UI["macos/Codescribe/ (SwiftUI + AppKit)"]
         direction LR
-        HK[os/hotkeys.rs]
-        CTRL[controller/]
-        IPC_SERVER[ipc/server.rs]
-        TRAY[ui/tray/]
-        OVERLAY[ui/overlay/ + ui/voice_chat/]
-        SETTINGS[ui/settings/]
-
-        subgraph CORE[core/ (portable)]
-            direction LR
-            WH[stt/whisper/]
-            CO[config/]
-            AU[audio/]
-            IPC_CORE[ipc types]
-        end
-
-        APP --> CORE
+        OVERLAY[Screens/Overlay/OverlayState.swift]
+        CHAT[Screens/AgentChat/]
+        SETTINGS[Screens/Settings/]
+        TRAY[Screens/Tray/]
     end
 
-    WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8\nruntime-loaded]
+    subgraph BRIDGE["bridge/ (UniFFI)"]
+        FFI[Rust ↔ Swift bindings\nmake app-bindings]
+    end
+
+    subgraph APP["app/ (Rust app layer)"]
+        direction LR
+        HK[os/hotkeys/]
+        CTRL[controller/]
+        PRES[presentation/emitter.rs]
+        AGENT[agent/]
+    end
+
+    subgraph CORE["core/ (portable)"]
+        direction LR
+        WH[stt/whisper/]
+        APPLE[stt/apple_stt/]
+        TAIL[stt/tail_patcher/]
+        CO[config/]
+        AU[audio/]
+        IPC_CORE[ipc types]
+    end
+
+    UI --> BRIDGE
+    BRIDGE --> APP
+    APP --> CORE
+
+    WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8\nembedded or runtime-loaded]
 
     subgraph TOOLS[Quality & CLI Tools]
-        CLI[bin/codescribe_quality]
-        LOOP[bin/codescribe_loop]
+        TEACH[bin/codescribe-teacher]
+        QUBE[bin/qube_daemon + qube_report]
     end
 
     APP -.-> TOOLS
@@ -99,15 +123,16 @@ flowchart TB
 
 ```
 ┌─────────────┐    ┌────────────┐    ┌───────────────┐    ┌──────────────┐
-│ CGEventTap  │───►│ hotkeys.rs │───►│ controller/   │───►│ whisper/     │
-│ (macOS API) │    │            │    │   mod.rs      │    │   engine.rs  │
+│ CGEventTap  │───►│ os/hotkeys/│───►│ controller/   │───►│ stt/apple_stt│
+│ (macOS API) │    │            │    │   mod.rs      │    │  + whisper/  │
 └─────────────┘    └────────────┘    └───────────────┘    └──────────────┘
        │                                    │                     │
        │                                    ▼                     ▼
        │                            ┌──────────────┐      ┌──────────────┐
-       │                            │ ui/voice_    │      │ ui/overlay/  │
-       │                            │ chat/        │      │              │
+       │                            │ Screens/     │      │ Screens/     │
+       │                            │ AgentChat/   │      │ Overlay/     │
        │                            └──────────────┘      └──────────────┘
+       │                              (Swift, via bridge/ UniFFI)
        │
   Fn hold → Raw mode (no AI)
   Fn+Shift hold → Assistive arm (default; Cmd selectable in Settings)
@@ -148,33 +173,36 @@ Codescribe/
 │   ├── embedder/                 # MiniLM embedder
 │   └── quality/                  # Quality loop + reports
 │
-├── app/                          # macOS app (AppKit, hotkeys, tray)
-│   ├── controller/               # Recording state machine
-│   ├── os/                       # Hotkeys, permissions, clipboard
-│   └── ui/
-│       ├── overlay/              # Dictation overlay window
-│       ├── voice_chat/           # Overlay UI
-│       ├── settings/             # Persistent settings window
-│       ├── onboarding/           # First-run flow
-│       ├── tray/                 # Menu bar UI
-│       └── shared/               # UI helpers/tokens
+├── app/                          # Rust app layer (state machine, OS integration)
+│   ├── controller/               # Recording state machine, stop-path, serving truth
+│   ├── os/                       # Hotkeys (CGEventTap), permissions, clipboard,
+│   │                             #   selection, hold badge, tray status, thermal
+│   ├── presentation/             # PresentationEmitter (typing animation)
+│   ├── agent/                    # Agent loop, tools, monitor
+│   └── agent_delivery.rs         # Voice → thread delivery gateway
+│
+├── bridge/                       # UniFFI bridge (Rust ↔ Swift); `make app-bindings`
+│
+├── macos/Codescribe/             # The macOS app UI — SwiftUI/AppKit
+│   ├── App.swift                 # AppDelegate / lifecycle
+│   ├── Core/                     # AppModel, ComposerDictation, chat/thread engines
+│   ├── Screens/
+│   │   ├── Overlay/              # OverlayState.swift — layered render enforcement point
+│   │   ├── AgentChat/            # Assistive chat surface
+│   │   ├── Settings/             # Settings window + SettingsViewModel
+│   │   ├── Onboarding/           # First-run flow
+│   │   └── Tray/                 # Menu bar UI
+│   ├── Services/                 # UpdaterService (Sparkle), platform services
+│   └── DesignSystem/             # Tokens, shared components
 │
 ├── bin/                          # CLI binaries
+│   ├── codescribe-teacher.rs     # Teacher / correction replay
+│   ├── qube_daemon.rs            # Qube donor daemon
+│   └── qube_report.rs            # Qube reporting
+│
 ├── tests/                        # Integration/E2E tests
 ├── assets/                       # Icons + packaged assets
 ├── scripts/                      # Release + tooling scripts
-│   │   └── types.rs              # MenuIds, TrayMenuEvent
-│   │
-│   ├── hotkeys.rs                # CGEventTap handler
-│   ├── ui.rs                     # Badge, Dock icon
-│   ├── ui_helpers.rs             # AppKit utilities
-│   ├── clipboard.rs              # Paste to active app
-│   ├── permissions.rs            # macOS permission checks
-│   └── ipc/                      # IPC server (Unix socket)
-│
-├── bin/                          # CLI tools
-│   ├── codescribe_quality.rs     # Batch quality reports
-│   └── codescribe_loop.rs        # Self-improving loop
 │
 ├── docs/
 │   ├── guide/                    # User documentation
@@ -228,14 +256,21 @@ match (hotkey, flags) {
 }
 ```
 
-### Voice Chat UI Components
+### Agent Chat UI Components (`macos/Codescribe/Screens/AgentChat/`)
 
-| Module        | LOC | Purpose                          |
-| ------------- | --- | -------------------------------- |
-| `mod.rs`      | 632 | UI creation with AppKit          |
-| `api.rs`      | 589 | Public API (update_status, etc.) |
-| `handlers.rs` | 450 | Objective-C action handlers      |
-| `state.rs`    | 148 | VoiceChatOverlayState struct     |
+The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `state.rs`,
+`VoiceChatOverlayState`) no longer exists — the surface was rewritten in Swift.
+
+| Module                          | LOC  | Purpose                                        |
+| ------------------------------- | ---- | ---------------------------------------------- |
+| `AgentChatStore.swift`          | 2464 | Chat/thread state, config + thread change buses |
+| `MessageList.swift`             | 1535 | Message rendering, streaming assistant bubbles  |
+| `ChatComponents.swift`          | 1008 | Shared bubble / attachment / tool components    |
+| `Composer.swift`                |  823 | Input composer (dictation, attachments, send)   |
+| `ThreadRail.swift`              |  498 | Thread list rail                                |
+| `AgentChatView.swift`           |  473 | Screen composition                              |
+| `ComposerTextView.swift`        |  370 | NSTextView bridge for the composer              |
+| `AssistivePromptPresentation.swift` | 346 | Assistive-lane prompt presentation          |
 
 ### Whisper Engine
 
