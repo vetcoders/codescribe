@@ -4105,3 +4105,227 @@ fn test_formatted_transcript_persists_before_paste() {
          cannot drop the AI-formatted layer from history"
     );
 }
+
+fn write_donor_test_wav(path: &std::path::Path, samples: &[i16]) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).expect("create wav");
+    for &s in samples {
+        writer.write_sample(s).expect("sample");
+    }
+    writer.finalize().expect("finalize");
+}
+
+fn qube_inbox_pairs(root: &std::path::Path) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    let inbox = root.join("qube_inbox");
+    let mut pairs = Vec::new();
+    let Ok(days) = std::fs::read_dir(&inbox) else {
+        return pairs;
+    };
+    for day in days.flatten() {
+        if !day.path().is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(day.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "wav") {
+                let txt = path.with_extension("txt");
+                if txt.exists() {
+                    pairs.push((path, txt));
+                }
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
+/// W3-A: donor ON writes date-subfolder WAV+TXT of the delivered transcript.
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_writes_layout_when_on() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::set_value("CODESCRIBE_QUBE_DONOR", "on");
+    let _final = EnvVarGuard::set_value("FINAL_PASS_MODE", "off");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[100, -100, 200, -200, 50, 60]);
+    let delivered = "Donor transcript for lexicon mining.";
+    let mut params = test_transcript_pipeline_params(
+        delivered,
+        config,
+        true, // force_raw — skip formatting side paths
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+    params.raw_save_enabled = false;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline must succeed with donor on");
+
+    let pairs = qube_inbox_pairs(temp_dir.path());
+    assert_eq!(pairs.len(), 1, "donor ON must write exactly one pair");
+    let (wav, txt) = &pairs[0];
+    assert!(wav.metadata().expect("wav meta").len() > 0);
+    assert_eq!(std::fs::read_to_string(txt).expect("read txt"), delivered);
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(
+        wav.to_string_lossy()
+            .contains(&format!("qube_inbox/{day}/")),
+        "layout must be qube_inbox/<YYYY-MM-DD>/: {}",
+        wav.display()
+    );
+}
+
+/// W3-A: default-off donor is bit-identical stop — no qube_inbox files.
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_off_by_default_no_files() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::unset("CODESCRIBE_QUBE_DONOR");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[1, 2, 3, 4]);
+    let mut params = test_transcript_pipeline_params(
+        "should not be donated",
+        config,
+        true,
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline ok");
+
+    assert!(
+        !temp_dir.path().join("qube_inbox").exists(),
+        "donor OFF must not create qube_inbox"
+    );
+    assert!(qube_inbox_pairs(temp_dir.path()).is_empty());
+}
+
+/// W3-A: Off + donor ON never invokes Whisper on the donor/stop surface.
+///
+/// process_transcript_text_pipeline is post-final-pass; donor only copies files.
+/// Final-pass Off is asserted via routing mode; whisper timing stays default.
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_zero_whisper_when_final_pass_off() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::set_value("CODESCRIBE_QUBE_DONOR", "on");
+    let _final = EnvVarGuard::set_value("FINAL_PASS_MODE", "off");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    // Drain any stale timing from prior tests under #[serial].
+    let _ = codescribe_core::stt::whisper::take_final_pass_timing();
+
+    assert_eq!(
+        final_pass_routing_mode(),
+        FinalPassRoutingMode::Off,
+        "FINAL_PASS_MODE=off must resolve to Off (no Whisper re-pass)"
+    );
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        use_local_stt: true,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[11, 22, 33, 44, 55]);
+    let mut params = test_transcript_pipeline_params(
+        "off mode donor",
+        config,
+        true,
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline ok");
+
+    assert_eq!(qube_inbox_pairs(temp_dir.path()).len(), 1);
+    let timing = codescribe_core::stt::whisper::take_final_pass_timing();
+    assert_eq!(
+        timing,
+        codescribe_core::stt::whisper::FinalPassTiming::default(),
+        "donor path under Off must not produce Whisper final-pass timing"
+    );
+}
+
+/// W3-A: donor works independent of FINAL_PASS_MODE (Smart path).
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_works_under_smart_mode() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::set_value("CODESCRIBE_QUBE_DONOR", "on");
+    let _final = EnvVarGuard::set_value("FINAL_PASS_MODE", "smart");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[7, 8, 9, 10]);
+    let mut params = test_transcript_pipeline_params(
+        "smart mode donor text",
+        config,
+        true,
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline ok");
+
+    assert_eq!(
+        qube_inbox_pairs(temp_dir.path()).len(),
+        1,
+        "donor must work under Smart as well as Off"
+    );
+}

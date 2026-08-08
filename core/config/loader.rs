@@ -733,6 +733,11 @@ impl Config {
         {
             Self::config_init_set_env("QUBE_DAEMON_AUTOSTART", if v { "1" } else { "0" });
         }
+        if Self::config_runtime_env_var("CODESCRIBE_QUBE_DONOR").is_err()
+            && let Some(ref v) = settings.qube_donor
+        {
+            Self::safe_set_env("CODESCRIBE_QUBE_DONOR", v);
+        }
         if Self::config_runtime_env_var("AGENT_ENTER_SENDS").is_err()
             && let Some(v) = settings.agent_enter_sends
         {
