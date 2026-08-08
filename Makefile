@@ -604,7 +604,7 @@ smoke-macos27:
 	@./scripts/smoke-macos27.sh $(SMOKE_ARGS)
 
 # SwiftUI front-end unit tests (macos/CodescribeTests) — the only gate that
-# executes them. 317 tests in ~4.5 s once the dylib and project exist.
+# executes them. 318 tests in ~4.3 s once the dylib and project exist.
 #
 # Deliberately NOT wired into `check`: it needs Xcode and a built ffi dylib,
 # and the self-hosted CI runners are cargo-only. Run it locally after touching
@@ -630,7 +630,22 @@ smoke-macos27:
 #
 # Narrow a run with SWIFT_TEST_ARGS:
 #   make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'
+#
+# WALL-CLOCK BUDGET. This gate used to report rc=0 whether the suite took 4 s or
+# 47 s, which is how a 10x regression lived in the tree with "4.1-4.5 s (n=4)"
+# recorded beside it as fact. Measured 2026-08-08, identical tree, identical 317
+# tests, three consecutive runs: 47.5 / 28.2 / 4.5 s at ~3 s of CPU — the spread
+# was BLOCKING (real Keychain calls from an XCTest host the core read as
+# production), not work. Fixed at the source in core/config/keychain.rs; the
+# budget stays because the next such regression should be a red gate, not
+# folklore about an unexplained hang.
+#
+# 30 s is ~6x the measured fast mode and would have failed both bad runs above,
+# while leaving room for a loaded host (this machine also runs CI). Raise it for
+# a genuinely busy box rather than deleting it:
+#   make test-swift SWIFT_TEST_MAX_SECONDS=90
 SWIFT_TEST_CODESIGN_IDENTITY ?= -
+SWIFT_TEST_MAX_SECONDS ?= 30
 .PHONY: test-swift
 test-swift:
 	@set -o pipefail; \
@@ -654,7 +669,20 @@ test-swift:
 	  echo "test-swift: silent pass, not a green gate. Check SWIFT_TEST_ARGS." >&2; \
 	  rc=3; \
 	fi; \
-	echo "test-swift: full log $(SWIFT_TEST_LOG) (rc=$$rc, executed=$${executed:-0})"; \
+	secs=$$(sed -nE 's/^.*Executed [0-9]+ tests?,.* in ([0-9.]+) \([0-9.]+\) seconds.*$$/\1/p' $(SWIFT_TEST_LOG) | tail -1); \
+	slowest=$$(sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$$/\3 \1.\2/p" $(SWIFT_TEST_LOG) | sort -rn | head -1); \
+	echo "test-swift: full log $(SWIFT_TEST_LOG) (rc=$$rc, executed=$${executed:-0}, seconds=$${secs:-unknown})"; \
+	if [ -n "$$slowest" ]; then echo "test-swift: slowest test $$slowest"; fi; \
+	if [ "$$rc" -eq 0 ] && [ -n "$$secs" ] && \
+	   awk -v s="$$secs" -v m="$(SWIFT_TEST_MAX_SECONDS)" 'BEGIN{exit !(s>m)}'; then \
+	  echo "test-swift: suite took $$secs s, over the $(SWIFT_TEST_MAX_SECONDS) s budget." >&2; \
+	  echo "test-swift: green-but-slow is the shape this gate exists to catch — a 10x swing" >&2; \
+	  echo "test-swift: here has meant the core is doing real (blocking) work for a test run," >&2; \
+	  echo "test-swift: not that the machine is busy. Check the slowest test above, then" >&2; \
+	  echo "test-swift: core/config/keychain.rs::in_xctest_host and macos/CodescribeTests/README.md." >&2; \
+	  echo "test-swift: if the host really is loaded: make test-swift SWIFT_TEST_MAX_SECONDS=90" >&2; \
+	  rc=4; \
+	fi; \
 	exit $$rc
 
 # Apple live engine proof.

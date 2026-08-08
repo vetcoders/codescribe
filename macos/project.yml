@@ -104,10 +104,9 @@ targets:
   CodescribeTests:
     type: bundle.unit-test
     platform: macOS
-    # README.md documents why this suite does not run (the XCTest host boots the
-    # Rust core through AppDelegate's eager properties). It is documentation for
-    # humans, not a fixture — excluded so xcodegen stops copying it into the
-    # test bundle's resources.
+    # README.md documents how this suite runs, what it costs, and the invocation
+    # traps around it. It is documentation for humans, not a fixture — excluded
+    # so xcodegen stops copying it into the test bundle's resources.
     sources:
       - path: CodescribeTests
         excludes: [README.md]

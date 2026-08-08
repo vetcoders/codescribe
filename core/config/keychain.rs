@@ -145,6 +145,9 @@ fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
 /// the harness signals below (the `target/**/deps/` exe path and `RUST_TEST_THREADS`), and
 /// may additionally set `CODESCRIBE_DISABLE_KEYCHAIN=1` — which the Makefile `TEST_SETUP` does.
 /// `CODESCRIBE_DATA_DIR` does NOT skip Keychain: it is a production-valid data-dir override.
+///
+/// The Swift front-end suite is a THIRD harness shape and none of the Rust signals see it —
+/// see `in_xctest_host` below.
 fn is_test_env() -> bool {
     if cfg!(test) {
         return true;
@@ -165,6 +168,9 @@ fn is_test_env() -> bool {
     if std::env::var_os("RUST_TEST_THREADS").is_some() {
         return true;
     }
+    if in_xctest_host() {
+        return true;
+    }
     keychain_disabled_by_signals(
         std::env::var_os("CODESCRIBE_DISABLE_KEYCHAIN").is_some(),
         std::env::var_os("CODESCRIBE_DATA_DIR").is_some(),
@@ -183,6 +189,43 @@ fn is_test_env() -> bool {
 fn keychain_disabled_by_signals(disable_keychain: bool, data_dir_set: bool, ci_set: bool) -> bool {
     let _ = (data_dir_set, ci_set);
     disable_keychain
+}
+
+/// True when this process is an XCTest host — the Swift front-end suite.
+///
+/// This is the harness shape every other signal in `is_test_env` misses, and missing it is
+/// not free. `make test-swift` hosts the tests inside the app itself, so the executable is
+/// `Codescribe.app/Contents/MacOS/Codescribe` (not `target/**/deps/*`) and libtest never
+/// runs, so `RUST_TEST_THREADS` is unset. The core therefore classified a test run as
+/// production and issued real Keychain calls from a binary whose ad-hoc signature changes on
+/// every rebuild, so macOS re-evaluated the item ACL instead of reusing a cached decision.
+///
+/// Measured 2026-08-08 on this host, identical tree and identical 317 tests, six runs:
+/// without the bypass 47.5 / 28.2 / 4.5 s, with it 4.19 / 4.69 / 4.22 s — ~3 s of CPU in
+/// every case, so the spread was blocking, not work. See `macos/CodescribeTests/README.md`.
+///
+/// Every other test lane in this repo already bypasses Keychain (`TEST_SETUP` in the
+/// Makefile, `CODESCRIBE_DISABLE_KEYCHAIN` in `.github/workflows/rust.yml`, the harness
+/// signals above). Detecting the host here rather than exporting the kill switch from the
+/// Makefile keeps that guarantee attached to the RUN, not to the invocation: an XCTest host
+/// launched from Xcode, from a script, or by a future CI job inherits it too.
+fn in_xctest_host() -> bool {
+    is_xctest_host_by_signals(
+        std::env::var_os("XCTestConfigurationFilePath").is_some(),
+        std::env::var_os("XCTestSessionIdentifier").is_some(),
+        std::env::var_os("XCTestBundlePath").is_some(),
+    )
+}
+
+/// Pure XCTest-host policy over environment signals — any one of them is proof.
+///
+/// Three markers rather than one because Xcode has moved which it exports across versions;
+/// `swift_suite_env_markers_pin_the_signal_the_core_keys_on` (CodescribeTests) asserts from
+/// inside a live host that at least one is still present, so this cannot rot silently into a
+/// function that always returns false. Kept side-effect-free so the policy is unit-testable
+/// without mutating process-global env vars (which race across the suite).
+fn is_xctest_host_by_signals(config_file: bool, session_id: bool, bundle_path: bool) -> bool {
+    config_file || session_id || bundle_path
 }
 
 /// Saves a secret to the macOS Keychain under the Codescribe service.
@@ -336,7 +379,26 @@ pub fn populate_env_from_keychain() {
 
 #[cfg(test)]
 mod tests {
-    use super::{keychain_disabled_by_signals, resolve_runtime_key};
+    use super::{is_xctest_host_by_signals, keychain_disabled_by_signals, resolve_runtime_key};
+
+    #[test]
+    fn any_xctest_marker_identifies_the_swift_test_host() {
+        // The Swift suite is a test run that looks like production to every other signal in
+        // `is_test_env`: an app binary, no libtest, no `target/**/deps/` path. Any one marker
+        // is enough — Xcode has moved which of the three it exports between versions, and a
+        // policy that required all three would go quietly false on the next Xcode bump.
+        assert!(is_xctest_host_by_signals(true, false, false));
+        assert!(is_xctest_host_by_signals(false, true, false));
+        assert!(is_xctest_host_by_signals(false, false, true));
+        assert!(is_xctest_host_by_signals(true, true, true));
+    }
+
+    #[test]
+    fn a_production_launch_is_never_mistaken_for_an_xctest_host() {
+        // The whole value of this detector is that it cannot fire for a user launch: it would
+        // drop persisted API keys / OAuth tokens on the floor. No markers, no bypass.
+        assert!(!is_xctest_host_by_signals(false, false, false));
+    }
 
     #[test]
     fn disable_keychain_flag_is_honored() {
