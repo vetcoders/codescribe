@@ -179,6 +179,16 @@ Inventing a different layer shape from memory. This file is the shape.
   Layer 1 fails the bar for being more accurate. `test-engine-parity` pins the lane to `off` for
   exactly this reason; a layered run
   must be scored against the human reference beside the fixture, never against Apple.
+  **Which target measures which lane** — the pin is per-target, so the lane is chosen by the
+  target you run, never by an env var you prepend: `make test-engine-parity` (Layer 0, pinned
+  off), `make test-engine-parity-layered` (phase1, the only incantation that actually arms
+  Layer 1), `make test-engine-parity-both` (runs both arms, prints both numbers and the delta).
+  Prepending `CODESCRIBE_LAYERED_TRANSCRIPTION=…` to any of them is now **refused** with exit 2:
+  a recipe pin beats CLI env, so that form silently measured the other lane and reported the
+  number as yours — it is how the W12 layered arm was recorded green while asserting nothing
+  (review P1-01). Re-measured 2026-08-08 through the correct target: layer0 0.902 (0 patches),
+  phase1 0.863 (24 patches), same 157 matching tokens in both arms — the layered arm loses only
+  because gap-filling grows the denominator.
   app/controller/mod.rs::adjudicate_recording_truth — "never full-replace live with Whisper";
   length-regression guard keeps the stream as the floor of truth.
 

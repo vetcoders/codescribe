@@ -2,6 +2,13 @@ import AppKit
 import XCTest
 @testable import Codescribe
 
+// NOT EXECUTED BY ANY GATE. The XCTest host reuses the app bundle and boots the
+// Rust core through AppDelegate's eager stored properties before the
+// `isRunningTests` guards can stop it, so `xcodebuild test` hangs while
+// Codescribe.app is running. The marker-rebase assertions below are therefore
+// verified by compilation only. See CodescribeTests/README.md for the mechanism
+// and the named follow-up.
+
 private final class OverlayStateTestEngine: DictationEngine {
     var pastedText: String?
     var pasteCallCount = 0
