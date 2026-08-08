@@ -11,6 +11,7 @@ pub(crate) mod apple_live_session;
 pub(crate) mod correction;
 pub(crate) mod emitter;
 pub mod live_assembly;
+pub(crate) mod live_audio_buffer;
 #[cfg(any(test, feature = "offline_eval"))]
 pub(crate) mod offline;
 pub(crate) mod pipeline;
