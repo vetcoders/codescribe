@@ -8,6 +8,7 @@
 pub mod conversation;
 pub mod history;
 pub mod notes;
+pub mod qube_donor;
 
 // Re-export main types (public API for GUI apps)
 pub use conversation::{
@@ -34,4 +35,8 @@ pub use history::{
 
 pub use notes::{
     append_quick_note, notes_dir, open_notes_folder, open_today_note, today_note_path,
+};
+pub use qube_donor::{
+    QubeDonorPaths, persist_qube_donor_pair, qube_donor_enabled, qube_inbox_base_dir,
+    try_persist_qube_donor_at_stop,
 };

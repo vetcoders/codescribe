@@ -3761,6 +3761,15 @@ impl RecordingController {
         }
         let delivery_secs = delivery_started.elapsed().as_secs_f64();
 
+        // Opt-in qube donor (CODESCRIBE_QUBE_DONOR=on): write WAV + delivered TXT
+        // for lexicon mining even when FINAL_PASS_MODE=off. Files only — never
+        // Whisper. Failures warn; delivery pipeline is unaffected.
+        crate::state::qube_donor::try_persist_qube_donor_at_stop(
+            audio_path.as_ref().map(|p| p.as_path()),
+            final_formatted_text.as_str(),
+            recording_timestamp,
+        );
+
         if let Some(cloud_verdict) = cloud_verdict_opt {
             let entry = crate::state::history::save_entry_with_timestamp_and_slug(
                 &cloud_verdict.text,

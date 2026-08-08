@@ -1165,6 +1165,13 @@ reload = "restart"
 category = "quality"
 description = "Start bundled qube-daemon on app launch when available; otherwise preserve the preference for external launchd/shell automation"
 
+[vars.CODESCRIBE_QUBE_DONOR]
+default = "off"
+type = "string"
+reload = "hot"
+category = "quality"
+description = "Opt-in qube donor at stop (off|on, default off). When on, copies each session's WAV + delivered transcript into ~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt} for lexicon candidate mining by qube-daemon. Writes files only — never runs Whisper. Orthogonal to FINAL_PASS_MODE (works under off/smart/always). Persist failures log a warning and never fail delivery."
+
 [vars.QUBE_DAEMON_USE_CLOUD_STT]
 default = "0"
 type = "bool"

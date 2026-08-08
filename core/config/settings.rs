@@ -169,6 +169,9 @@ pub struct UserSettings {
     pub start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qube_daemon_autostart: Option<bool>,
+    /// Opt-in qube donor (`on` | `off`). Seeds `CODESCRIBE_QUBE_DONOR`. Default off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qube_donor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_enter_sends: Option<bool>,
     /// First-run operating lane chosen during onboarding ("basic" | "agentic").
@@ -447,6 +450,9 @@ struct SystemV2 {
     start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     qube_daemon_autostart: Option<bool>,
+    /// Opt-in qube donor (`on` | `off`). Seeds `CODESCRIBE_QUBE_DONOR`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qube_donor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     onboarding_mode: Option<String>,
     // Agent workspace roots (colon-joined into AGENT_WORKSPACE_ROOTS). List on
@@ -622,6 +628,7 @@ impl UserSettings {
             system: Some(SystemV2 {
                 start_at_login: self.start_at_login,
                 qube_daemon_autostart: self.qube_daemon_autostart,
+                qube_donor: self.qube_donor.clone(),
                 onboarding_mode: self.onboarding_mode.clone(),
                 agent_workspace_roots: self.agent_workspace_roots.clone(),
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
@@ -771,6 +778,7 @@ impl UserSettings {
             quick_notes_save_only: v2.features.as_ref().and_then(|f| f.quick_notes_save_only),
             start_at_login: v2.system.as_ref().and_then(|s| s.start_at_login),
             qube_daemon_autostart: v2.system.as_ref().and_then(|s| s.qube_daemon_autostart),
+            qube_donor: v2.system.as_ref().and_then(|s| s.qube_donor.clone()),
             onboarding_mode: v2.system.as_ref().and_then(|s| s.onboarding_mode.clone()),
             agent_workspace_roots: v2
                 .system
@@ -1123,6 +1131,16 @@ impl UserSettings {
             }
             "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
                 self.layered_transcription = Some(value.to_owned())
+            }
+            "CODESCRIBE_QUBE_DONOR" => {
+                let normalized = value.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "on" | "off" => self.qube_donor = Some(normalized),
+                    _ => {
+                        warn!("Rejected qube_donor write (expected on|off): {value}");
+                        return;
+                    }
+                }
             }
             "AGENT_WORKSPACE_ROOTS" => {
                 let roots = parse_agent_workspace_roots(value);
