@@ -334,10 +334,16 @@ test-formatting:
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 # ── Core engine (freezed+append / Apple live multi-utterance) ────────────────
+# Private fixtures live OUTSIDE the repo (real operator speech, deprivatized
+# twice — .gitignore keeps tests/assets/data_assets empty by design). Resolve
+# through the documented order: CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets
+# → the in-repo drop dir (tests/assets/data_assets/README.md). Hardcoding the
+# third tier is what left every ENGINE_* target dead on a populated host.
+DATA_ASSETS_DIR := $(shell ./scripts/lib/data-assets.sh dir)
 # Clip for STT engine e2e (mic-sim → transcription_session). Override:
-#   make test-engine-apple ENGINE_CLIP=tests/assets/data_assets/01_no-to-dobra.wav
+#   make test-engine-apple ENGINE_CLIP=~/.codescribe/data_assets/01_no-to-dobra.wav
 #   make test-engine-apple ENGINE_ALL_CLIPS=1
-ENGINE_CLIP ?= tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav
+ENGINE_CLIP ?= $(DATA_ASSETS_DIR)/02_kubernetes-wymaga-konfiguracji.wav
 ENGINE_ALL_CLIPS ?= 0
 ENGINE_BRIDGE ?= target/release/codescribe-stt-bridge
 # Minimal .app wrapper: TCC grants privacy prompts to bundles, not loose binaries.
@@ -425,7 +431,7 @@ engine-auth: $(ENGINE_BRIDGE)
 .PHONY: test-engine-parity
 test-engine-parity: $(ENGINE_BRIDGE)
 	@CAPTURE_TEST=e2e_apple_live_parity \
-	  ./scripts/e2e-blackhole-dictation.sh tests/assets/data_assets/05_apple-live-parity.wav
+	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
 # Apple live engine proof.
 #
@@ -444,7 +450,7 @@ test-engine-apple: $(ENGINE_BRIDGE)
 	@if [ "$(ENGINE_ALL_CLIPS)" = "1" ]; then \
 	  set -e; \
 	  echo "=== harness path (BlackHole isolated; daily Sound defaults restored on exit) ==="; \
-	  for clip in tests/assets/data_assets/0[1-4]_*.wav; do \
+	  for clip in $(DATA_ASSETS_DIR)/0[1-4]_*.wav; do \
 	    echo "=== BlackHole device capture: $$clip ==="; \
 	    ./scripts/e2e-blackhole-dictation.sh "$$clip"; \
 	  done; \

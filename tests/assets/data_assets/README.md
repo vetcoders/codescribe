@@ -17,13 +17,38 @@ the second fence.
 
 ## Where fixtures live
 
-Resolution order used by the tests and the bench script:
+Resolution order used by the tests, the bench script, the engine harness and
+the `ENGINE_*` Makefile targets:
 
 1. `CODESCRIBE_DATA_ASSETS` — explicit fixtures directory,
 2. `~/.codescribe/data_assets` — the canonical local home,
 3. this directory (for ad-hoc local drops; never committed).
 
+Shell consumers share one implementation — `scripts/lib/data-assets.sh`
+(`dir` / `resolve <fixture>`), pinned by `tests/data_assets_resolution.rs`.
+Rust tests carry the same order in their own `data_assets_dir()` helpers.
+Hardcoding tier 3 is what left `make test-engine-parity` reporting
+`fixture not found` on hosts whose home corpus held the clip — the tier
+gitignore keeps empty by design is the one that got baked into the harness.
+
 When no fixtures are found, fixture-driven tests SKIP with a notice — they
-never fail on a clean public checkout. Detailed fixture provenance (source
-recordings, ffmpeg cut windows, re-derivation method) lives next to the audio
-in the local fixtures directory, not in the repository.
+never fail on a clean public checkout. The engine harness instead exits 2 and
+prints every path it checked, so a cold worker never has to hunt.
+
+## Cold worker: point a run at the corpus
+
+No copying, no committing — name the directory that holds it:
+
+```bash
+CODESCRIBE_DATA_ASSETS=/path/to/corpus make test-engine-parity
+```
+
+Verify resolution alone (no audio hardware touched):
+
+```bash
+./scripts/lib/data-assets.sh resolve 05_apple-live-parity.wav
+```
+
+Detailed fixture provenance (source recordings, ffmpeg cut windows,
+re-derivation method) lives next to the audio in the local fixtures directory,
+not in the repository.
