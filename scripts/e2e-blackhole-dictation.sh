@@ -42,7 +42,10 @@
 # Exit: 0 pass · 1 mismatch/empty · 2 preconditions missing.
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# Everything below is repo-root relative — including sourcing the fixture
+# resolver — and the script goes on to touch the operator's audio devices, so a
+# failed cd must stop the run, not silently relocate it.
+cd "$(dirname "$0")/.." || exit 2
 
 # Private fixtures live OUTSIDE the repo (real operator speech, deprivatized
 # twice). Resolution order — env → home → gitignored in-repo drop dir — is the

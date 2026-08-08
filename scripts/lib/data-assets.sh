@@ -105,7 +105,8 @@ resolve_data_asset() {
     printf 'checked, in documented order (tests/assets/data_assets/README.md):\n'
     printf '  %s\n' "${checked[@]}"
     printf 'These are private recordings and are never committed. Populate\n'
-    printf '~/.codescribe/data_assets or point CODESCRIBE_DATA_ASSETS at the corpus.\n'
+    printf '%s or point CODESCRIBE_DATA_ASSETS at the corpus.\n' \
+      "${HOME:-}/.codescribe/data_assets"
   } >&2
   return 3
 }
