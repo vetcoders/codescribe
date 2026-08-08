@@ -193,6 +193,35 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertNil(SettingsDeepLink.consume())
     }
 
+    /// The Rust core decides "am I a test?" partly from this process's environment
+    /// (`core/config/keychain.rs::in_xctest_host`). It has to: this suite hosts its tests
+    /// inside the app, so the core sees an app binary, no libtest, and no
+    /// `target/**/deps/` path — every Rust harness signal reads production.
+    ///
+    /// Getting that wrong is not cosmetic. Before the detector existed, the core made real
+    /// Keychain calls from an ad-hoc-signed host whose signature changes on every rebuild,
+    /// and this file's `testHoldBadgeControlRoundTrips…` swung between 0.001 s and 43.059 s
+    /// across otherwise identical runs. The detector keys on env markers Xcode exports and
+    /// has moved between versions, so it fails OPEN — no markers means "production", i.e.
+    /// the slow, wrong classification comes back silently.
+    ///
+    /// This assertion is the only thing standing between that and a future Xcode bump.
+    func testXCTestEnvMarkersPinTheSignalTheCoreKeysOn() {
+        let env = ProcessInfo.processInfo.environment
+        let markers = ["XCTestConfigurationFilePath", "XCTestSessionIdentifier", "XCTestBundlePath"]
+        let present = markers.filter { env[$0] != nil }
+        XCTAssertFalse(
+            present.isEmpty,
+            """
+            No XCTest environment marker found in the test host, so \
+            core/config/keychain.rs::in_xctest_host() now returns false for this very run and \
+            the core is treating the Swift suite as a production launch again. \
+            Looked for: \(markers.joined(separator: ", ")). \
+            Fix the marker list on BOTH sides before trusting this suite's timings.
+            """
+        )
+    }
+
     func testSettingsSplitConstructionDoesNotWriteConfigOrKeychain() {
         var configWrites: [(String, String)] = []
         let engine = MockSettingsEngine(
