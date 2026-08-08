@@ -619,9 +619,32 @@ final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked S
     }
 }
 
+/// Quick-start actions from the Creator panel's cards. Navigation cases route
+/// the settings rail; `openOverlay` starts a real dictation session through an
+/// injectable seam so the cards are never inert decorations again
+/// (UI_DIVERGENCE_AUDIT pkt 4 — fake UX).
+enum SettingsQuickStartAction: String, CaseIterable {
+    case testMic
+    case openOverlay
+    case tuneShortcuts
+}
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var section: SettingsSection = .creator
+
+    /// Dictation seam for the "Open overlay" quick-start card. Defaulted to the
+    /// live tray toggle but only dereferenced on click, so unit tests can inject
+    /// a spy without ever waking `AppModel.shared`.
+    var onQuickStartDictation: () -> Void = { AppModel.shared.tray.toggleDictation() }
+
+    func performQuickStart(_ action: SettingsQuickStartAction) {
+        switch action {
+        case .testMic: section = .audio
+        case .tuneShortcuts: section = .shortcuts
+        case .openOverlay: onQuickStartDictation()
+        }
+    }
 
     @Published private(set) var permissions: PermissionSnapshot
     @Published private(set) var settings: CsSettings
