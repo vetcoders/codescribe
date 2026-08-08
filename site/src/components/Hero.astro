@@ -3,6 +3,9 @@
 // Server-renders the RESOLVED frame (CLEAN words visible + result strip) so the
 // no-JS / reduced-motion experience is meaningful; the script re-drives the loop
 // only when motion is allowed.
+// The hero CTA shares the pinned download target with the Install section — two
+// buttons on one page must never resolve to different builds (review P1-4).
+import { DOWNLOAD_URL } from '../lib/release';
 const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minimal patch.'.split(' ');
 ---
 
@@ -44,7 +47,7 @@ const CLEAN = 'Analyze the repo for duplicate event-dispatch — propose a minim
     </div>
 
     <div class="cta">
-      <a class="btn btn--primary" href="https://github.com/vetcoders/codescribe/releases/latest/download/Codescribe.dmg">Download for macOS</a>
+      <a class="btn btn--primary" href={DOWNLOAD_URL}>Download for macOS</a>
       <a class="btn btn--ghost" href="#features">12 that matter</a>
     </div>
   </div>

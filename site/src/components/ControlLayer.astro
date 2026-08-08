@@ -1,5 +1,8 @@
 ---
 // Control layer manifesto (WEBSITE_SPEC §4.10).
+// Third download CTA on the page — shares the pinned target with Hero and
+// Install so all three resolve to one build (review P1-4).
+import { DOWNLOAD_URL } from '../lib/release';
 ---
 
 <section class="section control" data-screen-label="Control layer" aria-labelledby="control-title">
@@ -9,7 +12,7 @@
       Not a tool you open. A layer that sits over everything you already do — and
       turns talking into doing.
     </p>
-    <a class="btn" href="https://github.com/vetcoders/codescribe/releases/latest/download/Codescribe.dmg">Download for macOS</a>
+    <a class="btn" href={DOWNLOAD_URL}>Download for macOS</a>
   </div>
 </section>
 

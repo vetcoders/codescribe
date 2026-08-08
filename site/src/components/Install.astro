@@ -2,10 +2,10 @@
 // Install section (WEBSITE_SPEC §4.12). Repo URL brand-corrected to
 // github.com/vetcoders/codescribe (the reference render still had the old
 // camelCase path).
-// The download link is pinned to SITE_VERSION so the button can never serve
-// a different artifact than the version it advertises (review P1-4): bump
-// both together, and publish the GitHub release for the tag before deploying.
-const SITE_VERSION = "0.13.3";
+// The download link is pinned so the button can never serve a different
+// artifact than the version it advertises (review P1-4). The pin now lives in
+// src/lib/release.ts so Hero and Install cannot drift apart.
+import { SITE_VERSION, DOWNLOAD_URL, DOWNLOAD_SIZE } from '../lib/release';
 ---
 
 <section class="section install" id="install" data-screen-label="Install" aria-labelledby="install-title">
@@ -13,8 +13,8 @@ const SITE_VERSION = "0.13.3";
     <p class="eyebrow eyebrow--plain">macOS · APPLE SILICON · v{SITE_VERSION}</p>
     <h2 id="install-title">Local-first. Cloud opt-in.</h2>
     <p class="dl-row">
-      <a class="btn btn--primary" href={`https://github.com/vetcoders/codescribe/releases/download/v${SITE_VERSION}/Codescribe.dmg`}>Download Codescribe.dmg</a>
-      <span class="dl-note">signed &amp; notarized · <a href="https://github.com/vetcoders/codescribe#install-from-source">build from source: see README</a></span>
+      <a class="btn btn--primary" href={DOWNLOAD_URL}>Download Codescribe.dmg</a>
+      <span class="dl-note">signed &amp; notarized · {DOWNLOAD_SIZE} · <a href="https://github.com/vetcoders/codescribe#install-from-source">build from source: see README</a></span>
     </p>
     <div class="meta-row">
       <span>· local whisper preview</span>
