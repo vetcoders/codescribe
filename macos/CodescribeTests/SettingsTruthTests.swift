@@ -179,6 +179,20 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertFalse(ToolPermissionGrouping.matches(items[1], query: "zzz"))
     }
 
+    func testCreatorQuickStartCardsRouteOrStartDictation() {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+        var dictationStarts = 0
+        model.onQuickStartDictation = { dictationStarts += 1 }
+
+        model.performQuickStart(.testMic)
+        XCTAssertEqual(model.section, .audio)
+        model.performQuickStart(.tuneShortcuts)
+        XCTAssertEqual(model.section, .shortcuts)
+        model.performQuickStart(.openOverlay)
+        XCTAssertEqual(dictationStarts, 1)
+        XCTAssertEqual(model.section, .shortcuts, "openOverlay must not touch rail routing")
+    }
+
     func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
         SettingsDeepLink.pendingSection = nil
         defer { SettingsDeepLink.pendingSection = nil }
