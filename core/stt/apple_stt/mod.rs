@@ -120,6 +120,52 @@ impl AppleSttBackend {
     }
 }
 
+/// Whether Speech Recognition TCC (`SFSpeechRecognizer` authorization) is
+/// required for the selected Apple backend.
+///
+/// - **SFSpeechRecognizer** — yes; Apple gates that API with Speech Recognition.
+/// - **SpeechTranscriber** (SpeechAnalyzer family; future DT same rule) — no.
+///   Mic grant stays independent on the live-capture surface.
+/// - **None** — treat as SF-leaning so a speech-blocked SF fall-through still
+///   requests/fails auth instead of silently opening an unusable session.
+pub fn speech_recognition_tcc_required(backend: Option<AppleSttBackend>) -> bool {
+    match backend {
+        Some(AppleSttBackend::SpeechTranscriber) => false,
+        Some(AppleSttBackend::SfSpeechRecognizer) | None => true,
+    }
+}
+
+/// Init-time Speech Recognition TCC decision (backend-scoped, mic-orthogonal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeechAuthInitDecision {
+    /// ST/DT path: Speech Recognition TCC is not a prerequisite.
+    NotRequired,
+    /// SF path already authorized (or no speech_auth field).
+    Proceed,
+    /// SF path still undetermined — request once, then re-probe.
+    RequestAuthorization,
+    /// SF path denied/restricted/unknown — hard-fail init.
+    HardFail,
+}
+
+/// Pure matrix: `(backend × speech_auth) → init gate`.
+///
+/// Mic permission is intentionally not an input — live capture gates mic
+/// separately in `app/os/permissions`.
+pub fn speech_auth_init_decision(
+    backend: Option<AppleSttBackend>,
+    speech_auth: Option<&str>,
+) -> SpeechAuthInitDecision {
+    if !speech_recognition_tcc_required(backend) {
+        return SpeechAuthInitDecision::NotRequired;
+    }
+    match speech_auth {
+        None | Some("authorized") => SpeechAuthInitDecision::Proceed,
+        Some("not_determined") => SpeechAuthInitDecision::RequestAuthorization,
+        Some(_) => SpeechAuthInitDecision::HardFail,
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct BridgeResponse {
     #[serde(default)]
@@ -184,27 +230,40 @@ fn init_impl() -> Result<()> {
     let allow_download = env_bool(ENV_ALLOW_DOWNLOAD, true);
     let mut probe = probe_bridge(&locale, allow_download)?;
 
-    // Speech Recognition TCC lives on the process that calls SFSpeechRecognizer
-    // (the bridge helper, attributed to the hosting app when launched from
-    // Codescribe.app). When still undetermined, ask once — headless CLI can
-    // fail the dialog, but the main app also requests on launch so product
-    // path has two chances before we hard-fail.
-    if probe.speech_auth.as_deref() == Some("not_determined") {
-        tracing::info!(
-            "Apple STT speech_auth=not_determined — requesting authorization via bridge"
-        );
-        let _ = request_speech_auth_bridge(&locale, allow_download);
-        probe = probe_bridge(&locale, allow_download)?;
-    }
-
-    if let Some(auth) = probe.speech_auth.as_deref()
-        && auth != "authorized"
-    {
-        bail!(
-            "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
-             System Settings › Privacy & Security › Speech Recognition \
-             (or Settings › Dictation permission matrix)"
-        );
+    // Speech Recognition TCC is scoped to the SFSpeech path only (W4-B).
+    // SpeechTranscriber / SpeechAnalyzer family must not force the Speech
+    // grant when Apple docs do not require it — Polish ST-ready locales can
+    // onboard with mic alone. Headless bridge identity (CODESCRIBE_BRIDGE_DISCLAIM)
+    // still differs from the .app TCC slot (D1); that is process-scoped, not
+    // a reason to over-gate ST.
+    match speech_auth_init_decision(probe.backend, probe.speech_auth.as_deref()) {
+        SpeechAuthInitDecision::NotRequired | SpeechAuthInitDecision::Proceed => {}
+        SpeechAuthInitDecision::RequestAuthorization => {
+            tracing::info!(
+                "Apple STT SF path speech_auth=not_determined — requesting authorization via bridge"
+            );
+            let _ = request_speech_auth_bridge(&locale, allow_download);
+            probe = probe_bridge(&locale, allow_download)?;
+            match speech_auth_init_decision(probe.backend, probe.speech_auth.as_deref()) {
+                SpeechAuthInitDecision::NotRequired | SpeechAuthInitDecision::Proceed => {}
+                SpeechAuthInitDecision::RequestAuthorization | SpeechAuthInitDecision::HardFail => {
+                    let auth = probe.speech_auth.as_deref().unwrap_or("not_determined");
+                    bail!(
+                        "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
+                         System Settings › Privacy & Security › Speech Recognition \
+                         (or Settings › Dictation permission matrix) — required for SFSpeech path"
+                    );
+                }
+            }
+        }
+        SpeechAuthInitDecision::HardFail => {
+            let auth = probe.speech_auth.as_deref().unwrap_or("unknown");
+            bail!(
+                "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
+                 System Settings › Privacy & Security › Speech Recognition \
+                 (or Settings › Dictation permission matrix) — required for SFSpeech path"
+            );
+        }
     }
 
     if !probe.supported {
@@ -1457,6 +1516,77 @@ mod tests {
         let probe = interpret_probe_response(&response);
         assert_eq!(probe.backend, Some(AppleSttBackend::SfSpeechRecognizer));
         assert!(probe.supported && probe.installed);
+    }
+
+    /// W4-B acceptance matrix: backend × speech_auth → init gate.
+    /// Mic is intentionally absent — live capture gates mic elsewhere.
+    #[test]
+    fn speech_tcc_backend_scope_matrix() {
+        use AppleSttBackend::*;
+        use SpeechAuthInitDecision::*;
+
+        // ST path never requires Speech Recognition TCC (mic remains separate).
+        for auth in [
+            None,
+            Some("authorized"),
+            Some("not_determined"),
+            Some("denied"),
+            Some("restricted"),
+        ] {
+            assert_eq!(
+                speech_auth_init_decision(Some(SpeechTranscriber), auth),
+                NotRequired,
+                "ST must ignore speech_auth={auth:?}"
+            );
+            assert!(!speech_recognition_tcc_required(Some(SpeechTranscriber)));
+        }
+
+        // SF path still requires Speech authorized.
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("authorized")),
+            Proceed
+        );
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("not_determined")),
+            RequestAuthorization
+        );
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("denied")),
+            HardFail
+        );
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("restricted")),
+            HardFail
+        );
+        assert!(speech_recognition_tcc_required(Some(SfSpeechRecognizer)));
+
+        // DT (DictationTranscriber / SpeechAnalyzer family) follows ST when added:
+        // no SFSpeech TCC prerequisite. Proven here via the same ST rule surface.
+        assert!(!speech_recognition_tcc_required(Some(SpeechTranscriber)));
+
+        // No backend label (SF fall-through blocked by auth only) still gates SF.
+        assert_eq!(
+            speech_auth_init_decision(None, Some("not_determined")),
+            RequestAuthorization
+        );
+        assert_eq!(speech_auth_init_decision(None, Some("denied")), HardFail);
+        assert!(speech_recognition_tcc_required(None));
+    }
+
+    #[test]
+    fn speech_tcc_matrix_mic_is_orthogonal() {
+        // Contract proof: speech_auth_init_decision has no mic input — mic grant
+        // for live capture lives in app/os/permissions and is independent.
+        // SF denied still HardFail regardless of any mic status a caller holds.
+        assert_eq!(
+            speech_auth_init_decision(Some(AppleSttBackend::SfSpeechRecognizer), Some("denied")),
+            SpeechAuthInitDecision::HardFail
+        );
+        // ST denied speech still NotRequired even if mic were denied or granted.
+        assert_eq!(
+            speech_auth_init_decision(Some(AppleSttBackend::SpeechTranscriber), Some("denied")),
+            SpeechAuthInitDecision::NotRequired
+        );
     }
 
     #[test]
