@@ -1,0 +1,32 @@
+# Pinned census of AppKit-notification observers in the shipped Swift target.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# macOS 27 fires AppKit notifications from INSIDE window operations. On
+# 2026-08-07 a sample caught the main thread pinned 93/93 inside
+# `_NSPopoverCloseAndAnimate → becomeKeyWindow → refreshThreadsFromExternalChange`
+# — a popover close storming an `object: nil` observer that re-read disk on
+# every callout. Fixed in d79781b1 by coalescing onto the next main-queue tick.
+#
+# The fix is one site. The RULE is the class: every new AppKit-notification
+# observer has to answer "what happens when AppKit fires this a hundred times
+# inside one window operation?" This file makes that question unavoidable —
+# `scripts/smoke-macos27.sh` fails when the live census stops matching the pin,
+# so a new observer cannot land without a reviewer writing its discipline down.
+#
+# DISCIPLINE VALUES
+# -----------------
+#   coalesced      `object: nil` (or broad) observer; the handler MUST defer the
+#                  real work to the next main-queue tick, and must do no disk,
+#                  no DateFormatter/ICU and no layout inside the callout.
+#   object-scoped  observer bound to one specific object; the handler MUST stay
+#                  O(1) with no disk and no ICU. Acceptable un-coalesced only
+#                  because the sender is a single known object.
+#
+# FORMAT: <path> | <notification> | <discipline> | <note>
+# Comments and blank lines are ignored. Order does not matter.
+
+macos/Codescribe/Screens/AgentChat/AgentChatStore.swift | NSWindow.didBecomeKeyNotification | coalesced | d79781b1 · scheduleExternalThreadsRefresh() defers the disk re-read one tick; every window in the app posts this (object: nil)
+macos/Codescribe/Screens/AgentChat/MessageList.swift | NSScrollView.willStartLiveScrollNotification | object-scoped | bound to the chat scroll view; handler only emits .userScrollBegan
+macos/Codescribe/Screens/AgentChat/MessageList.swift | NSScrollView.didLiveScrollNotification | object-scoped | fires per scroll tick; handler is documentVisibleRect math only — keep it allocation-free
+macos/Codescribe/Screens/AgentChat/MessageList.swift | NSScrollView.didEndLiveScrollNotification | object-scoped | bound to the chat scroll view; handler is the same O(1) viewport report
