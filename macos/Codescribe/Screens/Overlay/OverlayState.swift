@@ -61,6 +61,19 @@ private struct OverlayTranscriptSegment: Equatable {
         return true
     }
 
+    /// Map a Rust-canonical char offset inside `text` onto the corresponding
+    /// offset inside `renderedText`. Annotations are inserted decoration, so
+    /// every one of them sitting at or before `offset` pushes it right by
+    /// `" [" + text + "]"`. Context markers anchor to RENDERED offsets, so
+    /// rebasing them after a patch has to go through this translation.
+    func renderedOffset(forTextOffset offset: Int) -> Int {
+        let bounded = min(max(offset, 0), text.count)
+        let shift = annotations
+            .filter { $0.position <= bounded }
+            .reduce(0) { $0 + $1.text.count + 3 }
+        return bounded + shift
+    }
+
     mutating func insertAnnotation(position: UInt64, text annotationText: String) -> Bool {
         guard let offset = Int(exactly: position), offset <= text.count else { return false }
         annotations.append(OverlayTranscriptAnnotation(position: offset, text: annotationText))
@@ -1278,11 +1291,59 @@ final class OverlayState: ObservableObject {
             showToast("Skipped unbound transcript patch")
             return
         }
+        // Snapshot the live-text geometry BEFORE the patch. `contextMarkers`
+        // hold absolute offsets into `rawLiveText` captured at selection time,
+        // so a patch that changes an earlier span's length slides every marker
+        // behind it out of alignment. Rebasing has to happen in the same
+        // transaction — a `{selection_N}` fence that drifts into the middle of
+        // an unrelated word is worse for the agent lane than no fence at all.
+        let origin = liveTextOffset(ofSegmentAt: index)
+        let before = committedSegments[index]
+        let spanStart = origin + before.renderedOffset(forTextOffset: Int(exactly: start) ?? .max)
+        let spanEnd = origin + before.renderedOffset(forTextOffset: Int(exactly: end) ?? .max)
+        let renderedLengthBefore = before.renderedText.count
+
         guard committedSegments[index].replaceRange(start: start, end: end, replacement: text) else {
             showToast("Skipped out-of-range transcript patch")
             return
         }
+        rebaseContextMarkers(
+            spanStart: spanStart,
+            spanEnd: spanEnd,
+            delta: committedSegments[index].renderedText.count - renderedLengthBefore
+        )
         syncCommittedUtterances()
+    }
+
+    /// Offset at which `committedSegments[index]` starts inside `rawLiveText`.
+    /// Mirrors that property's own assembly (blank segments dropped, one space
+    /// between the survivors) — the two must not drift apart.
+    private func liveTextOffset(ofSegmentAt index: Int) -> Int {
+        var offset = 0
+        for segment in committedSegments[..<index] {
+            let rendered = segment.renderedText
+            guard !rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            offset += rendered.count + 1
+        }
+        return offset
+    }
+
+    /// Slide context markers across a patch applied to `spanStart..<spanEnd`
+    /// (live-text coordinates) that changed its length by `delta`.
+    private func rebaseContextMarkers(spanStart: Int, spanEnd: Int, delta: Int) {
+        guard !contextMarkers.isEmpty else { return }
+        for index in contextMarkers.indices {
+            let position = contextMarkers[index].position
+            if position <= spanStart { continue }
+            if position >= spanEnd {
+                contextMarkers[index].position = max(0, position + delta)
+            } else {
+                // The characters this marker anchored to no longer exist.
+                // Collapse to the patch boundary: never dropped (lost intent),
+                // never left past the replacement (drifted intent).
+                contextMarkers[index].position = spanStart
+            }
+        }
     }
 
     func applyInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String) {
