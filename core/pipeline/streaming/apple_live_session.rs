@@ -36,6 +36,7 @@ use crate::pipeline::contracts::{
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 
+use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer};
 use super::session::SessionConfig;
 use super::stream_log::append_to_stream_log;
 
@@ -137,6 +138,7 @@ pub(crate) async fn apple_stream_transcription_session(
             info!(
                 sealed = outcome.sealed,
                 filtered_empty_drops = outcome.filtered_empty_drops,
+                unresolved_windows = outcome.unresolved_windows,
                 "Apple progressive live session finished"
             );
         }
@@ -173,10 +175,18 @@ struct AppleSealState {
     open_partial: String,
     sealed_count: u64,
     filtered_empty_drops: u64,
+    /// Bounded PCM retention, so a sealed boundary can be resolved back to the
+    /// audio behind it (Layer 1 tail-patch prerequisite).
+    audio: LiveAudioBuffer,
+    /// Session time of the previous seal — the lower bound of the next
+    /// utterance's audio window.
+    last_sealed_end: f32,
+    /// Seals whose audio window could not be resolved (F3 falsification).
+    unresolved_windows: u64,
 }
 
 impl AppleSealState {
-    fn new() -> Self {
+    fn new(sample_rate: u32) -> Self {
         Self {
             postprocessor: StreamPostProcessor::new(),
             preview_rev: 0,
@@ -184,6 +194,9 @@ impl AppleSealState {
             open_partial: String::new(),
             sealed_count: 0,
             filtered_empty_drops: 0,
+            audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
+            last_sealed_end: 0.0,
+            unresolved_windows: 0,
         }
     }
 }
@@ -192,6 +205,45 @@ impl AppleSealState {
 struct AppleStreamOutcome {
     sealed: u64,
     filtered_empty_drops: u64,
+    unresolved_windows: u64,
+}
+
+/// Resolve a sealed utterance back to its audio span, then release what can
+/// never be re-cut.
+///
+/// F3 (falsification): W2-A's tail-patch will cut exactly `window(prev_end,
+/// end_ts)` and hand it to Whisper. If an Apple `end_ts` ever fails to address
+/// retained audio — a clock that does not agree with the PCM timeline, or a
+/// boundary older than the retention cap — that must be visible here, in the
+/// live path, before Whisper is wired onto it. A silent miss would surface as
+/// canvas patched from the wrong audio.
+fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) {
+    let from = state.last_sealed_end;
+    match state.audio.window(from, end_ts) {
+        Some(window) => {
+            state.last_sealed_end = end_ts;
+            // Everything before this utterance is committed canvas; no future
+            // patch reaches back past it.
+            state.audio.committed_through(from);
+            tracing::debug!(
+                from_secs = from,
+                end_ts,
+                window_samples = window.len(),
+                retained_samples = state.audio.len(),
+                "Apple seal resolved to audio window"
+            );
+        }
+        None => {
+            state.unresolved_windows = state.unresolved_windows.saturating_add(1);
+            warn!(
+                from_secs = from,
+                end_ts,
+                retained_start_secs = state.audio.retained_start_secs(),
+                session_secs = state.audio.session_secs(),
+                "Apple seal window unresolved — end_ts does not address retained audio"
+            );
+        }
+    }
 }
 
 /// Seal one Apple utterance: run the shared lexicon + cleanup pass, then emit
@@ -247,6 +299,7 @@ fn seal_utterance_final(
         quality_gate_dropped: false,
         confidence_flags: Vec::new(),
     });
+    resolve_sealed_audio_window(state, end_ts);
     true
 }
 
@@ -258,7 +311,7 @@ fn apple_stream_worker(
     language: Option<&str>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let mut stream = LiveStreamSession::open(language, sample_rate)?;
-    let mut state = AppleSealState::new();
+    let mut state = AppleSealState::new(sample_rate);
     let mut samples_seen: u64 = 0;
 
     loop {
@@ -267,6 +320,12 @@ fn apple_stream_worker(
         match pcm_rx.recv_timeout(Duration::from_millis(40)) {
             Ok(Some(samples)) => {
                 samples_seen += samples.len() as u64;
+                // Retain before forwarding, on the same counter `audio_secs` is
+                // derived from, so the buffer and the seal clock cannot drift.
+                // This is worker-side on purpose: the async select loop stays
+                // lock-free (2026-07-27 interleave contract) because the buffer
+                // is never shared across the thread boundary.
+                state.audio.push(&samples);
                 stream.write_pcm(&samples)?;
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
                 emit_stream_events(stream.poll_events(), &ev_tx, &mut state, audio_secs);
@@ -295,6 +354,7 @@ fn apple_stream_worker(
     Ok(AppleStreamOutcome {
         sealed: state.sealed_count,
         filtered_empty_drops: state.filtered_empty_drops,
+        unresolved_windows: state.unresolved_windows,
     })
 }
 
@@ -364,10 +424,14 @@ mod tests {
     use super::*;
     use crate::stt::apple_stt::parse_stream_stdout_line;
 
+    /// Capture rate the Apple bridge is opened with; these tests exercise seal
+    /// text, not audio retention, so any valid rate is representative.
+    const TEST_SAMPLE_RATE: u32 = 16_000;
+
     #[test]
     fn emit_maps_partial_and_two_phrase_finals() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = AppleSealState::new();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         emit_stream_events(
             vec![
                 LiveStreamEvent::Partial {
@@ -407,6 +471,85 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
+        TranscriptSegment {
+            text: text.to_string(),
+            start_ts,
+            end_ts,
+        }
+    }
+
+    /// Feed `secs` of captured audio the way the worker does — chunk by chunk.
+    fn push_capture(state: &mut AppleSealState, secs: f32) {
+        let total = (secs * TEST_SAMPLE_RATE as f32) as usize;
+        let session = vec![0.25f32; total];
+        for chunk in session.chunks(1024) {
+            state.audio.push(chunk);
+        }
+    }
+
+    /// F3 wiring contract: a seal must resolve to the audio actually retained
+    /// for this session, and advance the lower bound for the next utterance.
+    /// This is what W2-A's tail-patch will stand on.
+    #[test]
+    fn seals_resolve_their_audio_window_from_retained_pcm() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 6.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "pierwsze zdanie".into(),
+                    segments: vec![segment("pierwsze zdanie", 0.5, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "drugie zdanie".into(),
+                    segments: vec![segment("drugie zdanie", 2.5, 4.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            6.0,
+        );
+
+        assert_eq!(state.sealed_count, 2);
+        assert_eq!(
+            state.unresolved_windows, 0,
+            "both boundaries must address retained audio"
+        );
+        assert_eq!(state.last_sealed_end, 4.0);
+        // Audio before the last boundary is committed canvas and released.
+        assert!(state.audio.window(0.0, 1.0).is_none());
+        assert!(state.audio.window(2.5, 4.0).is_some());
+    }
+
+    /// Falsification arm: an `end_ts` that does not describe this session's PCM
+    /// must be counted and surfaced, never silently truncated into a window.
+    #[test]
+    fn seal_window_beyond_captured_audio_is_counted_unresolved() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 2.0);
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "zdanie z przyszlosci".into(),
+                segments: vec![segment("zdanie z przyszlosci", 8.0, 9.0)],
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+
+        assert_eq!(state.sealed_count, 1, "the text still seals");
+        assert_eq!(state.unresolved_windows, 1);
+        assert_eq!(
+            state.last_sealed_end, 0.0,
+            "an unresolved boundary must not advance the window floor"
+        );
     }
 
     /// Contract sensor: mid-stream Previews must be consumable without waiting
@@ -469,7 +612,7 @@ mod tests {
     #[test]
     fn apple_seal_lexicon_corrects_sealed_final() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = AppleSealState::new();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         emit_stream_events(
             vec![LiveStreamEvent::PhraseFinal {
                 text: "uruchom doker teraz".into(),
@@ -497,7 +640,7 @@ mod tests {
     #[test]
     fn apple_seal_lexicon_leaves_previews_raw() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = AppleSealState::new();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         emit_stream_events(
             vec![LiveStreamEvent::Partial {
                 text: "uruchom doker".into(),
@@ -519,7 +662,7 @@ mod tests {
     #[test]
     fn apple_seal_lexicon_drops_filtered_empty_instead_of_emitting_blank() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = AppleSealState::new();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         emit_stream_events(
             vec![LiveStreamEvent::PhraseFinal {
                 // Trailing-":D" burst: a known ASR artifact that cleanup strips
@@ -551,7 +694,7 @@ mod tests {
     #[test]
     fn apple_seal_lexicon_corrects_summary_fallback_seal() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = AppleSealState::new();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         emit_stream_events(
             vec![LiveStreamEvent::Summary {
                 text: "zbuduj obraz doker".into(),
@@ -577,7 +720,7 @@ mod tests {
     #[test]
     fn apple_seal_lexicon_is_idempotent_under_stop_path_postprocess() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = AppleSealState::new();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         emit_stream_events(
             vec![LiveStreamEvent::PhraseFinal {
                 text: "uruchom doker teraz".into(),
