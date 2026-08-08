@@ -30,7 +30,8 @@ use std::path::{Path, PathBuf};
 
 use codescribe::audio;
 use codescribe_core::pipeline::contracts::{
-    EngineEvent, FINAL_PASS_REGRESSION_MIN_STREAM_CHARS, final_pass_is_length_regression,
+    EngineEvent, FINAL_PASS_REGRESSION_MIN_STREAM_CHARS, LayerSource,
+    final_pass_is_length_regression,
 };
 use codescribe_core::pipeline::streaming::{
     assemble_live_from_events, collect_buffered_engine_events,
@@ -51,6 +52,154 @@ fn overlay_assembly_from_events(events: &[EngineEvent]) -> String {
 
 fn streaming_floor_from_events(events: &[EngineEvent]) -> String {
     assemble_live_from_events(events).streaming_floor()
+}
+
+// ── Lane guard: the parity bar must measure the lane it was told to measure ───
+
+/// How many Layer 1 tail-patches actually reached the measured assembly.
+///
+/// Layer 1 is the ONLY producer of `ReplaceRange { source: TailPatch }`, so the
+/// event stream is a witness for which lane ran. Reading the environment
+/// instead would be unsound: the core injects `~/.codescribe/.env` into the
+/// process env on the first `Config::load()`, which can land *after* the
+/// session has already read the flag.
+fn measured_tail_patch_count(events: &[EngineEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                EngineEvent::ReplaceRange {
+                    source: LayerSource::TailPatch,
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+/// Fail-closed contract between the target that asked for a lane and the lane
+/// the run actually exercised.
+///
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, NOT a promoted
+/// settings.json key (`config::settings::is_promoted_key`), so
+/// `Config::inject_file_env_for_runtime` copies it out of `~/.codescribe/.env`
+/// into the process environment. An operator who switched their daily dictation
+/// to `phase1` therefore armed Layer 1 inside a target whose entire purpose is
+/// to score Layer 0 against an Apple-fidelity reference — and Layer 1 is
+/// *supposed* to diverge from Apple, so the bar went red for doing its job.
+///
+/// Measured 2026-08-08, one binary, consecutive runs of `make
+/// test-engine-parity`: `Other: 1` → similarity 0.931 PASS, then `Other: 22` →
+/// similarity 0.833 FAIL. The number was read as an engine regression; it was a
+/// lane leak. This guard makes that leak an explicit failure with a name
+/// instead of an unexplained score.
+///
+/// The mirror case matters just as much: a *layered* run that produced zero
+/// patches scored Layer 0 while claiming to gate Layer 1 — the P1-01 shape (a
+/// gate asserting nothing about the thing it exists to gate).
+fn measured_lane_matches_request(
+    requested_phase: Option<u8>,
+    events: &[EngineEvent],
+) -> Result<(), String> {
+    let patches = measured_tail_patch_count(events);
+    match (requested_phase, patches) {
+        (None, 0) => Ok(()),
+        (None, leaked) => Err(format!(
+            "this target scores Layer 0 against the Apple-fidelity reference, but the run \
+             measured Layer 1: {leaked} ReplaceRange{{TailPatch}} event(s) reached the \
+             assembly. `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, so \
+             ~/.codescribe/.env is injected into the process environment and can arm the \
+             layer underneath a Layer-0 bar. Pin the lane on the target \
+             (`CODESCRIBE_LAYERED_TRANSCRIPTION=off`) and re-run — the similarity number \
+             from this run says nothing about Layer 0."
+        )),
+        (Some(phase), 0) => Err(format!(
+            "this target claims to gate Layer 1 (phase{phase}), but the run measured Layer 0: \
+             zero ReplaceRange{{TailPatch}} events reached the assembly, so the similarity \
+             number gates nothing about the layer (review P1-01). Check that the phase \
+             reached the session and that the tail-patch lane is wired."
+        )),
+        (Some(_), _) => Ok(()),
+    }
+}
+
+fn sealed_final(utterance_id: u64, text: &str) -> EngineEvent {
+    EngineEvent::UtteranceFinal {
+        utterance_id,
+        text: text.into(),
+        raw_text: text.into(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: vec![],
+        vad_speech_pct: None,
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: vec![],
+    }
+}
+
+fn tail_patch(utterance_id: u64, start: usize, end: usize, text: &str) -> EngineEvent {
+    EngineEvent::ReplaceRange {
+        utterance_id,
+        start,
+        end,
+        text: text.into(),
+        source: LayerSource::TailPatch,
+    }
+}
+
+/// The refuted run, in miniature: `make test-engine-parity` (Layer 0) with the
+/// operator's `.env` arming `phase1` underneath it.
+#[test]
+fn parity_lane_guard_catches_layer1_leaking_into_the_layer0_bar() {
+    let leaked = vec![
+        sealed_final(1, "korzystając z Tulczajn 2024"),
+        tail_patch(1, 14, 22, "Toolchain"),
+    ];
+    let err = measured_lane_matches_request(None, &leaked)
+        .expect_err("a Layer-0 bar that measured Layer 1 must not report a lane it never ran");
+    assert!(
+        err.contains("Layer 1"),
+        "the failure must name the leaked lane, got: {err}"
+    );
+}
+
+/// Mirror: the layered target must not silently score Layer 0.
+#[test]
+fn parity_lane_guard_catches_a_layered_run_that_never_armed_the_layer() {
+    let unarmed = vec![sealed_final(1, "korzystając z Tulczajn 2024")];
+    let err = measured_lane_matches_request(Some(1), &unarmed)
+        .expect_err("a layered bar with zero tail-patches gates nothing (P1-01)");
+    assert!(
+        err.contains("Layer 0"),
+        "the failure must name the lane actually measured, got: {err}"
+    );
+}
+
+#[test]
+fn parity_lane_guard_passes_when_the_measured_lane_is_the_requested_lane() {
+    let layer0 = vec![sealed_final(1, "korzystając z Tulczajn 2024")];
+    let layer1 = vec![
+        sealed_final(1, "korzystając z Tulczajn 2024"),
+        tail_patch(1, 14, 22, "Toolchain"),
+    ];
+    assert!(measured_lane_matches_request(None, &layer0).is_ok());
+    assert!(measured_lane_matches_request(Some(1), &layer1).is_ok());
+    // Seal-time lexicon (W1-A) also emits `ReplaceRange` and rides the Layer-0
+    // lane by design — it must never be mistaken for a layered leak.
+    let lexicon_on_layer0 = vec![
+        sealed_final(1, "korzystając z Tulczajn 2024"),
+        EngineEvent::ReplaceRange {
+            utterance_id: 1,
+            start: 14,
+            end: 22,
+            text: "Toolchain".into(),
+            source: LayerSource::Lexicon,
+        },
+    ];
+    assert!(measured_lane_matches_request(None, &lexicon_on_layer0).is_ok());
 }
 
 /// Engine bar: multi-pause dictation must seal ≥2 freezed finals and cover the
@@ -869,6 +1018,12 @@ async fn e2e_apple_live_parity() {
     let device = std::env::var("AUDIO_INPUT_DEVICE")
         .expect("parity run requires AUDIO_INPUT_DEVICE (the loopback device name)");
 
+    // Snapshot the requested lane BEFORE the capture path can run
+    // `Config::load()`: the first load injects ~/.codescribe/.env into the
+    // process environment, so reading this afterwards would report a leak as if
+    // it were the request. See `measured_lane_matches_request`.
+    let requested_lane = codescribe_core::stt::tail_patcher::layered_phase();
+
     let clip = std::env::var("CODESCRIBE_E2E_AUDIO")
         .map(PathBuf::from)
         .unwrap_or_else(|_| data_assets_dir().join("05_apple-live-parity.wav"));
@@ -883,11 +1038,26 @@ async fn e2e_apple_live_parity() {
         )
     });
 
-    let (_events, transcript, clip_seconds) = capture_clip_via_device(&device, &clip).await;
+    let (events, transcript, clip_seconds) = capture_clip_via_device(&device, &clip).await;
     assert!(
         !transcript.trim().is_empty(),
         "capture path produced NO text from {clip_seconds:.1}s of speech"
     );
+
+    // Which lane did this run actually measure? Print it before any number, so
+    // every retained log under target/e2e-blackhole/ is self-describing, and
+    // fail loudly on a mismatch rather than reporting the wrong lane's score.
+    eprintln!(
+        "parity lane: requested {} · measured {} tail-patch event(s)",
+        match requested_lane {
+            None => "layer0 (off)".to_string(),
+            Some(phase) => format!("layer1 (phase{phase})"),
+        },
+        measured_tail_patch_count(&events)
+    );
+    if let Err(mismatch) = measured_lane_matches_request(requested_lane, &events) {
+        panic!("parity lane mismatch — {mismatch}");
+    }
 
     let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let ours = normalize(&transcript);
