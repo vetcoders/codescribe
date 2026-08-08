@@ -1,8 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  URLs are written in the same trailing-slash form Layout.astro emits as
+  <link rel="canonical">, so the sitemap and the canonical tag agree instead of
+  advertising two spellings of one page. Add a page here whenever a route is
+  added under site/src/pages/ — an unlisted page is deployed but not indexed.
+-->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://vetcoders.github.io/codescribe/</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://vetcoders.github.io/codescribe/privacy/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://vetcoders.github.io/codescribe/terms/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://vetcoders.github.io/codescribe/refunds/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://vetcoders.github.io/codescribe/support/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
   </url>
 </urlset>
