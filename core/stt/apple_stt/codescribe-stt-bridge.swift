@@ -9,8 +9,9 @@
 //   2. SFSpeechRecognizer on-device when ST lacks the locale but SF supports it
 //   3. Honest error when neither can serve the locale
 //
-// Build example:
-//   swiftc -O -o codescribe-stt-bridge core/stt/apple_stt/codescribe-stt-bridge.swift
+// Build example (pin target — do not inherit host triple):
+//   swiftc -O -target arm64-apple-macos26.0 -o codescribe-stt-bridge \
+//     core/stt/apple_stt/codescribe-stt-bridge.swift
 //
 // 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
@@ -727,6 +728,9 @@ private func recognizeSfSpeechBufferWindow(
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    // Isolate non-Sendable Speech request behind a serial-queue handle so
+    // Dispatch/AVAudio @Sendable completions never capture it bare (S-4).
+    let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-buffer")
 
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
@@ -739,18 +743,19 @@ private func recognizeSfSpeechBufferWindow(
     // Tap the player (proven path for short Polish fixtures). Mixer-bus tap
     // returned silent buffers on this machine.
     player.installTap(onBus: bus, bufferSize: bufferSize, format: fileFormat) { buffer, _ in
-        request.append(buffer)
+        requestHandle.append(buffer)
     }
+
+    let session = SfSpeechBufferSession(
+        player: player, engine: engine, bus: bus, request: requestHandle)
 
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
         let gate = SfSpeechSettleGate()
         let acc = SfSpeechPhraseAccumulator(timeOffset: timeOffset)
-        let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
+        let timeout = SfSpeechTimeoutCancel()
+        let settle: @Sendable (Result<TranscriptionPayload, Error>) -> Void = { outcome in
             guard gate.trySettle() else { return }
-            player.removeTap(onBus: bus)
-            player.stop()
-            engine.stop()
-            request.endAudio()
+            session.tearDown()
             switch outcome {
             case .success(let payload):
                 continuation.resume(returning: payload)
@@ -758,39 +763,36 @@ private func recognizeSfSpeechBufferWindow(
                 continuation.resume(throwing: error)
             }
         }
-        let timeoutWork = DispatchWorkItem {
+        let localeId = locale.identifier
+        timeout.schedule(after: deadlineSeconds) {
             gate.cancelTask()
             if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
                 settle(.success(payload))
             } else {
                 settle(.failure(BridgeError.runtime(
-                    "sf_speech_buffer: recognition_timeout after \(String(format: "%.1f", deadlineSeconds))s (locale=\(locale.identifier))"
+                    "sf_speech_buffer: recognition_timeout after \(String(format: "%.1f", deadlineSeconds))s (locale=\(localeId))"
                 )))
             }
         }
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(
-            deadline: .now() + deadlineSeconds,
-            execute: timeoutWork
-        )
 
-        let task = retained.recognitionTask(with: request) { result, error in
+        let task = retained.recognitionTask(with: requestHandle.bareRequest) { result, error in
             if gate.isSettled() { return }
             if let error {
                 if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
-                    timeoutWork.cancel()
+                    timeout.cancel()
                     settle(.success(payload))
                     return
                 }
                 let ns = error as NSError
                 // Cancel / no-speech after endAudio — treat as empty success when no text.
                 if ns.domain == "kAFAssistantErrorDomain" || ns.code == 216 || ns.code == 1 {
-                    timeoutWork.cancel()
+                    timeout.cancel()
                     settle(.success(
                         TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
                     ))
                     return
                 }
-                timeoutWork.cancel()
+                timeout.cancel()
                 settle(.failure(BridgeError.runtime(
                     "sf_speech_buffer: \(error.localizedDescription) (domain=\(ns.domain) code=\(ns.code))"
                 )))
@@ -818,15 +820,15 @@ private func recognizeSfSpeechBufferWindow(
 
         do {
             try engine.start()
-            let onPlaybackDone: () -> Void = {
+            let onPlaybackDone: @Sendable () -> Void = {
                 // File finished through the engine — end recognition input.
                 DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.35) {
                     if gate.isSettled() { return }
-                    request.endAudio()
+                    requestHandle.endAudio()
                     let settleGrace = max(1.5, min(4.0, audioSeconds * 0.05 + 1.2))
                     DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settleGrace) {
                         if gate.isSettled() { return }
-                        timeoutWork.cancel()
+                        timeout.cancel()
                         if let payload = acc.snapshotPayload() {
                             settle(.success(payload))
                         } else {
@@ -854,7 +856,7 @@ private func recognizeSfSpeechBufferWindow(
             }
             player.play()
         } catch {
-            timeoutWork.cancel()
+            timeout.cancel()
             settle(.failure(BridgeError.runtime(
                 "sf_speech_buffer: engine start failed: \(error.localizedDescription)"
             )))
@@ -955,15 +957,18 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    // Stream PCM pump runs on a Dispatch queue (@Sendable); isolate the bare
+    // request so append/endAudio never cross the Sendable boundary (L1068).
+    let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-stream")
 
     emitStreamEvent(StreamEventOut(event: "ready"))
 
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
         let gate = SfSpeechSettleGate()
         let acc = SfSpeechPhraseAccumulator(timeOffset: 0)
-        let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
+        let settle: @Sendable (Result<TranscriptionPayload, Error>) -> Void = { outcome in
             guard gate.trySettle() else { return }
-            request.endAudio()
+            requestHandle.endAudio()
             switch outcome {
             case .success(let payload):
                 emitStreamEvent(StreamEventOut(event: "end"))
@@ -975,7 +980,7 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
             }
         }
 
-        let task = recognizer.recognitionTask(with: request) { result, error in
+        let task = recognizer.recognitionTask(with: requestHandle.bareRequest) { result, error in
             if gate.isSettled() { return }
             if let error {
                 if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
@@ -1036,8 +1041,10 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
         // Blocking PCM pump on a background queue: read stdin → append buffers.
         // The recognizer's callbacks land on its own queue; nothing here blocks
         // them. EOF → endAudio → settle grace → snapshot.
+        let streamRate = header.rate
+        let streamChannels = header.channels
         DispatchQueue.global(qos: .userInitiated).async {
-            let bytesPerFrame = 4 * header.channels
+            let bytesPerFrame = 4 * streamChannels
             let chunkBytes = 32768
             var carry = Data()
             var raw = [UInt8](repeating: 0, count: chunkBytes)
@@ -1065,14 +1072,14 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
                 }
                 carry.removeSubrange(0..<usable)
                 fedFrames += Int64(frames)
-                request.append(buffer)
+                requestHandle.append(buffer)
             }
 
             if gate.isSettled() { return }
-            request.endAudio()
+            requestHandle.endAudio()
             // Settle grace scaled to how much audio flowed (same shape as the
             // window path) — SFSpeech needs a beat to flush its last final.
-            let fedSeconds = Double(fedFrames) / header.rate
+            let fedSeconds = Double(fedFrames) / streamRate
             let settleGrace = max(1.5, min(6.0, fedSeconds * 0.05 + 1.5))
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settleGrace) {
                 if gate.isSettled() { return }
@@ -1320,6 +1327,112 @@ final class SfSpeechSettleGate: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return settled
+    }
+}
+
+// MARK: - Sendable isolation (actor/serial-queue; never suppress-attribute)
+
+/// Serial-queue isolation for non-Sendable `SFSpeechAudioBufferRecognitionRequest`.
+///
+/// Dispatch / AVAudio completion handlers are `@Sendable`; capturing the bare
+/// request crosses that boundary and surfaces Sendable warnings (and hard
+/// failures under `-warnings-as-errors`). Callers capture this handle instead
+/// and hop through the serial queue for append/endAudio.
+final class SfSpeechRequestHandle: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private let request: SFSpeechAudioBufferRecognitionRequest
+
+    init(
+        _ request: SFSpeechAudioBufferRecognitionRequest,
+        label: String = "com.vetcoders.codescribe.stt.sf-request"
+    ) {
+        self.request = request
+        self.queue = DispatchQueue(label: label)
+    }
+
+    /// Bare request for APIs that require it on the creating thread
+    /// (`recognitionTask(with:)`, installTap setup before concurrent access).
+    var bareRequest: SFSpeechAudioBufferRecognitionRequest { request }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        queue.sync { request.append(buffer) }
+    }
+
+    func endAudio() {
+        queue.sync { request.endAudio() }
+    }
+}
+
+/// Cancelable timeout without capturing non-Sendable `DispatchWorkItem` in
+/// nested `@Sendable` closures (the L829 warning surface).
+final class SfSpeechTimeoutCancel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var workItem: DispatchWorkItem?
+
+    func schedule(
+        after seconds: TimeInterval,
+        qos: DispatchQoS.QoSClass = .userInitiated,
+        _ body: @escaping @Sendable () -> Void
+    ) {
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.isCancelled else { return }
+            body()
+        }
+        lock.lock()
+        workItem = item
+        lock.unlock()
+        DispatchQueue.global(qos: qos).asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        workItem?.cancel()
+        workItem = nil
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+/// Holds non-Sendable AVAudioEngine / player for buffer-path teardown so
+/// `@Sendable` completion handlers never capture them directly.
+final class SfSpeechBufferSession: @unchecked Sendable {
+    private let lock = NSLock()
+    private var player: AVAudioPlayerNode?
+    private var engine: AVAudioEngine?
+    private let bus: AVAudioNodeBus
+    private let request: SfSpeechRequestHandle
+    private var tornDown = false
+
+    init(
+        player: AVAudioPlayerNode,
+        engine: AVAudioEngine,
+        bus: AVAudioNodeBus,
+        request: SfSpeechRequestHandle
+    ) {
+        self.player = player
+        self.engine = engine
+        self.bus = bus
+        self.request = request
+    }
+
+    func tearDown() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !tornDown else { return }
+        tornDown = true
+        player?.removeTap(onBus: bus)
+        player?.stop()
+        engine?.stop()
+        request.endAudio()
+        player = nil
+        engine = nil
     }
 }
 

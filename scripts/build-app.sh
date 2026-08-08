@@ -162,8 +162,11 @@ MACOS_DIR="$APP/Contents/MacOS"
 mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
 cp "$DYLIB" "$FRAMEWORKS/"
 STT_BRIDGE_BUNDLED=0
+# Same host-triple pin as Makefile ENGINE_BRIDGE_TARGET (W0-B / S-1): avoid
+# inheriting the builder's macosxN.0 so bundled bridges match CI/dev hosts.
+STT_BRIDGE_TARGET="${CODESCRIBE_STT_BRIDGE_TARGET:-arm64-apple-macos26.0}"
 rm -f "$STT_BRIDGE_BIN" "$MACOS_DIR/codescribe-stt-bridge"
-if swiftc -O -o "$STT_BRIDGE_BIN" "$STT_BRIDGE_SRC"; then
+if swiftc -O -target "$STT_BRIDGE_TARGET" -o "$STT_BRIDGE_BIN" "$STT_BRIDGE_SRC"; then
   cp "$STT_BRIDGE_BIN" "$MACOS_DIR/"
   chmod 755 "$MACOS_DIR/codescribe-stt-bridge"
   STT_BRIDGE_BUNDLED=1
