@@ -36,6 +36,36 @@ Current source version: `0.12.2`
 - [ ] Landing page primary CTA does not promise a DMG until a current notarized DMG exists.
 - [ ] README install section names source install as the guaranteed path until the current DMG is verified.
 
+## Transport security: ATS + the update feed (S-3)
+
+macOS 27 keeps tightening App Transport Security, and the updater is the one component that
+fetches remote content and then *executes* what it fetched. These are release-gate items, not
+code cuts.
+
+- [ ] **No ATS exception has been added.** The app ships **no** `NSAppTransportSecurity` key at
+      all — verified 2026-08-08: zero occurrences of `NSAppTransportSecurity` /
+      `NSAllowsArbitraryLoads` across the repo. That means the OS defaults apply (HTTPS required,
+      TLS 1.2+, forward secrecy). This is the desired state; the check is that nobody added an
+      exception to make a staging host work. If an exception ever becomes necessary, it must be a
+      scoped `NSExceptionDomains` entry with a justification in this checklist — never
+      `NSAllowsArbitraryLoads`.
+- [ ] **`SUFeedURL` is HTTPS on a host we control.** Currently
+      `https://vetcoders.github.io/codescribe/appcast.xml` (`macos/project.yml`). A plain-HTTP or
+      third-party feed is an update-channel takeover, not a convenience.
+- [ ] **The feed actually resolves.** `curl -sSI "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' \
+      /Applications/Codescribe.app/Contents/Info.plist)"` returns `200`, not `404`.
+      `site/public/appcast.xml` exists on feature branches, but GitHub Pages deploys from the
+      default branch and `.github/workflows/release.yml` states that publishing to the live feed
+      "stays an operator PR" — so a signed appcast can exist as a release artifact while the live
+      feed is still absent. **Verify the live URL, not the file in your worktree.**
+- [ ] **`SUPublicEDKey` is present in the shipped bundle.** Empty means the updater is
+      fail-closed (it refuses every update) — correct for a local build, a shipped-release defect.
+      `scripts/smoke-macos27.sh` reports this row as `INFO` for local builds and `PASS` only when
+      the key is present; `scripts/verify-dmg-payload.sh` is the release-side gate.
+- [ ] **The DMG is fetched over HTTPS too.** The `enclosure url` in the published appcast points
+      at the GitHub Releases HTTPS asset URL, and the EdDSA signature in the appcast matches the
+      artifact that was actually notarized and stapled.
+
 ## First Public Release Drill
 
 1. Confirm the tree is clean and `make check` passes.
