@@ -441,8 +441,42 @@ engine-auth: $(ENGINE_BRIDGE)
 # went red for doing its job. Measured 2026-08-08, one binary, consecutive runs:
 # `Other: 1` → 0.931 PASS, then `Other: 22` → 0.833 FAIL. Explicit `off` also
 # blocks the injection at source (it only fills keys absent from the env).
+
+# The lane the CALLER asked for — and it is exactly what the recipe pins below
+# throw away. `make` cannot see a recipe-level `VAR=x cmd` assignment, but it
+# does see `VAR=x make …` / `make VAR=x`, so `origin` separates "the caller
+# pinned a lane" from "nobody asked". The operator's own `~/.codescribe/.env` is
+# injected in-process by the core, never into this shell, so a daily `phase1`
+# dotenv leaves this empty and the guard below stays silent for daily runs.
+ifneq ($(origin CODESCRIBE_LAYERED_TRANSCRIPTION),undefined)
+PARITY_LANE_REQUEST := $(CODESCRIBE_LAYERED_TRANSCRIPTION)
+endif
+
+# Refuse a run whose pin contradicts the request, instead of measuring the other
+# lane and reporting it as the caller's.
+#
+# This is review finding P1-01 made impossible. A dispatch verifier ran
+# `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 make test-engine-parity`; the recipe
+# pin silently won, Layer 0 was measured twice, and the layered arm was recorded
+# green while asserting nothing about Layer 1. The Rust-side guard
+# (`measured_lane_matches_request`, tests/e2e_overlay_delivery_parity.rs) cannot
+# catch that shape: by the time the test runs, request and measurement agree —
+# they agree on the WRONG lane, because the intent was dropped one layer up,
+# here. $(1) = lane this target pins, $(2) = target that actually measures the
+# requested one.
+define parity_lane_refuse
+	@if [ -n "$(PARITY_LANE_REQUEST)" ] && [ "$(PARITY_LANE_REQUEST)" != "$(1)" ]; then \
+	  printf 'parity lane refused: you asked for CODESCRIBE_LAYERED_TRANSCRIPTION=%s, but `%s` pins the lane to %s.\n' \
+	    '$(PARITY_LANE_REQUEST)' '$@' '$(1)' >&2; \
+	  printf 'The pin wins inside the recipe, so this run would measure %s and report that number as yours.\n' '$(1)' >&2; \
+	  printf 'Measure what you asked for:  make %s\n' '$(2)' >&2; \
+	  exit 2; \
+	fi
+endef
+
 .PHONY: test-engine-parity
 test-engine-parity: $(ENGINE_BRIDGE)
+	$(call parity_lane_refuse,off,test-engine-parity-layered)
 	@CODESCRIBE_LAYERED_TRANSCRIPTION=off \
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
@@ -461,9 +495,74 @@ test-engine-parity: $(ENGINE_BRIDGE)
 # a single pair of runs is an observation, not a verdict.
 .PHONY: test-engine-parity-layered
 test-engine-parity-layered: $(ENGINE_BRIDGE)
+	$(call parity_lane_refuse,phase1,test-engine-parity)
 	@CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 \
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
+
+# Both arms in one command, because "run both and compare" was a comment nobody
+# could execute: until this target, `test-engine-parity-layered` was referenced
+# by nothing at all — not a verifier, not a doc, not another target — so the
+# layered arm existed on paper while every gate measured Layer 0 (review P1-01).
+#
+# This runs each arm through its own guarded target, retains both logs, and
+# prints the two similarity numbers side by side with their delta. It does NOT
+# invent a bar for the layered arm: the Layer-0 bar (0.90 vs the Apple-fidelity
+# reference) is the wrong instrument for a layer whose job is to DIVERGE from
+# Apple, and restating bars is an operator decision (default-flip-memo-layered).
+# What this target owes you is two honest measurements from one command; the
+# verdict on the delta stays human.
+#
+# SFSpeech is nondeterministic at word level (measured spread 0.898–0.931 over
+# 5 runs), so one pair of runs is an observation, not a verdict — run it a few
+# times before believing a delta.
+#
+# `sim` reads the number from two places on purpose: the harness only echoes its
+# `parity similarity` line on the PASS path, so a RED arm would otherwise report
+# "<no measurement>" while its number sat in the assertion message. A red arm
+# with a number is the whole point here — measured 2026-08-08, phase1 scored
+# 0.863 against the Apple reference and the first version of this target hid it.
+#
+# Do NOT probe this target with `make -n`: the recipe recurses through $(MAKE),
+# and GNU make runs such lines even in dry-run mode, so the tee'd arm logs get
+# clobbered with dry-run output. The authoritative evidence is the per-run log
+# the harness retains under target/e2e-blackhole/<fixture>-<timestamp>.log.
+.PHONY: test-engine-parity-both
+test-engine-parity-both:
+	@if [ -n "$(PARITY_LANE_REQUEST)" ]; then \
+	  printf 'parity lane refused: this target runs BOTH lanes, so pinning CODESCRIBE_LAYERED_TRANSCRIPTION=%s cannot be honoured.\n' \
+	    '$(PARITY_LANE_REQUEST)' >&2; \
+	  printf 'Drop the pin (`make test-engine-parity-both`), or measure one lane with test-engine-parity / test-engine-parity-layered.\n' >&2; \
+	  exit 2; \
+	fi
+	@set -o pipefail; \
+	 mkdir -p target/e2e-blackhole; \
+	 off_log=target/e2e-blackhole/two-arm-layer0.log; \
+	 on_log=target/e2e-blackhole/two-arm-phase1.log; \
+	 sim() { \
+	   v="$$(awk '/^parity similarity/ { for (i = 1; i <= NF; i++) if ($$i == "=") v = $$(i + 1) } END { print v }' "$$1")"; \
+	   [ -n "$$v" ] || v="$$(awk -F'similarity ' '/similarity [0-9.]+ < bar/ { split($$2, a, " "); v = a[1] } END { print v }' "$$1")"; \
+	   printf '%s' "$$v"; \
+	 }; \
+	 echo "=== arm 1/2 — Layer 0 (lane pinned off) ==="; \
+	 $(MAKE) --no-print-directory test-engine-parity 2>&1 | tee "$$off_log"; \
+	 off_rc=$$?; \
+	 echo "=== arm 2/2 — Layer 1 (lane pinned phase1) ==="; \
+	 $(MAKE) --no-print-directory test-engine-parity-layered 2>&1 | tee "$$on_log"; \
+	 on_rc=$$?; \
+	 off_sim="$$(sim "$$off_log")"; on_sim="$$(sim "$$on_log")"; \
+	 echo "=== two-arm parity ==="; \
+	 printf 'layer0 (off)    similarity %s  (rc=%s, log %s)\n' "$${off_sim:-<no measurement>}" "$$off_rc" "$$off_log"; \
+	 printf 'layer1 (phase1) similarity %s  (rc=%s, log %s)\n' "$${on_sim:-<no measurement>}" "$$on_rc" "$$on_log"; \
+	 if [ -n "$$off_sim" ] && [ -n "$$on_sim" ]; then \
+	   awk -v a="$$off_sim" -v b="$$on_sim" 'BEGIN { printf "delta (phase1 - off) %+.3f\n", b - a }'; \
+	   if [ "$$off_sim" = "$$on_sim" ]; then \
+	     printf 'WARNING: arms are byte-identical — either the tail patches never reached the measured assembly, or the clip has nothing to patch. See parity_assembly_reads_layer1_tail_patches.\n' >&2; \
+	   fi; \
+	 else \
+	   printf 'no delta: an arm printed no similarity number — it died before the measurement (missing loopback, no mic grant, no fixture). That is a precondition failure, NOT a parity verdict; read the arm log before drawing a conclusion.\n' >&2; \
+	 fi; \
+	 [ "$$off_rc" -eq 0 ] && [ "$$on_rc" -eq 0 ]
 
 # Host smoke for the macOS surfaces we own — run after every OS/Xcode bump.
 # Headless, raises no TCC dialog, posts no synthetic events; operator-only rows
