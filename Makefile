@@ -9,7 +9,7 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
-        demo demo-raw demo-assistive check semgrep fix clean help \
+        demo demo-raw demo-assistive check verify semgrep fix clean help \
         dmg dmg-signed release-standard release-full release-dmgs notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks
 
@@ -226,6 +226,67 @@ bump-major:
 # ============================================================================
 # Quality
 # ============================================================================
+
+# ── GATE LEDGER ─────────────────────────────────────────────────────────────
+#
+# What green means here. A verification command is authoritative ONLY for what
+# it executes, and no surface may cite it as proof of something it does not run.
+# This block is the single place that says which is which; `check` enforces it
+# through scripts/validate-gates.sh, and tests/gate_registry.rs runs the same
+# validator under `cargo test` so the classification reaches CI — CI never
+# invokes a Makefile quality target itself.
+#
+# Adding a verification target without a row here fails the gate. So does
+# wiring one into .github/workflows/ without flipping its `ci=` field, and so
+# does claiming CI coverage no workflow provides. Both directions are checked.
+#
+#   class=static     no tests executed — format, lint, security scanning only
+#   class=hermetic   runs from a clean checkout: no operator dotenv, no private
+#                    corpus, no GUI, no API keys, no audio device, no Xcode
+#   class=operator   needs this host: ~/.codescribe/.env, real API keys, mic or
+#                    BlackHole, the private fixture corpus, Xcode, or a human
+#   ci=yes|no        whether a workflow in .github/workflows/ invokes THIS TARGET
+#                    BY NAME. Narrow on purpose, because it is the only claim a
+#                    script can check without guessing. It does NOT mean "this
+#                    check never runs in CI": release.yml reaches the DMG payload
+#                    check by calling scripts/verify-dmg-payload.sh directly, so
+#                    `verify-dmg` is honestly ci=no while its check does run.
+#                    Targets reached transitively through $(MAKE) inside another
+#                    recipe are likewise not followed. Say the rest in the reach
+#                    text — a field that quietly widened its meaning would be the
+#                    same failure this ledger exists to stop.
+#
+# `make verify` is the one hermetic gate, and it is literally what CI runs —
+# not a second recipe that resembles it. Everything below class=operator is a
+# bench instrument: real proof, host-local, never a merge gate.
+#
+# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
+# gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace; no tests
+# gate: semgrep class=static ci=no -- semgrep scan --config auto (semgrep.yml runs semgrep directly, not this target)
+# gate: verify class=hermetic ci=yes -- the workspace test set + doctests + env registry + this ledger; the command rust.yml runs
+# gate: verify-dmg class=operator ci=no -- fail-closed payload check against an already-built DMG; release.yml runs the same check via scripts/verify-dmg-payload.sh, not via this target
+# gate: test class=operator ci=no -- workspace tests + #[ignore] real-API tests + STT pipeline; sources ~/.codescribe/.env and opens Console
+# gate: test-quick class=operator ci=no -- workspace tests only, but still sources ~/.codescribe/.env and opens Console
+# gate: test-all class=operator ci=no -- test + ignored + STT pipeline + SSE streaming; needs LLM keys
+# gate: test-e2e class=operator ci=no -- e2e tests in release profile; sources the operator dotenv
+# gate: test-e2e-real class=operator ci=no -- e2e against real LLM APIs; needs LLM_API_KEY and LLM_ASSISTIVE_API_KEY
+# gate: test-sse class=operator ci=no -- live SSE streaming against a real endpoint
+# gate: test-sse-release class=operator ci=no -- test-sse in the release profile
+# gate: test-sse-heavy class=operator ci=no -- test-sse release + Responses chain/resume
+# gate: test-responses-live class=operator ci=no -- Responses live chain/resume against a real endpoint
+# gate: test-formatting class=operator ci=no -- AI formatting tests against a real LLM
+# gate: test-engine class=operator ci=no -- live-assembly and final-boundary unit lanes with output
+# gate: test-engine-apple class=operator ci=no -- Apple live engine over BlackHole; needs the private fixture corpus
+# gate: test-engine-apple-channel class=operator ci=no -- Apple channel path from WAV; needs the private fixture corpus
+# gate: test-engine-candle class=operator ci=no -- candle/Metal engine lane; needs local models
+# gate: test-engine-parity class=operator ci=no -- Layer 0 parity bar vs the Apple reference; private corpus, host-local bench
+# gate: test-engine-parity-layered class=operator ci=no -- Layer 1 parity arm judged on structure; private corpus, host-local bench
+# gate: test-engine-parity-both class=operator ci=no -- runs both parity arms and prints the delta
+# gate: test-teacher class=operator ci=no -- teacher CLI proof run, writes an HTML report
+# gate: test-swift class=operator ci=no -- 318 SwiftUI front-end tests; needs Xcode and a built ffi dylib
+# gate: smoke-macos27 class=operator ci=no -- host smoke after an OS/Xcode bump; operator-only rows report SKIP
+#
+# ─────────────────────────────────────────────────────────────────────────────
 
 format:
 	@cargo fmt
@@ -801,6 +862,13 @@ demo-assistive:
 	@echo "=== Assistive Mode Demo ==="
 	@cargo run --release --example demo_full_pipeline -- --assistive $(AUDIO)
 
+# Static gate: everything that can be decided without running the product.
+#
+# This target used to end with a bare "Quality gate passed" while executing not
+# one test, and .github/workflows/rust.yml called it "the full local gate (incl.
+# real-API / heavy e2e tests)". Both readings were wrong in the same direction —
+# toward more confidence than the commands earn. The closing line now names what
+# ran and what did not; `make verify` is the target that runs tests.
 check:
 	@echo "=== Format Check (Rust) ==="
 	@cargo fmt --all -- --check
@@ -810,7 +878,57 @@ check:
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="
 	@semgrep scan --config auto --error .
-	@echo "Quality gate passed"
+	@echo "=== Env registry ==="
+	@bash scripts/validate-envs.sh
+	@echo "=== Gate ledger ==="
+	@bash scripts/validate-gates.sh
+	@echo ""
+	@echo "check: static gate passed — format, lint, security, env registry, gate ledger."
+	@echo "check: NO tests were executed. Run 'make verify' for the test gate."
+
+# The hermetic gate — and the one CI runs, by name (.github/workflows/rust.yml).
+#
+# Hermetic means: nothing here reaches for this host. It does NOT source
+# ~/.codescribe/.env the way every `make test*` target does via ENV_LOAD, it
+# opens no Console window, it needs no API key, no audio device, no Xcode and no
+# private fixture corpus. That is the whole reason it can be both the agent's
+# gate and CI's job: one command, one definition site, no drift between them.
+#
+# CODESCRIBE_DISABLE_KEYCHAIN=1 keeps keychain-backed tests off the real macOS
+# Keychain (no interactive unlock on a runner — see core/config/keychain.rs);
+# CODESCRIBE_NO_EMBED=1 is build-time and keeps the model payload out, so the
+# gate builds the same way on a runner as it does for an agent on this host.
+#
+# --all-targets does NOT include doctests, so they are run explicitly after it;
+# dropping that second line would silently narrow the gate.
+#
+# `set -e` is load-bearing, not boilerplate. A `;`-joined recipe takes the exit
+# code of its LAST command, so without it this target printed "hermetic gate
+# passed" and returned 0 over `error: test failed, to rerun pass -p
+# codescribe-ffi --lib` — the first run of this gate produced exactly the lie it
+# was written to remove. Any line added below must stay in the `-e` chain.
+verify:
+	@set -eo pipefail; \
+	echo "=== Verify (hermetic: workspace tests) ==="; \
+	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
+	  cargo test --workspace --all-targets; \
+	echo "=== Verify (hermetic: doctests) ==="; \
+	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
+	  cargo test --workspace --doc; \
+	echo "=== Verify (env registry) ==="; \
+	bash scripts/validate-envs.sh; \
+	echo "=== Verify (gate ledger) ==="; \
+	bash scripts/validate-gates.sh; \
+	echo ""; \
+	echo "verify: hermetic gate passed."; \
+	echo "verify: NOT covered here — every class=operator target in the GATE LEDGER"; \
+	echo "verify: (parity bars, Swift front-end suite, host smoke, real-API e2e)."
+
+# Print the classified verification surface. Asserts nothing, so it carries no
+# ledger row of its own — it only shows the ledger `check` and `verify` enforce.
+.PHONY: gate-ledger
+gate-ledger:
+	@bash scripts/validate-gates.sh --list
 
 semgrep:
 	@semgrep scan --config auto --error --quiet .
@@ -890,12 +1008,20 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-minor' 'Bump minor (0.5.1 -> 0.6.0)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-major' 'Bump major (0.5.1 -> 1.0.0)'
 	@printf '\n'
-	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — GATES (run anywhere, decide merge)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Static gate: fmt + prettier + clippy + semgrep + registries. NO tests'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify' 'Hermetic test gate — exactly what CI runs (rust.yml)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'lint' 'Run clippy + fmt check'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'format' 'Format Rust code'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'fix' 'Format all code (Rust + Prettier)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Run full test suite (incl. ignored real-API tests)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Run tests without real-API calls'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
+	@printf '\n'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — BENCH INSTRUMENTS (this host only, never a merge gate)'
+	@printf '%s\n' '  Full classification: make -s gate-ledger'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Full suite incl. ignored real-API tests (sources ~/.codescribe/.env)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Workspace tests, no real API (sources ~/.codescribe/.env)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-swift' '318 SwiftUI front-end tests (needs Xcode + ffi dylib)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'smoke-macos27' 'Host smoke after an OS/Xcode bump (SMOKE_ARGS=--with-inference)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e' 'Run E2E tests (mock)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'
@@ -904,11 +1030,9 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine' 'Core freezed+append unit bar (fast, no STT)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-apple' 'Apple live multi-utterance e2e (ENGINE_CLIP / ENGINE_ALL_CLIPS=1)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-candle' 'Candle live multi-utterance e2e (same engine bar)'
+	@printf '%s\n' '  make test-engine-parity-both Both parity arms + delta (needs the private corpus)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-teacher' 'Teacher CLI proof HTML (live×whisper×human)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'Run full test suite'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Verify formatting + clippy + semgrep (CI-safe)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
 
 # ============================================================================
 # Release & Distribution

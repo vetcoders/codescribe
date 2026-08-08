@@ -10,7 +10,7 @@ entrypoint:
   bus: AGENT_BUS.md
   loctree: loct
   build: scripts/build-app.sh
-  test: make test-engine-parity
+  test: make verify
   swarm: AGENTS.md#swarm-orchestration--fast-boot-entrypoint
 roles:
   - operator
@@ -34,7 +34,7 @@ roles:
 │  1. READ PEER SIGNAL │ head -80 AGENT_BUS.md                                │
 │  2. STRUCTURAL SIGHT │ loct / loctree-mcp (AST map over text grep)          │
 │  3. OBEY DOCTRINE    │ 100% Append + Gap Fill Only + corrections on the fly!│
-│  4. VERIFY LOCAL RUN │ make test-engine-parity                              │
+│  4. VERIFY LOCAL RUN │ make verify   (parity is a bench, not a gate)        │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +50,7 @@ roles:
 Authored-By |
 | **3. UniFFI Bridge** | `bridge-worker` | `make app-bindings` | Bridge parity check between Rust
 & Swift |
-| **4. Verification** | `test-falsifier` | `make test-engine-parity` | Layer 0 only: similarity ≥
+| **4. Verification** | `test-falsifier` | gate: `make verify` · bench: `make test-engine-parity` | Layer 0 only: similarity ≥
 0.90 & structural bounds green. Needs the private corpus + loopback — see "Which ruler gates which
 lane"; the layered lane is judged on structure, never on Apple fidelity |
 | **5. App Build** | `release-builder` | `scripts/build-app.sh` | Developer ID signed binary
@@ -232,6 +232,20 @@ Inventing a different layer shape from memory. This file is the shape.
   odies.
   Loctree First: Structural questions (who imports X, blast radius, where a symbol lives) go to l
   oct / loctree-mcp, not grep. Grep is for literal text only.
+  What Green Means: A verification command is authoritative only for what it executes, and no
+  surface may cite it as proof of something it does not run. Two gates, and only two: `make check`
+  (static — format, lint, semgrep, the env registry and the gate ledger; it executes ZERO tests)
+  and `make verify` (hermetic — the workspace tests plus doctests, no operator dotenv, no private
+  corpus, no Xcode, no API key). `make verify` is not a recipe that resembles CI, it IS the command
+  `.github/workflows/rust.yml` runs, so the two cannot drift. Everything else — the parity bars,
+  `make test-swift`, `smoke-macos27`, every real-API `make test*` lane — is a bench instrument:
+  real proof, this host only, never a bar a merge has already cleared. The classification lives in
+  the GATE LEDGER block of the Makefile, `make -s gate-ledger` prints it, and
+  `scripts/validate-gates.sh` (run by `check`, and by `tests/gate_registry.rs` inside `verify`)
+  fails when a verification target has no row, when a row names no target, or when a `ci=` claim
+  disagrees with `.github/workflows/`. This rule exists because `check` used to print "Quality gate
+  passed" having run nothing, and rust.yml called it "the full local gate incl. real-API / heavy
+  e2e tests" directly above a job that ran cargo itself.
   Test Deadlines: In a test a clock is either the claim or a backstop — never both, and a backstop
   must sit out of reach of machine load. These budgets wrap process spawn, not just the wait for a
   reply: `spawn(python3) + initialize` for the MCP stdio mocks measures ~25 ms idle (n=12), so the
