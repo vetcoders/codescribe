@@ -244,6 +244,62 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
     assert_eq!(assembly.preview, "drugie zdanie live");
 }
 
+/// The parity bar measures `overlay_assembly_from_events` / the streaming
+/// floor. With `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1` the run also emits
+/// Layer 1 `ReplaceRange { source: TailPatch }`, so those patches MUST be
+/// visible in what the bar reads — otherwise the layered-on run scores exactly
+/// like layered-off and the gate is blind to the layer it exists to gate.
+///
+/// Always-on (no model, no loopback): this is a contract on the harness itself,
+/// and it is the reason the layered-on parity number can be trusted at all.
+#[test]
+fn parity_assembly_reads_layer1_tail_patches() {
+    use codescribe_core::pipeline::contracts::LayerSource;
+
+    let sealed = |id: u64, text: &str| EngineEvent::UtteranceFinal {
+        utterance_id: id,
+        text: text.into(),
+        raw_text: text.into(),
+        start_ts: 0.0,
+        end_ts: 1.0,
+        segments: vec![],
+        vad_speech_pct: None,
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: vec![],
+    };
+
+    // Layer 0 under-generated "Toolchain" as "Tulczajn"; Layer 1 re-transcribed
+    // the sealed window and patches the span in place.
+    let layer0 = vec![sealed(1, "korzystając z Tulczajn 2024")];
+    let layered = vec![
+        sealed(1, "korzystając z Tulczajn 2024"),
+        EngineEvent::ReplaceRange {
+            utterance_id: 1,
+            start: 14,
+            end: 22,
+            text: "Toolchain".into(),
+            source: LayerSource::TailPatch,
+        },
+    ];
+
+    let off = overlay_assembly_from_events(&layer0);
+    let on = overlay_assembly_from_events(&layered);
+    assert_eq!(off, "korzystając z Tulczajn 2024");
+    assert_eq!(on, "korzystając z Toolchain 2024");
+    assert_ne!(
+        off, on,
+        "layered-on parity must differ from layered-off — an identical score \
+         means the bar never saw Layer 1"
+    );
+    // The floor (finals only, what stop splice holds) carries the patch too.
+    assert_eq!(
+        streaming_floor_from_events(&layered),
+        "korzystając z Toolchain 2024"
+    );
+}
+
 #[test]
 fn delivery_merges_live_floor_with_whisper_fill_not_full_replace() {
     // Same shape as teacher merge unit tests: live under-gen + whisper excess.
