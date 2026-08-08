@@ -437,6 +437,24 @@ test-engine-parity: $(ENGINE_BRIDGE)
 	@CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
+# Same bar, Layer 1 armed: Apple live commits, then Whisper re-transcribes each
+# sealed window and patches it in place (`ReplaceRange { source: TailPatch }`).
+#
+# The point is the DELTA against `test-engine-parity`. Layer 1 is allowed to
+# raise the similarity or leave it flat — it must not lower it, and it must not
+# leave it byte-identical either, because identical numbers mean the patches
+# never reached the measured assembly (guarded always-on by
+# `parity_assembly_reads_layer1_tail_patches`).
+#
+# Run both, compare the printed `parity similarity` lines. SFSpeech is
+# nondeterministic at word level (measured spread 0.898–0.931 over 5 runs), so
+# a single pair of runs is an observation, not a verdict.
+.PHONY: test-engine-parity-layered
+test-engine-parity-layered: $(ENGINE_BRIDGE)
+	@CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 \
+	 CAPTURE_TEST=e2e_apple_live_parity \
+	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
+
 # Apple live engine proof.
 #
 # SEPARATION: daily Codescribe (mic + speakers + teacher) is independent of
