@@ -173,7 +173,10 @@ pub(crate) fn enqueue_pending_utterance(
 /// Driven solely by `CODESCRIBE_LAYERED_TRANSCRIPTION` ([`layered_phase`]).
 /// **Orthogonal to** `FINAL_PASS_MODE` / Smart: Smart never enables this, and
 /// enabling layered never changes stop-path full re-pass routing.
-fn tail_patch_enabled() -> bool {
+///
+/// Shared with the Apple progressive path (`super::apple_live_session`) so both
+/// live sessions read one gate — a second copy would be a second truth.
+pub(super) fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
 }
 
@@ -183,7 +186,7 @@ fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_f
     }
 }
 
-async fn compute_tail_patch_job(
+pub(super) async fn compute_tail_patch_job(
     utterance_id: u64,
     committed_text: String,
     audio: Vec<f32>,
@@ -209,7 +212,7 @@ async fn compute_tail_patch_job(
     .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
 }
 
-fn emit_tail_patch_result(
+pub(super) fn emit_tail_patch_result(
     event_sink: &dyn EventSink,
     result: Result<(u64, TailPatchOutcome)>,
 ) -> u64 {
@@ -250,7 +253,7 @@ fn emit_tail_patch_result(
     }
 }
 
-fn emit_session_finalised(
+pub(super) fn emit_session_finalised(
     event_sink: &dyn EventSink,
     session_id: String,
     tail_patch_replacements: u64,
@@ -278,10 +281,11 @@ fn emit_session_finalised(
 /// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
 /// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
 ///
-/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired only
-/// on the VAD/scheduler path below. Apple progressive live does not yet run
-/// Whisper gap-fill mid-hold; Smart final-pass still only skips/allows the
-/// stop-path full re-pass (orthogonal toggle).
+/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired on
+/// **both** live paths: the VAD/scheduler path below, and the Apple progressive
+/// path (W2-A), which gap-fills sealed utterances mid-hold from retained PCM.
+/// Smart final-pass stays orthogonal — it only skips/allows the stop-path full
+/// re-pass.
 pub(crate) async fn transcription_session(
     chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
@@ -290,17 +294,6 @@ pub(crate) async fn transcription_session(
     // Apple progressive stream branch — must run before the VAD/scheduler path
     // consumes the receiver.
     if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
-        if let Some(phase) = layered_phase() {
-            // Honesty: Settings may flip layered ON while Apple progressive is
-            // the daily driver — Layer 1 is not attached on this branch yet.
-            warn!(
-                phase,
-                "CODESCRIBE_LAYERED_TRANSCRIPTION=phase{phase} is set, but Apple progressive \
-                 live does not run Layer 1 tail-patch yet; gap-fill requires the VAD path \
-                 (CODESCRIBE_APPLE_STT_LIVE_MODE=wav or non-Apple engine). \
-                 FINAL_PASS_MODE/Smart is independent and still routes stop re-pass only."
-            );
-        }
         super::apple_live_session::apple_stream_transcription_session(
             chunk_receiver,
             event_sink,

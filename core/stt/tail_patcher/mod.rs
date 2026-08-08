@@ -27,14 +27,20 @@
 //!
 //! # Where Layer 1 is wired today
 //!
-//! - **Wired:** `core/pipeline/streaming/session.rs` → `vad_transcription_session`
-//!   (Whisper/VAD scheduler path, or Apple with `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`).
-//!   Gate: [`layered_phase`] ≥ 1; attaches FINAL audio per work item, spawns
-//!   Whisper re-transcribe + [`compute_tail_patch`], emits
+//! Both live paths are wired; gate is [`layered_phase`] ≥ 1 on each.
+//!
+//! - **VAD/scheduler:** `core/pipeline/streaming/session.rs` →
+//!   `vad_transcription_session` (Whisper engine, or Apple with
+//!   `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`). Attaches FINAL audio per work item,
+//!   spawns Whisper re-transcribe + [`compute_tail_patch`], emits
 //!   `ReplaceRange { source: TailPatch }`, counts in `SessionFinalised.layer_summary`.
-//! - **Not wired yet:** Apple progressive live session
-//!   (`apple_stream_transcription_session`). Enabling phase1 with default Apple
-//!   progressive live does not spawn tail patches (session logs a warn).
+//! - **Apple progressive live:** `core/pipeline/streaming/apple_live_session.rs`
+//!   → `apple_stream_transcription_session` (W2-A). Each sealed `UtteranceFinal`
+//!   resolves to its retained PCM window and is handed to the async Layer 1
+//!   lane, at most one job in flight so Whisper never sits on the event-drain
+//!   loop. A boundary that cannot address retained audio is never patched; a
+//!   full queue drops the request rather than stalling capture; the bounded
+//!   backlog left when capture stops is settled before `SessionFinalised`.
 //!
 //! # Invariants (from the ADR "Hard invariants")
 //!
