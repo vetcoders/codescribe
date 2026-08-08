@@ -2,9 +2,15 @@
 //!
 //! Bypasses Silero-VAD + per-window Whisper scheduler for the Apple live path.
 //! One long-lived SFSpeech stream maps:
-//! - `partial` → `EngineEvent::Preview`
+//! - `partial` → `EngineEvent::Preview` (RAW — previews are not canvas yet)
 //! - phrase `final` → `EngineEvent::UtteranceFinal` (multi-seal freezed+append)
 //! - open partial on stop → sealed as a last final when non-empty
+//!
+//! Every seal runs the shared `StreamPostProcessor::process_utterance` pass
+//! (lexicon + cleanup, no semantic gate) BEFORE the text becomes committed
+//! canvas — the daily-driver path must satisfy AGENTS.md item 3 ("lexicon
+//! corrections applied on the fly"). Correcting after commit would be a
+//! post-commit rewrite, which the append-only doctrine forbids.
 //!
 //! Whisper stays the file final-pass / emergency fill (controller stop path),
 //! not the live engine. INTERIM: per AGENTS.md (THE ONE RULE) Whisper's target
@@ -24,7 +30,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::pipeline::contracts::{EngineEvent, EventSink, LayerSummary, TranscriptSegment};
+use crate::pipeline::contracts::{
+    DropKind, EngineEvent, EventSink, LayerSummary, TranscriptSegment,
+};
+use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 
 use super::session::SessionConfig;
@@ -124,8 +133,12 @@ pub(crate) async fn apple_stream_transcription_session(
     }
 
     match worker.join() {
-        Ok(Ok(sealed)) => {
-            info!(sealed, "Apple progressive live session finished");
+        Ok(Ok(outcome)) => {
+            info!(
+                sealed = outcome.sealed,
+                filtered_empty_drops = outcome.filtered_empty_drops,
+                "Apple progressive live session finished"
+            );
         }
         Ok(Err(e)) => {
             warn!("Apple live stream worker failed: {e:#}");
@@ -147,18 +160,105 @@ pub(crate) async fn apple_stream_transcription_session(
     });
 }
 
+/// Mutable seal state for one Apple stream: revision counters plus the shared
+/// postprocessor that corrects every final at seal time.
+///
+/// Grouped into one struct so `emit_stream_events` keeps a readable signature
+/// while the worker and the event mapper stay on the same postprocessor
+/// instance (one lexicon reload cadence, one drop counter).
+struct AppleSealState {
+    postprocessor: StreamPostProcessor,
+    preview_rev: u64,
+    utterance_id: u64,
+    open_partial: String,
+    sealed_count: u64,
+    filtered_empty_drops: u64,
+}
+
+impl AppleSealState {
+    fn new() -> Self {
+        Self {
+            postprocessor: StreamPostProcessor::new(),
+            preview_rev: 0,
+            utterance_id: 0,
+            open_partial: String::new(),
+            sealed_count: 0,
+            filtered_empty_drops: 0,
+        }
+    }
+}
+
+/// What the worker sealed, and what seal-time postprocess filtered away.
+struct AppleStreamOutcome {
+    sealed: u64,
+    filtered_empty_drops: u64,
+}
+
+/// Seal one Apple utterance: run the shared lexicon + cleanup pass, then emit
+/// `UtteranceFinal`. Returns `false` when postprocess filtered the text to
+/// empty — mirroring `PostprocessDrop::FilteredEmpty` on the VAD path, an
+/// explicit `Drop` event is emitted instead of an empty final.
+///
+/// `raw_text` keeps the uncorrected engine output so the quality loop can see
+/// exactly what the lexicon rewrote (same contract as the VAD path).
+fn seal_utterance_final(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    raw: &str,
+    start_ts: f32,
+    end_ts: f32,
+    segments: Vec<TranscriptSegment>,
+) -> bool {
+    let raw_text = raw.trim().to_string();
+    if raw_text.is_empty() {
+        return false;
+    }
+
+    let Some(corrected) = state.postprocessor.process_utterance(&raw_text) else {
+        state.filtered_empty_drops = state.filtered_empty_drops.saturating_add(1);
+        warn!(
+            raw_text = %raw_text,
+            "Apple seal dropped: empty after lexicon/cleanup"
+        );
+        let _ = ev_tx.send(EngineEvent::Drop {
+            kind: DropKind::FilteredEmpty,
+            text: raw_text,
+            reason: "Empty after lexicon/cleanup (not semantic gate)".to_string(),
+        });
+        return false;
+    };
+
+    // TRIM CONTRACT parity with the VAD path: the emitted final is the string
+    // future ReplaceRange char offsets are computed against, so it must be
+    // trimmed here and nowhere else.
+    let text = corrected.trim().to_string();
+    state.utterance_id = state.utterance_id.saturating_add(1);
+    state.sealed_count = state.sealed_count.saturating_add(1);
+    let _ = ev_tx.send(EngineEvent::UtteranceFinal {
+        utterance_id: state.utterance_id,
+        text,
+        raw_text,
+        start_ts,
+        end_ts,
+        segments,
+        vad_speech_pct: None,
+        avg_logprob: None,
+        compression_ratio: None,
+        quality_gate_dropped: false,
+        confidence_flags: Vec::new(),
+    });
+    true
+}
+
 /// Blocking worker: owns the stream session for its full lifetime.
 fn apple_stream_worker(
     pcm_rx: std_mpsc::Receiver<Option<Vec<f32>>>,
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
     sample_rate: u32,
     language: Option<&str>,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<AppleStreamOutcome> {
     let mut stream = LiveStreamSession::open(language, sample_rate)?;
-    let mut preview_rev: u64 = 0;
-    let mut utterance_id: u64 = 0;
-    let mut open_partial = String::new();
-    let mut sealed_count: u64 = 0;
+    let mut state = AppleSealState::new();
     let mut samples_seen: u64 = 0;
 
     loop {
@@ -169,28 +269,12 @@ fn apple_stream_worker(
                 samples_seen += samples.len() as u64;
                 stream.write_pcm(&samples)?;
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                emit_stream_events(
-                    stream.poll_events(),
-                    &ev_tx,
-                    &mut preview_rev,
-                    &mut utterance_id,
-                    &mut open_partial,
-                    &mut sealed_count,
-                    audio_secs,
-                );
+                emit_stream_events(stream.poll_events(), &ev_tx, &mut state, audio_secs);
             }
             Ok(None) => break, // EOF from async side
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                emit_stream_events(
-                    stream.poll_events(),
-                    &ev_tx,
-                    &mut preview_rev,
-                    &mut utterance_id,
-                    &mut open_partial,
-                    &mut sealed_count,
-                    audio_secs,
-                );
+                emit_stream_events(stream.poll_events(), &ev_tx, &mut state, audio_secs);
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -198,81 +282,48 @@ fn apple_stream_worker(
 
     let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
     let trailing = stream.finish()?;
-    emit_stream_events(
-        trailing,
-        &ev_tx,
-        &mut preview_rev,
-        &mut utterance_id,
-        &mut open_partial,
-        &mut sealed_count,
-        audio_secs,
-    );
+    emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
 
     // Seal open partial that never got a phrase final (stop mid-phrase).
-    if !open_partial.trim().is_empty() {
-        utterance_id = utterance_id.saturating_add(1);
-        sealed_count = sealed_count.saturating_add(1);
-        let text = open_partial.trim().to_string();
-        let _ = ev_tx.send(EngineEvent::UtteranceFinal {
-            utterance_id,
-            text: text.clone(),
-            raw_text: text,
-            start_ts: 0.0,
-            end_ts: audio_secs,
-            segments: Vec::new(),
-            vad_speech_pct: None,
-            avg_logprob: None,
-            compression_ratio: None,
-            quality_gate_dropped: false,
-            confidence_flags: Vec::new(),
-        });
+    // Same seal-time correction as the phrase path — a stop mid-utterance must
+    // not be the one route that commits uncorrected text.
+    let open = state.open_partial.trim().to_string();
+    if !open.is_empty() {
+        seal_utterance_final(&mut state, &ev_tx, &open, 0.0, audio_secs, Vec::new());
     }
 
-    Ok(sealed_count)
+    Ok(AppleStreamOutcome {
+        sealed: state.sealed_count,
+        filtered_empty_drops: state.filtered_empty_drops,
+    })
 }
 
 fn emit_stream_events(
     events: Vec<LiveStreamEvent>,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-    preview_rev: &mut u64,
-    utterance_id: &mut u64,
-    open_partial: &mut String,
-    sealed_count: &mut u64,
+    state: &mut AppleSealState,
     audio_secs: f32,
 ) {
     for event in events {
         match event {
             LiveStreamEvent::Ready | LiveStreamEvent::End => {}
             LiveStreamEvent::Partial { text } => {
-                *open_partial = text.clone();
-                *preview_rev = preview_rev.saturating_add(1);
+                // Previews stay RAW: they are in-flight presentation, not
+                // canvas, and correcting them would make the lexicon rewrite
+                // flicker letter by letter while the phrase is still forming.
+                state.open_partial = text.clone();
+                state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
-                    rev: *preview_rev,
+                    rev: state.preview_rev,
                     text,
                 });
             }
             LiveStreamEvent::PhraseFinal { text, segments } => {
-                let trimmed = text.trim().to_string();
-                open_partial.clear();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                *utterance_id = utterance_id.saturating_add(1);
-                *sealed_count = sealed_count.saturating_add(1);
-                let segs: Vec<TranscriptSegment> = segments;
-                let _ = ev_tx.send(EngineEvent::UtteranceFinal {
-                    utterance_id: *utterance_id,
-                    text: trimmed.clone(),
-                    raw_text: trimmed,
-                    start_ts: segs.first().map(|s| s.start_ts).unwrap_or(0.0),
-                    end_ts: segs.last().map(|s| s.end_ts).unwrap_or(audio_secs),
-                    segments: segs,
-                    vad_speech_pct: None,
-                    avg_logprob: None,
-                    compression_ratio: None,
-                    quality_gate_dropped: false,
-                    confidence_flags: Vec::new(),
-                });
+                // The phrase is closed either way — the open partial is stale.
+                state.open_partial.clear();
+                let start_ts = segments.first().map(|s| s.start_ts).unwrap_or(0.0);
+                let end_ts = segments.last().map(|s| s.end_ts).unwrap_or(audio_secs);
+                seal_utterance_final(state, ev_tx, &text, start_ts, end_ts, segments);
             }
             LiveStreamEvent::Error { message } => {
                 warn!("Apple live stream error event: {message}");
@@ -295,29 +346,13 @@ fn emit_stream_events(
                     continue;
                 }
                 // No phrase finals → seal the full summary once (partials-only engine).
-                if *sealed_count == 0 {
-                    let trimmed = text.trim().to_string();
-                    if !trimmed.is_empty() {
-                        *utterance_id = utterance_id.saturating_add(1);
-                        *sealed_count = sealed_count.saturating_add(1);
-                        open_partial.clear();
-                        let _ = ev_tx.send(EngineEvent::UtteranceFinal {
-                            utterance_id: *utterance_id,
-                            text: trimmed.clone(),
-                            raw_text: trimmed,
-                            start_ts: 0.0,
-                            end_ts: audio_secs,
-                            segments,
-                            vad_speech_pct: None,
-                            avg_logprob: None,
-                            compression_ratio: None,
-                            quality_gate_dropped: false,
-                            confidence_flags: Vec::new(),
-                        });
+                if state.sealed_count == 0 {
+                    if seal_utterance_final(state, ev_tx, &text, 0.0, audio_secs, segments) {
+                        state.open_partial.clear();
                     }
                 } else {
                     // Phrase seals already emitted; don't double-seal open partial.
-                    open_partial.clear();
+                    state.open_partial.clear();
                 }
             }
         }
@@ -332,10 +367,7 @@ mod tests {
     #[test]
     fn emit_maps_partial_and_two_phrase_finals() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut preview_rev = 0;
-        let mut utterance_id = 0;
-        let mut open_partial = String::new();
-        let mut sealed = 0u64;
+        let mut state = AppleSealState::new();
         emit_stream_events(
             vec![
                 LiveStreamEvent::Partial {
@@ -351,10 +383,7 @@ mod tests {
                 },
             ],
             &tx,
-            &mut preview_rev,
-            &mut utterance_id,
-            &mut open_partial,
-            &mut sealed,
+            &mut state,
             1.0,
         );
         drop(tx);
@@ -362,7 +391,7 @@ mod tests {
         while let Ok(e) = rx.try_recv() {
             got.push(e);
         }
-        assert_eq!(sealed, 2);
+        assert_eq!(state.sealed_count, 2);
         assert!(matches!(got[0], EngineEvent::Preview { rev: 1, .. }));
         assert!(matches!(
             got[1],
@@ -430,6 +459,144 @@ mod tests {
         drop(ev_tx);
         let got = sink.0.lock().expect("lock").clone();
         assert_eq!(got, vec!["a".to_string(), "ab".to_string()]);
+    }
+
+    /// W1-A contract: lexicon correction must land at SEAL time on the Apple
+    /// progressive path — before the text becomes committed canvas. The Apple
+    /// path used to emit raw SFSpeech text and rely on the stop-path
+    /// postprocess, which is a post-commit rewrite (forbidden by the
+    /// append-only doctrine).
+    #[test]
+    fn apple_seal_lexicon_corrects_sealed_final() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new();
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker teraz".into(),
+                segments: vec![],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        drop(tx);
+        let event = rx.try_recv().expect("sealed final");
+        let EngineEvent::UtteranceFinal { text, raw_text, .. } = event else {
+            panic!("expected UtteranceFinal, got {event:?}");
+        };
+        assert_eq!(text, "uruchom Docker teraz");
+        assert_eq!(
+            raw_text, "uruchom doker teraz",
+            "raw_text must preserve uncorrected engine output for the quality loop"
+        );
+        assert_eq!(state.sealed_count, 1);
+    }
+
+    /// Previews are in-flight presentation, not canvas — they must stay raw so
+    /// the correction lands exactly once, at seal time.
+    #[test]
+    fn apple_seal_lexicon_leaves_previews_raw() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new();
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "uruchom doker".into(),
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        drop(tx);
+        let event = rx.try_recv().expect("preview");
+        let EngineEvent::Preview { text, .. } = event else {
+            panic!("expected Preview, got {event:?}");
+        };
+        assert_eq!(text, "uruchom doker");
+    }
+
+    /// Utterances that postprocess reduces to nothing must be dropped with an
+    /// explicit `FilteredEmpty` signal — never emitted as an empty final.
+    #[test]
+    fn apple_seal_lexicon_drops_filtered_empty_instead_of_emitting_blank() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new();
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                // Trailing-":D" burst: a known ASR artifact that cleanup strips
+                // to nothing.
+                text: ":D".into(),
+                segments: vec![],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        drop(tx);
+        let event = rx.try_recv().expect("drop event");
+        let EngineEvent::Drop { kind, text, .. } = event else {
+            panic!("expected Drop, got {event:?}");
+        };
+        assert_eq!(kind, DropKind::FilteredEmpty);
+        assert_eq!(text, ":D");
+        assert!(
+            rx.try_recv().is_err(),
+            "no final may follow a filtered drop"
+        );
+        assert_eq!(state.sealed_count, 0);
+        assert_eq!(state.filtered_empty_drops, 1);
+    }
+
+    /// Partials-only engines never emit a phrase final; the summary fallback is
+    /// the seal, so it needs the same correction.
+    #[test]
+    fn apple_seal_lexicon_corrects_summary_fallback_seal() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new();
+        emit_stream_events(
+            vec![LiveStreamEvent::Summary {
+                text: "zbuduj obraz doker".into(),
+                segments: vec![],
+                ok: true,
+                error: None,
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        drop(tx);
+        let event = rx.try_recv().expect("summary seal");
+        let EngineEvent::UtteranceFinal { text, .. } = event else {
+            panic!("expected UtteranceFinal, got {event:?}");
+        };
+        assert_eq!(text, "zbuduj obraz Docker");
+        assert!(state.open_partial.is_empty());
+    }
+
+    /// The stop-path postprocess still runs over committed text. Seal-time
+    /// correction is only append-safe because a second application is a no-op.
+    #[test]
+    fn apple_seal_lexicon_is_idempotent_under_stop_path_postprocess() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new();
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker teraz".into(),
+                segments: vec![],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        drop(tx);
+        let event = rx.try_recv().expect("sealed final");
+        let EngineEvent::UtteranceFinal { text, .. } = event else {
+            panic!("expected UtteranceFinal, got {event:?}");
+        };
+        assert_eq!(
+            crate::pipeline::stream_postprocess::apply_lexicon(&text),
+            text,
+            "stop-path lexicon must not rewrite already-sealed text"
+        );
     }
 
     #[test]
