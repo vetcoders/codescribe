@@ -10,22 +10,27 @@
 
 ## Layered rendering model (ADR 2026-05-26)
 
-The overlay no longer renders a single linear stream of one engine's output. It now renders
-**five concurrent layers**, each emitting events into the same already-shown text buffer:
+The overlay no longer renders a single linear stream of one engine's output. It renders the
+union of layer events, each mutating the same already-shown text buffer. The ADR specifies
+five layers; **the render path accepts all five event families, but only three producers
+exist today** — the `Status` column below is inventory, not intent:
 
-| Layer               | Engine                                                  | Event types                                                          | When                                      |
-| ------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- |
-| **0 — Live**        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal`                            | While the user speaks — owns first commit |
-| **1 — Tail Patch**  | Whisper (Candle / mlx-audio / OpenAI / libraxis)        | `ReplaceRange { source: TailPatch }`                                 | ~1 s after each utterance boundary        |
-| **2 — Polish**      | Local lexicon + small LLM (Bielik-11B default)          | `ReplaceRange { source: Lexicon \| InlineLlm }`                      | Debounced after Layer 1 settles           |
-| **3 — Paralingual** | Silero classifier head                                  | `InsertAnnotation { HesitationPause \| Paralingual }`                | Continuously alongside Layers 0–2         |
-| **4 — Final BAM**   | Session-end contextual pass                             | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release                |
+| Layer               | Engine                                                  | Event types                                                          | When                                      | Status |
+| ------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- | ------ |
+| **0 — Live**        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal`                            | While the user speaks — owns first commit | ✅ shipped, default |
+| **1 — Tail Patch**  | Whisper (Candle / mlx-audio / OpenAI / libraxis)        | `ReplaceRange { source: TailPatch }`                                 | at each sealed utterance boundary         | ✅ delivered, **opt-in** (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`, default off) |
+| **2 — Lexicon**     | Dictionary substitution (`apply_lexicon`)               | `ReplaceRange { source: Lexicon }`                                   | at seal time, after Layer 1               | ⚠️ delivered in a different shape than the ADR's debounced module |
+| **2 — LLM polish**  | Small inline LLM (Bielik-11B proposed)                  | `ReplaceRange { source: InlineLlm }`                                 | —                                         | ❌ no producer |
+| **3 — Paralingual** | Silero classifier head                                  | `InsertAnnotation { HesitationPause \| Paralingual }`                | —                                         | ❌ no producer (transport exists end-to-end) |
+| **4 — Final BAM**   | Session-end contextual pass                             | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release                | ❌ no producer; `SessionFinalised` *is* emitted by the live paths |
 
 **Hard invariant:** every layer mutates the buffer only through bounded events
 (`Append`, `ReplaceRange`, `InsertAnnotation`, `Backspace`). No layer is allowed to wipe the
-buffer and retype. The overlay (`app/ui/overlay/mod.rs`) is the enforcement point — its render
-path rejects any payload that would replace already-shown text outside of an explicit
-`ReplaceRange { start, end }` window. See ADR §Hard invariants for the full contract and rationale.
+buffer and retype. Since the UI moved to Swift the enforcement point is
+`macos/Codescribe/Screens/Overlay/OverlayState.swift` — `applyReplaceRange` delegates to
+`OverlayTranscriptSegment.replaceRange`, which returns `false` and drops the patch for any
+range that does not address the committed segment. See ADR §Hard invariants for the full
+contract and rationale.
 
 ```mermaid
 flowchart LR
@@ -62,7 +67,7 @@ flowchart TD
     PREROLL[Pre-roll buffer\n~64ms · catches consonant attacks]
     SPEECH[SpeechSession\ncore/audio/chunker.rs\nSupervisor mode]
     CHUNK[SpeechEvent::Utterance / UtteranceFinal\nclean speech audio segments]
-    WORKER[transcription_session\ncore/pipeline/streaming.rs\nunified pipeline]
+    WORKER[transcription_session\ncore/pipeline/streaming/session.rs\nunified pipeline]
     WHISPER[Whisper Engine\ncore/stt/whisper/engine.rs\nMetal GPU · large-v3-turbo-q8]
     POSTPROC[StreamPostProcessor\ncore/pipeline/stream_postprocess.rs\nlexicon + semantic gate]
     EVENT[EngineEvent\ncore/pipeline/contracts.rs]
@@ -70,8 +75,8 @@ flowchart TD
     ROUTER[ControllerEventRouter\napp/controller/helpers.rs]
     EMITTER[PresentationEmitter\napp/presentation/emitter.rs]
     CHECK{is_assistive_session?}
-    ASSIST[Voice Chat bubble\napp/ui/voice_chat/api.rs]
-    OVERLAY[Floating Overlay\napp/ui/overlay/mod.rs]
+    ASSIST[Agent Chat bubble\nScreens/AgentChat/MessageList.swift]
+    OVERLAY[Floating Overlay\nScreens/Overlay/OverlayState.swift]
 
     MIC --> CPAL
     CPAL --> SR
@@ -179,7 +184,7 @@ When recording stops but VAD never fired `Start` (e.g. speech was too quiet or s
 | Component                 | File                                  | Details                           |
 | ------------------------- | ------------------------------------- | --------------------------------- |
 | **WhisperEngine**         | `core/stt/whisper/engine.rs`          | Candle + Metal GPU, singleton     |
-| **transcription_session** | `core/pipeline/streaming.rs`          | Unified pipeline (event-based)    |
+| **transcription_session** | `core/pipeline/streaming/session.rs`  | Unified pipeline (event-based)    |
 | **StreamPostProcessor**   | `core/pipeline/stream_postprocess.rs` | Lexicon + semantic gate + cleanup |
 
 ### Streaming transcription
@@ -286,7 +291,9 @@ The controller checks `is_assistive_session()`:
 
 Delta arrives at the **Floating Overlay**:
 
-- `TranscriptDelta::from_raw(delta).apply(&mut state.accumulated_text)` (`app/ui/overlay/mod.rs`)
+- Deltas reach Swift through the UniFFI listener; `OverlayState.applyPreview` /
+  `applyCorrection` / `applyFinal` fold them into the committed-segment buffer
+  (`macos/Codescribe/Screens/Overlay/OverlayState.swift`).
 - Updates the always-on-top transparent overlay window.
 - Auto-resizes to fit text content.
 - Auto-hides after 5 seconds of inactivity (with hover guard).
@@ -295,7 +302,8 @@ Delta arrives at the **Floating Overlay**:
 
 Delta arrives at the **Agent Tab**:
 
-- `TranscriptDelta::from_raw(delta).apply(&mut msg.text)` (`app/ui/voice_chat/api.rs`)
+- `AgentChatStore` folds the delta into the streaming user message
+  (`macos/Codescribe/Screens/AgentChat/AgentChatStore.swift`).
 - Updates the streaming user message bubble.
 - After utterance is complete, the transcribed text is sent to the LLM.
 - LLM response streams back via a separate `delta_callback` into assistant message bubbles.
@@ -363,14 +371,16 @@ Displayed text (String, visible in overlay/bubble)
 | `core/vad/silero_ort.rs`              | Silero VAD v6 (ONNX), worker thread, resampler             |
 | `core/stt/whisper/engine.rs`          | Whisper singleton, Metal GPU inference                     |
 | `core/pipeline/contracts.rs`          | EngineEvent, EventSink, DeltaSink, TranscriptDelta         |
-| `core/pipeline/streaming.rs`          | transcription_session (unified), BufferedEmitter           |
+| `core/pipeline/streaming/session.rs`  | transcription_session (unified, VAD/scheduler path)        |
+| `core/pipeline/streaming/apple_live_session.rs` | Apple progressive live session + Layer 1 seal hand-off |
+| `core/stt/tail_patcher/mod.rs`        | Layer 1 gate, job computation, bounded-patch decision      |
 | `core/pipeline/sinks.rs`              | DeltaSinkAdapter, CallbackSink, CollectorEventSink         |
 | `core/pipeline/stream_postprocess.rs` | Lexicon correction, semantic gate, hallucination filter    |
 | `app/controller/mod.rs`               | Recording state machine, Hold/Toggle orchestration         |
 | `app/controller/helpers.rs`           | ControllerEventRouter, session mode routing                |
 | `app/presentation/emitter.rs`         | PresentationEmitter (typing animation via BufferedEmitter) |
-| `app/ui/overlay/mod.rs`               | Floating overlay window (Cocoa/AppKit)                     |
-| `app/ui/voice_chat/api.rs`            | Voice chat panel API (drawer/agent/settings)               |
+| `macos/Codescribe/Screens/Overlay/OverlayState.swift` | Floating overlay state + layered render enforcement |
+| `macos/Codescribe/Screens/AgentChat/AgentChatStore.swift` | Agent chat state (threads, streaming bubbles) |
 
 ---
 

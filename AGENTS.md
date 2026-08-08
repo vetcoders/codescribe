@@ -120,9 +120,12 @@ Apple Speech API — instant, letter-level, 100%-confidence live transcript. Thi
 transcribes only what it is sure of; its gaps are the voids the next layers fill.
 Whisper on partials, on the go — transcribes during the session, filling canvas gaps as they
 appear. Whisper is never a stop-time full-text authority. A full-file "final pass" that replaces
-the live transcript is a doctrine violation. (The current stop-path merge_live_whisper — live
-floor + gap fill, never full-replace — is an accepted interim; the target is on-the-go partial
-transcription.)
+the live transcript is a doctrine violation. (On-the-go partial transcription now **exists** —
+Layer 1 tail-patch runs on both live paths, including the default Apple progressive one, since
+`a6b1233d`. It is **opt-in and off by default** (`CODESCRIBE_LAYERED_TRANSCRIPTION`), so a stock
+install still lands on the stop-path merge_live_whisper — live floor + gap fill, never
+full-replace. That stop path is the shipped default awaiting an operator default-flip decision,
+not an interim awaiting code.)
 Lexicon correction — the FINAL automated layer — substitution from dictionary heuristics, applied
 after Whisper, at the end.
 Human correction — feeds lexicon perfectness. The human loop teaches the dictionary; the
@@ -161,12 +164,23 @@ Inventing a different layer shape from memory. This file is the shape.
 
   ## Measured Bars Guarding the Doctrine
 
-  tests/e2e_overlay_delivery_parity.rs::e2e_apple_live_parity — the live Apple canvas must re
-  produce the system dictation engine: similarity ≥ 0.90 (SFSpeech's own word-level noise measured
-  at 0.918–0.931 across identical runs) plus deterministic structural bars: head present, tail se
-  aled, word-count ratio 0.9–1.1 (no duplicated phrases, no lost spans).
-  app/controller/mod.rs::adjudicate_recording_truth — "never full-replace live with Whisper"; le
-  ngth-regression guard keeps the stream as the floor of truth.
+  tests/e2e_overlay_delivery_parity.rs::e2e_apple_live_parity — the live Apple canvas must
+  reproduce the system dictation engine: similarity ≥ 0.90 plus deterministic structural bars:
+  head present, tail sealed, word-count ratio 0.9–1.1 (no duplicated phrases, no lost spans).
+  **The bar is 0.90 and is not reproducibly green.** The "0.918–0.931 SFSpeech noise floor" this
+  file used to quote was n=4; the wider Layer-0 sample measured 2026-08-08 (lane-leaked runs
+  excluded) is 0.778 / 0.898 / 0.909 ×3 / 0.920 / 0.924 ×2 / 0.931 ×2 — 8 of 10 clear 0.90, two
+  do not. Treat a single green run as a sample, not as proof, and read the lane line the harness
+  now prints before trusting any number.
+  **The bar measures fidelity to Apple, so it is the wrong instrument for Layer 1.** Layer 1
+  exists to diverge from Apple toward the human transcript: with patches applied the same fixture
+  scores 0.844 against the Apple reference but 0.897 against the human one (twice, 24 patches),
+  where the Layer-0 run it is compared against scores 0.800 against that same human reference.
+  Layer 1 fails the bar for being more accurate. `test-engine-parity` pins the lane to `off` for
+  exactly this reason; a layered run
+  must be scored against the human reference beside the fixture, never against Apple.
+  app/controller/mod.rs::adjudicate_recording_truth — "never full-replace live with Whisper";
+  length-regression guard keeps the stream as the floor of truth.
 
   ## Working Rules
 
