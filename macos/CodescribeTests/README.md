@@ -1,71 +1,108 @@
-# CodescribeTests — what runs, and what does not
+# CodescribeTests — what runs, and how
 
-These are the Swift unit tests for the SwiftUI front-end. They are **not** part
-of any automated gate today. Read the limitation below before you treat a green
-`make check` as covering anything in this directory.
-
-## Running them
+Swift unit tests for the SwiftUI front-end. **317 tests, executed by
+`make test-swift`.**
 
 ```bash
-CODE_SIGN_IDENTITY="-" xcodebuild test -scheme Codescribe
+make test-swift                                    # whole suite
+make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'
 ```
 
-The ad-hoc signing identity is required — without it the test host fails to
-sign and never launches. `macos/project.yml` documents
-`xcodebuild test -scheme Codescribe` as the entry point.
+The target lives in the root `Makefile`; read its comment block before invoking
+`xcodebuild` by hand, because two of the traps below cost this plan a stage.
 
-## The limitation: the test host boots the Rust core
+## Invocation traps
 
-`xcodebuild build-for-testing` succeeds. It is the **run** phase that hangs
-(`hung before establishing connection`; ~345 s to give up, measured in the W12
-W2-B cut report, 2026-08-08).
+1. **`CODE_SIGN_IDENTITY="-" xcodebuild …` does nothing.** xcodebuild reads
+   build settings from *arguments*, never from the environment. The env-prefix
+   form leaves `project.yml`'s `Codescribe Dev` identity in place and the build
+   dies with `No certificate matching 'Codescribe Dev' found` before a single
+   test runs. It must be a positional `KEY=value`. This README documented the
+   broken form until 2026-08-08.
+2. **Do not pass a real identity either.** An `Apple Development: …` identity
+   propagates into the SPM package targets, which then fail with
+   `Signing for "HighlightSwift_HighlightSwift" requires a development team`.
+   Tests need a host that launches, not a distributable one — ad-hoc `-` is
+   correct here, and is what `make test-swift` uses.
+3. **`-scheme Codescribe` is mandatory.** xcodegen emits no scheme for
+   `bundle.unit-test` targets, so no `-target CodescribeTests` invocation can
+   resolve the SPM dependencies.
+4. **A `-only-testing` filter that matches nothing exits 0** with
+   `** TEST SUCCEEDED **` and `Executed 0 tests` — a silent pass, the same trap
+   `cargo test <filter>` carries. `make test-swift` fails with rc 3 when a run
+   executes zero tests.
 
-The cause is construction order, not the tests:
+## Why the suite was believed unrunnable
 
-- The XCTest host reuses the Codescribe app bundle, so `AppDelegate` is
-  instantiated in the host process.
-- `AppDelegate`'s stored properties are initialised at that instantiation —
-  `private let model = AppModel.shared` (`macos/Codescribe/App.swift:115`) and
-  `private let onboarding = OnboardingWindowController(...)` (`App.swift:149`).
-  `AppModel.shared` boots the Rust core.
-- That happens **before** `applicationWillFinishLaunching`, so the
-  `Self.isRunningTests` guards (`App.swift:163` and `App.swift:175`) never get
-  the chance to stop it. Those guards correctly keep the host from starting
-  hotkeys, the Sparkle updater, and the engine prewarm — they do not, and
-  cannot, prevent eager property construction.
-- With the real `Codescribe.app` running, the host's second core instance
-  fights the live one for the CGEventTap and the microphone, and the run hangs.
+Until 2026-08-08 this file said the suite could not run: that the XCTest host
+boots the Rust core through `AppDelegate`'s eager stored properties and hangs
+(`hung before establishing connection`, ~345 s), so the tests were "verified by
+compilation only" and no plan could cite them as evidence.
 
-`scripts/smoke-macos27.sh` works around the same problem by compiling
-production sources into standalone probes instead of using an XCTest host.
+Half of that was right.
 
-## What this costs us honestly
+**Right — the eager properties really do boot a second core in the test host.**
+The XCTest bundle uses the app as its host, so `AppDelegate` is instantiated in
+the test process, and stored properties initialise at instantiation — *before*
+`applicationWillFinishLaunching`, which is where the `isRunningTests` guards
+live. Those guards are structurally unable to prevent it. `AppModel.shared`
+builds the chat/overlay/tray engines and `TrayStatusStore.init` registers a live
+listener on the core.
 
-The W12 Swift-side behaviour changes are verified **by compilation only**:
+That listener answers `ConfigChangeBus.holdBadgeDidChange`, so a settings unit
+test running entirely on a mock engine drove real core work. Measured, whole
+suite, same binary except for `let` vs `lazy var` on those properties:
 
-- `OverlayStateTests.swift` — the overlay marker rebase
-  (`renderedOffset`, `rebaseContextMarkers`, `liveTextOffset` in
-  `Screens/Overlay/OverlayState.swift`)
-- `ComposerMicTests.swift` — the composer `onReplaceRange` path
-  (`ComposerDictation.swift`)
+| build | suite | slowest test |
+|---|---:|---|
+| eager stored properties | 86.7 s | `SettingsTruthTests.testHoldBadgeControlRoundTrips…` 82.3 s |
+| `lazy var` (current) | 4.1–4.5 s (n=4) | 0.009 s |
 
-No CI executes them: the self-hosted runners run cargo only. What does cover
-adjacent ground:
+The fan-out is the mechanism: XCTest retains every `XCTestCase` instance for the
+whole run, so each view model an earlier test built is still a live observer
+when a later test posts on the bus. That test costs **0.009 s alone** and
+**82.3 s** in suite position — the cost was never in the test.
 
-- Rust-side patch/marker coexistence tests in `core/pipeline/live_assembly.rs`
-  (including char-vs-byte offsets on Polish diacritics and out-of-range drops)
-- the operator smoke rows in `scripts/smoke-macos27.sh`
+**Wrong — the hang does not reproduce.** Checked on 2026-08-08 at HEAD
+`6784b160`, i.e. *before* the `lazy` change, on macOS 27 / Xcode 26.6:
 
-The overlay-side rebase arithmetic itself executes only in production. A
-`{selection_N}` fence drifting mid-word is an agent-lane corruption that daily
-use will hit before any gate does.
+| condition | result |
+|---|---|
+| pre-fix, `Codescribe.app` **not** running | full suite green, 86.7 s |
+| pre-fix, `Codescribe.app` **running** (pid 51794) | `ComposerMicTests` green, ~4 s |
+| post-fix, app running (pid 13987) | 71 tests green, 0.108 s |
 
-## Named follow-up (not done here)
+No hang in any arm. The first cold run after a rebuild takes ~20–30 s (dyld
+warming the 624 MB `libcodescribe_ffi.dylib`, plus re-signing); the ~345 s
+figure is most consistent with a cold run against a give-up timeout rather than
+a deadlock, but nobody has reproduced it, so treat it as unexplained rather than
+fixed. If you do see a hang, capture a sample of the host process — that is the
+missing evidence.
 
-Make `AppDelegate`'s core-touching stored properties lazy, or construct them
-behind the existing `isRunningTests` check, so the XCTest host stops booting a
-second core. Then wire `xcodebuild test` into a verifier and let this directory
-start earning its keep. Until that lands, no plan may cite these tests as
-executed evidence.
+The `lazy` change stands on its own measurement (20× faster suite, no core in
+the test process), independent of the hang question.
+
+## Coverage this actually buys
+
+317 tests across 28 files, including the two surfaces the W12 plan could
+previously only verify by compilation:
+
+- `OverlayStateTests.swift` — the overlay marker rebase (`renderedOffset`,
+  `rebaseContextMarkers`, `liveTextOffset`). 60 tests.
+- `ComposerMicTests.swift` — the composer `onReplaceRange` path, including the
+  `firstIndex` → `lastIndex` alignment. 11 tests.
+
+`make test-swift` is **not** part of `make check`: it needs Xcode and a built
+ffi dylib, and the self-hosted CI runners are cargo-only. Wiring it into CI
+needs Xcode on a runner — that is a real open item, not an oversight.
+
+## Known residue
+
+The suite is ~4.3 s, of which one test still carries the bus fan-out described
+above. It is bounded now, but it grows with every future test that builds a
+`SettingsViewModel` or `TrayViewModel`, because those register on
+`NotificationCenter.default` and live until the run ends. A scoped notification
+centre for `ConfigChangeBus` would remove the class; that is a production design
+change and was left for the operator to decide.
 
 _𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI_
