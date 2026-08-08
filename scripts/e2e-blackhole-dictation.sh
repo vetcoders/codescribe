@@ -24,10 +24,16 @@
 #
 #   scripts/e2e-blackhole-dictation.sh [fixture.wav]
 #
+# The fixture argument may be a bare basename, a repo-relative path, or an
+# absolute path: it is resolved through the documented three-tier order
+# (CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets → the gitignored in-repo
+# drop dir). See scripts/lib/data-assets.sh.
+#
 # Requires: BlackHole 2ch installed (brew install --cask blackhole-2ch) and
 # microphone permission for the *terminal* running this script.
 #
 # Optional env:
+#   CODESCRIBE_DATA_ASSETS    explicit fixtures directory (highest precedence)
 #   BLACKHOLE_DEVICE          default "BlackHole 2ch"
 #   DAILY_INPUT_DEVICE        preferred restore if saved default was BH
 #   DAILY_OUTPUT_DEVICE       preferred restore if saved default was BH
@@ -38,6 +44,17 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Private fixtures live OUTSIDE the repo (real operator speech, deprivatized
+# twice). Resolution order — env → home → gitignored in-repo drop dir — is the
+# documented contract in tests/assets/data_assets/README.md, shared with the
+# Rust e2e tests and scripts/bench-stt.sh.
+if [ ! -f ./scripts/lib/data-assets.sh ]; then
+  printf 'missing scripts/lib/data-assets.sh (fixture resolver)\n' >&2
+  exit 2
+fi
+# shellcheck source=scripts/lib/data-assets.sh
+. ./scripts/lib/data-assets.sh
+
 DEVICE="${BLACKHOLE_DEVICE:-BlackHole 2ch}"
 DAILY_INPUT_DEVICE="${DAILY_INPUT_DEVICE:-MacBook Pro Microphone}"
 DAILY_OUTPUT_DEVICE="${DAILY_OUTPUT_DEVICE:-MacBook Pro Speakers}"
@@ -45,7 +62,7 @@ DAILY_OUTPUT_DEVICE="${DAILY_OUTPUT_DEVICE:-MacBook Pro Speakers}"
 # written once the loopback is verified to carry signal end to end; until then
 # the run fails loudly rather than reporting a vacuous pass.
 CAPTURE_TEST="${CAPTURE_TEST:-e2e_device_capture_dictation}"
-FIXTURE="${1:-tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav}"
+FIXTURE_REQUEST="${1:-02_kubernetes-wymaga-konfiguracji.wav}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cs-bh-e2e.XXXXXX")"
 DEFAULTS_FILE="$WORK/audio-defaults.env"
 
@@ -84,7 +101,11 @@ info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWARN\033[0m %s\n' "$1" >&2; }
 
 # ── Preconditions ───────────────────────────────────────────────────────────
-[ -f "$FIXTURE" ] || fail "fixture not found: $FIXTURE" 2
+# A missing corpus is a PRECONDITION failure (exit 2), not a parity verdict:
+# resolve_data_asset already printed every path it looked at.
+FIXTURE="$(resolve_data_asset "$FIXTURE_REQUEST")" ||
+  fail "cannot resolve fixture '$FIXTURE_REQUEST' — see the checked paths above" 2
+info "fixture: $FIXTURE"
 command -v swift >/dev/null 2>&1 || fail "swift not on PATH" 2
 [ -f ./scripts/audio-default-devices.swift ] ||
   fail "missing scripts/audio-default-devices.swift (daily/harness separation helper)" 2
@@ -278,9 +299,21 @@ cargo test --test e2e_overlay_delivery_parity \
   "$CAPTURE_TEST" -- --ignored --nocapture >"$WORK/test.log" 2>&1
 STATUS=$?
 
+# The parity numbers (similarity, word-level diff) are the POINT of this
+# harness — every grinding iteration is supposed to produce a measurement. They
+# were being written into $WORK, which the EXIT trap wipes, so each run's
+# evidence evaporated with the temp dir. Retain the log under target/ (gitignored,
+# so the operator's speech never reaches git) before anything can delete it.
+KEPT_LOG="$WORK/test.log"
+KEEP_DIR="target/e2e-blackhole"
+if mkdir -p "$KEEP_DIR" 2>/dev/null; then
+  CANDIDATE="$KEEP_DIR/$(basename "${FIXTURE%.wav}")-$(date +%Y%m%d-%H%M%S).log"
+  cp "$WORK/test.log" "$CANDIDATE" 2>/dev/null && KEPT_LOG="$CANDIDATE"
+fi
+
 if [ $STATUS -ne 0 ]; then
-  tail -40 "$WORK/test.log" >&2
-  fail "dictation test failed (exit $STATUS); full log: $WORK/test.log"
+  tail -40 "$KEPT_LOG" >&2
+  fail "dictation test failed (exit $STATUS); full log: $KEPT_LOG"
 fi
 
 # `cargo test <name>` exits 0 when the filter matches NOTHING ("0 passed").
@@ -293,4 +326,7 @@ if [ "${PASSED:-0}" -lt 1 ]; then
 fi
 
 info "PASS — capture path transcribed the fixture ($PASSED test(s))"
-grep -E "^(transcript|chars|coverage)" "$WORK/test.log" 2>/dev/null || true
+info "test log retained: $KEPT_LOG"
+# Surface the measurement, not just the verdict: a baseline without the number
+# cannot be compared against the next iteration.
+grep -E "^(transcript|chars|coverage|parity similarity)" "$KEPT_LOG" 2>/dev/null || true
