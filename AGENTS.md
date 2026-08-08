@@ -65,6 +65,23 @@ concurrently in small, coherent commits (`[<agent>/<workflow>]`).
 Grep is strictly for literal text searching.
 4. **Immutable Live Transcript**: Any attempt to rewrite or replace live STT text with Whisper or
 post-processing is a hard doctrine violation.
+5. **Coalesce AppKit notification observers**: macOS 27 fires AppKit notifications from *inside*
+window operations — a popover close reaches `becomeKeyWindow` and storms every `object: nil`
+observer in the app (2026-08-07: main thread pinned 93/93 inside `_NSPopoverCloseAndAnimate`,
+fixed in `d79781b1`). Any new `NotificationCenter` observer on an AppKit notification must
+either coalesce onto the next main-queue tick (pattern: `scheduleExternalThreadsRefresh` in
+`AgentChatStore.swift`) or bind to one specific `object:` with an O(1) handler. No disk, no
+`DateFormatter`/ICU, no layout inside the callout. The live census is pinned in
+`scripts/smoke/appkit-observers.allow` and enforced by `scripts/smoke-macos27.sh` — a new
+observer fails the smoke until its discipline is written down.
+
+### 🩺 Host smoke after every OS / Xcode bump
+
+`scripts/smoke-macos27.sh` — the standing answer to "did AppKit/CoreGraphics move under us?".
+Runs headless and raises no TCC dialog: CoreGraphics constant table vs the raw values pinned in
+`app/os/hotkeys/platform.rs`, NSPanel placement clamp, event-tap re-arm, responsibility-disclaim
+symbol, Sparkle wiring, AppKit observer census. Rows that need a human at the keyboard are
+reported `SKIP`, never silently passed. `--out FILE` writes the filled checklist.
 
 ---
 

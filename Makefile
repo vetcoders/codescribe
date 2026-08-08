@@ -465,6 +465,14 @@ test-engine-parity-layered: $(ENGINE_BRIDGE)
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
+# Host smoke for the macOS surfaces we own — run after every OS/Xcode bump.
+# Headless, raises no TCC dialog, posts no synthetic events; operator-only rows
+# report SKIP instead of passing quietly. SMOKE_ARGS='--with-inference' adds the
+# Metal/candle cold-vs-warm row. See docs in scripts/smoke-macos27.sh.
+.PHONY: smoke-macos27
+smoke-macos27:
+	@./scripts/smoke-macos27.sh $(SMOKE_ARGS)
+
 # Apple live engine proof.
 #
 # SEPARATION: daily Codescribe (mic + speakers + teacher) is independent of
@@ -676,6 +684,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'fix' 'Format all code (Rust + Prettier)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Run full test suite (incl. ignored real-API tests)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Run tests without real-API calls'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'smoke-macos27' 'Host smoke after an OS/Xcode bump (SMOKE_ARGS=--with-inference)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e' 'Run E2E tests (mock)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-sse' 'Run SSE streaming tests (real API)'
