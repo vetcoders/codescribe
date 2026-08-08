@@ -104,6 +104,84 @@ final class ComposerMicTests: XCTestCase {
         XCTAssertEqual(publishes, 1, "VAD transition must publish once")
     }
 
+    // ── Composer × layered transcription ────────────────────────────────────
+    //
+    // The composer's live preview is assembled Swift-side by
+    // `ComposerDictationListener` from `onFinal`/`onPreview`. Layer 1 corrects
+    // sealed utterances afterwards via `onReplaceRange`, so a listener that
+    // ignores those events shows the user text the engine has already
+    // retracted — split-brain against the overlay, which does apply them.
+
+    /// Drain queued main-actor hops until the store settles on `expected`.
+    /// `publishPreview` hands off through `Task { @MainActor … }`, so the
+    /// update is one scheduling hop away from the call that caused it.
+    private func awaitDictationPreview(
+        _ store: AgentChatStore,
+        equals expected: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<500 {
+            if store.dictationPreview == expected { return }
+            await Task.yield()
+        }
+        XCTAssertEqual(store.dictationPreview, expected, file: file, line: line)
+    }
+
+    func testTailPatchCorrectsTheComposerLivePreviewInPlace() async {
+        let store = AgentChatStore()
+        store.beginDictationPreviewSession()
+        let listener = ComposerDictationListener(store: store, onError: { _ in })
+
+        listener.onFinal(
+            utteranceId: 1, text: "korzystając z Tulczajn 2024",
+            avgLogprob: nil, speechPct: nil, confidenceFlags: []
+        )
+        await awaitDictationPreview(store, equals: "korzystając z Tulczajn 2024")
+
+        listener.onReplaceRange(
+            utteranceId: 1, start: 14, end: 22, text: "Toolchain", source: .tailPatch
+        )
+        await awaitDictationPreview(store, equals: "korzystając z Toolchain 2024")
+    }
+
+    func testComposerTailPatchTargetsOnlyItsOwnUtterance() async {
+        let store = AgentChatStore()
+        store.beginDictationPreviewSession()
+        let listener = ComposerDictationListener(store: store, onError: { _ in })
+
+        listener.onFinal(
+            utteranceId: 1, text: "pierwsze zdanie",
+            avgLogprob: nil, speechPct: nil, confidenceFlags: []
+        )
+        listener.onFinal(
+            utteranceId: 2, text: "drugie zdanie",
+            avgLogprob: nil, speechPct: nil, confidenceFlags: []
+        )
+        listener.onReplaceRange(
+            utteranceId: 2, start: 0, end: 6, text: "trzecie", source: .tailPatch
+        )
+
+        await awaitDictationPreview(store, equals: "pierwsze zdanie trzecie zdanie")
+    }
+
+    /// An unbound or overrunning window is dropped, never half-applied — the
+    /// same rule the overlay and the Rust committed buffer follow.
+    func testComposerDropsUnboundOrOutOfRangePatches() async {
+        let store = AgentChatStore()
+        store.beginDictationPreviewSession()
+        let listener = ComposerDictationListener(store: store, onError: { _ in })
+
+        listener.onFinal(
+            utteranceId: 1, text: "krótkie",
+            avgLogprob: nil, speechPct: nil, confidenceFlags: []
+        )
+        listener.onReplaceRange(utteranceId: 9, start: 0, end: 3, text: "X", source: .tailPatch)
+        listener.onReplaceRange(utteranceId: 1, start: 0, end: 999, text: "X", source: .tailPatch)
+
+        await awaitDictationPreview(store, equals: "krótkie")
+    }
+
     func testPendingAttachmentPreviewUsesExactStagedURL() {
         let url = URL(fileURLWithPath: "/tmp/exact-staged-preview.png")
         let pending = PendingAttachment(url: url)

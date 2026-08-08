@@ -905,6 +905,146 @@ final class OverlayStateTests: XCTestCase {
         )
     }
 
+    // ── Layer 1 TailPatch on committed spans ────────────────────────────────
+    //
+    // `ReplaceRange { source: TailPatch }` is the ADR patch primitive: Whisper
+    // re-transcribes a sealed window and corrects it in place, mid-stream,
+    // while capture continues. The overlay is the surface the user watches
+    // while that happens, so these are the bars for "the patch landed and
+    // nothing else moved".
+
+    func testTailPatchReplacesCommittedSpanMidStream() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "korzystając z Tulczajn 2024")
+        state.applyPreview("i dalej mówię")
+
+        state.applyReplaceRange(utteranceId: 1, start: 14, end: 22, text: "Toolchain")
+
+        XCTAssertEqual(state.liveText, "korzystając z Toolchain 2024 i dalej mówię")
+    }
+
+    func testTailPatchTargetsOnlyItsOwnUtterance() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "pierwsze zdanie")
+        state.applyFinal(utteranceId: 2, "drugie zdanie")
+
+        state.applyReplaceRange(utteranceId: 2, start: 0, end: 6, text: "trzecie")
+
+        XCTAssertEqual(state.liveText, "pierwsze zdanie trzecie zdanie")
+    }
+
+    /// Offsets are Rust-canonical char offsets. Polish diacritics are 2-byte in
+    /// UTF-8, so any byte-indexed reading of the window slices the wrong span.
+    func testTailPatchOffsetsAreCharsNotBytes() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "zażółć gęślą")
+
+        state.applyReplaceRange(utteranceId: 1, start: 7, end: 12, text: "jaźń")
+
+        XCTAssertEqual(state.liveText, "zażółć jaźń")
+    }
+
+    func testTailPatchOutOfRangeOrUnboundLeavesTranscriptIntact() {
+        let state = OverlayState()
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "krótkie")
+
+        state.applyReplaceRange(utteranceId: 9, start: 0, end: 3, text: "X")
+        state.applyReplaceRange(utteranceId: 1, start: 0, end: 999, text: "X")
+
+        XCTAssertEqual(state.liveText, "krótkie")
+    }
+
+    // ── TailPatch × ContextMarker coexistence ───────────────────────────────
+    //
+    // A `{selection_N}` marker anchors to a POSITION in the live text captured
+    // at selection time. A TailPatch that changes the length of an earlier span
+    // moves every character behind it — so an un-rebased marker silently walks
+    // into the middle of a different word. The marker is an intent fence (it
+    // tells the agent where the user's selection belongs); a drifted fence is
+    // worse than a missing one.
+
+    func testTailPatchKeepsLaterContextMarkerAnchoredToItsWord() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "alpha beta")
+        // Marker captured at the end of the visible text.
+        state.applyContextMarker(position: 10, marker: "{selection_1}")
+        XCTAssertEqual(state.liveText, "alpha beta {selection_1}")
+
+        // Layer 1 grows the span before it by 3 chars.
+        state.applyReplaceRange(utteranceId: 1, start: 0, end: 5, text: "alphabet")
+
+        XCTAssertEqual(
+            state.liveText,
+            "alphabet beta {selection_1}",
+            "marker must ride the patch delta, not stay on a stale absolute offset"
+        )
+    }
+
+    func testTailPatchLeavesEarlierContextMarkerUntouched() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "alpha beta")
+        state.applyContextMarker(position: 5, marker: "{selection_1}")
+
+        // Patch lands entirely AFTER the marker.
+        state.applyReplaceRange(utteranceId: 1, start: 6, end: 10, text: "betka")
+
+        XCTAssertEqual(state.liveText, "alpha {selection_1} betka")
+    }
+
+    func testTailPatchNeitherDropsNorDuplicatesMarkers() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "alpha beta")
+        state.applyContextMarker(position: 5, marker: "{selection_1}")
+        state.applyContextMarker(position: 10, marker: "{selection_2}")
+
+        state.applyReplaceRange(utteranceId: 1, start: 0, end: 5, text: "alphabet")
+
+        let rendered = state.liveText
+        XCTAssertEqual(
+            rendered.components(separatedBy: "{selection_1}").count - 1, 1,
+            "marker 1 must appear exactly once"
+        )
+        XCTAssertEqual(
+            rendered.components(separatedBy: "{selection_2}").count - 1, 1,
+            "marker 2 must appear exactly once"
+        )
+        XCTAssertEqual(rendered, "alphabet {selection_1} beta {selection_2}")
+    }
+
+    /// A marker captured INSIDE the span a later patch rewrites has lost its
+    /// anchor text. It must collapse to the patch boundary — never vanish
+    /// (dropped intent) and never land past the replacement (drifted intent).
+    func testContextMarkerInsideAPatchedSpanCollapsesToTheBoundary() {
+        let state = OverlayState()
+        state.applyIndicatorMode(.assistive)
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        state.applyFinal(utteranceId: 1, "alpha beta")
+        state.applyContextMarker(position: 3, marker: "{selection_1}")
+
+        state.applyReplaceRange(utteranceId: 1, start: 0, end: 5, text: "omega")
+
+        // Rendered at the boundary, so the word-boundary padding rule applies.
+        XCTAssertEqual(state.liveText, "{selection_1} omega beta")
+    }
+
     func testAnyAgentFinalEditPermanentlyVetoesAutoSendUntilButton() async {
         let clock = OverlayStateTestClock()
         let engine = OverlayStateTestEngine()
