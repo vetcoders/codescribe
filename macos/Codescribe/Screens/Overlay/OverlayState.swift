@@ -203,6 +203,16 @@ final class OverlayState: ObservableObject {
     @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
     @Published private(set) var indicatorMode: CsIndicatorMode = .hold
 
+    // MARK: Session capture clock (UI_DIVERGENCE_AUDIT pkt 5 — overlay timer)
+    /// Monotonic uptime stamp of the moment capture began for the open session.
+    /// The overlay's live `00:00` counter derives from this: the user's absolute
+    /// reference for audio sync, transcription lag, and stream drift.
+    @Published private(set) var captureStartedAtUptime: TimeInterval?
+    /// Freeze stamp — set when capture stops (Finish / native release / abort) so
+    /// the counter halts at the session's true duration instead of ticking
+    /// through the final pass.
+    @Published private(set) var captureEndedAtUptime: TimeInterval?
+
     // MARK: Panel placement (persisted; the window orchestrator repositions live)
     /// Anchored placement: one of six screen anchors, applied on every show().
     /// Picking an anchor exits free motion — the pick's intent is "go there".
@@ -511,6 +521,34 @@ final class OverlayState: ObservableObject {
         Task { @MainActor in await self.runStart(language: language) }
     }
 
+    /// Whole seconds of capture for the open session; nil before any capture.
+    /// Reads the frozen end stamp once capture stopped, so the final pass does
+    /// not keep the clock ticking.
+    func elapsedCaptureSeconds() -> Int? {
+        guard let started = captureStartedAtUptime else { return nil }
+        let end = captureEndedAtUptime ?? nowProvider()
+        return max(0, Int(end - started))
+    }
+
+    /// `mm:ss` (or `h:mm:ss` past the hour) for the overlay's live counter.
+    var sessionTimerText: String {
+        let total = elapsedCaptureSeconds() ?? 0
+        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%02d:%02d", m, s)
+    }
+
+    private func beginCaptureClock() {
+        captureStartedAtUptime = nowProvider()
+        captureEndedAtUptime = nil
+    }
+
+    private func freezeCaptureClock() {
+        guard captureStartedAtUptime != nil, captureEndedAtUptime == nil else { return }
+        captureEndedAtUptime = nowProvider()
+    }
+
     /// Stop the mic and flip to the finalized transcript returned by the core.
     /// Ignored while already transcribing so a second Finish tap during the
     /// awaited `stopRecording()` cannot re-enter and hit "no active recording".
@@ -533,6 +571,7 @@ final class OverlayState: ObservableObject {
         isFormatting = false
         formatFailureStatus = nil
         errorMessage = nil
+        beginCaptureClock()
         recording = true
         do {
             // Whisper is optional gap-fill when Apple is live. initModel soft-fails
@@ -641,6 +680,7 @@ final class OverlayState: ObservableObject {
         // instead of leaving the recording UI up while the final pass runs.
         transcribing = true
         warmingUp = false
+        freezeCaptureClock()
         levelMeter.reset()
         do {
             // The controller bridge returns "" here; the authoritative transcript
@@ -960,6 +1000,7 @@ final class OverlayState: ObservableObject {
             formattedText = ""
             isFormatting = false
             errorMessage = nil
+            beginCaptureClock()
         }
         recording = true
         refreshOverlayPolicyTruth()
@@ -985,6 +1026,10 @@ final class OverlayState: ObservableObject {
             isFormatting = false
             formatFailureStatus = nil
             errorMessage = nil
+            beginCaptureClock()
+        }
+        if captureStartedAtUptime == nil {
+            beginCaptureClock()
         }
         recording = true
         refreshOverlayPolicyTruth()
@@ -996,6 +1041,7 @@ final class OverlayState: ObservableObject {
         cancelWarmupWatchdog()
         recording = false
         isFinalPass = false
+        freezeCaptureClock()
         finalizeTranscript()
     }
 
@@ -1012,6 +1058,7 @@ final class OverlayState: ObservableObject {
         cancelWarmupWatchdog()
         warmingUp = false
         transcribing = true
+        freezeCaptureClock()
         levelMeter.reset()
         hasMeasuredAudioLevel = false
     }
@@ -1142,6 +1189,7 @@ final class OverlayState: ObservableObject {
         audioReady = false
         vadActive = false
         isFinalPass = false
+        freezeCaptureClock()
         levelMeter.reset()
         hasMeasuredAudioLevel = false
         if shouldResetTranscript {
