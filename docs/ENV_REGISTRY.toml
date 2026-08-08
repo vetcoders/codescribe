@@ -486,7 +486,14 @@ default = "off"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Layered incremental transcription phase gate: off (default) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on the VAD/scheduler session path only (not yet on Apple progressive live). phase1 = Apple Layer 0 + Whisper ReplaceRange patches when that path is active."
+description = "Layered incremental transcription phase gate: off (default) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Power-user key: not promoted to settings.json, so a stale ~/.codescribe/.env line arms it in every process that loads the core."
+
+[vars.CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO]
+default = "0.5"
+type = "f32"
+reload = "hot"
+category = "stt"
+description = "Layer 1 safety threshold: a tail-patch whose changed-character ratio against the committed utterance exceeds this is dropped whole rather than applied, so a divergent re-transcription can never overwrite the live canvas"
 
 [vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
 default = "1"
@@ -634,6 +641,13 @@ type = "string"
 reload = "restart"
 category = "stt"
 description = "Apple live session transport: stream (AudioBuffer live) or wav (legacy VAD+scheduler escape hatch)"
+
+[vars.CODESCRIBE_APPLE_DICTATION_TRANSCRIBER]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Arm the DictationTranscriber PoC lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Read by both the Rust side and the inherited bridge child, so one key arms the whole path. Not a shipped default — flipping it is an operator decision"
 
 [vars.CODESCRIBE_ONNX_CPU_ONLY]
 default = "0"
@@ -847,6 +861,34 @@ reload = "hot"
 category = "llm"
 description = "Anthropic Messages API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=anthropic-messages (override for proxies)"
 
+[vars.CODESCRIBE_OPENAI_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the OpenAI account-login OAuth client id. Non-secret (a public client id); the operator-facing value lives in settings.json under LLM_OPENAI_OAUTH_CLIENT_ID. Unset on both surfaces, login reports 'awaiting app registration'"
+
+[vars.CODESCRIBE_OPENAI_OAUTH_ISSUER]
+default = "https://auth.openai.com"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the OpenAI OAuth issuer base URL used for device-code / PKCE account login (proxies and staging only)"
+
+[vars.CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the Anthropic account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_ANTHROPIC_OAUTH_CLIENT_ID"
+
+[vars.CODESCRIBE_ANTHROPIC_OAUTH_ISSUER]
+default = "https://console.anthropic.com"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the Anthropic OAuth issuer base URL used for account login (proxies and staging only)"
+
 [vars.LLM_USE_STREAMING]
 default = "1"
 type = "bool"
@@ -902,6 +944,13 @@ type = "bool"
 reload = "hot"
 category = "llm"
 description = "Reuse previous OpenAI Responses API response_id to continue the same thread"
+
+[vars.CODESCRIBE_AGENT_MAX_TURN_ITERATIONS]
+default = "200"
+type = "usize"
+reload = "restart"
+category = "llm"
+description = "Hard ceiling on tool-call iterations inside one agent turn. Hitting it raises an explicit loop_guard error — never a fabricated success"
 
 [vars.CODESCRIBE_AI_CLIENT_TIMEOUT_MS]
 default = "90000"
@@ -1256,6 +1305,13 @@ type = "secret"
 reload = "restart"
 category = "build"
 description = "Offline Ed25519 signing seed (64 hex chars) read ONLY by the `license_signer` example when minting production licenses; the app runtime never reads it and it must never be stored in .env or CI"
+
+[vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX]
+default = ""
+type = "string"
+reload = "rebuild"
+category = "build"
+description = "Ed25519 license verification public key (exactly 64 hex chars) embedded at build time by core/build.rs. Non-secret (it is a public key), but release builds refuse to build without it and refuse the development key's fingerprint — a build that embeds a dev key would ship unverifiable licensing"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Debug / Test

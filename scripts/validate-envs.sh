@@ -100,8 +100,18 @@ CODE_VARS4=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'config_(runtime_env_var|init_set_
     sed 's/.*("\([^"]*\)".*/\1/' | \
     sort -u || true)
 
+# Const-indirected keys (W3-B): every pattern above needs the key as a literal at
+# the call site. `env_bool(ENV_DICTATION_TRANSCRIBER, false)` puts it in a const
+# instead, so the var was invisible to this gate — green meant "not looked at".
+# The repo names those consts with an ENV token; that convention is the filter,
+# which is why `LICENSE_PREFIX = "CSK1"` and the Keychain-account consts stay out.
+CODE_VARS5=$(grep -rhoE "${GREP_EXCLUDES[@]}" 'const [A-Z][A-Z0-9_]*: &[^=]{0,12}str = "[A-Z][A-Z0-9_]+"' core/ app/ bin/ 2>/dev/null | \
+    sed -E 's/const ([A-Z0-9_]+): &[^=]{0,12}str = "([^"]*)"/\1 \2/' | \
+    awk '$1 ~ /(^ENV_|_ENV$|_ENV_)/ { print $2 }' | \
+    sort -u || true)
+
 # Combine all found vars
-ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3\n$CODE_VARS4" | sort -u | grep -v '^$' || true)
+ALL_CODE_VARS=$(echo -e "$CODE_VARS\n$CODE_VARS2\n$CODE_VARS3\n$CODE_VARS4\n$CODE_VARS5" | sort -u | grep -v '^$' || true)
 
 # Check each code var against registry
 UNREGISTERED=""
