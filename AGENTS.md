@@ -50,8 +50,9 @@ roles:
 Authored-By |
 | **3. UniFFI Bridge** | `bridge-worker` | `make app-bindings` | Bridge parity check between Rust
 & Swift |
-| **4. Verification** | `test-falsifier` | `make test-engine-parity` | Similarity ≥ 0.90 &
-structural bounds green |
+| **4. Verification** | `test-falsifier` | `make test-engine-parity` | Layer 0 only: similarity ≥
+0.90 & structural bounds green. Needs the private corpus + loopback — see "Which ruler gates which
+lane"; the layered lane is judged on structure, never on Apple fidelity |
 | **5. App Build** | `release-builder` | `scripts/build-app.sh` | Developer ID signed binary
 verification |
 
@@ -164,47 +165,51 @@ Inventing a different layer shape from memory. This file is the shape.
 
   ## Measured Bars Guarding the Doctrine
 
-  tests/e2e_overlay_delivery_parity.rs::e2e_apple_live_parity — the live Apple canvas must
-  reproduce the system dictation engine: similarity ≥ 0.90 plus deterministic structural bars:
-  head present, tail sealed, word-count ratio 0.9–1.1 (no duplicated phrases, no lost spans).
+  tests/e2e_overlay_delivery_parity.rs::e2e_apple_live_parity — **in the layer0 lane** the live
+  Apple canvas must reproduce the system dictation engine: similarity ≥ 0.90 plus deterministic
+  structural bars: head present, tail sealed, word-count ratio 0.9–1.1 (no duplicated phrases, no
+  lost spans). The layered lane is judged differently — see the next section, which is the
+  authority on which bar applies where.
   **The bar is 0.90 and is not reproducibly green.** The "0.918–0.931 SFSpeech noise floor" this
   file used to quote was n=4; the wider Layer-0 sample measured 2026-08-08 (lane-leaked runs
   excluded) is 0.778 / 0.898 / 0.909 ×3 / 0.920 / 0.924 ×2 / 0.931 ×2 — 8 of 10 clear 0.90, two
   do not. Treat a single green run as a sample, not as proof, and read the lane line the harness
   now prints before trusting any number.
-  **The bar measures fidelity to Apple, so it is the wrong instrument for Layer 1.** Layer 1
-  exists to diverge from Apple toward the human transcript. `test-engine-parity` pins the lane to
-  `off` for exactly this reason; a layered run must be scored against the human reference beside
-  the fixture, never against Apple.
-  That sentence is now **implemented, not just asserted**. Until 2026-08-08 no gate scored anything
-  against the human reference — `e2e_apple_live_parity` read only the Apple file, and the one
-  human-defaulting instrument (`examples/apple_backend_bars.rs`) was referenced by nothing but its
-  own doc-comment, so the 0.897/0.800 pair this file used to quote came from the file lane, never
-  from the live assembly under judgement. The parity run now prints a second arm,
-  `parity accuracy-vs-human`, for both lanes, and `test-engine-parity-both` prints both deltas.
-  Measured live through the real targets, two independent two-arm runs:
 
-  | arm | similarity vs Apple (the gate) | accuracy vs human (the truth) |
-  |---|---|---|
-  | layer0 (off)    | 0.924 / 0.924 — **PASS** | 0.821 / 0.826 |
-  | layer1 (phase1) | 0.821 / 0.839 — **FAIL** | **0.923 / 0.903** |
+  ### Which ruler gates which lane
 
-  Both runs agree on the sign: **similarity −0.085, accuracy +0.077**. The arm the gate passes is
-  the less accurate one. For scale, the Apple reference itself scores only **0.805** against the
-  human transcription of that same audio — pinned deterministically, without a microphone, by
-  `apple_reference_is_a_ruler_not_the_truth`, so 1.000 on this bar would mean reproducing Apple's
-  errors. Layer 0 (≈0.82) is already slightly more accurate than the ruler it is scored against.
-  **Do not read a falling similarity as a regression, and never make a layer less accurate to
-  raise it.** Which number gates a merge remains an operator decision
-  (`default-flip-memo-layered`) — it can now be made with both numbers on the table.
-  **A structural bar bites before the similarity bar does.** The word-count ratio window
-  (0.9–1.1, scored against Apple's token count) caps the capture at 188 tokens on this fixture
-  while the spoken truth carries 195, so no layer can reach what was actually said without
-  tripping an assertion whose message historically blamed "duplicated phrases". Layer 1 hit it
-  live on 2026-08-08 at 190 tokens (ratio 1.11) — a hard panic, not a soft red, and it fires on
-  the runs where Layer 1 is at its most accurate. The parity run now prints
-  `parity accuracy-headroom` showing exactly how much budget is left, and the assertion message
-  tells the reader to check the sign before diagnosing.
+  **One rule, and it is enforced in code (`apple_rulers_gate`, `e2e_apple_live_parity`):**
+  a bar gates only the lane whose job matches the bar's reference.
+
+  | lane | job | what GATES it | what is only measured |
+  |---|---|---|---|
+  | layer0 (`off`) | reproduce Apple's live canvas | similarity ≥ 0.90 vs Apple · ratio 0.9–1.1 · head · tail · lane match | accuracy-vs-human |
+  | layer1 (`phase1`) | diverge from Apple toward what was SAID | head · tail · ratio **floor** 0.9 (lost spans) · lane match | similarity vs Apple · ratio ceiling · accuracy-vs-human |
+
+  **Why layer1 is not gated on Apple fidelity.** Gap-filling grows the denominator against an
+  Apple ruler, so a *more* accurate layer scores *lower*. This is measured, repeatedly, and the
+  sign is stable across every pair ever run: similarity falls, accuracy rises. The anchor is
+  deterministic and needs no microphone — `apple_reference_is_a_ruler_not_the_truth` pins the
+  Apple reference at **0.805** against the human transcription of the same audio, so 1.000 on
+  that bar would mean reproducing Apple's errors. Layer 0 is already slightly more accurate than
+  the ruler it is scored against. **Never make a layer less accurate to raise a number.**
+
+  **Why accuracy-vs-human gates nothing either.** Its reference is a private fixture
+  (`~/.codescribe/data_assets`, never in the repo — deprivatize fence), so a bar on it would
+  evaporate silently on any tree without the operator's corpus. Both arms are printed for both
+  lanes; which number gates a merge stays an operator decision
+  (`.vibecrafted/plans/w12-layered-live-closure/reports/default-flip-memo-layered.md`).
+  Live numbers belong in the retained run logs under `target/e2e-blackhole/`, not in this file:
+  prose copies of them go stale within a run or two.
+
+  **The structural cliff is the sharper edge.** The word-count ratio ceiling (1.1, scored against
+  Apple's token count) caps the capture at 188 tokens on this fixture while the spoken truth
+  carries 195 — so no layer can reach what was actually said without tripping it, and it fires
+  hardest exactly when Layer 1 is most accurate (measured live at 190 tokens, ratio 1.11, a hard
+  panic). The ceiling therefore does not gate the layered lane — but only when the excuse is
+  visible: with no human reference beside the fixture, gap-fill and duplication are
+  indistinguishable and the ceiling gates after all. `parity accuracy-headroom` prints the
+  remaining budget every run.
   **Which target measures which lane** — the pin is per-target, so the lane is chosen by the
   target you run, never by an env var you prepend: `make test-engine-parity` (Layer 0, pinned
   off), `make test-engine-parity-layered` (phase1, the only incantation that actually arms
@@ -212,9 +217,11 @@ Inventing a different layer shape from memory. This file is the shape.
   Prepending `CODESCRIBE_LAYERED_TRANSCRIPTION=…` to any of them is now **refused** with exit 2:
   a recipe pin beats CLI env, so that form silently measured the other lane and reported the
   number as yours — it is how the W12 layered arm was recorded green while asserting nothing
-  (review P1-01). Re-measured 2026-08-08 through the correct target: layer0 0.902 (0 patches),
-  phase1 0.863 (24 patches), same 157 matching tokens in both arms — the layered arm loses only
-  because gap-filling grows the denominator.
+  (review P1-01).
+  **This instrument is operator-host-local, not CI.** Its whole corpus — the WAV, the Apple
+  reference and the human transcription — lives outside the repo, and nothing in
+  `.github/workflows/` runs it. On a checkout without the corpus these targets refuse rather
+  than measure. Treat parity as the bench you walk to, never as a bar a merge already cleared.
   app/controller/mod.rs::adjudicate_recording_truth — "never full-replace live with Whisper";
   length-regression guard keeps the stream as the floor of truth.
 

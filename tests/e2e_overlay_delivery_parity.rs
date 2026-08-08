@@ -1147,9 +1147,16 @@ fn apple_reference_is_a_ruler_not_the_truth() {
 #[ignore = "needs the BlackHole loopback — run via `make test-engine-parity`"]
 async fn e2e_apple_live_parity() {
     // Green bar for word-level similarity against the system-engine reference.
-    // Floor measured over 4 identical runs: 0.918/0.919/0.925/0.931 — the
-    // spread is SFSpeech-internal (same binary SHA, clean tree, level ruled
-    // out), so the bar sits under the floor with a small margin.
+    // The value is FENCED — restating it is an operator decision
+    // (.vibecrafted/plans/w12-layered-live-closure/reports/default-flip-memo-layered.md).
+    //
+    // What is NOT fenced is describing it honestly. This comment used to claim
+    // the bar sat "under the measured floor of 4 identical runs (0.918–0.931)".
+    // The wider Layer-0 sample (n=10, lane-leaked runs excluded) is
+    // 0.778 / 0.898 / 0.909 ×3 / 0.920 / 0.924 ×2 / 0.931 ×2: two runs land
+    // BELOW 0.90, so the bar is not under the floor and a single green run is a
+    // sample, not proof. `AGENTS.md` carries the same sample; this comment used
+    // to contradict it.
     const PARITY_SIMILARITY_BAR: f32 = 0.90;
     // Word-count ratio window against the Apple reference. Named (values
     // unchanged) so the headroom line below can print the same ceiling the
@@ -1211,15 +1218,50 @@ async fn e2e_apple_live_parity() {
     let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let ours = normalize(&transcript);
 
-    // Arm 1 — the GATE's ruler: fidelity to the system Apple engine.
+    // ── Which ruler GATES this run — decided once, by the lane's job ─────────
+    //
+    // Layer 0's job is to reproduce Apple's live canvas, so Apple fidelity is
+    // its ruler and every Apple-referenced bar below gates it.
+    //
+    // Layer 1's job is to DIVERGE from Apple toward what was actually said
+    // (`AGENTS.md`: "a layered run must be scored against the human reference
+    // beside the fixture, never against Apple"). Until this line existed, that
+    // sentence was doctrine the code contradicted: both lanes ran through the
+    // same Apple-referenced asserts, so the layered arm was marked FAIL for
+    // doing its job — three independent measurements agreed on the sign
+    // (similarity down, accuracy up) and the gate read only the first.
+    //
+    // So in the layered lane the Apple numbers are MEASURED and PRINTED, never
+    // a verdict. What still gates there is lane-agnostic truth: the head is
+    // present, the tail is sealed, no spans were lost, and the lane that ran is
+    // the lane that was asked for.
+    //
+    // The obvious-looking alternative — gate the layered lane on
+    // `accuracy-vs-human` instead — is rejected deliberately: that reference is
+    // a PRIVATE fixture (`~/.codescribe/data_assets`, never in the repo), so
+    // such a gate would evaporate silently on any tree without the operator's
+    // corpus. A gate that disappears when its input is missing is the exact
+    // failure this test already survived once. Accuracy stays informational
+    // until its reference is something a checkout can see.
+    let apple_rulers_gate = requested_lane.is_none();
+
+    // Arm 1 — the Apple ruler: fidelity to the system engine.
     // Keep this line's shape (`^parity similarity <n>/<d> = <v>`): the
     // `test-engine-parity-both` extractor parses it.
     let apple = teacher_score(&reference, &ours);
     let (equal, similarity) = (apple.equal, apple.similarity);
     let (target_tokens, our_tokens) = (apple.reference_tokens, apple.our_tokens);
     eprintln!(
-        "parity similarity {equal}/{} = {similarity:.3} (bar: >= {PARITY_SIMILARITY_BAR})",
-        apple.denominator
+        "parity similarity {equal}/{} = {similarity:.3} ({})",
+        apple.denominator,
+        if apple_rulers_gate {
+            format!("bar: >= {PARITY_SIMILARITY_BAR} — GATING in this lane")
+        } else {
+            format!(
+                "bar {PARITY_SIMILARITY_BAR} NOT APPLIED — wrong instrument for the layer1 lane; \
+                 measurement only"
+            )
+        }
     );
 
     // Arm 2 — the ACCURACY ruler: fidelity to what was actually said.
@@ -1233,12 +1275,15 @@ async fn e2e_apple_live_parity() {
     // doc-comment, so the doctrine's 0.897/0.800 numbers came from the file lane
     // — never from the live assembly under judgement.
     //
-    // Printed for BOTH lanes and gated for neither: which number gates a merge
-    // is an operator decision, and this arm exists so that decision can finally
-    // be made with both numbers on the table rather than one.
-    match human_reference_for_wav(&clip) {
-        Some(human) => {
-            let acc = teacher_score(&human, &ours);
+    // Printed for BOTH lanes and gating NEITHER — see `apple_rulers_gate`: the
+    // human reference is a private fixture, so a bar on it would vanish
+    // silently wherever the corpus is absent. It is kept as the axis on which
+    // the operator's default-flip decision can be made with both numbers on the
+    // table, and (below) as the only evidence that can excuse a ratio-ceiling
+    // breach in the layered lane.
+    let accuracy = human_reference_for_wav(&clip).map(|human| teacher_score(&human, &ours));
+    match &accuracy {
+        Some(acc) => {
             eprintln!(
                 "parity accuracy-vs-human {}/{} = {:.3} (no bar — informational; \
                  see AGENTS.md 'never against Apple')",
@@ -1319,30 +1364,74 @@ async fn e2e_apple_live_parity() {
         tail.contains("z apple"),
         "tail of the dictation is missing — the open phrase was not sealed at stream end"
     );
+    // The ratio bar has two sides and only one of them is lane-agnostic.
+    //
+    // BELOW the floor means lost spans — the capture dropped speech. That is a
+    // regression in ANY lane, so the floor gates both.
+    //
+    // ABOVE the ceiling is the ambiguous side: it means either duplicated
+    // phrases (a regression) or a layer that gap-filled toward what was
+    // actually SAID (the layered lane doing its job). The ceiling counts tokens
+    // against the Apple ruler, and the spoken truth carries MORE tokens than
+    // Apple transcribes (171 vs 195 on this fixture, pinned by
+    // `apple_reference_is_a_ruler_not_the_truth`), so it caps the capture below
+    // what was said and fires hardest exactly when Layer 1 is most accurate —
+    // measured live at 190 tokens, ratio 1.11, a hard panic.
     let ratio = our_tokens as f32 / target_tokens.max(1) as f32;
     assert!(
-        (RATIO_BAR_MIN..=RATIO_BAR_MAX).contains(&ratio),
-        "word count ratio {ratio:.2} outside [{RATIO_BAR_MIN}, {RATIO_BAR_MAX}] \
-         (ours {our_tokens} vs Apple reference {target_tokens}).\n\
-         Read the SIGN before diagnosing:\n\
-         - BELOW the floor: lost spans — the capture dropped speech. A real regression.\n\
-         - ABOVE the ceiling: either duplicated phrases (a regression) OR a layer that \
-         gap-filled toward what was actually SAID. This bar counts tokens against the \
-         Apple ruler, and the spoken truth carries MORE tokens than Apple transcribes \
-         (measured on this fixture by `apple_reference_is_a_ruler_not_the_truth`), so a \
-         more accurate capture walks this ratio up. Check `parity accuracy-vs-human` and \
-         the word diff above: gap-fill raises it, duplication does not.\n\
-         Do NOT make a layer less accurate to satisfy this bar — restating it is an \
-         operator decision (default-flip-memo-layered)."
+        ratio >= RATIO_BAR_MIN,
+        "word count ratio {ratio:.2} below the floor {RATIO_BAR_MIN} \
+         (ours {our_tokens} vs Apple reference {target_tokens}) — lost spans: the capture \
+         dropped speech. A real regression in either lane; see the word diff above."
     );
+    if apple_rulers_gate {
+        assert!(
+            ratio <= RATIO_BAR_MAX,
+            "word count ratio {ratio:.2} above the ceiling {RATIO_BAR_MAX} \
+             (ours {our_tokens} vs Apple reference {target_tokens}) — in the layer0 lane this \
+             is duplicated phrases, because Layer 0 has nothing to gap-fill WITH. \
+             Do NOT make a layer less accurate to satisfy this bar; restating it is an \
+             operator decision (see \
+             .vibecrafted/plans/w12-layered-live-closure/reports/default-flip-memo-layered.md)."
+        );
+    } else if ratio > RATIO_BAR_MAX {
+        // A ceiling breach is excusable in the layered lane only when the
+        // excuse is VISIBLE. Without the human reference there is no way to
+        // tell gap-fill from duplication, so the Apple ceiling gates after all
+        // rather than waving a red arm through on a story.
+        let acc = accuracy.as_ref().unwrap_or_else(|| {
+            panic!(
+                "word count ratio {ratio:.2} above the ceiling {RATIO_BAR_MAX} in the layer1 lane \
+                 (ours {our_tokens} vs Apple reference {target_tokens}), and there is NO human \
+                 transcription beside {} to tell gap-fill from duplication. \
+                 The ceiling gates until the excuse can be measured.",
+                clip.display()
+            )
+        });
+        eprintln!(
+            "parity ratio-ceiling {ratio:.2} > {RATIO_BAR_MAX} NOT APPLIED — layer1 lane, \
+             gap-fill toward the spoken {} tokens (accuracy-vs-human {:.3}); the ceiling counts \
+             against the Apple ruler and is the wrong instrument here. Read the word diff above \
+             if you suspect duplication rather than gap-fill.",
+            acc.reference_tokens, acc.similarity
+        );
+    }
 
-    assert!(
-        similarity >= PARITY_SIMILARITY_BAR,
-        "our capture path must reproduce the system Apple live output \
-         (similarity {similarity:.3} < bar {PARITY_SIMILARITY_BAR}) — see the word diff above; \
-         the reference's own artefacts are part of the spec (data_assets/README.md). \
-         The bar sits under the measured floor of 4 identical runs (0.918–0.931) \
-         because SFSpeech itself is nondeterministic at word level; a bar above \
-         the floor is a coin flip, not a gate."
-    );
+    if apple_rulers_gate {
+        assert!(
+            similarity >= PARITY_SIMILARITY_BAR,
+            "our capture path must reproduce the system Apple live output \
+             (similarity {similarity:.3} < bar {PARITY_SIMILARITY_BAR}) — see the word diff above; \
+             the reference's own artefacts are part of the spec (data_assets/README.md). \
+             SFSpeech is nondeterministic at word level and the Layer-0 sample straddles this \
+             bar (n=10: 0.778 / 0.898 / 0.909 ×3 / 0.920 / 0.924 ×2 / 0.931 ×2), so re-run \
+             before believing a single red — and restating the bar is an operator decision."
+        );
+    } else {
+        eprintln!(
+            "parity verdict: layer1 lane judged on structure only (head, tail, no lost spans, \
+             lane match). Apple-fidelity numbers above are measurements, not a verdict — \
+             see AGENTS.md 'Which ruler gates which lane'."
+        );
+    }
 }

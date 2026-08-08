@@ -482,37 +482,33 @@ test-engine-parity: $(ENGINE_BRIDGE)
 	 CAPTURE_TEST=e2e_apple_live_parity \
 	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
 
-# Same bar, Layer 1 armed: Apple live commits, then Whisper re-transcribes each
-# sealed window and patches it in place (`ReplaceRange { source: TailPatch }`).
+# Layer 1 armed: Apple live commits, then Whisper re-transcribes each sealed
+# window and patches it in place (`ReplaceRange { source: TailPatch }`).
 #
-# The point is the DELTA against `test-engine-parity` — but read the delta on
-# the RIGHT axis, because this target prints two and they move in opposite
-# directions by design:
+# NOT the same bar. This lane is judged on STRUCTURE ONLY — head present, tail
+# sealed, no lost spans, measured lane matches the request. The Apple-fidelity
+# numbers are printed and never asserted here, because Layer 1 exists to diverge
+# from Apple toward what was actually said: gap-filling grows the denominator, so
+# a MORE accurate layer scores LOWER against Apple. That is the mechanical shape
+# of the layer working, not a contract breach.
 #
-#   similarity        fidelity to the APPLE reference. Layer 1 gap-fills, which
-#                     grows the denominator, so a MORE accurate layer scores
-#                     LOWER here. A falling similarity is the expected shape,
-#                     not a contract breach.
-#   accuracy-vs-human fidelity to what was actually SAID. This is the axis on
-#                     which "is Layer 1 better?" has an answer at all.
+# The single decisive fact behind the rule: `apple_reference_is_a_ruler_not_the_truth`
+# pins the Apple reference at 0.805 against the human transcription of the same
+# audio, so 1.000 on the Apple bar would mean reproducing Apple's ERRORS.
 #
-# An earlier version of this comment said Layer 1 "must not lower" the
-# similarity. That was wrong on the tree's own terms — `AGENTS.md` and
-# `test-engine-parity-both` both state that lowering it is the mechanical
-# consequence of gap-filling — and it left the repo asserting both signs of the
-# same delta. Measured 2026-08-08: 0.902 -> 0.863, which the old sentence called
-# a breach and the doctrine calls correct. The doctrine wins; the sentence is
-# gone. `apple_reference_is_a_ruler_not_the_truth` pins why: the Apple reference
-# itself scores only 0.805 against the human transcription of the same audio, so
-# 1.000 on this bar would mean reproducing Apple's ERRORS.
+# Accuracy-vs-human is printed for both lanes and gates neither: its reference is
+# a private fixture (`~/.codescribe/data_assets`), so a bar on it would evaporate
+# on any tree without the operator's corpus. Which number gates a merge stays an
+# operator decision — see
+# .vibecrafted/plans/w12-layered-live-closure/reports/default-flip-memo-layered.md
 #
 # What Layer 1 must still not do is leave the number byte-identical: identical
 # means the patches never reached the measured assembly (guarded always-on by
 # `parity_assembly_reads_layer1_tail_patches`).
 #
 # Run both arms with `test-engine-parity-both`. SFSpeech is nondeterministic at
-# word level (measured spread 0.898–0.931 over 5 runs), so a single pair of runs
-# is an observation, not a verdict.
+# word level (Layer-0 sample n=10 straddles 0.90: 0.778 … 0.931), so a single
+# pair of runs is an observation, not a verdict.
 .PHONY: test-engine-parity-layered
 test-engine-parity-layered: $(ENGINE_BRIDGE)
 	$(call parity_lane_refuse,phase1,test-engine-parity)
@@ -529,9 +525,13 @@ test-engine-parity-layered: $(ENGINE_BRIDGE)
 # prints the two similarity numbers side by side with their delta. It does NOT
 # invent a bar for the layered arm: the Layer-0 bar (0.90 vs the Apple-fidelity
 # reference) is the wrong instrument for a layer whose job is to DIVERGE from
-# Apple, and restating bars is an operator decision (default-flip-memo-layered).
+# Apple, and restating bars is an operator decision (see the memo path above).
 # What this target owes you is two honest measurements from one command; the
 # verdict on the delta stays human.
+#
+# Read the arms asymmetrically, because they are judged asymmetrically: arm 1
+# (layer0) can go red on the similarity bar, arm 2 (layer1) can only go red on
+# structure. An `rc=1` on arm 2 is therefore never "the number dropped".
 #
 # SFSpeech is nondeterministic at word level (measured spread 0.898–0.931 over
 # 5 runs), so one pair of runs is an observation, not a verdict — run it a few

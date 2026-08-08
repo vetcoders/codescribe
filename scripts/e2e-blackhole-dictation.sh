@@ -332,7 +332,7 @@ fi
 # and never surfaced. Add new `parity …` lines here in the same commit that
 # prints them.
 surface_measurements() {
-  grep -E "^(transcript|chars|coverage|parity (lane|similarity|accuracy-vs-human|accuracy-headroom))" \
+  grep -E "^(transcript|chars|coverage|parity (lane|similarity|accuracy-vs-human|accuracy-headroom|ratio-ceiling|verdict))" \
     "$KEPT_LOG" 2>/dev/null || true
 }
 
