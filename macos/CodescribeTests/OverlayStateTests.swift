@@ -139,6 +139,37 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(unknown.help, "Insert at the cursor in the previous app")
     }
 
+    func testOverlaySessionTimerTracksCaptureAndFreezesOnStop() {
+        let clock = OverlayStateTestClock()
+        let state = OverlayState(nowProvider: { clock.now })
+        XCTAssertNil(state.elapsedCaptureSeconds())
+        XCTAssertEqual(state.sessionTimerText, "00:00")
+
+        clock.now = 100
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        XCTAssertEqual(state.elapsedCaptureSeconds(), 0)
+
+        clock.now = 165
+        XCTAssertEqual(state.elapsedCaptureSeconds(), 65)
+        XCTAssertEqual(state.sessionTimerText, "01:05")
+
+        // Native finalising freezes the clock — the final pass must not tick.
+        state.handleRecordingFinalising()
+        clock.now = 200
+        XCTAssertEqual(state.elapsedCaptureSeconds(), 65)
+        state.finishControllerRecording()
+        XCTAssertEqual(state.elapsedCaptureSeconds(), 65)
+
+        // A fresh session restarts from zero and formats hours past 59:59.
+        clock.now = 300
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        XCTAssertEqual(state.elapsedCaptureSeconds(), 0)
+        clock.now = 3900
+        XCTAssertEqual(state.sessionTimerText, "1:00:00")
+    }
+
     func testApprovedOverlayActionPresentationIsLiteralAndLevelBounded() {
         XCTAssertEqual(OverlayActionPresentation.sendTitle, "To Agent")
         XCTAssertEqual(OverlayActionPresentation.sendHelp, "Send transcript to the agent")
