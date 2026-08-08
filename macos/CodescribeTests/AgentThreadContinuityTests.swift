@@ -86,6 +86,39 @@ final class AgentThreadContinuityTests: XCTestCase {
         XCTAssertEqual(store.currentThread?.messages.map(\.id), visibleMessageIDs)
     }
 
+    func testVoiceTurnAdoptsSelectedEmptyDraftInsteadOfMintingParallelThread() {
+        let provider = StubThreadsProvider([("t_history", "History")])
+        let store = AgentChatStore(threadsProvider: provider)
+        store.newThread()
+        let draftID = store.selectedThreadID
+        let threadCount = store.threads.count
+
+        store.ingestVoiceTurn(threadId: "t_voice_session", userText: "Ze względu na fakt że…")
+        store.ingestVoiceDelta("odpowiedź")
+
+        XCTAssertEqual(store.selectedThreadID, draftID, "voice turn must land in the open draft")
+        XCTAssertEqual(store.currentThread?.backendId, "t_voice_session")
+        XCTAssertEqual(store.threads.count, threadCount, "no parallel thread may be minted")
+        XCTAssertTrue(store.currentThread?.messages.contains { message in
+            message.role == .you && message.text.contains("Ze względu")
+        } == true)
+        XCTAssertEqual(store.currentThread?.messages.last?.text, "odpowiedź")
+        XCTAssertNotEqual(store.currentThread?.title, "New thread", "adopted draft takes a real title")
+    }
+
+    func testVoiceTurnWithUnknownIdStillMintsThreadWhenSelectionIsBound() {
+        let provider = StubThreadsProvider([("t_history", "History")])
+        let store = AgentChatStore(threadsProvider: provider)
+        let selectedID = store.selectedThreadID
+        let threadCount = store.threads.count
+
+        store.ingestVoiceTurn(threadId: "t_new_session", userText: "fresh voice")
+
+        XCTAssertEqual(store.selectedThreadID, selectedID, "selection must not move")
+        XCTAssertEqual(store.threads.count, threadCount + 1)
+        XCTAssertEqual(thread("t_new_session", in: store)?.messages.first?.role, .you)
+    }
+
     func testOnlyExplicitNewThreadActionSelectsFreshThread() {
         let provider = StubThreadsProvider([
             ("t_first", "First"),
