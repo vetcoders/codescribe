@@ -27,11 +27,19 @@ Apple speech APIs are Swift-first. Keeping Swift in a separate executable gives:
 
 ## Build Bridge
 
+Pin the host triple so binaries do not inherit the builder's macOS version
+(cross-machine drift). The Makefile default is `ENGINE_BRIDGE_TARGET=arm64-apple-macos26.0`.
+
 ```bash
-swiftc -O -o codescribe-stt-bridge core/stt/apple_stt/codescribe-stt-bridge.swift
+# preferred: Makefile recipe (Info.plist section + codesign + target pin)
+make target/release/codescribe-stt-bridge
+
+# manual (same -target as Makefile / scripts/build-app.sh)
+swiftc -O -target arm64-apple-macos26.0 \
+  -o codescribe-stt-bridge core/stt/apple_stt/codescribe-stt-bridge.swift
 ```
 
-`make app` builds this helper and bundles it in:
+`make app` / `scripts/build-app.sh` builds this helper and bundles it in:
 
 ```text
 Codescribe.app/Contents/MacOS/codescribe-stt-bridge

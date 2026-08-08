@@ -346,6 +346,10 @@ DATA_ASSETS_DIR := $(shell ./scripts/lib/data-assets.sh dir)
 ENGINE_CLIP ?= $(DATA_ASSETS_DIR)/02_kubernetes-wymaga-konfiguracji.wav
 ENGINE_ALL_CLIPS ?= 0
 ENGINE_BRIDGE ?= target/release/codescribe-stt-bridge
+# Pin host triple so bridge binaries do not inherit the builder's macOS
+# version (measured: host macosx28.0 / minos 28.0 on a 27 beta machine).
+# Keep in lockstep with the SpeechAnalyzer / SFSpeech surface we ship against.
+ENGINE_BRIDGE_TARGET ?= arm64-apple-macos26.0
 # Minimal .app wrapper: TCC grants privacy prompts to bundles, not loose binaries.
 ENGINE_BRIDGE_APP ?= target/release/CodescribeSTTBridge.app
 # Live verbose: session/STT tracing during the long Apple/Candle run.
@@ -388,9 +392,9 @@ test-engine:
 # stable across rebuilds. Prefer it when present; fall back to ad-hoc.
 BRIDGE_SIGN_ID ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),-)
 $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_stt/bridge-Info.plist
-	@echo "Building codescribe-stt-bridge → $(ENGINE_BRIDGE)"
+	@echo "Building codescribe-stt-bridge → $(ENGINE_BRIDGE) (-target $(ENGINE_BRIDGE_TARGET))"
 	@mkdir -p $(dir $(ENGINE_BRIDGE))
-	@swiftc -O -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift \
+	@swiftc -O -target $(ENGINE_BRIDGE_TARGET) -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift \
 		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
 		-Xlinker core/stt/apple_stt/bridge-Info.plist
 	@codesign --force --sign "$(BRIDGE_SIGN_ID)" --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE) 2>/dev/null || \
