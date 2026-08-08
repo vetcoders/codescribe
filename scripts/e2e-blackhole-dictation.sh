@@ -321,7 +321,33 @@ if mkdir -p "$KEEP_DIR" 2>/dev/null; then
   cp "$WORK/test.log" "$CANDIDATE" 2>/dev/null && KEPT_LOG="$CANDIDATE"
 fi
 
+# Surface the measurement, not just the verdict: a baseline without the number
+# cannot be compared against the next iteration.
+#
+# This filter is load-bearing beyond the console. `make test-engine-parity-both`
+# tees THIS stdout per arm and parses the numbers back out of it, so a line the
+# test prints but this grep omits is invisible to the two-arm comparison — it
+# exists in the retained log and nowhere a gate can reach. `parity lane` and the
+# accuracy arm were exactly that until now: printed by the test since 2026-08-08
+# and never surfaced. Add new `parity …` lines here in the same commit that
+# prints them.
+surface_measurements() {
+  grep -E "^(transcript|chars|coverage|parity (lane|similarity|accuracy-vs-human|accuracy-headroom))" \
+    "$KEPT_LOG" 2>/dev/null || true
+}
+
 if [ $STATUS -ne 0 ]; then
+  # A RED arm that measured is not an arm that failed to measure. The parity
+  # numbers print long before the bars are asserted, so a run that scores
+  # cleanly and then trips a bar still owes the caller its numbers — otherwise
+  # `test-engine-parity-both` reports "<no measurement>" and blames a
+  # precondition failure (missing loopback / mic grant / fixture) for what was
+  # actually a completed measurement failing a threshold. Measured 2026-08-08:
+  # the layered arm scored 0.821 vs Apple and 0.923 vs human, then failed the
+  # word-count ratio bar — and the two-arm table reported none of it.
+  # `tail -40` cannot cover this: on a long fixture the numbers have already
+  # scrolled past 40 lines by the time the panic lands.
+  surface_measurements
   tail -40 "$KEPT_LOG" >&2
   fail "dictation test failed (exit $STATUS); full log: $KEPT_LOG"
 fi
@@ -337,6 +363,4 @@ fi
 
 info "PASS — capture path transcribed the fixture ($PASSED test(s))"
 info "test log retained: $KEPT_LOG"
-# Surface the measurement, not just the verdict: a baseline without the number
-# cannot be compared against the next iteration.
-grep -E "^(transcript|chars|coverage|parity similarity)" "$KEPT_LOG" 2>/dev/null || true
+surface_measurements

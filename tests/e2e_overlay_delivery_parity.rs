@@ -982,6 +982,150 @@ async fn e2e_device_capture_dictation() {
     );
 }
 
+// ─── The scoring instrument, written once ───────────────────────────────────
+
+/// One token-similarity score from the Teacher aligner — the same instrument
+/// the product uses for live↔whisper diffs, here diffing reference↔ours.
+///
+/// The metric is `equal / max(reference, ours)`, so text the reference does not
+/// contain lowers the score by growing the **denominator**, not by breaking
+/// matches. That is how one capture can score differently against two
+/// references while matching the identical number of tokens: the ruler moved,
+/// the capture did not. Any reading of a parity delta that ignores this reads
+/// the wrong quantity.
+///
+/// Extracted because the parity run now reads it **twice** — once against the
+/// Apple ruler (the gate) and once against the human ruler (the truth) — and
+/// two copies of a metric are two metrics.
+struct TeacherScore {
+    equal: usize,
+    reference_tokens: usize,
+    our_tokens: usize,
+    denominator: usize,
+    similarity: f32,
+    diff: String,
+}
+
+fn teacher_score(reference: &str, ours: &str) -> TeacherScore {
+    use codescribe_core::quality::teacher::{AlignOp, align_words, tokenize};
+
+    let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let target_tokens = tokenize(&normalize(reference));
+    let our_tokens = tokenize(&normalize(ours));
+    let ops = align_words(&target_tokens, &our_tokens);
+    let equal = ops
+        .iter()
+        .filter(|op| matches!(op, AlignOp::Equal { .. }))
+        .count();
+    let denominator = target_tokens.len().max(our_tokens.len()).max(1);
+
+    let mut diff = String::new();
+    for op in &ops {
+        match op {
+            AlignOp::Equal { .. } => {}
+            AlignOp::DeleteA { a } => {
+                diff.push_str(&format!("  -ref  {}\n", target_tokens[*a].surface));
+            }
+            AlignOp::InsertB { b } => {
+                diff.push_str(&format!("  +ours {}\n", our_tokens[*b].surface));
+            }
+            AlignOp::Substitute { a, b } => {
+                diff.push_str(&format!(
+                    "  ~     {} → {}\n",
+                    target_tokens[*a].surface, our_tokens[*b].surface
+                ));
+            }
+        }
+    }
+
+    TeacherScore {
+        equal,
+        reference_tokens: target_tokens.len(),
+        our_tokens: our_tokens.len(),
+        denominator,
+        similarity: equal as f32 / denominator as f32,
+        diff,
+    }
+}
+
+/// Resolve the frozen system-engine transcript beside a fixture — the ruler the
+/// 0.90 bar scores against. Sibling of `human_reference_for_wav`, which
+/// resolves what was actually said.
+fn apple_reference_for_wav(wav: &Path) -> Option<String> {
+    let stem = wav.file_stem()?.to_str()?;
+    let path = wav
+        .parent()?
+        .join(format!("{stem}_apple_live_reference.txt"));
+    std::fs::read_to_string(path).ok()
+}
+
+/// The Apple reference is a **ruler, not the truth**: it is one engine's output
+/// from the fixture, and `PARITY_SIMILARITY_BAR` scores our capture against it.
+/// This measures the gap between that ruler and what was actually said — the
+/// ceiling any Apple-scored arm can reach *while being faithful to the speech*.
+///
+/// Why this test exists at all: every human-reference number this plan reasons
+/// from (`AGENTS.md`, layered-pipeline docs) was quoted from
+/// `examples/apple_backend_bars.rs`, which no gate, script or CI job executes.
+/// A doctrine resting on a number nothing re-derives is a doctrine resting on a
+/// memory. This one needs no microphone, no loopback and no engine, so unlike
+/// every other parity number here it is reproducible by any agent on any host
+/// that has the fixtures.
+///
+/// It deliberately asserts **no quality bar** — inventing one is an operator
+/// decision. It asserts only the fact the bar's readers keep losing: scoring
+/// against Apple is provably not scoring against what was said.
+#[test]
+fn apple_reference_is_a_ruler_not_the_truth() {
+    let clip = data_assets_dir().join("05_apple-live-parity.wav");
+    let (Some(apple), Some(human)) = (
+        apple_reference_for_wav(&clip),
+        human_reference_for_wav(&clip),
+    ) else {
+        // A declared absence, not a silent pass: this line is the whole result
+        // when the fenced fixtures are not on the host (they are the operator's
+        // own speech and never enter the repo).
+        eprintln!(
+            "ruler-vs-truth: NO NUMBER — fixtures absent beside {} \
+             (private assets: CODESCRIBE_DATA_ASSETS or ~/.codescribe/data_assets)",
+            clip.display()
+        );
+        return;
+    };
+
+    let score = teacher_score(&apple, &human);
+    eprintln!(
+        "ruler-vs-truth: the Apple reference scores {}/{} = {:.3} against the human \
+         transcription of the same audio ({} Apple-ruler tokens vs {} spoken tokens). \
+         A capture that reproduced the SPEECH perfectly would score about this \
+         much against the Apple ruler, not 1.000 — so the {:.2} bar is measured \
+         in Apple-fidelity, never in accuracy.",
+        score.equal,
+        score.denominator,
+        score.similarity,
+        score.reference_tokens,
+        score.our_tokens,
+        0.90_f32,
+    );
+
+    assert!(
+        !apple.trim().is_empty() && !human.trim().is_empty(),
+        "both references must carry text — an empty ruler scores everything 0.000"
+    );
+    assert!(
+        score.similarity > 0.0,
+        "the two references share no tokens — they are not transcripts of the same audio, \
+         and every number scored against this ruler is meaningless"
+    );
+    assert!(
+        score.similarity < 1.0,
+        "the Apple reference and the human transcription are token-identical, so the \
+         layered doctrine's premise is false on this fixture: scoring against Apple \
+         WOULD be scoring against the truth, and `AGENTS.md`'s 'never against Apple' \
+         rule needs re-deriving rather than implementing"
+    );
+}
+
 // ─── Reversed TDD: apple-live parity ────────────────────────────────────────
 //
 // The spec is not synthetic: `05_apple-live-parity.wav` is the operator's own
@@ -1007,6 +1151,11 @@ async fn e2e_apple_live_parity() {
     // spread is SFSpeech-internal (same binary SHA, clean tree, level ruled
     // out), so the bar sits under the floor with a small margin.
     const PARITY_SIMILARITY_BAR: f32 = 0.90;
+    // Word-count ratio window against the Apple reference. Named (values
+    // unchanged) so the headroom line below can print the same ceiling the
+    // assertion enforces instead of restating 1.1 in two places that can drift.
+    const RATIO_BAR_MIN: f32 = 0.9;
+    const RATIO_BAR_MAX: f32 = 1.1;
     assert_eq!(
         std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
             .ok()
@@ -1061,42 +1210,74 @@ async fn e2e_apple_live_parity() {
 
     let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let ours = normalize(&transcript);
-    let target = normalize(&reference);
 
-    // Word-level diff via the Teacher aligner — the same instrument the
-    // product uses for live↔whisper diffs, here diffing target↔ours.
-    use codescribe_core::quality::teacher::{AlignOp, align_words, tokenize};
-    let target_tokens = tokenize(&target);
-    let our_tokens = tokenize(&ours);
-    let ops = align_words(&target_tokens, &our_tokens);
-    let equal = ops
-        .iter()
-        .filter(|op| matches!(op, AlignOp::Equal { .. }))
-        .count();
-    let similarity = equal as f32 / target_tokens.len().max(our_tokens.len()).max(1) as f32;
+    // Arm 1 — the GATE's ruler: fidelity to the system Apple engine.
+    // Keep this line's shape (`^parity similarity <n>/<d> = <v>`): the
+    // `test-engine-parity-both` extractor parses it.
+    let apple = teacher_score(&reference, &ours);
+    let (equal, similarity) = (apple.equal, apple.similarity);
+    let (target_tokens, our_tokens) = (apple.reference_tokens, apple.our_tokens);
     eprintln!(
         "parity similarity {equal}/{} = {similarity:.3} (bar: >= {PARITY_SIMILARITY_BAR})",
-        target_tokens.len().max(our_tokens.len())
+        apple.denominator
     );
-    {
-        let mut diff = String::new();
-        for op in &ops {
-            match op {
-                AlignOp::Equal { .. } => {}
-                AlignOp::DeleteA { a } => {
-                    diff.push_str(&format!("  -ref  {}\n", target_tokens[*a].surface));
+
+    // Arm 2 — the ACCURACY ruler: fidelity to what was actually said.
+    //
+    // `AGENTS.md` mandates that a layered run "must be scored against the human
+    // reference beside the fixture, never against Apple", because gap-filling
+    // grows the denominator against an Apple ruler and so a MORE accurate layer
+    // scores LOWER. Until this arm existed, nothing in the tree implemented that
+    // sentence: the only human-defaulting instrument was
+    // `examples/apple_backend_bars.rs`, referenced by nothing but its own
+    // doc-comment, so the doctrine's 0.897/0.800 numbers came from the file lane
+    // — never from the live assembly under judgement.
+    //
+    // Printed for BOTH lanes and gated for neither: which number gates a merge
+    // is an operator decision, and this arm exists so that decision can finally
+    // be made with both numbers on the table rather than one.
+    match human_reference_for_wav(&clip) {
+        Some(human) => {
+            let acc = teacher_score(&human, &ours);
+            eprintln!(
+                "parity accuracy-vs-human {}/{} = {:.3} (no bar — informational; \
+                 see AGENTS.md 'never against Apple')",
+                acc.equal, acc.denominator, acc.similarity
+            );
+            // The structural cliff, printed BEFORE the assert that enforces it.
+            //
+            // The ratio bar below is scored against the Apple ruler, so the
+            // closer a layer gets to the SPOKEN token count, the closer it
+            // drives that ratio to the hard 1.1 ceiling. Measured on this
+            // fixture: Apple 171 tokens, spoken 195 — so a perfectly accurate
+            // capture scores ratio 1.14 and trips a bar whose message blames
+            // "duplicated phrases". Nobody was watching this number; it is a
+            // harder gate on accuracy than the similarity bar everyone argues
+            // about, because it has no nondeterminism margin.
+            let ceiling = (RATIO_BAR_MAX * target_tokens as f32).floor() as usize;
+            eprintln!(
+                "parity accuracy-headroom: {our_tokens} of at most {ceiling} tokens allowed by \
+                 the ratio bar ({} left); reaching the spoken {} would need {} more — \
+                 accuracy runs out of ratio budget {}",
+                ceiling.saturating_sub(our_tokens),
+                acc.reference_tokens,
+                acc.reference_tokens.saturating_sub(our_tokens),
+                if acc.reference_tokens > ceiling {
+                    "BEFORE it can be reached"
+                } else {
+                    "with room to spare"
                 }
-                AlignOp::InsertB { b } => {
-                    diff.push_str(&format!("  +ours {}\n", our_tokens[*b].surface));
-                }
-                AlignOp::Substitute { a, b } => {
-                    diff.push_str(&format!(
-                        "  ~     {} → {}\n",
-                        target_tokens[*a].surface, our_tokens[*b].surface
-                    ));
-                }
-            }
+            );
         }
+        None => eprintln!(
+            "parity accuracy-vs-human: NO NUMBER — no human transcription beside {} \
+             (the layered lane cannot be judged on accuracy from this run)",
+            clip.display()
+        ),
+    }
+
+    {
+        let diff = apple.diff;
         if diff.is_empty() {
             eprintln!("word diff: none");
         } else {
@@ -1138,13 +1319,21 @@ async fn e2e_apple_live_parity() {
         tail.contains("z apple"),
         "tail of the dictation is missing — the open phrase was not sealed at stream end"
     );
-    let ratio = our_tokens.len() as f32 / target_tokens.len().max(1) as f32;
+    let ratio = our_tokens as f32 / target_tokens.max(1) as f32;
     assert!(
-        (0.9..=1.1).contains(&ratio),
-        "word count ratio {ratio:.2} outside [0.9, 1.1] — duplicated phrases inflate it, \
-         lost spans deflate it (ours {} vs reference {})",
-        our_tokens.len(),
-        target_tokens.len()
+        (RATIO_BAR_MIN..=RATIO_BAR_MAX).contains(&ratio),
+        "word count ratio {ratio:.2} outside [{RATIO_BAR_MIN}, {RATIO_BAR_MAX}] \
+         (ours {our_tokens} vs Apple reference {target_tokens}).\n\
+         Read the SIGN before diagnosing:\n\
+         - BELOW the floor: lost spans — the capture dropped speech. A real regression.\n\
+         - ABOVE the ceiling: either duplicated phrases (a regression) OR a layer that \
+         gap-filled toward what was actually SAID. This bar counts tokens against the \
+         Apple ruler, and the spoken truth carries MORE tokens than Apple transcribes \
+         (measured on this fixture by `apple_reference_is_a_ruler_not_the_truth`), so a \
+         more accurate capture walks this ratio up. Check `parity accuracy-vs-human` and \
+         the word diff above: gap-fill raises it, duplication does not.\n\
+         Do NOT make a layer less accurate to satisfy this bar — restating it is an \
+         operator decision (default-flip-memo-layered)."
     );
 
     assert!(
