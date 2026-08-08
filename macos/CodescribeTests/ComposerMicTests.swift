@@ -2,12 +2,8 @@ import Combine
 import XCTest
 @testable import Codescribe
 
-// NOT EXECUTED BY ANY GATE. The XCTest host reuses the app bundle and boots the
-// Rust core through AppDelegate's eager stored properties before the
-// `isRunningTests` guards can stop it, so `xcodebuild test` hangs while
-// Codescribe.app is running. The composer ReplaceRange assertions below are
-// therefore verified by compilation only. See CodescribeTests/README.md for the
-// mechanism and the named follow-up.
+// Executed by `make test-swift`. The composer ReplaceRange assertions below run
+// for real — 11 tests in this file, ~0.01 s. See CodescribeTests/README.md.
 
 @MainActor
 final class ComposerMicTests: XCTestCase {

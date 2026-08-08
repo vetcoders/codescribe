@@ -112,14 +112,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
     private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
 
-    private let model = AppModel.shared
-    private let trayStatus = TrayStatusStore()
-    private let hotkeys = CodescribeHotkeys()
+    // Every core-touching handle below is `lazy` for correctness, not for launch
+    // cost. The XCTest bundle uses this app as its host, so `AppDelegate` is
+    // instantiated inside the test process. Stored properties are initialised at
+    // *instantiation*, which happens before `applicationWillFinishLaunching` —
+    // so the `Self.isRunningTests` guards on the lifecycle methods below are
+    // structurally unable to stop them, no matter what they check.
+    //
+    // Constructed eagerly, they boot a second Rust core beside the test:
+    // `AppModel.shared` builds the chat/overlay/tray engines, and
+    // `TrayStatusStore.init` goes further and registers a live listener on the
+    // core (`TrayStatusStore.swift:56`). That listener answers
+    // `ConfigChangeBus.holdBadgeDidChange`, so a pure-logic settings unit test
+    // running entirely on a mock engine drove real core work.
+    //
+    // Measured 2026-08-08 on this host, whole suite (317 tests), same binary
+    // except for these keywords:
+    //   eager   86.7 s  — of which 82.3 s is one test,
+    //                     SettingsTruthTests.testHoldBadgeControlRoundTrips…,
+    //                     which costs 0.009 s when run alone
+    //   lazy     4.1-4.5 s  (n=4, app running or not)
+    // The gap is fan-out: XCTest holds every test-case instance for the whole
+    // run, so each view model an earlier test built is still a live observer
+    // when this one posts. Removing the app's own core-backed observers from the
+    // host is what collapses it.
+    //
+    // Deferring to first access costs production nothing: the earliest use is
+    // `applicationDidFinishLaunching` (line ~179), already behind the guard.
+    private lazy var model = AppModel.shared
+    private lazy var trayStatus = TrayStatusStore()
+    private lazy var hotkeys = CodescribeHotkeys()
     // Stateless bridge handles backing the tray's app-level actions (notes,
     // config paths, transcript history). Each call reads/writes live on-disk truth.
-    private let notes = CodescribeNotes()
-    private let config = CodescribeConfig()
-    private let threads = CodescribeThreads()
+    private lazy var notes = CodescribeNotes()
+    private lazy var config = CodescribeConfig()
+    private lazy var threads = CodescribeThreads()
     private var agentWindow: NSWindow?
     // Strong ref to the voice-assistive delivery listener: UniFFI releases the
     // foreign callback the moment Swift drops its reference, which would silently
@@ -146,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shouldExitForDuplicate = false
     // First-run onboarding wizard host. Presented at launch when the core gate
     // (`shouldShowOnboarding`) reports setup is due.
-    private let onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
+    private lazy var onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
     // Sparkle update channel. Created in didFinishLaunching (after the
     // duplicate-instance/test-host guard) so the XCTest host never starts a
     // scheduled updater alongside the live app.
@@ -454,6 +481,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Mirrors the launch guards: the test host never started hotkeys, and
+        // touching the lazy handle here would construct the bridge at teardown
+        // purely to stop something that was never running.
+        guard !Self.isRunningTests else { return }
         hotkeys.stop()
         if let textScaleMonitor { NSEvent.removeMonitor(textScaleMonitor) }
         DistributedNotificationCenter.default().removeObserver(self)

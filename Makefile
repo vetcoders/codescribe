@@ -237,6 +237,7 @@ lint:
 	@cargo clippy --workspace -- -D warnings
 
 TEST_LOG := /tmp/codescribe-tests.log
+SWIFT_TEST_LOG := /tmp/codescribe-swift-tests.log
 TEST_SSE_CARGO_JOBS ?= 2
 TEST_SSE_PROFILE ?= debug
 TEST_SSE_PROFILE_ARGS := $(if $(filter release,$(TEST_SSE_PROFILE)),--release,)
@@ -601,6 +602,60 @@ test-engine-parity-both:
 .PHONY: smoke-macos27
 smoke-macos27:
 	@./scripts/smoke-macos27.sh $(SMOKE_ARGS)
+
+# SwiftUI front-end unit tests (macos/CodescribeTests) — the only gate that
+# executes them. 317 tests in ~4.5 s once the dylib and project exist.
+#
+# Deliberately NOT wired into `check`: it needs Xcode and a built ffi dylib,
+# and the self-hosted CI runners are cargo-only. Run it locally after touching
+# anything under macos/.
+#
+# Two invocation traps this target exists to close, both of which read as
+# "the Swift tests cannot run here" when hit by hand:
+#
+#   1. `CODE_SIGN_IDENTITY="-" xcodebuild …` does nothing. xcodebuild takes
+#      build settings from ARGUMENTS, never from the environment, so the
+#      env-prefix form leaves project.yml's `Codescribe Dev` identity in place
+#      and the build dies with "No certificate matching 'Codescribe Dev'
+#      found" — before a single test runs. It must be a positional KEY=value.
+#   2. `-scheme Codescribe` is mandatory. xcodegen emits no scheme for
+#      bundle.unit-test targets, so no `-target CodescribeTests` invocation can
+#      resolve the SPM dependencies.
+#
+# The identity is ad-hoc on purpose and is NOT $(CODESCRIBE_CODESIGN_IDENTITY):
+# handing xcodebuild a real "Apple Development: …" identity propagates to the
+# SPM package targets, which then fail with `Signing for
+# "HighlightSwift_HighlightSwift" requires a development team`. Tests need a
+# host that launches, not a distributable identity.
+#
+# Narrow a run with SWIFT_TEST_ARGS:
+#   make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'
+SWIFT_TEST_CODESIGN_IDENTITY ?= -
+.PHONY: test-swift
+test-swift:
+	@set -o pipefail; \
+	if [ ! -f target/$(PROFILE)/libcodescribe_ffi.dylib ]; then \
+	  echo "test-swift: target/$(PROFILE)/libcodescribe_ffi.dylib is missing." >&2; \
+	  echo "test-swift: run 'make app-bindings' (or 'make app') first." >&2; \
+	  exit 2; \
+	fi; \
+	echo "=== Swift front-end tests (CodescribeTests) ==="; \
+	cd macos && xcodebuild test \
+	  -scheme Codescribe \
+	  -destination 'platform=macOS,arch=arm64' \
+	  CODE_SIGN_IDENTITY="$(SWIFT_TEST_CODESIGN_IDENTITY)" \
+	  $(SWIFT_TEST_ARGS) 2>&1 | tee $(SWIFT_TEST_LOG) | \
+	  grep -E "^Test Case .* (failed|error)|Executed [0-9]+ tests|^\*\* TEST|error:"; \
+	rc=$${PIPESTATUS[0]}; \
+	executed=$$(grep -oE 'Executed [0-9]+ test' $(SWIFT_TEST_LOG) | tail -1 | grep -oE '[0-9]+'); \
+	if [ "$$rc" -eq 0 ] && [ "$${executed:-0}" -eq 0 ]; then \
+	  echo "test-swift: xcodebuild said TEST SUCCEEDED but executed 0 tests." >&2; \
+	  echo "test-swift: a -only-testing filter that matches nothing exits 0 — that is a" >&2; \
+	  echo "test-swift: silent pass, not a green gate. Check SWIFT_TEST_ARGS." >&2; \
+	  rc=3; \
+	fi; \
+	echo "test-swift: full log $(SWIFT_TEST_LOG) (rc=$$rc, executed=$${executed:-0})"; \
+	exit $$rc
 
 # Apple live engine proof.
 #
