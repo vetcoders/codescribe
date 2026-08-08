@@ -43,6 +43,11 @@ const DEFAULT_BRIDGE_BIN: &str = "codescribe-stt-bridge";
 const ENV_STT_BRIDGE: &str = "CODESCRIBE_APPLE_STT_BRIDGE";
 const ENV_LOCALE: &str = "CODESCRIBE_APPLE_STT_LOCALE";
 const ENV_ALLOW_DOWNLOAD: &str = "CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD";
+/// Opt-in gate for the `DictationTranscriber` PoC lane (W4-A). Read by BOTH
+/// sides: the bridge child inherits it from this process, so one key arms the
+/// whole path. Default OFF — the shipped pl-PL default stays SFSpeech until an
+/// operator STOP-1 decision says otherwise.
+pub const ENV_DICTATION_TRANSCRIBER: &str = "CODESCRIBE_APPLE_DICTATION_TRANSCRIBER";
 
 const BRIDGE_TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(30);
 const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -93,6 +98,8 @@ struct BridgeRequest<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppleSttBackend {
     SpeechTranscriber,
+    /// `DictationTranscriber` (SpeechAnalyzer family) — opt-in PoC lane (W4-A).
+    DictationTranscriber,
     SfSpeechRecognizer,
 }
 
@@ -100,6 +107,7 @@ impl AppleSttBackend {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SpeechTranscriber => "speech_transcriber",
+            Self::DictationTranscriber => "dictation_transcriber",
             Self::SfSpeechRecognizer => "sf_speech_recognizer",
         }
     }
@@ -107,6 +115,7 @@ impl AppleSttBackend {
     pub fn from_bridge(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "speech_transcriber" => Some(Self::SpeechTranscriber),
+            "dictation_transcriber" => Some(Self::DictationTranscriber),
             "sf_speech_recognizer" => Some(Self::SfSpeechRecognizer),
             _ => None,
         }
@@ -115,6 +124,7 @@ impl AppleSttBackend {
     pub fn engine_mode(self) -> TranscriptionEngineMode {
         match self {
             Self::SpeechTranscriber => TranscriptionEngineMode::SpeechTranscriber,
+            Self::DictationTranscriber => TranscriptionEngineMode::DictationTranscriber,
             Self::SfSpeechRecognizer => TranscriptionEngineMode::SfSpeechOnDevice,
         }
     }
@@ -124,13 +134,15 @@ impl AppleSttBackend {
 /// required for the selected Apple backend.
 ///
 /// - **SFSpeechRecognizer** — yes; Apple gates that API with Speech Recognition.
-/// - **SpeechTranscriber** (SpeechAnalyzer family; future DT same rule) — no.
+/// - **SpeechTranscriber / DictationTranscriber** (SpeechAnalyzer family) — no.
+///   Measured 2026-08-08: DT transcribed the pl-PL parity fixture end to end
+///   while `SFSpeechRecognizer.authorizationStatus()` read `notDetermined`.
 ///   Mic grant stays independent on the live-capture surface.
 /// - **None** — treat as SF-leaning so a speech-blocked SF fall-through still
 ///   requests/fails auth instead of silently opening an unusable session.
 pub fn speech_recognition_tcc_required(backend: Option<AppleSttBackend>) -> bool {
     match backend {
-        Some(AppleSttBackend::SpeechTranscriber) => false,
+        Some(AppleSttBackend::SpeechTranscriber | AppleSttBackend::DictationTranscriber) => false,
         Some(AppleSttBackend::SfSpeechRecognizer) | None => true,
     }
 }
@@ -814,11 +826,12 @@ pub fn preferred_backend_for_probe(
 }
 
 /// Mirrors `probe()` fall-through in `codescribe-stt-bridge.swift`:
-/// ST only when supported **and** installed; otherwise try SF on-device;
-/// when neither is ready, surface ST not-installed (negative path).
+/// ST only when supported **and** installed; then the opt-in DT lane under the
+/// same supported+installed rule; otherwise SF on-device; when nothing is
+/// ready, surface the supported-but-uninstalled lane (negative path).
 ///
 /// Returns the backend string the bridge would emit, plus installed flag for
-/// the selected backend. `None` backend means neither path is ready.
+/// the selected backend. `None` backend means no path is ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeFallthrough {
     pub backend: Option<&'static str>,
@@ -826,39 +839,67 @@ pub struct ProbeFallthrough {
     pub locale_installed: bool,
 }
 
-pub fn probe_st_sf_fallthrough(
+/// `DictationTranscriber` lane state for the router (W4-A).
+///
+/// `enabled` is the product gate: DT is a measurement PoC, so it stays OFF
+/// until an operator opts in with [`ENV_DICTATION_TRANSCRIBER`]. With the gate
+/// closed the router must reproduce the shipped ST → SF behaviour exactly —
+/// otherwise landing the PoC would silently flip the pl-PL default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DictationLane {
+    pub enabled: bool,
+    pub supported: bool,
+    pub installed: bool,
+}
+
+/// Whether the operator armed the DT PoC lane in this process.
+pub fn dictation_transcriber_enabled() -> bool {
+    env_bool(ENV_DICTATION_TRANSCRIBER, false)
+}
+
+impl DictationLane {
+    fn ready(self) -> bool {
+        self.enabled && self.supported && self.installed
+    }
+
+    fn listed(self) -> bool {
+        self.enabled && self.supported
+    }
+}
+
+pub fn probe_backend_fallthrough(
     st_supported: bool,
     st_installed: bool,
+    dictation: DictationLane,
     sf_on_device_ready: bool,
 ) -> ProbeFallthrough {
-    if st_supported {
-        if st_installed {
-            return ProbeFallthrough {
-                backend: Some("speech_transcriber"),
-                locale_supported: true,
-                locale_installed: true,
-            };
-        }
-        // ST supported but not installed: fall through to SF when ready.
-        if sf_on_device_ready {
-            return ProbeFallthrough {
-                backend: Some("sf_speech_recognizer"),
-                locale_supported: true,
-                locale_installed: true,
-            };
-        }
-        // Negative path: ST listed, assets missing, SF cannot serve.
-        return ProbeFallthrough {
-            backend: Some("speech_transcriber"),
-            locale_supported: true,
-            locale_installed: false,
-        };
+    let ready = |backend: &'static str| ProbeFallthrough {
+        backend: Some(backend),
+        locale_supported: true,
+        locale_installed: true,
+    };
+
+    if st_supported && st_installed {
+        return ready("speech_transcriber");
+    }
+    if dictation.ready() {
+        return ready("dictation_transcriber");
     }
     if sf_on_device_ready {
+        return ready("sf_speech_recognizer");
+    }
+    // Nothing can serve: report the lane that *listed* the locale so the caller
+    // sees "assets missing" rather than "unsupported". ST outranks DT here for
+    // the same reason it outranks it when ready — layer order is ST → DT → SF.
+    if st_supported || dictation.listed() {
         return ProbeFallthrough {
-            backend: Some("sf_speech_recognizer"),
+            backend: Some(if st_supported {
+                "speech_transcriber"
+            } else {
+                "dictation_transcriber"
+            }),
             locale_supported: true,
-            locale_installed: true,
+            locale_installed: false,
         };
     }
     ProbeFallthrough {
@@ -1133,6 +1174,13 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// The shipped product state: DT PoC lane not armed.
+    const DT_LANE_CLOSED: DictationLane = DictationLane {
+        enabled: false,
+        supported: false,
+        installed: false,
+    };
+
     #[test]
     fn parse_stream_bridge_response_skips_events_keeps_summary() {
         let stdout = r#"
@@ -1403,6 +1451,139 @@ mod tests {
     }
 
     #[test]
+    fn dictation_transcriber_backend_round_trips() {
+        // W4-A: DT is a third bridge backend label, not an alias of ST.
+        let backend =
+            AppleSttBackend::from_bridge("dictation_transcriber").expect("DT label is known");
+        assert_eq!(backend, AppleSttBackend::DictationTranscriber);
+        assert_eq!(backend.as_str(), "dictation_transcriber");
+        assert_eq!(
+            backend.engine_mode(),
+            TranscriptionEngineMode::DictationTranscriber,
+            "DT provenance must stay distinguishable from ST in the verdict"
+        );
+        assert_eq!(AppleSttBackend::from_bridge("dictation"), None);
+    }
+
+    #[test]
+    fn dictation_transcriber_does_not_require_speech_tcc() {
+        // Measured 2026-08-08: DT transcribed the pl-PL parity fixture with
+        // SFSpeechRecognizer.authorizationStatus() == notDetermined. DT is
+        // SpeechAnalyzer family, so W4-B's SF-only TCC scope covers it.
+        assert!(!speech_recognition_tcc_required(Some(
+            AppleSttBackend::DictationTranscriber
+        )));
+        assert_eq!(
+            speech_auth_init_decision(
+                Some(AppleSttBackend::DictationTranscriber),
+                Some("not_determined")
+            ),
+            SpeechAuthInitDecision::NotRequired
+        );
+    }
+
+    #[test]
+    fn dictation_lane_is_opt_in_and_never_flips_the_default() {
+        // Gate closed: pl-PL (ST-less) must still resolve to SF — the shipped default.
+        let closed = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: false,
+                supported: true,
+                installed: true,
+            },
+            true,
+        );
+        assert_eq!(closed.backend, Some("sf_speech_recognizer"));
+
+        // Gate open: DT takes precedence over SF for the same locale.
+        let open = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: true,
+            },
+            true,
+        );
+        assert_eq!(open.backend, Some("dictation_transcriber"));
+        assert!(open.locale_supported && open.locale_installed);
+    }
+
+    #[test]
+    fn dictation_lane_never_outranks_an_installed_speech_transcriber() {
+        let out = probe_backend_fallthrough(
+            true,
+            true,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: true,
+            },
+            true,
+        );
+        assert_eq!(
+            out.backend,
+            Some("speech_transcriber"),
+            "layer order stays ST → DT → SF"
+        );
+    }
+
+    #[test]
+    fn dictation_lane_supported_but_not_installed_is_honest() {
+        // DT listed for the locale, assets absent, SF cannot serve: report DT
+        // not-installed rather than inventing readiness.
+        let out = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: false,
+            },
+            false,
+        );
+        assert_eq!(out.backend, Some("dictation_transcriber"));
+        assert!(out.locale_supported);
+        assert!(!out.locale_installed);
+
+        // …and with SF ready it falls through to SF, never to a fake DT.
+        let with_sf = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: false,
+            },
+            true,
+        );
+        assert_eq!(with_sf.backend, Some("sf_speech_recognizer"));
+    }
+
+    #[test]
+    fn dictation_lane_preserves_the_st_sf_fallthrough_when_gate_is_closed() {
+        let closed = DT_LANE_CLOSED;
+        assert_eq!(
+            probe_backend_fallthrough(true, true, closed, false).backend,
+            Some("speech_transcriber")
+        );
+        assert_eq!(
+            probe_backend_fallthrough(true, false, closed, true).backend,
+            Some("sf_speech_recognizer")
+        );
+        let negative = probe_backend_fallthrough(true, false, closed, false);
+        assert_eq!(negative.backend, Some("speech_transcriber"));
+        assert!(!negative.locale_installed);
+        assert_eq!(
+            probe_backend_fallthrough(false, false, closed, false).backend,
+            None
+        );
+    }
+
+    #[test]
     fn sf_speech_deadline_sits_under_bridge_and_apple_budgets() {
         // Const bounds live in const blocks (clippy::assertions_on_constants);
         // the runtime comparison against the bridge timeout stays a live assert.
@@ -1471,7 +1652,7 @@ mod tests {
     #[test]
     fn probe_st_supported_uninstalled_branch_falls_to_sf_or_refuses() {
         // Branch 1: ST listed, assets missing, SF ready → bridge returns SF.
-        let via_sf = probe_st_sf_fallthrough(true, false, true);
+        let via_sf = probe_backend_fallthrough(true, false, DT_LANE_CLOSED, true);
         assert_eq!(via_sf.backend, Some("sf_speech_recognizer"));
         assert!(via_sf.locale_supported);
         assert!(via_sf.locale_installed);
@@ -1484,7 +1665,7 @@ mod tests {
         assert_eq!(backend, AppleSttBackend::SfSpeechRecognizer);
 
         // Branch 2: ST listed, assets missing, SF not ready → not installed refusal.
-        let stuck = probe_st_sf_fallthrough(true, false, false);
+        let stuck = probe_backend_fallthrough(true, false, DT_LANE_CLOSED, false);
         assert_eq!(stuck.backend, Some("speech_transcriber"));
         assert!(stuck.locale_supported);
         assert!(!stuck.locale_installed);

@@ -28,10 +28,14 @@ and Layer 3 backends. See ADR §"What is shipped today" for the gap analysis.
 
 ### Final pass routing & stop-path receipts (since W11, 2026-07-23)
 
-The Apple bridge (`core/stt/apple_stt/codescribe-stt-bridge.swift`) probes dual
+The Apple bridge (`core/stt/apple_stt/codescribe-stt-bridge.swift`) probes
 backends per locale: `SpeechTranscriber` only when supported **and installed**,
 else `SFSpeechRecognizer` on-device (notably pl-PL — measured 0.24–2.3 s final
-pass vs the 20–30 s double-Whisper era). Stop-path final-pass routing is owned
+pass vs the 20–30 s double-Whisper era). A third lane,
+`DictationTranscriber` — the SpeechAnalyzer module behind the SYSTEM dictation
+and the only Apple analyzer whose catalog carries pl-PL — sits between them but
+stays **off unless `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER=1`**; it is a
+measurement PoC (W4-A), not a shipped default. Stop-path final-pass routing is owned
 by `FINAL_PASS_MODE` (`always|smart|off`, Smart default; Settings → Dictation →
 "Final pass"). **Smart only** skips the full stop re-pass on a typed,
 adjudicator-backed completeness decision (`StreamingCompleteness`) — never on

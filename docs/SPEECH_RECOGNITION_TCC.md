@@ -25,7 +25,13 @@ Speech Recognition TCC is required **only for the SFSpeechRecognizer path**.
 | ------- | ---------------------- | ------------------ |
 | `sf_speech_recognizer` | Required | Independent |
 | `speech_transcriber` (ST) | **Not** a prerequisite | Independent |
-| DictationTranscriber / DT (when present) | Same as ST | Independent |
+| `dictation_transcriber` (DT, opt-in W4-A) | **Not** a prerequisite — measured | Independent |
+
+The DT row stopped being an inference on 2026-08-08: the lane transcribed the
+full 140.85 s pl-PL parity fixture (1072 chars) from a terminal-responsible
+process whose `SFSpeechRecognizer.authorizationStatus()` read `notDetermined`.
+An engine that ran to completion under a *withheld* Speech grant cannot be
+gated on it.
 
 Bridge entry points (`transcribe` / `stream` / `transcribe_live`) no longer call
 `ensureSpeechAuthorizedForSfSpeech` before backend selection. Auth is enforced

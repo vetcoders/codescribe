@@ -383,6 +383,10 @@ pub enum TranscriptionEngineMode {
     SpeechTranscriber,
     /// Apple SFSpeechRecognizer on-device path (locales ST lacks, e.g. pl-PL).
     SfSpeechOnDevice,
+    /// Apple SpeechAnalyzer / DictationTranscriber path — the system-dictation
+    /// model family, which *does* serve pl-PL. Opt-in PoC lane (W4-A); kept a
+    /// distinct mode so a verdict never claims ST provenance for DT text.
+    DictationTranscriber,
 }
 
 impl std::fmt::Display for TranscriptionEngineMode {
@@ -392,6 +396,7 @@ impl std::fmt::Display for TranscriptionEngineMode {
             Self::RuntimeFallback => write!(f, "runtime_fallback"),
             Self::SpeechTranscriber => write!(f, "speech_transcriber"),
             Self::SfSpeechOnDevice => write!(f, "sf_speech_on_device"),
+            Self::DictationTranscriber => write!(f, "dictation_transcriber"),
         }
     }
 }
@@ -1388,6 +1393,10 @@ mod tests {
         assert_eq!(
             TranscriptionEngineMode::SfSpeechOnDevice.to_string(),
             "sf_speech_on_device"
+        );
+        assert_eq!(
+            TranscriptionEngineMode::DictationTranscriber.to_string(),
+            "dictation_transcriber"
         );
     }
 
