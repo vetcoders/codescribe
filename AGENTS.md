@@ -232,6 +232,15 @@ Inventing a different layer shape from memory. This file is the shape.
   odies.
   Loctree First: Structural questions (who imports X, blast radius, where a symbol lives) go to l
   oct / loctree-mcp, not grep. Grep is for literal text only.
+  Test Deadlines: In a test a clock is either the claim or a backstop — never both, and a backstop
+  must sit out of reach of machine load. These budgets wrap process spawn, not just the wait for a
+  reply: `spawn(python3) + initialize` for the MCP stdio mocks measures ~25 ms idle (n=12), so the
+  sub-second budgets that used to guard them were a bet that a loaded box is never 10x slower at
+  starting an interpreter. Losing that bet costs one of two things — a red that blames healthy code
+  (`unexpected error: Timed out waiting for MCP response to 'initialize'`, reproduced deliberately
+  2026-08-08), or, where the assertion is merely `is_err()`, a green that never exercised the guard
+  at all. `core/mcp/client.rs::CONTENT_ASSERTION_BACKSTOP` is the pattern and carries the numbers;
+  a tight clock is legitimate only where the timeout is the thing asserted.
   Attribution: Authored-By: <agent> <agents@vetcoders.io> — the agent that actually did the work.
   No vendor default footers.
   GitHub surface is English; chat with the operator is Polish.

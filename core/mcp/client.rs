@@ -954,6 +954,27 @@ mod tests {
     use super::{McpClient, McpServerConfig, effective_mcp_path, resolve_command};
     use crate::agent::ToolResultContent;
 
+    /// Backstop for the stdio tests whose claim is *what* the failure says, not
+    /// how fast it arrives.
+    ///
+    /// These tests never spend this budget on the green path: the mock server
+    /// answers, emits garbage, or dies the moment it is up, so each one returns
+    /// on a pipe event within tens of milliseconds. The value exists only to
+    /// bound a hang.
+    ///
+    /// It must stay far out of reach of machine load, because the budget covers
+    /// `spawn(python3) + initialize`, not merely the wait for a response.
+    /// Measured on an idle host that handshake is ~25 ms (n=12, min 23 / max
+    /// 28) — a sub-second backstop is a bet that a loaded box is never ten
+    /// times slower at starting an interpreter. When that bet loses, the
+    /// deadline wins the race and the test panics with
+    /// `unexpected error: Timed out waiting for MCP response to 'initialize'`:
+    /// a red that names the JSON-RPC layer while the JSON-RPC layer is healthy.
+    ///
+    /// A tight deadline is legitimate only where the deadline *is* the claim —
+    /// see `mcp_timeout_errors_without_sleeping_test`.
+    const CONTENT_ASSERTION_BACKSTOP: Duration = Duration::from_secs(10);
+
     fn mock_server(mode: &str) -> McpServerConfig {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1211,7 +1232,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_malformed_response_errors() {
         let client =
-            McpClient::new(mock_server("malformed")).with_timeout(Duration::from_millis(250));
+            McpClient::new(mock_server("malformed")).with_timeout(CONTENT_ASSERTION_BACKSTOP);
 
         let error = client
             .list_tools()
@@ -1224,6 +1245,12 @@ mod tests {
         );
     }
 
+    /// The one test in this module that may keep a tight deadline: here the
+    /// deadline IS the claim. The `silent` server never answers, so a slow
+    /// spawn cannot change the outcome — it still times out, which is exactly
+    /// what is asserted. Do not migrate this to
+    /// [`CONTENT_ASSERTION_BACKSTOP`]; that would trade a 100 ms test for a
+    /// 10 s one and assert nothing new.
     #[tokio::test]
     async fn mcp_timeout_errors_without_sleeping_test() {
         let client = McpClient::new(mock_server("silent")).with_timeout(Duration::from_millis(100));
@@ -1315,7 +1342,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_crashed_server_returns_call_error() {
         let client =
-            McpClient::new(mock_server("crash-on-call")).with_timeout(Duration::from_millis(250));
+            McpClient::new(mock_server("crash-on-call")).with_timeout(CONTENT_ASSERTION_BACKSTOP);
 
         let error = client
             .call_tool("echo", json!({ "message": "boom" }))
@@ -1334,7 +1361,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_server_dead_before_initialize_degrades_to_error() {
         let client = McpClient::new(mock_server("exit-before-initialize"))
-            .with_timeout(Duration::from_millis(500));
+            .with_timeout(CONTENT_ASSERTION_BACKSTOP);
 
         let error = client
             .list_tools()
@@ -1363,8 +1390,14 @@ mod tests {
         // and restored before the test returns.
         let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 
+        // The backstop is deliberately out of reach of machine load. This test
+        // asserts only `is_err()`, so a fired deadline would satisfy it without
+        // the client ever writing to the dead pipe — the guard would go green
+        // without exercising the hole it exists to falsify. Here a tight clock
+        // does not produce a false red, it produces a vacuous pass, which is
+        // the worse of the two.
         let client = McpClient::new(mock_server("exit-before-initialize"))
-            .with_timeout(Duration::from_millis(500));
+            .with_timeout(CONTENT_ASSERTION_BACKSTOP);
         let result = client.list_tools().await;
 
         // SAFETY: restores the disposition captured above.
