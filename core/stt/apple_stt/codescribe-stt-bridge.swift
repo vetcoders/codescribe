@@ -240,13 +240,12 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         // Operator/CLI: force the system Speech Recognition dialog (if notDetermined).
         return try await requestSpeechAuthorizationResponse()
     case "transcribe":
-        // Offline / final-pass: SFSpeechURLRecognitionRequest (file engine).
-        // Known to under-generate / collapse on long Polish dictation — product
-        // floor-guards against this path winning over live assembly.
+        // Offline / final-pass: may select SpeechTranscriber OR SFSpeech.
+        // Speech Recognition TCC is enforced only inside SFSpeech entry points
+        // (W4-B) — ST must not force ensureSpeechAuthorizedForSfSpeech.
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
-        try await ensureSpeechAuthorizedForSfSpeech()
         let transcription = try await transcribe(audioPath: audioPath, locale: locale)
         return BridgeResponse(
             ok: true,
@@ -269,7 +268,7 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         // BridgeResponse. Protocol: first stdin line = JSON header
         // {"rate":48000,"channels":1}, then raw interleaved f32le frames, EOF
         // ends the stream.
-        try await ensureSpeechAuthorizedForSfSpeech()
+        // Speech TCC: requested inside transcribeStreaming (SF-only path).
         let payload = try await transcribeStreaming(locale: locale)
         return BridgeResponse(
             ok: true,
@@ -283,14 +282,11 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
             speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
         )
     case "transcribe_live":
-        // Live / virtual-mic: SFSpeechAudioBufferRecognitionRequest.
-        // Feed PCM buffers as if from a microphone (fixture WAV or hardware
-        // mic path both land here). This is the Apple engine that product
-        // live dictation must use — NOT the file URL path.
+        // Live / virtual-mic: may select SpeechTranscriber (buffer/file) or
+        // SFSpeechAudioBufferRecognitionRequest. Speech TCC only on SF entry.
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
-        try await ensureSpeechAuthorizedForSfSpeech()
         let transcription = try await transcribeLiveBuffered(audioPath: audioPath, locale: locale)
         return BridgeResponse(
             ok: true,
@@ -433,6 +429,11 @@ private func speechAuthLabel(_ status: SFSpeechRecognizerAuthorizationStatus) ->
 }
 
 /// Prompt system dialog when status is notDetermined; fail loudly if denied.
+///
+/// Call **only** from SFSpeechRecognizer entry points. SpeechTranscriber /
+/// DictationTranscriber (SpeechAnalyzer family) must not invoke this — Apple
+/// docs do not require Speech Recognition TCC for those APIs. Mic grant for
+/// live capture is independent (`AVCaptureDevice` / app permissions).
 private func ensureSpeechAuthorizedForSfSpeech() async throws {
     let status = SFSpeechRecognizer.authorizationStatus()
     switch status {
@@ -617,6 +618,8 @@ private func transcribeWithSfSpeechAudioBuffer(
     audioPath: String,
     locale: Locale
 ) async throws -> TranscriptionPayload {
+    // SFSpeech path only — Speech Recognition TCC required here (not on ST).
+    try await ensureSpeechAuthorizedForSfSpeech()
     guard let recognizer = SFSpeechRecognizer(locale: locale) else {
         throw BridgeError.runtime(
             "neither SpeechTranscriber nor SFSpeechRecognizer supports locale \(locale.identifier)"
@@ -925,6 +928,8 @@ private struct StreamHeader: Codable {
 /// events (with `SFTranscriptionSegment.confidence`), EOF ends audio and the
 /// accumulated text is returned as the summary payload.
 private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPayload {
+    // Stream command is SFSpeechAudioBuffer only today — gate Speech TCC here.
+    try await ensureSpeechAuthorizedForSfSpeech()
     guard let headerData = readRawStdinLine(),
         let header = try? {
             let decoder = JSONDecoder()
@@ -1211,6 +1216,8 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
 }
 
 private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+    // SFSpeech URL path — Speech Recognition TCC required here (not on ST).
+    try await ensureSpeechAuthorizedForSfSpeech()
     guard let recognizer = SFSpeechRecognizer(locale: locale) else {
         throw BridgeError.runtime(
             "neither SpeechTranscriber nor SFSpeechRecognizer supports locale \(locale.identifier)"
