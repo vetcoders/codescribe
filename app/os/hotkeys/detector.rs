@@ -18,10 +18,23 @@ pub enum HoldAction {
 
 /// High-level hold intent derived from modifier state.
 ///
-/// UX split:
+/// UX split — the destination is chosen by the MODE, and only `Raw` reaches the
+/// frontmost app:
 /// - `Raw`: dictation → auto-paste (fast)
-/// - `Chat`: voice chat to AI → response in overlay (no auto-paste)
-/// - `Selection`: apply instruction to selected text → response in overlay (no auto-paste)
+/// - `Chat`: voice chat to AI → reply in the **agent chat window** (no auto-paste)
+/// - `Selection`: instruction applied to the selected text → reply in the
+///   **agent chat window** (no auto-paste)
+///
+/// Both agent modes previously documented "response in overlay". That has been
+/// false since the legacy AppKit overlay sink was removed: replies are
+/// broadcast to Swift over `CsAgentDeliveryListener`
+/// (`bridge/src/agent_delivery.rs`), deliberately kept off the
+/// overlay/dictation stream, and `testAgentModesNeverConstructOrOrderOverlayFront`
+/// asserts the overlay is never even constructed for them. The comment is
+/// corrected rather than deleted because the reconstruction of this contract
+/// (`reports/trigger-routing-contract-reconstruction.md`, gap G2) exists
+/// precisely to stop the routing rule being re-invented by the next reader who
+/// trusts the code's own doc over the doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HoldMode {
     #[default]

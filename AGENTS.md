@@ -173,12 +173,38 @@ Inventing a different layer shape from memory. This file is the shape.
   do not. Treat a single green run as a sample, not as proof, and read the lane line the harness
   now prints before trusting any number.
   **The bar measures fidelity to Apple, so it is the wrong instrument for Layer 1.** Layer 1
-  exists to diverge from Apple toward the human transcript: with patches applied the same fixture
-  scores 0.844 against the Apple reference but 0.897 against the human one (twice, 24 patches),
-  where the Layer-0 run it is compared against scores 0.800 against that same human reference.
-  Layer 1 fails the bar for being more accurate. `test-engine-parity` pins the lane to `off` for
-  exactly this reason; a layered run
-  must be scored against the human reference beside the fixture, never against Apple.
+  exists to diverge from Apple toward the human transcript. `test-engine-parity` pins the lane to
+  `off` for exactly this reason; a layered run must be scored against the human reference beside
+  the fixture, never against Apple.
+  That sentence is now **implemented, not just asserted**. Until 2026-08-08 no gate scored anything
+  against the human reference — `e2e_apple_live_parity` read only the Apple file, and the one
+  human-defaulting instrument (`examples/apple_backend_bars.rs`) was referenced by nothing but its
+  own doc-comment, so the 0.897/0.800 pair this file used to quote came from the file lane, never
+  from the live assembly under judgement. The parity run now prints a second arm,
+  `parity accuracy-vs-human`, for both lanes, and `test-engine-parity-both` prints both deltas.
+  Measured live through the real targets, two independent two-arm runs:
+
+  | arm | similarity vs Apple (the gate) | accuracy vs human (the truth) |
+  |---|---|---|
+  | layer0 (off)    | 0.924 / 0.924 — **PASS** | 0.821 / 0.826 |
+  | layer1 (phase1) | 0.821 / 0.839 — **FAIL** | **0.923 / 0.903** |
+
+  Both runs agree on the sign: **similarity −0.085, accuracy +0.077**. The arm the gate passes is
+  the less accurate one. For scale, the Apple reference itself scores only **0.805** against the
+  human transcription of that same audio — pinned deterministically, without a microphone, by
+  `apple_reference_is_a_ruler_not_the_truth`, so 1.000 on this bar would mean reproducing Apple's
+  errors. Layer 0 (≈0.82) is already slightly more accurate than the ruler it is scored against.
+  **Do not read a falling similarity as a regression, and never make a layer less accurate to
+  raise it.** Which number gates a merge remains an operator decision
+  (`default-flip-memo-layered`) — it can now be made with both numbers on the table.
+  **A structural bar bites before the similarity bar does.** The word-count ratio window
+  (0.9–1.1, scored against Apple's token count) caps the capture at 188 tokens on this fixture
+  while the spoken truth carries 195, so no layer can reach what was actually said without
+  tripping an assertion whose message historically blamed "duplicated phrases". Layer 1 hit it
+  live on 2026-08-08 at 190 tokens (ratio 1.11) — a hard panic, not a soft red, and it fires on
+  the runs where Layer 1 is at its most accurate. The parity run now prints
+  `parity accuracy-headroom` showing exactly how much budget is left, and the assertion message
+  tells the reader to check the sign before diagnosing.
   **Which target measures which lane** — the pin is per-target, so the lane is chosen by the
   target you run, never by an env var you prepend: `make test-engine-parity` (Layer 0, pinned
   off), `make test-engine-parity-layered` (phase1, the only incantation that actually arms

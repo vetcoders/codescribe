@@ -484,15 +484,34 @@ test-engine-parity: $(ENGINE_BRIDGE)
 # Same bar, Layer 1 armed: Apple live commits, then Whisper re-transcribes each
 # sealed window and patches it in place (`ReplaceRange { source: TailPatch }`).
 #
-# The point is the DELTA against `test-engine-parity`. Layer 1 is allowed to
-# raise the similarity or leave it flat — it must not lower it, and it must not
-# leave it byte-identical either, because identical numbers mean the patches
-# never reached the measured assembly (guarded always-on by
+# The point is the DELTA against `test-engine-parity` — but read the delta on
+# the RIGHT axis, because this target prints two and they move in opposite
+# directions by design:
+#
+#   similarity        fidelity to the APPLE reference. Layer 1 gap-fills, which
+#                     grows the denominator, so a MORE accurate layer scores
+#                     LOWER here. A falling similarity is the expected shape,
+#                     not a contract breach.
+#   accuracy-vs-human fidelity to what was actually SAID. This is the axis on
+#                     which "is Layer 1 better?" has an answer at all.
+#
+# An earlier version of this comment said Layer 1 "must not lower" the
+# similarity. That was wrong on the tree's own terms — `AGENTS.md` and
+# `test-engine-parity-both` both state that lowering it is the mechanical
+# consequence of gap-filling — and it left the repo asserting both signs of the
+# same delta. Measured 2026-08-08: 0.902 -> 0.863, which the old sentence called
+# a breach and the doctrine calls correct. The doctrine wins; the sentence is
+# gone. `apple_reference_is_a_ruler_not_the_truth` pins why: the Apple reference
+# itself scores only 0.805 against the human transcription of the same audio, so
+# 1.000 on this bar would mean reproducing Apple's ERRORS.
+#
+# What Layer 1 must still not do is leave the number byte-identical: identical
+# means the patches never reached the measured assembly (guarded always-on by
 # `parity_assembly_reads_layer1_tail_patches`).
 #
-# Run both, compare the printed `parity similarity` lines. SFSpeech is
-# nondeterministic at word level (measured spread 0.898–0.931 over 5 runs), so
-# a single pair of runs is an observation, not a verdict.
+# Run both arms with `test-engine-parity-both`. SFSpeech is nondeterministic at
+# word level (measured spread 0.898–0.931 over 5 runs), so a single pair of runs
+# is an observation, not a verdict.
 .PHONY: test-engine-parity-layered
 test-engine-parity-layered: $(ENGINE_BRIDGE)
 	$(call parity_lane_refuse,phase1,test-engine-parity)
@@ -540,9 +559,12 @@ test-engine-parity-both:
 	 off_log=target/e2e-blackhole/two-arm-layer0.log; \
 	 on_log=target/e2e-blackhole/two-arm-phase1.log; \
 	 sim() { \
-	   v="$$(awk '/^parity similarity/ { for (i = 1; i <= NF; i++) if ($$i == "=") v = $$(i + 1) } END { print v }' "$$1")"; \
+	   v="$$(awk '/^parity similarity [0-9]/ { for (i = 1; i <= NF; i++) if ($$i == "=") v = $$(i + 1) } END { print v }' "$$1")"; \
 	   [ -n "$$v" ] || v="$$(awk -F'similarity ' '/similarity [0-9.]+ < bar/ { split($$2, a, " "); v = a[1] } END { print v }' "$$1")"; \
 	   printf '%s' "$$v"; \
+	 }; \
+	 acc() { \
+	   awk '/^parity accuracy-vs-human [0-9]/ { for (i = 1; i <= NF; i++) if ($$i == "=") v = $$(i + 1) } END { print v }' "$$1"; \
 	 }; \
 	 echo "=== arm 1/2 — Layer 0 (lane pinned off) ==="; \
 	 $(MAKE) --no-print-directory test-engine-parity 2>&1 | tee "$$off_log"; \
@@ -551,16 +573,24 @@ test-engine-parity-both:
 	 $(MAKE) --no-print-directory test-engine-parity-layered 2>&1 | tee "$$on_log"; \
 	 on_rc=$$?; \
 	 off_sim="$$(sim "$$off_log")"; on_sim="$$(sim "$$on_log")"; \
+	 off_acc="$$(acc "$$off_log")"; on_acc="$$(acc "$$on_log")"; \
 	 echo "=== two-arm parity ==="; \
-	 printf 'layer0 (off)    similarity %s  (rc=%s, log %s)\n' "$${off_sim:-<no measurement>}" "$$off_rc" "$$off_log"; \
-	 printf 'layer1 (phase1) similarity %s  (rc=%s, log %s)\n' "$${on_sim:-<no measurement>}" "$$on_rc" "$$on_log"; \
+	 printf 'layer0 (off)    similarity %s  accuracy-vs-human %s  (rc=%s, log %s)\n' \
+	   "$${off_sim:-<no measurement>}" "$${off_acc:-<none>}" "$$off_rc" "$$off_log"; \
+	 printf 'layer1 (phase1) similarity %s  accuracy-vs-human %s  (rc=%s, log %s)\n' \
+	   "$${on_sim:-<no measurement>}" "$${on_acc:-<none>}" "$$on_rc" "$$on_log"; \
 	 if [ -n "$$off_sim" ] && [ -n "$$on_sim" ]; then \
-	   awk -v a="$$off_sim" -v b="$$on_sim" 'BEGIN { printf "delta (phase1 - off) %+.3f\n", b - a }'; \
+	   awk -v a="$$off_sim" -v b="$$on_sim" 'BEGIN { printf "delta similarity (phase1 - off) %+.3f  <- fidelity to APPLE; gap-fill lowers this by design\n", b - a }'; \
 	   if [ "$$off_sim" = "$$on_sim" ]; then \
 	     printf 'WARNING: arms are byte-identical — either the tail patches never reached the measured assembly, or the clip has nothing to patch. See parity_assembly_reads_layer1_tail_patches.\n' >&2; \
 	   fi; \
+	   if [ -n "$$off_acc" ] && [ -n "$$on_acc" ]; then \
+	     awk -v a="$$off_acc" -v b="$$on_acc" 'BEGIN { printf "delta accuracy  (phase1 - off) %+.3f  <- fidelity to what was SAID; this is the sign that answers \"is Layer 1 better?\"\n", b - a }'; \
+	   else \
+	     printf 'delta accuracy: <none> — no human transcription beside the fixture, so neither arm was scored on accuracy. The similarity delta alone CANNOT tell you whether Layer 1 is better; it only tells you it is different.\n' >&2; \
+	   fi; \
 	 else \
-	   printf 'no delta: an arm printed no similarity number — it died before the measurement (missing loopback, no mic grant, no fixture). That is a precondition failure, NOT a parity verdict; read the arm log before drawing a conclusion.\n' >&2; \
+	   printf 'no delta: an arm printed no similarity number. Since the harness now surfaces its measurements on the FAILING path too, this means the arm stopped before scoring at all — a precondition failure (missing loopback, no mic grant, no fixture) rather than a parity verdict. Read the arm log; do NOT report this as a red bar.\n' >&2; \
 	 fi; \
 	 [ "$$off_rc" -eq 0 ] && [ "$$on_rc" -eq 0 ]
 

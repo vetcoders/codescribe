@@ -268,9 +268,20 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     /// `start`/`end` are Rust-canonical char offsets inside `utteranceId`;
     /// unbound or overrunning windows are dropped whole rather than
     /// half-applied, matching the overlay and the Rust committed buffer.
+    ///
+    /// `lastIndex` is not a style choice — it is the third copy of one algebra.
+    /// The same patch is resolved by `live_assembly.rs` (`rposition`) and by
+    /// `OverlayState.onReplaceRange` (`lastIndex`); this used to say
+    /// `firstIndex`, which picks the opposite slot the moment an utterance id is
+    /// ever sealed twice. Today it cannot be (`EngineEvent::UtteranceFinal` is
+    /// contracted "once per VAD-bounded segment"), so the divergence was latent
+    /// and invisible — see
+    /// `re_sealed_utterance_id_duplicates_here_but_not_in_the_swift_surfaces`,
+    /// which pins how the three surfaces disagree. Changing this one word costs
+    /// nothing today and removes one of the three ways they can drift apart.
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {
         publishPreview {
-            guard let index = committedSegments.firstIndex(where: { $0.utteranceId == utteranceId }),
+            guard let index = committedSegments.lastIndex(where: { $0.utteranceId == utteranceId }),
                   let startOffset = Int(exactly: start),
                   let endOffset = Int(exactly: end),
                   startOffset <= endOffset
