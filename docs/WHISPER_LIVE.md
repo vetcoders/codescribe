@@ -96,14 +96,14 @@ Practical win:
 
 ## Layer mapping for this file
 
-| Section below                                   | Layer it lights up                                         |
-| ----------------------------------------------- | ---------------------------------------------------------- |
-| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                    |
-| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                  |
-| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision |
-| Cloud STT alternatives                          | Pluggable Layer 1 backend                                  |
+| Section below                                   | Layer it lights up                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                             |
+| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                           |
+| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision          |
+| Cloud STT alternatives                          | Pluggable Layer 1 backend                                           |
 | Lexicon substitution (`apply_lexicon`)          | Layer 2 — delivered at seal time, not as the ADR's debounced module |
-| Small inline LLM pass (Phase 2, proposed)       | ❌ not built — no `core/llm/inline_polish.rs`              |
+| Small inline LLM pass (Phase 2, proposed)       | ❌ not built — no `core/llm/inline_polish.rs`                       |
 
 Everything below this point is the same Whisper-Live tech that existed before the ADR — it is
 **not removed**, just relocated in the architecture: Whisper became the silent partner that makes

@@ -114,20 +114,20 @@ Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPT
 
 > **Power-user hazard (measured 2026-08-08).** Because `CODESCRIBE_LAYERED_TRANSCRIPTION` is
 > **not** promoted to `settings.json`, `Config::inject_file_env_for_runtime` copies it out of
-> `~/.codescribe/.env` into the process env on the first `Config::load()` — in *every* process
+> `~/.codescribe/.env` into the process env on the first `Config::load()` — in _every_ process
 > that loads the core, tests and harnesses included. A stale `.env` line therefore arms Layer 1
 > silently. This was observed live: the same `make test-engine-parity` binary scored 0.931 with
 > the lane off and 0.833 with the operator's dotenv arming `phase1`, and the low score was the
-> *more accurate* transcript. The parity target now pins the lane explicitly (`Makefile`), but
+> _more accurate_ transcript. The parity target now pins the lane explicitly (`Makefile`), but
 > the general hazard stands for any tool that loads the core. Promoting the key the way
 > `CODESCRIBE_STT_ENGINE` was promoted is an open operator decision.
 
 **Final pass vs layered (orthogonal):**
 
-| Setting | Env | Default | Role |
-| --- | --- | --- | --- |
-| Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: full WAV re-pass routing (`always` / skip-if-complete / `off`) |
-| Layered | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off` | During-hold Layer 1 Whisper tail-patch when phase ≥ 1, on **both** live paths — VAD/scheduler and the default Apple progressive live (wired 2026-08-08, `a6b1233d`) |
+| Setting    | Env                                | Default | Role                                                                                                                                                                |
+| ---------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Final pass | `FINAL_PASS_MODE`                  | `smart` | Stop-path only: full WAV re-pass routing (`always` / skip-if-complete / `off`)                                                                                      |
+| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off`   | During-hold Layer 1 Whisper tail-patch when phase ≥ 1, on **both** live paths — VAD/scheduler and the default Apple progressive live (wired 2026-08-08, `a6b1233d`) |
 
 Smart does **not** turn layered on. Off final-pass does **not** force Whisper at stop. Layered phase tokens (`phase1`…) are not final-pass tokens (`smart`/`always`/`off`).
 

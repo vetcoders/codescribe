@@ -14,7 +14,7 @@ The target lives in the root `Makefile`; read its comment block before invoking
 ## Invocation traps
 
 1. **`CODE_SIGN_IDENTITY="-" xcodebuild …` does nothing.** xcodebuild reads
-   build settings from *arguments*, never from the environment. The env-prefix
+   build settings from _arguments_, never from the environment. The env-prefix
    form leaves `project.yml`'s `Codescribe Dev` identity in place and the build
    dies with `No certificate matching 'Codescribe Dev' found` before a single
    test runs. It must be a positional `KEY=value`. This README documented the
@@ -43,7 +43,7 @@ Half of that was right.
 
 **Right — the eager properties really do boot a second core in the test host.**
 The XCTest bundle uses the app as its host, so `AppDelegate` is instantiated in
-the test process, and stored properties initialise at instantiation — *before*
+the test process, and stored properties initialise at instantiation — _before_
 `applicationWillFinishLaunching`, which is where the `isRunningTests` guards
 live. Those guards are structurally unable to prevent it. `AppModel.shared`
 builds the chat/overlay/tray engines and `TrayStatusStore.init` registers a live
@@ -65,14 +65,14 @@ survive contact with a fourth, fifth and sixth run.
 
 ### The suite's cost was nondeterministic, and the reason was not fan-out
 
-Measured 2026-08-08, identical tree (`cd2fbb9a`, i.e. *with* `lazy`), identical
+Measured 2026-08-08, identical tree (`cd2fbb9a`, i.e. _with_ `lazy`), identical
 test set, same host, live app not running:
 
-| condition | runs | suite seconds | spread |
-|---|---:|---|---:|
-| as committed | 3 | 47.507 / 28.246 / **4.484** | 10.6× |
-| `TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1` | 3 | 4.186 / 4.691 / 4.218 | 1.12× |
-| core detects the XCTest host (current) | 3 | 4.452 / 4.415 / 4.264 | 1.04× |
+| condition                                   | runs | suite seconds               | spread |
+| ------------------------------------------- | ---: | --------------------------- | -----: |
+| as committed                                |    3 | 47.507 / 28.246 / **4.484** |  10.6× |
+| `TEST_RUNNER_CODESCRIBE_DISABLE_KEYCHAIN=1` |    3 | 4.186 / 4.691 / 4.218       |  1.12× |
+| core detects the XCTest host (current)      |    3 | 4.452 / 4.415 / 4.264       |  1.04× |
 
 In the 47.5 s run, `SettingsTruthTests.testHoldBadgeControlRoundTrips…` alone
 took **43.059 s** — 91 % of the suite. In the 4.5 s run the same test took
@@ -97,7 +97,7 @@ exports, so the bypass is attached to the **run** rather than to the invocation:
 Xcode, a script or a future CI job all inherit it.
 `SettingsTruthTests.testXCTestEnvMarkersPinTheSignalTheCoreKeysOn` asserts from
 inside a live host that at least one marker is still present, because the
-detector fails *open* — if Xcode renames them, the slow classification returns
+detector fails _open_ — if Xcode renames them, the slow classification returns
 silently.
 
 **The ~345 s hang is no longer unexplained**, though it is still unreproduced:
@@ -121,7 +121,7 @@ above `SWIFT_TEST_MAX_SECONDS` (default 30 s, ~6× the measured fast mode). Both
 bad runs above would have failed it. Raise the budget on a genuinely loaded host
 (`make test-swift SWIFT_TEST_MAX_SECONDS=90`) rather than removing it.
 
-Note on exit codes: the *recipe* exits 3 (zero tests) or 4 (over budget), which
+Note on exit codes: the _recipe_ exits 3 (zero tests) or 4 (over budget), which
 appears in `make: *** [test-swift] Error N`. GNU make itself exits **2** for any
 recipe failure, so a caller reading `$?` sees 2 in every failing case. Scripts
 should branch on non-zero, not on the specific code.
