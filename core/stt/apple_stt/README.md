@@ -7,12 +7,12 @@ This directory contains the Apple STT backend for codescribe:
 
 ## Backend selection (per locale)
 
-| Priority | Backend                                | When                                                                               |
-| -------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
-| 1        | `SpeechTranscriber` (SpeechAnalyzer)   | Locale is in ST supported+installed catalog                                        |
+| Priority | Backend                                 | When                                                                                        |
+| -------- | --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1        | `SpeechTranscriber` (SpeechAnalyzer)    | Locale is in ST supported+installed catalog                                                 |
 | 2        | `DictationTranscriber` (SpeechAnalyzer) | **Opt-in only** — `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER=1` and locale supported+installed |
-| 3        | `SFSpeechRecognizer` on-device         | ST lacks the locale **and** `supportsOnDeviceRecognition` is true (e.g. **pl-PL**) |
-| 4        | Error                                  | No backend can serve the locale                                                    |
+| 3        | `SFSpeechRecognizer` on-device          | ST lacks the locale **and** `supportsOnDeviceRecognition` is true (e.g. **pl-PL**)          |
+| 4        | Error                                   | No backend can serve the locale                                                             |
 
 SFSpeechRecognizer is the current public dictation-class API and the product's
 foundation for Polish — **not** a "legacy" path. Whisper remains the fallback
@@ -24,11 +24,11 @@ engine, tail-patch donor, and quality second opinion when Apple fails.
 and unlike `SpeechTranscriber` its catalog **includes pl-PL**. Measured on
 macOS 27.0 / SDK 26.5 with the frozen `05_apple-live-parity` fixture (140.85 s):
 
-| Lane                                | vs Apple live ref | vs human | word ratio | wall  | repeatable |
-| ----------------------------------- | ----------------- | -------- | ---------- | ----- | ---------- |
-| SYSTEM Apple live dictation (frozen) | 1.000 (identity)  | 0.805    | 0.88       | —     | frozen     |
+| Lane                                 | vs Apple live ref | vs human | word ratio  | wall   | repeatable                 |
+| ------------------------------------ | ----------------- | -------- | ----------- | ------ | -------------------------- |
+| SYSTEM Apple live dictation (frozen) | 1.000 (identity)  | 0.805    | 0.88        | —      | frozen                     |
 | `DictationTranscriber`               | **0.947**         | 0.810    | 0.99 / 0.87 | ~2.4 s | byte-identical over 3 runs |
-| SFSpeech streaming (shipped, W0-A)   | 0.898–0.931       | —        | —          | —     | no (spread 0.033) |
+| SFSpeech streaming (shipped, W0-A)   | 0.898–0.931       | —        | —           | —      | no (spread 0.033)          |
 
 Two things the lane must not be read as: it is **not** enabled, and the numbers
 above are a single-fixture PoC. Harder vocabulary clips (01–04) score 0.47–0.80
@@ -148,7 +148,7 @@ contrast engines; the controller/router must not.
 1. **SpeechTranscriber** — only when the locale is in the ST catalog **and**
    the model assets are installed (optional download when
    `CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD=1`).
-2. **DictationTranscriber** — only when armed *and* supported+installed. Unarmed,
+2. **DictationTranscriber** — only when armed _and_ supported+installed. Unarmed,
    this rung does not exist and the order below is byte-for-byte the shipped one.
 3. **SFSpeechRecognizer on-device** — when the analyzer lanes lack the locale, or
    are in the catalog but assets are missing, and SF supports on-device

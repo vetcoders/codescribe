@@ -22,15 +22,15 @@ inventory, not intent — the ADR's
 [Phase delivery status](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md#phase-delivery-status-2026-08-08)
 carries the per-phase detail.
 
-| Layer           | Engine                                                  | Status | Where it lives                                                                        |
-| --------------- | ------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------- |
-| 0 — Live        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | ✅ shipped, default | `core/stt/apple_stt/` + `core/stt/whisper/`                                   |
-| 1 — Tail Patch  | Whisper background diff                                 | ✅ delivered, **opt-in** (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`, default off) | `core/stt/tail_patcher/`, wired into `core/pipeline/streaming/session.rs` **and** `core/pipeline/streaming/apple_live_session.rs` |
-| 2 — Lexicon     | Dictionary substitution                                 | ⚠️ partial, different shape | `core/pipeline/stream_postprocess.rs::apply_lexicon`, applied at seal time on the Apple path — not the ADR's debounced `core/lexicon/` module |
-| 2 — LLM polish  | Small inline LLM                                        | ❌ not built | no `core/llm/inline_polish.rs`; stop-path `core/llm/ai_formatting.rs` is a different surface |
-| 3 — Paralingual | Silero classifier head                                  | ❌ not built | `InsertAnnotation` transport exists end-to-end; no producer                            |
-| 4 — Final BAM   | Session-end contextual pass                             | ❌ not built | no `core/pipeline/final_bam.rs`; `FINAL_PASS_MODE` is a different mechanism            |
-| Orchestrator    | —                                                       | ❌ not built, not currently needed | both live paths share the `tail_patcher` gate directly; no `app/controller/layered_orchestrator.rs` |
+| Layer           | Engine                                                  | Status                                                                             | Where it lives                                                                                                                                |
+| --------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0 — Live        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | ✅ shipped, default                                                                | `core/stt/apple_stt/` + `core/stt/whisper/`                                                                                                   |
+| 1 — Tail Patch  | Whisper background diff                                 | ✅ delivered, **opt-in** (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`, default off) | `core/stt/tail_patcher/`, wired into `core/pipeline/streaming/session.rs` **and** `core/pipeline/streaming/apple_live_session.rs`             |
+| 2 — Lexicon     | Dictionary substitution                                 | ⚠️ partial, different shape                                                        | `core/pipeline/stream_postprocess.rs::apply_lexicon`, applied at seal time on the Apple path — not the ADR's debounced `core/lexicon/` module |
+| 2 — LLM polish  | Small inline LLM                                        | ❌ not built                                                                       | no `core/llm/inline_polish.rs`; stop-path `core/llm/ai_formatting.rs` is a different surface                                                  |
+| 3 — Paralingual | Silero classifier head                                  | ❌ not built                                                                       | `InsertAnnotation` transport exists end-to-end; no producer                                                                                   |
+| 4 — Final BAM   | Session-end contextual pass                             | ❌ not built                                                                       | no `core/pipeline/final_bam.rs`; `FINAL_PASS_MODE` is a different mechanism                                                                   |
+| Orchestrator    | —                                                       | ❌ not built, not currently needed                                                 | both live paths share the `tail_patcher` gate directly; no `app/controller/layered_orchestrator.rs`                                           |
 
 Existing files (`core/stt/whisper/`, `core/audio/streaming_recorder.rs`, `core/vad/silero_ort.rs`)
 keep their public APIs — Layer 1 reuses them as its backend.
@@ -52,7 +52,7 @@ punctuation and never rewritten by live engine (Off stays Off; Off never forces
 Whisper at stop). Live gap-fill (Layer 1 Whisper tail-patch) is a **separate**
 opt-in via `CODESCRIBE_LAYERED_TRANSCRIPTION` (default off; phase ≥ 1 arms it on
 **both** live paths — VAD/scheduler and the default Apple progressive live, wired
-2026-08-08 in `a6b1233d`). Smart works *with* layered when both are enabled;
+2026-08-08 in `a6b1233d`). Smart works _with_ layered when both are enabled;
 Smart does not enable layered. Dictionary/lexicon always runs in postprocess.
 
 Two INFO receipts prove the path in `codescribe.log`:
@@ -261,16 +261,16 @@ match (hotkey, flags) {
 The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `state.rs`,
 `VoiceChatOverlayState`) no longer exists — the surface was rewritten in Swift.
 
-| Module                          | LOC  | Purpose                                        |
-| ------------------------------- | ---- | ---------------------------------------------- |
-| `AgentChatStore.swift`          | 2464 | Chat/thread state, config + thread change buses |
-| `MessageList.swift`             | 1535 | Message rendering, streaming assistant bubbles  |
-| `ChatComponents.swift`          | 1008 | Shared bubble / attachment / tool components    |
-| `Composer.swift`                |  823 | Input composer (dictation, attachments, send)   |
-| `ThreadRail.swift`              |  498 | Thread list rail                                |
-| `AgentChatView.swift`           |  473 | Screen composition                              |
-| `ComposerTextView.swift`        |  370 | NSTextView bridge for the composer              |
-| `AssistivePromptPresentation.swift` | 346 | Assistive-lane prompt presentation          |
+| Module                              | LOC  | Purpose                                         |
+| ----------------------------------- | ---- | ----------------------------------------------- |
+| `AgentChatStore.swift`              | 2464 | Chat/thread state, config + thread change buses |
+| `MessageList.swift`                 | 1535 | Message rendering, streaming assistant bubbles  |
+| `ChatComponents.swift`              | 1008 | Shared bubble / attachment / tool components    |
+| `Composer.swift`                    | 823  | Input composer (dictation, attachments, send)   |
+| `ThreadRail.swift`                  | 498  | Thread list rail                                |
+| `AgentChatView.swift`               | 473  | Screen composition                              |
+| `ComposerTextView.swift`            | 370  | NSTextView bridge for the composer              |
+| `AssistivePromptPresentation.swift` | 346  | Assistive-lane prompt presentation              |
 
 ### Whisper Engine
 

@@ -15,14 +15,14 @@ union of layer events, each mutating the same already-shown text buffer. The ADR
 five layers; **the render path accepts all five event families, but only three producers
 exist today** — the `Status` column below is inventory, not intent:
 
-| Layer               | Engine                                                  | Event types                                                          | When                                      | Status |
-| ------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- | ------ |
-| **0 — Live**        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal`                            | While the user speaks — owns first commit | ✅ shipped, default |
+| Layer               | Engine                                                  | Event types                                                          | When                                      | Status                                                                             |
+| ------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| **0 — Live**        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal`                            | While the user speaks — owns first commit | ✅ shipped, default                                                                |
 | **1 — Tail Patch**  | Whisper (Candle / mlx-audio / OpenAI / libraxis)        | `ReplaceRange { source: TailPatch }`                                 | at each sealed utterance boundary         | ✅ delivered, **opt-in** (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`, default off) |
-| **2 — Lexicon**     | Dictionary substitution (`apply_lexicon`)               | `ReplaceRange { source: Lexicon }`                                   | at seal time, after Layer 1               | ⚠️ delivered in a different shape than the ADR's debounced module |
-| **2 — LLM polish**  | Small inline LLM (Bielik-11B proposed)                  | `ReplaceRange { source: InlineLlm }`                                 | —                                         | ❌ no producer |
-| **3 — Paralingual** | Silero classifier head                                  | `InsertAnnotation { HesitationPause \| Paralingual }`                | —                                         | ❌ no producer (transport exists end-to-end) |
-| **4 — Final BAM**   | Session-end contextual pass                             | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release                | ❌ no producer; `SessionFinalised` *is* emitted by the live paths |
+| **2 — Lexicon**     | Dictionary substitution (`apply_lexicon`)               | `ReplaceRange { source: Lexicon }`                                   | at seal time, after Layer 1               | ⚠️ delivered in a different shape than the ADR's debounced module                  |
+| **2 — LLM polish**  | Small inline LLM (Bielik-11B proposed)                  | `ReplaceRange { source: InlineLlm }`                                 | —                                         | ❌ no producer                                                                     |
+| **3 — Paralingual** | Silero classifier head                                  | `InsertAnnotation { HesitationPause \| Paralingual }`                | —                                         | ❌ no producer (transport exists end-to-end)                                       |
+| **4 — Final BAM**   | Session-end contextual pass                             | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release                | ❌ no producer; `SessionFinalised` _is_ emitted by the live paths                  |
 
 **Hard invariant:** every layer mutates the buffer only through bounded events
 (`Append`, `ReplaceRange`, `InsertAnnotation`, `Backspace`). No layer is allowed to wipe the
@@ -363,24 +363,24 @@ Displayed text (String, visible in overlay/bubble)
 
 ## Key Source Files
 
-| File                                  | Role                                                       |
-| ------------------------------------- | ---------------------------------------------------------- |
-| `core/audio/recorder.rs`              | cpal audio capture, device management                      |
-| `core/audio/streaming_recorder.rs`    | Pipeline orchestrator, connects recorder to engine         |
-| `core/audio/chunker.rs`               | SpeechSession, VAD gate, Supervisor mode, flush fallback   |
-| `core/vad/silero_ort.rs`              | Silero VAD v6 (ONNX), worker thread, resampler             |
-| `core/stt/whisper/engine.rs`          | Whisper singleton, Metal GPU inference                     |
-| `core/pipeline/contracts.rs`          | EngineEvent, EventSink, DeltaSink, TranscriptDelta         |
-| `core/pipeline/streaming/session.rs`  | transcription_session (unified, VAD/scheduler path)        |
-| `core/pipeline/streaming/apple_live_session.rs` | Apple progressive live session + Layer 1 seal hand-off |
-| `core/stt/tail_patcher/mod.rs`        | Layer 1 gate, job computation, bounded-patch decision      |
-| `core/pipeline/sinks.rs`              | DeltaSinkAdapter, CallbackSink, CollectorEventSink         |
-| `core/pipeline/stream_postprocess.rs` | Lexicon correction, semantic gate, hallucination filter    |
-| `app/controller/mod.rs`               | Recording state machine, Hold/Toggle orchestration         |
-| `app/controller/helpers.rs`           | ControllerEventRouter, session mode routing                |
-| `app/presentation/emitter.rs`         | PresentationEmitter (typing animation via BufferedEmitter) |
-| `macos/Codescribe/Screens/Overlay/OverlayState.swift` | Floating overlay state + layered render enforcement |
-| `macos/Codescribe/Screens/AgentChat/AgentChatStore.swift` | Agent chat state (threads, streaming bubbles) |
+| File                                                      | Role                                                       |
+| --------------------------------------------------------- | ---------------------------------------------------------- |
+| `core/audio/recorder.rs`                                  | cpal audio capture, device management                      |
+| `core/audio/streaming_recorder.rs`                        | Pipeline orchestrator, connects recorder to engine         |
+| `core/audio/chunker.rs`                                   | SpeechSession, VAD gate, Supervisor mode, flush fallback   |
+| `core/vad/silero_ort.rs`                                  | Silero VAD v6 (ONNX), worker thread, resampler             |
+| `core/stt/whisper/engine.rs`                              | Whisper singleton, Metal GPU inference                     |
+| `core/pipeline/contracts.rs`                              | EngineEvent, EventSink, DeltaSink, TranscriptDelta         |
+| `core/pipeline/streaming/session.rs`                      | transcription_session (unified, VAD/scheduler path)        |
+| `core/pipeline/streaming/apple_live_session.rs`           | Apple progressive live session + Layer 1 seal hand-off     |
+| `core/stt/tail_patcher/mod.rs`                            | Layer 1 gate, job computation, bounded-patch decision      |
+| `core/pipeline/sinks.rs`                                  | DeltaSinkAdapter, CallbackSink, CollectorEventSink         |
+| `core/pipeline/stream_postprocess.rs`                     | Lexicon correction, semantic gate, hallucination filter    |
+| `app/controller/mod.rs`                                   | Recording state machine, Hold/Toggle orchestration         |
+| `app/controller/helpers.rs`                               | ControllerEventRouter, session mode routing                |
+| `app/presentation/emitter.rs`                             | PresentationEmitter (typing animation via BufferedEmitter) |
+| `macos/Codescribe/Screens/Overlay/OverlayState.swift`     | Floating overlay state + layered render enforcement        |
+| `macos/Codescribe/Screens/AgentChat/AgentChatStore.swift` | Agent chat state (threads, streaming bubbles)              |
 
 ---
 
