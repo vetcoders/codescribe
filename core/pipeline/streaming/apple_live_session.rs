@@ -12,10 +12,14 @@
 //! corrections applied on the fly"). Correcting after commit would be a
 //! post-commit rewrite, which the append-only doctrine forbids.
 //!
-//! Whisper stays the file final-pass / emergency fill (controller stop path),
-//! not the live engine. INTERIM: per AGENTS.md (THE ONE RULE) Whisper's target
-//! role is transcribing partials on the go to fill canvas gaps — never a
-//! stop-time full-text authority. Escape hatch:
+//! Whisper is never the live engine here. Under
+//! `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+` it runs as Layer 1 gap-fill
+//! (W2-A): each sealed utterance resolves to its retained PCM window and is
+//! re-transcribed off this path, emitting bounded
+//! `ReplaceRange { source: TailPatch }` events — AGENTS.md (THE ONE RULE):
+//! filling canvas gaps on the go, never a stop-time full-text authority.
+//! Outside that flag Whisper stays the file final-pass / emergency fill
+//! (controller stop path). Escape hatch:
 //! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` restores the legacy VAD+scheduler path.
 //!
 //! The bridge global lock + child process live on a **dedicated OS thread**
@@ -27,18 +31,116 @@ use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::Duration;
 
+use anyhow::Result;
+use futures_util::StreamExt;
+use futures_util::future::BoxFuture;
+use futures_util::stream::FuturesOrdered;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::pipeline::contracts::{
-    DropKind, EngineEvent, EventSink, LayerSummary, TranscriptSegment,
-};
+use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
+use crate::stt::tail_patcher::{TailPatchConfig, TailPatchOutcome};
 
 use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer};
-use super::session::SessionConfig;
+use super::session::{
+    SessionConfig, compute_tail_patch_job, emit_session_finalised, emit_tail_patch_result,
+    tail_patch_enabled,
+};
 use super::stream_log::append_to_stream_log;
+
+/// How many sealed utterances may wait for Layer 1 before the seal path starts
+/// dropping requests.
+///
+/// The seal path runs on the worker thread that also forwards PCM into the
+/// SFSpeech bridge, so it must never block on this queue — a stalled worker is
+/// a stalled capture. A bounded queue plus a counted drop is the honest
+/// backpressure shape: Whisper falling behind costs patches, never audio.
+const TAIL_PATCH_QUEUE_CAP: usize = 8;
+
+/// One sealed utterance handed from the worker thread to the async Layer 1 lane.
+struct TailPatchRequest {
+    utterance_id: u64,
+    /// Byte-identical to the emitted `UtteranceFinal.text` — the string every
+    /// `ReplaceRange` char offset is computed against.
+    committed_text: String,
+    /// PCM behind exactly this utterance: `[previous seal end, end_ts)`.
+    audio: Vec<f32>,
+}
+
+/// Async Layer 1 lane for the Apple progressive path.
+///
+/// Owns the in-flight Whisper gap-fill job and the replacement count that
+/// `SessionFinalised.layer_summary` reports. Jobs are boxed so the lane can be
+/// driven by a stub future in tests without a model on disk.
+struct AppleTailPatchLane {
+    jobs: FuturesOrdered<BoxFuture<'static, Result<(u64, TailPatchOutcome)>>>,
+    sample_rate: u32,
+    language: Option<String>,
+    config: TailPatchConfig,
+    replacements: u64,
+}
+
+impl AppleTailPatchLane {
+    fn new(sample_rate: u32, language: Option<String>) -> Self {
+        Self {
+            jobs: FuturesOrdered::new(),
+            sample_rate,
+            language,
+            // F2: thresholds stay exactly where the shared primitive puts them.
+            config: TailPatchConfig::from_env(),
+            replacements: 0,
+        }
+    }
+
+    fn push_request(&mut self, req: TailPatchRequest) {
+        let job = compute_tail_patch_job(
+            req.utterance_id,
+            req.committed_text,
+            req.audio,
+            self.sample_rate,
+            self.language.clone(),
+            self.config,
+        );
+        self.push_job(Box::pin(job));
+    }
+
+    fn push_job(&mut self, job: BoxFuture<'static, Result<(u64, TailPatchOutcome)>>) {
+        self.jobs.push_back(job);
+    }
+
+    async fn next(&mut self) -> Option<Result<(u64, TailPatchOutcome)>> {
+        self.jobs.next().await
+    }
+
+    fn complete(&mut self, event_sink: &dyn EventSink, result: Result<(u64, TailPatchOutcome)>) {
+        self.replacements = self
+            .replacements
+            .saturating_add(emit_tail_patch_result(event_sink, result));
+    }
+
+    fn replacements(&self) -> u64 {
+        self.replacements
+    }
+}
+
+/// Deliver one engine event to the sink, writing the same per-utterance
+/// diagnostic line the VAD path writes.
+///
+/// Factored out because the Layer 1 branch must flush every queued event before
+/// emitting a patch: a `ReplaceRange` that overtook its own `UtteranceFinal`
+/// would address canvas that has not been committed yet.
+fn deliver_event(
+    event: &EngineEvent,
+    event_sink: &dyn EventSink,
+    stream_log_path: Option<&std::path::Path>,
+) {
+    if let (Some(path), EngineEvent::UtteranceFinal { text, .. }) = (stream_log_path, event) {
+        let _ = append_to_stream_log(path, text.trim());
+    }
+    event_sink.on_event(event);
+}
 
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
@@ -77,8 +179,34 @@ pub(crate) async fn apple_stream_transcription_session(
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
 
-    let worker =
-        thread::spawn(move || apple_stream_worker(pcm_rx, ev_tx, sample_rate, language.as_deref()));
+    // Layer 1 (Whisper tail-patch) lane — off unless
+    // `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`. Read once here so the whole
+    // session agrees on one answer even if the env flips mid-hold.
+    let tail_patch_on = tail_patch_enabled();
+    if tail_patch_on {
+        info!(
+            "Layered transcription Layer 1 (Whisper tail-patch) enabled on Apple progressive path"
+        );
+    }
+    let mut tail_patch_lane = AppleTailPatchLane::new(sample_rate, language.clone());
+    // At-most-one-in-flight gate (F1), tracked outside the lane so the admit
+    // branch's guard does not borrow what the collect branch holds mutably.
+    let mut tail_patch_in_flight = false;
+    // Bounded: the worker `try_send`s from the PCM-forwarding thread.
+    let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+    // Layered off → the worker gets no sender at all, so the lane stays empty
+    // and its branch never yields: zero jobs, zero behaviour change.
+    let worker_tp_tx = tail_patch_on.then_some(tp_tx);
+
+    let worker = thread::spawn(move || {
+        apple_stream_worker(
+            pcm_rx,
+            ev_tx,
+            sample_rate,
+            language.as_deref(),
+            worker_tp_tx,
+        )
+    });
 
     // CRITICAL (operator 2026-07-27 — live preview "blocked" on overlay):
     // PCM forward and EngineEvent drain MUST interleave. The previous shape
@@ -91,16 +219,13 @@ pub(crate) async fn apple_stream_transcription_session(
         tokio::select! {
             event = ev_rx.recv() => {
                 match event {
-                    Some(event) => {
-                        // Same diagnostic artifact the VAD path writes: one
-                        // line per committed utterance (CODESCRIBE_STREAM_LOG).
-                        if let (Some(path), EngineEvent::UtteranceFinal { text, .. }) =
-                            (stream_log_path.as_deref(), &event)
-                        {
-                            let _ = append_to_stream_log(path, text.trim());
-                        }
-                        event_sink.on_event(&event);
-                    }
+                    // Same diagnostic artifact the VAD path writes: one line
+                    // per committed utterance (CODESCRIBE_STREAM_LOG).
+                    Some(event) => deliver_event(
+                        &event,
+                        event_sink.as_ref(),
+                        stream_log_path.as_deref(),
+                    ),
                     // Worker dropped the sender — stream finished.
                     None => break,
                 }
@@ -121,6 +246,23 @@ pub(crate) async fn apple_stream_transcription_session(
                     }
                 }
             }
+            // Admit one sealed utterance into Layer 1 at a time. The Whisper
+            // call itself runs on `spawn_blocking` inside the job, so this loop
+            // only ever schedules and collects — inference never sits on the
+            // event-drain path (F1).
+            Some(req) = tp_rx.recv(), if !tail_patch_in_flight => {
+                tail_patch_lane.push_request(req);
+                tail_patch_in_flight = true;
+            }
+            Some(result) = tail_patch_lane.next() => {
+                tail_patch_in_flight = false;
+                // Flush everything the worker already queued first: a patch
+                // must never overtake the `UtteranceFinal` it patches.
+                while let Ok(event) = ev_rx.try_recv() {
+                    deliver_event(&event, event_sink.as_ref(), stream_log_path.as_deref());
+                }
+                tail_patch_lane.complete(event_sink.as_ref(), result);
+            }
         }
     }
 
@@ -129,8 +271,41 @@ pub(crate) async fn apple_stream_transcription_session(
     // channel — an early engine death (e.g. bridge spawn failure) must not
     // turn live audio callbacks into send errors. Mirrors the pre-interleave
     // contract where the session always outlived the audio stream.
+    //
+    // This comes before the Layer 1 backlog on purpose: capture-sender safety
+    // is the older, harder contract, and Whisper must never run while live
+    // audio is still being drained.
     if !audio_eof {
         while chunk_receiver.recv().await.is_some() {}
+    }
+
+    // No new seals can arrive — but seals the worker emitted just before
+    // exiting (the trailing summary, the open partial) may still be queued.
+    // Whether the select loop admitted them before `ev_rx` closed is a race, so
+    // finish the backlog here instead: a patch that lands only sometimes is
+    // worse than one that always lands.
+    //
+    // This is bounded work, not a stop-time re-pass: at most `TAIL_PATCH_QUEUE_CAP`
+    // already-sealed utterances, one job at a time, each emitting only bounded
+    // `ReplaceRange` events. No Preview is waiting on it — capture is over.
+    let mut settled_at_stop = 0u64;
+    loop {
+        while let Some(result) = tail_patch_lane.next().await {
+            tail_patch_lane.complete(event_sink.as_ref(), result);
+        }
+        match tp_rx.try_recv() {
+            Ok(req) => {
+                tail_patch_lane.push_request(req);
+                settled_at_stop = settled_at_stop.saturating_add(1);
+            }
+            Err(_) => break,
+        }
+    }
+    if settled_at_stop > 0 {
+        info!(
+            settled_at_stop,
+            "Layer 1 tail-patch backlog settled after capture stopped"
+        );
     }
 
     match worker.join() {
@@ -156,10 +331,11 @@ pub(crate) async fn apple_stream_transcription_session(
         }
     }
 
-    event_sink.on_event(&EngineEvent::SessionFinalised {
+    emit_session_finalised(
+        event_sink.as_ref(),
         session_id,
-        layer_summary: LayerSummary::default(),
-    });
+        tail_patch_lane.replacements(),
+    );
 }
 
 /// Mutable seal state for one Apple stream: revision counters plus the shared
@@ -183,6 +359,10 @@ struct AppleSealState {
     last_sealed_end: f32,
     /// Seals whose audio window could not be resolved (F3 falsification).
     unresolved_windows: u64,
+    /// Layer 1 hand-off, present only when layered transcription is armed.
+    tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
+    /// Seals whose tail-patch request found the queue full (F1 backpressure).
+    tail_patch_backpressure_drops: u64,
 }
 
 impl AppleSealState {
@@ -197,6 +377,15 @@ impl AppleSealState {
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             last_sealed_end: 0.0,
             unresolved_windows: 0,
+            tail_patch: None,
+            tail_patch_backpressure_drops: 0,
+        }
+    }
+
+    fn new_with_tail_patch(sample_rate: u32, tail_patch: mpsc::Sender<TailPatchRequest>) -> Self {
+        Self {
+            tail_patch: Some(tail_patch),
+            ..Self::new(sample_rate)
         }
     }
 }
@@ -211,13 +400,13 @@ struct AppleStreamOutcome {
 /// Resolve a sealed utterance back to its audio span, then release what can
 /// never be re-cut.
 ///
-/// F3 (falsification): W2-A's tail-patch will cut exactly `window(prev_end,
-/// end_ts)` and hand it to Whisper. If an Apple `end_ts` ever fails to address
-/// retained audio — a clock that does not agree with the PCM timeline, or a
-/// boundary older than the retention cap — that must be visible here, in the
-/// live path, before Whisper is wired onto it. A silent miss would surface as
-/// canvas patched from the wrong audio.
-fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) {
+/// F3 (falsification): the tail-patch cuts exactly `window(prev_end, end_ts)`
+/// and hands it to Whisper. If an Apple `end_ts` ever fails to address retained
+/// audio — a clock that does not agree with the PCM timeline, or a boundary
+/// older than the retention cap — that must be visible here, in the live path.
+/// A silent miss would surface as canvas patched from the wrong audio, so an
+/// unresolved boundary yields `None` and never reaches Layer 1.
+fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) -> Option<Vec<f32>> {
     let from = state.last_sealed_end;
     match state.audio.window(from, end_ts) {
         Some(window) => {
@@ -232,6 +421,7 @@ fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) {
                 retained_samples = state.audio.len(),
                 "Apple seal resolved to audio window"
             );
+            Some(window)
         }
         None => {
             state.unresolved_windows = state.unresolved_windows.saturating_add(1);
@@ -242,6 +432,7 @@ fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) {
                 session_secs = state.audio.session_secs(),
                 "Apple seal window unresolved — end_ts does not address retained audio"
             );
+            None
         }
     }
 }
@@ -286,8 +477,12 @@ fn seal_utterance_final(
     let text = corrected.trim().to_string();
     state.utterance_id = state.utterance_id.saturating_add(1);
     state.sealed_count = state.sealed_count.saturating_add(1);
+    // Layer 1 diffs against this exact string, so capture it before the event
+    // takes ownership — and only when there is a lane to hand it to.
+    let committed_text = state.tail_patch.is_some().then(|| text.clone());
+    let utterance_id = state.utterance_id;
     let _ = ev_tx.send(EngineEvent::UtteranceFinal {
-        utterance_id: state.utterance_id,
+        utterance_id,
         text,
         raw_text,
         start_ts,
@@ -299,7 +494,27 @@ fn seal_utterance_final(
         quality_gate_dropped: false,
         confidence_flags: Vec::new(),
     });
-    resolve_sealed_audio_window(state, end_ts);
+
+    let window = resolve_sealed_audio_window(state, end_ts);
+    // The seal path runs on the PCM-forwarding thread: hand off without ever
+    // waiting. A full queue costs a patch, never a stalled capture (F1).
+    if let (Some(audio), Some(committed_text)) = (window, committed_text) {
+        let send = state.tail_patch.as_ref().map(|tx| {
+            tx.try_send(TailPatchRequest {
+                utterance_id,
+                committed_text,
+                audio,
+            })
+        });
+        if let Some(Err(e)) = send {
+            state.tail_patch_backpressure_drops =
+                state.tail_patch_backpressure_drops.saturating_add(1);
+            warn!(
+                utterance_id,
+                "Layer 1 tail-patch request dropped — queue full or lane gone: {e}"
+            );
+        }
+    }
     true
 }
 
@@ -309,9 +524,13 @@ fn apple_stream_worker(
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
     sample_rate: u32,
     language: Option<&str>,
+    tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let mut stream = LiveStreamSession::open(language, sample_rate)?;
-    let mut state = AppleSealState::new(sample_rate);
+    let mut state = match tail_patch {
+        Some(tx) => AppleSealState::new_with_tail_patch(sample_rate, tx),
+        None => AppleSealState::new(sample_rate),
+    };
     let mut samples_seen: u64 = 0;
 
     loop {
@@ -422,7 +641,12 @@ fn emit_stream_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::contracts::LayerSource;
     use crate::stt::apple_stt::parse_stream_stdout_line;
+    use crate::stt::tail_patcher::{LAYERED_TRANSCRIPTION_ENV, compute_tail_patch};
+    use serial_test::serial;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
 
     /// Capture rate the Apple bridge is opened with; these tests exercise seal
     /// text, not audio retention, so any valid rate is representative.
@@ -558,9 +782,6 @@ mod tests {
     /// still open surface to the sink immediately (not only after stop).
     #[tokio::test]
     async fn live_previews_surface_before_audio_eof() {
-        use crate::pipeline::contracts::EventSink;
-        use std::sync::Mutex;
-
         struct CollectSink(Mutex<Vec<String>>);
         impl EventSink for CollectSink {
             fn on_event(&self, event: &EngineEvent) {
@@ -740,6 +961,259 @@ mod tests {
             text,
             "stop-path lexicon must not rewrite already-sealed text"
         );
+    }
+
+    // ── W2-A · Layer 1 tail-patch on the Apple progressive path ──────────────
+
+    /// Restores an env var to its pre-test value, so a serial env test cannot
+    /// leak a phase flag into the rest of the binary.
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                previous: std::env::var_os(key),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<EngineEvent>>);
+
+    impl EventSink for RecordingSink {
+        fn on_event(&self, event: &EngineEvent) {
+            self.0.lock().expect("lock").push(event.clone());
+        }
+    }
+
+    impl RecordingSink {
+        fn events(&self) -> Vec<EngineEvent> {
+            self.0.lock().expect("lock").clone()
+        }
+    }
+
+    /// Wiring contract: a sealed utterance must hand Layer 1 the exact audio
+    /// behind it plus the exact committed string `ReplaceRange` offsets are
+    /// computed against. Anything else patches canvas from the wrong source.
+    #[test]
+    fn apple_tail_patch_seal_enqueues_audio_window_for_the_sealed_utterance() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 6.0);
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker".into(),
+                segments: vec![segment("uruchom doker", 0.5, 2.0)],
+            }],
+            &tx,
+            &mut state,
+            6.0,
+        );
+
+        let req = tp_rx
+            .try_recv()
+            .expect("sealed utterance must enqueue a tail-patch request");
+        assert_eq!(req.utterance_id, 1);
+        assert_eq!(
+            req.committed_text, "uruchom Docker",
+            "Layer 1 must diff against the lexicon-corrected committed text, not raw engine output"
+        );
+        assert_eq!(
+            req.audio.len(),
+            2 * TEST_SAMPLE_RATE as usize,
+            "window is [previous seal end, end_ts) at session rate"
+        );
+    }
+
+    /// F3 carry-over: a boundary that does not address retained audio already
+    /// counts as unresolved. It must also never reach Whisper — patching from
+    /// the wrong span is worse than not patching.
+    #[test]
+    fn apple_tail_patch_unresolved_window_enqueues_nothing() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 2.0);
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "zdanie z przyszlosci".into(),
+                segments: vec![segment("zdanie z przyszlosci", 8.0, 9.0)],
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+
+        assert_eq!(state.sealed_count, 1, "the text still seals");
+        assert_eq!(state.unresolved_windows, 1);
+        assert!(
+            tp_rx.try_recv().is_err(),
+            "an unresolved window must not be handed to Layer 1"
+        );
+    }
+
+    /// Layered off (default): the seal path carries no Layer 1 wire at all, so
+    /// zero jobs can be scheduled from it.
+    #[test]
+    fn apple_tail_patch_off_by_default_enqueues_no_jobs() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 4.0);
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker".into(),
+                segments: vec![segment("uruchom doker", 0.5, 2.0)],
+            }],
+            &tx,
+            &mut state,
+            4.0,
+        );
+
+        assert!(
+            state.tail_patch.is_none(),
+            "no wire exists when layered is off"
+        );
+        assert_eq!(state.sealed_count, 1);
+        assert_eq!(state.tail_patch_backpressure_drops, 0);
+    }
+
+    /// F1: the seal path runs on the worker thread that also forwards PCM into
+    /// the bridge. It must never block on the patch queue — a full queue drops
+    /// and counts, capture keeps flowing.
+    #[test]
+    fn apple_tail_patch_backpressure_drops_instead_of_stalling_capture() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tp_tx, _tp_rx) = mpsc::channel::<TailPatchRequest>(1);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 10.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "pierwsze zdanie".into(),
+                    segments: vec![segment("pierwsze zdanie", 0.5, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "drugie zdanie".into(),
+                    segments: vec![segment("drugie zdanie", 2.5, 4.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            10.0,
+        );
+
+        assert_eq!(state.sealed_count, 2, "seals never wait on the patch queue");
+        assert_eq!(state.tail_patch_backpressure_drops, 1);
+    }
+
+    /// Acceptance arm: an induced gap (Layer 0 committed a shorter span than
+    /// the audio actually carried) emits exactly one bounded
+    /// `ReplaceRange{TailPatch}` and increments the count that
+    /// `SessionFinalised.layer_summary` reports.
+    #[tokio::test]
+    async fn apple_tail_patch_induced_gap_emits_replace_range_and_counts_into_summary() {
+        let sink = RecordingSink::default();
+        let mut lane = AppleTailPatchLane::new(TEST_SAMPLE_RATE, None);
+
+        // Layer 0 sealed the phrase without its tail word; Whisper heard it.
+        let outcome = compute_tail_patch(
+            "ala ma kota w domu",
+            "ala ma kota w domu swoim",
+            1,
+            &TailPatchConfig::default(),
+        );
+        lane.push_job(Box::pin(async move { Ok((1u64, outcome)) }));
+
+        let result = lane.next().await.expect("one job in flight");
+        lane.complete(&sink, result);
+
+        assert_eq!(lane.replacements(), 1);
+        let replaces: Vec<_> = sink
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    EngineEvent::ReplaceRange {
+                        source: LayerSource::TailPatch,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(replaces.len(), 1, "one bounded patch, never a full rewrite");
+
+        emit_session_finalised(&sink, "session".to_string(), lane.replacements());
+        let finalised = sink
+            .events()
+            .into_iter()
+            .find_map(|e| match e {
+                EngineEvent::SessionFinalised { layer_summary, .. } => Some(layer_summary),
+                _ => None,
+            })
+            .expect("SessionFinalised");
+        assert_eq!(finalised.tail_patch_replacements, 1);
+    }
+
+    /// F2: the shared `TailPatchConfig` threshold still owns the decision — a
+    /// re-transcription that diverges wholesale is skipped, not applied.
+    /// Thresholds are untouched by this cut.
+    #[tokio::test]
+    async fn apple_tail_patch_divergent_retranscription_is_skipped_not_applied() {
+        let sink = RecordingSink::default();
+        let mut lane = AppleTailPatchLane::new(TEST_SAMPLE_RATE, None);
+
+        let outcome = compute_tail_patch(
+            "ala ma kota w domu",
+            "zupelnie inne zdanie bez zwiazku calkiem",
+            1,
+            &TailPatchConfig::default(),
+        );
+        assert!(
+            matches!(outcome, TailPatchOutcome::Skipped { .. }),
+            "shared threshold must reject a wholesale divergence"
+        );
+        lane.push_job(Box::pin(async move { Ok((1u64, outcome)) }));
+
+        let result = lane.next().await.expect("one job in flight");
+        lane.complete(&sink, result);
+
+        assert_eq!(lane.replacements(), 0);
+        assert!(
+            sink.events().is_empty(),
+            "a skipped patch must not touch committed canvas"
+        );
+    }
+
+    /// The env gate is the only control: layered off → no lane, `phase1` → lane.
+    #[test]
+    #[serial]
+    fn apple_tail_patch_lane_is_wired_only_when_layered_phase_is_set() {
+        let _restore = EnvRestore::capture(LAYERED_TRANSCRIPTION_ENV);
+
+        unsafe { std::env::remove_var(LAYERED_TRANSCRIPTION_ENV) };
+        assert!(!tail_patch_enabled(), "default is off");
+
+        unsafe { std::env::set_var(LAYERED_TRANSCRIPTION_ENV, "phase1") };
+        assert!(tail_patch_enabled(), "phase1 arms Layer 1");
     }
 
     #[test]
