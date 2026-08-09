@@ -9,10 +9,16 @@ import SwiftUI
 /// real streaming chat is a tracked core-change follow-up).
 struct AgentChatView: View {
     @StateObject var store: AgentChatStore
-    /// Rail state survives window close/reopen and app relaunch. The rail has
-    /// TWO states — expanded list and compact icon strip — and is never removed
-    /// from the split view, so no path can leave it unrecoverable and no path
-    /// leaves an empty band where the rail used to be.
+    /// Rail state survives window close/reopen and app relaunch. Collapse is
+    /// the NATIVE split-view collapse (`columnVisibility = .detailOnly`) — the
+    /// same mechanism the Settings window uses, so both windows speak one
+    /// design language. The previous shape faked collapse by clamping the
+    /// column to a 56pt icon strip, but `navigationSplitViewColumnWidth` is
+    /// read only when the column is built and the split view's width autosave
+    /// outlives an `.id()` content rebuild, so "Collapse sidebar" left the
+    /// monogram strip floating in a 200-500pt band (operator screenshots,
+    /// 2026-08-09). Recovery stays guaranteed: the toggle lives in the DETAIL
+    /// header, which never collapses.
     @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
     @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -23,25 +29,15 @@ struct AgentChatView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            ThreadRail(store: store, mode: sidebarMode)
-                // Column geometry is owned by the mode: expanded stays
-                // drag-resizable, compact pins the icon strip. The rail view
+            ThreadRail(store: store, mode: .expanded)
+                // Drag-resizable within the expanded bounds. The rail view
                 // itself carries no fixed width — a hardcoded 236 inside a
                 // resizable column left a dead band between rail and detail.
                 .navigationSplitViewColumnWidth(
-                    min: sidebarMode.minimumWidth,
-                    ideal: sidebarMode.idealWidth,
-                    max: sidebarMode.maximumWidth
+                    min: AgentSidebarMode.expanded.minimumWidth,
+                    ideal: AgentSidebarMode.expanded.idealWidth,
+                    max: AgentSidebarMode.expanded.maximumWidth
                 )
-                // Identity keyed on the mode. `navigationSplitViewColumnWidth`
-                // is read when the column is built; changing its values on an
-                // existing column left the divider where the user (or a restored
-                // autosave) had put it, so "Collapse sidebar" kept a 200-500pt
-                // band and merely re-centred the strip inside it — the collapsed
-                // rail the operator reported as dots floating in a void. A new
-                // identity rebuilds the column so the compact 56pt clamp is
-                // applied instead of inherited.
-                .id(sidebarMode)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
             ThreadDetail(
@@ -62,18 +58,14 @@ struct AgentChatView: View {
             AgentPerf.logger.info("agent window shell rendered")
             store.startDemoStreamIfNeeded()
         }
-        // The rail column is always present; only its mode changes.
-        .onAppear { columnVisibility = .all }
-    }
-
-    private var sidebarMode: AgentSidebarMode {
-        sidebarExpanded ? .expanded : .compact
+        // Restore the persisted rail state through the native mechanism.
+        .onAppear { columnVisibility = sidebarExpanded ? .all : .detailOnly }
     }
 
     private func toggleSidebar() {
         withAnimation {
-            columnVisibility = .all
-            sidebarExpanded = AgentSidebarMode.toggled(sidebarMode).isExpanded
+            sidebarExpanded.toggle()
+            columnVisibility = sidebarExpanded ? .all : .detailOnly
         }
     }
 }
