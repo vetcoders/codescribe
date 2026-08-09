@@ -216,7 +216,7 @@ private struct LanguageIdentityPicker: View {
                             )
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.csFocusRing(cornerRadius: 8))
                 .accessibilityLabel(choice.accessibilityLabel)
                 .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
                 .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -371,7 +371,7 @@ private struct QuickStartCard: View {
             )
             .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.csFocusRing(cornerRadius: CSRadius.card))
         .onHover { hovered = $0 }
         .accessibilityLabel(title)
         .accessibilityHint(subtitle)
