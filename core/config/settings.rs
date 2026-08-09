@@ -132,22 +132,19 @@ pub struct UserSettings {
     pub llm_assistive_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_provider: Option<String>,
-    /// OAuth client id for "Sign in with ChatGPT" (non-secret app identity, not
-    /// a credential). `None` means "awaiting app registration" — the account
-    /// login stays gated. Env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID` remains the
-    /// dev-only fallback when this is unset.
+    /// Optional override for the OpenAI OAuth client id (non-secret app identity).
+    /// `None` falls through to env, then the shipped Codex CLI public app id
+    /// (see `NOTICE`). Env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID` is the dev fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai_oauth_client_id: Option<String>,
     /// Same contract as `openai_oauth_client_id`, for Anthropic account login.
-    /// `None` ⇒ "awaiting app registration"; env
+    /// No shipped default — `None` ⇒ "awaiting app registration"; env
     /// `CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID` is the dev-only fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_oauth_client_id: Option<String>,
-    /// Same contract as `openai_oauth_client_id`, for xAI account login. Unlike
-    /// the other two, xAI publishes a desktop client id, so leaving this unset
-    /// still yields a working sign-in; setting it overrides that default with
-    /// the operator's own registration. Env `CODESCRIBE_XAI_OAUTH_CLIENT_ID` is
-    /// the dev-only fallback between the two.
+    /// Optional override for xAI OAuth client id. `None` falls through to env,
+    /// then the shipped Grok CLI public client id (`NOTICE`). Env
+    /// `CODESCRIBE_XAI_OAUTH_CLIENT_ID` is the dev-only mid-tier fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xai_oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1185,7 +1182,7 @@ impl UserSettings {
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
             "LLM_ASSISTIVE_PROVIDER" => self.llm_assistive_provider = Some(value.to_owned()),
             "LLM_OPENAI_OAUTH_CLIENT_ID" => {
-                // Empty clears back to "awaiting app registration".
+                // Empty clears back to the shipped Codex CLI public app id.
                 let trimmed = value.trim();
                 self.openai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
             }

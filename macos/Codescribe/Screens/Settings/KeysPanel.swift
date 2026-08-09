@@ -569,7 +569,8 @@ private struct KeyRow: View {
                 .help("Remove this key from the Keychain")
             }
 
-            if let accountProvider {
+            if let accountProvider,
+               accountProvider.accountLoginEnabled || accountProvider.accountSignedIn {
                 AccountLoginRow(
                     provider: accountProvider,
                     loginPending: accountLoginPending,
@@ -660,9 +661,42 @@ private struct AccountLoginRow: View {
     let onSaveClientId: (String) -> Void
 
     @State private var clientIdDraft: String = ""
+    @State private var showAdvancedClientId = false
 
     private var signedIn: Bool { provider.accountSignedIn }
     private var accent: Color { signedIn ? CSColor.olive : CSColor.textFaint }
+
+    /// Short brand for the account row — OpenCode-style, not a client-id dump.
+    private var accountBrand: String {
+        switch provider.id {
+        case "openai-responses": return "ChatGPT"
+        case "xai-responses": return "xAI"
+        case "anthropic-messages": return "Claude"
+        default: return provider.displayName
+        }
+    }
+
+    /// Honest routing: signed-in OAuth account wins over a stored API key
+    /// (matches `assistive_snapshot` preference). Shown so the operator never
+    /// has to guess which credential the assistive path will send.
+    private var credentialSourceLabel: String? {
+        if signedIn && provider.apiKeySet {
+            return "using \(accountBrand) account (API key held as fallback)"
+        }
+        if signedIn {
+            return "using \(accountBrand) account"
+        }
+        if provider.apiKeySet {
+            return "using API key"
+        }
+        return nil
+    }
+
+    private var credentialSourceTint: Color {
+        if signedIn { return CSColor.oliveLight }
+        if provider.apiKeySet { return CSColor.amber }
+        return CSColor.textFaint
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -670,7 +704,7 @@ private struct AccountLoginRow: View {
                 Circle()
                     .fill(accent.opacity(0.85))
                     .frame(width: 7, height: 7)
-                Text("ChatGPT account")
+                Text("\(accountBrand) account")
                     .font(CSFont.ui(12.5, .semibold))
                     .foregroundStyle(CSColor.textBody)
                 // Carries "signed in as <email>" / "not signed in" /
@@ -694,7 +728,7 @@ private struct AccountLoginRow: View {
                         enabled: !loginPending,
                         action: onSignOut
                     )
-                    .help("Remove the stored ChatGPT account tokens")
+                    .help("Remove the stored \(accountBrand) account tokens")
                 }
                 Button(action: onStart) {
                     HStack(spacing: 6) {
@@ -706,7 +740,7 @@ private struct AccountLoginRow: View {
                         } else {
                             CSIconView(icon: .accountVerified, size: 12, weight: .semibold)
                         }
-                        Text(loginPending ? "Waiting for browser…" : "Sign in with ChatGPT")
+                        Text(loginPending ? "Waiting for browser…" : "Sign in with \(accountBrand)")
                             .font(CSFont.ui(12, .semibold))
                     }
                     .foregroundStyle(
@@ -729,38 +763,68 @@ private struct AccountLoginRow: View {
                 .help(provider.accountStatusMessage)
             }
 
-            // OAuth client id — non-secret app identity (NOT a credential), so a
-            // plain TextField with the value visible is correct here. Saving an
-            // empty field clears back to "awaiting app registration".
-            HStack(spacing: 8) {
-                Text("client id")
+            if let credentialSourceLabel {
+                Text(credentialSourceLabel)
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(credentialSourceTint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(credentialSourceTint.opacity(0.11))
+                    )
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(credentialSourceTint.opacity(0.24), lineWidth: 1)
+                    )
+                    .help(
+                        "Assistive traffic for this provider uses the account when signed in; "
+                            + "the API key remains a fallback if you sign out."
+                    )
+            }
+
+            // Client id is a non-secret public app identity. OpenAI + xAI ship
+            // defaults (NOTICE); operators almost never need to paste one. Keep
+            // the override under Advanced so the Keys panel matches OpenCode's
+            // "pick a login method" calm instead of a scary UUID field.
+            DisclosureGroup(isExpanded: $showAdvancedClientId) {
+                HStack(spacing: 8) {
+                    Text("client id")
+                        .font(CSFont.mono(10, .medium))
+                        .foregroundStyle(CSColor.textFaint)
+                    TextField(
+                        provider.oauthClientId == nil
+                            ? "Override OAuth client id…"
+                            : provider.oauthClientId ?? "",
+                        text: $clientIdDraft
+                    )
+                    .textFieldStyle(.plain)
+                    .font(CSFont.mono(11, .regular))
+                    .foregroundStyle(CSColor.textBody)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .fill(CSColor.surfaceRaised(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                    )
+                    .onSubmit { onSaveClientId(clientIdDraft) }
+                    AccountActionButton(
+                        title: "Save",
+                        tint: CSColor.oliveLight,
+                        enabled: clientIdDraft != (provider.oauthClientId ?? ""),
+                        action: { onSaveClientId(clientIdDraft) }
+                    )
+                    .help("Optional override (settings.json) — empty restores the shipped default")
+                }
+                .padding(.top, 4)
+            } label: {
+                Text("Advanced · OAuth client id")
                     .font(CSFont.mono(10, .medium))
                     .foregroundStyle(CSColor.textFaint)
-                TextField(
-                    provider.oauthClientId == nil ? "Paste OAuth client id…" : "",
-                    text: $clientIdDraft
-                )
-                .textFieldStyle(.plain)
-                .font(CSFont.mono(11, .regular))
-                .foregroundStyle(CSColor.textBody)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .fill(CSColor.surfaceRaised(0.03))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-                )
-                .onSubmit { onSaveClientId(clientIdDraft) }
-                AccountActionButton(
-                    title: "Save",
-                    tint: CSColor.oliveLight,
-                    enabled: clientIdDraft != (provider.oauthClientId ?? ""),
-                    action: { onSaveClientId(clientIdDraft) }
-                )
-                .help("Store the client id (settings.json) — applies without restart")
             }
         }
         .onAppear { clientIdDraft = provider.oauthClientId ?? "" }

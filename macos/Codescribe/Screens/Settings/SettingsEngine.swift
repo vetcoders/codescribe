@@ -550,14 +550,15 @@ extension CsApiKeyProbeResult {
 extension CsProviderOption {
     /// Preview seed mirroring the core provider identities (OpenAI, Anthropic, xAI).
     static let sampleProviders: [CsProviderOption] = [
+        // OpenAI + xAI ship public desktop client ids (NOTICE); Anthropic does not.
         CsProviderOption(
             id: "openai-responses",
             displayName: "OpenAI (Responses)",
             apiKeyAccount: "LLM_ASSISTIVE_API_KEY",
             apiKeySet: true,
             accountSignedIn: false,
-            accountLoginEnabled: false,
-            accountStatusMessage: "awaiting app registration",
+            accountLoginEnabled: true,
+            accountStatusMessage: "not signed in",
             oauthClientId: nil,
             models: []
         ),
@@ -572,8 +573,6 @@ extension CsProviderOption {
             oauthClientId: nil,
             models: []
         ),
-        // xAI ships a vendor-published desktop client id, so unlike the other
-        // two its sign-in is enabled without the operator registering an app.
         CsProviderOption(
             id: "xai-responses",
             displayName: "xAI (Grok)",

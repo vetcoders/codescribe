@@ -866,7 +866,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Dev/CI fallback for the OpenAI account-login OAuth client id. Non-secret (a public client id); the operator-facing value lives in settings.json under LLM_OPENAI_OAUTH_CLIENT_ID. Unset on both surfaces, login reports 'awaiting app registration'"
+description = "Dev/CI fallback for the OpenAI account-login OAuth client id. Non-secret (a public client id); the operator-facing value lives in settings.json under LLM_OPENAI_OAUTH_CLIENT_ID. Unset on both surfaces, Codescribe uses the shipped Codex CLI public app id (see NOTICE)"
 
 [vars.CODESCRIBE_OPENAI_OAUTH_ISSUER]
 default = "https://auth.openai.com"
@@ -909,7 +909,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "llm"
-description = "Dev/CI fallback for the xAI account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_XAI_OAUTH_CLIENT_ID. Unlike OpenAI/Anthropic, leaving both unset still works: xAI publishes a desktop client id that ships as the default (see NOTICE)"
+description = "Dev/CI fallback for the xAI account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_XAI_OAUTH_CLIENT_ID. Leaving both unset still works: xAI's Grok CLI public client id ships as the default (see NOTICE), same pattern as OpenAI's Codex CLI app id"
 
 [vars.CODESCRIBE_XAI_OAUTH_ISSUER]
 default = "https://auth.x.ai"

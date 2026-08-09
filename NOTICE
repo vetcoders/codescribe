@@ -16,7 +16,21 @@ license metadata remains authoritative for this project.
 Third-party OAuth client identity
 ---------------------------------
 
-xAI account login ships a default OAuth client id:
+Codescribe ships public desktop OAuth client ids for two providers so account
+sign-in works without the operator pasting a registration. Neither id is a
+secret. Settings and env overrides are always checked first.
+
+OpenAI (ChatGPT account / Codex CLI public app id):
+
+    app_EMoamEEZ73f0CkXaXp7hrann
+
+This is the public OAuth client id used by OpenAI's Codex CLI for the ChatGPT
+desktop loopback flow (preferred redirect host localhost, path /auth/callback,
+preferred port 1455). Codescribe reuses it so "Sign in with ChatGPT" works out
+of the box; it does not claim to be the Codex CLI. Override with
+LLM_OPENAI_OAUTH_CLIENT_ID or CODESCRIBE_OPENAI_OAUTH_CLIENT_ID.
+
+xAI (Grok / Grok CLI public client id):
 
     b1a00492-073a-47ea-816f-4c329264a828
 
@@ -24,11 +38,8 @@ This is the client id xAI publishes for the Grok CLI as a public desktop OAuth
 client, registered against the loopback redirect http://127.0.0.1:56121/callback.
 Codescribe uses it as the default so xAI sign-in works without the operator
 registering an application; it is not a private registration and Codescribe does
-not claim to be the Grok CLI.
+not claim to be the Grok CLI. Override with LLM_XAI_OAUTH_CLIENT_ID or
+CODESCRIBE_XAI_OAUTH_CLIENT_ID.
 
-An operator who registers their own xAI application overrides it in
-Settings -> Keys (LLM_XAI_OAUTH_CLIENT_ID) or via CODESCRIBE_XAI_OAUTH_CLIENT_ID;
-both are checked before this default.
-
-No other provider ships a client id. OpenAI and Anthropic account login stays
-gated on the operator supplying their own registration.
+Anthropic account login stays gated on the operator supplying their own
+registration (paste-code flow; no shipped default).
