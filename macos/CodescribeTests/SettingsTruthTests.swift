@@ -52,6 +52,58 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertTrue(SettingsSection.matching(query: "zzzz").isEmpty)
     }
 
+    /// Pagination must not lose a subsystem or strand a page: every page belongs
+    /// to a real section, selecting a section lands on its first page, and a
+    /// section without pages keeps rendering whole.
+    func testPaginatedSectionsRouteToPagesWithoutLosingSubsystems() {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+
+        XCTAssertEqual(
+            SettingsPage.pages(in: .agent),
+            [.agentLanes, .agentWorkspace, .agentStatus, .agentTools, .agentMcp],
+            "the Agent panel's five subsystems each need their own page"
+        )
+        for page in SettingsPage.allCases {
+            XCTAssertFalse(page.title.isEmpty)
+            XCTAssertFalse(page.symbol.isEmpty)
+            XCTAssertTrue(SettingsPage.pages(in: page.section).contains(page))
+        }
+
+        // Landing on a paginated section opens its first page.
+        model.select(SettingsSection.agent)
+        XCTAssertEqual(model.page, .agentLanes)
+        XCTAssertEqual(model.route, .page(.agentLanes))
+
+        // Selecting a page keeps the parent section consistent.
+        model.select(SettingsPage.agentMcp)
+        XCTAssertEqual(model.section, .agent)
+        XCTAssertEqual(model.route, .page(.agentMcp))
+
+        // Leaving for an unpaginated section clears the page.
+        model.select(SettingsSection.audio)
+        XCTAssertNil(model.page)
+        XCTAssertEqual(model.route, .section(.audio))
+
+        // Route selection round-trips through the rail's binding type.
+        model.select(SettingsRoute.page(.agentTools))
+        XCTAssertEqual(model.route, .page(.agentTools))
+        model.select(SettingsRoute.section(.license))
+        XCTAssertEqual(model.route, .section(.license))
+    }
+
+    func testSettingsSearchReachesInsideLongSections() {
+        // A page keyword surfaces its parent section…
+        XCTAssertTrue(SettingsPage.matching(query: "mcp").contains(.agentMcp))
+        XCTAssertEqual(SettingsPage.matching(query: "mcp").first?.section, .agent)
+        // …even though the section's own title and keywords do not mention it.
+        XCTAssertFalse(SettingsSection.agent.title.lowercased().contains("mcp"))
+
+        XCTAssertTrue(SettingsPage.matching(query: "permission").contains(.agentTools))
+        XCTAssertTrue(SettingsPage.matching(query: "roots").contains(.agentWorkspace))
+        XCTAssertTrue(SettingsPage.matching(query: "zzzz").isEmpty)
+        XCTAssertEqual(SettingsPage.matching(query: "  ").count, SettingsPage.allCases.count)
+    }
+
     func testSectionAvailabilityKeepsPromisesHonest() {
         for section in [
             SettingsSection.creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .license, .user,

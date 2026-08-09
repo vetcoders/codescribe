@@ -66,15 +66,13 @@ struct SettingsView: View {
     /// Native sidebar: grouped sections, SF Symbol rows, system selection, and a
     /// search field that matches panel names AND what each panel does.
     private var sidebar: some View {
-        List(selection: sectionSelection) {
+        List(selection: routeSelection) {
             ForEach(SettingsSectionGroup.allCases) { group in
-                let items = SettingsSection.matching(query: search).filter { $0.group == group }
+                let items = matchedSections.filter { $0.group == group }
                 if !items.isEmpty {
                     Section(group.title) {
                         ForEach(items) { item in
-                            Label(item.title, systemImage: item.symbol)
-                                .tag(item)
-                                .accessibilityIdentifier("settings-rail-\(item.rawValue)")
+                            sidebarRow(item)
                         }
                     }
                 }
@@ -88,11 +86,71 @@ struct SettingsView: View {
         )
     }
 
+    /// A paginated section renders as an expandable parent whose children are
+    /// its pages; everything else stays a plain row. While a search is active
+    /// the tree is pre-expanded — a hit the user cannot see is not a hit.
+    @ViewBuilder
+    private func sidebarRow(_ item: SettingsSection) -> some View {
+        let pages = visiblePages(in: item)
+        if pages.isEmpty {
+            Label(item.title, systemImage: item.symbol)
+                .tag(SettingsRoute.section(item))
+                .accessibilityIdentifier("settings-rail-\(item.rawValue)")
+        } else {
+            DisclosureGroup(isExpanded: expansion(for: item)) {
+                ForEach(pages) { page in
+                    Label(page.title, systemImage: page.symbol)
+                        .tag(SettingsRoute.page(page))
+                        .accessibilityIdentifier("settings-rail-page-\(page.rawValue)")
+                }
+            } label: {
+                Label(item.title, systemImage: item.symbol)
+                    .tag(SettingsRoute.section(item))
+                    .accessibilityIdentifier("settings-rail-\(item.rawValue)")
+            }
+        }
+    }
+
+    /// Sections the current query reveals: a title/keyword hit on the section
+    /// itself, or on any of its pages (so "mcp" surfaces Agent).
+    private var matchedSections: [SettingsSection] {
+        let direct = Set(SettingsSection.matching(query: search))
+        let viaPages = Set(SettingsPage.matching(query: search).map(\.section))
+        let hits = search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? direct
+            : direct.union(viaPages)
+        return SettingsSection.allCases.filter { hits.contains($0) }
+    }
+
+    /// Pages to show under a section: all of them normally, only the matches
+    /// while searching — unless the section itself matched, which means the user
+    /// asked for the section and deserves its full contents.
+    private func visiblePages(in section: SettingsSection) -> [SettingsPage] {
+        let all = SettingsPage.pages(in: section)
+        guard !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !SettingsSection.matching(query: search).contains(section) else { return all }
+        let matched = Set(SettingsPage.matching(query: search))
+        return all.filter { matched.contains($0) }
+    }
+
+    private func expansion(for section: SettingsSection) -> Binding<Bool> {
+        Binding(
+            get: {
+                !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || model.section == section
+            },
+            set: { expanded in
+                // Expanding a collapsed parent is also a navigation intent.
+                if expanded, model.section != section { model.select(section) }
+            }
+        )
+    }
+
     /// `List` selection is optional by contract; a nil write (⌘-click clearing a
     /// row) must not blank the detail pane, so it is dropped instead of applied.
-    private var sectionSelection: Binding<SettingsSection?> {
+    private var routeSelection: Binding<SettingsRoute?> {
         Binding(
-            get: { model.section },
+            get: { model.route },
             set: { if let value = $0 { model.select(value) } }
         )
     }
