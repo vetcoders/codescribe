@@ -66,8 +66,47 @@ fn idle_unload_after() -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs))
 }
 
+/// Probe text for the backend self-test. Short, ASCII, and meaningless — it only
+/// has to produce numbers.
+const BACKEND_PROBE_TEXT: &str = "probe";
+
 fn load_engine() -> Result<EmbedderEngine> {
-    let engine = EmbedderEngine::with_config(config())?;
+    let mut engine = EmbedderEngine::with_config(config())?;
+
+    // Verify the backend produces finite vectors before anyone trusts it.
+    //
+    // Measured 2026-08-09 on macOS 27.0 / Metal: this exact model returned 384
+    // dimensions of NaN for EVERY input, while the same weights on the CPU
+    // returned unit-norm vectors with sensible similarities (cargo/kargo 0.836).
+    // Nothing surfaced, because the sole consumer — the semantic dedup gate —
+    // compares against a threshold, and every comparison with NaN is false: the
+    // gate reported `gate_drops=0` across 378 real deliveries and read as
+    // "nothing to drop" rather than "I am blind". A 471 MB model was loaded on
+    // every delivery to compute nothing.
+    //
+    // The self-test costs one embedding at load time and converts a silent
+    // wrong answer into a loud, self-healing one.
+    let probe = engine.embed(BACKEND_PROBE_TEXT)?;
+    let degenerate = probe.is_empty() || probe.iter().any(|value| !value.is_finite());
+    if degenerate && !super::engine::is_demoted_to_cpu() {
+        warn!(
+            "Embedder backend returned non-finite output ({} dims); demoting this process to CPU and reloading",
+            probe.len()
+        );
+        super::engine::demote_to_cpu();
+        engine = EmbedderEngine::with_config(config())?;
+        let retry = engine.embed(BACKEND_PROBE_TEXT)?;
+        anyhow::ensure!(
+            !retry.is_empty() && retry.iter().all(|value| value.is_finite()),
+            "Embedder produced non-finite output on CPU as well; refusing to serve a blind semantic gate"
+        );
+        info!("Embedder recovered on CPU after a non-finite accelerated backend");
+    } else if degenerate {
+        anyhow::bail!(
+            "Embedder produced non-finite output on CPU; refusing to serve a blind semantic gate"
+        );
+    }
+
     info!("Embedder engine loaded");
     Ok(engine)
 }
