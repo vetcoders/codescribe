@@ -185,6 +185,11 @@ pub struct CsKeyStatus {
     /// Anthropic assistive-lane key (`LLM_ANTHROPIC_API_KEY`) — separate from the
     /// OpenAI assistive key so both providers can be configured at once.
     pub llm_anthropic_api_key_set: bool,
+    /// xAI assistive-lane key (`LLM_XAI_API_KEY`). Present for the same reason
+    /// as the Anthropic field: the Keys panel lists a row per Keychain account
+    /// and reads its indicator from this record, so an account without a field
+    /// here renders as permanently "not set" even after the operator saves it.
+    pub llm_xai_api_key_set: bool,
     pub github_token_set: bool,
 }
 
@@ -709,6 +714,7 @@ impl CodescribeConfig {
             llm_formatting_api_key_set: key_present("LLM_FORMATTING_API_KEY"),
             llm_assistive_api_key_set: key_present("LLM_ASSISTIVE_API_KEY"),
             llm_anthropic_api_key_set: key_present("LLM_ANTHROPIC_API_KEY"),
+            llm_xai_api_key_set: key_present("LLM_XAI_API_KEY"),
             github_token_set: key_present("GITHUB_TOKEN"),
         }
     }

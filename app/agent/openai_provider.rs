@@ -55,10 +55,15 @@ pub struct OpenAiProvider {
     previous_response_id: Arc<Mutex<Option<String>>>,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
-    /// Lane resolved to "Sign in with ChatGPT" account auth (no API key, official
-    /// endpoint, stored tokens). Each request fetches a FRESH access token via
+    /// Lane resolved to provider-account auth (no API key, official endpoint,
+    /// stored tokens). Each request fetches a FRESH access token via
     /// `account_auth` so the auto-refresh path keeps long sessions alive.
     use_account_auth: bool,
+    /// Which Responses vendor this lane targets. Carried so the account-auth
+    /// path asks for THAT provider's tokens: this provider serves every
+    /// Responses-family vendor, and reaching for OpenAI's Keychain slot by
+    /// reflex would send an OpenAI token to `api.x.ai`.
+    provider: ProviderKind,
 }
 
 impl OpenAiProvider {
@@ -73,7 +78,7 @@ impl OpenAiProvider {
             model: default_model,
             api_key,
             account_auth: use_account_auth,
-            provider: _,
+            provider,
         } = lane;
         let api_key = api_key.unwrap_or_default();
 
@@ -113,6 +118,7 @@ impl OpenAiProvider {
             initial_response_timeout,
             inter_chunk_timeout,
             use_account_auth,
+            provider,
         })
     }
 }
@@ -178,10 +184,13 @@ impl AgentProvider for OpenAiProvider {
         // manager formats the `Bearer` header itself, so this is the raw token.
         let account_token = if self.use_account_auth {
             Some(
-                account_auth::access_token(ProviderKind::OpenAiResponses)
+                account_auth::access_token(self.provider)
                     .await
                     .map_err(|error| {
-                        anyhow::anyhow!("ChatGPT account authentication failed: {error}")
+                        anyhow::anyhow!(
+                            "{} account authentication failed: {error}",
+                            self.provider.display_name()
+                        )
                     })?,
             )
         } else {
@@ -677,7 +686,7 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAiProvider, build_request_input_items, format_tool_output,
+        OpenAiProvider, ProviderKind, build_request_input_items, format_tool_output,
         forward_events_and_track_chain, reasoning_summary_request, request_messages, to_data_uri,
     };
     use std::sync::Arc;
@@ -998,6 +1007,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
         let messages = vec![Message::new(
             Role::User,
@@ -1041,6 +1051,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
 
         // Pre-condition: stored chain holds prior failed attempt's response id.
@@ -1077,6 +1088,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
 
         // Mid-turn advance (tool round) or dirty cancel would move the live id.
@@ -1110,6 +1122,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
 
         let options = StreamOptions::default();
@@ -1189,6 +1202,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
         let reset_options = StreamOptions {
             reset_chain: true,
@@ -1366,6 +1380,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
         let messages = vec![Message::new(
             Role::User,

@@ -22,6 +22,7 @@ pub const KEYCHAIN_ACCOUNTS: &[&str] = &[
     "LLM_FORMATTING_API_KEY",
     "LLM_ASSISTIVE_API_KEY",
     "LLM_ANTHROPIC_API_KEY",
+    "LLM_XAI_API_KEY",
     "GITHUB_TOKEN",
 ];
 

@@ -32,7 +32,7 @@ use crate::config::{Config, FormattingPolicy};
 use super::account_auth;
 use super::lane_truth;
 use super::lane_truth::AssistiveLaneSnapshot;
-use super::provider::{LlmMode, ProviderKind, capability_policy};
+use super::provider::{LlmMode, ProviderKind, WireFamily, capability_policy};
 use super::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
@@ -251,10 +251,16 @@ fn get_assistive_model() -> Result<String> {
     Ok(lane_truth::assistive_snapshot(&Config::load()).model)
 }
 
-fn get_anthropic_api_key() -> Result<String> {
-    let account = ProviderKind::AnthropicMessages.api_key_env_key();
-    lane_truth::secret(account)
-        .with_context(|| format!("Anthropic API key is required. Set {account}."))
+/// The API key for an explicit provider, read from its own registry key account
+/// so the error names the field the operator has to fill for *that* vendor.
+fn get_provider_api_key(provider: ProviderKind) -> Result<String> {
+    let account = provider.api_key_env_key();
+    lane_truth::secret(account).with_context(|| {
+        format!(
+            "{} API key is required. Set {account}.",
+            provider.display_name()
+        )
+    })
 }
 
 /// Get temperature from env var. Returns None if empty/unset (skip parameter).
@@ -311,12 +317,18 @@ struct ThreadTitleProvider {
 /// Resolve request format from explicit provider, preserving path-based Ollama
 /// compatibility only for the protected OpenAI/default lane.
 fn detect_format(endpoint: &str, provider: ProviderKind) -> EndpointFormat {
-    match provider {
-        ProviderKind::AnthropicMessages => EndpointFormat::AnthropicMessages,
-        ProviderKind::OpenAiResponses if endpoint.contains("/api/chat") => {
+    match provider.wire_family() {
+        WireFamily::AnthropicMessages => EndpointFormat::AnthropicMessages,
+        // Ollama's native chat path is a compatibility shim on the protected
+        // default lane only. A hosted Responses vendor (xAI) never serves
+        // `/api/chat`, and honouring the shim for it would let a stray endpoint
+        // string silently downgrade the request shape.
+        WireFamily::OpenAiResponses
+            if provider.owns_generic_lane_config() && endpoint.contains("/api/chat") =>
+        {
             EndpointFormat::OllamaChat
         }
-        ProviderKind::OpenAiResponses => EndpointFormat::ResponsesApi,
+        WireFamily::OpenAiResponses => EndpointFormat::ResponsesApi,
     }
 }
 
@@ -337,14 +349,18 @@ fn resolve_thread_title_provider() -> Result<ThreadTitleProvider> {
     let config = Config::load();
     let provider = lane_truth::provider(LlmMode::Formatting);
     let model = lane_truth::model_for_provider(LlmMode::Formatting, provider, &config);
-    let endpoint = match provider {
-        ProviderKind::OpenAiResponses => lane_truth::endpoint(LlmMode::Formatting, &config),
-        ProviderKind::AnthropicMessages => lane_truth::anthropic_messages_endpoint(),
-    };
+    let endpoint = lane_truth::provider_endpoint(LlmMode::Formatting, provider, &config);
     let format = detect_format(&endpoint, provider);
     let api_key = match format {
-        EndpointFormat::ResponsesApi => Some(get_formatting_api_key()?),
-        EndpointFormat::AnthropicMessages => Some(get_anthropic_api_key()?),
+        // The formatting runtime owns a separate credential on the protected
+        // default lane; any other vendor authenticates with its own registry
+        // key account rather than borrowing that one.
+        EndpointFormat::ResponsesApi if provider.owns_generic_lane_config() => {
+            Some(get_formatting_api_key()?)
+        }
+        EndpointFormat::ResponsesApi | EndpointFormat::AnthropicMessages => {
+            Some(get_provider_api_key(provider)?)
+        }
         EndpointFormat::OllamaChat => None,
     };
 
@@ -1581,7 +1597,7 @@ async fn call_anthropic_messages(
     };
     let model =
         lane_truth::model_for_provider(mode, ProviderKind::AnthropicMessages, &Config::load());
-    let api_key = get_anthropic_api_key()?;
+    let api_key = get_provider_api_key(ProviderKind::AnthropicMessages)?;
 
     call_anthropic_messages_resolved(
         user_message,
@@ -2029,8 +2045,10 @@ pub fn has_api_key() -> bool {
         return true;
     }
 
-    if matches!(endpoint_format, EndpointFormat::AnthropicMessages) {
-        return get_anthropic_api_key().is_ok();
+    // A non-default vendor authenticates with its own registry key account; the
+    // protected default lane keeps its dedicated formatting credential.
+    if !provider.owns_generic_lane_config() {
+        return get_provider_api_key(provider).is_ok();
     }
 
     // Responses API requires API key

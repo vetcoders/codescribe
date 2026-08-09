@@ -3,12 +3,11 @@
 use std::str::FromStr;
 
 use crate::config::keychain;
-use crate::config::{
-    Config, DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
-    DEFAULT_OPENAI_RESPONSES_ENDPOINT, UserSettings,
-};
+use crate::config::{Config, DEFAULT_LLM_MODEL, DEFAULT_OPENAI_RESPONSES_ENDPOINT, UserSettings};
 use crate::llm::account_auth;
-use crate::llm::provider::{LlmMode, ProviderKind, resolve_provider};
+use crate::llm::provider::{
+    LlmMode, PROVIDER_REGISTRY, ProviderKind, WireFamily, resolve_provider,
+};
 
 /// Resolve a Keychain account without exposing the secret to callers that only
 /// need presence. Explicit non-empty process env remains the highest-priority
@@ -61,9 +60,10 @@ pub fn model(lane: LlmMode, config: &Config) -> String {
 }
 
 /// Resolve the wire model for an explicit provider without making callers
-/// reimplement the fresh-settings hierarchy. The OpenAI branch preserves the
-/// Responses-only filtering in [`model`]; the Anthropic branch accepts only
-/// Claude model ids and supplies the provider's lane-specific default.
+/// reimplement the fresh-settings hierarchy. Every provider accepts only model
+/// ids it actually serves (see [`ProviderKind::owns_model`]) and falls back to
+/// its own registry seed, so a lane switched between vendors never carries the
+/// previous vendor's model id onto the new wire.
 pub fn model_for_provider(lane: LlmMode, provider: ProviderKind, config: &Config) -> String {
     model_for_provider_with_settings(lane, provider, config, &UserSettings::load())
 }
@@ -71,36 +71,37 @@ pub fn model_for_provider(lane: LlmMode, provider: ProviderKind, config: &Config
 fn model_for_provider_with_settings(
     lane: LlmMode,
     provider: ProviderKind,
-    config: &Config,
+    _config: &Config,
     settings: &UserSettings,
 ) -> String {
-    match provider {
-        ProviderKind::OpenAiResponses => model_with_settings(lane, config, settings),
-        ProviderKind::AnthropicMessages => anthropic_model_with_settings(lane, settings),
-    }
-}
-
-fn model_with_settings(lane: LlmMode, _config: &Config, settings: &UserSettings) -> String {
-    let (lane_key, lane_setting, lane_default) = match lane {
+    let (lane_key, lane_setting) = match lane {
         LlmMode::Formatting => (
             "LLM_FORMATTING_MODEL",
             settings.llm_formatting_model.clone(),
-            DEFAULT_FORMATTING_MODEL,
         ),
-        LlmMode::Assistive => (
-            "LLM_ASSISTIVE_MODEL",
-            settings.llm_assistive_model.clone(),
-            DEFAULT_ASSISTIVE_MODEL,
-        ),
+        LlmMode::Assistive => ("LLM_ASSISTIVE_MODEL", settings.llm_assistive_model.clone()),
     };
-    let openai_model = |candidate: String| (!candidate.starts_with("claude")).then_some(candidate);
+    let owned = |candidate: String| provider.owns_model(&candidate).then_some(candidate);
 
-    non_empty_option(lane_setting)
-        .and_then(openai_model)
-        .or_else(|| env_non_empty(lane_key).and_then(openai_model))
-        .or_else(|| non_empty_option(settings.llm_model.clone()).and_then(openai_model))
-        .or_else(|| env_non_empty("LLM_MODEL").and_then(openai_model))
-        .unwrap_or_else(|| lane_default.to_string())
+    let resolved = non_empty_option(lane_setting)
+        .and_then(owned)
+        .or_else(|| env_non_empty(lane_key).and_then(owned));
+
+    // The un-prefixed `llm_model` / `LLM_MODEL` pair describes the default
+    // provider only — see `ProviderKind::owns_generic_lane_config`.
+    let resolved = if provider.owns_generic_lane_config() {
+        resolved
+            .or_else(|| non_empty_option(settings.llm_model.clone()).and_then(owned))
+            .or_else(|| env_non_empty("LLM_MODEL").and_then(owned))
+    } else {
+        resolved
+    };
+
+    resolved.unwrap_or_else(|| provider.default_model(lane).to_string())
+}
+
+fn model_with_settings(lane: LlmMode, config: &Config, settings: &UserSettings) -> String {
+    model_for_provider_with_settings(lane, ProviderKind::OpenAiResponses, config, settings)
 }
 
 /// Resolve the provider identity for a lane from the same persisted-settings
@@ -128,10 +129,6 @@ fn provider_with_settings(lane: LlmMode, settings: &UserSettings) -> ProviderKin
 /// pointed at a key-requiring cloud without a key. Guidance only — code never
 /// silently reroutes traffic here.
 pub const SUGGESTED_KEY_OPTIONAL_ENDPOINT: &str = "https://api.libraxis.cloud/v1";
-
-const DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-const DEFAULT_ANTHROPIC_FORMATTING_MODEL: &str = "claude-sonnet-4-6";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 
 /// Stable lane identity exposed by [`lane_truth_snapshot`]. `Main` is the
 /// shared fallback configured by `LLM_ENDPOINT` / `LLM_MODEL`; the other two
@@ -201,12 +198,8 @@ fn lane_truth_snapshot_with(
         }
         LaneTruthLane::Formatting => {
             let (provider, model) = formatting_identity_with(config, settings);
-            let endpoint = match provider {
-                ProviderKind::OpenAiResponses => {
-                    endpoint_with_settings(LlmMode::Formatting, config, settings)
-                }
-                ProviderKind::AnthropicMessages => anthropic_messages_endpoint(),
-            };
+            let endpoint =
+                provider_endpoint_with_settings(LlmMode::Formatting, provider, config, settings);
             // The formatting runtime intentionally owns a separate credential,
             // regardless of wire provider (see ai_formatting::get_llm_api_key).
             let key_account = "LLM_FORMATTING_API_KEY";
@@ -278,18 +271,20 @@ fn assistive_snapshot_with(
 ) -> AssistiveLaneSnapshot {
     let (provider, model) = assistive_identity_with(config, settings);
     let key_account = provider.api_key_env_key();
-    let endpoint = match provider {
-        ProviderKind::OpenAiResponses => {
-            endpoint_with_settings(LlmMode::Assistive, config, settings)
-        }
-        ProviderKind::AnthropicMessages => anthropic_messages_endpoint(),
-    };
+    let endpoint = provider_endpoint_with_settings(LlmMode::Assistive, provider, config, settings);
     let api_key = secret_with_keychain(key_account, &load_key);
-    // Prefer signed-in ChatGPT OAuth over any stored API key on the official
-    // OpenAI host. API key remains the fallback when no account tokens exist.
-    let account_auth = provider == ProviderKind::OpenAiResponses
+    // Prefer a signed-in provider account over any stored API key on the
+    // vendor's official host; the key stays the fallback.
+    //
+    // Gated on the WIRE FAMILY, not the vendor: the Responses send path formats
+    // an `Authorization: Bearer` header, so OpenAI and xAI can both ride stored
+    // tokens. Anthropic Messages authenticates with `x-api-key` and would
+    // silently ignore a token — claiming the lane is available on tokens alone
+    // would be a green light for a request that cannot succeed.
+    let account_auth = provider.wire_family() == WireFamily::OpenAiResponses
         && endpoint_requires_api_key(&endpoint)
-        && secret_with_keychain(account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT, &load_key).is_some();
+        && account_auth::provider_oauth_config(provider)
+            .is_ok_and(|row| secret_with_keychain(row.tokens_account, &load_key).is_some());
     AssistiveLaneSnapshot {
         provider,
         endpoint,
@@ -326,25 +321,38 @@ fn assistive_identity_with(config: &Config, settings: &UserSettings) -> (Provide
     (provider, model)
 }
 
-fn anthropic_model_with_settings(lane: LlmMode, settings: &UserSettings) -> String {
-    let (lane_key, lane_setting, lane_default) = match lane {
-        LlmMode::Formatting => (
-            "LLM_FORMATTING_MODEL",
-            settings.llm_formatting_model.clone(),
-            DEFAULT_ANTHROPIC_FORMATTING_MODEL,
-        ),
-        LlmMode::Assistive => (
-            "LLM_ASSISTIVE_MODEL",
-            settings.llm_assistive_model.clone(),
-            DEFAULT_ANTHROPIC_MODEL,
-        ),
-    };
-    let claude_model = |candidate: String| candidate.starts_with("claude").then_some(candidate);
+/// Resolve the wire endpoint for an explicit provider.
+///
+/// The default provider additionally consults the generic lane chain
+/// (`LLM_ASSISTIVE_ENDPOINT` → `LLM_ENDPOINT` → config). Every other vendor is
+/// deliberately confined to its own env override plus its registry default, so
+/// an operator's OpenAI endpoint can never redirect Anthropic or xAI traffic.
+pub fn provider_endpoint(lane: LlmMode, provider: ProviderKind, config: &Config) -> String {
+    provider_endpoint_with_settings(lane, provider, config, &UserSettings::load())
+}
 
-    non_empty_option(lane_setting)
-        .and_then(claude_model)
-        .or_else(|| env_non_empty(lane_key).and_then(claude_model))
-        .unwrap_or_else(|| lane_default.to_string())
+fn provider_endpoint_with_settings(
+    lane: LlmMode,
+    provider: ProviderKind,
+    config: &Config,
+    settings: &UserSettings,
+) -> String {
+    if provider.owns_generic_lane_config() {
+        return endpoint_with_settings(lane, config, settings);
+    }
+    vendor_endpoint(provider)
+}
+
+/// A non-default vendor's endpoint: its own env override, else its registry
+/// default, normalized to the canonical path of the protocol it speaks.
+fn vendor_endpoint(provider: ProviderKind) -> String {
+    let identity = provider.identity();
+    let resolved = env_non_empty(identity.endpoint_env)
+        .unwrap_or_else(|| identity.default_endpoint.to_string());
+    match provider.wire_family() {
+        WireFamily::OpenAiResponses => normalize_openai_responses_endpoint(&resolved),
+        WireFamily::AnthropicMessages => normalize_anthropic_messages_endpoint(&resolved),
+    }
 }
 
 /// Ready snapshot of the assistive lane, or the user-facing reason it cannot
@@ -356,47 +364,66 @@ pub fn assistive_availability(config: &Config) -> Result<AssistiveLaneSnapshot, 
 }
 
 fn availability_of(snapshot: AssistiveLaneSnapshot) -> Result<AssistiveLaneSnapshot, String> {
-    if snapshot.api_key.is_some() {
+    // A stored key, a key-optional endpoint, or a signed-in provider account are
+    // each a complete credential on their own — the agent must work with only one.
+    if snapshot.api_key.is_some()
+        || !endpoint_requires_api_key(&snapshot.endpoint)
+        || snapshot.account_auth
+    {
         return Ok(snapshot);
     }
-    match snapshot.provider {
-        ProviderKind::OpenAiResponses if !endpoint_requires_api_key(&snapshot.endpoint) => {
-            Ok(snapshot)
-        }
-        // A signed-in ChatGPT account is a complete credential for the official
-        // OpenAI endpoint — the agent must work with ONLY that login.
-        ProviderKind::OpenAiResponses if snapshot.account_auth => Ok(snapshot),
-        ProviderKind::OpenAiResponses => Err(format!(
-            "The assistive lane points at {}, which requires an API key, and none is stored \
-             (Keychain account LLM_ASSISTIVE_API_KEY). Add a key in Settings, sign in with \
-             your ChatGPT account in Settings → Keys, or switch the assistive endpoint in \
-             Settings → Engine to a key-optional server such as {}.",
-            snapshot.endpoint, SUGGESTED_KEY_OPTIONAL_ENDPOINT
-        )),
-        ProviderKind::AnthropicMessages if !endpoint_requires_api_key(&snapshot.endpoint) => {
-            Ok(snapshot)
-        }
-        ProviderKind::AnthropicMessages => Err(format!(
-            "The assistive provider is Anthropic ({}), but no key is stored \
-             (Keychain account LLM_ANTHROPIC_API_KEY). Add an Anthropic key in Settings, or \
-             switch the assistive provider to an OpenAI-compatible endpoint such as {}.",
-            snapshot.endpoint, SUGGESTED_KEY_OPTIONAL_ENDPOINT
-        )),
-    }
+    Err(unavailable_reason(&snapshot))
+}
+
+/// The user-facing reason an assistive lane cannot reach a model. Built from the
+/// provider's own registry row so a new vendor gets an accurate message instead
+/// of OpenAI's by reflex — it names this lane, this endpoint, and this
+/// provider's Keychain account, and only offers sign-in when that provider
+/// actually has an OAuth row.
+fn unavailable_reason(snapshot: &AssistiveLaneSnapshot) -> String {
+    let provider = snapshot.provider;
+    let sign_in = if account_auth::provider_oauth_config(provider).is_ok() {
+        format!(
+            ", sign in to your {} account in Settings → Keys",
+            provider.display_name()
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "The assistive lane points at {}, which requires an API key, and none is stored \
+         (Keychain account {}). Add a key in Settings{}, or switch the assistive endpoint in \
+         Settings → Engine to a key-optional server such as {}.",
+        snapshot.endpoint,
+        provider.api_key_env_key(),
+        sign_in,
+        SUGGESTED_KEY_OPTIONAL_ENDPOINT
+    )
 }
 
 /// Official cloud APIs reject unauthenticated requests outright; every other
 /// endpoint (self-hosted, LAN, Libraxis) may be key-optional and gets a clean
 /// unauthenticated request instead of a hard refusal at the availability gate.
+///
+/// The official hosts are derived from the registry's default endpoints, so a
+/// new vendor row is covered here the moment it lands — no second list to keep
+/// in sync, and no vendor silently treated as key-optional.
 fn endpoint_requires_api_key(endpoint: &str) -> bool {
-    let host = endpoint
+    let host = host_of(endpoint);
+    !host.is_empty()
+        && PROVIDER_REGISTRY
+            .iter()
+            .any(|row| host.eq_ignore_ascii_case(host_of(row.default_endpoint)))
+}
+
+fn host_of(endpoint: &str) -> &str {
+    endpoint
         .split("://")
         .nth(1)
         .unwrap_or(endpoint)
         .split(['/', ':'])
         .next()
-        .unwrap_or_default();
-    host.eq_ignore_ascii_case("api.openai.com") || host.eq_ignore_ascii_case("api.anthropic.com")
+        .unwrap_or_default()
 }
 
 pub(crate) fn endpoint_for_account(config: &Config, account: &str) -> String {
@@ -426,10 +453,14 @@ pub(crate) fn model_for_account(config: &Config, account: &str) -> String {
 }
 
 fn shared_model_with_settings(settings: &UserSettings) -> String {
-    let openai_model = |candidate: String| (!candidate.starts_with("claude")).then_some(candidate);
+    let owned = |candidate: String| {
+        ProviderKind::OpenAiResponses
+            .owns_model(&candidate)
+            .then_some(candidate)
+    };
     non_empty_option(settings.llm_model.clone())
-        .and_then(openai_model)
-        .or_else(|| env_non_empty("LLM_MODEL").and_then(openai_model))
+        .and_then(owned)
+        .or_else(|| env_non_empty("LLM_MODEL").and_then(owned))
         .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string())
 }
 
@@ -446,9 +477,7 @@ pub(crate) fn normalize_anthropic_messages_endpoint(endpoint: &str) -> String {
 }
 
 pub(crate) fn anthropic_messages_endpoint() -> String {
-    let endpoint = env_non_empty("LLM_ANTHROPIC_ENDPOINT")
-        .unwrap_or_else(|| DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT.to_string());
-    normalize_anthropic_messages_endpoint(&endpoint)
+    vendor_endpoint(ProviderKind::AnthropicMessages)
 }
 
 fn normalize_endpoint(endpoint: &str, canonical_suffix: &str, known_suffixes: &[&str]) -> String {
@@ -682,7 +711,11 @@ mod tests {
             EnvGuard::remove("LLM_ASSISTIVE_API_KEY"),
             EnvGuard::remove("LLM_ANTHROPIC_API_KEY"),
             EnvGuard::remove("LLM_ANTHROPIC_ENDPOINT"),
+            EnvGuard::remove("LLM_XAI_API_KEY"),
+            EnvGuard::remove("LLM_XAI_ENDPOINT"),
             EnvGuard::remove(account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT),
+            EnvGuard::remove(account_auth::ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT),
+            EnvGuard::remove(account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT),
         ]
     }
 
@@ -839,9 +872,120 @@ mod tests {
         assert!(endpoint_requires_api_key(
             "https://Api.Anthropic.Com/v1/messages"
         ));
+        // Derived from the registry, so the xAI row is covered without a second
+        // list — a vendor treated as key-optional by accident would let the lane
+        // claim it is ready and then fail on the first request.
+        assert!(endpoint_requires_api_key("https://API.X.AI/v1/responses"));
         assert!(!endpoint_requires_api_key(
             "https://openai-compatible.example/v1"
         ));
+    }
+
+    /// The xAI lane must reach xAI: its own endpoint, its own model seed, and
+    /// its own Keychain account. Sharing any of the three with OpenAI is how a
+    /// second Responses vendor silently borrows the first one's credentials.
+    #[test]
+    #[serial]
+    fn xai_lane_resolves_to_its_own_endpoint_model_and_key_account() {
+        let _env = lane_env_guards();
+        let settings = UserSettings {
+            llm_assistive_provider: Some("grok".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |account| {
+            (account == "LLM_XAI_API_KEY").then(|| "xai-secret".to_string())
+        });
+
+        assert_eq!(snapshot.provider, ProviderKind::XaiResponses);
+        assert_eq!(snapshot.endpoint, "https://api.x.ai/v1/responses");
+        assert_eq!(snapshot.model, "grok-4.5");
+        assert_eq!(snapshot.api_key.as_deref(), Some("xai-secret"));
+        availability_of(snapshot).expect("an xAI key makes the xAI lane available");
+    }
+
+    /// An operator's generic OpenAI endpoint must not follow them onto another
+    /// vendor's lane — that would post Responses traffic meant for xAI at
+    /// `api.openai.com` with an xAI key.
+    #[test]
+    #[serial]
+    fn a_generic_openai_endpoint_never_leaks_into_the_xai_lane() {
+        let _env = lane_env_guards();
+        let settings = UserSettings {
+            llm_assistive_provider: Some("xai-responses".to_string()),
+            llm_assistive_endpoint: Some("https://api.openai.com/v1/responses".to_string()),
+            llm_endpoint: Some("https://api.openai.com/v1/responses".to_string()),
+            llm_model: Some("gpt-5.5".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |_| None);
+
+        assert_eq!(snapshot.endpoint, "https://api.x.ai/v1/responses");
+        assert_eq!(snapshot.model, "grok-4.5");
+    }
+
+    /// A stored xAI account is a complete credential, exactly like a ChatGPT
+    /// login: same Responses wire, same `Bearer` header.
+    #[test]
+    #[serial]
+    fn signed_in_xai_account_alone_makes_the_official_endpoint_available() {
+        let _env = lane_env_guards();
+        let settings = UserSettings {
+            llm_assistive_provider: Some("xai-responses".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |account| {
+            (account == account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT)
+                .then(|| r#"{"provider":"xai-responses"}"#.to_string())
+        });
+        assert!(snapshot.account_auth, "stored xAI tokens must arm the lane");
+        assert_eq!(snapshot.api_key, None);
+        availability_of(snapshot).expect("an xAI login alone must be enough");
+    }
+
+    /// Anthropic authenticates with `x-api-key`, so stored Anthropic tokens
+    /// cannot authorize a request. Arming the lane on them would report a ready
+    /// lane that fails on every send — worse than an honest "add a key".
+    #[test]
+    #[serial]
+    fn stored_anthropic_tokens_do_not_arm_a_lane_that_needs_a_key() {
+        let _env = lane_env_guards();
+        let settings = UserSettings {
+            llm_assistive_provider: Some("anthropic-messages".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |account| {
+            (account == account_auth::ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT)
+                .then(|| r#"{"provider":"anthropic-messages"}"#.to_string())
+        });
+
+        assert!(!snapshot.account_auth);
+        let reason = availability_of(snapshot).expect_err("tokens cannot stand in for the key");
+        assert!(reason.contains("LLM_ANTHROPIC_API_KEY"), "{reason}");
+    }
+
+    /// The unavailable message must name the provider the operator actually
+    /// selected. Reaching for OpenAI's account by reflex is what W6-A cut out of
+    /// the login server; the same reflex here would send them to the wrong field.
+    #[test]
+    #[serial]
+    fn an_unconfigured_xai_lane_names_the_xai_account_not_openais() {
+        let _env = lane_env_guards();
+        let settings = UserSettings {
+            llm_assistive_provider: Some("xai-responses".to_string()),
+            ..UserSettings::default()
+        };
+
+        let snapshot = assistive_snapshot_with(&Config::default(), &settings, |_| None);
+        let reason = availability_of(snapshot).expect_err("xAI lane requires a credential");
+
+        assert!(reason.contains("LLM_XAI_API_KEY"), "{reason}");
+        assert!(!reason.contains("LLM_ASSISTIVE_API_KEY"), "{reason}");
+        // xAI has an OAuth row, so sign-in is a real alternative worth offering.
+        assert!(reason.contains("xAI (Grok)"), "{reason}");
     }
 
     #[test]
@@ -1097,12 +1241,12 @@ mod tests {
                 }
                 LaneTruthLane::Formatting => {
                     let (provider, model) = formatting_identity_with(&config, &case.settings);
-                    let endpoint = match provider {
-                        ProviderKind::OpenAiResponses => {
-                            endpoint_with_settings(LlmMode::Formatting, &config, &case.settings)
-                        }
-                        ProviderKind::AnthropicMessages => anthropic_messages_endpoint(),
-                    };
+                    let endpoint = provider_endpoint_with_settings(
+                        LlmMode::Formatting,
+                        provider,
+                        &config,
+                        &case.settings,
+                    );
                     assert_eq!(
                         snapshot.provider_id,
                         provider.as_str(),

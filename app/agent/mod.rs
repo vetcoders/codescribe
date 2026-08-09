@@ -2,7 +2,7 @@ use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
 use codescribe_core::config::Config;
 use codescribe_core::llm::lane_truth;
-use codescribe_core::llm::provider::ProviderKind;
+use codescribe_core::llm::provider::WireFamily;
 
 pub mod anthropic_provider;
 pub mod monitor;
@@ -22,9 +22,12 @@ pub use openai_provider::OpenAiProvider;
 pub fn create_default_provider() -> Result<Box<dyn AgentProvider>> {
     let config = Config::load();
     let lane = lane_truth::assistive_availability(&config).map_err(anyhow::Error::msg)?;
-    match lane.provider {
-        ProviderKind::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_lane(lane)?)),
-        ProviderKind::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(lane)?)),
+    // Selected by protocol, not vendor: `OpenAiProvider` is the Responses-family
+    // client and carries the lane's provider identity, so xAI rides it without a
+    // second implementation.
+    match lane.provider.wire_family() {
+        WireFamily::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_lane(lane)?)),
+        WireFamily::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(lane)?)),
     }
 }
 

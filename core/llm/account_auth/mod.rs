@@ -38,6 +38,21 @@ pub const ANTHROPIC_CLIENT_ID_ENV: &str = "CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID"
 pub const ANTHROPIC_ISSUER_ENV: &str = "CODESCRIBE_ANTHROPIC_OAUTH_ISSUER";
 pub const ANTHROPIC_DEFAULT_ISSUER: &str = "https://console.anthropic.com";
 
+pub const XAI_ACCOUNT_TOKENS_ACCOUNT: &str = "LLM_XAI_ACCOUNT_TOKENS";
+pub const XAI_CLIENT_ID_SETTING: &str = "LLM_XAI_OAUTH_CLIENT_ID";
+pub const XAI_CLIENT_ID_ENV: &str = "CODESCRIBE_XAI_OAUTH_CLIENT_ID";
+pub const XAI_ISSUER_ENV: &str = "CODESCRIBE_XAI_OAUTH_ISSUER";
+pub const XAI_DEFAULT_ISSUER: &str = "https://auth.x.ai";
+
+/// The client id xAI publishes for the Grok CLI — a **public** desktop OAuth
+/// client, not a private registration lifted from another product. It is the
+/// only id this table ships by default, and it is disclosed in `NOTICE`.
+///
+/// The redirect URI is not free to choose: xAI registered this client against
+/// `http://127.0.0.1:56121/callback` exactly, so the loopback host and port
+/// below are part of the contract, not preferences.
+pub const XAI_GROK_CLI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+
 /// How a provider's token endpoint wants its request body. OpenAI speaks
 /// form-urlencoded (RFC 6749 §4.1.3 to the letter); Anthropic's console
 /// endpoint takes JSON.
@@ -156,10 +171,37 @@ const ANTHROPIC_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     encoding: TokenRequestEncoding::Json,
 };
 
+const XAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
+    provider: ProviderKind::XaiResponses,
+    tokens_account: XAI_ACCOUNT_TOKENS_ACCOUNT,
+    client_id_setting: XAI_CLIENT_ID_SETTING,
+    client_id_env: XAI_CLIENT_ID_ENV,
+    client_id_from_settings: |settings| settings.xai_oauth_client_id.clone(),
+    // The one row that ships an id: xAI publishes this one for third-party
+    // desktop clients (see `XAI_GROK_CLI_CLIENT_ID`). An operator with their own
+    // registration still wins — settings and env are both checked first.
+    default_client_id: Some(XAI_GROK_CLI_CLIENT_ID),
+    issuer_env: XAI_ISSUER_ENV,
+    default_issuer: XAI_DEFAULT_ISSUER,
+    authorize_path: "/oauth2/authorize",
+    token_path: "/oauth2/token",
+    // Pinned by xAI's registration for the published client: the literal
+    // `127.0.0.1` (not `localhost`) on port 56121, path `/callback`. These are
+    // not interchangeable — a mismatch is rejected at the authorize step.
+    callback_path: "/callback",
+    callback_host: "127.0.0.1",
+    preferred_port: 56121,
+    scope: "openid profile email offline_access grok-cli:access api:access",
+    extra_authorize_params: &[("plan", "generic")],
+    login_flow: LoginFlow::Loopback,
+    encoding: TokenRequestEncoding::Form,
+};
+
 /// The OAuth registry: one row per provider that can sign in with an account.
 /// A provider absent from this table has no account auth — [`provider_oauth_config`]
 /// answers `UnsupportedProvider`, which is the honest answer, not a panic.
-const PROVIDER_OAUTH_REGISTRY: [ProviderOAuthConfig; 2] = [OPENAI_OAUTH, ANTHROPIC_OAUTH];
+const PROVIDER_OAUTH_REGISTRY: [ProviderOAuthConfig; 3] =
+    [OPENAI_OAUTH, ANTHROPIC_OAUTH, XAI_OAUTH];
 
 pub fn provider_oauth_config(
     provider: ProviderKind,
@@ -305,10 +347,11 @@ pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountA
 /// save takes effect on the very next click, no restart, and env never freezes
 /// over a saved setting.
 ///
-/// No client id ships hardcoded today: both rows carry `default_client_id:
-/// None`. Reusing another vendor's *private* registration (the trick some CLI
-/// ports lean on) would make Codescribe impersonate that application; the field
-/// exists only for ids a vendor publishes for third-party desktop clients.
+/// Only ids a vendor **publishes** for third-party desktop clients may ship as
+/// a `default_client_id` — today that is xAI's Grok CLI id alone. Reusing a
+/// vendor's *private* registration (the trick some CLI ports lean on) would
+/// make Codescribe impersonate that application, so OpenAI and Anthropic stay
+/// gated on the operator pasting their own.
 fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
     let settings = UserSettings::load();
     (config.client_id_from_settings)(&settings)
@@ -853,18 +896,48 @@ mod tests {
         ));
     }
 
-    /// No row ships a client id today; the field exists for vendor-published
-    /// desktop ids. If one ever lands here it must be a deliberate edit, not a
-    /// silent lift of someone else's registration.
+    /// A shipped `default_client_id` is a deliberate, disclosed decision — never
+    /// a silent lift of someone else's registration. This is the allowlist: any
+    /// row that grows a default without being added here fails, which is exactly
+    /// the copy-paste this guard exists to catch.
+    ///
+    /// xAI's entry is the Grok CLI id, which xAI publishes for third-party
+    /// desktop clients and `NOTICE` discloses. OpenAI and Anthropic publish no
+    /// such id, so they stay gated on the operator's own registration.
     #[test]
-    fn no_row_ships_a_borrowed_client_id() {
+    fn only_vendor_published_client_ids_ship_by_default() {
         for row in PROVIDER_OAUTH_REGISTRY {
+            let expected = match row.provider {
+                ProviderKind::XaiResponses => Some(XAI_GROK_CLI_CLIENT_ID),
+                _ => None,
+            };
             assert_eq!(
-                row.default_client_id, None,
-                "{} ships a hardcoded client id",
+                row.default_client_id, expected,
+                "{} ships an undisclosed client id",
                 row.provider
             );
         }
+    }
+
+    /// xAI registered its published client against one exact redirect URI. A
+    /// drifted host, port, or path is not a cosmetic difference — the authorize
+    /// step rejects it, and the failure surfaces as a dead sign-in button.
+    #[test]
+    fn xai_row_matches_the_registered_grok_cli_redirect() {
+        let row = provider_oauth_config(ProviderKind::XaiResponses).unwrap();
+        assert_eq!(row.callback_host, "127.0.0.1");
+        assert_eq!(row.preferred_port, 56121);
+        assert_eq!(row.callback_path, "/callback");
+        assert_eq!(row.default_issuer, "https://auth.x.ai");
+        assert_eq!(row.authorize_path, "/oauth2/authorize");
+        assert_eq!(row.token_path, "/oauth2/token");
+        assert_eq!(row.login_flow, LoginFlow::Loopback);
+        assert_eq!(row.encoding, TokenRequestEncoding::Form);
+        // The api:access scope is what makes the token usable for inference;
+        // dropping it yields a token that signs in but cannot call the model.
+        assert!(row.scope.contains("api:access"));
+        assert!(row.scope.contains("grok-cli:access"));
+        assert!(row.scope.contains("offline_access"));
     }
 
     #[derive(Debug)]
