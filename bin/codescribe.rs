@@ -13,12 +13,12 @@
 //!
 //! Two faces, matching the GUI's two faces:
 //! - default        = the DELIVERY: one shaped transcript on stdout.
-//! - `--stream`     = the LIVE CANVAS view: per-segment text flushed to stdout
-//!                    as decoding progresses through the file (lexicon applied
-//!                    per segment; Light+ belongs to delivery, not the canvas).
-//! - `--raw`        = the Ctrl-hold contract: literal words, no Light+.
-//! - `-f/--format`  = the AI-formatted lane (same `ai_formatting` call and
-//!                    lane config the GUI uses; requires a configured key).
+//! - `--stream` = the LIVE CANVAS view: per-segment text flushed to stdout
+//!   as decoding progresses through the file (lexicon applied per segment;
+//!   Light+ belongs to delivery, not the canvas).
+//! - `--raw` = the Ctrl-hold contract: literal words, no Light+.
+//! - `-f/--format` = the AI-formatted lane (same `ai_formatting` call and
+//!   lane config the GUI uses; requires a configured key).
 //!
 //! Provenance goes to stderr, GUI-truth style, so stdout stays pipeable.
 //! The old `daemon` mode is gone on purpose: the SwiftUI app owns runtime.
