@@ -7,20 +7,25 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::llm::account_auth::pkce::PkceCodes;
 use crate::llm::account_auth::server::exchange_code_for_tokens;
-use crate::llm::account_auth::{AccountAuthError, DEFAULT_ISSUER, store_account_tokens};
+use crate::llm::account_auth::{AccountAuthError, issuer_for, store_account_tokens};
 use crate::llm::provider::ProviderKind;
 
+/// One device-code login attempt. `provider` decides both the issuer default
+/// and the account the resulting tokens are filed under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceAuthConfig {
+    pub provider: ProviderKind,
     pub issuer: String,
     pub client_id: String,
     pub max_wait: Duration,
 }
 
 impl DeviceAuthConfig {
-    pub fn new(client_id: String) -> Self {
+    /// Registry-derived issuer for `provider`, env override honoured.
+    pub fn new(provider: ProviderKind, client_id: String) -> Self {
         Self {
-            issuer: DEFAULT_ISSUER.to_string(),
+            provider,
+            issuer: issuer_for(provider),
             client_id,
             max_wait: Duration::from_secs(15 * 60),
         }
@@ -145,6 +150,7 @@ pub async fn complete_device_code_login(
         config.issuer.trim_end_matches('/')
     );
     let tokens = exchange_code_for_tokens(
+        config.provider,
         &config.issuer,
         &config.client_id,
         &redirect_uri,
@@ -152,7 +158,7 @@ pub async fn complete_device_code_login(
         &code_resp.authorization_code,
     )
     .await?;
-    store_account_tokens(ProviderKind::OpenAiResponses, &tokens)
+    store_account_tokens(config.provider, &tokens)
 }
 
 async fn poll_for_authorization_code(
@@ -263,6 +269,7 @@ mod tests {
             .create_async()
             .await;
         let config = DeviceAuthConfig {
+            provider: ProviderKind::OpenAiResponses,
             issuer: server.url(),
             client_id: "client".to_string(),
             max_wait: Duration::from_secs(1),
