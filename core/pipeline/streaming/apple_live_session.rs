@@ -1244,14 +1244,19 @@ mod tests {
         );
     }
 
-    /// The env gate is the only control: layered off → no lane, `phase1` → lane.
+    /// The env gate is the only control: default (unset) arms the lane — the
+    /// live tail patch is a core element of the triangulation, not an opt-in
+    /// (operator directive 2026-08-09). Explicit `off` is the one way out.
     #[test]
     #[serial]
-    fn apple_tail_patch_lane_is_wired_only_when_layered_phase_is_set() {
+    fn apple_tail_patch_lane_is_wired_by_default_and_off_disarms() {
         let _restore = EnvRestore::capture(LAYERED_TRANSCRIPTION_ENV);
 
         unsafe { std::env::remove_var(LAYERED_TRANSCRIPTION_ENV) };
-        assert!(!tail_patch_enabled(), "default is off");
+        assert!(tail_patch_enabled(), "default arms the live tail patch");
+
+        unsafe { std::env::set_var(LAYERED_TRANSCRIPTION_ENV, "off") };
+        assert!(!tail_patch_enabled(), "explicit off disarms");
 
         unsafe { std::env::set_var(LAYERED_TRANSCRIPTION_ENV, "phase1") };
         assert!(tail_patch_enabled(), "phase1 arms Layer 1");
