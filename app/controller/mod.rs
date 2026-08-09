@@ -148,9 +148,13 @@ const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
 #[cfg(test)]
 static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
 
+/// Clears [`PROCESS_RECORDING_TEST_HANG`] on drop, so a test that arms the hang
+/// cannot leak it into the next test in the same process.
 #[cfg(test)]
 struct ProcessRecordingHangGuard;
 
+/// Make `process_recording` block forever, so the stuck-stop watchdog can be
+/// exercised without a real recorder or a real stall.
 #[cfg(test)]
 fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
     PROCESS_RECORDING_TEST_HANG.store(true, Ordering::SeqCst);
@@ -164,6 +168,14 @@ impl Drop for ProcessRecordingHangGuard {
     }
 }
 
+/// Publish the live-transcription tuning for the session that is about to start
+/// and report whether the overlay is enabled.
+///
+/// The knobs cross into the core pipeline as process env vars, which is why
+/// this runs at every session start rather than once at boot: user settings can
+/// change between recordings. A session with no overlay to feed uses a much
+/// longer interim window — nobody is watching the partials, so paying for
+/// frequent interim emissions would be waste.
 fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool {
     let overlay_enabled = config.transcription_overlay_enabled;
     let settings = UserSettings::load();
@@ -200,6 +212,10 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
     overlay_enabled
 }
 
+/// Write the provenance sidecar next to a saved artifact, logging either way.
+///
+/// Sidecar loss must never fail a delivery that already succeeded, so the error
+/// is warned and swallowed rather than propagated.
 fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
     match types::write_truth_sidecar(path, metadata) {
         Ok(sidecar_path) => debug!("Truth sidecar saved: {}", sidecar_path.display()),
@@ -211,11 +227,15 @@ fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthM
     }
 }
 
+/// Holds a shared flag `true` for a scope and clears it on drop — including on
+/// an early `return` out of a start path, which is exactly where a hand-written
+/// reset gets forgotten.
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
 }
 
 impl AtomicFlagGuard {
+    /// Raise the flag; it falls when the returned guard is dropped.
     fn new(flag: Arc<AtomicBool>) -> Self {
         flag.store(true, Ordering::SeqCst);
         Self { flag }
@@ -228,6 +248,8 @@ impl Drop for AtomicFlagGuard {
     }
 }
 
+/// What one stop-and-process pass produced: the delivery decision plus the
+/// per-phase wall clock that the stop-path budget line reports.
 #[derive(Debug, Clone, Default)]
 struct ProcessRecordingOutcome {
     no_speech_reason: Option<String>,
@@ -241,6 +263,8 @@ struct ProcessRecordingOutcome {
 }
 
 impl ProcessRecordingOutcome {
+    /// Outcome for a stop that produced no usable transcript. Timings are zero
+    /// because this path exits before the delivery cone.
     fn no_speech(reason: impl Into<String>) -> Self {
         Self {
             no_speech_reason: Some(reason.into()),
@@ -254,6 +278,9 @@ impl ProcessRecordingOutcome {
     }
 }
 
+/// Whether a finalized transcript may replace the whole user bubble rather than
+/// append to it. Append-mode and live-stream sessions own their canvas
+/// incrementally, so a full rewrite there would erase committed text.
 #[cfg(test)]
 fn should_allow_full_user_bubble_rewrite(
     skip_user_bubble: bool,
@@ -263,6 +290,8 @@ fn should_allow_full_user_bubble_rewrite(
     !skip_user_bubble && !append_mode && !live_stream_session
 }
 
+/// The action contract applies only to plain dictation: assistive sessions
+/// deliver through the agent lane, and live-stream sessions bypass formatting.
 fn should_apply_transcription_action_contract(assistive: bool, live_stream_session: bool) -> bool {
     !assistive && !live_stream_session
 }
@@ -373,11 +402,16 @@ pub struct RecordingController {
 }
 
 impl RecordingController {
+    /// One phrasing for "there is no recorder", logged and returned together so
+    /// a caller cannot report the failure in a way the log does not corroborate.
     fn recorder_unavailable_error(context: &str) -> anyhow::Error {
         warn!("{context}: streaming recorder unavailable; voice capture is disabled");
         anyhow::anyhow!("{context}: streaming recorder unavailable")
     }
 
+    /// Best-effort recorder construction at controller init. A missing audio
+    /// device disables voice capture but must not prevent the app from starting,
+    /// so the failure degrades to `None` plus a warning.
     fn init_streaming_recorder(context: &str) -> Option<StreamingRecorder> {
         match StreamingRecorder::new() {
             Ok(recorder) => Some(recorder),
@@ -388,6 +422,7 @@ impl RecordingController {
         }
     }
 
+    /// Mutable recorder out of a held lock guard, or the unavailable error.
     fn recorder_from_guard_mut<'a>(
         recorder_guard: &'a mut Option<StreamingRecorder>,
         context: &str,
@@ -397,6 +432,7 @@ impl RecordingController {
             .ok_or_else(|| Self::recorder_unavailable_error(context))
     }
 
+    /// Shared recorder out of a held lock guard, or the unavailable error.
     fn recorder_from_guard<'a>(
         recorder_guard: &'a Option<StreamingRecorder>,
         context: &str,
@@ -422,6 +458,13 @@ impl RecordingController {
         )
     }
 
+    /// Shared constructor behind both public entry points.
+    ///
+    /// Outside tests this also kicks off a background STT prewarm. The product
+    /// invariant it protects is that **recording readiness is not engine
+    /// readiness**: capture must start the instant the user presses record, so
+    /// the prewarm runs on its own thread and a failure is a warning, never a
+    /// blocked recording.
     fn with_config(config: Config, recorder_context: &str) -> Self {
         info!(
             "Initializing RecordingController (hold_delay={}ms, beep={}, language={:?})",
@@ -520,24 +563,34 @@ impl RecordingController {
         *self.state.read().await
     }
 
+    /// Subscribe to the controller's IPC event stream. Each subscriber gets its
+    /// own receiver; a slow consumer lags rather than stalling the producer.
     pub fn subscribe_events(&self) -> broadcast::Receiver<IpcEvent> {
         self.event_broadcast.subscribe()
     }
 
+    /// Transition state and broadcast the change (see
+    /// [`Self::set_state_with_broadcast`] for the invariants).
     async fn set_state(&self, new_state: State) {
         Self::set_state_with_broadcast(&self.state, &self.event_broadcast, new_state).await;
     }
 
+    /// Flip the cursor badge to "processing" while a stop pipeline runs.
     async fn show_processing_badge_if_enabled(&self) {
         let hold_indicator = self.config.read().await.hold_indicator;
         publish_recording_indicator(BadgeMode::Processing, hold_indicator);
     }
 
+    /// Publish a cursor-badge mode, honoring the user's badge setting.
     async fn publish_indicator(&self, mode: BadgeMode) {
         let hold_indicator = self.config.read().await.hold_indicator;
         publish_recording_indicator(mode, hold_indicator);
     }
 
+    /// Character offset the live transcript has reached, used to anchor a
+    /// context marker at the point in the dictation where the user pressed the
+    /// combo. Zero outside an active recording, and zero when no recorder or
+    /// buffer exists — an unanchored marker is better than a wrong anchor.
     async fn current_live_transcript_position(&self, state: State) -> usize {
         if !matches!(state, State::RecHold | State::RecToggle) {
             return 0;
@@ -554,6 +607,14 @@ impl RecordingController {
         transcript_buffer.lock().await.chars().count()
     }
 
+    /// Capture selection + frontmost app for an assistive combo pressed mid
+    /// session, and drop it into the context bucket as a marked item.
+    ///
+    /// Ordering is deliberate: the OS capture is launched first and the
+    /// transcript position is read while it is already in flight, because
+    /// focus and caret state can vanish the moment the combo changes the UI.
+    /// A bucket failure degrades to the plain selection context rather than
+    /// losing the capture entirely.
     async fn capture_assistive_combo_context(
         &self,
         state: State,
@@ -715,6 +776,13 @@ impl RecordingController {
         Ok(true)
     }
 
+    /// Swap the state and broadcast the transition, on `Arc` handles so spawned
+    /// tasks can drive it without borrowing the controller.
+    ///
+    /// The write guard is released before the broadcast, and the event fires
+    /// only on a real change. Any arrival at `Idle` tears down the cursor badge,
+    /// which is what makes finalize, cancel, error and no-speech all end with a
+    /// clean cursor instead of each path remembering to hide it.
     async fn set_state_with_broadcast(
         state: &Arc<RwLock<State>>,
         event_broadcast: &broadcast::Sender<IpcEvent>,
@@ -849,6 +917,12 @@ impl RecordingController {
         })
     }
 
+    /// Degrade path when a synthetic paste is not safe to post: arm the payload
+    /// behind the "Paste Here" shortcut, or fall back to a plain clipboard copy
+    /// when that shortcut cannot be registered.
+    ///
+    /// The out-params carry back what the UI must tell the user — which
+    /// shortcut is now armed, or why arming failed.
     fn arm_or_copy_deferred_payload(
         &self,
         payload: String,
@@ -943,6 +1017,11 @@ impl RecordingController {
         *self.pre_overlay_frontmost_app.write().await = None;
     }
 
+    /// Detach every sink and callback from the recorder.
+    ///
+    /// Run on each stop and before each start: a callback left over from a
+    /// finished session would route the next session's audio and deltas into
+    /// the previous session's overlay.
     fn clear_recorder_callbacks(recorder: &mut StreamingRecorder) {
         recorder.set_utterance_callback(None);
         recorder.set_utterance_silence_sec(None);
@@ -950,6 +1029,9 @@ impl RecordingController {
         recorder.set_level_callback(None);
     }
 
+    /// Bring the recorder to a clean pre-start state: force-stop a stream left
+    /// active by a previous session, then clear its callbacks. Refusing to
+    /// start here would strand the user behind a session they cannot see.
     async fn ensure_recorder_ready_for_start(
         recorder: &mut StreamingRecorder,
         context: &str,
@@ -997,6 +1079,8 @@ impl RecordingController {
         self.set_state(State::Idle).await;
     }
 
+    /// Unwind session state after a start that never produced a recording, so a
+    /// failed start leaves nothing behind for the next hotkey press.
     async fn reset_session_after_start_failure(&self, context: &str) {
         warn!("{context}: resetting controller flags after failed start");
         self.reset_session_fields().await;
@@ -1004,11 +1088,22 @@ impl RecordingController {
         reset_session_telemetry(&self.session_telemetry);
     }
 
+    /// Unwind session state after a recording that completed. Telemetry is kept
+    /// (unlike the start-failure path) — the finished session's stats are still
+    /// being read by the result handler.
     async fn reset_finished_recording_state(&self) {
         self.reset_session_fields().await;
         set_assistive_session(false);
     }
 
+    /// Post-pipeline epilogue: log the commit decision on success, and surface a
+    /// failure to the user instead of leaving it in the log.
+    ///
+    /// On success it also hands freed pages back to the OS while the app is
+    /// idle, so a long session does not accumulate footprint across recordings.
+    /// A failure is routed through the engine `Warning` channel, which the
+    /// bridge turns into a visible error and a tray state — a silently failed
+    /// transcription reads to the user as a lost recording.
     async fn handle_processed_recording_result(
         &self,
         assistive: bool,
@@ -1064,12 +1159,21 @@ impl RecordingController {
         }
     }
 
+    /// Recognize the recorder's "already in progress" refusal, which is the one
+    /// start failure worth a single force-stop-and-retry rather than an abort.
     fn is_already_in_progress_error(error: &anyhow::Error) -> bool {
         error
             .to_string()
             .contains("Recording is already in progress")
     }
 
+    /// Reconcile a controller that believes it is `Idle` with a recorder that is
+    /// still streaming, by force-stopping the orphaned stream.
+    ///
+    /// The in-flight start flag is checked twice — before and after taking the
+    /// serial lock — because a session that is mid-start legitimately looks like
+    /// "Idle plus an active recorder", and killing it there would turn recovery
+    /// into the very bug it exists to fix.
     async fn recover_stale_recorder_if_idle(&self) {
         if self.start_transition_in_flight.load(Ordering::SeqCst) {
             debug!("RECOVERY decision: skip idle-recovery while start transition is in-flight");
@@ -1119,6 +1223,12 @@ impl RecordingController {
         info!("RECOVERY decision: stale active stream cleared, controller remains IDLE");
     }
 
+    /// Fan one pipeline event stream out to the three consumers a session needs:
+    /// the presentation emitter (transcript assembly, optional preview deltas),
+    /// the IPC broadcast, and session telemetry.
+    ///
+    /// Preview deltas are wired only when something is actually watching them;
+    /// otherwise the delta sink is absent rather than emitting into the void.
     fn build_recording_event_sink(
         transcript_buffer: Arc<tokio::sync::Mutex<String>>,
         preview_deltas_enabled: bool,
@@ -1172,6 +1282,8 @@ impl RecordingController {
         });
     }
 
+    /// Wire level metering and the event sink for a hold session. Hold has no
+    /// utterance callback: text is finalized on key-up in `finish_recording`.
     fn configure_hold_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
@@ -1187,6 +1299,8 @@ impl RecordingController {
         )));
     }
 
+    /// Wire level metering and the event sink for a toggle / hands-off session,
+    /// which is ONE continuous recorder session (ADR 2026-05-28 Faza 1).
     fn configure_toggle_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
@@ -2289,6 +2403,13 @@ impl RecordingController {
         Ok(())
     }
 
+    /// Stop a toggle session under a watchdog.
+    ///
+    /// The full stop — recorder drain, final-pass STT, post-process, delivery —
+    /// must finish within `STOP_TIMEOUT`. When it does not (final-pass deadlock
+    /// on the Metal device, lock contention, a `stop` blocked in a CoreAudio
+    /// callback), recovery forces `Idle` so the next toggle press registers, the
+    /// badge clears, and the tray stops claiming idle over a hung recording.
     async fn stop_toggle_and_adjudicate(&self) -> Result<()> {
         if *self.state.read().await != State::RecToggle {
             return Ok(());
@@ -2316,6 +2437,16 @@ impl RecordingController {
         }
     }
 
+    /// The stop body the watchdog above wraps.
+    ///
+    /// Phases are timed and logged at `info!` on purpose: the watchdog could say
+    /// *that* a stop hung but never *where*, and `debug!` is filtered out in
+    /// release, exactly where the hang was reported. The phase numbers in the
+    /// log lines are the diagnostic contract.
+    ///
+    /// The session-id snapshot before the rename is a self-deadlock guard: under
+    /// Rust 2024 a read guard held as an if-let scrutinee outlives the body and
+    /// would block this same task's write.
     async fn stop_toggle_and_adjudicate_inner(&self) -> Result<()> {
         // Phase-timed instrumentation: the watchdog above wraps this entire fn
         // in STOP_TIMEOUT, but until now we couldn't tell WHICH await hung.
@@ -2465,6 +2596,9 @@ impl RecordingController {
         self.reset_finished_recording_state().await;
     }
 
+    /// Stop the current recording on behalf of a non-hotkey surface (tray, the
+    /// SwiftUI overlay), routing to the same stop path the hotkey would have
+    /// taken for this session shape.
     pub async fn stop_recording_from_external_surface(&self) -> Result<()> {
         let current_state = self.current_state().await;
         let assistive = *self.assistive_mode.read().await;
@@ -2548,6 +2682,22 @@ impl RecordingController {
         result.map(|_| ())
     }
 
+    /// Turn a stopped recording into a delivered transcript: decide the final
+    /// pass, adjudicate which transcript is the truth, then run the text
+    /// pipeline.
+    ///
+    /// Final-pass routing is typed rather than heuristic. `Always` re-passes the
+    /// whole file; `Smart` on a complete streaming transcript skips; `Smart` on
+    /// an incomplete one transcribes only the uncommitted audio tail and appends
+    /// it, because committed streaming text is immutable under the append-only
+    /// overlay doctrine and a full re-pass there would rewrite what the user
+    /// already watched being typed. `Off` still emits a skipped LocalFinalPass
+    /// so provenance stays honest — it gates the WAV re-pass, never the lexicon.
+    ///
+    /// A missing tail boundary is carried by the type, not by a sentinel: the
+    /// `Skip` variant produces no `from_secs` at all, so handing `0.0` to the
+    /// tail primitive — which would transcribe the whole file and append it onto
+    /// committed text — is structurally impossible rather than merely avoided.
     // allow(too_many_arguments): single-call-site pipeline seam carrying the
     // stop-recording context; grouping into a struct is planned with the
     // controller decomposition cut (see prune report follow-ups).
@@ -3247,6 +3397,20 @@ impl RecordingController {
         .await
     }
 
+    /// Shared text pipeline from adjudicated transcript to delivered text:
+    /// post-process, format per mode, persist, then paste or hand off.
+    ///
+    /// The dictionary step (lexicon, cleanup, semantic gate) always runs — it is
+    /// independent of the final-pass mode, which routes only the optional WAV
+    /// re-pass. Formatting then follows the mode the hotkey chose, and the
+    /// Light+ sentence-shape floor is applied to every lane that *promised*
+    /// formatting. RAW lanes are excluded on purpose: `force_raw` and Toggle-OFF
+    /// promise the user their literal words.
+    ///
+    /// History is written before the paste attempt. Delivery can fail
+    /// transiently and early-return, so persisting first keeps the formatted
+    /// layer recoverable; the write is disk-only, leaving the user-visible order
+    /// of effects unchanged.
     async fn process_transcript_text_pipeline(
         &self,
         p: types::TranscriptPipelineParams,

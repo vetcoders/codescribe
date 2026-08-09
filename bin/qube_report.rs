@@ -12,6 +12,9 @@ use codescribe::config::Config;
 use codescribe::qube_report::{LocalTranscriptionMode, MetricsReference, QualityReportConfig, run};
 use codescribe_core::quality::overlay_quality::replay_corrections_through_extractor;
 
+/// Command-line surface of the report generator. Two distinct jobs share this
+/// binary: the default batch quality report, and the `--replay-corrections`
+/// lexicon extraction pass, which ignores the report flags entirely.
 #[derive(Parser)]
 #[command(name = "qube-report")]
 #[command(version)]
@@ -80,12 +83,19 @@ struct Args {
     apply: bool,
 }
 
+/// Which transcript metrics are scored against: the corpus `.txt` beside the
+/// audio, or the cloud transcription produced during the run.
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum ReferenceSourceArg {
     Corpus,
     Cloud,
 }
 
+/// Dispatch to one of the two jobs and print where the output landed.
+///
+/// `--replay-corrections` returns early: it writes a proposed JSONL plus a
+/// markdown table and leaves the live lexicon untouched unless `--apply` was
+/// given, so the extraction can be reviewed before it changes anything.
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -211,6 +221,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Read a boolean environment flag, accepting `1` or a case-insensitive
+/// `true`; anything else (including unset) reads as `false`.
 fn env_bool(key: &str) -> bool {
     std::env::var(key)
         .ok()

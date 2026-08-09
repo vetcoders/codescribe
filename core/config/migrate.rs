@@ -219,10 +219,20 @@ pub fn migrate_agent_workspace_roots_if_needed(file_env: Option<&HashMap<String,
     }
 }
 
+/// Read a key from the `.env` **snapshot only**.
+///
+/// Deliberately never falls back to `std::env`: the process environment holds
+/// runtime values from many sources, and persisting those would turn a one-time
+/// import of the user's file into an accidental capture of ambient state.
 fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
     file_env.and_then(|vars| vars.get(key).cloned())
 }
 
+/// Write one secret to the Keychain, with a test-only failure injection point.
+///
+/// The seam exists because the retry contract — a failed secret write must leave
+/// `settings.json` unwritten so the next launch tries again — cannot be exercised
+/// against a real Keychain.
 fn save_migrated_key(account: &str, secret: &str) -> anyhow::Result<()> {
     #[cfg(test)]
     if test_save_key_failure_account(account) {

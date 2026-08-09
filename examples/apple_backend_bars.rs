@@ -34,6 +34,9 @@ use std::time::Instant;
 
 use codescribe_core::quality::teacher::{AlignOp, align_words, tokenize};
 
+/// Resolve the reference transcript sitting beside the clip, chosen by the
+/// `REFERENCE` variable: `apple` scores against system dictation, anything
+/// else against the human transcription.
 fn reference_path(clip: &Path) -> PathBuf {
     let suffix = match std::env::var("REFERENCE").as_deref() {
         Ok("apple") => "_apple_live_reference.txt",
@@ -47,6 +50,13 @@ fn reference_path(clip: &Path) -> PathBuf {
     clip.with_file_name(format!("{stem}{suffix}"))
 }
 
+/// Score every clip on the command line and print one table row each.
+///
+/// The requested lane is echoed before any measurement, and each row also
+/// carries the backend the bridge actually selected — a mis-set lane then
+/// shows up in the output instead of quietly producing numbers for the wrong
+/// engine. Head and tail markers are optional and report `n/a` when unset,
+/// so the same harness serves fixtures that have no such anchors.
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 

@@ -4,6 +4,11 @@
 //! cold loads at a median of 9.2 s because the idle reaper drops the weights
 //! every 45 minutes. This binary answers the only question that decides the
 //! fix: which phase actually costs the seconds.
+
+/// Initialise the singleton once and report the wall time the user would feel.
+///
+/// The engine's own phase logging supplies the breakdown; this prints the
+/// total it adds up to, so the parts can be checked against the whole.
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(

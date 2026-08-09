@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 /// known, therefore forgeable; production issuance must never use it.
 const DEV_SEED_HEX: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
+/// Route to `keygen` or `sign`; anything else prints usage and exits 2.
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -42,6 +43,12 @@ fn main() -> ExitCode {
     }
 }
 
+/// Mint a fresh Ed25519 signing key.
+///
+/// The public half and its fingerprint go to stdout, ready to paste into the
+/// repository variable. The private seed goes to stderr and is zeroed
+/// immediately after — split across the two streams so a redirected stdout
+/// cannot capture the secret alongside the shareable half.
 fn keygen() -> ExitCode {
     let mut seed = [0_u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut seed);
@@ -62,6 +69,12 @@ fn keygen() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Issue a signed CSK1 license for `<email> [sku] [updates-months] [seat-limit]`.
+///
+/// The seed arrives through the environment, never as an argument, so it stays
+/// out of the process list and shell history. Signing with the publicly known
+/// development seed is refused outright — a license anyone can forge must not
+/// be issuable by the production tool.
 fn sign(args: Vec<String>) -> ExitCode {
     let Some(email) = args.first() else {
         eprintln!("usage: license_signer sign <email> [sku] [updates-months] [seat-limit]");
@@ -131,6 +144,8 @@ fn sign(args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Parse exactly 64 hex characters into a 32-byte seed. Any other length, or
+/// a non-hex digit, yields `None` rather than a truncated or padded key.
 fn decode_seed(hex_str: &str) -> Option<[u8; 32]> {
     if hex_str.len() != 64 {
         return None;
@@ -142,6 +157,7 @@ fn decode_seed(hex_str: &str) -> Option<[u8; 32]> {
     Some(seed)
 }
 
+/// Lowercase hex encoding, used for keys, fingerprints and email hashes alike.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

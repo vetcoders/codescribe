@@ -78,7 +78,10 @@ impl From<codescribe_core::config::models::WhisperModelStatus> for CsWhisperMode
 /// `bytes_total` is `-1` when the server did not send Content-Length.
 #[uniffi::export(with_foreign)]
 pub trait CsWhisperDownloadListener: Send + Sync {
+    /// One progress tick for `file`. `bytes_total` is `-1` when the server sent no
+    /// Content-Length, so the UI must fall back to an indeterminate indicator.
     fn on_progress(&self, file: String, bytes_done: u64, bytes_total: i64);
+    /// The whole model is on disk at `path`.
     fn on_complete(&self, path: String);
 }
 
@@ -118,6 +121,8 @@ pub async fn download_whisper_model(
     })?
 }
 
+/// Trim a device name and collapse blank/whitespace-only values to `None`, so an
+/// empty setting reads as "no preference" rather than a device named `""`.
 fn normalized_device_name(device: Option<&str>) -> Option<String> {
     device
         .map(str::trim)
@@ -125,6 +130,9 @@ fn normalized_device_name(device: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether the configured device is present among live inputs, using the same
+/// exact-then-substring policy as `Recorder::start`. No configured device counts
+/// as available: the system default always exists.
 fn device_is_available(configured_device: Option<&str>, devices: &[String]) -> bool {
     let Some(configured_device) = normalized_device_name(configured_device) else {
         return true;
@@ -135,6 +143,12 @@ fn device_is_available(configured_device: Option<&str>, devices: &[String]) -> b
     })
 }
 
+/// Resolve which input the recorder will actually use, mirroring `Recorder::start`.
+///
+/// Returns `(resolved_device, configured_device_available, fell_back_to_default)`.
+/// A configured name wins on exact match, then on case-insensitive substring; an
+/// unplugged device degrades to the system default and is reported as a fallback
+/// so the UI can say so instead of showing a device that is not recording.
 fn resolve_audio_input_state(
     configured_device: Option<&str>,
     devices: &[String],
@@ -289,8 +303,12 @@ impl From<&LayerSummary> for CsLayerSummary {
 /// The Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
 pub trait CsTranscriptionListener: Send + Sync {
+    /// The engine is spinning up capture; no audio is flowing yet.
     fn on_recording_preparing(&self);
+    /// The microphone is live and utterances may start arriving.
     fn on_recording_started(&self);
+    /// Terminal state of a dictation session — capture and any post-capture pass
+    /// are both finished. Always the last lifecycle callback.
     fn on_recording_stopped(&self);
     /// Capture ended and the controller entered `Busy` (final transcription pass).
     /// Fired BEFORE `on_recording_stopped` (which lands on the terminal Idle) so a
@@ -299,7 +317,11 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Swift-driven Finish path enters that phase itself; this is the native-path
     /// counterpart. Surfaces with no post-capture phase may leave it a no-op.
     fn on_recording_finalising(&self);
+    /// Latest interim text for the utterance in flight. Replace-not-append: each
+    /// call supersedes the previous preview rather than extending it.
     fn on_preview(&self, text: String);
+    /// An already-previewed utterance was revised; `previous_text` is what the
+    /// surface currently shows, so it can locate and swap the right span.
     fn on_correction(&self, text: String, previous_text: String);
     /// Completed VAD-bounded utterance. Optional STT quality fields feed the
     /// overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
@@ -311,6 +333,9 @@ pub trait CsTranscriptionListener: Send + Sync {
         speech_pct: Option<f32>,
         confidence_flags: Vec<String>,
     );
+    /// Bounded patch of an already-committed utterance: replace `[start, end)`
+    /// within the segment stamped `utterance_id`. `source` names the layer that
+    /// produced it, so the surface can attribute or style the edit.
     fn on_replace_range(
         &self,
         utterance_id: u64,
@@ -319,6 +344,8 @@ pub trait CsTranscriptionListener: Send + Sync {
         text: String,
         source: CsLayerSource,
     );
+    /// Insert an annotation (hesitation pause, paralingual marker) at `position`
+    /// inside the segment stamped `utterance_id`, without replacing any text.
     fn on_insert_annotation(
         &self,
         utterance_id: u64,
@@ -329,18 +356,23 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Insert a context-bucket marker at the global transcript character
     /// position captured when the agent combo was pressed.
     fn on_context_marker(&self, position: u64, marker: String);
+    /// The session closed; `layer_summary` carries the per-layer edit counters.
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
     /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
     /// the SAME clean text that is pasted/delivered and written to history. Surfaces
     /// fire it once per dictation stop so the overlay FINAL matches delivery/Copy.
     fn on_final_transcript_ready(&self, text: String);
+    /// Voice activity started (`true`) or stopped (`false`).
     fn on_vad_active(&self, active: bool);
     /// Live microphone input level: RMS of one captured audio block (linear,
     /// 0..~1). Fires continuously (~40–50 Hz) while a controller dictation
     /// session records, so the overlay waveform can track the real voice.
     /// Surfaces without a level meter may leave it a no-op.
     fn on_audio_level(&self, rms: f32);
+    /// A session or utterance yielded no usable speech; `reason` explains which
+    /// check rejected it, so the UI can distinguish silence from a failure.
     fn on_no_speech(&self, reason: String);
+    /// Recoverable engine warning. Not fatal — the session keeps running.
     fn on_error(&self, message: String);
 }
 
@@ -435,6 +467,7 @@ enum ComposerTranscriptSource {
 }
 
 impl ComposerTranscriptSource {
+    /// Stable log token for the stop breadcrumb.
     fn label(self) -> &'static str {
         match self {
             Self::MergedLiveWhisper => "merged_live_whisper",
@@ -524,6 +557,8 @@ enum ComposerFinalPassPlan {
 }
 
 impl ComposerFinalPassPlan {
+    /// Stable log token for the chosen plan (the `TailGap` boundary is logged
+    /// separately, so variants with payloads still map to one flat name).
     fn label(self) -> &'static str {
         match self {
             Self::FullFile => "full_file",
@@ -743,6 +778,8 @@ pub struct CodescribeDictation {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CodescribeDictation {
+    /// Build an idle dictation handle and initialize logging. No microphone or
+    /// model work happens here — call `set_listener` then `start_recording`.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();

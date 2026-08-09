@@ -16,6 +16,9 @@ pub fn secret(account: &str) -> Option<String> {
     secret_with_keychain(account, keychain::load_key)
 }
 
+/// Testable core of [`secret`]: the Keychain lookup is injected so tests can
+/// exercise the env-beats-Keychain precedence without touching the real
+/// Keychain.
 fn secret_with_keychain(
     account: &str,
     load_key: impl FnOnce(&str) -> Option<String>,
@@ -30,6 +33,9 @@ pub fn endpoint(lane: LlmMode, config: &Config) -> String {
     endpoint_with_settings(lane, config, &UserSettings::load())
 }
 
+/// Testable core of [`endpoint`] with an explicit settings snapshot. The
+/// precedence is lane setting → lane env → shared setting → shared env →
+/// config → compiled-in default, then normalization.
 fn endpoint_with_settings(lane: LlmMode, config: &Config, settings: &UserSettings) -> String {
     let (lane_key, lane_setting) = match lane {
         LlmMode::Formatting => (
@@ -68,6 +74,9 @@ pub fn model_for_provider(lane: LlmMode, provider: ProviderKind, config: &Config
     model_for_provider_with_settings(lane, provider, config, &UserSettings::load())
 }
 
+/// Testable core of [`model_for_provider`] with an explicit settings snapshot.
+/// Every candidate must pass [`ProviderKind::owns_model`], so a model id left
+/// behind by a previous vendor is dropped rather than sent on the new wire.
 fn model_for_provider_with_settings(
     lane: LlmMode,
     provider: ProviderKind,
@@ -100,6 +109,8 @@ fn model_for_provider_with_settings(
     resolved.unwrap_or_else(|| provider.default_model(lane).to_string())
 }
 
+/// Testable core of [`model`] with an explicit settings snapshot: the
+/// Responses-specific path, pinned to the OpenAI provider.
 fn model_with_settings(lane: LlmMode, config: &Config, settings: &UserSettings) -> String {
     model_for_provider_with_settings(lane, ProviderKind::OpenAiResponses, config, settings)
 }
@@ -112,6 +123,9 @@ pub fn provider(lane: LlmMode) -> ProviderKind {
     provider_with_settings(lane, &UserSettings::load())
 }
 
+/// Testable core of [`provider`] with an explicit settings snapshot. An
+/// unparseable persisted value falls through to the canonical resolver rather
+/// than failing the lane.
 fn provider_with_settings(lane: LlmMode, settings: &UserSettings) -> ProviderKind {
     let lane_setting = match lane {
         // No persisted formatting-provider setting exists yet; env remains the
@@ -141,6 +155,7 @@ pub enum LaneTruthLane {
 }
 
 impl LaneTruthLane {
+    /// Stable lane identifier used in FFI payloads and diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Main => "main",
@@ -172,6 +187,9 @@ pub fn lane_truth_snapshot(lane: LaneTruthLane, config: &Config) -> LaneTruthSna
     lane_truth_snapshot_with(lane, config, &UserSettings::load(), keychain::load_key)
 }
 
+/// Testable core of [`lane_truth_snapshot`] with an explicit settings snapshot
+/// and injected Keychain lookup. Each lane delegates to the same resolvers the
+/// runtime uses, so the snapshot cannot drift from live resolution.
 fn lane_truth_snapshot_with(
     lane: LaneTruthLane,
     config: &Config,
@@ -260,10 +278,15 @@ pub struct AssistiveLaneSnapshot {
     pub account_auth: bool,
 }
 
+/// Resolve everything the agent send path needs for the assistive lane from
+/// fresh persisted settings, process env, and Keychain truth. Reads secrets —
+/// use [`assistive_identity`] on hot paths that only need labels.
 pub fn assistive_snapshot(config: &Config) -> AssistiveLaneSnapshot {
     assistive_snapshot_with(config, &UserSettings::load(), keychain::load_key)
 }
 
+/// Testable core of [`assistive_snapshot`] with an explicit settings snapshot
+/// and injected Keychain lookup.
 fn assistive_snapshot_with(
     config: &Config,
     settings: &UserSettings,
@@ -302,6 +325,7 @@ pub fn formatting_identity(config: &Config) -> (ProviderKind, String) {
     formatting_identity_with(config, &UserSettings::load())
 }
 
+/// Testable core of [`formatting_identity`] with an explicit settings snapshot.
 fn formatting_identity_with(config: &Config, settings: &UserSettings) -> (ProviderKind, String) {
     let provider = provider_with_settings(LlmMode::Formatting, settings);
     let model = model_for_provider_with_settings(LlmMode::Formatting, provider, config, settings);
@@ -315,6 +339,7 @@ pub fn assistive_identity(config: &Config) -> (ProviderKind, String) {
     assistive_identity_with(config, &UserSettings::load())
 }
 
+/// Testable core of [`assistive_identity`] with an explicit settings snapshot.
 fn assistive_identity_with(config: &Config, settings: &UserSettings) -> (ProviderKind, String) {
     let provider = provider_with_settings(LlmMode::Assistive, settings);
     let model = model_for_provider_with_settings(LlmMode::Assistive, provider, config, settings);
@@ -331,6 +356,9 @@ pub fn provider_endpoint(lane: LlmMode, provider: ProviderKind, config: &Config)
     provider_endpoint_with_settings(lane, provider, config, &UserSettings::load())
 }
 
+/// Testable core of [`provider_endpoint`] with an explicit settings snapshot:
+/// the default provider takes the generic lane chain, every other vendor is
+/// confined to [`vendor_endpoint`].
 fn provider_endpoint_with_settings(
     lane: LlmMode,
     provider: ProviderKind,
@@ -363,6 +391,9 @@ pub fn assistive_availability(config: &Config) -> Result<AssistiveLaneSnapshot, 
     availability_of(assistive_snapshot(config))
 }
 
+/// Decide whether an already-resolved snapshot can reach a model, without
+/// re-reading settings. Shared by [`assistive_availability`] and the lane
+/// snapshot projection so both report the same verdict.
 fn availability_of(snapshot: AssistiveLaneSnapshot) -> Result<AssistiveLaneSnapshot, String> {
     // A stored key, a key-optional endpoint, or a signed-in provider account are
     // each a complete credential on their own — the agent must work with only one.
@@ -416,6 +447,8 @@ fn endpoint_requires_api_key(endpoint: &str) -> bool {
             .any(|row| host.eq_ignore_ascii_case(host_of(row.default_endpoint)))
 }
 
+/// Bare host of an endpoint URL, without scheme, port, or path. Tolerates a
+/// scheme-less value so a hand-edited endpoint still compares sensibly.
 fn host_of(endpoint: &str) -> &str {
     endpoint
         .split("://")
@@ -426,6 +459,10 @@ fn host_of(endpoint: &str) -> &str {
         .unwrap_or_default()
 }
 
+/// Endpoint a stored credential would actually be sent to, keyed by its
+/// Keychain account. Used by the key-liveness probe so it tests the key against
+/// the same endpoint the runtime would use; unknown accounts fall back to the
+/// shared lane.
 pub(crate) fn endpoint_for_account(config: &Config, account: &str) -> String {
     let settings = UserSettings::load();
     match account {
@@ -435,6 +472,8 @@ pub(crate) fn endpoint_for_account(config: &Config, account: &str) -> String {
     }
 }
 
+/// The un-prefixed `LLM_ENDPOINT` chain shared by lanes that have no override
+/// of their own, normalized to the canonical Responses path.
 fn shared_endpoint_with_settings(config: &Config, settings: &UserSettings) -> String {
     let resolved = non_empty_option(settings.llm_endpoint.clone())
         .or_else(|| env_non_empty("LLM_ENDPOINT"))
@@ -443,6 +482,9 @@ fn shared_endpoint_with_settings(config: &Config, settings: &UserSettings) -> St
     normalize_openai_responses_endpoint(&resolved)
 }
 
+/// Model a stored credential would actually be used with, keyed by its
+/// Keychain account — the [`endpoint_for_account`] counterpart for the
+/// key-liveness probe.
 pub(crate) fn model_for_account(config: &Config, account: &str) -> String {
     let settings = UserSettings::load();
     match account {
@@ -452,6 +494,9 @@ pub(crate) fn model_for_account(config: &Config, account: &str) -> String {
     }
 }
 
+/// The un-prefixed `LLM_MODEL` chain for lanes without their own model. Guarded
+/// by [`ProviderKind::owns_model`], so a foreign vendor's id never reaches the
+/// Responses wire.
 fn shared_model_with_settings(settings: &UserSettings) -> String {
     let owned = |candidate: String| {
         ProviderKind::OpenAiResponses
@@ -464,6 +509,8 @@ fn shared_model_with_settings(settings: &UserSettings) -> String {
         .unwrap_or_else(|| DEFAULT_LLM_MODEL.to_string())
 }
 
+/// Rewrite any OpenAI-compatible base or legacy chat/completions URL to the
+/// canonical `/v1/responses` path, so an operator can paste a bare base URL.
 pub fn normalize_openai_responses_endpoint(endpoint: &str) -> String {
     normalize_endpoint(
         endpoint,
@@ -472,14 +519,22 @@ pub fn normalize_openai_responses_endpoint(endpoint: &str) -> String {
     )
 }
 
+/// The [`normalize_openai_responses_endpoint`] counterpart for the Anthropic
+/// wire: anything ending in a known suffix is rewritten to `/v1/messages`, so a
+/// Responses path left over from another provider cannot survive the switch.
 pub(crate) fn normalize_anthropic_messages_endpoint(endpoint: &str) -> String {
     normalize_endpoint(endpoint, "/v1/messages", &["/v1/messages", "/v1/responses"])
 }
 
+/// The Anthropic Messages endpoint currently in effect: the operator's env
+/// override if set, else the registry default.
 pub(crate) fn anthropic_messages_endpoint() -> String {
     vendor_endpoint(ProviderKind::AnthropicMessages)
 }
 
+/// Shared endpoint normalizer: strip a known protocol suffix (or a bare `/v1`)
+/// and re-append the canonical one. A base with neither simply gains the
+/// canonical suffix, which keeps self-hosted URLs working untouched.
 fn normalize_endpoint(endpoint: &str, canonical_suffix: &str, known_suffixes: &[&str]) -> String {
     let mut base = endpoint.trim().trim_end_matches('/').to_string();
     for suffix in known_suffixes {
@@ -494,15 +549,21 @@ fn normalize_endpoint(endpoint: &str, canonical_suffix: &str, known_suffixes: &[
     format!("{base}{canonical_suffix}")
 }
 
+/// Read a process env var, treating unset and blank as equally absent — a
+/// bootstrap variable exported as an empty string must not shadow a real value
+/// further down the chain.
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key).ok().and_then(non_empty)
 }
 
+/// Trim a value and drop it if nothing readable remains.
 fn non_empty(value: String) -> Option<String> {
     let value = value.trim().to_string();
     (!value.is_empty()).then_some(value)
 }
 
+/// [`non_empty`] lifted over an already-optional value, for the settings
+/// fields that are `Option<String>` on disk.
 fn non_empty_option(value: Option<String>) -> Option<String> {
     value.and_then(non_empty)
 }

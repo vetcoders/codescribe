@@ -22,6 +22,7 @@ pub enum FinalPassRoutingMode {
 }
 
 impl FinalPassRoutingMode {
+    /// Canonical lowercase token (`always` / `smart` / `off`) for logs and telemetry.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Always => "always",
@@ -30,6 +31,11 @@ impl FinalPassRoutingMode {
         }
     }
 
+    /// Parse a settings/env token, accepting the documented aliases.
+    ///
+    /// Case- and whitespace-insensitive. Returns `None` for anything unknown —
+    /// an unrecognised token must never silently coerce to a mode that
+    /// re-transcribes the whole file.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "always" | "on" | "1" | "true" | "yes" => Some(Self::Always),

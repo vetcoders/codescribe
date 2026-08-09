@@ -4,6 +4,11 @@
 
 use codescribe::config::{Config, Language};
 
+/// Walk the config surface end to end: load, parse an enum, save a single
+/// value, then reload to prove the write actually reached disk.
+///
+/// Note that this writes to the real `.env` — the round-trip is the point, and
+/// it cannot be demonstrated without persisting.
 fn main() -> anyhow::Result<()> {
     println!("Codescribe Config Demo\n");
 

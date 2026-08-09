@@ -15,6 +15,11 @@ use tracing::{debug, info, trace};
 use super::config::VadConfig;
 use crate::hf_cache;
 
+/// The Silero ONNX graph baked into the binary at build time.
+///
+/// `build.rs` emits `embedded_vad_data.rs` into `OUT_DIR` exposing the model as
+/// a `MODEL` byte slice, which is why VAD needs no disk file and no download on
+/// the production path.
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/embedded_vad_data.rs"));
 }
@@ -78,6 +83,10 @@ pub struct Resampler {
 }
 
 impl Resampler {
+    /// Build a resampler from `input_rate` to the fixed 16 kHz Silero expects.
+    ///
+    /// The scratch buffer is pre-sized so steady-state resampling does not
+    /// allocate on the audio path.
     pub fn new(input_rate: u32) -> Self {
         let ratio = VAD_SAMPLE_RATE as f32 / input_rate as f32;
         Self {
@@ -179,6 +188,10 @@ impl SileroVad {
         })
     }
 
+    /// Declare the sample rate of audio handed to [`Self::predict`].
+    ///
+    /// Installs a resampler only when the rate differs from 16 kHz; passing
+    /// [`VAD_SAMPLE_RATE`] clears it, keeping the native-rate path allocation-free.
     pub fn set_input_sample_rate(&mut self, rate: u32) {
         if rate != VAD_SAMPLE_RATE {
             self.resampler = Some(Resampler::new(rate));
@@ -289,6 +302,7 @@ impl SileroVad {
         self.context.fill(0.0);
     }
 
+    /// Configured probability above which a chunk counts as speech.
     pub fn threshold(&self) -> f32 {
         self.config.threshold
     }
@@ -436,6 +450,7 @@ impl AccumulatingVad {
 
 /// HuggingFace repo for Silero VAD model
 const SILERO_VAD_REPO: &str = "snakers4/silero-vad";
+/// ONNX file name inside that repo, and the name used in the models directory.
 const SILERO_VAD_FILE: &str = "silero_vad.onnx";
 
 /// Get default model path (bundled/models dir -> HF cache -> ~/.codescribe/models/)

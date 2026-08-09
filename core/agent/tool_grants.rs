@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 
 const VERSION: u32 = 1;
 
+/// Canonical grants file location: `$HOME/.codescribe/tool_grants.json`.
+/// Errors when `HOME` is unset rather than guessing a fallback directory.
 pub fn default_tool_grants_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable is not set")?;
     Ok(PathBuf::from(home)
@@ -36,11 +38,18 @@ pub fn grant_key(server: &str, upstream_tool: &str) -> String {
     format!("{}:{}", server.to_ascii_lowercase(), upstream_tool)
 }
 
+/// One grant's payload. Only the timestamp is stored — the identity lives in the
+/// map key — so the Settings list can show when consent was given.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GrantEntry {
     granted_at: String,
 }
 
+/// On-disk shape of `tool_grants.json`.
+///
+/// `always_allow` is a [`BTreeMap`] so the serialized file has a stable key order
+/// and does not churn between writes. `version` exists to let a future format
+/// change be detected rather than silently misread.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GrantsFile {
     version: u32,
@@ -67,6 +76,7 @@ pub fn load_granted() -> HashSet<String> {
         .unwrap_or_default()
 }
 
+/// [`load_granted`] against an explicit path, so tests can drive a tempdir.
 fn load_granted_at(path: &Path) -> HashSet<String> {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return HashSet::new();
@@ -82,6 +92,8 @@ pub fn grant(server: &str, upstream_tool: &str) -> Result<()> {
     grant_at(&default_tool_grants_path()?, server, upstream_tool)
 }
 
+/// [`grant`] against an explicit path. Re-granting an existing key refreshes its
+/// timestamp rather than erroring.
 fn grant_at(path: &Path, server: &str, upstream_tool: &str) -> Result<()> {
     let mut file = read_for_mutation(path)?;
     file.always_allow.insert(
@@ -98,6 +110,7 @@ pub fn revoke(key: &str) -> Result<()> {
     revoke_at(&default_tool_grants_path()?, key)
 }
 
+/// [`revoke`] against an explicit path.
 fn revoke_at(path: &Path, key: &str) -> Result<()> {
     let mut file = read_for_mutation(path)?;
     file.always_allow.remove(key);
@@ -115,6 +128,11 @@ pub fn list() -> Result<Vec<(String, String)>> {
         .collect())
 }
 
+/// Read the grants file for a read-modify-write cycle.
+///
+/// The strict counterpart to [`load_granted_at`]: a missing file is an empty
+/// default, but an **unparsable** one is an error. Tolerating a parse failure
+/// here would mean overwriting an operator's grants with a fresh empty map.
 fn read_for_mutation(path: &Path) -> Result<GrantsFile> {
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- The only production caller passes `default_tool_grants_path()` ($HOME/.codescribe/tool_grants.json); tests pass a tempdir. Grant identity (server, tool) becomes a JSON KEY, never a path component — see `grant_key`.
     match std::fs::read_to_string(path) {
@@ -129,6 +147,9 @@ fn read_for_mutation(path: &Path) -> Result<GrantsFile> {
     }
 }
 
+/// Persist grants atomically: write a sibling `.tmp`, `fsync` it, then rename
+/// into place. A crash mid-write leaves the previous file intact — a partially
+/// written grants file would silently drop consent the operator already gave.
 fn write_atomic(path: &Path, file: &GrantsFile) -> Result<()> {
     let parent = path
         .parent()

@@ -30,7 +30,11 @@ pub(crate) use codescribe_core::config::{FinalPassRoutingMode, final_pass_routin
 /// Typed streaming-completeness decision for Smart skip (never "non-empty ⇒ complete").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamingCompleteness {
+    /// The adjudicator sealed the transcript: committed, covered, no pending tail.
     Complete,
+    /// Something is missing; `reason` is the stable telemetry label for which
+    /// check failed (`no_speech`, `empty`, `pending_tail`, `partial_pending`,
+    /// `no_commit_source`, `no_coverage`).
     Incomplete { reason: &'static str },
 }
 
@@ -167,16 +171,22 @@ pub(crate) fn engine_label_from_verdict(
 /// Named stop-path phase timings (rec_stop → final_pass → postproc → format → delivery).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct StopPathBudget {
+    /// Wall time of the whole stop path; the named phases must fit inside it.
     pub total_secs: f64,
+    /// Recorder teardown: stopping capture and sealing the audio file.
     pub rec_stop_secs: f64,
+    /// Whisper final pass, whatever `FinalPassAction` selected (0 when skipped).
     pub final_pass_secs: f64,
+    /// Transcript post-processing (dictionary / lexicon cleanup).
     pub postproc_secs: f64,
+    /// AI formatting pass, when enabled.
     pub format_secs: f64,
     /// Actual deliver_once / history+paste handoff span (not phase-4 cleanup).
     pub delivery_secs: f64,
 }
 
 impl StopPathBudget {
+    /// Total of the five named phases, excluding unattributed wall time.
     pub(crate) fn named_sum_secs(self) -> f64 {
         self.rec_stop_secs
             + self.final_pass_secs

@@ -87,6 +87,8 @@ pub enum ModelDiscoveryError {
 }
 
 impl ModelDiscoveryError {
+    /// Which provider failed. Needed because Settings refreshes several
+    /// providers at once and must attribute each failure to its own row.
     pub const fn provider(&self) -> ProviderKind {
         match self {
             Self::NoKey { provider, .. }
@@ -98,6 +100,8 @@ impl ModelDiscoveryError {
         }
     }
 
+    /// Stable machine-readable discriminant for the UI and tests. Distinct from
+    /// [`Self::message`], which is prose the operator reads.
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NoKey { .. } => "no_key",
@@ -109,6 +113,9 @@ impl ModelDiscoveryError {
         }
     }
 
+    /// Operator-facing explanation. Also the `reason` recorded when a failure
+    /// degrades to [`ModelDiscoveryStatus::Cached`], which is why it never
+    /// interpolates key material — only the env key's name.
     pub fn message(&self) -> String {
         match self {
             Self::NoKey { env_key, .. } => format!("{env_key} is not configured"),
@@ -149,27 +156,37 @@ impl std::fmt::Display for ModelDiscoveryError {
 
 impl std::error::Error for ModelDiscoveryError {}
 
+/// Last-good models for one provider. `fetched_at` is informational only —
+/// the cache has no expiry, because a stale picker still beats an empty one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedProviderModels {
     fetched_at: String,
     models: Vec<DiscoveredModel>,
 }
 
+/// On-disk shape of the discovery cache. Keyed by provider so one provider's
+/// failure can never invalidate another's last-good list; `BTreeMap` keeps the
+/// serialized file diff-stable.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct DiscoveryCacheFile {
     providers: BTreeMap<String, CachedProviderModels>,
 }
 
+/// Envelope of `GET /v1/models` on the OpenAI wire family.
 #[derive(Debug, Deserialize)]
 struct OpenAiModelsResponse {
     data: Vec<OpenAiModel>,
 }
 
+/// One OpenAI-family model. Only `id` is read: the protocol carries no display
+/// name, so the picker falls back to the id itself.
 #[derive(Debug, Deserialize)]
 struct OpenAiModel {
     id: String,
 }
 
+/// One page of Anthropic's `/v1/models`. Unlike the OpenAI family this endpoint
+/// paginates, so `has_more` and `last_id` drive the fetch loop.
 #[derive(Debug, Deserialize)]
 struct AnthropicModelsResponse {
     data: Vec<AnthropicModel>,
@@ -178,6 +195,8 @@ struct AnthropicModelsResponse {
     last_id: Option<String>,
 }
 
+/// One Anthropic model. `display_name` is optional on the wire, hence the
+/// fallback to `id` when it is absent or blank.
 #[derive(Debug, Deserialize)]
 struct AnthropicModel {
     id: String,
@@ -233,9 +252,13 @@ fn finish_generation(provider: ProviderKind, generation: u64) -> bool {
     }
 }
 
+/// One-shot callback fired right after a generation is claimed. `FnOnce` so a
+/// test cannot accidentally arm the same interference twice.
 #[cfg(test)]
 type AfterClaimHook = Box<dyn FnOnce(ProviderKind) + Send>;
 
+/// Process-wide slot holding the armed hook. Tests using it run `#[serial]`,
+/// since the slot — like the generation registry — is global state.
 #[cfg(test)]
 fn test_after_claim_hook() -> &'static Mutex<Option<AfterClaimHook>> {
     static HOOK: OnceLock<Mutex<Option<AfterClaimHook>>> = OnceLock::new();
@@ -358,6 +381,9 @@ fn commit_fetch_outcome(
     }
 }
 
+/// Fetch models from an OpenAI-family provider, deriving the `/models` URL from
+/// the endpoint the runtime already uses for this lane — so a custom proxy or
+/// gateway is discovered against the same host that will serve inference.
 async fn fetch_openai_models(
     client: &Client,
     config: &Config,
@@ -390,6 +416,9 @@ async fn fetch_openai_models(
         .collect())
 }
 
+/// Fetch the full Anthropic model list, following `after_id` pagination until
+/// the provider reports no more pages. A `has_more` page without a cursor is a
+/// parse error rather than a silent truncation of the picker.
 async fn fetch_anthropic_models(
     client: &Client,
     api_key: &str,
@@ -450,6 +479,9 @@ async fn fetch_anthropic_models(
     Ok(models)
 }
 
+/// Read the body, then classify by status. Reading first is deliberate: an
+/// error body usually holds the provider's own explanation, which is more use
+/// to the operator than a bare status line.
 async fn response_body_or_error(
     provider: ProviderKind,
     response: reqwest::Response,
@@ -466,6 +498,8 @@ async fn response_body_or_error(
     }
 }
 
+/// Wrap a transport failure (DNS, TLS, timeout) as a `Network` error — the
+/// class that is allowed to fall back to last-good cache.
 fn network_error(provider: ProviderKind, error: reqwest::Error) -> ModelDiscoveryError {
     ModelDiscoveryError::Network {
         provider,
@@ -473,6 +507,9 @@ fn network_error(provider: ProviderKind, error: reqwest::Error) -> ModelDiscover
     }
 }
 
+/// Turn a non-2xx response into an error carrying a single-line, length-capped
+/// excerpt of the body — enough to diagnose, small enough for a status label,
+/// and with the status reason as fallback when the body is empty.
 fn http_status_error(
     provider: ProviderKind,
     status: StatusCode,
@@ -496,6 +533,12 @@ fn http_status_error(
     }
 }
 
+/// Derive the `/models` URL from a configured inference endpoint.
+///
+/// Operators paste whatever their provider documents — `/v1/responses`,
+/// `/v1/chat/completions`, or a bare proxy base — so the trailing inference
+/// segment is swapped for `models` rather than assumed. Query and fragment are
+/// dropped: they belong to the inference call, not to discovery.
 fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError> {
     let provider = ProviderKind::OpenAiResponses;
     let mut url = reqwest::Url::parse(endpoint).map_err(|error| ModelDiscoveryError::Parse {
@@ -541,6 +584,9 @@ fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError>
     Ok(url.to_string())
 }
 
+/// Trim, drop blanks, and de-duplicate by id while preserving provider order —
+/// the picker shows this list verbatim. Applied on both write and read, so a
+/// cache file that predates a normalization rule is still cleaned up on load.
 fn normalize_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel> {
     let mut seen = HashSet::new();
     models
@@ -563,10 +609,14 @@ fn normalize_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel> {
         .collect()
 }
 
+/// Cache location, resolved through `Config` so an isolated data dir (tests,
+/// portable installs) redirects it along with everything else.
 fn cache_path() -> std::path::PathBuf {
     Config::config_dir().join(CACHE_FILE_NAME)
 }
 
+/// Read the whole cache file. A missing file is an empty cache, not an error —
+/// first run must not surface as a discovery failure.
 fn read_cache_file() -> Result<DiscoveryCacheFile, ModelDiscoveryError> {
     let path = cache_path();
     match fs::read_to_string(&path) {
@@ -584,6 +634,8 @@ fn read_cache_file() -> Result<DiscoveryCacheFile, ModelDiscoveryError> {
     }
 }
 
+/// Last-good models for one provider, re-normalized on read. Absent entry
+/// yields an empty list, which callers treat as "no cache to fall back to".
 fn read_cached_models(provider: ProviderKind) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
     let cache = read_cache_file().map_err(|error| ModelDiscoveryError::Cache {
         provider,
@@ -596,6 +648,9 @@ fn read_cached_models(provider: ProviderKind) -> Result<Vec<DiscoveredModel>, Mo
         .unwrap_or_default())
 }
 
+/// Replace this provider's cache entry, leaving other providers untouched.
+/// A failure here is logged rather than propagated: losing the cache write
+/// must not turn a successful live discovery into a failed one.
 fn write_cache(
     provider: ProviderKind,
     models: &[DiscoveredModel],
@@ -627,6 +682,7 @@ fn write_cache(
     })
 }
 
+/// Read an env var, treating whitespace-only as unset.
 #[cfg(test)]
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
@@ -635,6 +691,9 @@ fn env_non_empty(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Anthropic's models endpoint. Unlike the OpenAI family it is not derived from
+/// configuration — the Messages wire has no per-lane endpoint setting — so the
+/// override exists only under `cfg(test)`, to point at a mock server.
 fn anthropic_models_endpoint() -> String {
     #[cfg(test)]
     if let Some(endpoint) = env_non_empty("CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT") {
@@ -644,6 +703,12 @@ fn anthropic_models_endpoint() -> String {
     ANTHROPIC_MODELS_ENDPOINT.to_string()
 }
 
+/// Discovery is exercised against a mock HTTP server and an isolated data dir,
+/// so no case depends on a real provider or on the operator's own config.
+///
+/// Every test touching the module's global generation registry is `#[serial]`:
+/// the counters are process-wide, and a parallel run would cancel generations
+/// belonging to another test.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,6 +716,8 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
+    /// Live OpenAI discovery reports `Fresh` and lands in the cache verbatim,
+    /// so the next offline refresh has something to fall back to.
     #[test]
     #[serial]
     fn openai_models_parse_and_cache_round_trips() {
@@ -693,6 +760,9 @@ mod tests {
         env.keepalive();
     }
 
+    /// Pagination is followed to the end and display names survive, including
+    /// the fallback to `id` for a model that ships without one. A regression
+    /// here silently truncates the picker to page one.
     #[test]
     #[serial]
     fn anthropic_models_parse_display_names_and_pagination() {
@@ -748,6 +818,8 @@ mod tests {
         env.keepalive();
     }
 
+    /// A missing key fails before anything reaches the wire — asserted by the
+    /// mock's `expect(0)`, not merely by the returned error code.
     #[test]
     #[serial]
     fn no_key_returns_error_without_request() {
@@ -768,6 +840,8 @@ mod tests {
         env.keepalive();
     }
 
+    /// A provider outage degrades the picker to the last-good list with the
+    /// failure carried as `reason`, instead of emptying it.
     #[test]
     #[serial]
     fn network_error_uses_last_good_cache() {
@@ -806,6 +880,9 @@ mod tests {
         env.keepalive();
     }
 
+    /// A superseded request is abandoned before a single byte goes out — the
+    /// `biased` select must see the pre-fired cancel first. Proven by the mock
+    /// asserting zero requests, and by the cache staying empty.
     #[test]
     #[serial]
     fn superseding_generation_cancels_inflight_discovery() {
@@ -846,6 +923,9 @@ mod tests {
         env.keepalive();
     }
 
+    /// The other half of the cancel race: a fetch that was superseded *after*
+    /// completing must commit nothing, or a slow earlier request would end up
+    /// overwriting the newer answer.
     #[test]
     #[serial]
     fn stale_generation_result_does_not_overwrite_cache() {
@@ -884,6 +964,8 @@ mod tests {
         env.keepalive();
     }
 
+    /// The cancel channel stays silent while a request is the newest one, and
+    /// fires exactly when a newer claim arrives.
     #[test]
     #[serial]
     fn newer_generation_fires_cancel_signal() {
@@ -903,6 +985,9 @@ mod tests {
         );
     }
 
+    /// Generations are per-provider: Settings refreshes several providers in
+    /// one batch, and an Anthropic claim must not abort an in-flight OpenAI
+    /// fetch (the reason the registry is a map, not a single counter).
     #[test]
     #[serial]
     fn cross_provider_generations_are_independent() {
@@ -924,6 +1009,8 @@ mod tests {
         );
     }
 
+    /// The three endpoint shapes operators actually paste — Responses, legacy
+    /// chat completions, and a bare proxy base — all resolve to `/models`.
     #[test]
     fn openai_endpoint_normalizes_common_api_paths() {
         assert_eq!(
@@ -940,12 +1027,18 @@ mod tests {
         );
     }
 
+    /// Isolated environment for one test: a temp data dir plus the env vars
+    /// discovery reads, each restored on drop. The temp dir is held so it
+    /// outlives the cache reads and writes performed during the test.
     struct TestEnv {
         _tmp: TempDir,
         guards: Vec<EnvGuard>,
     }
 
     impl TestEnv {
+        /// Point the data dir at a fresh temp directory, disable the keychain,
+        /// and clear every key/endpoint var so the test starts from a known
+        /// state rather than inheriting the operator's own configuration.
         fn new() -> Self {
             let tmp = tempfile::tempdir().unwrap();
             let mut this = Self {
@@ -963,29 +1056,38 @@ mod tests {
             this
         }
 
+        /// Set a var for the duration of the test.
         fn set(&mut self, key: &'static str, value: &str) {
             self.guards.push(EnvGuard::set(key, value));
         }
 
+        /// Unset a var for the duration of the test.
         fn remove(&mut self, key: &'static str) {
             self.guards.push(EnvGuard::remove(key));
         }
 
+        /// Drop-order pin, not dead code: called at the end of a test so the
+        /// guards cannot be dropped — and the environment restored — before the
+        /// assertions above have run.
         fn keepalive(&self) {}
     }
 
+    /// One env var borrowed and given back. Restoring the previous value on
+    /// drop is what keeps `#[serial]` tests from leaking state into each other.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Remember the current value, then set the new one.
         fn set(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
             unsafe { std::env::set_var(key, value) };
             Self { key, prev }
         }
 
+        /// Remember the current value, then unset the var.
         fn remove(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             unsafe { std::env::remove_var(key) };

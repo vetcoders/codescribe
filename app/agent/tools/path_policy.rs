@@ -1,9 +1,37 @@
+//! Sandbox policy for the agent's filesystem and terminal tools.
+//!
+//! Every path an agent tool touches passes through here first, and the whole
+//! module is written to **fail closed**: an unresolvable path, an unconfigured
+//! root set, or an unrecognised command shape is a denial, never a default-allow.
+//!
+//! Two independent gates:
+//!
+//! - **Path containment** — [`validate_existing`] and [`validate_new_target`]
+//!   canonicalize (resolving symlinks) and then require the result to sit under a
+//!   configured workspace root. Canonicalizing *before* the root check is what
+//!   makes a symlink pointing outside the workspace fail.
+//! - **Command shape** — [`validate_terminal`] admits exactly one program with no
+//!   shell metacharacters, rejects interpreters and privilege tools, and pushes
+//!   every path-shaped argument back through the containment gate.
+//!
+//! Roots come from operator configuration ([`workspace_roots`]); an empty root
+//! set denies everything rather than falling back to the whole filesystem.
+//!
+//! The `review P1-05` / `review S-P0-03` markers throughout name the audits that
+//! closed specific bypasses — the tests below reproduce each one, so treat them
+//! as regression anchors rather than incidental comments.
+
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::config::Config;
 
+/// The operator-configured workspace roots, canonicalized and tilde-expanded.
+///
+/// Reads fresh config on every call so a Settings change takes effect without a
+/// restart. Unreadable or non-directory roots are silently dropped, so this can
+/// legitimately return empty — which every gate below treats as "deny all".
 pub fn workspace_roots() -> Vec<PathBuf> {
     canonical_roots(
         &Config::effective_agent_workspace_roots()
@@ -13,6 +41,12 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     )
 }
 
+/// Canonicalize a root list, dropping entries that do not resolve to an existing
+/// directory and de-duplicating the survivors.
+///
+/// Dropping rather than erroring is deliberate: a stale configured root must not
+/// take the whole tool surface down, and a root that cannot be resolved cannot
+/// contain anything anyway.
 pub fn canonical_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     roots
@@ -23,6 +57,13 @@ pub fn canonical_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Resolve an **existing** path and prove it lies inside `roots`.
+///
+/// Requires an absolute input, then canonicalizes before the containment check —
+/// that ordering is the symlink defence: a link inside the workspace that points
+/// outside resolves to its target and fails the root test.
+///
+/// Errors when the path is relative, missing, unresolvable, or out of bounds.
 pub fn validate_existing(path: &str, roots: &[PathBuf]) -> Result<PathBuf> {
     let path = absolute(path)?;
     if !path.exists() {
@@ -35,6 +76,16 @@ pub fn validate_existing(path: &str, roots: &[PathBuf]) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// Resolve a path that may not exist yet (a create/write destination) and prove
+/// it lands inside `roots`.
+///
+/// A path that does not exist cannot be canonicalized, so containment is proven
+/// against the nearest **existing** ancestor: walk up to it, canonicalize and
+/// root-check that, then re-append the missing components. Because those trailing
+/// components are never resolved, `.` and `..` are rejected outright — allowing
+/// them would let an unresolvable `..` escape after the check had already passed.
+///
+/// An already-existing target takes the same route as [`validate_existing`].
 pub fn validate_new_target(path: &str, roots: &[PathBuf]) -> Result<PathBuf> {
     let path = absolute(path)?;
     if path
@@ -87,6 +138,15 @@ pub fn validate_new_target(path: &str, roots: &[PathBuf]) -> Result<PathBuf> {
     Ok(canonical_target)
 }
 
+/// Program names the terminal tool refuses to run, in any argv position.
+///
+/// Two groups, blocked for different reasons. Privilege, disk, and system-state
+/// tools (`sudo`, `diskutil`, `launchctl`, …) can do damage no path check can
+/// undo. Interpreters and command launchers (`bash`, `python`, `env`, `xargs`, …)
+/// are worse: they execute arbitrary code, which voids every other rule in
+/// [`validate_terminal`] at once.
+///
+/// Matching is version-suffix aware — see [`is_forbidden_program`].
 const FORBIDDEN_PROGRAMS: &[&str] = &[
     "sudo",
     "su",
@@ -147,6 +207,25 @@ const FORBIDDEN_PROGRAMS: &[&str] = &[
     "open",
 ];
 
+/// Admit a single terminal command, returning the validated working directory.
+///
+/// The contract is **one command line means one program**. In order:
+///
+/// 1. `cwd` must be an existing directory inside `roots`.
+/// 2. No newlines, and no shell control or expansion characters
+///    (`| ; & < > ( ) $ \``) anywhere in the line. This is a whole-string reject,
+///    not per-token stripping — stripping was the P1-05 bypass that let
+///    `curl … | bash` through as three innocent words.
+/// 3. No token resolves to a `FORBIDDEN_PROGRAMS` entry, checked by basename so
+///    `/bin/bash` is caught alongside `bash`.
+/// 4. Targeted refusals for commands that are individually fine but destructive
+///    in specific shapes: `dd of=/dev/…`, `rm -rf`, `git reset --hard`,
+///    `git clean -f`, and anything naming keychains, browser profiles, or the
+///    policy settings themselves.
+/// 5. Every path-shaped argument is sanitized and pushed back through the
+///    containment gates, so arguments cannot reach outside the workspace.
+///
+/// Returns the canonical `cwd` on success; any failure is a denial.
 pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<PathBuf> {
     let cwd = validate_existing(cwd, roots)?;
     if !cwd.is_dir() {
@@ -358,6 +437,11 @@ fn sanitize_path_segment(segment: &str) -> Result<String> {
     Ok(out)
 }
 
+/// `$HOME` as an absolute path string, for `~` expansion.
+///
+/// Reads the environment rather than argv — the tilde is expanded from trusted
+/// process state, never from model-supplied text. A missing, empty, or relative
+/// `HOME` is an error, not a silent skip.
 fn home_dir_string() -> Result<String> {
     let home =
         std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set; cannot expand ~"))?;
@@ -367,6 +451,8 @@ fn home_dir_string() -> Result<String> {
     Ok(home)
 }
 
+/// Join an already-sanitized component stack into an absolute path string.
+/// An empty stack is the filesystem root.
 fn normalize_absolute_stack(stack: Vec<String>) -> Result<String> {
     if stack.is_empty() {
         return Ok("/".to_string());
@@ -376,6 +462,8 @@ fn normalize_absolute_stack(stack: Vec<String>) -> Result<String> {
     Ok(absolute)
 }
 
+/// Require an absolute path. Relative input is refused rather than joined
+/// against some implied base — there is no trustworthy base to assume.
 fn absolute(path: &str) -> Result<PathBuf> {
     let path = PathBuf::from(path);
     if !path.is_absolute() {
@@ -384,6 +472,10 @@ fn absolute(path: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// The containment check itself: `path` must be prefixed by one canonical root.
+///
+/// An empty root set is an explicit denial. Callers must pass an already
+/// canonicalized `path` — a prefix test against an unresolved path proves nothing.
 fn ensure_within_roots(path: &Path, roots: &[PathBuf]) -> Result<()> {
     let roots = canonical_roots(roots);
     if roots.is_empty() {
@@ -398,6 +490,9 @@ fn ensure_within_roots(path: &Path, roots: &[PathBuf]) -> Result<()> {
     )
 }
 
+/// Expand a leading `~` / `~/` in a **configured root** using `$HOME`.
+/// Without `HOME` the string passes through unchanged and simply fails to
+/// canonicalize later.
 fn expand_tilde(path: String) -> PathBuf {
     if path == "~" {
         return std::env::var_os("HOME")

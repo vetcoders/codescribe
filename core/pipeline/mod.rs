@@ -1,3 +1,7 @@
+//! Transcription pipeline: the event contracts every stage speaks, the sinks
+//! that fan those events out to consumers, overlap dedup, streaming session
+//! management, and the post-processing passes applied to emitted text.
+
 pub mod contracts;
 pub mod dedup;
 pub mod light_plus;

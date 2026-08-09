@@ -37,6 +37,7 @@ pub(super) fn demote_to_cpu() {
     FORCE_CPU.store(true, Ordering::Relaxed);
 }
 
+/// Whether [`demote_to_cpu`] has fired in this process.
 pub(super) fn is_demoted_to_cpu() -> bool {
     FORCE_CPU.load(Ordering::Relaxed)
 }
@@ -49,6 +50,13 @@ pub(super) fn is_demoted_to_cpu() -> bool {
 /// Metal-with-CPU-fallback.
 const ENV_EMBEDDER_DEVICE: &str = "CODESCRIBE_EMBEDDER_DEVICE";
 
+/// The Candle device for this process, created at most once.
+///
+/// The demotion flag is checked *before* `PROCESS_DEVICE` so a CPU fallback
+/// survives idle-unload without re-deriving the Metal device. Metal acquisition
+/// falls back to CPU on failure, and `CODESCRIBE_EMBEDDER_DEVICE=cpu` forces CPU
+/// outright. Availability is not correctness: the loader still runs a
+/// finite-output self-test on top of whatever this returns.
 fn process_device() -> Device {
     if is_demoted_to_cpu() {
         return Device::Cpu;
@@ -182,6 +190,10 @@ impl EmbedderEngine {
         Self::from_path(&model_path, device, config.max_length)
     }
 
+    /// Build the engine from weights compiled into the binary.
+    ///
+    /// Tensors are deserialized on the CPU and then moved, because the embedded
+    /// weights are a plain byte slice with no device affinity.
     fn from_embedded(
         embedded: &embedded::EmbeddedModel,
         device: Device,
@@ -214,6 +226,11 @@ impl EmbedderEngine {
         })
     }
 
+    /// Build the engine from a model directory on disk.
+    ///
+    /// Expects `config.json`, `tokenizer.json` and `model.safetensors`. A
+    /// directory holding only the ONNX export is refused with a message naming
+    /// both paths, since this loader is safetensors-only.
     fn from_path(model_path: &Path, device: Device, max_length: Option<usize>) -> Result<Self> {
         let config_path = model_path.join("config.json");
         let tokenizer_path = model_path.join("tokenizer.json");
@@ -289,6 +306,11 @@ impl EmbedderEngine {
         self.embed_internal(&inputs)
     }
 
+    /// The single inference path behind every `embed*` entry point.
+    ///
+    /// Runs BERT, mean-pools over the attention mask, L2-normalizes, then forces
+    /// f32 on the CPU before extraction — an accelerated backend may hold the
+    /// result in a narrower dtype, and `to_vec2::<f32>()` would fail on it.
     fn embed_internal(&mut self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
         let (input_ids, token_type_ids, attention_mask) = encode_batch(
             &self.tokenizer,
@@ -339,6 +361,11 @@ impl EmbedderEngine {
     }
 }
 
+/// Locate a model directory: explicit path, then `CODESCRIBE_EMBEDDER_PATH`,
+/// then an HF cache snapshot for the configured or default repo.
+///
+/// Never downloads. Failure returns an error naming the exact commands and env
+/// vars that would fix it.
 fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path.clone());
@@ -374,6 +401,11 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
     ))
 }
 
+/// Whether `path` holds a usable model: both config files plus safetensors or
+/// ONNX weights.
+///
+/// Broader than what [`EmbedderEngine::from_path`] accepts — this only gates
+/// *candidate* directories during resolution.
 fn model_files_present(path: &Path) -> bool {
     let has_config = path.join("config.json").exists() && path.join("tokenizer.json").exists();
     let has_weights = path.join("model.safetensors").exists();
@@ -381,6 +413,11 @@ fn model_files_present(path: &Path) -> bool {
     has_config && (has_weights || has_onnx)
 }
 
+/// Pin padding and truncation on a freshly loaded tokenizer.
+///
+/// Effective length is `min(override_or_model_max, DEFAULT_MAX_LENGTH)`, so a
+/// caller cannot request a window wider than the model or than the 512-token
+/// ceiling. Padding is batch-longest, which keeps single-text calls cheap.
 fn prepare_tokenizer(
     tokenizer: Tokenizer,
     config: &BertConfig,
@@ -412,6 +449,13 @@ fn prepare_tokenizer(
     Ok(tokenizer)
 }
 
+/// Tokenize a batch into the `(input_ids, token_type_ids, attention_mask)`
+/// triple BERT expects, each shaped `[batch, max_len]`.
+///
+/// Rows are re-padded here even though the tokenizer pads: the widths are
+/// re-derived from the actual encodings so a tokenizer configured differently
+/// cannot produce a ragged tensor. Missing type ids default to zeros
+/// (single-segment input); the mask is f32 so it can be broadcast during pooling.
 fn encode_batch(
     tokenizer: &Tokenizer,
     inputs: &[String],
@@ -460,12 +504,19 @@ fn encode_batch(
     Ok((input_ids, token_type_ids, attention_mask))
 }
 
+/// Right-pad `vec` to `target_len` with `pad`. Longer input is left untouched.
 fn pad_to(vec: &mut Vec<u32>, target_len: usize, pad: u32) {
     if vec.len() < target_len {
         vec.extend(std::iter::repeat_n(pad, target_len - vec.len()));
     }
 }
 
+/// Mask-aware mean pooling: `[batch, seq, hidden]` → `[batch, hidden]`.
+///
+/// This is the pooling sentence-transformers trained the MiniLM checkpoint with,
+/// so it is a correctness requirement, not a choice. Padding positions are
+/// zeroed before summing and excluded from the divisor; an epsilon guards the
+/// all-padding row against division by zero.
 fn mean_pool(hidden: &Tensor, mask: &Tensor) -> Result<Tensor> {
     // hidden: [batch, seq, hidden], mask: [batch, seq]
     let dtype = hidden.dtype();
@@ -479,6 +530,10 @@ fn mean_pool(hidden: &Tensor, mask: &Tensor) -> Result<Tensor> {
     Ok(sum.broadcast_div(&counts)?)
 }
 
+/// Scale each row to unit length, with an epsilon so a zero row stays finite.
+///
+/// Unit-norm output is what lets [`EmbedderEngine::similarity`] read as cosine
+/// similarity.
 fn l2_normalize(t: &Tensor) -> Result<Tensor> {
     let dtype = t.dtype();
     let squared = t.sqr()?;
@@ -489,6 +544,10 @@ fn l2_normalize(t: &Tensor) -> Result<Tensor> {
     Ok(t.broadcast_div(&norm)?)
 }
 
+/// Cast every tensor to `dtype` and move it onto `device`, preserving names.
+///
+/// The cast runs before the move so the conversion happens on the CPU rather
+/// than on the accelerator.
 fn move_tensors_to_device(
     tensors: std::collections::HashMap<String, Tensor>,
     device: &Device,

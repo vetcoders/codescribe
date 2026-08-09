@@ -133,6 +133,8 @@ pub struct CodescribeAgentStatus {}
 
 #[uniffi::export]
 impl CodescribeAgentStatus {
+    /// Construct the handle and ensure logging is initialised, since Swift may
+    /// reach this before any other bridge entry point has run.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -172,6 +174,13 @@ impl CodescribeAgentStatus {
     }
 }
 
+/// Derive connector health from the configured MCP servers for the capability
+/// matrix.
+///
+/// Servers are matched by substring on their name, so operator-chosen names like
+/// `loctree-mcp` or `my-intellij` still resolve. IntelliJ's project path needs a
+/// second read of `mcp.json`: `list_servers` exposes env *keys* only, never their
+/// values. Workspace roots are tilde-expanded here so the matrix shows real paths.
 fn live_connector_health() -> ConnectorHealth {
     let servers = list_servers().unwrap_or_default();
     let mut intellij_healthy = false;

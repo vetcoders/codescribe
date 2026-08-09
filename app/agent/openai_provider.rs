@@ -1,3 +1,17 @@
+//! Responses-API agent provider (`POST /v1/responses`, streaming SSE).
+//!
+//! Serves every Responses-family vendor, not just OpenAI — the target is
+//! whatever the assistive lane resolved, and [`ProviderKind`] is carried so the
+//! account-auth path asks that vendor for tokens instead of reaching for
+//! OpenAI's Keychain slot by reflex.
+//!
+//! Unlike [`super::AnthropicProvider`], which replays full history every turn,
+//! this API can chain turns server-side via `previous_response_id`. That chain
+//! is the delicate part of the file: it may only advance on a clean terminal the
+//! consumer actually received, so [`forward_events_and_track_chain`] delivers
+//! the event first and mutates the chain second, and a dirty terminal resets it
+//! rather than resuming from a poisoned response.
+
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,15 +36,25 @@ use codescribe_core::llm::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
 
+/// How long to wait for the first byte of the response before giving up.
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
+/// How long a started stream may stall between chunks before giving up.
 const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 
+/// Agent provider speaking the Responses API over SSE.
 #[derive(Clone)]
 pub struct OpenAiProvider {
+    /// Shared HTTP client; its own timeout is the outer streaming ceiling.
     client: Client,
+    /// Full Responses endpoint URL for the resolved lane.
     endpoint: String,
+    /// Bearer/API key; empty means an intentionally unauthenticated endpoint.
     api_key: String,
+    /// Model used when the caller leaves `StreamOptions::model` blank.
     default_model: String,
+    /// Whether server-side chaining is enabled at all
+    /// (`CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID`). When off, every turn
+    /// replays the full message list.
     use_previous_response_id: bool,
     /// Single source of truth for the AGENT path's response chain
     /// (`previous_response_id`).
@@ -53,7 +77,9 @@ pub struct OpenAiProvider {
     /// `AiMode::Assistive` branch in `core::state::conversation` becomes dead and
     /// should be removed (owner: GROUP state).
     previous_response_id: Arc<Mutex<Option<String>>>,
+    /// Deadline for the first byte of a response.
     initial_response_timeout: Duration,
+    /// Deadline between chunks of an already-started stream.
     inter_chunk_timeout: Duration,
     /// Lane resolved to provider-account auth (no API key, official endpoint,
     /// stored tokens). Each request fetches a FRESH access token via
@@ -375,8 +401,13 @@ async fn forward_events_and_track_chain(
     }
 }
 
+/// Wire body for `POST /v1/responses`.
+///
+/// Optional fields are skipped when unset rather than sent as null: omitting a
+/// parameter is always accepted, while sending one a model rejects is a 400.
 #[derive(Debug, Serialize)]
 struct OpenAiResponsesRequest {
+    /// Target model id.
     model: String,
     /// Ask reasoning-capable Responses models for the safe public summary
     /// stream. Without this field the API may reason internally but emits no
@@ -384,25 +415,39 @@ struct OpenAiResponsesRequest {
     /// an opaque "thinking…" placeholder for the whole tool turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<OpenAiReasoningRequest>,
+    /// Conversation items for this turn — the tail only when chaining.
     input: Vec<Value>,
+    /// Server-side chain anchor, absent on a fresh or reset chain.
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
+    /// System prompt; top-level here, not a message role.
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
+    /// Output ceiling when the caller sets one.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
+    /// Sampling temperature when the caller sets one.
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// Callable tool definitions; omitted entirely when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefinition>,
+    /// Always `true` — this provider only ever streams.
     stream: bool,
 }
 
+/// Opt-in request for the public reasoning-summary stream.
 #[derive(Debug, Serialize)]
 struct OpenAiReasoningRequest {
+    /// Summary mode; `"auto"` is the only value sent.
     summary: &'static str,
 }
 
+/// Ask for reasoning summaries, but only from models that emit them.
+///
+/// Without this the API may reason internally while emitting no
+/// `response.reasoning_summary_text.*` events, leaving the UI stuck on an
+/// opaque "thinking…" placeholder for the whole turn.
 fn reasoning_summary_request(model: &str) -> Option<OpenAiReasoningRequest> {
     let model = model.trim().to_ascii_lowercase();
     let supports_reasoning = model.starts_with("gpt-5")
@@ -412,15 +457,21 @@ fn reasoning_summary_request(model: &str) -> Option<OpenAiReasoningRequest> {
     supports_reasoning.then_some(OpenAiReasoningRequest { summary: "auto" })
 }
 
+/// Wire form of one callable tool.
 #[derive(Debug, Serialize)]
 struct OpenAiToolDefinition {
+    /// Always `"function"`.
     #[serde(rename = "type")]
     tool_type: &'static str,
+    /// Tool name the model calls.
     name: String,
+    /// Natural-language description shown to the model.
     description: String,
+    /// JSON Schema for the tool's arguments.
     parameters: Value,
 }
 
+/// Project the registry's tool definitions onto the Responses wire shape.
 fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<OpenAiToolDefinition> {
     tools
         .iter()
@@ -433,6 +484,7 @@ fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<OpenAiToolDefinition> {
         .collect()
 }
 
+/// Build the `input` array: select the messages to send, then encode them.
 fn build_request_input_items(
     messages: &[Message],
     previous_response_id: Option<&str>,
@@ -440,6 +492,11 @@ fn build_request_input_items(
     build_input_items(request_messages(messages, previous_response_id))
 }
 
+/// Choose which messages a request carries.
+///
+/// Without a chain, everything. With one, only the trailing run of user
+/// messages — the server already holds the rest, so resending it would both
+/// duplicate context and inflate the bill.
 fn request_messages<'a>(
     messages: &'a [Message],
     previous_response_id: Option<&str>,
@@ -456,6 +513,15 @@ fn request_messages<'a>(
     &messages[start..]
 }
 
+/// Encode messages into Responses input items.
+///
+/// Tool calls and tool results become their own top-level items rather than
+/// message content, which is what the API expects. Empty content produces no
+/// item at all, since a message with nothing in it is rejected.
+///
+/// # Errors
+/// Returns an error if tool arguments fail to serialize or an image asset
+/// cannot be read.
 fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
     let mut items = Vec::new();
 
@@ -535,6 +601,7 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
     Ok(items)
 }
 
+/// Text block type for a role: the API distinguishes model output from input.
 fn text_content_type(role: Role) -> &'static str {
     match role {
         Role::Assistant => "output_text",
@@ -542,6 +609,15 @@ fn text_content_type(role: Role) -> &'static str {
     }
 }
 
+/// Render tool result blocks into the string `function_call_output` expects.
+///
+/// A lone text block is returned bare (prefixed `ERROR: ` on failure) so the
+/// common case stays readable to the model; anything richer is serialized as
+/// JSON. Empty results still produce a sentence, because a silent tool result
+/// reads to the model as the tool having done nothing.
+///
+/// Image bytes are described here, not embedded — they ride as separate input
+/// items so the model can actually see them.
 fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String> {
     let mut parts = Vec::new();
     for block in content {
@@ -607,6 +683,11 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
     serde_json::to_string(&payload).context("Failed to serialize tool output payload")
 }
 
+/// Collect viewable images from a tool result as `input_image` content.
+///
+/// Emitted as a follow-up user message, since `function_call_output` carries
+/// only text. Byte-less images restored from history are skipped loudly — an
+/// empty data URL makes the provider reject the entire request.
 fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
     let mut image_content = Vec::new();
     for block in content {
@@ -634,6 +715,10 @@ fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
     Ok(image_content)
 }
 
+/// Load a stored image asset and inline it as an `input_image` data URI.
+///
+/// # Errors
+/// Returns an error if the asset cannot be read from the store.
 fn image_asset_input_content(asset: &ImageAsset) -> Result<Value> {
     // Tainted-path guard: asset paths ride through conversation state, so the
     // read goes through the store, which honors only the file name re-rooted
@@ -645,6 +730,7 @@ fn image_asset_input_content(asset: &ImageAsset) -> Result<Value> {
     }))
 }
 
+/// Wire spelling of a message role.
 fn role_to_str(role: Role) -> &'static str {
     match role {
         Role::User => "user",
@@ -653,6 +739,7 @@ fn role_to_str(role: Role) -> &'static str {
     }
 }
 
+/// Base64 `data:` URI for image bytes, defaulting a blank media type to PNG.
 fn to_data_uri(data: &[u8], media_type: &str) -> String {
     let media_type = {
         let normalized = media_type.trim();
@@ -665,6 +752,7 @@ fn to_data_uri(data: &[u8], media_type: &str) -> String {
     format!("data:{media_type};base64,{}", BASE64.encode(data))
 }
 
+/// Read a `u64` env override, falling back on absent or unparseable values.
 fn parse_env_u64(key: &str, default: u64) -> u64 {
     env::var(key)
         .ok()
@@ -672,6 +760,10 @@ fn parse_env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Read a boolean env override, accepting `1/true/yes/on` and their negatives.
+///
+/// An unrecognized value keeps the default rather than reading as `false`, so a
+/// typo cannot silently disable a feature.
 fn parse_env_bool(key: &str, default: bool) -> bool {
     match env::var(key) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {

@@ -35,27 +35,40 @@
 // Core modules (namespaced)
 // ═══════════════════════════════════════════════════════════
 
+/// Agent runtime: threads, sessions, capabilities, permissions, tool grants,
+/// and durable run monitoring.
 pub mod agent;
 pub mod attachment;
 pub mod audio;
 pub mod config;
 pub mod connectors;
 pub mod conversation;
+/// Streaming tag demultiplexer: splits a model stream into plain text and
+/// tagged events as the bytes arrive.
 pub mod demux;
 pub mod embedded;
 pub mod embedder;
 mod hf_cache;
+/// Message types shared across the app's process boundaries.
 pub mod ipc;
 pub mod licensing;
+/// LLM surface: provider clients, Responses streaming, account auth, key
+/// liveness, model discovery, and AI formatting.
 pub mod llm;
+/// Model Context Protocol: client, server config store, and secret migration.
 pub mod mcp;
 pub mod memory;
+/// Transcription pipeline: engine contracts, streaming, dedup, post-processing,
+/// and event sinks.
 pub mod pipeline;
+/// Transcript quality: overlay scoring, the qube daemon and its report, and the
+/// teacher merge between live and Whisper text.
 pub mod quality;
 pub mod state;
 pub mod stt;
 pub mod transcript_tagging;
 pub mod tts;
+/// Shared utilities: capability-checked path access and status reporting.
 pub mod util;
 pub mod vad;
 pub use stt::whisper;

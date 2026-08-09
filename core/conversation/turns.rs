@@ -26,6 +26,8 @@ pub struct TurnConfig {
 }
 
 impl Default for TurnConfig {
+    /// Timings tuned for natural back-and-forth: 800ms of silence closes a turn,
+    /// 200ms of speech over the assistant counts as an interruption.
     fn default() -> Self {
         Self {
             min_speech_ms: 100,
@@ -40,6 +42,7 @@ impl Default for TurnConfig {
 /// Manages turn-taking in conversation
 #[derive(Debug)]
 pub struct TurnManager {
+    /// Thresholds governing every transition below.
     config: TurnConfig,
 
     /// Current speaker state
@@ -62,6 +65,7 @@ pub struct TurnManager {
 }
 
 impl Default for TurnManager {
+    /// Idle manager using [`TurnConfig::default`].
     fn default() -> Self {
         Self::new(TurnConfig::default())
     }
@@ -243,6 +247,8 @@ impl TurnManager {
     }
 }
 
+/// Covers the instant transitions; the silence-driven ones need a clock and are
+/// exercised at the pipeline level instead.
 #[cfg(test)]
 mod tests {
     use super::*;

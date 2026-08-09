@@ -1,3 +1,17 @@
+//! Process-global runtime mirror of the hotkey contract.
+//!
+//! Every hotkey setting is held in an atomic rather than behind a lock, so the
+//! gesture detector can read the live configuration without blocking on
+//! whoever is writing it. [`apply_hotkey_config`] is the single write entry
+//! point from [`Config`]; the detector only ever reads.
+//!
+//! Multi-valued settings are bit-packed into one atomic — all three
+//! [`WorkMode`] bindings share a single `AtomicU16` — so an apply is observed
+//! whole rather than as a torn mix of old and new bindings.
+//!
+//! Canonical gesture semantics live in `docs/HOTKEYS_CONTRACT.md`, which the
+//! defaults here mirror.
+
 use crate::config::{
     Config, DeferredInsertShortcut, HoldArmModifier, ShortcutBinding, UserSettings, WorkMode,
 };
@@ -20,6 +34,7 @@ const DEFAULT_MODE_BINDINGS_ENCODED: u16 =
 // Runtime source of truth: mode -> binding mapping, not legacy hold/toggle fields.
 static MODE_HOTKEY_BINDINGS: AtomicU16 = AtomicU16::new(DEFAULT_MODE_BINDINGS_ENCODED);
 
+/// Pack one binding into its 4-bit slot value inside `MODE_HOTKEY_BINDINGS`.
 fn encode_shortcut_binding(binding: ShortcutBinding) -> u16 {
     match binding {
         ShortcutBinding::Disabled => BIND_DISABLED,
@@ -34,6 +49,8 @@ fn encode_shortcut_binding(binding: ShortcutBinding) -> u16 {
     }
 }
 
+/// Unpack a 4-bit slot value, treating anything unrecognised as
+/// [`ShortcutBinding::Disabled`] so a corrupt atomic can never arm a gesture.
 fn decode_shortcut_binding(value: u16) -> ShortcutBinding {
     match value {
         BIND_DISABLED => ShortcutBinding::Disabled,
@@ -49,12 +66,15 @@ fn decode_shortcut_binding(value: u16) -> ShortcutBinding {
     }
 }
 
+/// Pack all three mode bindings into one `u16`: dictation in bits 0-3,
+/// formatting in 4-7, assistive in 8-11.
 fn encode_mode_hotkey_bindings(bindings: ModeHotkeyBindings) -> u16 {
     encode_shortcut_binding(bindings.dictation)
         | (encode_shortcut_binding(bindings.formatting) << 4)
         | (encode_shortcut_binding(bindings.assistive) << 8)
 }
 
+/// Inverse of `encode_mode_hotkey_bindings`.
 fn decode_mode_hotkey_bindings(raw: u16) -> ModeHotkeyBindings {
     ModeHotkeyBindings {
         dictation: decode_shortcut_binding(raw & 0x0F),
@@ -63,6 +83,10 @@ fn decode_mode_hotkey_bindings(raw: u16) -> ModeHotkeyBindings {
     }
 }
 
+/// Publish a new mode-to-gesture mapping for the gesture detector.
+///
+/// This mapping is the runtime source of truth for which gesture drives which
+/// [`WorkMode`]; the legacy hold/toggle fields are not consulted.
 pub fn set_mode_hotkey_bindings(bindings: ModeHotkeyBindings) {
     MODE_HOTKEY_BINDINGS.store(
         encode_mode_hotkey_bindings(bindings),
@@ -76,6 +100,7 @@ pub fn set_mode_hotkey_bindings(bindings: ModeHotkeyBindings) {
     );
 }
 
+/// Current mode-to-gesture mapping as seen by the gesture detector.
 pub fn get_mode_hotkey_bindings() -> ModeHotkeyBindings {
     decode_mode_hotkey_bindings(MODE_HOTKEY_BINDINGS.load(AtomicOrdering::SeqCst))
 }
@@ -94,6 +119,7 @@ static EXCLUSIVE_MODE: AtomicBool = AtomicBool::new(false);
 /// Atomic storage for assistive-arm modifier: 0 = Shift (default), 1 = Cmd.
 static HOLD_ARM_MODIFIER: AtomicU8 = AtomicU8::new(0);
 
+/// Pack the assistive-arm modifier for `HOLD_ARM_MODIFIER`.
 fn encode_hold_arm_modifier(arm: HoldArmModifier) -> u8 {
     match arm {
         HoldArmModifier::Shift => 0,
@@ -101,6 +127,8 @@ fn encode_hold_arm_modifier(arm: HoldArmModifier) -> u8 {
     }
 }
 
+/// Unpack the assistive-arm modifier, defaulting to
+/// [`HoldArmModifier::Shift`] for any unknown value.
 fn decode_hold_arm_modifier(value: u8) -> HoldArmModifier {
     match value {
         1 => HoldArmModifier::Cmd,
@@ -108,11 +136,13 @@ fn decode_hold_arm_modifier(value: u8) -> HoldArmModifier {
     }
 }
 
+/// Choose which modifier arms the assistive lane during a hold gesture.
 pub fn set_hold_arm_modifier(arm: HoldArmModifier) {
     HOLD_ARM_MODIFIER.store(encode_hold_arm_modifier(arm), AtomicOrdering::SeqCst);
     tracing::info!("Hold arm modifier set to: {}", arm.as_str());
 }
 
+/// Current modifier that arms the assistive lane during a hold gesture.
 pub fn get_hold_arm_modifier() -> HoldArmModifier {
     decode_hold_arm_modifier(HOLD_ARM_MODIFIER.load(AtomicOrdering::SeqCst))
 }
@@ -125,6 +155,7 @@ pub fn set_exclusive_mode(enabled: bool) {
     tracing::info!("Hotkey exclusive mode set to: {}", enabled);
 }
 
+/// Whether Shift/Cmd are ignored as mode modifiers (see [`set_exclusive_mode`]).
 pub fn get_exclusive_mode() -> bool {
     EXCLUSIVE_MODE.load(AtomicOrdering::SeqCst)
 }
@@ -159,6 +190,7 @@ const DEFERRED_INSERT_COMMAND_CONTROL_V: u8 = 3;
 // between tap start and config apply the chord must not be armed.
 static DEFERRED_INSERT_SHORTCUT: AtomicU8 = AtomicU8::new(DEFERRED_INSERT_DISABLED);
 
+/// Pack the deferred-insert chord for `DEFERRED_INSERT_SHORTCUT`.
 fn encode_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) -> u8 {
     match shortcut {
         DeferredInsertShortcut::Disabled => DEFERRED_INSERT_DISABLED,
@@ -168,6 +200,8 @@ fn encode_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) -> u8 {
     }
 }
 
+/// Unpack the deferred-insert chord, defaulting to
+/// [`DeferredInsertShortcut::Disabled`] for any unknown value.
 fn decode_deferred_insert_shortcut(value: u8) -> DeferredInsertShortcut {
     match value {
         DEFERRED_INSERT_COMMAND_OPTION_V => DeferredInsertShortcut::CommandOptionV,
@@ -177,6 +211,7 @@ fn decode_deferred_insert_shortcut(value: u8) -> DeferredInsertShortcut {
     }
 }
 
+/// Arm (or disable) the chord that triggers deferred insert.
 pub fn set_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) {
     DEFERRED_INSERT_SHORTCUT.store(
         encode_deferred_insert_shortcut(shortcut),
@@ -185,6 +220,7 @@ pub fn set_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) {
     tracing::info!(label = shortcut.label(), "Deferred insert shortcut set");
 }
 
+/// Currently armed deferred-insert chord.
 pub fn get_deferred_insert_shortcut() -> DeferredInsertShortcut {
     decode_deferred_insert_shortcut(DEFERRED_INSERT_SHORTCUT.load(AtomicOrdering::SeqCst))
 }
@@ -202,6 +238,11 @@ pub fn get_double_tap_interval_ms() -> u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The whole hotkey contract as one comparable value.
+///
+/// Snapshotting every atomic into a single struct is what lets
+/// [`apply_hotkey_runtime_config`] diff current against incoming state and
+/// skip the write — and its logging — when nothing actually changed.
 pub struct HotkeyRuntimeConfig {
     pub mode_bindings: ModeHotkeyBindings,
     pub hold_exclusive: bool,
@@ -212,6 +253,7 @@ pub struct HotkeyRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which gesture drives each [`WorkMode`].
 pub struct ModeHotkeyBindings {
     pub dictation: ShortcutBinding,
     pub formatting: ShortcutBinding,
@@ -219,6 +261,7 @@ pub struct ModeHotkeyBindings {
 }
 
 impl ModeHotkeyBindings {
+    /// Read the mapping out of already-loaded user settings.
     pub fn from_settings(settings: &UserSettings) -> Self {
         Self {
             dictation: settings.mode_binding_for(WorkMode::Dictation),
@@ -227,6 +270,7 @@ impl ModeHotkeyBindings {
         }
     }
 
+    /// Load [`UserSettings`] from disk, then read the mapping out of them.
     pub fn load() -> Self {
         Self::from_settings(&UserSettings::load())
     }
@@ -245,6 +289,7 @@ impl From<&Config> for HotkeyRuntimeConfig {
     }
 }
 
+/// Snapshot every hotkey atomic into one value.
 pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
     HotkeyRuntimeConfig {
         mode_bindings: get_mode_hotkey_bindings(),
@@ -256,6 +301,11 @@ pub fn get_hotkey_runtime_config() -> HotkeyRuntimeConfig {
     }
 }
 
+/// Apply a full hotkey snapshot, writing only when something actually changed.
+///
+/// The double-tap interval is normalised before the diff because its setter
+/// clamps on store — without that, an out-of-range settings value would read
+/// as "changed" on every apply and flood the log.
 pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     // Normalize before diffing: the double-tap setter clamps on store, so an
     // out-of-range settings value must not read as "changed" on every apply.
@@ -278,6 +328,7 @@ pub fn apply_hotkey_runtime_config(config: HotkeyRuntimeConfig) {
     set_deferred_insert_shortcut(normalized.deferred_insert_shortcut);
 }
 
+/// Apply the hotkey slice of a [`Config`] to the runtime atomics.
 pub fn apply_hotkey_config(config: &Config) {
     apply_hotkey_runtime_config(HotkeyRuntimeConfig::from(config));
 }

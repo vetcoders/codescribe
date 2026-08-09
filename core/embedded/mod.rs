@@ -122,6 +122,7 @@ pub fn snapshot() -> Vec<(&'static str, bool, usize)> {
     ]
 }
 
+/// One `(name, embedded?, total_size_bytes)` row for a single asset type.
 fn report<A: EmbeddedAsset>() -> (&'static str, bool, usize) {
     (A::NAME, A::is_embedded_available(), A::total_size())
 }

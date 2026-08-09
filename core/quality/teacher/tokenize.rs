@@ -3,7 +3,11 @@
 /// A display token with original surface form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
+    /// The word exactly as it appeared, punctuation and casing intact — what
+    /// a diff shows the reader.
     pub surface: String,
+    /// The matching key: lowercased and stripped of edge punctuation, so
+    /// "Codescribe." and "codescribe" align.
     pub norm: String,
 }
 

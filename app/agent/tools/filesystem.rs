@@ -1,3 +1,11 @@
+//! Native filesystem tool (canonical: `read_file`).
+//!
+//! Reading is sandboxed twice over: the path must canonicalize into one of the
+//! configured workspace roots (plus Codescribe's own storage directory), and the
+//! open itself goes through a `cap_std` root capability so a symlink cannot walk
+//! out. Size is bounded on both the metadata check and the read, so a file that
+//! grows mid-read cannot force an unbounded allocation.
+
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -8,8 +16,10 @@ use serde_json::{Value, json};
 
 use super::{output_guard, path_policy, workspace};
 
+/// Hard ceiling on a single `read_file` call (512 KiB).
 const MAX_FILE_SIZE_BYTES: u64 = 512 * 1024;
 
+/// Register the read-only `read_file` tool on the shared [`ToolRegistry`].
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -20,6 +30,7 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register read_file tool");
 }
 
+/// Tool schema for `read_file`.
 fn read_file_definition() -> ToolDefinition {
     ToolDefinition {
         name: "read_file".to_string(),
@@ -39,6 +50,7 @@ fn read_file_definition() -> ToolDefinition {
     }
 }
 
+/// Dispatch adapter for `read_file`: turns a [`Result`] into tool content.
 async fn handle_read_file(input: Value) -> Vec<ToolResultContent> {
     match read_file_from_input(&input) {
         Ok(content) => vec![ToolResultContent::Text(content)],
@@ -46,11 +58,17 @@ async fn handle_read_file(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Read a file using the roots resolved from live settings.
 fn read_file_from_input(input: &Value) -> Result<String> {
     let roots = allowed_read_roots();
     read_file_from_input_with_roots(input, &roots)
 }
 
+/// Read a file against an explicit root set — the injectable core of the tool.
+///
+/// Enforces, in order: required `path` field, root containment, the size ceiling
+/// on metadata, the same ceiling on the bounded read, UTF-8 decoding, and finally
+/// a truncation that always carries a pointer back to the on-disk source.
 fn read_file_from_input_with_roots(input: &Value, roots: &[PathBuf]) -> Result<String> {
     let path_str = input
         .get("path")
@@ -95,6 +113,10 @@ fn read_file_from_input_with_roots(input: &Value, roots: &[PathBuf]) -> Result<S
     Ok(content)
 }
 
+/// Prove `path_str` is an absolute, existing, regular file inside one of `roots`.
+///
+/// Returns the canonicalized path together with the root that admitted it, so the
+/// caller can open through that root's capability.
 fn validate_path_for_read_with_roots(
     path_str: &str,
     roots: &[PathBuf],
@@ -128,6 +150,7 @@ fn validate_path_for_read_with_roots(
     Ok((canonical, root))
 }
 
+/// Configured workspace roots plus Codescribe's own config directory.
 fn allowed_read_roots() -> Vec<PathBuf> {
     let mut roots = workspace::resolved_roots();
     // Codescribe-owned storage is the only deliberate non-workspace exception.
@@ -135,6 +158,7 @@ fn allowed_read_roots() -> Vec<PathBuf> {
     path_policy::canonical_roots(&roots)
 }
 
+/// Test-only predicate: does `path` canonicalize inside any of `roots`?
 #[cfg(test)]
 pub(crate) fn is_path_allowed(path: &std::path::Path, roots: &[PathBuf]) -> bool {
     let Ok(canonical) = path.canonicalize() else {
@@ -145,6 +169,8 @@ pub(crate) fn is_path_allowed(path: &std::path::Path, roots: &[PathBuf]) -> bool
         .any(|root| canonical.starts_with(root))
 }
 
+/// Sandbox proofs: root derivation from settings, root containment, and the
+/// symlink-escape denial.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,12 +315,14 @@ mod tests {
         assert!(!is_path_allowed(&escape, &[allowed]));
     }
 
+    /// Scoped environment override that restores the prior value on drop.
     struct EnvGuard {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvGuard {
+        /// Set `key` to `value` for the guard's lifetime.
         fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
             let previous = env::var_os(key);
             // SAFETY: the test mutating process env is serialized.
@@ -302,6 +330,7 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Unset `key` for the guard's lifetime.
         fn remove(key: &'static str) -> Self {
             let previous = env::var_os(key);
             // SAFETY: the test mutating process env is serialized.

@@ -24,8 +24,12 @@ pub enum FormattingPolicy {
 }
 
 impl FormattingPolicy {
+    /// Every policy in increasing-aggressiveness order, for UI pickers that
+    /// must not hand-maintain their own copy of the list.
     pub const ALL: [Self; 4] = [Self::Off, Self::Correction, Self::Smart, Self::Max];
 
+    /// Canonical persisted spelling. Always a modern name — writing back a
+    /// legacy alias is what the normalization boundary exists to prevent.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -35,6 +39,9 @@ impl FormattingPolicy {
         }
     }
 
+    /// The one place legacy aliases (`raw`, `medium`, `creative`) are accepted.
+    /// An unrecognized value is an error rather than a fallback: silently
+    /// defaulting would hand the user a *more* aggressive policy than they set.
     pub fn parse(value: &str) -> anyhow::Result<Self> {
         match value.trim() {
             "off" | "raw" => Ok(Self::Off),
@@ -47,6 +54,9 @@ impl FormattingPolicy {
         }
     }
 
+    /// Precedence for the effective policy: process env beats `settings.json`,
+    /// which beats the built-in default. A malformed value at either layer is
+    /// surfaced as an error instead of being skipped over.
     pub fn resolve(runtime: Option<&str>, persisted: Option<&str>) -> anyhow::Result<Self> {
         runtime
             .or(persisted)
@@ -244,6 +254,14 @@ pub struct UserSettings {
     pub agent_capabilities: Option<crate::agent::capabilities::AgentCapabilityPreferences>,
 }
 
+/// On-disk shape of `settings.json`: the same state as [`UserSettings`], but
+/// grouped by domain instead of flat.
+///
+/// The two representations must stay in bijection. A field that exists in
+/// `UserSettings` but is dropped by [`UserSettings::to_v2`] or
+/// [`UserSettings::from_v2`] "ghosts": the user can set it, and `save` → `load`
+/// silently reverts it. The `De-ghosted (2026-05-30)` markers below are the
+/// scars of exactly that failure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct SettingsV2 {
@@ -265,6 +283,8 @@ struct SettingsV2 {
     agent: Option<AgentV2>,
 }
 
+/// `agent` section. Written only when at least one of its parts is present, so
+/// a user who never touched agent settings gets no empty section on disk.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct AgentV2 {
@@ -276,6 +296,7 @@ struct AgentV2 {
     capabilities: Option<crate::agent::capabilities::AgentCapabilityPreferences>,
 }
 
+/// `interaction` section: how the user starts, stops, and delivers dictation.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct InteractionV2 {
@@ -298,6 +319,8 @@ struct InteractionV2 {
     auto_paste_enabled: Option<bool>,
 }
 
+/// Timing of the tap-based triggers: how fast a double tap must be, and how
+/// long silence may run before a toggled session closes itself.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct TriggerV2 {
@@ -307,6 +330,8 @@ struct TriggerV2 {
     toggle_silence_timeout_sec: Option<f32>,
 }
 
+/// Hold-to-talk behaviour: whether the hold key is claimed exclusively, which
+/// modifier arms the assistive lane, and the delay before recording starts.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct HoldV2 {
@@ -318,6 +343,8 @@ struct HoldV2 {
     start_delay_ms: Option<u64>,
 }
 
+/// `speech` section: everything between the microphone and the delivered text —
+/// recognition engine, formatting, the assistive lane, and emission cadence.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct SpeechV2 {
@@ -339,6 +366,9 @@ struct SpeechV2 {
     llm_model: Option<String>,
 }
 
+/// Which recognizer runs and how. `mode` is the legacy local/cloud switch;
+/// `stt_engine` is the newer three-way selector that supersedes it. Both are
+/// kept because existing files on disk still carry the former.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct SpeechEngineV2 {
@@ -364,6 +394,9 @@ struct SpeechEngineV2 {
     initial_prompt_enabled: Option<bool>,
 }
 
+/// LLM post-processing of the transcript: whether it runs, how aggressively,
+/// and against which endpoint. The endpoint/model here override the base
+/// `speech.llm_*` pair for the formatting lane only.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct FormattingV2 {
@@ -381,6 +414,9 @@ struct FormattingV2 {
     llm_model: Option<String>,
 }
 
+/// The assistive lane's own provider triple. Separate from formatting so the
+/// two lanes can run on different models — and so a key written for one lane
+/// cannot quietly serve the other.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct AssistiveV2 {
@@ -392,6 +428,8 @@ struct AssistiveV2 {
     provider: Option<String>,
 }
 
+/// Pacing of text as it lands in the target app: buffering delay, typing
+/// speed, chunk size, and how often interim results are refreshed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct EmissionV2 {
@@ -405,6 +443,8 @@ struct EmissionV2 {
     interim_cadence_sec: Option<f32>,
 }
 
+/// `audio` section: capture device plus the audible feedback that tells the
+/// user recording actually started.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct AudioV2 {
@@ -414,6 +454,7 @@ struct AudioV2 {
     feedback: Option<FeedbackV2>,
 }
 
+/// Start-of-recording cue: whether it sounds, which sound, and how loudly.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct FeedbackV2 {
@@ -425,6 +466,8 @@ struct FeedbackV2 {
     volume: Option<f32>,
 }
 
+/// `ui` section: chrome the user sees — chat zoom, Dock presence, the live
+/// transcription overlay, and which lane the tray starts in.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct UiV2 {
@@ -438,6 +481,8 @@ struct UiV2 {
     tray_start_assistive: Option<bool>,
 }
 
+/// `features` section: optional surfaces the user can switch off entirely,
+/// such as transcript history and quick notes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct FeaturesV2 {
@@ -450,6 +495,10 @@ struct FeaturesV2 {
     quick_notes_save_only: Option<bool>,
 }
 
+/// `system` section: install-level state and app identity — launch at login,
+/// the qube daemon, onboarding lane, agent workspace roots, and the OAuth
+/// client ids. The client ids live here rather than in the Keychain because
+/// they identify the app, not the user.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct SystemV2 {
@@ -557,6 +606,10 @@ pub fn is_promoted_key(key: &str) -> bool {
 }
 
 impl UserSettings {
+    /// Project the flat settings onto the nested on-disk schema. Always writes
+    /// `schema_version: 3` and normalized values, so re-saving an older file
+    /// upgrades it in place. Every field added to `UserSettings` must be routed
+    /// here and in [`Self::from_v2`], or it ghosts on the next round-trip.
     fn to_v2(&self) -> SettingsV2 {
         let normalized_mode_bindings = self.mode_bindings_normalized();
         SettingsV2 {
@@ -659,6 +712,14 @@ impl UserSettings {
         }
     }
 
+    /// Flatten the on-disk schema back into runtime settings. Missing sections
+    /// collapse to `None` rather than failing, which is what lets a partially
+    /// written file still load.
+    ///
+    /// Two fields deliberately do not: `stt_engine` and `final_pass_mode` fall
+    /// back to the product defaults (`apple` / `smart`). An empty
+    /// `speech.engine: {}` used to leave them unset, handing the decision to
+    /// whatever the environment happened to say.
     fn from_v2(v2: SettingsV2) -> Self {
         Self {
             whisper_language: v2.speech.as_ref().and_then(|s| s.language.clone()),
@@ -870,6 +931,9 @@ impl UserSettings {
         }
     }
 
+    /// Reject a file that would load into nonsense: unsupported schema version,
+    /// out-of-range zoom, or an unparseable formatting level. Runs on both read
+    /// and write, so a bad value can neither be loaded nor persisted.
     fn validate_v2(v2: &SettingsV2) -> anyhow::Result<()> {
         if v2.schema_version != 2 && v2.schema_version != 3 {
             anyhow::bail!("settings schema_version must be 2 or 3")
@@ -890,6 +954,9 @@ impl UserSettings {
         Ok(())
     }
 
+    /// Write via temp file plus rename, so a crash mid-write leaves the previous
+    /// `settings.json` intact rather than a truncated one the app would treat
+    /// as corrupt and silently replace with defaults.
     fn write_json_atomic(path: &PathBuf, json: &str) -> anyhow::Result<()> {
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, json)?;
@@ -1013,6 +1080,10 @@ impl UserSettings {
         Ok(())
     }
 
+    /// Persist only when the setter actually changed something. Setters are
+    /// called on every UI event, so writing unconditionally would rewrite the
+    /// file constantly — and a failed save is logged, not propagated, because
+    /// the in-memory value has already been updated.
     fn save_if_changed(&self, before: &Self, setter: &str, key: &str) {
         if self == before {
             debug!("{setter}({key}) ignored; value unchanged");
@@ -1023,6 +1094,10 @@ impl UserSettings {
         }
     }
 
+    /// Overlay the user's bindings on the built-in defaults, so a settings file
+    /// that mentions one mode does not leave the others unbound. Unknown modes
+    /// are appended rather than dropped — a downgrade must not destroy bindings
+    /// written by a newer build.
     fn mode_bindings_normalized(&self) -> Vec<ModeBinding> {
         let mut normalized = default_mode_bindings();
 
@@ -1042,6 +1117,8 @@ impl UserSettings {
         normalized
     }
 
+    /// Effective shortcut for a work mode, defaults included. A mode with no
+    /// binding at all reads as `Disabled` rather than panicking.
     pub fn mode_binding_for(&self, mode: WorkMode) -> ShortcutBinding {
         self.mode_bindings_normalized()
             .into_iter()
@@ -1050,6 +1127,9 @@ impl UserSettings {
             .unwrap_or(ShortcutBinding::Disabled)
     }
 
+    /// Rebind one work mode and persist. Writes the *full* normalized set, so
+    /// the file always states every mode explicitly instead of relying on
+    /// defaults that a later release might change under the user.
     pub fn set_mode_binding(&mut self, mode: WorkMode, binding: ShortcutBinding) {
         let before = self.clone();
         let mut mode_bindings = self.mode_bindings_normalized();
@@ -1246,6 +1326,10 @@ impl UserSettings {
     }
 }
 
+/// Persistence is exercised against real files in a temp data dir, not against
+/// in-memory conversions — the failures these guard against (ghosted fields,
+/// migration loss, write amplification) only appear on the round-trip through
+/// disk. All tests are `#[serial]`: the data dir is selected by process env.
 #[cfg(test)]
 mod tests {
     use super::{FormattingPolicy, UserSettings, is_promoted_key};
@@ -1254,6 +1338,9 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Redirect the data dir to a fresh temp directory and clear the legacy
+    /// hotkey env vars. The returned guard must stay alive for the whole test:
+    /// dropping it deletes the directory the settings file lives in.
     fn setup_isolated_data_dir() -> TempDir {
         let tmp = TempDir::new().expect("tempdir");
         // SAFETY: tests are serial and intentionally override process env.
@@ -1265,6 +1352,9 @@ mod tests {
         tmp
     }
 
+    /// Zoom normalization: clamped to the supported range, rounded to two
+    /// decimals, and the effective default encoded as `None` so it is omitted
+    /// from the file entirely.
     #[test]
     fn test_normalized_chat_zoom_rules() {
         assert_eq!(UserSettings::normalized_chat_zoom(1.0), None);
@@ -1274,6 +1364,9 @@ mod tests {
         assert_eq!(UserSettings::normalized_chat_zoom(4.0), Some(2.0));
     }
 
+    /// Zoom is a slider, so it fires continuously: a change that rounds to the
+    /// already-persisted value must not touch the file at all. Asserted on the
+    /// file's bytes, not on the return flag.
     #[test]
     #[serial]
     fn test_set_chat_zoom_writes_only_on_effective_change() {
@@ -1297,6 +1390,9 @@ mod tests {
         assert_eq!(first_contents, second_contents);
     }
 
+    /// A legacy flat file is migrated on first load, the original is kept as a
+    /// `.bak`, and the rewritten file states the hotkey contract explicitly
+    /// rather than leaving it implied by defaults.
     #[test]
     #[serial]
     fn test_v1_settings_hard_migrate_to_v2_with_backup() {
@@ -1336,6 +1432,10 @@ mod tests {
         );
     }
 
+    /// Full alias matrix through both schema generations: every legacy spelling
+    /// is accepted on read and rewritten in canonical form, while unknown values
+    /// are refused rather than rounded up to a more aggressive policy — and a
+    /// rejected write leaves no file behind.
     #[test]
     #[serial]
     fn formatting_policy_v1_v2_alias_matrix_normalizes_and_rejects_unknowns() {
@@ -1409,6 +1509,8 @@ mod tests {
         assert!(!UserSettings::settings_path().exists());
     }
 
+    /// A `false` written through the setter survives reload — the case a naive
+    /// `skip_serializing_if` on a plain `bool` would silently lose.
     #[test]
     #[serial]
     fn test_show_dock_icon_bool_persists_and_roundtrips() {
@@ -1422,6 +1524,9 @@ mod tests {
         assert_eq!(loaded.show_dock_icon, Some(false));
     }
 
+    /// Auto-paste round-trips through both schemas *and* its declared contract
+    /// in `ENV_REGISTRY.toml` still matches (bool, hot-reloadable, default on).
+    /// Reading the registry keeps code and documented contract from drifting.
     #[test]
     #[serial]
     fn auto_paste_v1_v2_roundtrips_and_registry_contract_is_promoted_hot() {
@@ -1464,6 +1569,9 @@ mod tests {
         assert!(section.contains("reload = \"hot\""));
     }
 
+    /// The ghosting regression itself: these keys were settable and promoted,
+    /// but the V2 conversion dropped them, so `save` → `load` reverted them to
+    /// default. Runs the real on-disk path, since an in-memory check would pass.
     #[test]
     #[serial]
     fn test_deghosted_keys_survive_settings_json_roundtrip() {
@@ -1498,6 +1606,9 @@ mod tests {
         assert_eq!(loaded.llm_model.as_deref(), Some("gpt-4.1"));
     }
 
+    /// The STT selector keys survive the `speech.engine` round-trip, and the
+    /// setters route them to the same place — so `settings.json` remains a
+    /// valid seed source instead of being overwritten by env on next load.
     #[test]
     #[serial]
     fn test_stt_engine_and_layered_transcription_survive_roundtrip() {
@@ -1532,6 +1643,9 @@ mod tests {
         assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
     }
 
+    /// An empty `speech.engine: {}` must resolve to the product default, not to
+    /// "unset". Unset handed the choice to the environment, so which recognizer
+    /// ran depended on a stale `.env` line rather than on the product.
     #[test]
     #[serial]
     fn empty_speech_engine_defaults_to_apple_live_product() {
@@ -1561,6 +1675,9 @@ mod tests {
         assert!(is_promoted_key("FINAL_PASS_MODE"));
     }
 
+    /// Tool permissions survive persistence *and* land under `agent.permissions`
+    /// at the exact JSON paths the gateway reads. A permission that round-trips
+    /// in memory but lands elsewhere on disk is a silently unenforced rule.
     #[test]
     #[serial]
     fn agent_permissions_roundtrip_under_agent_section() {
@@ -1605,6 +1722,9 @@ mod tests {
         );
     }
 
+    /// Workspace roots persist as a list under `system`, parse from the
+    /// colon-joined wire form with surrounding space trimmed, and clear back to
+    /// `None` when set to empty — the seed `list_projects` depends on.
     #[test]
     #[serial]
     fn test_agent_workspace_roots_survive_v2_system_roundtrip() {
@@ -1652,6 +1772,8 @@ mod tests {
         assert_eq!(cleared.agent_workspace_roots, None);
     }
 
+    /// Overlay toggle lands under `ui`, asserted on the JSON path rather than
+    /// on the reloaded struct — a stray top-level key would still round-trip.
     #[test]
     #[serial]
     fn test_transcription_overlay_enabled_persists_in_v2_ui_section() {
@@ -1675,6 +1797,7 @@ mod tests {
         );
     }
 
+    /// Same section contract for the tray's starting lane.
     #[test]
     #[serial]
     fn test_tray_start_assistive_persists_in_v2_ui_section() {
@@ -1698,6 +1821,7 @@ mod tests {
         );
     }
 
+    /// Daemon autostart is install-level state, so it belongs under `system`.
     #[test]
     #[serial]
     fn test_qube_daemon_autostart_persists_in_v2_system_section() {
@@ -1721,6 +1845,8 @@ mod tests {
         );
     }
 
+    /// Onboarding lane must survive the flat → nested → flat trip. Losing it
+    /// would re-run first-run onboarding for a user who already finished it.
     #[test]
     #[serial]
     fn test_onboarding_mode_persists_in_v2_system_section() {
@@ -1746,6 +1872,9 @@ mod tests {
         );
     }
 
+    /// The OAuth client id persists under `system`, and a blank or
+    /// whitespace-only write clears it back to "awaiting registration" instead
+    /// of storing an empty string that would read as a configured identity.
     #[test]
     #[serial]
     fn test_oauth_client_id_persists_in_v2_system_section_and_empty_clears() {
@@ -1774,6 +1903,8 @@ mod tests {
         assert_eq!(UserSettings::load().openai_oauth_client_id, None);
     }
 
+    /// "Not yet chosen" is `None`, distinct from any concrete lane — callers
+    /// treat it as the safe Basic path.
     #[test]
     #[serial]
     fn test_onboarding_mode_defaults_to_none_when_unset() {
@@ -1782,6 +1913,7 @@ mod tests {
         assert_eq!(settings.onboarding_mode, None);
     }
 
+    /// A rebind is readable back through the same accessor the runtime uses.
     #[test]
     #[serial]
     fn test_mode_binding_updates_canonical_contract_only() {
@@ -1795,6 +1927,8 @@ mod tests {
         );
     }
 
+    /// Rebinding one mode leaves the others alone — the normalization overlay
+    /// must merge into the defaults, not replace them.
     #[test]
     #[serial]
     fn test_mode_binding_partial_update_preserves_other_modes() {
@@ -1818,6 +1952,8 @@ mod tests {
         );
     }
 
+    /// Retired hotkey env vars are inert: they neither change the effective
+    /// bindings nor cause a `settings.json` to be synthesized on load.
     #[test]
     #[serial]
     fn test_load_ignores_legacy_hotkey_env_imports() {
@@ -1847,6 +1983,8 @@ mod tests {
         );
     }
 
+    /// With both present, the saved binding wins over the legacy env var — a
+    /// leftover shell export cannot take the user's hotkey away.
     #[test]
     #[serial]
     fn test_saved_mode_bindings_outrank_legacy_hotkey_env_noise() {

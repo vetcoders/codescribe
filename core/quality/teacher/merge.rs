@@ -27,7 +27,9 @@ pub enum MergeMode {
 /// Result of merging live assembly with Whisper final-pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedDelivery {
+    /// The delivered text: live floor with Whisper spliced into the gaps.
     pub text: String,
+    /// Which of the merge shapes produced [`Self::text`].
     pub mode: MergeMode,
     /// Tokens taken from Whisper InsertB (gap fill count).
     pub whisper_fill_tokens: usize,

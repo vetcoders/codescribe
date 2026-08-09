@@ -18,6 +18,7 @@ use crate::hf_cache;
 
 /// Default TTS model name (for dev/fallback mode)
 pub const DEFAULT_MODEL: &str = "csm-1b";
+/// HuggingFace repository the fallback resolver downloads / looks up.
 const DEFAULT_TTS_REPO: &str = "sesame/csm-1b";
 
 /// Global singleton engine
@@ -204,6 +205,7 @@ pub fn play_with_speaker(text: &str, speaker_idx: usize) -> Result<()> {
     audio_player.play(&samples, super::SAMPLE_RATE)
 }
 
+/// Environment-tolerant coverage of the fallback path resolver.
 #[cfg(test)]
 mod tests {
     use super::*;

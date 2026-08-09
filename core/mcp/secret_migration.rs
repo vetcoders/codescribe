@@ -21,6 +21,7 @@ use serde_json::{Map, Value};
 use crate::config::keychain;
 use crate::util::safe_path::{safe_canonicalize, safe_read_to_string};
 
+/// Top-level object in `mcp.json` holding one entry per configured server.
 const SERVERS_KEY: &str = "mcpServers";
 
 /// Keys that are safe to keep as plaintext in mcp.json (paths, non-secrets).
@@ -41,6 +42,10 @@ fn is_non_secret_env_key(key: &str) -> bool {
     )
 }
 
+/// Heuristic: does the env key name suggest it carries a credential?
+///
+/// Deliberately broad — a false positive costs one Keychain round-trip, a false
+/// negative leaves a secret in plaintext.
 fn looks_like_secret_key(key: &str) -> bool {
     let upper = key.to_ascii_uppercase();
     upper.contains("KEY")
@@ -52,18 +57,27 @@ fn looks_like_secret_key(key: &str) -> bool {
         || upper.contains("AUTH")
 }
 
+/// Outcome of one migration attempt — safe to log in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretMigrationReport {
+    /// Timestamped copy of the pre-migration config, when one was written.
     pub backup_path: Option<PathBuf>,
+    /// Secrets moved into the Keychain (identified by account, never by value).
     pub migrated: Vec<MigratedSecret>,
+    /// Operator to-do list: credentials that were exposed and must be rotated.
     pub rotation_required: Vec<String>,
+    /// Entries deliberately left alone, with the reason.
     pub skipped: Vec<String>,
+    /// Whether the config file on disk was actually rewritten.
     pub wrote: bool,
 }
 
+/// One env value relocated from plaintext into the Keychain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigratedSecret {
+    /// MCP server the value belonged to.
     pub server: String,
+    /// Environment variable name that held it.
     pub env_key: String,
     /// Keychain account name (never the secret value).
     pub account: String,
@@ -224,12 +238,14 @@ pub fn resolve_server_env(
     Ok(out)
 }
 
+/// Derive the deterministic Keychain account name for a server/env-key pair.
 pub fn keychain_account_name(server: &str, env_key: &str) -> String {
     let server = sanitize_account_part(server);
     let env_key = sanitize_account_part(env_key);
     format!("MCP_ENV_{server}_{env_key}")
 }
 
+/// Fold one account-name component to `[A-Z0-9_]` so it survives Keychain.
 fn sanitize_account_part(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -242,6 +258,11 @@ fn sanitize_account_part(s: &str) -> String {
         .collect()
 }
 
+/// Write `body` to a `.json.bak-<unix-secs>` sibling, owner-only on Unix.
+///
+/// Created with `create_new`, so an existing backup is never clobbered. The
+/// backup still holds the plaintext secrets — which is exactly why the report
+/// demands rotation.
 fn write_timestamped_backup(path: &Path, body: &[u8]) -> Result<PathBuf> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -266,6 +287,8 @@ fn write_timestamped_backup(path: &Path, body: &[u8]) -> Result<PathBuf> {
     Ok(backup)
 }
 
+/// Serialize `root` to a `.tmp` sibling (owner-only, fsynced) and rename it into
+/// place, so a crash mid-write can never leave a truncated config.
 fn write_atomic(path: &Path, root: &Value) -> Result<()> {
     let pretty = serde_json::to_string_pretty(root).context("serialize MCP config")?;
     let tmp = path.with_extension("tmp");
@@ -321,6 +344,8 @@ pub fn format_report(report: &SecretMigrationReport) -> String {
     lines.join("\n")
 }
 
+/// Covers dry-run detection, the apply path with backup, non-secret retention,
+/// and the guarantee that no report text ever embeds a secret value.
 #[cfg(test)]
 mod tests {
     use super::*;

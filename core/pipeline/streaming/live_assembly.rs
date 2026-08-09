@@ -109,11 +109,15 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
     LiveAssembly { freezed, preview }
 }
 
+/// Pins the freeze+append contract, the bounded-patch semantics of
+/// `ReplaceRange` (char offsets, drop-on-desync, no retro-apply), and the
+/// re-seal divergence against the two Swift replays.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
+    /// Minimal sealed final: no VAD, confidence, or segment detail.
     fn final_ev(id: u64, text: &str) -> EngineEvent {
         EngineEvent::UtteranceFinal {
             utterance_id: id,

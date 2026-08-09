@@ -18,6 +18,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use tracing::{error, info};
 
+/// Resolve the notes directory without creating it.
+///
+/// `CODESCRIBE_NOTES_DIR` wins when set (tilde-expanded); otherwise the notes
+/// folder sits under the standard config dir.
 fn notes_base_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("CODESCRIBE_NOTES_DIR") {
         return PathBuf::from(shellexpand::tilde(&custom).into_owned());

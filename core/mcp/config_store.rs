@@ -60,6 +60,9 @@ pub fn list_servers() -> Result<Vec<McpServerSummary>> {
     list_servers_at(&default_mcp_config_path()?)
 }
 
+/// Path-explicit twin of [`list_servers`]. Every public entry point in this
+/// module delegates to an `_at` variant so the tests can drive the real logic
+/// against a temp dir instead of the operator's live `~/.codescribe/mcp.json`.
 fn list_servers_at(path: &Path) -> Result<Vec<McpServerSummary>> {
     let Some(config) = McpConfigFile::load_optional(path)? else {
         return Ok(Vec::new());
@@ -92,6 +95,8 @@ pub fn add_server(spec: &McpServerSpec) -> Result<()> {
     add_server_at(&default_mcp_config_path()?, spec)
 }
 
+/// Path-explicit twin of [`add_server`]. Both validations run BEFORE the file is
+/// touched, so a rejected spec leaves no `mcp.json` behind at all.
 fn add_server_at(path: &Path, spec: &McpServerSpec) -> Result<()> {
     validate_name(&spec.name)?;
     validate_server_spec(spec)?;
@@ -114,6 +119,12 @@ pub fn update_server(name: &str, spec: &McpServerSpec) -> Result<()> {
     update_server_at(&default_mcp_config_path()?, name, spec)
 }
 
+/// Path-explicit twin of [`update_server`]. Mutates the existing entry in place
+/// rather than replacing it — that in-place edit is what preserves `env`,
+/// `timeout_seconds`, and any hand-added key on the server being updated.
+///
+/// Note the name/spec split: `name` addresses the entry to edit while
+/// `spec.name` is ignored here, so this call cannot rename a server.
 fn update_server_at(path: &Path, name: &str, spec: &McpServerSpec) -> Result<()> {
     validate_server_spec(spec)?;
 
@@ -137,6 +148,8 @@ pub fn remove_server(name: &str) -> Result<()> {
     remove_server_at(&default_mcp_config_path()?, name)
 }
 
+/// Path-explicit twin of [`remove_server`]. Removing an absent server is an
+/// error, not a silent success — a typo must not read as "already gone".
 fn remove_server_at(path: &Path, name: &str) -> Result<()> {
     let mut root = load_value(path)?;
     {
@@ -168,6 +181,9 @@ pub fn probe_server_blocking(name: &str, timeout: Duration) -> Result<McpProbeSu
     probe_server_blocking_at(&default_mcp_config_path()?, name, timeout)
 }
 
+/// Path-explicit twin of [`probe_server_blocking`]. Uses the strict
+/// `McpConfigFile::load` (not `load_optional`): probing against a missing config
+/// is a hard error, since there is nothing to spawn.
 fn probe_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<McpProbeSummary> {
     let config = McpConfigFile::load(path)?;
     let server = config
@@ -191,6 +207,13 @@ fn test_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result
 
 // --- internals ------------------------------------------------------------
 
+/// Run the async handshake to completion from a synchronous caller.
+///
+/// The dedicated thread is not optional: building a current-thread runtime
+/// inside an already-running tokio runtime panics, and this path is reached from
+/// the synchronous FFI surface as well as from async Settings code. Spawning
+/// isolates the new runtime from whatever the caller is standing in. A panic in
+/// the probe surfaces as an `Err` rather than unwinding into the caller.
 fn run_probe_blocking(server: McpServerConfig, timeout: Duration) -> Result<McpProbeSummary> {
     std::thread::spawn(move || -> Result<McpProbeSummary> {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -212,6 +235,8 @@ fn run_probe_blocking(server: McpServerConfig, timeout: Duration) -> Result<McpP
     .map_err(|_| anyhow::anyhow!("MCP test thread panicked"))?
 }
 
+/// Build a fresh JSON entry for a newly added server. Unlike the update path
+/// there is nothing to preserve here, so the object starts empty.
 fn server_object(spec: &McpServerSpec) -> Value {
     let mut obj = Map::new();
     write_server_shape(&mut obj, spec);
@@ -219,6 +244,15 @@ fn server_object(spec: &McpServerSpec) -> Value {
     Value::Object(obj)
 }
 
+/// Write the spawn shape (local command vs remote endpoint) onto an existing
+/// entry, touching only the keys that define it.
+///
+/// The two shapes are mutually exclusive, so each branch REMOVES the other's
+/// keys: flipping a server from local to remote must not leave a stale
+/// `command` behind for a loader to pick up, and flipping back must not leave a
+/// stale `url` / `auth_ref`. Keys outside this set (`env`, `timeout_seconds`,
+/// custom fields) are never named here, which is what makes the update path
+/// preservation-safe.
 fn write_server_shape(obj: &mut Map<String, Value>, spec: &McpServerSpec) {
     if let Some(endpoint) = &spec.endpoint {
         obj.remove("command");
@@ -246,6 +280,7 @@ fn write_server_shape(obj: &mut Map<String, Value>, spec: &McpServerSpec) {
     }
 }
 
+/// Convert argv to a JSON string array.
 fn args_value(args: &[String]) -> Value {
     Value::Array(args.iter().cloned().map(Value::String).collect())
 }
@@ -343,6 +378,13 @@ fn write_atomic(path: &Path, value: &Value) -> Result<()> {
     })
 }
 
+/// Reject server names that cannot be addressed safely.
+///
+/// The charset is deliberately narrow (ASCII alphanumerics, `_`, `-`): the name
+/// is a JSON object key AND a user-facing identifier, so quoting, whitespace,
+/// and lookalike Unicode would all become ways to shadow an existing server.
+/// Surrounding whitespace is rejected rather than trimmed, so what the operator
+/// typed is what gets stored.
 fn validate_name(name: &str) -> Result<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -362,6 +404,8 @@ fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject an empty (or whitespace-only) spawn command — a local server with
+/// nothing to execute would fail at probe time instead of at save time.
 fn validate_command(command: &str) -> Result<()> {
     if command.trim().is_empty() {
         bail!("MCP server command is empty");
@@ -369,6 +413,14 @@ fn validate_command(command: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a spec against the shape it claims to be — remote or local, never
+/// both.
+///
+/// Remote endpoints carry three extra rules: the scheme must be `http`/`https`
+/// (no `file://` or custom schemes reaching the transport), userinfo credentials
+/// are refused outright because `mcp.json` is not the place for secrets
+/// (Keychain via `auth_ref` is), and a remote entry must not also define a local
+/// command — an ambiguous entry would let the loader pick the shape for us.
 fn validate_server_spec(spec: &McpServerSpec) -> Result<()> {
     match spec.endpoint.as_deref() {
         Some(endpoint) => {

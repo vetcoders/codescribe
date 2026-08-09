@@ -108,6 +108,8 @@ impl std::fmt::Display for State {
 }
 
 impl State {
+    /// Lowercase state token used on the IPC surface, distinct from the
+    /// uppercase `Display` form used in logs.
     pub fn to_ipc_str(self) -> &'static str {
         match self {
             State::Idle => "idle",
@@ -150,6 +152,11 @@ pub struct HotkeyInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether a transcription action delivers raw text or AI-formatted text.
+///
+/// Defined and re-exported from `controller`, but currently read nowhere in
+/// the tree: the live raw-versus-format decision travels as the `force_raw` /
+/// `force_ai` pair on [`HotkeyInput`] and [`TranscriptPipelineParams`].
 pub enum TranscriptionActionContractMode {
     Raw,
     AiFormat,
@@ -157,6 +164,10 @@ pub enum TranscriptionActionContractMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Which engine and path produced the transcript that was actually delivered.
+///
+/// Persisted into `truth.json`, so the serialized variant names are part of
+/// the on-disk sidecar format.
 pub enum RecordingTranscriptSource {
     LocalFinalPass,
     ToggleSessionAdjudicated,
@@ -167,6 +178,7 @@ pub enum RecordingTranscriptSource {
 }
 
 impl RecordingTranscriptSource {
+    /// Human-readable source label for status surfaces.
     pub fn label(self) -> &'static str {
         match self {
             Self::LocalFinalPass => "Final-pass local",
@@ -181,6 +193,7 @@ impl RecordingTranscriptSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// How bad a fallback was, when one was taken. Persisted into `truth.json`.
 pub enum RecordingFallbackClass {
     Acceptable,
     Degraded,
@@ -188,6 +201,7 @@ pub enum RecordingFallbackClass {
 }
 
 impl RecordingFallbackClass {
+    /// Human-readable fallback description for status surfaces.
     pub fn label(self) -> &'static str {
         match self {
             Self::Acceptable => "acceptable fallback",
@@ -198,6 +212,13 @@ impl RecordingFallbackClass {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// The `truth.json` sidecar: what really produced a recording's transcript.
+///
+/// Written next to every saved transcript so a delivered result stays
+/// auditable after the fact — which engine served it, whether a fallback was
+/// taken, and how confident the adjudicator was. Fields accrue over releases,
+/// so the deserializer is deliberately tolerant of sidecars written by older
+/// builds.
 pub struct RecordingTruthMetadata {
     pub source: Option<RecordingTranscriptSource>,
     pub engine: Option<String>,
@@ -262,6 +283,7 @@ where
     Ok(out)
 }
 
+/// Sidecar path for a transcript: `<file name>.truth.json` beside it.
 pub fn truth_sidecar_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -271,6 +293,7 @@ pub fn truth_sidecar_path(path: &Path) -> PathBuf {
     path.with_file_name(file_name)
 }
 
+/// Serialize the truth metadata beside `path` and return the sidecar path.
 pub fn write_truth_sidecar(path: &Path, metadata: &RecordingTruthMetadata) -> Result<PathBuf> {
     let sidecar_path = truth_sidecar_path(path);
     let payload =
@@ -280,6 +303,8 @@ pub fn write_truth_sidecar(path: &Path, metadata: &RecordingTruthMetadata) -> Re
     Ok(sidecar_path)
 }
 
+/// Read a truth sidecar back. Test-only counterpart to
+/// [`write_truth_sidecar`], used to prove roundtrip fidelity.
 #[cfg(test)]
 pub fn read_truth_sidecar(path: &Path) -> Result<RecordingTruthMetadata> {
     let sidecar_path = truth_sidecar_path(path);

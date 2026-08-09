@@ -237,6 +237,9 @@ pub struct CodescribeThreads {}
 
 #[uniffi::export]
 impl CodescribeThreads {
+    /// Construct the handle, initialising logging on first use. Holds no state:
+    /// every method reopens the store, so the handle can outlive any data-dir
+    /// mutation the engine performs.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();

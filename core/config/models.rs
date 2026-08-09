@@ -12,11 +12,21 @@ use crate::hf_cache;
 
 /// Default Whisper model name used for runtime fallback lookup.
 pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+/// Hugging Face repo backing [`DEFAULT_MODEL`], used for cache lookup and for
+/// the Settings → Dictation download.
 pub const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 
+/// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
+/// Weight file names, of which **any one** satisfies the completeness check —
+/// upstream repos ship either `model.safetensors` or `weights.safetensors`.
 const REQUIRED_MODEL_WEIGHTS: [&str; 2] = ["weights.safetensors", "model.safetensors"];
 
+/// Canonicalize a path, falling back to the original on failure.
+///
+/// Resolution must not fail just because a path cannot be canonicalized (a
+/// symlink into an unmounted volume, a permission gap): the caller gets a usable
+/// path and a warning rather than an error.
 fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     match path.canonicalize() {
         Ok(canonical) => canonical,
@@ -30,6 +40,11 @@ fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     }
 }
 
+/// Whether `path` holds a fully usable Whisper model.
+///
+/// Requires every [`REQUIRED_MODEL_FILES`] entry plus at least one of
+/// [`REQUIRED_MODEL_WEIGHTS`]. This is the gate that keeps half-downloaded
+/// directories from being advertised or resolved as loadable models.
 fn is_complete_whisper_model_dir(path: &Path) -> bool {
     REQUIRED_MODEL_FILES
         .iter()
@@ -39,6 +54,11 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
             .any(|name| path.join(name).exists())
 }
 
+/// Find a complete Hugging Face cache snapshot for a model reference.
+///
+/// A reference containing `/` is treated as a repo id and looked up directly.
+/// The bare [`DEFAULT_MODEL`] alias maps to [`DEFAULT_WHISPER_REPO`]. Any other
+/// bare name is a models-dir alias, not a repo, so it yields `None` here.
 fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     let trimmed = model_ref.trim();
     if trimmed.is_empty() {
@@ -64,6 +84,11 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     None
 }
 
+/// Owner of the resolved runtime models directory.
+///
+/// Scope is deliberately narrow: it locates and inspects model directories on
+/// disk. It performs no loading and no downloading, and it is only consulted
+/// when embedded Whisper is unavailable.
 pub struct ModelManager {
     models_dir: PathBuf,
 }
@@ -80,6 +105,12 @@ impl ModelManager {
         Ok(Self { models_dir })
     }
 
+    /// Locate the models directory, creating the user-level fallback if needed.
+    ///
+    /// Order: `CODESCRIBE_MODELS_DIR` override, bundled `Contents/Resources/models`,
+    /// the development tree two levels above the executable, a repo-root-relative
+    /// `../../models`, and finally `~/.codescribe/models` (created on demand, so
+    /// this tier always succeeds).
     fn resolve_models_dir() -> Result<PathBuf> {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
@@ -127,6 +158,11 @@ impl ModelManager {
         Ok(user_models)
     }
 
+    /// Where a model of this name would live: the path itself if `model_name` is
+    /// an existing absolute path, otherwise the name joined onto the models dir.
+    ///
+    /// Purely positional — the returned path is not checked for completeness and
+    /// need not exist.
     pub fn get_model_path(&self, model_name: &str) -> PathBuf {
         // Check if it's an absolute path that exists
         let candidate = PathBuf::from(model_name);
@@ -137,6 +173,10 @@ impl ModelManager {
         self.models_dir.join(model_name)
     }
 
+    /// Resolve a reference that may be a path or a models-dir alias.
+    ///
+    /// Differs from [`Self::get_model_path`] by accepting *relative* paths that
+    /// exist (canonicalizing them) before falling back to alias semantics.
     pub fn resolve_model_reference(&self, model_ref: &str) -> PathBuf {
         let candidate = PathBuf::from(model_ref);
         if candidate.exists() {
@@ -146,11 +186,20 @@ impl ModelManager {
         self.models_dir.join(model_ref)
     }
 
+    /// Whether the reference resolves to a *complete* model directory.
+    ///
+    /// A directory that exists but is missing weights or metadata reports
+    /// `false` — existence alone is not the contract.
     pub fn check_model_exists(&self, model_name: &str) -> bool {
         let path = self.resolve_model_reference(model_name);
         is_complete_whisper_model_dir(&path)
     }
 
+    /// Sorted names of every complete model in the models directory.
+    ///
+    /// Half-downloaded directories are filtered out rather than listed, so the
+    /// result is safe to surface as user-selectable options. A missing models
+    /// directory yields an empty list, not an error.
     pub fn list_models(&self) -> Result<Vec<String>> {
         if !self.models_dir.exists() {
             return Ok(Vec::new());
@@ -174,6 +223,7 @@ impl ModelManager {
         Ok(out)
     }
 
+    /// The resolved models directory this manager is anchored to.
     pub fn models_dir(&self) -> &PathBuf {
         &self.models_dir
     }
@@ -233,10 +283,15 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
 /// Live status of the default local Whisper model for Settings / bridge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhisperModelStatus {
+    /// Transcription can start: either embedded, or a complete model on disk.
     pub available: bool,
+    /// The binary carries an embedded payload, so no download is ever required.
     pub embedded: bool,
+    /// Resolved on-disk model directory, when one was found.
     pub path: Option<String>,
+    /// Model alias the runtime fallback looks for ([`DEFAULT_MODEL`]).
     pub model_id: String,
+    /// Hugging Face repo a download would pull from ([`DEFAULT_WHISPER_REPO`]).
     pub repo: String,
     /// Short human size hint for the UI (not a network probe).
     pub size_hint: String,
@@ -341,6 +396,11 @@ where
     Ok(canonicalize_or_self(dest))
 }
 
+/// Copy a warm Hugging Face cache snapshot into the user models directory.
+///
+/// Lets Settings → Download complete without network traffic when the cache is
+/// already populated. Existing destination files are left alone, so an
+/// interrupted copy resumes rather than restarting.
 fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
     for name in REQUIRED_MODEL_FILES {
@@ -364,6 +424,12 @@ fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one file from the Hugging Face resolve endpoint into `dest`.
+///
+/// Downloads to a sibling `.partial` file and renames on success, so an aborted
+/// transfer can never leave a truncated file that passes the completeness check.
+/// A non-empty `dest` is treated as already done. `HF_TOKEN` is sent as bearer
+/// auth when set, for gated repos.
 fn download_hf_file<F>(
     client: &reqwest::blocking::Client,
     repo: &str,

@@ -13,15 +13,24 @@ use std::io::{self, Write};
 use std::time::Instant;
 
 // ANSI colors
+/// Cyan — banners, prompts, and result values.
 const CYAN: &str = "\x1b[36m";
+/// Green — the STT stage and a passing verdict.
 const GREEN: &str = "\x1b[32m";
+/// Yellow — the TTS stage and a middling verdict.
 const YELLOW: &str = "\x1b[33m";
+/// Magenta — audio playback.
 const MAGENTA: &str = "\x1b[35m";
+/// Blue — echoed input.
 const BLUE: &str = "\x1b[34m";
+/// Clears every active attribute.
 const RESET: &str = "\x1b[0m";
+/// Bold — step labels.
 const BOLD: &str = "\x1b[1m";
+/// Dim — secondary detail and help text.
 const DIM: &str = "\x1b[2m";
 
+/// Print a coloured step header with optional dimmed detail underneath.
 fn log_step(icon: &str, color: &str, label: &str, detail: &str) {
     println!("{}{}{} {}{}{}", color, icon, RESET, BOLD, label, RESET);
     if !detail.is_empty() {
@@ -29,10 +38,12 @@ fn log_step(icon: &str, color: &str, label: &str, detail: &str) {
     }
 }
 
+/// Print an indented `label value` pair under the current step.
 fn log_result(label: &str, value: &str) {
     println!("   {} {}{}{}", label, CYAN, value, RESET);
 }
 
+/// Draw the demo's opening banner.
 fn print_banner() {
     println!();
     println!(
@@ -54,6 +65,7 @@ fn print_banner() {
     println!();
 }
 
+/// Draw a horizontal rule between round-trips.
 fn print_separator() {
     println!(
         "{}───────────────────────────────────────────────────────────{}",
@@ -87,6 +99,10 @@ fn word_similarity(a: &str, b: &str) -> f32 {
     intersection as f32 / union as f32
 }
 
+/// Run one full text → TTS → (playback) → STT → comparison cycle.
+///
+/// Reports word-overlap similarity always, and semantic similarity when the
+/// embedder is available.
 fn run_roundtrip(input: &str, language: &str, play_audio: bool) -> Result<()> {
     print_separator();
     log_step("📝", BLUE, "INPUT", input);
@@ -159,6 +175,8 @@ fn run_roundtrip(input: &str, language: &str, play_audio: bool) -> Result<()> {
     Ok(())
 }
 
+/// REPL over [`run_roundtrip`]: each line is a round-trip, `lang XX` switches
+/// language, `q`/`quit`/`exit` leaves. A failed cycle is reported, not fatal.
 fn interactive_mode(language: &str, play_audio: bool) -> Result<()> {
     println!();
     println!(
@@ -205,6 +223,8 @@ fn interactive_mode(language: &str, play_audio: bool) -> Result<()> {
     Ok(())
 }
 
+/// Parse the flags, warm TTS / Whisper / embedder, then run one round-trip or
+/// enter the interactive loop. A missing embedder degrades to word similarity.
 fn main() -> Result<()> {
     print_banner();
 

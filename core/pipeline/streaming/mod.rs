@@ -7,17 +7,28 @@
 //! Decomposed into responsibility modules; this facade preserves the original
 //! `pipeline::streaming::*` import surface for all external consumers.
 
+/// Apple on-device recognition session driving the live layer.
 pub(crate) mod apple_live_session;
+/// Phase-2 correction pass: trigger policy, Refine-lane scheduling, reconciliation.
 pub(crate) mod correction;
+/// Buffered "typing" emission of transcript deltas.
 pub(crate) mod emitter;
+/// Assembly of the live transcript from engine events.
 pub mod live_assembly;
+/// Bounded per-session PCM retention, so a sealed utterance can be re-read for tail-patch.
 pub(crate) mod live_audio_buffer;
+/// Offline replay of recorded samples, for tests and evaluation.
 #[cfg(any(test, feature = "offline_eval"))]
 pub(crate) mod offline;
+/// Per-session text postprocess: hallucination drops, overlap dedup, emitted-suffix tracking.
 pub(crate) mod pipeline;
+/// Pre/post-inference gates: hallucination, silence, short-utterance, word-rate anomaly.
 pub(crate) mod quality_gate;
+/// Event-based transcription session: VAD ingestion, the Whisper inference loop, final emission.
 pub(crate) mod session;
+/// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;
+/// Env-tunable runtime knobs shared across these modules.
 pub(crate) mod tuning;
 
 #[cfg(test)]

@@ -31,18 +31,29 @@ pub trait CsAgentDeliveryListener: Send + Sync {
     /// placeholder. `thread_id` is the core runtime persistence id, used to
     /// correlate the turn to a store thread.
     fn on_turn_started(&self, thread_id: String, user_text: String);
+    /// One streamed token chunk of the assistant reply; append to the bubble.
     fn on_text_delta(&self, delta: String);
+    /// Final reply text for the turn — authoritative over accumulated deltas.
     fn on_text_done(&self, text: String);
+    /// One streamed chunk of reasoning/thinking text, rendered separately.
     fn on_reasoning_delta(&self, delta: String);
+    /// A tool call started; `id` correlates it with the matching result.
     fn on_tool_executing(&self, name: String, id: String);
+    /// A tool call finished, carrying a display summary and its error flag.
     fn on_tool_result(&self, name: String, id: String, summary: String, is_error: bool);
+    /// Terminal: the turn completed normally.
     fn on_done(&self);
+    /// Terminal: the turn failed; `message` is displayable.
     fn on_error(&self, message: String);
+    /// Terminal: the turn was cancelled. Distinct from `on_done` so the UI can
+    /// mark the thread rather than present a finished reply.
     fn on_cancelled(&self, thread_id: String);
 }
 
+/// Process-global slot holding the registered Swift listener, if any.
 type SharedDeliveryListener = Arc<RwLock<Option<Arc<dyn CsAgentDeliveryListener>>>>;
 
+/// Accessor for the process-global listener slot, initialized on first use.
 fn shared_delivery_listener() -> SharedDeliveryListener {
     static LISTENER: OnceLock<SharedDeliveryListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
@@ -98,6 +109,9 @@ pub(crate) fn spawn_delivery_forwarder(handle: Handle) {
     });
 }
 
+/// Translate one core delivery event into the matching listener callback.
+/// Exhaustive by construction: a new `AgentDeliveryEvent` variant fails to
+/// compile here rather than being silently dropped on the way to Swift.
 fn forward_delivery_event(event: AgentDeliveryEvent, listener: Arc<dyn CsAgentDeliveryListener>) {
     match event {
         AgentDeliveryEvent::TurnStarted {

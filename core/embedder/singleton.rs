@@ -31,10 +31,13 @@ const REAPER_TICK: Duration = Duration::from_secs(30);
 
 /// Resettable engine slot: `None` when unloaded, plus the last-use timestamp.
 struct EmbedderSlot {
+    /// Loaded engine, or `None` once the reaper has dropped its weights.
     engine: Option<EmbedderEngine>,
+    /// Refreshed on every `with_embedder` call; the reaper's idle clock.
     last_used: Instant,
 }
 
+/// The one process-wide engine slot.
 static SLOT: OnceLock<Mutex<EmbedderSlot>> = OnceLock::new();
 
 /// Config used to (re)load the engine. First value wins (default unless
@@ -44,6 +47,7 @@ static CONFIG: OnceLock<EmbedderConfig> = OnceLock::new();
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
 
+/// Accessor for the engine slot, initialized empty on first use.
 fn slot() -> &'static Mutex<EmbedderSlot> {
     SLOT.get_or_init(|| {
         Mutex::new(EmbedderSlot {
@@ -53,6 +57,7 @@ fn slot() -> &'static Mutex<EmbedderSlot> {
     })
 }
 
+/// The config every (re)load uses. First value set wins for the process.
 fn config() -> EmbedderConfig {
     CONFIG.get_or_init(EmbedderConfig::default).clone()
 }
@@ -70,6 +75,9 @@ fn idle_unload_after() -> Option<Duration> {
 /// has to produce numbers.
 const BACKEND_PROBE_TEXT: &str = "probe";
 
+/// Build the engine and refuse to hand back one that cannot produce finite
+/// vectors. On a non-finite accelerated backend the process is demoted to CPU
+/// and the load retried once; a non-finite CPU result is a hard error.
 fn load_engine() -> Result<EmbedderEngine> {
     let mut engine = EmbedderEngine::with_config(config())?;
 

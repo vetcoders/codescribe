@@ -236,6 +236,13 @@ pub fn safe_symlink_or_copy_bounded(
     Ok(())
 }
 
+/// Resolve a possibly-nonexistent path against an already-canonical root.
+///
+/// The target may not exist yet, so `..` and `.` are folded lexically by
+/// [`normalize_path`] instead of by the filesystem. Two checks follow: the
+/// normalized path must sit under the root, and — when the parent directory does
+/// exist — its *canonical* form must too. That second pass is what catches a
+/// symlinked parent whose lexical path looks contained.
 fn safe_prepare_path_with_root(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     let candidate = if path.is_absolute() {
         path.to_path_buf()
@@ -267,6 +274,11 @@ fn safe_prepare_path_with_root(path: &Path, root_canon: &Path) -> Result<PathBuf
     Ok(normalized)
 }
 
+/// Canonicalize an existing path and express it relative to `root_canon`, ready
+/// to hand to a `cap_std` [`Dir`].
+///
+/// Refuses the root itself: an empty relative path would target the capability
+/// directory rather than a file inside it.
 fn relative_existing_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     let canonical = path
         .canonicalize()
@@ -285,6 +297,8 @@ fn relative_existing_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     Ok(relative.to_path_buf())
 }
 
+/// [`relative_existing_path`] for write targets — the path need not exist yet, so
+/// containment is proven by [`safe_prepare_path_with_root`] first.
 fn relative_prepared_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     let prepared = safe_prepare_path_with_root(path, root_canon)?;
     let relative = prepared.strip_prefix(root_canon).unwrap_or(Path::new(""));
@@ -294,11 +308,21 @@ fn relative_prepared_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     Ok(relative.to_path_buf())
 }
 
+/// Open the capability handle every bounded operation goes through.
+///
+/// Once a [`Dir`] is open, `cap_std` refuses to traverse outside it — the root
+/// boundary stops being a check we remember to run and becomes one the OS-level
+/// handle enforces.
 fn open_root_dir(root_canon: &Path) -> Result<Dir> {
     Dir::open_ambient_dir(root_canon, ambient_authority())
         .with_context(|| format!("Failed to open root dir: {}", root_canon.display()))
 }
 
+/// Fold `.` and `..` purely lexically, without touching the filesystem.
+///
+/// Needed because [`Path::canonicalize`] requires the path to exist. A `..` at
+/// the root is dropped rather than escaping. Being lexical, this does **not**
+/// resolve symlinks — callers must still canonicalize whatever part does exist.
 fn normalize_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {

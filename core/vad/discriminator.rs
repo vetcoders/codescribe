@@ -8,15 +8,24 @@
 use crate::pipeline::contracts::VadClass;
 use crate::vad::config::VadConfig;
 
+/// Width of one classified window; every index in a [`VadTimeline`] spans this.
 pub const DISCRIMINATOR_WINDOW_MS: u32 = 500;
 
+/// Per-window silence semantics for a whole recording.
+///
+/// Index `i` describes the audio from `i * window_sec` to `(i + 1) * window_sec`.
 #[derive(Debug, Clone)]
 pub struct VadTimeline {
+    /// One class per window, in recording order.
     pub classes: Vec<VadClass>,
+    /// Window width in seconds (`DISCRIMINATOR_WINDOW_MS / 1000`).
     pub window_sec: f32,
 }
 
 impl VadTimeline {
+    /// Class of the window containing `t` seconds.
+    ///
+    /// Returns `None` for a non-finite or negative `t`, or past the end.
     pub fn class_at(&self, t: f32) -> Option<VadClass> {
         if !t.is_finite() || t < 0.0 || self.window_sec <= 0.0 {
             return None;
@@ -25,6 +34,8 @@ impl VadTimeline {
         self.classes.get(idx).copied()
     }
 
+    /// Does `[start_sec, end_sec)` touch any window classified as trailing
+    /// silence? A Whisper segment that does is a hallucination candidate.
     pub fn overlaps_trailing_silence(&self, start_sec: f32, end_sec: f32) -> bool {
         self.range_slice(start_sec, end_sec)
             .iter()
@@ -32,6 +43,8 @@ impl VadTimeline {
             .any(|class| class == VadClass::TrailingSilence)
     }
 
+    /// Most frequent class across `[start_sec, end_sec)`, or `None` when the
+    /// range covers no windows.
     pub fn dominant_class(&self, start_sec: f32, end_sec: f32) -> Option<VadClass> {
         let mut speech = 0usize;
         let mut utterance_gap = 0usize;
@@ -58,6 +71,8 @@ impl VadTimeline {
         .and_then(|(class, count)| (count > 0).then_some(class))
     }
 
+    /// Clamp a time range onto the class vector, always yielding at least one
+    /// window when the timeline is non-empty. Non-finite bounds fold to zero.
     fn range_slice(&self, start_sec: f32, end_sec: f32) -> &[VadClass] {
         if self.classes.is_empty() || self.window_sec <= 0.0 {
             return &[];
@@ -144,11 +159,14 @@ pub fn classify_windows(probabilities: &[f32], config: &VadConfig) -> VadTimelin
     }
 }
 
+/// Pins the three-way silence split and the rule that a long silence only
+/// becomes trailing silence when nothing follows it.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vad::VadConfig;
 
+    /// Shared configuration for the classification cases.
     fn default_config() -> VadConfig {
         VadConfig::default()
     }

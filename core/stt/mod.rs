@@ -1,6 +1,34 @@
+//! Speech-to-text engine router.
+//!
+//! Three backends live behind one call surface — Candle Whisper, ONNX Whisper,
+//! and Apple SpeechAnalyzer — selected by `CODESCRIBE_STT_ENGINE`. Unset or
+//! `auto` resolves through [`default_engine`]: Apple when its runtime *and*
+//! bridge are both reachable, otherwise Candle.
+//!
+//! ## The lane split (product truth, not an implementation detail)
+//!
+//! - **Live** (buffer / progressive / chunk) is Apple's lane when Apple is
+//!   selected. A hard bridge failure with real audio falls back to Candle as
+//!   *emergency recovery* so a session never dies silently — never as a quiet
+//!   default.
+//! - **File final-pass** is Whisper only. [`transcribe_file_verdict`]
+//!   deliberately refuses the Apple file path even under
+//!   `CODESCRIBE_STT_ENGINE=apple`; measured on long Polish dictation, Apple's
+//!   URL recognizer collapses the take to a tail fragment.
+//!
+//! ## Append-only tail gap-fill
+//!
+//! [`resolve_tail_gap_boundary`], [`whisper_tail_gap_transcribe_file`] and
+//! [`append_tail_gap`] implement the Smart-mode primitive: transcribe only the
+//! *uncommitted* tail and append it. Committed text is immutable, so a missing
+//! commit boundary must resolve to a skip rather than a whole-file re-pass
+//! appended onto text the user already sees.
+
 pub mod adapter;
 pub mod apple_stt;
 pub mod onnx_adapter;
+/// Serialized STT request scheduler: live, commit, and refine lanes with
+/// supersede semantics for stale requests and thermal-pressure backoff.
 pub mod scheduler;
 pub mod tail_patcher;
 pub mod whisper;
@@ -12,13 +40,20 @@ use tracing::warn;
 
 const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
 
+/// Which STT backend the router dispatches to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SttEngine {
+    /// Candle Whisper — the local model. Only engine that honours an
+    /// `initial_prompt`, and the only legal file final-pass route.
     Candle,
+    /// ONNX Whisper runtime.
     Onnx,
+    /// Apple SpeechAnalyzer via the external bridge; live lane only.
     Apple,
 }
 
+/// Resolve the active engine: an explicit `CODESCRIBE_STT_ENGINE` value when it
+/// names one, otherwise the platform auto policy.
 fn selected_engine() -> SttEngine {
     match std::env::var(ENV_STT_ENGINE) {
         Ok(value) => requested_engine(&value).unwrap_or_else(default_engine),
@@ -26,6 +61,9 @@ fn selected_engine() -> SttEngine {
     }
 }
 
+/// Parse an explicit engine request. `""` and `"auto"` yield `None` (defer to
+/// the auto policy); an unrecognized value falls back to Candle rather than
+/// failing the recording.
 fn requested_engine(value: &str) -> Option<SttEngine> {
     match value.trim().to_ascii_lowercase().as_str() {
         "onnx" => SttEngine::Onnx,
@@ -37,6 +75,7 @@ fn requested_engine(value: &str) -> Option<SttEngine> {
     .into()
 }
 
+/// Auto policy: Apple only when it can actually run, otherwise Candle.
 fn default_engine() -> SttEngine {
     // AUTO only selects Apple when the SpeechAnalyzer bridge is actually
     // launchable; otherwise the probe is wasted and the router silently falls
@@ -88,6 +127,8 @@ pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
 //
 // Used by `pipeline::streaming` to keep backend selection transparent.
 
+/// Warn once per process that Apple was requested but Candle is serving.
+/// Latched through a `OnceLock` so a per-chunk fallback cannot flood the log.
 fn warn_apple_fallback(context: &str, error: &anyhow::Error) {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
@@ -98,6 +139,13 @@ fn warn_apple_fallback(context: &str, error: &anyhow::Error) {
     });
 }
 
+/// Run `apple_path`, silently degrading to `whisper_fallback` when the Apple
+/// runtime is missing or the attempt fails.
+///
+/// This is the *setup*-phase helper (adapter construction, engine init) where a
+/// swap is invisible and harmless. Live transcription uses
+/// [`run_apple_live_only`] instead, so a failure surfaces rather than quietly
+/// re-routing the user's dictation to another engine.
 fn run_apple_or_whisper<T>(
     context: &str,
     apple_path: impl FnOnce() -> anyhow::Result<T>,
@@ -212,6 +260,8 @@ pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
     })
 }
 
+/// Warn once that a domain-vocabulary `initial_prompt` is being dropped —
+/// only Candle Whisper can consume one.
 fn warn_initial_prompt_unsupported(engine: &str) {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
@@ -227,6 +277,7 @@ fn warn_initial_prompt_unsupported(engine: &str) {
 // try_transcribe_long_with_segments across whisper/apple/onnx providers) is
 // parked: runtime uses the scheduler+streaming path. Kept as the documented
 // provider contract for CLI/batch revival; operator decides revive-or-delete.
+/// Candle chunk transcription through the Whisper singleton.
 #[allow(dead_code)]
 fn candle_transcribe_chunk(
     audio: &[f32],
@@ -238,6 +289,7 @@ fn candle_transcribe_chunk(
     whisper::singleton::transcribe_chunk(audio, sample_rate, language)
 }
 
+/// Candle long-audio transcription with segment timestamps (blocking acquire).
 fn candle_transcribe_long_with_segments(
     audio: &[f32],
     sample_rate: u32,
@@ -246,6 +298,7 @@ fn candle_transcribe_long_with_segments(
     whisper::singleton::transcribe_with_segments(audio, sample_rate, language)
 }
 
+/// Candle long-audio transcription seeded with a per-call domain vocabulary.
 fn candle_transcribe_long_with_segments_with_initial_prompt(
     audio: &[f32],
     sample_rate: u32,
@@ -260,6 +313,10 @@ fn candle_transcribe_long_with_segments_with_initial_prompt(
     )
 }
 
+/// Whisper-transcribe an audio slice after VAD trims it to speech.
+///
+/// Returns an empty transcript when VAD finds no speech, short-circuiting
+/// before any model load — a silent tail must never pay for weights.
 pub(crate) fn whisper_tail_patch_transcribe(
     audio: &[f32],
     sample_rate: u32,
@@ -424,6 +481,9 @@ pub fn whisper_tail_gap_transcribe_file(
     whisper_tail_patch_transcribe(tail, sample_rate, language)
 }
 
+/// Non-blocking Candle long transcription: yields an error instead of waiting
+/// when the engine lock is held, so a correction pass can be skipped rather
+/// than queued behind live work.
 #[allow(dead_code)]
 fn candle_try_transcribe_long_with_segments(
     audio: &[f32],

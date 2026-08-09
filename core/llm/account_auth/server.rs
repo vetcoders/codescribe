@@ -1,5 +1,23 @@
 // Portions derived from openai/codex (Apache-2.0).
 
+//! Loopback OAuth login server.
+//!
+//! Runs a throwaway HTTP server on localhost, hands the caller an authorize URL
+//! to open in a browser, and completes when the provider redirects back with an
+//! authorization code.
+//!
+//! Everything vendor-specific — issuer, callback path, token path, body
+//! encoding, scope, extra authorize params, preferred port — comes from the
+//! provider's registry row rather than being hardcoded to one vendor's shape.
+//! The provider identity is carried through the entire flow, from
+//! `ServerOptions` to the token store, which is what prevents the failure this
+//! module was reshaped to fix: a code obtained for one vendor being filed under
+//! another vendor's account slot.
+//!
+//! Only providers whose login flow is a loopback callback are served here.
+//! Paste-code providers are refused outright — binding a port nothing will call
+//! back on is worse than an honest error.
+
 use std::io::{self, Cursor, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
@@ -52,6 +70,14 @@ impl ServerOptions {
     }
 }
 
+/// A login attempt already listening on localhost.
+///
+/// Returned as soon as the port is bound, before the user has done anything —
+/// the caller needs `auth_url` to open a browser, and `actual_port` because the
+/// preferred port may have been taken. The flow itself completes later, through
+/// [`block_until_done`] or a cancel.
+///
+/// [`block_until_done`]: Self::block_until_done
 pub struct LoginServer {
     pub auth_url: String,
     pub actual_port: u16,
@@ -60,27 +86,41 @@ pub struct LoginServer {
 }
 
 impl LoginServer {
+    /// Wait for the login to settle, consuming the server.
+    ///
+    /// `Ok` means tokens were exchanged and stored. Every other ending —
+    /// cancelled in the browser, cancelled by the caller, request channel
+    /// closed — is an error, because none of them produced a usable account.
     pub async fn block_until_done(self) -> Result<(), AccountAuthError> {
         self.server_handle
             .await
             .map_err(|error| AccountAuthError::Io(io::Error::other(error.to_string())))?
     }
 
+    /// Abandon the login. The pending [`block_until_done`] resolves to an
+    /// error.
+    ///
+    /// [`block_until_done`]: Self::block_until_done
     pub fn cancel(&self) {
         self.shutdown_handle.shutdown();
     }
 
+    /// A detachable cancel trigger, for cancelling from somewhere that does not
+    /// own the server — a UI button, a timeout.
     pub fn cancel_handle(&self) -> ShutdownHandle {
         self.shutdown_handle.clone()
     }
 }
 
+/// Cheap clonable handle that can stop a running [`LoginServer`].
 #[derive(Clone, Debug)]
 pub struct ShutdownHandle {
     shutdown_notify: Arc<tokio::sync::Notify>,
 }
 
 impl ShutdownHandle {
+    /// Ask the server to stop. Idempotent and safe to call after it already
+    /// finished.
     pub fn shutdown(&self) {
         // `notify_one` (not `notify_waiters`): it stores a permit when the
         // server task is momentarily outside its `select!` — e.g. mid-response
@@ -90,6 +130,16 @@ impl ShutdownHandle {
     }
 }
 
+/// Start a loopback login for `opts.provider`.
+///
+/// Refuses any provider that does not sign in through a local callback. On
+/// success the port is bound and the authorize URL — carrying PKCE, `state`,
+/// and the redirect URI built from the provider's own callback host and path —
+/// is ready to open; the returned handle is how the caller waits or cancels.
+///
+/// The blocking `tiny_http` accept loop lives on its own thread and feeds
+/// requests to an async task over a channel, so the async side can await both a
+/// request and a cancel in one `select!`.
 pub async fn run_login_server(opts: ServerOptions) -> Result<LoginServer, AccountAuthError> {
     let config = provider_oauth_config(opts.provider)?;
     // A paste-code provider has no loopback listener to bind. Binding one anyway
@@ -171,6 +221,13 @@ pub async fn run_login_server(opts: ServerOptions) -> Result<LoginServer, Accoun
     })
 }
 
+/// What to do with one incoming request, decided before any I/O.
+///
+/// Separating the decision from the reply is what lets a single variant —
+/// [`ResponseAndExit`] — express "answer the browser, then stop the server"
+/// without the handler needing to reach the server loop.
+///
+/// [`ResponseAndExit`]: HandledRequest::ResponseAndExit
 enum HandledRequest {
     Response(Response<Cursor<Vec<u8>>>),
     Redirect(Header),
@@ -181,6 +238,10 @@ enum HandledRequest {
     },
 }
 
+/// Write the decided reply, off the async executor.
+///
+/// Returns `Some` when this request ends the login — the value is the flow's
+/// result — and `None` when the server should keep listening.
 async fn respond(
     request: Request,
     handled: HandledRequest,
@@ -209,6 +270,17 @@ async fn respond(
     }
 }
 
+/// Route one request: the provider's callback path, or our own `/success` and
+/// `/cancel`.
+///
+/// On the callback path the checks are ordered so nothing irreversible happens
+/// on an unverified request — `state` must match before the code is even read,
+/// and the code is exchanged before anything is persisted. A `state` mismatch
+/// is answered 400 and the server keeps listening; it is not a reason to end a
+/// login the real browser may still complete.
+///
+/// After a successful exchange the browser is redirected to `/success`, so the
+/// user lands on a page whose URL no longer contains their authorization code.
 async fn process_request(
     url_raw: &str,
     config: ProviderOAuthConfig,
@@ -368,6 +440,11 @@ pub async fn exchange_code_for_tokens(
     ))
 }
 
+/// Build the authorize URL the user's browser opens.
+///
+/// Assembled entirely from the provider's row plus this attempt's PKCE
+/// challenge and `state`, so a new vendor needs a registry entry rather than a
+/// branch here.
 fn build_authorize_url(
     config: ProviderOAuthConfig,
     opts: &ServerOptions,
@@ -398,12 +475,20 @@ fn build_authorize_url(
     url.to_string()
 }
 
+/// 256 bits of randomness, URL-safe base64. Used for both `state` and the
+/// OpenID `nonce` — same unguessability requirement, same generator.
 fn generate_state() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Bind the loopback listener, evicting a stale login if the port is taken.
+///
+/// The port is not arbitrary — it is the one the provider's registered redirect
+/// URI points at, so falling back to a different one would break the callback.
+/// An abandoned earlier attempt is therefore asked to release it (`/cancel`)
+/// and the bind is retried once.
 fn bind_server(port: u16) -> Result<Server, AccountAuthError> {
     let bind_address = format!("127.0.0.1:{port}");
     match Server::http(&bind_address) {
@@ -420,6 +505,11 @@ fn bind_server(port: u16) -> Result<Server, AccountAuthError> {
     }
 }
 
+/// Hand-write a `GET /cancel` at whatever holds `port`.
+///
+/// Raw TCP with short timeouts rather than an HTTP client: this runs on a
+/// blocked bind path, the peer may not be one of ours, and the reply is
+/// irrelevant — only that the port gets released.
 fn send_cancel_request(port: u16) -> io::Result<()> {
     let addr: SocketAddr = format!("127.0.0.1:{port}")
         .parse()
@@ -435,6 +525,12 @@ fn send_cancel_request(port: u16) -> io::Result<()> {
     Ok(())
 }
 
+/// Write a terminal response by hand and close the connection.
+///
+/// The server is about to shut down, so the reply must not leave the browser on
+/// a keep-alive connection waiting for a socket that will never answer again:
+/// any inherited `Connection` header is dropped in favour of `close`, and
+/// `Content-Length` is set so the browser knows the body is complete.
 fn send_response_with_disconnect(
     request: Request,
     mut headers: Vec<Header>,

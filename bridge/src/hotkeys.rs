@@ -37,7 +37,10 @@ type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>
 /// and must never enter the recording controller path.
 #[uniffi::export(with_foreign)]
 pub trait CsAppActionListener: Send + Sync {
+    /// Bring the Agent surface forward. UI-only — must not touch the mic.
     fn on_show_agent(&self);
+    /// Drive the Agent-owned composer microphone. The bridge has already claimed
+    /// (or verified) capture ownership before this fires.
     fn on_agent_capture(&self, command: CsAgentCaptureCommand);
 }
 
@@ -56,6 +59,11 @@ const CAPTURE_OWNER_OVERLAY: u8 = 1;
 const CAPTURE_OWNER_AGENT: u8 = 2;
 static CAPTURE_OWNER: AtomicU8 = AtomicU8::new(CAPTURE_OWNER_NONE);
 
+/// Try to become the single process-wide capture owner for the Agent lane.
+///
+/// Returns true when the Agent now owns the mic — including the re-entrant case
+/// where it already did (a repeated Start must not be treated as a conflict).
+/// Returns false only when the legacy overlay holds ownership.
 fn claim_agent_capture() -> bool {
     match CAPTURE_OWNER.compare_exchange(
         CAPTURE_OWNER_NONE,
@@ -68,6 +76,8 @@ fn claim_agent_capture() -> bool {
     }
 }
 
+/// Release Agent capture ownership. Compare-exchange rather than a plain store,
+/// so a late Stop can never steal ownership away from the overlay.
 fn release_agent_capture() {
     let _ = CAPTURE_OWNER.compare_exchange(
         CAPTURE_OWNER_AGENT,
@@ -77,6 +87,10 @@ fn release_agent_capture() {
     );
 }
 
+/// Whether this event would begin a NEW overlay capture session, and therefore
+/// has to claim capture ownership first. Deliberately narrow: only the two
+/// toggles and a raw hold key-down start a session; every other event either
+/// continues or ends one that already owns the mic.
 fn event_can_start_overlay(event: &HotkeyEvent) -> bool {
     matches!(
         event,
@@ -89,6 +103,12 @@ fn event_can_start_overlay(event: &HotkeyEvent) -> bool {
     )
 }
 
+/// Translate an assistive-lane hotkey into an Agent composer command, or `None`
+/// when the event belongs to the recording controller instead.
+///
+/// This is the fork that keeps exactly one Assistive capture owner: Chat and
+/// Selection hold modes plus the assistive toggle are Agent-owned, everything
+/// else falls through to `RecordingController`.
 fn agent_capture_command(event: &HotkeyEvent) -> Option<CsAgentCaptureCommand> {
     match event {
         HotkeyEvent::ToggleAssistive => Some(CsAgentCaptureCommand::Toggle),
@@ -131,21 +151,27 @@ fn overlay_owned_assistive_hold_fallback(event: &HotkeyEvent) -> Option<HotkeyEv
     }
 }
 
+/// Process-global slot for the lazily-created `RecordingController`.
 fn shared_controller() -> SharedController {
     static CONTROLLER: OnceLock<SharedController> = OnceLock::new();
     Arc::clone(CONTROLLER.get_or_init(|| Arc::new(Mutex::new(None))))
 }
 
+/// Process-global slot for the Swift overlay listener. `RwLock` because the
+/// event forwarder reads it on every broadcast and Swift writes it once.
 fn shared_listener() -> SharedListener {
     static LISTENER: OnceLock<SharedListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
 }
 
+/// Process-global slot for the Swift app-action listener (UI-only commands).
 fn shared_app_action_listener() -> SharedAppActionListener {
     static LISTENER: OnceLock<SharedAppActionListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
 }
 
+/// Snapshot the registered app-action listener, if Swift has installed one.
+/// Cloned out of the lock so the caller never holds it across a foreign call.
 fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
     shared_app_action_listener()
         .read()
@@ -154,6 +180,16 @@ fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
         .map(Arc::clone)
 }
 
+/// Single routing decision for every hotkey event, kept pure over injected
+/// callbacks so the whole contract is unit-testable without a live tap,
+/// controller or runtime.
+///
+/// Precedence is deliberate and must not be reordered:
+/// 1. overlay-owned assistive fallback — ownership cannot migrate mid-recording;
+/// 2. Agent capture commands — arming the trigger context BEFORE the composer
+///    mic takes over, per `docs/HOTKEYS_CONTRACT.md`;
+/// 3. UI-only commands (`ShowAgent`, `InsertHere`);
+/// 4. everything else → the recording controller.
 fn route_hotkey_event<F, G, H>(
     event: HotkeyEvent,
     app_action_listener: Option<Arc<dyn CsAppActionListener>>,
@@ -208,6 +244,9 @@ fn route_hotkey_event<F, G, H>(
     }
 }
 
+/// Deliver the armed "Paste Here" transcript and always tell the user what
+/// happened — a silent no-op on an explicit user gesture reads as a broken
+/// hotkey, so nothing-to-insert and expiry both surface a notification.
 fn deliver_deferred_insert_and_notify() {
     match clipboard::deliver_deferred_insert() {
         Ok(clipboard::DeferredInsertDelivery::Delivered) => {
@@ -224,6 +263,9 @@ fn deliver_deferred_insert_and_notify() {
     }
 }
 
+/// Get the shared controller, creating it (and its event forwarder) on first
+/// use. Lazy by design: `start()` installs the tap without paying
+/// `Config::load()` until the user actually invokes a shortcut.
 fn ensure_controller(
     controller_store: &SharedController,
     handle: Handle,
@@ -236,6 +278,8 @@ fn ensure_controller(
     }))
 }
 
+/// Snapshot the shared controller WITHOUT creating one. Query surfaces use this
+/// so a mere status read never triggers controller construction.
 fn current_controller(controller_store: &SharedController) -> Option<Arc<RecordingController>> {
     controller_store
         .lock()
@@ -244,6 +288,9 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
         .map(Arc::clone)
 }
 
+/// Collapse a latched paste-target app name to `None` when it carries no
+/// information, so Swift never renders a blank or whitespace-only app label as
+/// if it were a known target.
 fn normalize_paste_target_app_name(name: Option<String>) -> Option<String> {
     name.and_then(|value| {
         let trimmed = value.trim();
@@ -276,6 +323,14 @@ pub(crate) fn refresh_live_controller_config() {
     });
 }
 
+/// Pump the controller's broadcast stream into the registered Swift listener for
+/// the controller's lifetime, and release overlay capture ownership on every
+/// return to `idle`.
+///
+/// The listener is resolved per event rather than captured, so a listener that
+/// registers after the forwarder starts still receives everything from that
+/// point on. Lag is survivable (keep forwarding); only a closed channel ends the
+/// task.
 fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
     let listener_store = shared_listener();
     let mut events = controller.subscribe_events();
@@ -321,6 +376,12 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
     });
 }
 
+/// Translate one IPC payload into the Swift listener's callback vocabulary and
+/// keep the tray status in step.
+///
+/// Stateless router by design — every idempotency concern lives on the Swift
+/// side. `Drop` and `Stats` are intentionally not forwarded: they are telemetry,
+/// not user-visible transcript truth.
 fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTranscriptionListener>) {
     match payload {
         IpcEventPayload::StateChange { to, .. } => match to.as_str() {
@@ -413,6 +474,7 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
     }
 }
 
+/// Snapshot the registered overlay listener, cloned out of the lock.
 fn current_listener() -> Option<Arc<dyn CsTranscriptionListener>> {
     shared_listener()
         .read()
@@ -436,6 +498,14 @@ fn current_listener() -> Option<Arc<dyn CsTranscriptionListener>> {
 /// double-fires.
 static PREPARING_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// Show the "preparing" overlay immediately on a start gesture, before the
+/// controller has done any work, so the UI reacts at key-down latency instead of
+/// after model/recorder setup.
+///
+/// Only fires for gestures that actually start a session, and only from `Idle` —
+/// a mid-session event must not repaint a preparing state over live capture.
+/// Arms [`PREPARING_PENDING`] first so the terminal half of the contract holds
+/// even when the dispatch that follows never transitions state.
 async fn optimistically_show_overlay(event: &HotkeyEvent) {
     let starts_redesign_overlay = matches!(
         event,
@@ -508,6 +578,8 @@ pub struct CodescribeHotkeys {}
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CodescribeHotkeys {
+    /// Construct the hotkey facade and initialise logging. Creates no listener,
+    /// controller or tap — `start()` owns that.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -884,6 +956,9 @@ impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
     }
 }
 
+/// Full delivery truth for one overlay Insert, including the app names observed
+/// at the exact delivery boundary and the Paste Here shortcut (or the reason it
+/// was unavailable), so Swift can explain any degradation instead of guessing.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct CsPasteResult {
     pub outcome: CsPasteOutcome,
@@ -905,6 +980,9 @@ impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
     }
 }
 
+/// Run a UI-initiated recording gesture through the SAME capture gate and
+/// dispatch path a real hotkey takes, so an FFI start can never bypass the
+/// ownership rules the tap path enforces.
 async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
     let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
     dispatch_recording_with_capture_gate(event, controller)
@@ -914,6 +992,13 @@ async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
         })
 }
 
+/// Wrap a recording dispatch in the full capture-ownership lifecycle: claim on a
+/// session-starting event, refuse while the Agent owns the mic, show the
+/// optimistic overlay, dispatch, compensate an orphaned "preparing", and release
+/// ownership once the controller is back at `Idle`.
+///
+/// The claim happens BEFORE any controller work so two racing gestures cannot
+/// both believe they started a session.
 async fn dispatch_recording_with_capture_gate(
     event: HotkeyEvent,
     controller: Arc<RecordingController>,
@@ -952,6 +1037,12 @@ async fn dispatch_recording_with_capture_gate(
     dispatch
 }
 
+/// Lower a `HotkeyEvent` into the `HotkeyInput` vocabulary the recording
+/// controller state machine speaks.
+///
+/// UI-only commands are `unreachable!` here on purpose: `route_hotkey_event`
+/// owns that split, and reaching this point with one means the routing contract
+/// was violated rather than a user gesture being unusual.
 async fn dispatch_recording_hotkey_event(
     event: HotkeyEvent,
     controller: Arc<RecordingController>,
@@ -1036,6 +1127,9 @@ async fn dispatch_recording_hotkey_event(
     Ok(())
 }
 
+/// One-shot manual format levels: unknown levels and `off` are rejected (a
+/// manual action must act), while legacy aliases still normalize through the
+/// same `FormattingPolicy` owner.
 #[cfg(test)]
 mod format_level_tests {
     use super::*;
@@ -1072,6 +1166,8 @@ mod format_level_tests {
     }
 }
 
+/// Recording-dispatch side effects — notably that a blocked double-tap stays
+/// silent on the tray instead of publishing a conflict the detector already owns.
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
@@ -1097,6 +1193,10 @@ mod dispatch_tests {
     }
 }
 
+/// The routing contract of [`route_hotkey_event`]: capture ownership is atomic
+/// and mutually exclusive, assistive holds map to Agent start/stop, UI-only
+/// commands never reach recording dispatch, and the assistive trigger context is
+/// armed on start but never re-armed at send time.
 #[cfg(test)]
 mod app_action_tests {
     use super::*;
@@ -1418,6 +1518,9 @@ const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
     ShortcutBinding::DoubleRightOption,
 ];
 
+/// Pair a mode with its binding and attach the display copy sourced from the
+/// core, so the Settings UI never re-invents labels that live in
+/// `docs/HOTKEYS_CONTRACT.md`.
 fn build_mode_binding(mode: WorkMode, binding: ShortcutBinding) -> CsModeBinding {
     CsModeBinding {
         mode: mode.into(),
@@ -1588,6 +1691,9 @@ impl CodescribeHotkeys {
     }
 }
 
+/// The Settings mode-binding surface: FFI enum roundtrips, the re-arm gate,
+/// conflict validation, and a persist/read-back cycle against an isolated
+/// `CODESCRIBE_DATA_DIR`.
 #[cfg(test)]
 mod mode_binding_tests {
     use super::*;
@@ -1733,6 +1839,8 @@ mod mode_binding_tests {
     }
 }
 
+/// Paste-result mapping across the FFI boundary: app names normalize to `None`
+/// when blank, and a permission denial keeps both observed app names intact.
 #[cfg(test)]
 mod paste_target_mapping_tests {
     use super::{CsPasteOutcome, CsPasteResult, normalize_paste_target_app_name};
@@ -1787,6 +1895,9 @@ mod paste_target_mapping_tests {
 // broadcast forwarder owns the terminal event and the compensator must NOT
 // double-fire.
 // ===========================================================================
+/// The terminal-event guarantee for the optimistic overlay described in the
+/// banner above, plus the `busy` → finalising → `idle` → stopped forwarding
+/// sequence a real hold-release produces.
 #[cfg(test)]
 mod preparing_compensation_tests {
     use super::*;

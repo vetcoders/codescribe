@@ -73,12 +73,20 @@ pub enum AgentDeliveryEvent {
 static AGENT_DELIVERY_TX: OnceLock<broadcast::Sender<AgentDeliveryEvent>> = OnceLock::new();
 static AGENT_DELIVERY_TURNS: OnceLock<AgentDeliveryTurnRegistry> = OnceLock::new();
 
+/// Process-global map of cancellable voice turns, keyed by delivery thread id.
+///
+/// A thread can hold more than one entry: Swift may key a second turn onto the
+/// same thread before the first has settled, and Stop is expected to cancel all
+/// of them. Entries are identified by `token`, not by position, so a completing
+/// turn removes exactly its own row.
 #[derive(Default)]
 struct AgentDeliveryTurnRegistry {
     turns: Mutex<HashMap<String, Vec<AgentDeliveryTurnEntry>>>,
     next_token: AtomicU64,
 }
 
+/// One cancellable turn: a process-unique `token` and the sender half of its
+/// cancellation flag.
 struct AgentDeliveryTurnEntry {
     token: u64,
     cancel: watch::Sender<bool>,
@@ -95,6 +103,8 @@ pub(crate) struct AgentDeliveryTurnCancellation {
 }
 
 impl AgentDeliveryTurnRegistry {
+    /// Open a cancellation window for a new turn on `thread_id` and hand the
+    /// caller its receiver half.
     fn register(&self, thread_id: &str) -> AgentDeliveryTurnCancellation {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let (cancel, cancelled) = watch::channel(false);
@@ -112,6 +122,8 @@ impl AgentDeliveryTurnRegistry {
         }
     }
 
+    /// Flag every turn registered for `thread_id`. Returns whether anything was
+    /// still cancellable.
     fn cancel(&self, thread_id: &str) -> bool {
         let turns = self.turns.lock().unwrap_or_else(|error| error.into_inner());
         let Some(entries) = turns.get(thread_id) else {
@@ -145,6 +157,15 @@ impl AgentDeliveryTurnRegistry {
 }
 
 impl AgentDeliveryTurnCancellation {
+    /// Resolve once this turn is cancelled; otherwise stay pending forever.
+    ///
+    /// Written for use as one arm of a `select!` against the provider send. A
+    /// closed channel means [`finish`] disarmed the window, which is *not*
+    /// cancellation — resolving there would race a successful terminal into
+    /// looking cancelled, so the future parks instead and lets the sibling arm
+    /// complete the select.
+    ///
+    /// [`finish`]: Self::finish
     pub(crate) async fn cancelled(&mut self) {
         if *self.cancelled.borrow() {
             return;
@@ -181,10 +202,15 @@ impl Drop for AgentDeliveryTurnCancellation {
     }
 }
 
+/// The process-global turn registry, created on first use.
 fn delivery_turn_registry() -> &'static AgentDeliveryTurnRegistry {
     AGENT_DELIVERY_TURNS.get_or_init(AgentDeliveryTurnRegistry::default)
 }
 
+/// Register a controller-owned voice turn so Swift's Stop can reach it.
+///
+/// The returned guard disarms itself on drop, so an early return from the send
+/// path cannot leave a phantom cancellable entry behind.
 pub(crate) fn register_agent_delivery_turn(thread_id: &str) -> AgentDeliveryTurnCancellation {
     delivery_turn_registry().register(thread_id)
 }
@@ -196,6 +222,7 @@ pub fn cancel_agent_delivery_turn(thread_id: &str) -> bool {
     delivery_turn_registry().cancel(thread_id)
 }
 
+/// The process-global delivery channel's sender, created on first use.
 fn sender() -> &'static broadcast::Sender<AgentDeliveryEvent> {
     AGENT_DELIVERY_TX.get_or_init(|| broadcast::channel(AGENT_DELIVERY_CHANNEL_CAPACITY).0)
 }

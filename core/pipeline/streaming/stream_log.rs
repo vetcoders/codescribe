@@ -8,6 +8,13 @@ use super::tuning::env_bool;
 
 // ── Logging ──────────────────────────────────────────────────────────────────
 
+/// Resolve where the stream log should be written, or `None` when logging is
+/// off.
+///
+/// An explicit `CODESCRIBE_STREAM_LOG_PATH` wins outright; otherwise the
+/// boolean `CODESCRIBE_STREAM_LOG` opts into the default location under the
+/// config dir. Two variables rather than one so a path can be set without
+/// also having to flip the switch.
 pub(crate) fn stream_log_path() -> Option<std::path::PathBuf> {
     if let Ok(path) = std::env::var("CODESCRIBE_STREAM_LOG_PATH") {
         let trimmed = path.trim();
@@ -24,6 +31,12 @@ pub(crate) fn stream_log_path() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Append one RFC 3339-stamped line to the stream log, creating the file and
+/// its parent directory as needed.
+///
+/// Newlines, carriage returns and backspaces are escaped rather than written
+/// literally, which keeps the file strictly one record per line — partials
+/// routinely carry control characters that would otherwise split a record.
 pub(crate) fn append_to_stream_log(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

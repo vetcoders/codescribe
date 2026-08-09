@@ -1,3 +1,13 @@
+//! Wire representation of engine events for the IPC boundary.
+//!
+//! The in-process [`EngineEvent`] is the engine's own type; the types here are
+//! its serialized mirror, and the difference between them is deliberate. The
+//! wire form is externally-tagged JSON (`type` / `event` discriminators) and
+//! deliberately narrower — `UtteranceFinal::raw_text` never crosses the
+//! boundary, and legacy variants that were removed from the engine must fail to
+//! deserialize rather than silently reappear. Both properties are pinned by the
+//! tests in this module.
+
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::contracts::{
@@ -5,6 +15,9 @@ use crate::pipeline::contracts::{
     TranscriptionConfidenceFlag,
 };
 
+/// One timestamped envelope on the IPC stream. The payload is flattened, so a
+/// serialized event carries its discriminator and fields at the top level
+/// alongside `timestamp`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcEvent {
     pub timestamp: String, // RFC3339 UTC
@@ -12,6 +25,14 @@ pub struct IpcEvent {
     pub payload: IpcEventPayload,
 }
 
+/// What an [`IpcEvent`] carries, tagged by the `event` field.
+///
+/// [`Engine`] is the transcription pipeline's own event stream; the remaining
+/// variants are surfaces that exist only across this boundary (authoritative
+/// post-stop transcript, context markers, capture-level metering) and have no
+/// [`EngineEvent`] counterpart.
+///
+/// [`Engine`]: IpcEventPayload::Engine
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event")]
 pub enum IpcEventPayload {
@@ -38,6 +59,14 @@ pub enum IpcEventPayload {
     AudioLevel { rms: f32 },
 }
 
+/// Serializable mirror of [`EngineEvent`], tagged by `type` in snake_case.
+///
+/// Built exclusively through the [`From`] impl below, which is where the
+/// engine→wire narrowing happens: `UtteranceFinal` drops `raw_text` so the
+/// unfiltered transcript never leaves the process. Variants retired from the
+/// engine are also retired here — the deserialize path must reject them
+/// (`vad_fallback`, `delta`, `worker_status`) instead of accepting stale
+/// clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEventWire {
@@ -240,6 +269,10 @@ impl From<&EngineEvent> for EngineEventWire {
     }
 }
 
+/// Stable wire spelling for a [`DropKind`].
+///
+/// Written out by hand rather than derived: these strings are consumed by the
+/// Swift side, so they are a contract that must not follow a Rust rename.
 fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
     match kind {
         DropKind::Hallucination => "hallucination",

@@ -149,6 +149,9 @@ fn tighten_punctuation(text: &str) -> String {
     out
 }
 
+/// Does the text already close on a mark that makes a trailing period wrong?
+///
+/// `:` counts — a list header (`Lista:`) is finished, not a fragment.
 fn ends_with_terminal_punctuation(text: &str) -> bool {
     matches!(text.chars().last(), Some('.' | '!' | '?' | '…' | ':'))
 }
@@ -179,6 +182,9 @@ fn capitalize_sentences(text: &str) -> String {
     out
 }
 
+/// Pins the two properties the pass exists for — sentence shape on an
+/// unpunctuated stream, and idempotence — plus the "never delete a user's word"
+/// rule that separates this from the Python original.
 #[cfg(test)]
 mod tests {
     use super::*;

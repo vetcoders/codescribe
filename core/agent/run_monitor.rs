@@ -39,16 +39,25 @@ const MONITOR_FILE_NAME: &str = "monitors.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunMonitorState {
+    /// Registered and live, but no cursor movement observed yet.
     Started,
+    /// Cursor movement seen since the last poll — the run is alive.
     Running,
+    /// No progress past `stale_after_secs` and no promised artifact to explain it.
     Stale,
+    /// Meta reports a block, or it stayed unreadable past the failure budget.
     Blocked,
+    /// Terminal success with the promised report artifact present.
     Completed,
+    /// Terminal failure: meta says `failed`, or the exit code is non-zero.
     Failed,
+    /// Terminal success *claimed* without its promised artifact — never
+    /// reported as [`Completed`](Self::Completed).
     NeedsRerun,
 }
 
 impl RunMonitorState {
+    /// Stable kebab-case wire/log name for this state.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Started => "started",
@@ -103,6 +112,7 @@ pub struct RunMonitorRecord {
 }
 
 impl RunMonitorRecord {
+    /// Still worth polling: neither finished nor cancelled.
     pub fn is_active(&self) -> bool {
         !self.done && !self.cancelled
     }
@@ -120,6 +130,7 @@ pub struct RunMonitorRegistration {
     pub stale_after_secs: u64,
 }
 
+/// On-disk shape of the monitor store: a flat list, rewritten atomically.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RunMonitorStoreData {
     monitors: Vec<RunMonitorRecord>,
@@ -134,10 +145,13 @@ pub struct RunMonitorStore {
 }
 
 impl RunMonitorStore {
+    /// Open the store under the app data dir (`CODESCRIBE_DATA_DIR`-aware).
     pub fn new() -> Result<Self> {
         Self::new_in(super::thread_store::app_data_dir().join("agent_monitors"))
     }
 
+    /// Open the store in an explicit directory, creating it if absent. The
+    /// isolation seam tests use instead of the shared data dir.
     pub fn new_in<P: AsRef<Path>>(dir: P) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)
@@ -147,10 +161,12 @@ impl RunMonitorStore {
         })
     }
 
+    /// Path of the backing JSON file — the inspectable evidence surface.
     pub fn file_path(&self) -> &Path {
         &self.file_path
     }
 
+    /// Read the store. A missing file is an empty store, not an error.
     fn load(&self) -> Result<RunMonitorStoreData> {
         if !self.file_path.exists() {
             return Ok(RunMonitorStoreData::default());
@@ -161,6 +177,8 @@ impl RunMonitorStore {
             .with_context(|| format!("Failed to parse {}", self.file_path.display()))
     }
 
+    /// Write the store atomically (tmp file + rename) so a crash mid-write
+    /// cannot leave a truncated ledger behind.
     fn save(&self, data: &RunMonitorStoreData) -> Result<()> {
         let raw = serde_json::to_string_pretty(data).context("Failed to serialize monitors")?;
         let tmp = self.file_path.with_extension("tmp");
@@ -213,10 +231,12 @@ impl RunMonitorStore {
         Ok(record)
     }
 
+    /// Every record, including finished and cancelled ones.
     pub fn list(&self) -> Result<Vec<RunMonitorRecord>> {
         Ok(self.load()?.monitors)
     }
 
+    /// Only the records still worth polling.
     pub fn active(&self) -> Result<Vec<RunMonitorRecord>> {
         Ok(self
             .load()?
@@ -226,6 +246,7 @@ impl RunMonitorStore {
             .collect())
     }
 
+    /// Look one record up by its harness-side `monitor_id`.
     pub fn get(&self, monitor_id: &str) -> Result<Option<RunMonitorRecord>> {
         Ok(self
             .load()?
@@ -423,11 +444,17 @@ pub fn observe_record(record: &RunMonitorRecord, now: DateTime<Utc>) -> Result<R
 /// Why a heartbeat is being delivered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeartbeatKind {
+    /// A previously-notified stall or block started progressing again.
     Recovered,
+    /// The run went quiet past its stale bar.
     Stalled,
+    /// The run's control-plane meta reports a block or is unreadable.
     Blocked,
+    /// The run finished successfully.
     Completed,
+    /// The run finished unsuccessfully.
     Failed,
+    /// The run claimed success without its promised report artifact.
     NeedsRerun,
 }
 

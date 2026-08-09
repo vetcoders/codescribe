@@ -42,7 +42,9 @@ const CLAMP_TOLERANCE_SECS: f32 = 0.1;
 
 /// Bounded ring of session PCM, addressable by session-time seconds.
 pub(crate) struct LiveAudioBuffer {
+    /// Capture rate, and the unit second↔index conversions are expressed in.
     sample_rate: u32,
+    /// Retained tail, oldest first.
     samples: VecDeque<f32>,
     /// Absolute session-sample index of `samples.front()`.
     start_index: u64,

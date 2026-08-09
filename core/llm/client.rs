@@ -84,6 +84,11 @@ pub struct CloudTranscriptionVerdict {
 }
 
 impl CloudTranscriptionVerdict {
+    /// Build a verdict for text that came off the cloud path. `source` is fixed
+    /// to `Cloud` here — the constructor is the single place that stamps
+    /// provenance, so a cloud result can never be mislabelled downstream.
+    /// Confidence flags start empty; the cloud protocols carry no per-token
+    /// scores today.
     fn new(text: String, latency_ms: Option<u64>, model_name: Option<String>) -> Self {
         Self {
             text,

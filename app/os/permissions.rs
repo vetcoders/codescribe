@@ -43,12 +43,17 @@ pub enum PermissionStatus {
 /// survives the legacy AppKit UI excision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionKind {
+    /// `AVCaptureDevice` audio TCC — required for any capture.
     Microphone,
+    /// `AXIsProcessTrusted` — required for global hotkey registration.
     Accessibility,
+    /// `CGPreflightListenEventAccess` — required for the global key-event tap.
     InputMonitoring,
+    /// `CGPreflightScreenCaptureAccess` — required for screen capture.
     ScreenRecording,
     /// SFSpeechRecognizer TCC — required for Apple live dictation.
     SpeechRecognition,
+    /// Full Disk Access — inferred by probing, since macOS exposes no preflight.
     FullDiskAccess,
 }
 
@@ -74,6 +79,8 @@ pub fn check_accessibility() -> PermissionStatus {
     // Use AXIsProcessTrusted() from ApplicationServices
     // This returns true if the app has Accessibility permission
     unsafe extern "C" {
+        /// ApplicationServices: true when this process is a trusted Accessibility
+        /// client. Does not prompt; reflects the current TCC decision only.
         fn AXIsProcessTrusted() -> bool;
     }
 
@@ -86,6 +93,8 @@ pub fn check_accessibility() -> PermissionStatus {
     }
 }
 
+/// Non-macOS stub: there is no Accessibility TCC gate, so hotkeys are always
+/// allowed to register.
 #[cfg(not(target_os = "macos"))]
 pub fn check_accessibility() -> PermissionStatus {
     PermissionStatus::Granted // Not needed on other platforms
@@ -97,6 +106,8 @@ pub fn check_accessibility() -> PermissionStatus {
 #[cfg(target_os = "macos")]
 pub fn check_input_monitoring() -> PermissionStatus {
     unsafe extern "C" {
+        /// CoreGraphics: true when this process may listen to global key events.
+        /// Preflight only — it never raises the Input Monitoring prompt.
         fn CGPreflightListenEventAccess() -> bool;
     }
 
@@ -109,6 +120,7 @@ pub fn check_input_monitoring() -> PermissionStatus {
     }
 }
 
+/// Non-macOS stub: global key-event listening is not TCC-gated off macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn check_input_monitoring() -> PermissionStatus {
     PermissionStatus::Granted
@@ -133,6 +145,8 @@ pub fn check_speech_recognition() -> PermissionStatus {
     }
 }
 
+/// Non-macOS stub: `SFSpeechRecognizer` is an Apple-only surface, so nothing
+/// gates dictation here.
 #[cfg(not(target_os = "macos"))]
 pub fn check_speech_recognition() -> PermissionStatus {
     PermissionStatus::Granted
@@ -161,6 +175,7 @@ pub fn check_microphone() -> PermissionStatus {
     }
 }
 
+/// Non-macOS stub: capture devices are not TCC-gated off macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn check_microphone() -> PermissionStatus {
     PermissionStatus::Granted // Not needed on other platforms
@@ -173,6 +188,11 @@ const MICROPHONE_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 #[cfg(target_os = "macos")]
 const MAIN_THREAD_DISPATCH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// True when the caller is on the AppKit main thread.
+///
+/// Asks `NSThread` first and falls back to the Rust thread name, because the
+/// microphone prompt must be armed from the main thread but this module is also
+/// reachable from worker threads.
 #[cfg(target_os = "macos")]
 fn is_main_thread() -> bool {
     unsafe {
@@ -184,6 +204,11 @@ fn is_main_thread() -> bool {
     }
 }
 
+/// Fire `AVCaptureDevice.requestAccessForMediaType` and forward the completion
+/// result over `callback_tx`.
+///
+/// Returns whether the request was *started*, not whether access was granted —
+/// the grant arrives asynchronously on the channel.
 #[cfg(target_os = "macos")]
 fn start_microphone_request(callback_tx: Sender<bool>) -> bool {
     use tracing::warn;
@@ -209,6 +234,12 @@ fn start_microphone_request(callback_tx: Sender<bool>) -> bool {
     true
 }
 
+/// Start the microphone request on the main thread, hopping there via
+/// `Queue::main()` when the caller is elsewhere.
+///
+/// The hop is bounded by `MAIN_THREAD_DISPATCH_TIMEOUT`: a wedged or
+/// not-yet-running main queue reports "not started" instead of blocking the
+/// caller forever.
 #[cfg(target_os = "macos")]
 fn start_microphone_request_on_main_thread(callback_tx: Sender<bool>) -> bool {
     use tracing::warn;
@@ -239,6 +270,14 @@ fn start_microphone_request_on_main_thread(callback_tx: Sender<bool>) -> bool {
     }
 }
 
+/// Block until the microphone grant resolves, or until
+/// `MICROPHONE_REQUEST_TIMEOUT` elapses.
+///
+/// The completion block is not trusted as the only signal: the wait is
+/// interleaved with `check_microphone()` polls every
+/// `MICROPHONE_STATUS_POLL_INTERVAL`, so a callback that never fires, reports a
+/// stale `false`, or has its channel dropped still resolves to the live TCC
+/// status rather than hanging.
 #[cfg(target_os = "macos")]
 fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
     use tracing::{info, warn};
@@ -339,6 +378,7 @@ pub fn request_microphone() -> bool {
     wait_for_microphone_resolution(callback_rx)
 }
 
+/// Non-macOS stub: nothing to request, capture is always permitted.
 #[cfg(not(target_os = "macos"))]
 pub fn request_microphone() -> bool {
     true
@@ -347,7 +387,9 @@ pub fn request_microphone() -> bool {
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
+    /// CoreGraphics: true when Screen Recording is already granted. Never prompts.
     fn CGPreflightScreenCaptureAccess() -> bool;
+    /// CoreGraphics: raise the Screen Recording prompt and report the outcome.
     fn CGRequestScreenCaptureAccess() -> bool;
 }
 
@@ -368,6 +410,7 @@ pub fn check_screen_recording() -> PermissionStatus {
     }
 }
 
+/// Non-macOS stub: screen capture is not TCC-gated off macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn check_screen_recording() -> PermissionStatus {
     PermissionStatus::Granted
@@ -379,6 +422,7 @@ pub fn request_screen_recording() -> bool {
     unsafe { CGRequestScreenCaptureAccess() }
 }
 
+/// Non-macOS stub: nothing to request, screen capture is always permitted.
 #[cfg(not(target_os = "macos"))]
 pub fn request_screen_recording() -> bool {
     true
@@ -390,11 +434,18 @@ pub fn check_full_disk_access() -> PermissionStatus {
     full_disk_access_status()
 }
 
+/// Non-macOS stub: there is no Full Disk Access class off macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn check_full_disk_access() -> PermissionStatus {
     PermissionStatus::Granted
 }
 
+/// Infer Full Disk Access by probing TCC-protected directories under `$HOME`.
+///
+/// macOS exposes no preflight API for this class, so the status is read from
+/// behaviour: a readable protected root proves `Granted`, an `ErrorKind::
+/// PermissionDenied` proves `Denied`, and anything else (missing paths, empty
+/// `$HOME`) stays `NotDetermined` rather than guessing.
 #[cfg(target_os = "macos")]
 fn full_disk_access_status() -> PermissionStatus {
     use std::path::Path;

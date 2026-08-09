@@ -22,6 +22,12 @@ pub enum OverlayPasteDelivery {
     Noop,
 }
 
+/// Full outcome of an overlay Insert action, including the context needed to
+/// explain a fallback to the user.
+///
+/// The app-name fields are carried even on success so the UI can name the target
+/// ("Pasted into Xcode"); the `deferred_insert_*` fields are populated only on
+/// the [`OverlayPasteDelivery::DeferredInsertArmed`] path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayPasteResult {
     pub delivery: OverlayPasteDelivery,
@@ -31,12 +37,20 @@ pub struct OverlayPasteResult {
     pub deferred_insert_failure: Option<String>,
 }
 
+/// Whether the global "Paste Here" hotkey is usable right now, and if not, the
+/// operator-facing reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DeferredInsertRegistration {
     Available { shortcut_label: String },
     Unavailable { reason: String },
 }
 
+/// Decide deferred-insert availability from the three things that can block it:
+/// the shortcut being disabled, the hotkey manager failing to register, or a
+/// collision with an existing binding.
+///
+/// Every unavailable branch carries a specific reason string — the UI shows it
+/// verbatim, so "it silently did nothing" is not a reachable state.
 pub(super) fn deferred_insert_registration(
     shortcut: DeferredInsertShortcut,
     manager_active: bool,
@@ -62,6 +76,12 @@ pub(super) fn deferred_insert_registration(
     }
 }
 
+/// Whether a synthetic paste may be posted, or which precondition failed and
+/// forces the copy-to-clipboard fallback.
+///
+/// Each `Copy*` variant is a distinct diagnosis, not interchangeable: they tell
+/// the user whether focus was lost, whether the wrong app is frontmost, or
+/// whether Accessibility permission is missing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OverlayPasteDisposition {
     Paste,
@@ -71,6 +91,13 @@ pub(super) enum OverlayPasteDisposition {
     CopyAccessibilityDenied,
 }
 
+/// Decide whether to paste or fall back to the clipboard.
+///
+/// Pasting requires that focus actually returned to the recorded target: both app
+/// names must be present, the frontmost app must not be Codescribe itself, and it
+/// must match the target. Only then does missing Accessibility permission become
+/// the deciding factor. Any mismatch degrades to a copy rather than firing Cmd+V
+/// at whatever window happens to be in front.
 pub(super) fn overlay_paste_disposition(
     target_app: Option<&str>,
     frontmost_app: Option<&str>,

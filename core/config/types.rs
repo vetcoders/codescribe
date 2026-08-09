@@ -7,6 +7,9 @@ use std::str::FromStr;
 
 use super::defaults::*;
 
+/// Serde default for [`Config::auto_paste_enabled`]: pasting is on unless the
+/// user turns it off, so configs written before the field existed keep the
+/// historical behaviour.
 const fn default_auto_paste_enabled() -> bool {
     true
 }
@@ -21,6 +24,8 @@ pub enum WorkMode {
 }
 
 impl WorkMode {
+    /// Stable wire/serde identifier for this mode. Round-trips through
+    /// [`FromStr`], so it is safe to persist.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Dictation => "dictation",
@@ -29,6 +34,8 @@ impl WorkMode {
         }
     }
 
+    /// Human-readable name for menus and the settings UI. Presentation only —
+    /// never persist this; persist [`WorkMode::as_str`].
     pub fn label(&self) -> &'static str {
         match self {
             Self::Dictation => "Dictation",
@@ -37,6 +44,8 @@ impl WorkMode {
         }
     }
 
+    /// One-sentence explanation of what the mode does with the user's voice,
+    /// shown next to the mode picker.
     pub fn description(&self) -> &'static str {
         match self {
             Self::Dictation => "Transcribes your voice and pastes the text.",
@@ -45,14 +54,21 @@ impl WorkMode {
         }
     }
 
+    /// Whether the mode routes the transcript to the agent instead of the
+    /// caret.
     pub fn is_assistive(&self) -> bool {
         matches!(self, Self::Assistive)
     }
 
+    /// Whether the mode pastes by default. Assistive sends to the agent, so it
+    /// never auto-pastes; the user preference and controller-owned vetoes still
+    /// apply on top of this (see [`Config::auto_paste_enabled`]).
     pub fn defaults_to_auto_paste(&self) -> bool {
         !self.is_assistive()
     }
 
+    /// Whether the mode requires an LLM round-trip regardless of the global AI
+    /// formatting switch: formatting rewrites the text, assistive answers it.
     pub fn forces_ai(&self) -> bool {
         matches!(self, Self::Formatting | Self::Assistive)
     }
@@ -87,6 +103,8 @@ pub enum ShortcutBinding {
 }
 
 impl ShortcutBinding {
+    /// Human-readable gesture description for the settings UI ("Hold Ctrl",
+    /// "Double-tap Left Option"). Presentation only.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Disabled => "Disabled",
@@ -101,6 +119,9 @@ impl ShortcutBinding {
         }
     }
 
+    /// Stable persisted identifier for this gesture. [`FromStr`] accepts
+    /// exactly these strings — legacy aliases are deliberately rejected so a
+    /// stale config fails loudly instead of silently rebinding a hotkey.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
@@ -154,6 +175,7 @@ pub enum DeferredInsertShortcut {
 }
 
 impl DeferredInsertShortcut {
+    /// Chord rendered with macOS modifier glyphs for the settings UI.
     pub fn label(self) -> &'static str {
         match self {
             Self::Disabled => "Disabled",
@@ -163,6 +185,8 @@ impl DeferredInsertShortcut {
         }
     }
 
+    /// Whether a chord is bound at all. `Disabled` is the default, so callers
+    /// must check this before installing the event tap.
     pub fn is_enabled(self) -> bool {
         !matches!(self, Self::Disabled)
     }
@@ -182,12 +206,16 @@ impl FromStr for DeferredInsertShortcut {
     }
 }
 
+/// One persisted work-mode-to-gesture pair. The binding list is stored as a
+/// sequence rather than a map so the settings UI can keep a stable row order.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModeBinding {
     pub mode: WorkMode,
     pub binding: ShortcutBinding,
 }
 
+/// Factory-default gesture for each work mode: Fn-hold dictates, double-tap
+/// left Option formats, double-tap right Option talks to the agent.
 pub fn default_mode_bindings() -> Vec<ModeBinding> {
     vec![
         ModeBinding {
@@ -220,6 +248,8 @@ pub enum Language {
 }
 
 impl Language {
+    /// Stable persisted identifier — the ISO code for concrete languages,
+    /// `"auto"` for detection.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -228,6 +258,7 @@ impl Language {
         }
     }
 
+    /// Human-readable name for the language picker. Presentation only.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Auto => "Auto-detect / multilingual",
@@ -236,6 +267,9 @@ impl Language {
         }
     }
 
+    /// Language hint to hand to Whisper, or `None` to let it detect. This is
+    /// the accessor STT and formatting paths should use: forcing a concrete
+    /// code is only correct for explicit single-language sessions.
     pub fn whisper_hint(&self) -> Option<&'static str> {
         match self {
             Self::Auto => None,
@@ -268,6 +302,7 @@ pub enum TranscriptSendMode {
 }
 
 impl TranscriptSendMode {
+    /// Stable persisted identifier for this send strategy.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::EndOfUtterance => "end_of_utterance",
@@ -298,6 +333,7 @@ pub enum OverlayPositionMode {
 }
 
 impl OverlayPositionMode {
+    /// Stable persisted identifier for this overlay placement strategy.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SnappedTopRight => "snapped_top_right",
@@ -331,6 +367,7 @@ pub enum HoldArmModifier {
 }
 
 impl HoldArmModifier {
+    /// Stable persisted identifier for this arming modifier.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Shift => "shift",
@@ -338,6 +375,7 @@ impl HoldArmModifier {
         }
     }
 
+    /// Human-readable modifier name for the settings UI. Presentation only.
     pub fn label(self) -> &'static str {
         match self {
             Self::Shift => "Shift",

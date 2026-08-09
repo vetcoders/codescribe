@@ -85,6 +85,11 @@ struct ResolvedTokens {
 }
 
 impl ResolvedTokens {
+    /// Resolve the special token IDs from `tokenizer.json` rather than
+    /// hardcoding them: ONNX exports of different Whisper variants renumber the
+    /// special-token block, and a stale constant would decode as ordinary text.
+    /// `<|nospeech|>` is optional — some exports omit it, which only disables
+    /// the no-speech short-circuit.
     fn from_tokenizer(tokenizer: &Tokenizer) -> Result<Self> {
         let sot = tokenizer
             .token_to_id("<|startoftranscript|>")
@@ -324,6 +329,9 @@ impl OnnxEngine {
             .text)
     }
 
+    /// Resample to 16 kHz, then decode one window into a full `RawTranscript`
+    /// (text + segments). The `_raw` twin of [`Self::transcribe_internal`],
+    /// which throws the segments away.
     #[allow(dead_code)]
     fn transcribe_internal_raw(
         &mut self,
@@ -336,6 +344,13 @@ impl OnnxEngine {
         self.transcribe_internal_16k_raw(&samples_16k, language)
     }
 
+    /// Decode one 30-second window that is ALREADY at 16 kHz — the single place
+    /// mel computation, encoder run, and the greedy decoder loop live.
+    ///
+    /// The mel is padded or trimmed to exactly `ONNX_N_FRAMES`: `pcm_to_mel`
+    /// rounds up to 1500-frame multiples, but the ONNX encoder input is a fixed
+    /// `[1, 128, 3000]` tensor. Callers that hold arbitrary-rate audio must go
+    /// through [`Self::transcribe_internal_raw`] or [`Self::transcribe_long_raw`].
     fn transcribe_internal_16k_raw(
         &mut self,
         samples_16k: &[f32],
@@ -530,6 +545,13 @@ impl OnnxEngine {
         })
     }
 
+    /// Transcribe audio of any length by sliding the encoder's native 30-second
+    /// window with a 5-second overlap, then stitching the pieces.
+    ///
+    /// The overlap exists for context continuity, and is also why the joins go
+    /// through `append_with_overlap_dedup` + `dedup_repetitions` — without them
+    /// the shared 5 seconds would surface twice. Segment timestamps are shifted
+    /// by each chunk's session offset so they stay session-absolute.
     fn transcribe_long_raw(
         &mut self,
         samples: &[f32],
@@ -597,6 +619,8 @@ impl OnnxEngine {
 pub struct OnnxWhisperAdapter;
 
 impl OnnxWhisperAdapter {
+    /// Construct the adapter. Does NOT initialise the engine — call
+    /// [`init`] first, or `transcribe` will fail with "engine not initialized".
     pub fn new() -> Self {
         Self
     }

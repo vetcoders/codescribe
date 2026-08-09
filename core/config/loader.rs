@@ -29,8 +29,19 @@ use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
 };
 
+/// Has the process already seeded its environment from config? Seeding happens
+/// once, at the first load; later loads read snapshots instead, so a background
+/// thread never sees `set_var` racing under it.
 static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
+
+/// Serializes the one bootstrap load, so two concurrent `Config::load()` calls
+/// cannot both decide they are the first writer.
 static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Keys this process seeded itself. After bootstrap they are reported as absent
+/// by [`Config::config_runtime_env_var`], so a later Settings write wins over
+/// the value config planted at startup — that is what makes settings hot-apply
+/// without a restart. Only a genuinely external env var keeps its priority.
 static CONFIG_SEEDED_ENV_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 impl Config {
@@ -56,6 +67,13 @@ impl Config {
         Self::load_with_keychain_population(false)
     }
 
+    /// The single load path behind both public entry points.
+    ///
+    /// Order matters throughout: legacy `.env` keys are migrated, then one-time
+    /// imports into `settings.json` run, then non-promoted `.env` values are
+    /// injected into the process env — promoted keys are deliberately skipped so
+    /// a stale `~/.codescribe/.env` cannot shadow a choice made in the UI.
+    /// Only after that are defaults, settings, and finally explicit env applied.
     fn load_with_keychain_population(populate_keychain: bool) -> Self {
         let _bootstrap_guard = Self::config_env_bootstrap_guard();
         let seed_process_env = Self::can_seed_process_env();
@@ -121,6 +139,8 @@ impl Config {
         config
     }
 
+    /// Hold the bootstrap lock for the duration of a load. Skipped under `cfg(test)`,
+    /// where each test intentionally re-runs bootstrap against its own temp dir.
     fn config_env_bootstrap_guard() -> Option<std::sync::MutexGuard<'static, ()>> {
         if cfg!(test) {
             None
@@ -134,20 +154,27 @@ impl Config {
         }
     }
 
+    /// May this load still write to the process environment? True exactly once
+    /// in production — afterwards, mutating env would race threads that are
+    /// already running.
     fn can_seed_process_env() -> bool {
         cfg!(test) || !CONFIG_ENV_BOOTSTRAPPED.load(Ordering::SeqCst)
     }
 
+    /// Close the seeding window after a successful bootstrap load.
     fn mark_process_env_bootstrapped(seed_process_env: bool) {
         if seed_process_env && !cfg!(test) {
             CONFIG_ENV_BOOTSTRAPPED.store(true, Ordering::SeqCst);
         }
     }
 
+    /// Lazily-initialized set of self-seeded keys.
     fn seeded_env_keys() -> &'static Mutex<HashSet<String>> {
         CONFIG_SEEDED_ENV_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
     }
 
+    /// Record that this process — not the user's shell — set `key`. No-op under
+    /// test, where each case manages its own environment.
     fn remember_seeded_env_key(key: &str) {
         if cfg!(test) {
             return;
@@ -157,6 +184,8 @@ impl Config {
         }
     }
 
+    /// Was this value planted by config itself? If so it must not outrank a
+    /// fresh persisted setting.
     fn was_seeded_env_key(key: &str) -> bool {
         if cfg!(test) {
             return false;
@@ -167,6 +196,11 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Read runtime env truth, with two deliberate departures from
+    /// `std::env::var`: Keychain-backed accounts are served from the cached
+    /// secret rather than the environment, and a key this process seeded during
+    /// bootstrap reads as absent afterwards — so persisted settings win over
+    /// config's own startup copy.
     fn config_runtime_env_var(key: &str) -> Result<String, VarError> {
         if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
             return super::keychain::cached_runtime_key(key).ok_or(VarError::NotPresent);
@@ -239,18 +273,29 @@ impl Config {
         }
     }
 
+    /// Treat a whitespace-only value as unset — an empty env var is a common way
+    /// to accidentally "configure" a key into a broken state.
     fn env_missing_or_empty(key: &str) -> bool {
         Self::config_runtime_env_var(key)
             .ok()
             .is_none_or(|value| value.trim().is_empty())
     }
 
+    /// Seed a default without ever overwriting a value the user actually set.
     fn config_init_set_env_if_missing(key: &str, value: impl AsRef<str>) {
         if Self::env_missing_or_empty(key) {
             Self::config_init_set_env(key, value.as_ref());
         }
     }
 
+    /// Give all three LLM lanes (base, formatting, assistive) a complete
+    /// endpoint/model/provider triple, so a lane whose override is unset still
+    /// resolves instead of failing at first use. The base endpoint is reused for
+    /// every lane; only explicitly configured values differ.
+    ///
+    /// Deliberately seeds no API key: a missing credential must surface as an
+    /// auth error the user can act on, not as a silent fallback to some other
+    /// lane's key.
     fn apply_default_llm_runtime_env(&mut self) {
         let endpoint = self
             .llm_endpoint
@@ -499,6 +544,9 @@ impl Config {
         Self::config_init_set_env(key, value);
     }
 
+    /// Write to the process env during bootstrap only, and remember the key.
+    /// After the window closes this is a no-op — the value has to reach the
+    /// runtime through a settings snapshot instead.
     fn config_init_set_env(key: &str, value: impl AsRef<str>) {
         if !Self::can_seed_process_env() {
             return;
@@ -1116,6 +1164,12 @@ impl Config {
         Ok(())
     }
 
+    /// Handle the LLM override keys, where blank means *clear* rather than
+    /// "store an empty string". Removing the field lets the resolver fall back
+    /// to the default; storing `""` would pin the lane to an unusable endpoint.
+    ///
+    /// Returns `false` for keys it does not own, so the caller continues with
+    /// its normal typed routing.
     fn apply_optional_override(
         settings: &mut super::settings::UserSettings,
         key: &str,
@@ -1406,6 +1460,9 @@ impl Config {
     }
 }
 
+/// Resolve a path and require it to be a regular file. Canonicalizing first
+/// collapses symlinks and `..`, so a directory or dangling link is rejected
+/// before anything reads through it.
 fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
     let path = path.canonicalize()?;
     if !path.is_file() {
@@ -1414,6 +1471,14 @@ fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// Guards for the three-tier precedence this module implements: explicit
+/// process env, then `settings.json`, then optional `.env`.
+///
+/// The recurring failure being tested is *shadowing* — a value written in one
+/// tier being silently masked by another, or a persistence write leaking into
+/// the process env and pinning a stale value for the rest of the session. Cases
+/// therefore assert on the real files and on `std::env` directly, not just on
+/// the returned `Config`.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1422,17 +1487,21 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Set a var for the current test case.
     fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
         // SAFETY: these tests are marked `serial` and do not start background workers,
         // so process-env mutation stays confined to the active test case.
         unsafe { std::env::set_var(key, value) };
     }
 
+    /// Unset a var for the current test case.
     fn remove_env_for_test(key: &str) {
         // SAFETY: same invariant as `set_env_for_test` above.
         unsafe { std::env::remove_var(key) };
     }
 
+    /// Put a var back the way it was, including the "was absent" case — the one
+    /// most easily lost when restoring by hand.
     fn restore_env_for_test(key: &str, previous: Option<String>) {
         if let Some(value) = previous {
             set_env_for_test(key, value);
@@ -1441,12 +1510,16 @@ mod tests {
         }
     }
 
+    /// RAII guard that clears one env var and restores it on drop. Tests here
+    /// must start from "the operator has not set this", because a variable
+    /// inherited from the developer's own shell would mask the tier under test.
     struct TestEnvGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
     impl TestEnvGuard {
+        /// Clear `key`, remembering whatever was there before.
         fn unset(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             remove_env_for_test(key);
@@ -1460,6 +1533,9 @@ mod tests {
         }
     }
 
+    /// Point config at a fresh temp dir and clear the vars that would otherwise
+    /// preempt what is being tested. The returned guard owns the directory both
+    /// `settings.json` and `.env` live in.
     fn setup_isolated_data_dir() -> TempDir {
         let tmp = TempDir::new().expect("tempdir");
         set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
@@ -1469,6 +1545,9 @@ mod tests {
         tmp
     }
 
+    /// Every LLM write key as `(key, sample value, JSON pointer)`. A `None`
+    /// pointer marks a key with no durable `settings.json` home — it is still
+    /// exercised, to prove writing it does not invent one.
     fn llm_write_key_cases() -> &'static [(&'static str, &'static str, Option<&'static str>)] {
         &[
             (

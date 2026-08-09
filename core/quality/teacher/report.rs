@@ -33,11 +33,16 @@ pub enum AttentionKind {
     LiveMissWhisperOk,
 }
 
+/// One locus the human label surface should highlight.
 #[derive(Debug, Clone, Serialize)]
 pub struct AttentionSpan {
+    /// Why this span was flagged.
     pub kind: AttentionKind,
+    /// Tokens the live leg carried here (may be empty).
     pub live_tokens: Vec<String>,
+    /// Tokens the Whisper leg carried here (may be empty).
     pub whisper_tokens: Vec<String>,
+    /// Human tokens, when a reference transcript was supplied.
     pub human_tokens: Vec<String>,
     /// Operator-facing one-liner.
     pub note: String,
@@ -46,24 +51,38 @@ pub struct AttentionSpan {
 /// Deterministic lexicon candidate from a human-confirmed (or auto-hinted) pair.
 #[derive(Debug, Clone, Serialize)]
 pub struct LexiconHint {
+    /// Surface form Whisper produced.
     pub from_whisper: String,
+    /// Surface form the human wrote instead.
     pub to_human: String,
+    /// Provenance of the hint, e.g. `whisper_vs_human_substitute`.
     pub reason: String,
 }
 
+/// One completed Teacher lesson, ready for CLI, HTML, or a UI surface.
 #[derive(Debug, Clone, Serialize)]
 pub struct TeacherReport {
+    /// Session label carried from the input.
     pub label: Option<String>,
+    /// Token count of the live leg.
     pub live_token_count: usize,
+    /// Token count of the Whisper leg.
     pub whisper_token_count: usize,
+    /// Token count of the human reference, when supplied.
     pub human_token_count: Option<usize>,
+    /// Live×Whisper alignment positions that agreed.
     pub equal_ops: usize,
+    /// Every flagged locus, in alignment order.
     pub attention: Vec<AttentionSpan>,
+    /// Deduplicated lexicon candidates, sorted by pair.
     pub lexicon_hints: Vec<LexiconHint>,
     /// Among Whisper errors vs human, fraction that co-locate with live weakness.
     pub gap_hallucination_hit_rate: Option<f64>,
+    /// Whisper tokens that disagree with the human reference.
     pub whisper_errors_vs_human: usize,
+    /// Subset of those errors sitting where the live leg was also weak.
     pub whisper_errors_at_live_weak: usize,
+    /// Operator-facing reading of the hit rate, including its caveats.
     pub thesis_summary: String,
 }
 
@@ -351,6 +370,9 @@ equal ops: {eq} · whisper errors: {we} · at live-weak: {wl} · hit-rate: {hit}
     )
 }
 
+/// Escape `&`, `<`, `>`, and `"` so transcript text cannot break the report
+/// markup. Ordering matters: `&` is replaced first, or the later escapes would
+/// have their own ampersands re-escaped.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

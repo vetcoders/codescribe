@@ -20,6 +20,11 @@ use uuid::Uuid;
 
 use crate::config::{Config, FormattingPolicy};
 
+/// Serializes every custom-lexicon rewrite in this process.
+///
+/// The write is read-modify-write over one file, so two unsynchronized callers
+/// would each rewrite from their own snapshot and the loser's rule would vanish
+/// with no error. The lock covers the whole cycle, not just the final rename.
 static CUSTOM_LEXICON_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Quality record for one user correction on the overlay.
@@ -69,8 +74,12 @@ pub struct QualityRecord {
 /// Provenance of a custom-lexicon row. Correction upserts stamp `"correction"`.
 /// Legacy rows without a source deserialize as `"legacy"`.
 pub const LEXICON_SOURCE_CORRECTION: &str = "correction";
+/// Rule the operator typed by hand in Voice Lab.
 pub const LEXICON_SOURCE_MANUAL: &str = "manual";
+/// Rule brought in from an external dictionary file.
 pub const LEXICON_SOURCE_IMPORT: &str = "import";
+/// Fallback for rows written before provenance was stamped — unknown origin,
+/// not a claim that a human wrote them.
 pub const LEXICON_SOURCE_LEGACY: &str = "legacy";
 
 /// Read-only projection of one custom lexicon rule for product surfaces.
@@ -78,12 +87,20 @@ pub const LEXICON_SOURCE_LEGACY: &str = "legacy";
 /// Voice Lab renders the flattened `variant -> canonical` truth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomLexiconEntry {
+    /// The misheard form as it appears in STT output.
     pub variant: String,
+    /// The term the variant is rewritten to.
     pub canonical: String,
     /// `correction` | `manual` | `import` | `legacy` (default for old rows).
     pub source: String,
 }
 
+/// On-disk shape of one `lexicon.custom.jsonl` row.
+///
+/// Every field but `term` is `#[serde(default)]` because this file has been
+/// written by several generations of the loader: rows predating `extras` and
+/// `source` must still parse, or teaching would silently drop the operator's
+/// oldest rules.
 #[derive(Deserialize)]
 struct StoredCustomLexiconEntry {
     term: String,
@@ -95,6 +112,8 @@ struct StoredCustomLexiconEntry {
     source: Option<String>,
 }
 
+/// Legacy nested variant list. Older writers put mispronunciations under
+/// `extras`; both locations are merged on read.
 #[derive(Deserialize)]
 struct StoredLexiconExtras {
     #[serde(default)]
@@ -107,6 +126,8 @@ pub const MAX_PAIR_EDIT_DELTA_CHARS: usize = 20;
 
 /// Per-side phrase length window in Unicode chars (not bytes).
 pub const MIN_CANDIDATE_CHARS: usize = 2;
+/// Upper bound of that window: longer phrases are sentences, and a rule keyed
+/// on a whole sentence would never match a second time.
 pub const MAX_CANDIDATE_CHARS: usize = 80;
 
 /// Global rewrite guard: if more than this fraction of tokens changed, return
@@ -120,6 +141,9 @@ pub const MAX_TOKEN_CHANGE_RATIO: f64 = 0.40;
 pub const MIN_TOKENS_FOR_REWRITE_GUARD: usize = 6;
 
 impl QualityRecord {
+    /// New record for one overlay edit, stamped now with a fresh
+    /// `correction_id` at revision 1. Confidence fields are left empty; use
+    /// [`QualityRecord::new_with_confidence`] when STT reported them.
     pub fn new(
         raw_text: String,
         delivered_text: String,
@@ -143,6 +167,11 @@ impl QualityRecord {
         )
     }
 
+    /// Full constructor, including the STT confidence signals (W11-C).
+    ///
+    /// An unavailable clock yields `timestamp_ms == 0` rather than a panic: the
+    /// correction itself is the evidence, and refusing to record it because the
+    /// system clock misbehaved would lose the operator's actual work.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_confidence(
         raw_text: String,
@@ -182,6 +211,14 @@ impl QualityRecord {
         }
     }
 
+    /// Identity used to collapse a correction and its later revisions into one
+    /// row.
+    ///
+    /// Rows written before `correction_id` existed get a deterministic
+    /// `legacy-<sha256>` derived from their immutable fields (timestamp, mode,
+    /// model, raw and delivered text) — never from `edited_text`, which is
+    /// exactly what a revision changes. Fields are hashed with a `0` separator
+    /// so adjacent values cannot be shifted between them to collide.
     pub fn logical_id(&self) -> String {
         let stored = self.correction_id.trim();
         if !stored.is_empty() {
@@ -301,6 +338,11 @@ pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
         .collect())
 }
 
+/// Every correction record in file order, revisions included.
+///
+/// Unlike [`recent_quality_records`] this does not collapse to the newest
+/// revision per correction — finalization needs the whole chain to pick the
+/// current head and compute the next revision number.
 fn all_quality_records() -> Result<Vec<QualityRecord>> {
     let path = quality_dir().join("corrections.jsonl");
     let file = match File::open(&path) {
@@ -514,6 +556,8 @@ fn tokenize_for_alignment(text: &str) -> Vec<String> {
     tokens
 }
 
+/// Comparison key for alignment: full Unicode lowercase, so `Żółw` and `żółw`
+/// align as the same token instead of registering as a substitution.
 fn token_key(token: &str) -> String {
     token
         .chars()
@@ -521,6 +565,9 @@ fn token_key(token: &str) -> String {
         .collect::<String>()
 }
 
+/// Length of the longest common token subsequence — the "how much survived the
+/// edit" number behind the global rewrite guard. Two rolling rows only; the
+/// alignment itself is reconstructed separately by [`aligned_replace_runs`].
 fn token_lcs_length(a: &[String], b: &[String]) -> usize {
     let n = a.len();
     let m = b.len();
@@ -617,6 +664,9 @@ fn aligned_replace_runs(a: &[String], b: &[String]) -> Vec<(String, String)> {
     pairs
 }
 
+/// Edit distance in Unicode chars. Chars, not bytes: a Polish diacritic costs
+/// two bytes, and byte distance would reject `łódź`-shaped fixes that are one
+/// character apart.
 fn levenshtein_chars(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -652,6 +702,7 @@ pub fn upsert_correction_in_custom_lexicon(variant: &str, canonical: &str) -> Re
     upsert_correction_in_custom_lexicon_unlocked(variant, canonical)
 }
 
+/// Single-pair upsert body. Caller must already hold [`CUSTOM_LEXICON_WRITE_LOCK`].
 fn upsert_correction_in_custom_lexicon_unlocked(variant: &str, canonical: &str) -> Result<()> {
     upsert_corrections_unlocked(std::slice::from_ref(&(variant, canonical)))
 }
@@ -676,6 +727,11 @@ pub fn upsert_corrections_in_custom_lexicon(pairs: &[(&str, &str)]) -> Result<()
     upsert_corrections_unlocked(pairs)
 }
 
+/// Shared upsert body: gate every pair, fold them into one in-memory rewrite,
+/// then perform a single atomic replace.
+///
+/// Caller must already hold [`CUSTOM_LEXICON_WRITE_LOCK`]. Returns `Ok(())`
+/// without touching the file when no pair survives the gate.
 fn upsert_corrections_unlocked(pairs: &[(&str, &str)]) -> Result<()> {
     assert_test_data_dir_isolated("upsert_correction_in_custom_lexicon");
     let accepted: Vec<(&str, &str)> = pairs
@@ -738,10 +794,18 @@ pub fn cleanup_orphaned_lexicon_temps(dir: &Path) {
     }
 }
 
+/// Matching key for "is this the same variant?" during a rewrite. Trim plus
+/// lowercase, so re-teaching `Junie` after `junie` supersedes the old row
+/// instead of stacking a second rule beside it.
 fn normalized_variant(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
+/// Strip `target` from a row's variant lists, both the top-level
+/// `mispronunciations` and the legacy `extras` nest.
+///
+/// Non-string array members are kept: this walks untyped JSON so an unfamiliar
+/// row shape is preserved rather than quietly pruned.
 fn remove_normalized_variant(value: &mut serde_json::Value, target: &str) {
     if let Some(entries) = value
         .get_mut("mispronunciations")
@@ -769,6 +833,14 @@ fn remove_normalized_variant(value: &mut serde_json::Value, target: &str) {
     }
 }
 
+/// Produce the new lexicon file contents with exactly one active mapping for
+/// `variant`.
+///
+/// Order of operations matters: every prior mapping of the variant is removed
+/// first, husk rows left with no variants are dropped, and only then is the new
+/// row appended — otherwise the loader could see two rules for one variant and
+/// the winner would depend on read order. Rows that fail to parse are passed
+/// through verbatim; a rewrite is not the place to discard data it cannot read.
 fn rewrite_custom_lexicon(existing: &str, variant: &str, canonical: &str) -> Result<String> {
     let target = normalized_variant(variant);
     let mut lines = Vec::new();
@@ -806,6 +878,8 @@ fn rewrite_custom_lexicon(existing: &str, variant: &str, canonical: &str) -> Res
     Ok(format!("{}\n", lines.join("\n")))
 }
 
+/// True when a row has no usable variant left in either location — a husk that
+/// would otherwise accumulate in the file forever (W11-B).
 fn lexicon_row_has_no_variants(value: &serde_json::Value) -> bool {
     let top_empty = value
         .get("mispronunciations")
@@ -829,6 +903,13 @@ fn lexicon_row_has_no_variants(value: &serde_json::Value) -> bool {
     top_empty && extras_empty
 }
 
+/// Replace a file's contents atomically: write a unique temp beside it, fsync,
+/// rename over the target, then fsync the directory so the rename itself is
+/// durable. A crash leaves either the old file or the new one, never a partial.
+///
+/// `rename` is injected so tests can fail that exact step and prove the
+/// previous bytes survive. The temp name carries pid and UUID, so concurrent
+/// processes cannot collide, and the error path removes it.
 fn atomic_write_with_rename<F>(path: &Path, content: &[u8], rename: F) -> Result<()>
 where
     F: FnOnce(&Path, &Path) -> std::io::Result<()>,
@@ -866,6 +947,7 @@ where
 /// Result of a successful overlay-quality commit (evidence always; learn when Correction).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayCorrectionCommit {
+    /// The `corrections.jsonl` the evidence line was appended to.
     pub quality_path: PathBuf,
     /// Lexicon pairs actually upserted from this commit (0 when evidence-only or filtered).
     pub pairs_learned: u32,
@@ -1100,10 +1182,15 @@ pub fn replay_corrections_through_extractor(
 /// One dry-run / apply row from [`replay_corrections_through_extractor`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReplayCandidate {
+    /// 1-based line in the replayed corrections file, for operator traceability.
     pub line: usize,
+    /// Logical id of the record this pair came from.
     pub correction_id: String,
+    /// Misheard form.
     pub variant: String,
+    /// Term it would be rewritten to.
     pub canonical: String,
+    /// False in a dry run; true once the batch upsert succeeded.
     pub applied: bool,
 }
 

@@ -1,3 +1,21 @@
+//! MCP server discovery, tool registration, and the readiness probes that
+//! report on both.
+//!
+//! Two responsibilities live here:
+//!
+//! - **Registration.** [`register`] reads the user's `mcp.json`, probes every
+//!   enabled server in parallel and in isolation, and exposes each discovered
+//!   tool under an `mcp__<server>__<tool>` name. One dead or hung server costs
+//!   only its own timeout: the session starts degraded, never dead. Desktop
+//!   Commander gets a hardened profile on top — per-tool risk classification,
+//!   workspace-root path validation, and secret redaction in approval previews.
+//! - **Reporting.** The Settings Engine tab and the onboarding readiness step
+//!   read [`probe_mcp_status`] and [`probe_agentic_readiness`]. Per the C4
+//!   decision, MCP servers are operator tooling and are INFORMATIONAL only:
+//!   readiness is decided solely by the core capability gate
+//!   ([`CoreReadiness`]), so a missing or broken `mcp.json` can never sink a
+//!   working agent.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -36,10 +54,13 @@ enum ServerRuntime {
 /// agent-runtime init, read on demand by the read-only Engine settings tab.
 static MCP_RUNTIME: OnceLock<Mutex<BTreeMap<String, ServerRuntime>>> = OnceLock::new();
 
+/// Lazily initialize and borrow the process-wide runtime discovery cache.
 fn runtime_cache() -> &'static Mutex<BTreeMap<String, ServerRuntime>> {
     MCP_RUNTIME.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+/// Replace the cache with the outcome of one discovery pass. A whole-map
+/// replacement, so servers dropped from the config do not linger as stale rows.
 fn record_runtime(snapshot: BTreeMap<String, ServerRuntime>) {
     let mut guard = runtime_cache()
         .lock()
@@ -47,6 +68,9 @@ fn record_runtime(snapshot: BTreeMap<String, ServerRuntime>) {
     *guard = snapshot;
 }
 
+/// Innermost cause of an error, as the string shown to the user. The context
+/// chain reads as boilerplate in a status row; the root cause ("command not
+/// found", "expected value at line 1") is the actionable part.
 fn anyhow_root_cause(error: &anyhow::Error) -> String {
     error.root_cause().to_string()
 }
@@ -83,6 +107,7 @@ pub struct McpStatusReport {
 }
 
 impl McpStatusReport {
+    /// Status rows to render, in display order.
     pub fn summary_rows(&self) -> &[McpStatusRow] {
         &self.rows
     }
@@ -94,6 +119,9 @@ impl McpStatusReport {
         self.configured
     }
 
+    /// Build a report carrying exactly one row — the terminal states (no
+    /// config, unreadable config, config with no servers) where per-server rows
+    /// would be meaningless.
     fn single(
         config_path_display: String,
         configured: bool,
@@ -135,6 +163,9 @@ pub fn probe_mcp_status() -> McpStatusReport {
     probe_mcp_status_at(&path)
 }
 
+/// Testable core of [`probe_mcp_status`] against an explicit config path.
+/// Emits one row per configured server, sorted by name, merging the cached
+/// discovery outcome with the config's own enabled flag.
 fn probe_mcp_status_at(path: &Path) -> McpStatusReport {
     let config_path_display = path.display().to_string();
 
@@ -268,6 +299,9 @@ pub fn probe_core_readiness() -> CoreReadiness {
     )
 }
 
+/// [`probe_core_readiness`] with the secret lookup injected, so tests can
+/// assert the gate honours the *active* provider's key account without
+/// touching the real Keychain.
 #[cfg(test)]
 fn probe_core_readiness_with_secret(
     resolve_secret: impl FnOnce(&str) -> Option<String>,
@@ -280,6 +314,9 @@ fn probe_core_readiness_with_secret(
     assemble_core_readiness(provider, key_env_key, key_set, roots.clone(), roots)
 }
 
+/// Assemble a [`CoreReadiness`] from already-resolved inputs, counting native
+/// tools by building a throwaway registry. Shared by the live probe and its
+/// test variant so both count tools the same way.
 fn assemble_core_readiness(
     provider: ProviderKind,
     key_env_key: String,
@@ -301,6 +338,9 @@ fn assemble_core_readiness(
     }
 }
 
+/// Whether Settings and the native tools resolve exactly the same, non-empty
+/// root list. Empty counts as a mismatch: an agent with no reachable workspace
+/// is not ready, however consistent the two sides are about it.
 fn workspace_roots_match(core: &CoreReadiness) -> bool {
     !core.configured_workspace_roots.is_empty()
         && core.configured_workspace_roots == core.tool_workspace_roots
@@ -323,6 +363,8 @@ pub struct AgenticReadinessReport {
 }
 
 impl AgenticReadinessReport {
+    /// Rows to render, in display order: the core-gate rows that decide
+    /// `ready` first, then the informational operator-tooling rows.
     pub fn summary_rows(&self) -> &[McpStatusRow] {
         &self.rows
     }
@@ -442,6 +484,10 @@ pub fn probe_agentic_readiness() -> AgenticReadinessReport {
     probe_agentic_readiness_at(&path, core)
 }
 
+/// Testable core of [`probe_agentic_readiness`]: an explicit config path plus
+/// an explicit core verdict, so readiness tests stay free of process-env and
+/// Keychain coupling. A missing or unparseable config yields an empty server
+/// set (plus a warn note), never an error.
 fn probe_agentic_readiness_at(path: &Path, core: CoreReadiness) -> AgenticReadinessReport {
     let config_path_display = path.display().to_string();
 
@@ -593,6 +639,11 @@ fn assemble_readiness(
     }
 }
 
+/// Register every MCP tool from the user's `mcp.json` into the agent registry.
+///
+/// MCP is optional, so this never fails the caller: an unavailable config path
+/// or a failed registration is logged and skipped. Also populates the runtime
+/// discovery cache read back by the Settings Engine tab.
 pub fn register(registry: &mut ToolRegistry) {
     let path = match codescribe_core::mcp::default_mcp_config_path() {
         Ok(path) => path,
@@ -613,6 +664,8 @@ pub fn register(registry: &mut ToolRegistry) {
     }
 }
 
+/// Register tools from an explicit config path and return how many landed.
+/// A missing file is not an error — it yields zero, since MCP is opt-in.
 pub(crate) fn register_mcp_tools_from_config_path(
     registry: &mut ToolRegistry,
     path: &Path,
@@ -623,6 +676,10 @@ pub(crate) fn register_mcp_tools_from_config_path(
     register_mcp_tools_from_config(registry, config)
 }
 
+/// Run discovery, then register each discovered tool behind a closure that
+/// dispatches to its own server. Per-tool failures (unsafe name, duplicate
+/// registration) are warned and skipped so one bad tool cannot cost the rest;
+/// the count reflects what actually registered.
 fn register_mcp_tools_from_config(
     registry: &mut ToolRegistry,
     config: McpConfigFile,
@@ -692,6 +749,12 @@ fn register_mcp_tools_from_config(
     Ok(registered)
 }
 
+/// The schema the model sees, which may differ from the server's own.
+///
+/// Only Desktop Commander's `start_process` is rewritten: a required `cwd` is
+/// added so the working directory becomes an explicit, validatable argument
+/// instead of being smuggled inside the command string.
+/// [`prepare_upstream_input`] folds it back before the call goes out.
 fn public_input_schema(
     server: &str,
     tool: &str,
@@ -727,6 +790,12 @@ fn public_input_schema(
     schema
 }
 
+/// Translate validated tool input into what the server actually expects.
+///
+/// The inverse of [`public_input_schema`]: for Desktop Commander's
+/// `start_process`, the Codescribe-only `cwd` field is removed and folded into
+/// the command as a quoted `cd`, so policy metadata never travels upstream.
+/// Every other tool passes through untouched.
 fn prepare_upstream_input(
     server: &str,
     tool: &str,
@@ -748,14 +817,25 @@ fn prepare_upstream_input(
     Ok(input)
 }
 
+/// Wrap a value in single quotes for POSIX shell, escaping embedded quotes, so
+/// a validated path cannot break out of the `cd` that carries it.
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Whether this server is Desktop Commander, which gets the hardened policy
+/// profile. Case-insensitive: the server name comes from user-written config.
 fn is_desktop_commander_server(server_name: &str) -> bool {
     server_name.eq_ignore_ascii_case("desktop-commander")
 }
 
+/// Risk classification and optional input validator for one discovered tool.
+///
+/// Unknown servers get `ToolRisk::Unknown` with no validator — the registry's
+/// own decision step turns Unknown into "require approval", so an unclassified
+/// tool is never a silent allow. Desktop Commander is classified per tool:
+/// reads run freely, mutations and process control require approval, and
+/// anything unrecognised stays Unknown.
 fn execution_policy(
     server_name: &str,
     upstream_tool: &str,
@@ -812,6 +892,14 @@ fn execution_policy(
     )
 }
 
+/// Build the per-call validator for a Desktop Commander tool.
+///
+/// The validator runs before every call and produces the approval preview. It
+/// is the enforcement point for three rules: every path argument must resolve
+/// inside a configured workspace root, URL reads are denied outright, and
+/// Desktop Commander may not rewrite its own security-policy keys (matched on
+/// a normalized key, so `security.allowedDirectories[0]` cannot slip through).
+/// Returning `Err` aborts the call.
 fn desktop_commander_validator(upstream_tool: &str) -> Option<ToolInputValidator> {
     let tool = upstream_tool.to_string();
     Some(Arc::new(move |input| {
@@ -930,6 +1018,11 @@ fn desktop_commander_validator(upstream_tool: &str) -> Option<ToolInputValidator
     }))
 }
 
+/// Redact secrets from a command line before it is shown in an approval
+/// prompt. Handles both shapes: `KEY=value` inline assignments, and a flag
+/// whose secret sits in the following token(s) — `Authorization`/`Cookie` take
+/// two, everything else one. Display only; the command sent upstream is
+/// unchanged.
 fn redact_command_for_approval(command: &str) -> String {
     const SENSITIVE_KEYS: &[&str] = &[
         "token",
@@ -975,6 +1068,9 @@ fn redact_command_for_approval(command: &str) -> String {
         .join(" ")
 }
 
+/// First non-blank string among the given keys, or an error naming all of
+/// them. The key list absorbs upstream naming drift (`file_path` vs `path`,
+/// `source` vs `source_path`) without duplicating the validator arms.
 fn required_string<'a>(input: &'a serde_json::Value, keys: &[&str]) -> Result<&'a str> {
     for key in keys {
         if let Some(value) = input.get(key).and_then(serde_json::Value::as_str)
@@ -989,6 +1085,9 @@ fn required_string<'a>(input: &'a serde_json::Value, keys: &[&str]) -> Result<&'
     )
 }
 
+/// One tool found on one server, carrying the config needed to call it later.
+/// The server config is cloned per tool because each registered closure owns
+/// its own client.
 #[derive(Debug)]
 struct DiscoveredMcpTool {
     server_name: String,
@@ -996,6 +1095,14 @@ struct DiscoveredMcpTool {
     tool: McpTool,
 }
 
+/// Probe every configured server and return the tools they expose.
+///
+/// Synchronous by contract — it is reached from the sync registration path —
+/// so it runs its own current-thread runtime on a dedicated thread; see the
+/// inline P2.4 note for why that is the correct choice rather than an
+/// oversight. Servers are probed in parallel and in isolation: a failure is
+/// recorded against that server alone and never propagates, and disabled
+/// servers are still recorded so the UI can tell "off" from "missing".
 fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMcpTool>> {
     // P2.4 DEFERRED (cross-cut, owned by the runtime/bin group):
     // This spawns a std::thread and builds a fresh current_thread runtime to run
@@ -1087,12 +1194,17 @@ fn discover_mcp_tools_blocking(config: McpConfigFile) -> Result<Vec<DiscoveredMc
     .map_err(|_| anyhow::anyhow!("MCP discovery thread panicked"))?
 }
 
+/// Compose the `mcp__<server>__<tool>` name the model calls. Both parts are
+/// validated first, so a hostile or malformed name cannot forge a different
+/// tool identity through the separator.
 fn public_tool_name(server_name: &str, tool_name: &str) -> Result<String> {
     validate_name_part("server", server_name)?;
     validate_name_part("tool", tool_name)?;
     Ok(format!("mcp__{server_name}__{tool_name}"))
 }
 
+/// Require a non-empty name of ASCII alphanumerics, `_`, or `-`. `kind` only
+/// labels the error message ("server" / "tool").
 fn validate_name_part(kind: &str, name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("MCP {kind} name is empty");

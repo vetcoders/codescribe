@@ -20,17 +20,23 @@ pub use codescribe_core::{
 // App/macOS-specific modules
 // ═══════════════════════════════════════════════════════════
 
+/// Assistive agent runtime: providers, tool registry, and the run monitor service.
 pub mod agent;
 
+/// Process-global broadcast carrying voice-assistive reply events to the UI.
 pub mod agent_delivery;
+/// Tracing/log initialization shared by the app and the UniFFI bridge.
 pub mod logging;
+/// macOS platform layer: hotkeys, clipboard, onboarding, permissions.
 pub mod os;
 #[cfg(test)]
 pub(crate) mod test_env;
 
+/// Recording lifecycle owner: start/stop paths, final pass, delivery.
 #[cfg(target_os = "macos")]
 pub mod controller;
 
+/// Native presentation surfaces (overlay, tray, status rendering).
 #[cfg(target_os = "macos")]
 pub mod presentation;
 

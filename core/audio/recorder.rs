@@ -85,6 +85,12 @@ struct RecorderVad {
 }
 
 impl RecorderVad {
+    /// Spawn the VAD thread and return a handle, or `None` if it cannot start.
+    ///
+    /// `None` is a soft failure: auto-silence is lost but recording continues.
+    /// The probability starts at 0.0 (no speech seen), which is what makes the
+    /// `seen_speech` gate in the capture callback work — a 1.0 start would let
+    /// initial silence trip the auto-stop before the user says anything.
     fn new(sample_rate: u32) -> Option<Self> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(128);
         // 0.0 = no speech seen yet (the critical fix)
@@ -120,6 +126,10 @@ impl RecorderVad {
 }
 
 impl Drop for RecorderVad {
+    /// Close the sample channel *before* joining the worker.
+    ///
+    /// The worker loops over the receiver, so joining first would deadlock: the
+    /// loop only ends once the sender is gone.
     fn drop(&mut self) {
         // Close channel first so the worker loop can exit before join().
         drop(self.tx.take());
@@ -154,6 +164,11 @@ const STREAMING_BUFFER_CAP_SECONDS: usize = 300;
 
 // --- configuration ---
 
+/// Tunables for a recording session.
+///
+/// `sample_rate` is a request, not a guarantee: the stream is opened at the
+/// device's native rate, and [`Recorder::actual_sample_rate`] reports what was
+/// actually used.
 #[derive(Debug, Clone)]
 pub struct RecorderConfig {
     /// Sample rate (Hz)
@@ -172,6 +187,12 @@ pub struct RecorderConfig {
 }
 
 impl Default for RecorderConfig {
+    /// Defaults derived from [`vad::VadConfig`], with auto-silence read from the
+    /// `AUTO_SILENCE` environment variable.
+    ///
+    /// Deriving rather than duplicating keeps one source of truth for the VAD
+    /// thresholds. Note this `Default` is environment-sensitive: two calls in
+    /// the same process can differ if `AUTO_SILENCE` changes between them.
     fn default() -> Self {
         // Keep a single source of truth for VAD thresholds/silence durations.
         // VAD internals are hardcoded in `vad::VadConfig`.
@@ -191,6 +212,8 @@ impl Default for RecorderConfig {
 
 // --- diagnostics ---
 
+/// Counters for the most recently completed take, filled in by
+/// [`Recorder::stop`].
 #[derive(Debug, Default, Clone)]
 pub struct RecorderDiagnostics {
     pub frames: usize,
@@ -217,12 +240,27 @@ pub struct SnapshotResult {
 
 // --- audio buffer ---
 
+/// Shared capture buffer: mono i16 samples, written from the CoreAudio callback.
+///
+/// A `VecDeque` because streaming sessions evict from the front once the
+/// retention cap is reached.
 type AudioBuffer = Arc<Mutex<VecDeque<i16>>>;
 
+/// Per-block tap on the live capture stream, receiving mono f32 samples.
+///
+/// Invoked on the CoreAudio callback thread — anything slow or blocking here
+/// shows up as dropped audio.
 pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 
 // --- recorder ---
 
+/// Microphone capture session over cpal.
+///
+/// Owns the input stream, the shared sample buffer and — when auto-silence is
+/// enabled — a [`RecorderVad`] that dies with the recorder. Samples accumulate
+/// until [`Recorder::stop`] writes them to a temp WAV;
+/// [`Recorder::snapshot_wav`] can slice the buffer without interrupting
+/// capture.
 pub struct Recorder {
     pub config: RecorderConfig,
     buffer: AudioBuffer,
@@ -290,6 +328,11 @@ impl Recorder {
         self.on_data = Some(callback);
     }
 
+    /// Warn when a VAD-stop callback is registered while auto-silence is off.
+    ///
+    /// The registration is kept, not rejected — but it can never fire, and a
+    /// silent no-op callback is the kind of thing that reads as a broken
+    /// recorder rather than a disabled feature.
     fn warn_inert_vad_stop_callback(&self, context: &str) {
         if self.on_vad_stop.is_some() && !self.config.auto_silence {
             warn!(
@@ -729,12 +772,21 @@ impl Recorder {
 }
 
 impl Default for Recorder {
+    /// # Panics
+    ///
+    /// Panics if the recorder cannot be constructed. Prefer [`Recorder::new`],
+    /// which surfaces the same failure as a `Result`.
     fn default() -> Self {
         Self::new().expect("Failed to create default recorder")
     }
 }
 
 impl Drop for Recorder {
+    /// Tear down the input stream if the caller never reached
+    /// [`Recorder::stop`].
+    ///
+    /// Defensive only: it releases the device, but the buffered audio is
+    /// discarded rather than written to a WAV.
     fn drop(&mut self) {
         // Defensive cleanup: ensure stream is stopped when Recorder is dropped
         if self.stream.is_some() {
@@ -749,20 +801,38 @@ impl Drop for Recorder {
 
 // Note: RMS-based silence detection replaced with Silero VAD (see vad module)
 
+/// Retention cap in samples for a streaming session
+/// (`STREAMING_BUFFER_CAP_SECONDS` at `sample_rate`).
+///
+/// Only applied when a streaming callback is consuming the audio live; a plain
+/// recorder keeps the whole take so `stop()` can write all of it.
 fn streaming_buffer_cap_samples(sample_rate: u32) -> usize {
     (sample_rate as usize).saturating_mul(STREAMING_BUFFER_CAP_SECONDS)
 }
 
+/// Parse `AUTO_SILENCE`: absent is off, and only `0`/`false`/`no`/`off`
+/// (case-insensitive) disable it once set.
+///
+/// Off by default because auto-stop cutting someone off mid-sentence is worse
+/// than making them stop the recording themselves.
 fn auto_silence_from_env_value(value: Option<&str>) -> bool {
     value
         .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
         .unwrap_or(false)
 }
 
+/// The VAD-stop emission gate, extracted so the policy is testable without a
+/// live audio device: both the feature and a registered callback are required.
 fn should_invoke_vad_stop_callback(auto_silence: bool, callback_registered: bool) -> bool {
     auto_silence && callback_registered
 }
 
+/// Average interleaved frames down to mono.
+///
+/// The device is opened at its native channel count, but VAD, Whisper and the
+/// WAV writer are all mono, so this is the single conversion point. A trailing
+/// partial frame is averaged over the samples it actually has, and mono input
+/// short-circuits without copying per frame.
 fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
     let channels = channels.max(1);
     if channels == 1 {
@@ -775,6 +845,13 @@ fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
         .collect()
 }
 
+/// Convert mono f32 samples to i16 and append them, evicting from the front
+/// once `cap_samples` is exceeded.
+///
+/// Samples are clamped to `[-1.0, 1.0]` before scaling, so an out-of-range block
+/// saturates instead of wrapping to the opposite polarity. `buffer_start_offset`
+/// advances by exactly the number of evicted samples, which is what keeps
+/// [`Recorder::snapshot_wav`] offsets absolute across a trimmed buffer.
 fn append_mono_i16_samples(
     buffer: &mut VecDeque<i16>,
     buffer_start_offset: &AtomicUsize,

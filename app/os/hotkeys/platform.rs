@@ -1,3 +1,24 @@
+//! Platform binding for the hotkey listener: a CoreGraphics event tap on
+//! macOS, and a warning-only stub everywhere else.
+//!
+//! This is the only file in the hotkey stack that talks to the OS. It decodes
+//! CGEvents into [`HotkeyDetectorInput`] and hands them to the pure state
+//! machine in [`super::detector`], which is why the gesture rules can be tested
+//! without Accessibility permission — the untestable part is confined here.
+//!
+//! Two properties are load-bearing and easy to break:
+//!
+//! - **The tap is listen-only.** It observes events and cannot suppress them,
+//!   so the callback's return value is ignored by CoreGraphics.
+//! - **Teardown is a swap race, not a lock.** Every CoreFoundation handle lives
+//!   in an `AtomicPtr` inside `RuntimeControl`; whoever swaps a non-null value
+//!   out owns the teardown. That is what keeps `shutdown()` and `Drop` from
+//!   double-invalidating the same port.
+//!
+//! Both `cfg` branches export the same five-item surface
+//! ([`HotkeyRuntime`], [`start_listener`], [`enable`], [`disable`],
+//! [`is_enabled`]) so callers never need a `cfg` of their own.
+
 use super::config::{get_hotkey_runtime_config, get_mode_hotkey_bindings};
 use super::detector::{
     HotkeyDetector, HotkeyDetectorInput, HotkeyEvent, HotkeyModifierSnapshot, HotkeyPhysicalKey,
@@ -7,6 +28,8 @@ use std::time::{Duration, Instant};
 
 // --- macOS CGEventTap Implementation using raw bindings ---
 
+/// The real implementation: a session-level CGEventTap driven on its own
+/// thread by a CFRunLoop.
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
@@ -18,19 +41,38 @@ mod macos {
     use std::thread::{self, JoinHandle};
 
     // CGEvent types and flags
+    //
+    // Hand-written aliases for the CoreGraphics/CoreFoundation ABI. They are
+    // opaque pointers and plain integers rather than newtypes so the `extern`
+    // declarations below match the C signatures exactly, with no repr risk.
+
+    /// Opaque `CGEventRef` — a single keyboard event, owned by the callback's
+    /// caller for the callback's duration only.
     type CGEventRef = *mut c_void;
+    /// Opaque `CGEventTapProxy` — unused here, the tap is listen-only.
     type CGEventTapProxy = *mut c_void;
+    /// Opaque `CFMachPortRef` — the event tap port; retained, must be released.
     type CFMachPortRef = *mut c_void;
+    /// Opaque `CFRunLoopSourceRef` — retained, must be released.
     type CFRunLoopSourceRef = *mut c_void;
+    /// Opaque `CFRunLoopRef` — **not** owned; `CFRunLoopGetCurrent` does not
+    /// retain, so this one is never released.
     type CFRunLoopRef = *mut c_void;
 
+    /// Discriminant of a CGEvent (key down, key up, flags changed, or a
+    /// tap-disabled sentinel).
     type CGEventType = u32;
+    /// Bitfield of active modifier keys.
     type CGEventFlags = u64;
+    /// Selector for `CGEventGetIntegerValueField`.
     type CGEventField = u32;
 
     // CGEventType values
+    /// A non-modifier key went down.
     const K_CG_EVENT_KEY_DOWN: CGEventType = 10;
+    /// A non-modifier key was released.
     const K_CG_EVENT_KEY_UP: CGEventType = 11;
+    /// A modifier changed state — carries every hold and double-tap gesture.
     const K_CG_EVENT_FLAGS_CHANGED: CGEventType = 12;
 
     // CGEventType "tap disabled" sentinels. CoreGraphics emits these (the two
@@ -39,35 +81,55 @@ mod macos {
     // sensitive sequence. They live in <CoreGraphics/CGEvent.h> as stable ABI
     // constants, named there `kCGEventTapDisabledByTimeout` and
     // `kCGEventTapDisabledByUserInput`.
+    /// Tap killed because our callback took too long to return.
     const K_CG_EVENT_TAP_DISABLED_BY_TIMEOUT: CGEventType = 0xFFFF_FFFE;
+    /// Tap killed by user input during a sensitive sequence.
     const K_CG_EVENT_TAP_DISABLED_BY_USER_INPUT: CGEventType = 0xFFFF_FFFF;
 
     // CGEventFlags masks
+    /// Control held.
     const K_CG_EVENT_FLAG_MASK_CONTROL: CGEventFlags = 0x00040000;
+    /// Shift held.
     const K_CG_EVENT_FLAG_MASK_SHIFT: CGEventFlags = 0x00020000;
+    /// Option held — CoreGraphics calls it "alternate".
     const K_CG_EVENT_FLAG_MASK_ALTERNATE: CGEventFlags = 0x00080000; // Option key
+    /// Command held.
     const K_CG_EVENT_FLAG_MASK_COMMAND: CGEventFlags = 0x00100000;
+    /// Fn (Globe) held.
     const K_CG_EVENT_FLAG_MASK_SECONDARY_FN: CGEventFlags = 0x00800000;
 
     // CGEventField for keycode
+    /// Field selector that yields the virtual keycode of a keyboard event.
     const K_CG_KEYBOARD_EVENT_KEYCODE: CGEventField = 9;
 
     // macOS virtual keycodes for Option keys
+    /// Left Option — the formatting-mode double-tap side.
     const K_VK_OPTION: i64 = 58; // Left Option
+    /// Right Option — the assistive-mode double-tap side.
     const K_VK_RIGHT_OPTION: i64 = 61; // Right Option
     // macOS virtual keycodes for Control keys
+    /// Left Control.
     const K_VK_CONTROL: i64 = 59; // Left Control
+    /// Right Control.
     const K_VK_RIGHT_CONTROL: i64 = 62; // Right Control
+    /// Fn / Globe.
     const K_VK_FUNCTION: i64 = 63; // Fn (Globe)
+    /// Space — half of the Show-Agent chord.
     const K_VK_SPACE: i64 = 49;
+    /// V — half of the Insert-Here chord.
     const K_VK_V: i64 = 9;
 
     // CGEventTap constants
+    /// Tap at session scope: all events for this login session.
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
+    /// Insert at the head of the tap chain.
     const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
+    /// Observe only — the tap cannot modify or swallow events, and the
+    /// callback's return value is ignored.
     const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
 
     // Callback type
+    /// Signature CoreGraphics expects for an event tap callback.
     type CGEventTapCallBack = extern "C" fn(
         proxy: CGEventTapProxy,
         event_type: CGEventType,
@@ -77,6 +139,9 @@ mod macos {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
+        /// Create an event tap. Returns null when Accessibility permission is
+        /// missing — the single most common failure on a fresh install.
+        /// The returned port is retained and must be released.
         fn CGEventTapCreate(
             tap: u32,
             place: u32,
@@ -86,32 +151,54 @@ mod macos {
             user_info: *mut c_void,
         ) -> CFMachPortRef;
 
+        /// Arm or disarm a tap. Also used to *re-arm* after macOS disables one.
         fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+        /// Whether the tap is currently armed; checked once at startup because
+        /// creation can succeed while enabling is denied.
         fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
+        /// Read the modifier bitfield of an event.
         fn CGEventGetFlags(event: CGEventRef) -> CGEventFlags;
+        /// Read one integer field of an event (here: the virtual keycode).
         fn CGEventGetIntegerValueField(event: CGEventRef, field: CGEventField) -> i64;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
+        /// Wrap the tap port as a run loop source. Retained — must be released.
         fn CFMachPortCreateRunLoopSource(
             allocator: *const c_void,
             port: CFMachPortRef,
             order: i64,
         ) -> CFRunLoopSourceRef;
+        /// Tear down a mach port so it stops delivering.
         fn CFMachPortInvalidate(port: CFMachPortRef);
 
+        /// The calling thread's run loop. Does **not** retain, so the result is
+        /// never released.
         fn CFRunLoopGetCurrent() -> CFRunLoopRef;
+        /// Attach a source to a run loop in the given mode.
         fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: *const c_void);
+        /// Tear down a run loop source.
         fn CFRunLoopSourceInvalidate(source: CFRunLoopSourceRef);
+        /// Block the current thread, dispatching events until stopped.
         fn CFRunLoopRun();
+        /// Ask a run loop to return from `CFRunLoopRun`.
         fn CFRunLoopStop(rl: CFRunLoopRef);
+        /// Nudge a run loop so it notices a pending stop instead of sleeping on.
         fn CFRunLoopWakeUp(rl: CFRunLoopRef);
+        /// Release a retained CoreFoundation object.
         fn CFRelease(cf: *const c_void);
 
+        /// Mode set that keeps the tap live during menu tracking and drags.
         static kCFRunLoopCommonModes: *const c_void;
     }
 
+    /// Everything the C callback needs, reached through the tap's `user_info`
+    /// pointer.
+    ///
+    /// Boxed and owned by [`EventTapResources`] so the address stays stable for
+    /// the tap's whole life; the callback casts `user_info` straight back to
+    /// `&mut HotkeyState`.
     struct HotkeyState {
         detector: HotkeyDetector,
         tx: Sender<HotkeyEvent>,
@@ -123,6 +210,7 @@ mod macos {
     }
 
     impl HotkeyState {
+        /// Fresh state with a default detector.
         fn new(tx: Sender<HotkeyEvent>, control: Arc<RuntimeControl>) -> Self {
             Self {
                 detector: HotkeyDetector::default(),
@@ -132,12 +220,24 @@ mod macos {
         }
     }
 
+    /// Whether a listener is live. Process-wide because there is exactly one
+    /// event tap; guarded by [`RunningGuard`].
     static RUNNING: AtomicBool = AtomicBool::new(false);
+    /// Soft on/off switch read by the callback on every event.
+    ///
+    /// Separate from `RUNNING` on purpose: disabling makes the tap ignore
+    /// events without tearing it down, so re-enabling costs nothing and does
+    /// not re-prompt for permission.
     static ENABLED: AtomicBool = AtomicBool::new(true);
 
+    /// RAII token proving this process owns the single listener slot.
+    ///
+    /// Held by [`HotkeyRuntime`]; releasing it on drop is what lets a
+    /// subsequent `start_listener` succeed after a shutdown.
     struct RunningGuard;
 
     impl RunningGuard {
+        /// Claim the listener slot, or fail if one is already running.
         fn acquire() -> Result<Self, String> {
             if RUNNING.swap(true, Ordering::SeqCst) {
                 return Err("Hotkey listener already running".to_string());
@@ -152,6 +252,14 @@ mod macos {
         }
     }
 
+    /// Shared teardown rendezvous between the owning thread, the worker, and
+    /// the C callback.
+    ///
+    /// Each CoreFoundation handle lives in an `AtomicPtr` so ownership can be
+    /// claimed by swap rather than by lock: whoever swaps out a non-null value
+    /// is responsible for invalidating and releasing it, and everyone else sees
+    /// null and no-ops. That is the mechanism preventing the double-invalidate
+    /// crash when `shutdown()` and `Drop for EventTapResources` race.
     #[derive(Default)]
     struct RuntimeControl {
         stop_requested: AtomicBool,
@@ -161,10 +269,17 @@ mod macos {
     }
 
     impl RuntimeControl {
+        /// Whether teardown has been asked for.
         fn is_stop_requested(&self) -> bool {
             self.stop_requested.load(Ordering::SeqCst)
         }
 
+        /// Tear the tap down and wake the run loop, exactly once.
+        ///
+        /// Idempotent by the `swap` on `stop_requested`: a second call returns
+        /// immediately. Each handle is swapped to null *before* being touched,
+        /// so this and `Drop for EventTapResources` can run concurrently
+        /// without either double-releasing.
         fn request_stop(&self) {
             if self.stop_requested.swap(true, Ordering::SeqCst) {
                 return;
@@ -202,6 +317,11 @@ mod macos {
         }
     }
 
+    /// Owner of everything the run loop thread allocates.
+    ///
+    /// Lives on the worker thread's stack, so unwinding out of `run_event_tap`
+    /// — for any reason, including an early permission error — releases the tap
+    /// through `Drop` without a separate cleanup path.
     struct EventTapResources {
         state: Box<HotkeyState>,
         tap: Option<CFMachPortRef>,
@@ -211,6 +331,8 @@ mod macos {
     }
 
     impl EventTapResources {
+        /// Allocate the callback state; the handles are filled in as the tap is
+        /// built.
         fn new(tx: Sender<HotkeyEvent>, control: Arc<RuntimeControl>) -> Self {
             Self {
                 state: Box::new(HotkeyState::new(tx, Arc::clone(&control))),
@@ -221,10 +343,14 @@ mod macos {
             }
         }
 
+        /// Stable pointer to the boxed [`HotkeyState`], handed to
+        /// `CGEventTapCreate` as `user_info`.
         fn user_info_ptr(&mut self) -> *mut c_void {
             (&mut *self.state as *mut HotkeyState).cast::<c_void>()
         }
 
+        /// Record the tap port here and publish it to [`RuntimeControl`] so the
+        /// callback can re-arm it and teardown can claim it.
         fn set_tap(&mut self, tap: CFMachPortRef) {
             self.tap = Some(tap);
             self.control
@@ -232,6 +358,7 @@ mod macos {
                 .store(tap.cast::<c_void>(), Ordering::SeqCst);
         }
 
+        /// Record and publish the run loop source.
         fn set_source(&mut self, source: CFRunLoopSourceRef) {
             self.source = Some(source);
             self.control
@@ -239,6 +366,8 @@ mod macos {
                 .store(source.cast::<c_void>(), Ordering::SeqCst);
         }
 
+        /// Record and publish the worker's run loop, so a stop request from
+        /// another thread can wake it.
         fn set_run_loop(&mut self, run_loop: CFRunLoopRef) {
             self.run_loop = Some(run_loop);
             self.control
@@ -292,6 +421,11 @@ mod macos {
         }
     }
 
+    /// Owning handle for a live hotkey listener.
+    ///
+    /// Dropping it shuts the listener down, so the caller only has to keep it
+    /// alive for as long as hotkeys should work. [`Self::shutdown`] is the
+    /// explicit form and is idempotent.
     pub struct HotkeyRuntime {
         control: Arc<RuntimeControl>,
         worker: Option<JoinHandle<()>>,
@@ -299,6 +433,7 @@ mod macos {
     }
 
     impl HotkeyRuntime {
+        /// Take ownership of a spawned worker and its listener slot.
         fn new(
             control: Arc<RuntimeControl>,
             worker: JoinHandle<()>,
@@ -311,6 +446,12 @@ mod macos {
             }
         }
 
+        /// Stop the listener and join its thread.
+        ///
+        /// Idempotent — `Drop` calls it too, and a second call after an
+        /// explicit shutdown returns immediately. A panicking worker is logged
+        /// rather than propagated, because failing to join must not stop the
+        /// listener slot from being released.
         pub fn shutdown(&mut self) {
             if self.worker.is_none() && self.running_guard.is_none() {
                 return;
@@ -332,6 +473,8 @@ mod macos {
         }
     }
 
+    /// Decode a CoreGraphics modifier bitfield into the detector's snapshot
+    /// type.
     fn modifiers_from_flags(flags: CGEventFlags) -> HotkeyModifierSnapshot {
         HotkeyModifierSnapshot {
             ctrl: (flags & K_CG_EVENT_FLAG_MASK_CONTROL) != 0,
@@ -352,6 +495,8 @@ mod macos {
         )
     }
 
+    /// Map a macOS virtual keycode onto the keys the detector distinguishes;
+    /// everything else becomes `Other`.
     fn map_keycode(keycode: i64) -> HotkeyPhysicalKey {
         match keycode {
             K_VK_OPTION => HotkeyPhysicalKey::LeftOption,
@@ -707,29 +852,41 @@ mod macos {
 
 // --- Fallback for non-macOS ---
 
+/// Stub with the same name and surface as the macOS module, so the rest of the
+/// app compiles unchanged off-platform.
+///
+/// Every entry point warns and succeeds rather than failing: a machine without
+/// an event tap should still run the app, just without hotkeys.
 #[cfg(not(target_os = "macos"))]
 mod macos {
     use super::*;
 
+    /// Inert stand-in for the macOS runtime handle.
     pub struct HotkeyRuntime;
 
     impl HotkeyRuntime {
+        /// No-op — there is nothing to tear down.
         pub fn shutdown(&mut self) {}
     }
 
+    /// Warn and hand back an inert runtime; never an error, so startup is not
+    /// blocked by the absence of hotkey support.
     pub fn start_listener(_tx: Sender<HotkeyEvent>) -> Result<HotkeyRuntime, String> {
         tracing::warn!("Hotkey listener not supported on this platform");
         Ok(HotkeyRuntime)
     }
 
+    /// No-op — warns that hotkeys do not exist here.
     pub fn enable() {
         tracing::warn!("Hotkey enable not supported on this platform");
     }
 
+    /// No-op — warns that hotkeys do not exist here.
     pub fn disable() {
         tracing::warn!("Hotkey disable not supported on this platform");
     }
 
+    /// Always `false` off macOS.
     pub fn is_enabled() -> bool {
         false
     }

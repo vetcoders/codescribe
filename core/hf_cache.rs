@@ -10,10 +10,17 @@ use std::time::SystemTime;
 
 use directories::BaseDirs;
 
+/// Locate a cached snapshot of `repo` containing every file in `required`.
 pub fn find_snapshot(repo: &str, required: &[&str]) -> Option<PathBuf> {
     find_snapshot_with_any(repo, required, &[])
 }
 
+/// Locate a cached snapshot satisfying both an all-of and an any-of file list.
+///
+/// The any-of list exists because a repo can ship one of several interchangeable
+/// weight formats; demanding a specific one would miss a perfectly usable
+/// download. Cache roots are tried in [`cache_bases`] order and the first hit
+/// wins.
 pub fn find_snapshot_with_any(
     repo: &str,
     required_all: &[&str],
@@ -27,6 +34,13 @@ pub fn find_snapshot_with_any(
     None
 }
 
+/// Every directory that might hold a Hugging Face cache, deduplicated.
+///
+/// Environment overrides come first (`CODESCRIBE_HF_CACHE`,
+/// `HUGGINGFACE_HUB_CACHE`, `HF_HUB_CACHE`, `HF_HOME`), then the standard
+/// `~/.cache/huggingface/hub`, then the Codescribe-local download locations.
+/// Sorting before dedup means the returned order is stable, not
+/// insertion-ordered.
 fn cache_bases() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(path) = env::var("CODESCRIBE_HF_CACHE") {
@@ -62,6 +76,13 @@ fn cache_bases() -> Vec<PathBuf> {
     out
 }
 
+/// Search one cache root for the newest snapshot of `repo` that has the
+/// required files.
+///
+/// The directory name is derived from the repo id, but the cache preserves the
+/// original casing, so a miss falls back to a case-insensitive scan rather than
+/// reporting the model absent. Among qualifying snapshots the most recently
+/// modified wins — the cache can hold several revisions at once.
 fn find_snapshot_in_base(
     base: &PathBuf,
     repo: &str,

@@ -4,14 +4,29 @@ use crate::pipeline::contracts::{TranscriptSegment, VadClass};
 use crate::vad::VadConfig;
 use crate::vad::discriminator::VadTimeline;
 
+/// Result of filtering Whisper segments against a VAD timeline.
 #[derive(Debug, Clone)]
 pub struct SileroFilterOutcome {
+    /// Surviving segment texts joined by single spaces.
     pub text: String,
+    /// Surviving segments, with gap punctuation already applied.
     pub segments: Vec<TranscriptSegment>,
+    /// How many segments were dropped as trailing-silence hallucinations.
     pub dropped_count: u32,
+    /// Up to three dropped texts, kept for diagnostics.
     pub dropped_text_samples: Vec<String>,
 }
 
+/// Drop Whisper segments that fall in trailing silence and punctuate the gaps
+/// between the survivors.
+///
+/// Trailing-silence segments are where Whisper's over-generation lands (the
+/// classic "Dziękuję" / "Subscribe" tail), so they are removed — but only when
+/// `tail_drop_enabled`, which keeps the filter auditable against an unfiltered
+/// run. Between kept segments the gap class decides the seam: an utterance gap
+/// prefixes an ellipsis, a sentence boundary closes the previous segment with a
+/// period. Both are idempotent, so a segment already carrying its mark is left
+/// alone.
 pub fn map_whisper_segments_to_silero(
     segments: &[TranscriptSegment],
     timeline: &VadTimeline,
@@ -85,6 +100,7 @@ pub fn map_whisper_segments_to_silero(
     }
 }
 
+/// Does the text already close a sentence, ignoring trailing whitespace?
 fn ends_with_sentence_terminator(text: &str) -> bool {
     matches!(
         text.trim_end().chars().last(),
@@ -92,11 +108,14 @@ fn ends_with_sentence_terminator(text: &str) -> bool {
     )
 }
 
+/// Covers tail dropping (and its opt-out), both gap punctuations, and the
+/// diagnostics cap on retained dropped samples.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pipeline::contracts::VadClass;
 
+    /// Default VAD config with the tail-drop switch forced either way.
     fn config_with_tail_drop(enabled: bool) -> VadConfig {
         VadConfig {
             tail_drop_enabled: enabled,
@@ -104,6 +123,7 @@ mod tests {
         }
     }
 
+    /// Timeline built directly from classes, at the standard 500ms window.
     fn timeline(classes: &[VadClass]) -> VadTimeline {
         VadTimeline {
             classes: classes.to_vec(),
@@ -111,6 +131,7 @@ mod tests {
         }
     }
 
+    /// Minimal transcript segment.
     fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
         TranscriptSegment {
             text: text.to_string(),

@@ -83,6 +83,9 @@ struct AppleTailPatchLane {
 }
 
 impl AppleTailPatchLane {
+    /// Open an empty lane. `TailPatchConfig::from_env` is read once here so the
+    /// whole session judges every patch against the same thresholds, even if the
+    /// env flips mid-hold.
     fn new(sample_rate: u32, language: Option<String>) -> Self {
         Self {
             jobs: FuturesOrdered::new(),
@@ -94,6 +97,9 @@ impl AppleTailPatchLane {
         }
     }
 
+    /// Turn a sealed utterance into a Whisper gap-fill job and queue it. The job
+    /// is only constructed — inference happens inside it on `spawn_blocking`, so
+    /// this call never sits on the event-drain path.
     fn push_request(&mut self, req: TailPatchRequest) {
         let job = compute_tail_patch_job(
             req.utterance_id,
@@ -106,20 +112,30 @@ impl AppleTailPatchLane {
         self.push_job(Box::pin(job));
     }
 
+    /// Queue an already-built job. Boxed and separate from `push_request` so
+    /// tests can drive the lane with a stub future, with no model on disk.
     fn push_job(&mut self, job: BoxFuture<'static, Result<(u64, TailPatchOutcome)>>) {
         self.jobs.push_back(job);
     }
 
+    /// Await the next finished job. `FuturesOrdered` (not `Unordered`) is the
+    /// point: patches must reach the sink in seal order, or a later utterance's
+    /// `ReplaceRange` could land before an earlier one's.
     async fn next(&mut self) -> Option<Result<(u64, TailPatchOutcome)>> {
         self.jobs.next().await
     }
 
+    /// Emit a finished job's patch and fold its replacement count into the
+    /// session total. A skipped or failed patch contributes zero — only text
+    /// that actually reached the canvas is counted.
     fn complete(&mut self, event_sink: &dyn EventSink, result: Result<(u64, TailPatchOutcome)>) {
         self.replacements = self
             .replacements
             .saturating_add(emit_tail_patch_result(event_sink, result));
     }
 
+    /// How many bounded replacements Layer 1 landed this session — the number
+    /// `SessionFinalised.layer_summary` reports.
     fn replacements(&self) -> u64 {
         self.replacements
     }
@@ -366,6 +382,8 @@ struct AppleSealState {
 }
 
 impl AppleSealState {
+    /// Fresh seal state with Layer 1 disabled (`tail_patch: None`) — the default
+    /// shape when `CODESCRIBE_LAYERED_TRANSCRIPTION` is unset.
     fn new(sample_rate: u32) -> Self {
         Self {
             postprocessor: StreamPostProcessor::new(),
@@ -382,6 +400,9 @@ impl AppleSealState {
         }
     }
 
+    /// Same state, armed with the Layer 1 hand-off. Holding the sender is what
+    /// makes `seal_utterance_final` clone the committed text at all — with no
+    /// wire there is nothing to diff against later.
     fn new_with_tail_patch(sample_rate: u32, tail_patch: mpsc::Sender<TailPatchRequest>) -> Self {
         Self {
             tail_patch: Some(tail_patch),
@@ -577,6 +598,16 @@ fn apple_stream_worker(
     })
 }
 
+/// Map one poll's worth of bridge events onto `EngineEvent`s, sealing where the
+/// stream says a phrase closed.
+///
+/// The mapping is where the RAW-preview / corrected-seal split is enforced:
+/// `Partial` forwards verbatim, `PhraseFinal` goes through
+/// [`seal_utterance_final`] (lexicon + cleanup). `audio_secs` is the session
+/// clock and only acts as a fallback `end_ts` when the engine hands over no
+/// segments. `Summary` is the partials-only engines' single seal — it commits
+/// only when no phrase final ever arrived, otherwise it would double-seal what
+/// the phrase path already committed.
 fn emit_stream_events(
     events: Vec<LiveStreamEvent>,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,

@@ -137,6 +137,17 @@ pub struct CsTokenConfidence {
     pub logprob: f32,
 }
 
+/// Persist one overlay correction: the quality record always lands, while lexicon
+/// learning is gated by `formatting_level`.
+///
+/// Only the Correction level teaches word pairs; higher levels are recorded as
+/// evidence with `pairs_learned = 0`, because a creative rewrite is not a
+/// transcription fix and would poison the lexicon. An unrecognised
+/// `formatting_level` is rejected before anything is written.
+///
+/// The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
+/// stored alongside the text so later analysis can correlate corrections with how
+/// unsure the engine was.
 #[uniffi::export]
 #[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(

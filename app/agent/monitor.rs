@@ -37,8 +37,11 @@ const SERVICE_TICK: Duration = Duration::from_secs(2);
 /// Outcome counters for one pass over the active monitors (test surface).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TickSummary {
+    /// Monitors that were due and actually observed this pass.
     pub polled: usize,
+    /// Heartbeats delivered into their registering threads.
     pub heartbeats: usize,
+    /// Monitors that reached a terminal state and were marked done.
     pub finished: usize,
 }
 
@@ -232,6 +235,13 @@ fn validate_registration(run_id: &str, thread_store_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Register a monitor for `run_id` heartbeating into `thread_store_id`, using
+/// an explicit store + control-plane root (test-injectable core of
+/// [`register_run_monitor`]).
+///
+/// Fails when the run has no control-plane `meta.json` — there is nothing to
+/// observe. Artifact paths are seeded from that snapshot; the observer re-reads
+/// them on every poll regardless.
 pub fn register_run_monitor_in(
     store: &RunMonitorStore,
     control_plane_root: &std::path::Path,
@@ -310,12 +320,17 @@ pub fn resume_monitors_on_startup() {
     }
 }
 
+/// Ownership record for the single resident service thread.
 struct MonitorServiceHandle {
+    /// Shutdown flag the loop checks each tick.
     stop: &'static AtomicBool,
+    /// Join handle, taken on shutdown. `None` when the spawn failed.
     thread: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
+/// Set to stop the resident loop at its next tick.
 static MONITOR_STOP: AtomicBool = AtomicBool::new(false);
+/// The one service handle per process; its presence means the loop was started.
 static MONITOR_SERVICE: OnceLock<MonitorServiceHandle> = OnceLock::new();
 
 /// Start the resident polling loop once per process. Called on registration
@@ -350,6 +365,8 @@ pub fn shutdown_monitor_service() {
     }
 }
 
+/// The resident thread body: tick, log any failure, sleep, repeat until stopped.
+/// A failing tick is never fatal — the next one re-reads the store.
 fn monitor_loop() {
     info!("Run-monitor service started");
     loop {
@@ -364,6 +381,9 @@ fn monitor_loop() {
     info!("Run-monitor service stopped");
 }
 
+/// One [`tick_all`] pass against the default stores. Returns early without
+/// opening the thread store when nothing is active, so an idle process pays
+/// only a store read per tick.
 fn tick_default() -> Result<()> {
     let store = RunMonitorStore::new()?;
     if store.active()?.is_empty() {
