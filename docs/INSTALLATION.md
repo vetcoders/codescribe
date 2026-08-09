@@ -91,7 +91,6 @@ Configuration is **tiered**:
 │   └── assistive.txt
 ├── history/          # Transcription history
 ├── reports/          # Quality reports
-└── repo_path         # Path to source repo (set during install)
 ```
 
 **Secrets** (API keys) are stored in **macOS Keychain** under service `com.vetcoders.codescribe`.

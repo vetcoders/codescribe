@@ -80,16 +80,6 @@ fn main() {
     configure_license_public_key(is_release && !is_local_install);
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
-        let codescribe_dir = dirs::home_dir()
-            .map(|h| h.join(".codescribe"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/.codescribe"));
-
-        if is_release {
-            let _ = fs::create_dir_all(&codescribe_dir);
-            let repo_path_file = codescribe_dir.join("repo_path");
-            let _ = fs::write(&repo_path_file, &manifest_dir);
-        }
-
         let out_dir = env::var("OUT_DIR").unwrap();
         let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
             .ok()
