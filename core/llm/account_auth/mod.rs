@@ -192,7 +192,12 @@ const XAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     callback_host: "127.0.0.1",
     preferred_port: 56121,
     scope: "openid profile email offline_access grok-cli:access api:access",
-    extra_authorize_params: &[("plan", "generic")],
+    // OpenCode packages/opencode/src/plugin/xai.ts (XaiAuthPlugin):
+    // `plan=generic` is required for the Grok-CLI public client loopback flow;
+    // without it accounts.x.ai rejects non-allowlisted clients. `referrer`
+    // is best-effort attribution in xAI's OAuth logs (OpenCode uses
+    // "opencode"; we attribute Codescribe).
+    extra_authorize_params: &[("plan", "generic"), ("referrer", "codescribe")],
     login_flow: LoginFlow::Loopback,
     encoding: TokenRequestEncoding::Form,
 };
@@ -938,6 +943,19 @@ mod tests {
         assert!(row.scope.contains("api:access"));
         assert!(row.scope.contains("grok-cli:access"));
         assert!(row.scope.contains("offline_access"));
+        // OpenCode xai.ts contract — plan=generic is load-bearing for loopback.
+        assert!(
+            row.extra_authorize_params
+                .iter()
+                .any(|(k, v)| *k == "plan" && *v == "generic"),
+            "xAI authorize must send plan=generic (OpenCode XaiAuthPlugin)"
+        );
+        assert!(
+            row.extra_authorize_params
+                .iter()
+                .any(|(k, v)| *k == "referrer" && *v == "codescribe"),
+            "xAI authorize should attribute Codescribe as referrer"
+        );
     }
 
     #[derive(Debug)]

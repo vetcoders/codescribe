@@ -381,6 +381,10 @@ fn build_authorize_url(
         config.authorize_path
     ))
     .expect("issuer must parse");
+    // OpenCode XaiAuthPlugin always sends OpenID `nonce` with the xAI authorize
+    // request (alongside PKCE + state). Harmless for other loopback providers
+    // that ignore unknown params; required for parity with auth.x.ai.
+    let nonce = generate_state();
     url.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", &opts.client_id)
@@ -388,6 +392,7 @@ fn build_authorize_url(
         .append_pair("scope", config.scope)
         .append_pair("code_challenge", &pkce.code_challenge)
         .append_pair("code_challenge_method", "S256")
+        .append_pair("nonce", &nonce)
         .extend_pairs(config.extra_authorize_params.iter().copied())
         .append_pair("state", state);
     url.to_string()
