@@ -3515,6 +3515,27 @@ impl RecordingController {
             }
         };
 
+        // Light+ floor — deterministic sentence shape for every lane that PROMISED
+        // formatting, and for none that promised literalness.
+        //
+        // No Apple on-device path emits Polish punctuation: measured 2026-08-09 on
+        // the frozen parity fixture, `DictationTranscriber` and the SYSTEM dictation
+        // reference both produce 1 period and 0 commas per ~1050 characters, against
+        // a human transcript of the same audio carrying 6 and 32. That made the LLM
+        // the product's only producer of sentences, so a dead key or an offline
+        // provider silently downgraded a formatted delivery to a word stream.
+        //
+        // RAW is excluded on purpose. `force_raw` (Ctrl hold) and the Toggle-OFF
+        // branch promise the user their literal words; shaping them there would break
+        // that contract — a controller test pins it, and it caught this exact mistake
+        // when the pass was first wired into the shared post-process step.
+        let formatted_text =
+            if force_raw || matches!(output_kind, crate::state::history::TranscriptKind::Raw) {
+                formatted_text
+            } else {
+                codescribe_core::pipeline::light_plus::apply(&formatted_text)
+            };
+
         let format_secs = format_started.elapsed().as_secs_f64();
         let mode_label =
             recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai).to_string();
