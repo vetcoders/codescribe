@@ -184,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// check would `terminate` the runner whenever the real app is running, and
     /// the host would start hotkeys + engine prewarm alongside the live instance
     /// (fighting it for the CGEventTap and the microphone).
-    private static let isRunningTests = NSClassFromString("XCTestCase") != nil
+    private static let isRunningTests = QualityCaptureHost.isRunningTests
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard !Self.isRunningTests, Self.isDuplicateInstance else { return }
