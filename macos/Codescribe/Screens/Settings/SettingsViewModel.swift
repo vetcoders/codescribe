@@ -305,6 +305,12 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     case agentStatus
     case agentTools
     case agentMcp
+    // Prompts — one page per prompt file; the stacked editor was four
+    // TextEditors in one scroll ("scrollowany potworek", operator 2026-08-09).
+    case promptCorrection
+    case promptSmart
+    case promptMax
+    case promptAssistive
 
     var id: String { rawValue }
 
@@ -312,6 +318,8 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .agentLanes, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
             return .agent
+        case .promptCorrection, .promptSmart, .promptMax, .promptAssistive:
+            return .prompts
         }
     }
 
@@ -322,6 +330,10 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .agentStatus: return "Capabilities"
         case .agentTools: return "Tool permissions"
         case .agentMcp: return "MCP servers"
+        case .promptCorrection: return "Correction"
+        case .promptSmart: return "Smart"
+        case .promptMax: return "Max"
+        case .promptAssistive: return "Assistive"
         }
     }
 
@@ -332,6 +344,10 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .agentStatus: return "checklist"
         case .agentTools: return "lock.shield"
         case .agentMcp: return "server.rack"
+        case .promptCorrection: return "text.badge.checkmark"
+        case .promptSmart: return "wand.and.stars"
+        case .promptMax: return "text.alignleft"
+        case .promptAssistive: return "person.wave.2"
         }
     }
 
@@ -342,6 +358,10 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .agentStatus: return ["capability", "native", "enhanced", "readiness"]
         case .agentTools: return ["permission", "allow", "ask", "deny", "tool"]
         case .agentMcp: return ["mcp", "server", "stdio", "transport"]
+        case .promptCorrection: return ["prompt", "formatting", "correction", "formatting.txt"]
+        case .promptSmart: return ["prompt", "smart", "formatting-smart"]
+        case .promptMax: return ["prompt", "max", "prose", "formatting-max"]
+        case .promptAssistive: return ["prompt", "assistive", "assistant", "system"]
         }
     }
 
