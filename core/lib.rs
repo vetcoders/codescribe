@@ -38,25 +38,35 @@
 /// Agent runtime: threads, sessions, capabilities, permissions, tool grants,
 /// and durable run monitoring.
 pub mod agent;
+/// Attachment model and on-disk store used by agent chat and LLM context.
 pub mod attachment;
+/// Audio capture, loading, resampling, and playback primitives.
 pub mod audio;
+/// Persistent user settings with the tiered config truth model.
 pub mod config;
+/// External content connectors that produce attachment payloads.
 pub mod connectors;
+/// Full-duplex Moshi conversational AI (voice turn management).
 pub mod conversation;
 /// Streaming tag demultiplexer: splits a model stream into plain text and
 /// tagged events as the bytes arrive.
 pub mod demux;
+/// Cross-asset metadata for optionally compiled-in model blobs.
 pub mod embedded;
+/// Offline MiniLM text embeddings for RAG and similarity.
 pub mod embedder;
+/// HuggingFace cache lookup for locally downloaded model snapshots.
 mod hf_cache;
 /// Message types shared across the app's process boundaries.
 pub mod ipc;
+/// Local-first CSK1 license verification and entitlement state.
 pub mod licensing;
 /// LLM surface: provider clients, Responses streaming, account auth, key
 /// liveness, model discovery, and AI formatting.
 pub mod llm;
 /// Model Context Protocol: client, server config store, and secret migration.
 pub mod mcp;
+/// Process memory hygiene after heavy STT/TTS work returns buffers.
 pub mod memory;
 /// Transcription pipeline: engine contracts, streaming, dedup, post-processing,
 /// and event sinks.
@@ -64,12 +74,17 @@ pub mod pipeline;
 /// Transcript quality: overlay scoring, the qube daemon and its report, and the
 /// teacher merge between live and Whisper text.
 pub mod quality;
+/// Conversation state tracking and voice-chat history helpers.
 pub mod state;
+/// Speech-to-text engine router (Candle, ONNX, Apple live backends).
 pub mod stt;
+/// Transcript tagging helpers for paste-delivery wrappers.
 pub mod transcript_tagging;
+/// Local CSM-1B text-to-speech synthesis surface.
 pub mod tts;
 /// Shared utilities: capability-checked path access and status reporting.
 pub mod util;
+/// Silero neural voice-activity detection.
 pub mod vad;
 pub use stt::whisper;
 

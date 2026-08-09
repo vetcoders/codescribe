@@ -441,10 +441,12 @@ pub fn matrix_map(health: &ConnectorHealth) -> BTreeMap<String, CapabilityStatus
         .collect()
 }
 
+/// Capability resolution: native ops, IntelliJ match, unavailable tiers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// FS and repo ops resolve to Native tools with no connectors healthy.
     #[test]
     fn native_ops_resolve_without_connectors() {
         let health = ConnectorHealth::default();
@@ -457,6 +459,7 @@ mod tests {
         assert!(commit.op.is_mutating());
     }
 
+    /// IntelliJ path outside workspace roots does not steal native status.
     #[test]
     fn stale_intellij_project_is_bypassed() {
         let health = ConnectorHealth {
@@ -471,6 +474,7 @@ mod tests {
         assert!(!health.intellij_project_matched());
     }
 
+    /// Matched IntelliJ project upgrades ProjectBuild to the IDE provider.
     #[test]
     fn matched_intellij_project_enhances_build() {
         let health = ConnectorHealth {
@@ -485,6 +489,7 @@ mod tests {
         assert_eq!(status.native_tool, Some("project_build"));
     }
 
+    /// CodeSymbols stays Unavailable when no semantic provider is present.
     #[test]
     fn optional_semantics_unavailable_without_providers() {
         let health = ConnectorHealth::default();
@@ -493,6 +498,7 @@ mod tests {
         assert!(status.native_tool.is_none());
     }
 
+    /// capability_matrix emits one row per CapabilityOp with expected tools.
     #[test]
     fn matrix_covers_all_ops() {
         let matrix = capability_matrix(&ConnectorHealth::default());

@@ -31,6 +31,7 @@ pub(crate) mod stream_log;
 /// Env-tunable runtime knobs shared across these modules.
 pub(crate) mod tuning;
 
+/// Streaming pipeline unit tests (quality gates, assembly, session helpers).
 #[cfg(test)]
 mod tests;
 

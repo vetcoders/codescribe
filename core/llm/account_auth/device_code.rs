@@ -120,6 +120,7 @@ fn deserialize_interval<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
+    /// JSON untagged form of a poll interval: quoted string or bare number.
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum StringOrU64 {
@@ -518,11 +519,13 @@ fn api_accounts_base(issuer: &str) -> String {
     format!("{}/api/accounts", issuer.trim_end_matches('/'))
 }
 
+/// HTTP mocks for Codex and xAI device-code request/poll contracts.
 #[cfg(test)]
 mod tests {
     use super::*;
     use mockito::Matcher;
 
+    /// Codex token poll tolerates one 403-pending then returns the auth code.
     #[tokio::test]
     async fn device_code_polling_waits_through_pending_then_returns_code() {
         let mut server = mockito::Server::new_async().await;
@@ -564,6 +567,7 @@ mod tests {
         assert_eq!(response.code_verifier, "verifier");
     }
 
+    /// Codex usercode response maps into `DeviceCode` including string intervals.
     #[tokio::test]
     async fn request_device_code_maps_usercode_response() {
         let mut server = mockito::Server::new_async().await;
@@ -621,6 +625,7 @@ mod tests {
         assert_eq!(code.interval, 5);
     }
 
+    /// xAI RFC8628 poll: `authorization_pending` then access/refresh tokens.
     #[tokio::test]
     async fn xai_device_poll_pending_then_token() {
         let mut server = mockito::Server::new_async().await;

@@ -210,6 +210,7 @@ pub fn play_with_speaker(text: &str, speaker_idx: usize) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Fallback model path resolver is environment-tolerant (Ok or expected CI miss).
     #[test]
     fn test_model_path_resolution() {
         // This test verifies the path resolution logic works

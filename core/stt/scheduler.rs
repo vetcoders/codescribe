@@ -406,6 +406,8 @@ impl SttScheduler {
 }
 
 impl Drop for SttScheduler {
+    /// Deregister this scheduler from the process thermal fan-out registry.
+    /// Shutdown may already have done this; double-drop is safe (id filter).
     fn drop(&mut self) {
         deregister_scheduler_sender(self.registry_id);
     }
@@ -965,6 +967,7 @@ fn env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Scheduler unit tests: thermal duty cycle, lane priority, coalesce, prefilter.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,12 +976,15 @@ mod tests {
     use std::sync::{Condvar, Mutex as StdMutex};
     use tokio::time::{Duration, timeout};
 
+    /// RAII restore of one process env var after a test mutates it.
+    /// Previous value (or absence) is put back on drop so serial tests stay isolated.
     struct EnvRestore {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvRestore {
+        /// Snapshot the current value of `key` so Drop can restore it later.
         fn capture(key: &'static str) -> Self {
             Self {
                 key,
@@ -988,6 +994,7 @@ mod tests {
     }
 
     impl Drop for EnvRestore {
+        /// Restore the captured env value (or remove the key if it was unset).
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -996,6 +1003,7 @@ mod tests {
         }
     }
 
+    /// Build a deterministic `RawTranscript` whose text encodes the job id.
     fn transcript_for_id(id: u32) -> RawTranscript {
         RawTranscript {
             text: format!("job-{id}"),
@@ -1004,10 +1012,12 @@ mod tests {
         }
     }
 
+    /// Test prefilter that never strips samples — isolates queue/inference logic.
     fn passthrough_commit_prefilter(samples: &[f32], _sample_rate: u32) -> Vec<f32> {
         samples.to_vec()
     }
 
+    /// True when the process registry still lists `registry_id` as live.
     fn scheduler_registry_contains(registry_id: u64) -> bool {
         SCHEDULER_REGISTRY
             .get()
@@ -1021,6 +1031,7 @@ mod tests {
             .unwrap_or(false)
     }
 
+    /// Assert two durations match within 1 ms (scheduler sleep jitter budget).
     fn assert_duration_near(actual: Duration, expected: Duration) {
         let diff = actual.abs_diff(expected);
         assert!(
@@ -1029,6 +1040,7 @@ mod tests {
         );
     }
 
+    /// Governor maps Nominal→0 sleep and scales Serious/Critical intervals correctly.
     #[test]
     fn governor_thermal_mapping_keeps_serious_and_critical_throttles() {
         let governor = SttGovernorConfig::test_with_intervals(90, 180, 240);
@@ -1052,6 +1064,7 @@ mod tests {
         );
     }
 
+    /// At Nominal thermal level, duty-cycle sleep returns immediately with zero wait.
     #[tokio::test]
     async fn scheduler_nominal_thermal_skips_duty_cycle_sleep() {
         let governor = SttGovernorConfig::test_with_intervals(200, 200, 200);
@@ -1071,6 +1084,7 @@ mod tests {
         );
     }
 
+    /// With initial-prompt env unset, every lane gets `None` (opt-in default).
     #[test]
     #[serial]
     fn scheduler_initial_prompt_defaults_off_for_all_lanes() {
@@ -1094,6 +1108,7 @@ mod tests {
         assert_eq!(initial_prompt_for_lane(SttLane::Refine), None);
     }
 
+    /// When prompt is enabled, only Commit/Refine seed Whisper; Live stays unprompted.
     #[tokio::test]
     #[serial]
     async fn scheduler_seeds_prompt_only_for_commit_and_refine_lanes() {
@@ -1175,6 +1190,7 @@ mod tests {
         );
     }
 
+    /// Pending work drains Live, then Commit, then Refine regardless of submit order.
     #[tokio::test]
     async fn scheduler_prioritizes_live_then_commit_then_refine() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
@@ -1243,6 +1259,7 @@ mod tests {
         );
     }
 
+    /// A newer Refine supersedes an older pending Refine with a typed error.
     #[tokio::test]
     async fn scheduler_coalesces_pending_refine_requests() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
@@ -1312,6 +1329,7 @@ mod tests {
         );
     }
 
+    /// Live previews coalesce per utterance id; older previews get superseded errors.
     #[tokio::test]
     async fn scheduler_coalesces_pending_live_requests_per_utterance() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
@@ -1378,6 +1396,7 @@ mod tests {
         );
     }
 
+    /// Back-to-back inferences respect the governor min-interval for that lane.
     #[tokio::test]
     async fn scheduler_enforces_min_interval_between_inferences() {
         let started = Arc::new(StdMutex::new(Vec::<Instant>::new()));
@@ -1425,6 +1444,7 @@ mod tests {
         );
     }
 
+    /// Serious thermal still runs Live/Commit but parks Refine until cooler.
     #[tokio::test]
     async fn scheduler_serious_thermal_pauses_refine_lane() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
@@ -1479,6 +1499,7 @@ mod tests {
         );
     }
 
+    /// Critical thermal runs Commit and throttles Live; Refine stays paused.
     #[tokio::test]
     async fn scheduler_critical_thermal_runs_commit_and_throttles_live() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
@@ -1556,6 +1577,7 @@ mod tests {
         );
     }
 
+    /// Dropping `SttScheduler` removes its command sender from the thermal registry.
     #[tokio::test]
     async fn scheduler_registry_deregisters_senders_on_drop() {
         let mut dropped_ids = Vec::new();
@@ -1585,6 +1607,7 @@ mod tests {
         assert_eq!(leaked, 0, "dropped scheduler senders leaked in registry");
     }
 
+    /// Commit lane returns empty transcript when VAD prefilter finds no speech.
     #[tokio::test]
     async fn scheduler_commit_returns_empty_when_prefilter_finds_no_speech() {
         let started = Arc::new(StdMutex::new(Vec::<Vec<f32>>::new()));
@@ -1635,6 +1658,7 @@ mod tests {
         scheduler.shutdown().await.expect("shutdown");
     }
 
+    /// Even short commit buffers always run the speech prefilter (no bypass).
     #[tokio::test]
     async fn scheduler_commit_always_prefilters_short_buffers() {
         let captured = Arc::new(StdMutex::new(Vec::<Vec<f32>>::new()));
@@ -1695,6 +1719,7 @@ mod tests {
         scheduler.shutdown().await.expect("shutdown");
     }
 
+    /// Commit inference sees only prefiltered speech audio, not the raw buffer.
     #[tokio::test]
     async fn scheduler_commit_infers_only_prefiltered_speech_audio() {
         let captured = Arc::new(StdMutex::new(Vec::<Vec<f32>>::new()));
@@ -1749,6 +1774,7 @@ mod tests {
         scheduler.shutdown().await.expect("shutdown");
     }
 
+    /// Shutdown drains/cancels pending work so waiters resolve with SHUTDOWN_ERR.
     #[tokio::test]
     async fn scheduler_shutdown_drains_pending_work() {
         let started = Arc::new(StdMutex::new(Vec::<u32>::new()));

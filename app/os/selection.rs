@@ -58,6 +58,7 @@ struct TimedAssistiveContext {
 /// recovered rather than propagated — losing context must never panic a
 /// recording.
 fn recent_assistive_context_store() -> &'static Mutex<Option<TimedAssistiveContext>> {
+    /// Process-wide once-cell for the most recent timed assistive context.
     static STORE: OnceLock<Mutex<Option<TimedAssistiveContext>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(None))
 }
@@ -249,6 +250,7 @@ fn activate_running_app_by_name(app_name: &str) -> bool {
     use objc::runtime::{Class, Object};
     use objc::{msg_send, sel, sel_impl};
 
+    /// `NSApplicationActivateIgnoringOtherApps` bit for force-front activation.
     const ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
 
     // SAFETY: sharedWorkspace/runningApplications return shared autoreleased
@@ -858,16 +860,21 @@ unsafe extern "C" {
 }
 
 // AX constants
+/// AX API success code (`kAXErrorSuccess`).
 #[cfg(target_os = "macos")]
 const AX_ERROR_SUCCESS: i32 = 0;
+/// AX attribute name for the currently focused UI element.
 #[cfg(target_os = "macos")]
 const AX_FOCUSED_UIELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
+/// AX attribute name for the focused element's selected text string.
 #[cfg(target_os = "macos")]
 const AX_SELECTED_TEXT_ATTRIBUTE: &str = "AXSelectedText";
+/// AX attribute name for the focused element's selected text range.
 #[cfg(target_os = "macos")]
 const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
 
 // AXValue types
+/// `AXValueType` for `CFRange` when unwrapping selection range values.
 #[cfg(target_os = "macos")]
 const AX_VALUE_CFRANGE_TYPE: i32 = 3;
 
@@ -1012,11 +1019,13 @@ fn selected_content_from_frontmost(
     CopiedSelectionPayload::default()
 }
 
+/// Assistive frontmost, prompt-shape, copy-landed, and cache TTL unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// When Codescribe is current, prior frontmost app is preferred and restore flagged.
     #[test]
     fn effective_frontmost_prefers_prior_when_codescribe_is_current() {
         let (app, should_restore) = resolve_effective_frontmost_app(
@@ -1028,6 +1037,7 @@ mod tests {
         assert!(should_restore);
     }
 
+    /// Capture path after overlay activation targets prior app, not Codescribe.
     #[test]
     fn assistive_capture_uses_prior_frontmost_after_overlay_activation() {
         let ctx = capture_assistive_context_from_parts(
@@ -1047,6 +1057,7 @@ mod tests {
         assert!(input.contains("SELECTED_TEXT:\n<<<\n"));
     }
 
+    /// No selection emits explicit empty-marker text, never an empty heredoc block.
     #[test]
     fn assistive_input_handles_missing_selection_without_empty_context_block() {
         let ctx = AssistiveContext {
@@ -1063,6 +1074,7 @@ mod tests {
         assert!(input.contains("frontmost_app: GitHub Desktop"));
     }
 
+    /// Bucket count > 0 rewrites header so models do not treat selections as a leak.
     #[test]
     fn assistive_input_header_tells_truth_when_bucket_carries_selection() {
         // Incident t_2026-07-21_zcryie: "no selection" header alongside
@@ -1079,6 +1091,7 @@ mod tests {
         assert!(!input.contains("brak dostępnego zaznaczenia"));
     }
 
+    /// Live selection keeps heredoc shape even when a bucket count is also set.
     #[test]
     fn assistive_input_live_selection_wins_over_bucket_flag() {
         // Live selection path keeps its exact heredoc shape regardless of the
@@ -1096,6 +1109,7 @@ mod tests {
         );
     }
 
+    /// Change-count delta (any direction) is authoritative proof a copy landed.
     #[test]
     fn copy_landed_when_change_count_increments() {
         // Authoritative: count moved => copy landed.
@@ -1104,12 +1118,14 @@ mod tests {
         assert!(copy_landed_by_change_count(Some(8), Some(3)));
     }
 
+    /// Stable change count means the synthetic Cmd+C did not write.
     #[test]
     fn copy_not_landed_when_change_count_unchanged() {
         // Selection equals previous clipboard, or copy hit a no-op: count stable.
         assert!(!copy_landed_by_change_count(Some(42), Some(42)));
     }
 
+    /// Missing count on either side defers to content comparison (assume landed).
     #[test]
     fn copy_landed_falls_back_when_change_count_unavailable() {
         // Binding unavailable on either side => defer to content comparison.
@@ -1118,6 +1134,7 @@ mod tests {
         assert!(copy_landed_by_change_count(None, None));
     }
 
+    /// Image bytes are read before clipboard restore so they cannot vanish.
     #[test]
     fn copied_image_is_retained_before_clipboard_restore() {
         use std::cell::Cell;
@@ -1136,6 +1153,7 @@ mod tests {
         assert_eq!(captured.image_png, Some(vec![1, 2, 3, 4]));
     }
 
+    /// No prior app keeps Codescribe as frontmost and does not request restore.
     #[test]
     fn effective_frontmost_preserves_codescribe_guard_without_prior_app() {
         let (app, should_restore) =
@@ -1145,6 +1163,7 @@ mod tests {
         assert!(!should_restore);
     }
 
+    /// Fresh cache TTL returns the stored context unchanged.
     #[test]
     #[serial]
     fn recent_assistive_context_roundtrips_while_fresh() {
@@ -1162,6 +1181,7 @@ mod tests {
         );
     }
 
+    /// Expired cache entry is dropped so later prompts cannot leak old context.
     #[test]
     #[serial]
     fn stale_recent_assistive_context_is_cleared() {

@@ -22,13 +22,21 @@
 //! - `engine` - The LocalWhisperEngine implementation
 //! - `params` - Decoding parameters
 
+/// Optional build-time embedded Whisper weight bytes (fat/offline SKUs).
 pub mod embedded;
+/// Local Candle Whisper engine implementation.
 mod engine;
+/// Encoder/decoder layer graph ported for local inference.
 mod model;
+/// Decoding hyperparameters (temperature, beam, language, …).
 mod params;
+/// Silero VAD post-filter for file-level Whisper segments.
 pub mod silero_filter;
+/// Process-wide engine singleton and public transcribe API.
 pub mod singleton;
+/// Timestamp token helpers for segmented decoder output.
 pub mod timestamps;
+/// Thread-local final-pass stage timing (latency truth).
 pub mod timing;
 
 // Public API exports

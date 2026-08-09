@@ -151,6 +151,7 @@ impl OpenAiProvider {
 
 #[async_trait]
 impl AgentProvider for OpenAiProvider {
+    /// Open a Responses API SSE stream, tracking `previous_response_id` when enabled.
     async fn stream(
         &self,
         messages: &[Message],
@@ -260,6 +261,7 @@ impl AgentProvider for OpenAiProvider {
         Ok(rx)
     }
 
+    /// Wrap tool output as a user `ToolResult` message for the next model turn.
     fn build_tool_result(
         &self,
         call_id: &str,
@@ -276,6 +278,7 @@ impl AgentProvider for OpenAiProvider {
         )
     }
 
+    /// Build an inline image content block from raw bytes and media type.
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
         ContentBlock::Image {
             data: data.to_vec(),
@@ -283,18 +286,22 @@ impl AgentProvider for OpenAiProvider {
         }
     }
 
+    /// Initial-response and inter-chunk timeouts for the streaming manager.
     fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
         Some((self.initial_response_timeout, self.inter_chunk_timeout))
     }
 
+    /// Stable provider id used in logs and session diagnostics.
     fn name(&self) -> &str {
         "openai-responses"
     }
 
+    /// Current stored Responses chain id, if chain tracking is active.
     async fn response_chain_id(&self) -> Option<String> {
         self.previous_response_id.lock().await.clone()
     }
 
+    /// Reinstate a pre-turn chain id after user Stop so follow-ups keep continuity.
     async fn restore_response_chain(&self, id: Option<String>) {
         let mut lock = self.previous_response_id.lock().await;
         if *lock != id {
@@ -775,6 +782,7 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
     }
 }
 
+/// Responses request shape, image payload, and chain-reset unit tests.
 #[cfg(test)]
 mod tests {
     use super::{
@@ -791,6 +799,7 @@ mod tests {
     use serde_json::json;
     use tokio::sync::{Mutex, mpsc};
 
+    /// Reasoning summary requests apply only to reasoning-capable model families.
     #[test]
     fn requests_public_reasoning_summaries_only_for_reasoning_models() {
         let gpt5 = serde_json::to_value(reasoning_summary_request("gpt-5.6").unwrap())
@@ -801,6 +810,7 @@ mod tests {
         assert!(reasoning_summary_request("llama3.3").is_none());
     }
 
+    /// Without a chain id the request replays the full conversation history.
     #[test]
     fn request_messages_replays_full_history_without_previous_response_id() {
         let messages = vec![
@@ -815,6 +825,7 @@ mod tests {
         assert_eq!(selected, messages.as_slice());
     }
 
+    /// With a chain id only trailing user messages are re-sent as input.
     #[test]
     fn request_messages_uses_only_trailing_user_messages_with_previous_response_id() {
         let messages = vec![
@@ -849,6 +860,7 @@ mod tests {
         assert!(selected.iter().all(|message| message.role == Role::User));
     }
 
+    /// Resuming a chain omits prior turns already stored server-side.
     #[test]
     fn build_request_input_items_skips_prior_history_when_resuming_chain() {
         let messages = vec![
@@ -882,6 +894,7 @@ mod tests {
         assert_eq!(items[0]["call_id"], "call_1");
     }
 
+    /// Large tool output is sent as a stored-path reference, not inline bytes.
     #[test]
     fn stored_tool_output_reference_is_the_only_body_sent_to_openai() {
         let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
@@ -902,6 +915,7 @@ mod tests {
         assert!(!payload.contains("monster inline body"));
     }
 
+    /// Assistant history serializes as `output_text`, user as `input_text`.
     #[test]
     fn build_request_input_items_uses_output_text_for_assistant_history() {
         let messages = vec![
@@ -925,6 +939,7 @@ mod tests {
         assert_eq!(items[2]["content"][0]["type"], "input_text");
     }
 
+    /// Tool-result images become references; raw base64 must not hit the wire.
     #[test]
     fn format_tool_output_omits_raw_image_base64() {
         let output = format_tool_output(
@@ -941,6 +956,7 @@ mod tests {
         assert!(!output.contains("bm90IHJlYWxseSBhIHBuZw"));
     }
 
+    /// Restored thread images still serialize as native input_image data URIs.
     #[test]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
@@ -972,6 +988,7 @@ mod tests {
         }
     }
 
+    /// Disk-backed tool image assets add a native input_image item beside output.
     #[test]
     fn tool_result_image_asset_adds_native_input_image_item() {
         let _env_serial = crate::test_env::data_dir_env_serial();
@@ -1010,6 +1027,7 @@ mod tests {
         std::fs::remove_file(asset_path).ok();
     }
 
+    /// Empty restored tool images are dropped, never empty data URIs.
     #[test]
     fn tool_result_data_omitted_image_is_skipped_not_sent_as_empty_data_uri() {
         // D8 parity: a tool-result image restored from history (`data_omitted`)
@@ -1037,6 +1055,7 @@ mod tests {
         assert_eq!(items[0]["output"], "Tool executed successfully");
     }
 
+    /// Composer inline images serialize as input_image next to caption text.
     #[test]
     fn user_message_inline_image_serializes_as_input_image() {
         // Composer 📎 path parity with Anthropic: `AgentSession::send` builds a
@@ -1071,6 +1090,7 @@ mod tests {
         );
     }
 
+    /// SSE `error` events surface as specific AgentEvent::Error, not session noise.
     #[tokio::test]
     async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
         let mut server = mockito::Server::new_async().await;
@@ -1201,6 +1221,7 @@ mod tests {
         );
     }
 
+    /// Default stream options must keep the stored previous_response_id chain.
     #[tokio::test]
     async fn apply_chain_reset_preserves_stored_chain_when_not_requested() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_keep_me".to_string())));

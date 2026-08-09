@@ -42,8 +42,11 @@
 //! - `TurnManager` - Handles turn-taking and interruption
 
 pub mod config;
+/// Conversation history and rolling context window for Moshi turns.
 pub mod context;
+/// Full-duplex Moshi engine: audio in, response frames out.
 pub mod engine;
+/// Turn-taking state machine (idle / speaking / silence handoff).
 pub mod turns;
 
 pub use config::MoshiConfig;

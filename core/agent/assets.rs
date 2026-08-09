@@ -164,6 +164,7 @@ fn random_suffix(len: usize) -> String {
 mod tests {
     use super::*;
 
+    /// Unknown / blank media types must resolve to the fixed `png` extension.
     #[test]
     fn extension_for_media_type_defaults_to_png() {
         assert_eq!(extension_for_media_type("image/png"), "png");
@@ -171,6 +172,7 @@ mod tests {
         assert_eq!(extension_for_media_type("image/jpeg"), "jpg");
     }
 
+    /// Traversal-shaped paths only match the leaf name inside assets dir.
     #[test]
     fn read_image_strips_directory_components() {
         // A traversal-shaped path must never reach the attacker-chosen
@@ -185,6 +187,7 @@ mod tests {
         );
     }
 
+    /// Bytes written by `save_image` must be readable back via `read_image`.
     #[test]
     fn read_image_roundtrips_saved_asset() {
         let asset = AgentAssetStore::save_image(b"png-bytes", "image/png")
@@ -194,6 +197,7 @@ mod tests {
         std::fs::remove_file(&asset.path).ok();
     }
 
+    /// Paths without a file-name component are rejected before directory listing.
     #[test]
     fn read_image_rejects_paths_without_file_name() {
         let err = AgentAssetStore::read_image(Path::new("/tmp/.."))

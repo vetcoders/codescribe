@@ -32,17 +32,22 @@ use license_key_contract::{
 
 /// Default Whisper model to embed
 const DEFAULT_MODEL_NAME: &str = "whisper-large-v3-turbo-mlx-q8";
+/// Hugging Face repo id for the default Whisper snapshot (HF cache + download hints).
 const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 
 /// Default TTS model to embed
 const DEFAULT_TTS_MODEL_NAME: &str = "csm-1b";
+/// Hugging Face repo id for the default CSM TTS snapshot.
 const DEFAULT_TTS_REPO: &str = "sesame/csm-1b";
+/// Hugging Face repo id for Mimi codec weights used with TTS embedding.
 const DEFAULT_MIMI_REPO: &str = "kyutai/mimi";
 
 /// Default embedder model — MiniLM multilingual (~224MB fp16, always embedded like Silero)
 /// Override with CODESCRIBE_EMBEDDER_REPO for alternative models
 const DEFAULT_EMBEDDER_MODEL_NAME: &str = "minilm-l12-v2";
+/// Default sentence-transformers MiniLM repo embedded unless `CODESCRIBE_NO_EMBED`.
 const DEFAULT_EMBEDDER_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
+/// Env flag: local install path skips release license-key hardening in `main`.
 const LOCAL_INSTALL_ENV: &str = "CODESCRIBE_LOCAL_INSTALL";
 
 /// Resolve every optional model asset and emit the `embed_*` cfgs the crate
@@ -129,9 +134,13 @@ fn main() {
             );
             let whisper_content = format!(
                 r#"
+                /// Embedded Whisper config.json bytes (opt-in fat SKU only).
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                /// Embedded Whisper tokenizer.json bytes.
                 pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                /// Embedded Whisper mel filter bank (mel_filters.npz).
                 pub static MEL_FILTERS: &[u8] = include_bytes!(r"{}");
+                /// Embedded Whisper model weights (safetensors).
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
                 "#,
                 model_path.join("config.json").display(),
@@ -175,11 +184,17 @@ fn main() {
             );
             let tts_content = format!(
                 r#"
+                /// Embedded TTS config.json bytes.
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                /// Embedded TTS tokenizer.json bytes.
                 pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                /// Embedded TTS model.safetensors weights.
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
+                /// Placeholder Mimi config (factory defaults; not file-backed).
                 pub static MIMI_CONFIG: &[u8] = &[]; // Mimi uses factory config
+                /// Embedded Mimi codec weights for TTS decoding.
                 pub static MIMI_WEIGHTS: &[u8] = include_bytes!(r"{}");
+                /// Optional voice-token blob (empty when unused).
                 pub static VOICE_TOKENS: &[u8] = &[]; // Optional voice tokens
                 "#,
                 tts_model_path.join("config.json").display(),
@@ -225,8 +240,11 @@ fn main() {
             );
             let embedder_content = format!(
                 r#"
+                /// Embedded MiniLM embedder config.json bytes.
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                /// Embedded MiniLM tokenizer.json bytes.
                 pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                /// Embedded MiniLM model.safetensors weights.
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
                 "#,
                 embedder_model_path.join("config.json").display(),
@@ -258,6 +276,7 @@ fn main() {
         if silero_path.exists() {
             let silero_content = format!(
                 r#"
+                /// Embedded Silero VAD ONNX model bytes (always required).
                 pub static MODEL: &[u8] = include_bytes!(r"{}");
                 "#,
                 silero_path.display(),

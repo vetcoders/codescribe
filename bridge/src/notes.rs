@@ -68,6 +68,7 @@ impl CodescribeNotes {
     /// guaranteed live selection. Returns the saved text, or `None` when there
     /// was nothing to capture.
     pub fn save_selection(&self) -> Result<Option<String>, CsError> {
+        /// Hard cap on selection text accepted across the notes bridge (memory/UI bound).
         const MAX_SELECTION_CHARS: usize = 500_000;
         let text = codescribe::os::selection::get_selected_text(MAX_SELECTION_CHARS)
             .filter(|selection| !selection.trim().is_empty())

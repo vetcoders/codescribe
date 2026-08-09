@@ -33,6 +33,7 @@ pub const MAX_READ_FAILURES_BEFORE_BLOCKED: u32 = 5;
 /// Backoff ceiling for failing polls.
 pub const MAX_BACKOFF_SECS: u64 = 300;
 
+/// On-disk JSON filename under the agent_monitors directory.
 const MONITOR_FILE_NAME: &str = "monitors.json";
 
 /// Monitor-visible lifecycle of one observed run.
@@ -583,6 +584,7 @@ pub fn active_state_summary(records: &[RunMonitorRecord]) -> Vec<(RunMonitorStat
     seen
 }
 
+/// Store durability, classification, heartbeat, and path-safety unit tests.
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -590,10 +592,12 @@ mod tests {
 
     use super::*;
 
+    /// Fixed UTC instant so store/classification tests stay deterministic.
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 1, 9, 0, 0).single().unwrap()
     }
 
+    /// Build a minimal registration with 1s poll / 60s stale defaults.
     fn registration(run_id: &str, thread: &str, meta: &Path) -> RunMonitorRegistration {
         RunMonitorRegistration {
             run_id: run_id.to_string(),
@@ -606,6 +610,7 @@ mod tests {
         }
     }
 
+    /// Register survives a fresh store open on the same directory (restart).
     #[test]
     fn store_registers_persists_and_resumes_across_instances() {
         let tmp = TempDir::new().unwrap();
@@ -627,6 +632,7 @@ mod tests {
         assert_eq!(active[0].run_id, "work-1");
     }
 
+    /// Same (run_id, thread) reuses monitor_id; a new thread is distinct.
     #[test]
     fn register_is_idempotent_per_run_and_thread() {
         let tmp = TempDir::new().unwrap();
@@ -649,6 +655,7 @@ mod tests {
         assert_eq!(store.list().unwrap().len(), 2);
     }
 
+    /// Cancel marks done/cancelled, empties active, keeps the record on disk.
     #[test]
     fn cancel_keeps_inspectable_evidence_and_stops_activity() {
         let tmp = TempDir::new().unwrap();
@@ -667,6 +674,7 @@ mod tests {
         assert!(!store.cancel("mon-missing", now()).unwrap());
     }
 
+    /// Every classify_run_state branch: live, stale, block, complete, fail, rerun.
     #[test]
     fn classify_covers_the_full_state_machine() {
         // Live and progressing.
@@ -715,6 +723,7 @@ mod tests {
         );
     }
 
+    /// Fixture record with optional last_notified_state for heartbeat tests.
     fn record_with(last_notified: Option<RunMonitorState>) -> RunMonitorRecord {
         RunMonitorRecord {
             monitor_id: "mon-test".to_string(),
@@ -738,6 +747,7 @@ mod tests {
         }
     }
 
+    /// Heartbeats fire once per degradation/terminal; quiet Running stays silent.
     #[test]
     fn heartbeat_decisions_dedupe_and_stay_meaningful() {
         // Quiet progress never notifies.
@@ -790,6 +800,7 @@ mod tests {
         );
     }
 
+    /// Poll backoff doubles with failures and clamps at MAX_BACKOFF_SECS.
     #[test]
     fn backoff_grows_and_caps() {
         assert_eq!(next_poll_delay_secs(5, 0), 5);
@@ -799,6 +810,7 @@ mod tests {
         assert_eq!(next_poll_delay_secs(0, 0), 1);
     }
 
+    /// Tail read respects MAX_HEARTBEAT_EXCERPT_BYTES; missing path is None.
     #[test]
     fn bounded_tail_clips_to_budget() {
         let tmp = TempDir::new().unwrap();
@@ -809,6 +821,7 @@ mod tests {
         assert!(bounded_tail(&tmp.path().join("missing.log"), 64).is_none());
     }
 
+    /// Accepts safe run ids; rejects empty, path separators, and leading dots.
     #[test]
     fn run_id_validation_rejects_traversal_shapes() {
         assert!(is_valid_run_id("work-260801-104012-91713"));
@@ -818,6 +831,7 @@ mod tests {
         assert!(!is_valid_run_id(".hidden"));
     }
 
+    /// Observation tracks meta growth and terminal report presence correctly.
     #[test]
     fn observe_reads_meta_and_flags_progress() {
         let tmp = TempDir::new().unwrap();

@@ -294,10 +294,12 @@ pub fn normalize_audio(samples: &mut [f32], target_peak: f32) {
     }
 }
 
+/// Resample identity/upsample and peak-normalization smoke tests.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Same in/out sample rate is a pure copy (no interpolation side effects).
     #[test]
     fn test_resample_same_rate() {
         let samples = vec![0.0, 0.5, 1.0, 0.5, 0.0];
@@ -305,6 +307,7 @@ mod tests {
         assert_eq!(samples, resampled);
     }
 
+    /// 2× upsample doubles frame count for a two-sample input.
     #[test]
     fn test_resample_upsample() {
         let samples = vec![0.0, 1.0];
@@ -312,6 +315,7 @@ mod tests {
         assert_eq!(resampled.len(), 4);
     }
 
+    /// Peak normalize scales the current peak to the requested target.
     #[test]
     fn test_normalize() {
         let mut samples = vec![0.0, 0.25, 0.5, 0.25, 0.0];

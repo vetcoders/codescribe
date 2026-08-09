@@ -162,6 +162,7 @@ pub(super) trait AutomaticDeliverySink: Send + Sync {
 pub(super) struct ClipboardDeliverySink;
 
 impl AutomaticDeliverySink for ClipboardDeliverySink {
+    /// Paste delivery path: type/paste corrected text into the frontmost app.
     fn paste(&self, text: &str) -> Result<()> {
         clipboard::paste_text(text).context("Failed to paste text")
     }

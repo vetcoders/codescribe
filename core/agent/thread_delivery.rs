@@ -372,6 +372,8 @@ fn is_all_caps_header(line: &str) -> bool {
     has_alpha
 }
 
+/// Delivery gateway contract tests: single-thread upsert, title eligibility,
+/// and boilerplate stripping against a temp store.
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -384,12 +386,14 @@ mod tests {
     use super::*;
     use crate::agent::{ThreadIndex, ThreadIndexData, ThreadNote, TokenUsage};
 
+    /// Fixed UTC timestamp on 2026-07-19 at the given hour for deterministic tests.
     fn timestamp(hour: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 7, 19, hour, 0, 0)
             .single()
             .expect("fixed timestamp should be valid")
     }
 
+    /// One-block text `ThreadMessage` with the given role and wall-clock.
     fn message(role: &str, text: &str, at: DateTime<Utc>) -> ThreadMessage {
         ThreadMessage {
             role: role.to_string(),
@@ -399,6 +403,7 @@ mod tests {
         }
     }
 
+    /// Build a full `ThreadDeliveryInput` with fixed provider/model/mode/tags.
     fn input(
         backend_id: &str,
         source: ThreadDeliverySource,
@@ -417,6 +422,7 @@ mod tests {
         }
     }
 
+    /// User then assistant messages at the same timestamp (one completed exchange).
     fn exchange(at: DateTime<Utc>, user: &str, assistant: &str) -> Vec<ThreadMessage> {
         vec![
             message("user", user, at),
@@ -424,6 +430,7 @@ mod tests {
         ]
     }
 
+    /// Assert the temp dir has exactly one thread JSON and one index row.
     fn assert_single_thread_artifacts(threads_dir: &Path) -> Result<()> {
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- test-only directory is created by TempDir and initialized by ThreadDeliveryGateway/ThreadStore before inspection.
         let thread_files = fs::read_dir(threads_dir)?
@@ -449,6 +456,7 @@ mod tests {
         Ok(())
     }
 
+    /// Voice and composer inputs share backend id while preserving distinct sources.
     #[test]
     fn thread_delivery_input_constructs_voice_and_composer_sources() {
         let at = timestamp(8);
@@ -472,6 +480,7 @@ mod tests {
         assert_eq!(composer.tags, vec!["agent", "overlay"]);
     }
 
+    /// Same backend id: voice then composer land on one JSON file and one index row.
     #[test]
     fn thread_delivery_upserts_voice_and_composer_into_one_json_and_index_row() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -529,6 +538,7 @@ mod tests {
         Ok(())
     }
 
+    /// Two different backend ids leave two artifacts; the single-thread verifier panics.
     #[test]
     #[should_panic(expected = "same backend id must leave exactly one thread JSON artifact")]
     fn thread_delivery_verifier_rejects_a_different_second_backend_id() {
@@ -558,6 +568,7 @@ mod tests {
             .expect("artifact verifier should reject the identity split");
     }
 
+    /// Custom titles survive deliver; first_exchange may still fire, title_eligible does not.
     #[test]
     fn thread_delivery_preserves_custom_title_and_disables_title_eligibility() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -599,6 +610,7 @@ mod tests {
         Ok(())
     }
 
+    /// Title derivation skips ALL-CAPS / instruction preambles and keeps the request line.
     #[test]
     fn thread_delivery_title_skips_boilerplate_preamble() {
         let message = Message {
@@ -615,6 +627,7 @@ mod tests {
         );
     }
 
+    /// Plain first-line user text becomes the title without boilerplate stripping.
     #[test]
     fn thread_delivery_title_keeps_plain_first_line() {
         let message = Message {
@@ -630,6 +643,7 @@ mod tests {
         );
     }
 
+    /// When every line is boilerplate, fall back to the unstripped first-user text.
     #[test]
     fn thread_delivery_title_falls_back_when_all_boilerplate() {
         let message = Message {

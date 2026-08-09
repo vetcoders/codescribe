@@ -75,8 +75,10 @@ impl WorkMode {
 }
 
 impl FromStr for WorkMode {
+    /// Parse error payload for WorkMode wire identifiers.
     type Err = String;
 
+    /// Parse a WorkMode from config/UI text (accepts a few historical aliases).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "dictation" | "raw" => Ok(Self::Dictation),
@@ -138,8 +140,10 @@ impl ShortcutBinding {
 }
 
 impl FromStr for ShortcutBinding {
+    /// Parse error payload for ShortcutBinding wire identifiers.
     type Err = String;
 
+    /// Parse a ShortcutBinding from snake_case; rejects legacy aliases intentionally.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "disabled" => Ok(Self::Disabled),
@@ -193,8 +197,10 @@ impl DeferredInsertShortcut {
 }
 
 impl FromStr for DeferredInsertShortcut {
+    /// Parse error payload for DeferredInsertShortcut wire identifiers.
     type Err = String;
 
+    /// Parse a deferred-insert chord id; several cmd_* aliases map to the same chord.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "disabled" => Ok(Self::Disabled),
@@ -280,8 +286,10 @@ impl Language {
 }
 
 impl FromStr for Language {
+    /// Parse error payload for Language wire identifiers.
     type Err = String;
 
+    /// Parse Language from codes or names; empty/auto synonyms map to Auto detect.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "auto" | "" | "detect" | "multilingual" | "any" => Ok(Self::Auto),
@@ -312,8 +320,10 @@ impl TranscriptSendMode {
 }
 
 impl FromStr for TranscriptSendMode {
+    /// Parse error payload for TranscriptSendMode wire identifiers.
     type Err = String;
 
+    /// Parse transcript send strategy; accepts short aliases (end/stream).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "end_of_utterance" | "end" | "delayed" => Ok(Self::EndOfUtterance),
@@ -343,8 +353,10 @@ impl OverlayPositionMode {
 }
 
 impl FromStr for OverlayPositionMode {
+    /// Parse error payload for OverlayPositionMode wire identifiers.
     type Err = String;
 
+    /// Parse overlay placement mode from config text (snap/custom aliases).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "snapped_top_right" | "snap" | "top_right" => Ok(Self::SnappedTopRight),
@@ -385,8 +397,10 @@ impl HoldArmModifier {
 }
 
 impl FromStr for HoldArmModifier {
+    /// Parse error payload for HoldArmModifier wire identifiers.
     type Err = String;
 
+    /// Parse the assistive arm modifier; cmd/command/meta are equivalent.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "shift" | "hold_shift" | "fn_shift" => Ok(Self::Shift),
@@ -606,6 +620,7 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// Ship-safe defaults: hold modifiers on, STT prompt off, Responses LLM endpoint.
     fn default() -> Self {
         Self {
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
@@ -678,11 +693,13 @@ impl Config {
     }
 }
 
+/// Config type parser/default regression tests (bindings, prompt, badge scale).
 #[cfg(test)]
 mod tests {
     use super::{Config, DeferredInsertShortcut, ShortcutBinding};
     use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
+    /// Legacy shortcut aliases must fail parse so old broken names do not resurrect.
     #[test]
     fn shortcut_binding_parser_rejects_legacy_aliases() {
         assert!("none".parse::<ShortcutBinding>().is_err());
@@ -691,6 +708,7 @@ mod tests {
         assert!("double_ralt".parse::<ShortcutBinding>().is_err());
     }
 
+    /// Deferred insert defaults Disabled and round-trips its opt-in chord variants.
     #[test]
     fn deferred_insert_shortcut_round_trips_and_defaults_to_disabled() {
         // Opt-in by design: listen-only tap cannot swallow the chord, so a
@@ -716,6 +734,7 @@ mod tests {
         );
     }
 
+    /// Default keep hold_exclusive=false so Shift/Cmd arm modifiers stay live.
     #[test]
     fn default_config_keeps_hold_modifiers_enabled() {
         // hold_exclusive=true makes Fn-hold RAW-only and disables the configured
@@ -734,6 +753,7 @@ mod tests {
         );
     }
 
+    /// HoldArmModifier accepts shift/cmd/command and rejects unknown tokens.
     #[test]
     fn hold_arm_modifier_parses_shift_and_cmd() {
         use super::HoldArmModifier;
@@ -743,6 +763,7 @@ mod tests {
         assert!("nope".parse::<HoldArmModifier>().is_err());
     }
 
+    /// Default LLM endpoint is the OpenAI Responses URL, not chat/completions.
     #[test]
     fn default_config_uses_openai_responses_endpoint() {
         assert_eq!(
@@ -751,6 +772,7 @@ mod tests {
         );
     }
 
+    /// Default disables Whisper initial_prompt (WER collapse guard, W2-F).
     #[test]
     fn default_config_disables_stt_initial_prompt() {
         assert!(
@@ -759,6 +781,7 @@ mod tests {
         );
     }
 
+    /// sanitize keeps only the exposed badge scales 4/8/12; others fall back to 12.
     #[test]
     fn hold_badge_sanitize_accepts_only_exposed_scale() {
         for size in [4, 8, 12] {

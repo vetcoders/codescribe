@@ -253,6 +253,7 @@ impl TurnManager {
 mod tests {
     use super::*;
 
+    /// First speech frame transitions Idle → UserSpeaking with `changed=true`.
     #[test]
     fn test_idle_to_speaking() {
         let mut manager = TurnManager::default();
@@ -262,6 +263,7 @@ mod tests {
         assert!(changed);
     }
 
+    /// Continued speech keeps UserSpeaking and reports `changed=false`.
     #[test]
     fn test_speech_continues() {
         let mut manager = TurnManager::default();
@@ -273,6 +275,7 @@ mod tests {
         assert!(!changed);
     }
 
+    /// `reset` returns the manager to Idle regardless of prior speech state.
     #[test]
     fn test_reset() {
         let mut manager = TurnManager::default();

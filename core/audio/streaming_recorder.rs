@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 
 // Keep enough raw audio queued to survive a cold Whisper load without dropping
 // the user's first words. The STT session drains this backlog once the model is ready.
+/// Channel depth for cold Whisper load: first words queue instead of drop.
 const AUDIO_BACKLOG_CHUNKS: usize = 2048;
 
 /// A recording session that transcribes while it captures.
@@ -326,6 +327,7 @@ fn block_rms(samples: &[f32]) -> f32 {
     (sum_sq / samples.len() as f64).sqrt() as f32
 }
 
+/// Unit and opt-in e2e probes for RMS meters, VAD index sync, and corpus WER.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +341,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use tokio::time::Duration;
 
+    /// Empty/silence/full-scale blocks map to the 0 / 0 / ~1 energy ladder meters use.
     #[test]
     fn block_rms_measures_signal_energy() {
         assert_eq!(block_rms(&[]), 0.0, "empty block must read as silence");
@@ -355,6 +358,7 @@ mod tests {
         );
     }
 
+    /// Quiet < loud stays finite; NaN/Inf capture samples must not poison level transport.
     #[test]
     fn block_rms_orders_quiet_and_loud_finite_levels() {
         let silence = block_rms(&[0.0; 512]);
@@ -486,6 +490,7 @@ mod tests {
         assert_eq!(drops, 0, "sustained recording dropped audio chunks");
     }
 
+    /// `start_event_session` must refuse when no event sink was configured.
     #[tokio::test]
     async fn start_event_session_requires_event_sink() {
         let mut recorder = StreamingRecorder::new().expect("Failed to create recorder");
@@ -499,6 +504,7 @@ mod tests {
         );
     }
 
+    /// Live mic: SpeechSession emits chunks for lt/eq/gt VAD block sizes (opt-in).
     #[test]
     #[ignore] // Manual: requires microphone + Silero model (set CODESCRIBE_E2E_MIC=1)
     fn test_vad_gate_live_chunk_sizes() {
@@ -572,6 +578,7 @@ mod tests {
         let _ = fs::remove_file(&wav_path);
     }
 
+    /// Corpus WER/CER: stream postprocess must not regress raw beyond the budget.
     #[test]
     #[serial]
     fn test_stream_postprocess_corpus_pairs() {
@@ -681,6 +688,7 @@ mod tests {
         }
     }
 
+    /// Opt-in flag: true only for `1` or case-insensitive `true`.
     fn env_bool(key: &str) -> bool {
         std::env::var(key)
             .ok()
@@ -688,6 +696,7 @@ mod tests {
             .unwrap_or(false)
     }
 
+    /// Parse env `f32`; unset or unparsable yields `default`.
     fn env_f32(key: &str, default: f32) -> f32 {
         std::env::var(key)
             .ok()
@@ -695,6 +704,7 @@ mod tests {
             .unwrap_or(default)
     }
 
+    /// Parse env `usize`; unset or unparsable yields `default`.
     fn env_usize(key: &str, default: usize) -> usize {
         std::env::var(key)
             .ok()
@@ -702,6 +712,7 @@ mod tests {
             .unwrap_or(default)
     }
 
+    /// Corpus dir: `CODESCRIBE_E2E_CORPUS_DIR` or `~/.codescribe/transcriptions`.
     fn corpus_root() -> PathBuf {
         if let Ok(dir) = std::env::var("CODESCRIBE_E2E_CORPUS_DIR") {
             return PathBuf::from(shellexpand::tilde(&dir).into_owned());
@@ -710,10 +721,12 @@ mod tests {
         crate::config::Config::config_dir().join("transcriptions")
     }
 
+    /// Terminal no-speech / `*_failed.wav` names that must not score as VAD misses.
     fn is_terminal_no_speech_artifact(file_name: &str) -> bool {
         file_name.contains("no-speech") || file_name.ends_with("_failed.wav")
     }
 
+    /// Name-bounded filter: only explicit no-speech / `*_failed.wav` names match.
     #[test]
     fn terminal_no_speech_artifact_filter_is_name_bounded() {
         assert!(is_terminal_no_speech_artifact(
@@ -731,6 +744,7 @@ mod tests {
         assert!(!is_terminal_no_speech_artifact("dictation_failed.m4a"));
     }
 
+    /// Collect newest WAV+TXT pairs under optional date filter and limit.
     fn collect_pairs(
         root: &Path,
         date_filter: Option<&str>,
@@ -791,6 +805,7 @@ mod tests {
         pairs
     }
 
+    /// Lowercase alphanumerics + whitespace for WER/CER token and char eval.
     fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
         let mut normalized = String::with_capacity(text.len());
         for ch in text.to_lowercase().chars() {
@@ -808,12 +823,14 @@ mod tests {
         (tokens, normalized)
     }
 
+    /// Word-level Levenshtein over `|reference|` (denom floored at 1).
     fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
         let dist = levenshtein(reference, hypothesis);
         let denom = reference.len().max(1) as f32;
         dist as f32 / denom
     }
 
+    /// Char-level Levenshtein over `|reference|` (denom floored at 1).
     fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
         let ref_chars: Vec<char> = reference.chars().collect();
         let hyp_chars: Vec<char> = hypothesis.chars().collect();
@@ -822,10 +839,12 @@ mod tests {
         dist as f32 / denom
     }
 
+    /// One VAD chunk in input sample-rate space — max allowed index drift.
     fn vad_index_drift_tolerance(input_sr: u32) -> usize {
         ((vad::CHUNK_SIZE as f32 * input_sr as f32) / vad::VAD_SAMPLE_RATE as f32) as usize
     }
 
+    /// Synthetic tone: VAD→raw index mapping stays within one-chunk tolerance.
     #[test]
     #[serial]
     fn test_vad_index_sync_no_drift() {
@@ -883,6 +902,7 @@ mod tests {
         );
     }
 
+    /// Busy Supervisor path: interim/final keep boundary and speech accounting.
     #[test]
     #[serial]
     fn test_supervisor_busy_flush_keeps_boundary_and_speech_accounting() {
@@ -1303,6 +1323,7 @@ mod tests {
         println!("╰────────────────────────────────────────────────────╯\n");
     }
 
+    /// Classic DP edit distance shared by WER and CER helpers.
     fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
         let mut prev: Vec<usize> = (0..=b.len()).collect();
         let mut cur = vec![0usize; b.len() + 1];

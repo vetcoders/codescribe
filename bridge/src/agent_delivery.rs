@@ -55,6 +55,7 @@ type SharedDeliveryListener = Arc<RwLock<Option<Arc<dyn CsAgentDeliveryListener>
 
 /// Accessor for the process-global listener slot, initialized on first use.
 fn shared_delivery_listener() -> SharedDeliveryListener {
+    /// OnceLock slot for the process-global Swift delivery listener.
     static LISTENER: OnceLock<SharedDeliveryListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
 }
@@ -74,6 +75,7 @@ pub(crate) fn set_delivery_listener(listener: Arc<dyn CsAgentDeliveryListener>) 
 /// listener re-registration) never stack duplicate forwarders that would each
 /// deliver the same event.
 pub(crate) fn spawn_delivery_forwarder(handle: Handle) {
+    /// Guards single spawn of the delivery forwarder task across start calls.
     static SPAWNED: OnceLock<()> = OnceLock::new();
     if SPAWNED.set(()).is_err() {
         return;
@@ -134,11 +136,13 @@ fn forward_delivery_event(event: AgentDeliveryEvent, listener: Arc<dyn CsAgentDe
     }
 }
 
+/// Forwarder mapping tests — terminal Cancelled stays distinct from Done.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Test sink that counts terminal callbacks and captures cancelled thread ids.
     #[derive(Default)]
     struct RecordingDeliveryListener {
         done: AtomicUsize,
@@ -148,18 +152,27 @@ mod tests {
     }
 
     impl CsAgentDeliveryListener for RecordingDeliveryListener {
+        /// No-op: turn open is not asserted by the cancelled-terminal test.
         fn on_turn_started(&self, _thread_id: String, _user_text: String) {}
+        /// No-op streaming delta for the test listener.
         fn on_text_delta(&self, _delta: String) {}
+        /// No-op final text for the test listener.
         fn on_text_done(&self, _text: String) {}
+        /// No-op reasoning delta for the test listener.
         fn on_reasoning_delta(&self, _delta: String) {}
+        /// No-op tool-start for the test listener.
         fn on_tool_executing(&self, _name: String, _id: String) {}
+        /// No-op tool-result for the test listener.
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
+        /// Count normal completion; must stay zero when only Cancelled is forwarded.
         fn on_done(&self) {
             self.done.fetch_add(1, Ordering::SeqCst);
         }
+        /// Count error terminals; must stay zero for a pure Cancelled event.
         fn on_error(&self, _message: String) {
             self.errors.fetch_add(1, Ordering::SeqCst);
         }
+        /// Count cancel terminals and record the exact thread_id payload.
         fn on_cancelled(&self, thread_id: String) {
             self.cancelled.fetch_add(1, Ordering::SeqCst);
             *self
@@ -169,6 +182,7 @@ mod tests {
         }
     }
 
+    /// Cancelled maps to on_cancelled only, with the exact thread_id preserved.
     #[test]
     fn cancelled_is_one_distinct_terminal_with_exact_thread_id() {
         let listener = Arc::new(RecordingDeliveryListener::default());

@@ -17,21 +17,32 @@ use crate::config::{
 };
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
+/// Packed slot: no gesture armed for that mode.
 const BIND_DISABLED: u16 = 0;
+/// Packed slot: hold the Fn (globe) key.
 const BIND_HOLD_FN: u16 = 1;
+/// Packed slot: hold Control alone.
 const BIND_HOLD_CTRL: u16 = 2;
+/// Packed slot: hold Control+Option.
 const BIND_HOLD_CTRL_ALT: u16 = 3;
+/// Packed slot: hold Control+Shift.
 const BIND_HOLD_CTRL_SHIFT: u16 = 4;
+/// Packed slot: hold Control+Command.
 const BIND_HOLD_CTRL_CMD: u16 = 5;
+/// Packed slot: double-tap Control.
 const BIND_DOUBLE_CTRL: u16 = 6;
+/// Packed slot: double-tap left Option.
 const BIND_DOUBLE_LEFT_OPTION: u16 = 7;
+/// Packed slot: double-tap right Option.
 const BIND_DOUBLE_RIGHT_OPTION: u16 = 8;
 
+/// Boot packing: Fn hold → dictation, left Option double → formatting, right Option → assistive.
 const DEFAULT_MODE_BINDINGS_ENCODED: u16 =
     BIND_HOLD_FN | (BIND_DOUBLE_LEFT_OPTION << 4) | (BIND_DOUBLE_RIGHT_OPTION << 8);
 
 // --- Global Mode Binding Contract ---
 // Runtime source of truth: mode -> binding mapping, not legacy hold/toggle fields.
+/// Process-global mode→gesture map; three 4-bit slots in one `AtomicU16` (no torn apply).
 static MODE_HOTKEY_BINDINGS: AtomicU16 = AtomicU16::new(DEFAULT_MODE_BINDINGS_ENCODED);
 
 /// Pack one binding into its 4-bit slot value inside `MODE_HOTKEY_BINDINGS`.
@@ -181,13 +192,18 @@ pub fn get_hold_start_delay_ms() -> u64 {
 /// Atomic storage for double-tap interval (milliseconds)
 static DOUBLE_TAP_INTERVAL_MS: AtomicU64 = AtomicU64::new(200);
 
+/// Packed deferred-insert chord: disabled (safe boot default).
 const DEFERRED_INSERT_DISABLED: u8 = 0;
+/// Packed deferred-insert chord: ⌘⌥V.
 const DEFERRED_INSERT_COMMAND_OPTION_V: u8 = 1;
+/// Packed deferred-insert chord: ⌘⇧V.
 const DEFERRED_INSERT_COMMAND_SHIFT_V: u8 = 2;
+/// Packed deferred-insert chord: ⌘⌃V.
 const DEFERRED_INSERT_COMMAND_CONTROL_V: u8 = 3;
 
 // Boot default matches `DeferredInsertShortcut::default()` (Disabled, P1-04):
 // between tap start and config apply the chord must not be armed.
+/// Live deferred-insert chord; stays Disabled until config apply arms a real shortcut.
 static DEFERRED_INSERT_SHORTCUT: AtomicU8 = AtomicU8::new(DEFERRED_INSERT_DISABLED);
 
 /// Pack the deferred-insert chord for `DEFERRED_INSERT_SHORTCUT`.
@@ -277,6 +293,10 @@ impl ModeHotkeyBindings {
 }
 
 impl From<&Config> for HotkeyRuntimeConfig {
+    /// Build a runtime snapshot from `Config` timings/flags plus disk mode bindings.
+    ///
+    /// Mode bindings still come from [`ModeHotkeyBindings::load`], not from
+    /// `config` fields — the mode map is settings-owned, not Config-owned.
     fn from(config: &Config) -> Self {
         Self {
             mode_bindings: ModeHotkeyBindings::load(),
@@ -333,13 +353,16 @@ pub fn apply_hotkey_config(config: &Config) {
     apply_hotkey_runtime_config(HotkeyRuntimeConfig::from(config));
 }
 
+/// Unit coverage for the process-global hotkey atomics (bindings, clamp, apply).
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// Serializes tests that mutate process-global hotkey atomics.
     static HOTKEY_ATOMICS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Round-trips a full mode-binding pack through set/get.
     #[test]
     fn test_mode_hotkey_bindings_get_set() {
         let _guard = HOTKEY_ATOMICS_TEST_LOCK
@@ -355,6 +378,7 @@ mod tests {
         assert_eq!(get_mode_hotkey_bindings(), bindings);
     }
 
+    /// Proves double-tap setter clamps to the safe [100, 450] ms window.
     #[test]
     fn test_double_tap_interval_get_set() {
         let _guard = HOTKEY_ATOMICS_TEST_LOCK
@@ -369,6 +393,7 @@ mod tests {
         assert_eq!(get_double_tap_interval_ms(), 450);
     }
 
+    /// Apply writes every hotkey atomic when the snapshot differs from live state.
     #[test]
     fn test_apply_hotkey_runtime_config_updates_all_atomics() {
         let _guard = HOTKEY_ATOMICS_TEST_LOCK
@@ -403,6 +428,7 @@ mod tests {
         );
     }
 
+    /// Second apply of an out-of-range interval is a no-op after the first clamp.
     #[test]
     fn test_apply_hotkey_runtime_config_is_idempotent_after_clamp() {
         let _guard = HOTKEY_ATOMICS_TEST_LOCK

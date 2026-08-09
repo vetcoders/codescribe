@@ -12,8 +12,11 @@ mod data {
 /// Empty stand-ins so the rest of the module compiles without an embedded payload.
 #[cfg(not(embed_embedder))]
 mod data {
+    /// Placeholder config.json bytes (empty when the model is not baked in).
     pub static CONFIG: &[u8] = &[];
+    /// Placeholder tokenizer.json bytes (empty when the model is not baked in).
     pub static TOKENIZER: &[u8] = &[];
+    /// Placeholder safetensors weights (empty when the model is not baked in).
     pub static WEIGHTS: &[u8] = &[];
 }
 
@@ -58,10 +61,12 @@ impl EmbeddedModel {
     }
 }
 
+/// Smoke checks for the build-time embed flag and optional payload size.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Reports whether the binary carries an embedder payload (cfg + non-empty weights).
     #[test]
     fn test_embedded_availability() {
         let available = is_embedded_available();

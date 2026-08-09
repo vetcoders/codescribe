@@ -138,7 +138,9 @@ struct Args {
 /// (the two are chosen independently).
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum ReferenceSourceArg {
+    /// Operator-curated corpus transcript as ground truth.
     Corpus,
+    /// Cloud STT transcript as ground truth.
     Cloud,
     /// AI-formatted transcript (Whisper + LLM correction) - best for learning corrections
     Ai,
@@ -328,6 +330,7 @@ fn count_mismatches_from_latest_report(config_dir: &Path) -> usize {
     };
 
     // Parse history entry to get report path
+    /// Minimal JSONL history row — only the path to the full quality report.
     #[derive(serde::Deserialize)]
     struct HistoryEntry {
         report_json: String,
@@ -351,6 +354,7 @@ fn count_mismatches_from_latest_report(config_dir: &Path) -> usize {
 
     // Count entries where local (raw/post) differs significantly from cloud
     // We consider it a mismatch if WER > 0.10 (10%)
+    /// Absolute WER gap above which local vs cloud counts as a mismatch (10%).
     const MISMATCH_WER_THRESHOLD: f32 = 0.10;
 
     report
@@ -414,10 +418,12 @@ fn build_daemon_check_args(args: &Args, date_filter: String) -> Args {
     }
 }
 
+/// Daemon check-args builder tests (apply/date/limit/lexicon propagation).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Baseline `Args` for daemon unit tests (non-daemon defaults).
     fn default_args() -> Args {
         Args {
             input: None,
@@ -449,6 +455,7 @@ mod tests {
         }
     }
 
+    /// Parent `apply=true` must survive into daemon check_args.
     #[test]
     fn test_daemon_check_args_propagates_apply_true() {
         let mut args = default_args();
@@ -463,6 +470,7 @@ mod tests {
         );
     }
 
+    /// Parent `apply=false` must survive into daemon check_args.
     #[test]
     fn test_daemon_check_args_propagates_apply_false() {
         let mut args = default_args();
@@ -477,6 +485,7 @@ mod tests {
         );
     }
 
+    /// Daemon forces today/date, unlimited limit, and skip_formatting.
     #[test]
     fn test_daemon_check_args_overrides_date_and_limit() {
         let mut args = default_args();
@@ -502,6 +511,7 @@ mod tests {
         );
     }
 
+    /// Lexicon caps and apply flags clone through from the parent args.
     #[test]
     fn test_daemon_check_args_preserves_lexicon_settings() {
         let mut args = default_args();

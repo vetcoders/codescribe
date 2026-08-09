@@ -1605,6 +1605,7 @@ impl VadIterState {
 // Tests
 // ═══════════════════════════════════════════════════════════
 
+/// VAD iterator, gate defaults, supervisor flush, and unavailable-path tests.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1643,6 +1644,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the previous env value (or unset) when the guard leaves scope.
         fn drop(&mut self) {
             unsafe {
                 match self.prev.as_ref() {
@@ -1653,6 +1655,7 @@ mod tests {
         }
     }
 
+    /// Start on high prob, stay open on speech, End after enough silence frames.
     #[test]
     fn vad_iter_state_basic_lifecycle() {
         let config = GateConfig {
@@ -1697,6 +1700,7 @@ mod tests {
         // That's OK — the state machine correctly filters short bursts.
     }
 
+    /// reset() clears triggered state and the VAD-domain sample counter.
     #[test]
     fn vad_iter_state_reset() {
         let config = GateConfig {
@@ -1720,6 +1724,7 @@ mod tests {
         assert_eq!(state.current_sample, 0);
     }
 
+    /// hardcoded_gate_config defaults to Supervisor gate mode.
     #[test]
     #[serial]
     fn gate_mode_default_is_supervisor() {
@@ -1727,6 +1732,7 @@ mod tests {
         assert_eq!(config.mode, VadGateMode::Supervisor);
     }
 
+    /// Utterance silence uses DEFAULT_BUFFERED_SILENCE_SEC; stream keeps VAD base.
     #[test]
     #[serial]
     fn utterance_default_silence_uses_buffered_cadence_default() {
@@ -1748,6 +1754,7 @@ mod tests {
         assert_eq!(utterance.min_silence_samples(), utter_expected);
     }
 
+    /// BUFFERED_SILENCE_SEC overrides utterance only; stream silence stays base.
     #[test]
     #[serial]
     fn utterance_silence_env_override_does_not_change_stream_default() {
@@ -1767,6 +1774,7 @@ mod tests {
         assert_eq!(utterance.min_silence_samples(), utter_expected);
     }
 
+    /// new_utterance derives non-zero pre_roll from config (not hardcoded zero).
     #[test]
     fn test_utterance_pre_roll_nonzero() {
         // new_utterance() must calculate pre_roll from config, not hardcode 0.
@@ -1779,6 +1787,7 @@ mod tests {
         );
     }
 
+    /// Chunk, Utterance, and UtteranceFinal carry sample vectors as constructed.
     #[test]
     fn speech_event_variants() {
         let chunk = SpeechEvent::Chunk(vec![1.0, 2.0]);
@@ -1935,6 +1944,7 @@ mod tests {
         );
     }
 
+    /// Flush emits open segment and drains pending Silero speech-sample accounting.
     #[test]
     fn test_supervisor_flush_tracks_event_speech_samples() {
         let sr = 16000u32;
@@ -1969,6 +1979,7 @@ mod tests {
         );
     }
 
+    /// Busy flush emits only unseen tail and preserves FIFO speech accounting.
     #[test]
     fn test_supervisor_busy_flush_emits_tail_and_keeps_speech_sample_fifo() {
         let sr = 16000u32;
@@ -2020,6 +2031,7 @@ mod tests {
         );
     }
 
+    /// Flush clamps to visible buffer when segment_start was trimmed away.
     #[test]
     fn test_supervisor_flush_is_boundary_safe_when_start_was_trimmed() {
         let sr = 16000u32;
@@ -2065,6 +2077,7 @@ mod tests {
         );
     }
 
+    /// No unseen tail → emit preroll-sized final window with zero speech samples.
     #[test]
     fn test_supervisor_flush_emits_preroll_window_when_no_new_tail_exists() {
         let sr = 16000u32;
@@ -2103,6 +2116,7 @@ mod tests {
         );
     }
 
+    /// Missing VAD emits no speech events and records unavailable-frame telemetry.
     #[test]
     fn test_vad_unavailable_is_measured_and_does_not_assume_speech() {
         let sr = 16000u32;

@@ -95,11 +95,13 @@ fn spill_dir() -> PathBuf {
     Config::config_dir().join("agent").join("spill")
 }
 
+/// Spill-and-point guard: cut context, never destroy knowledge.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Sub-threshold chunks return verbatim with no spill file written.
     #[test]
     fn small_chunk_passes_untouched() {
         let dir = TempDir::new().expect("tempdir");
@@ -113,6 +115,7 @@ mod tests {
         );
     }
 
+    /// Oversized generated output is cut in-context but fully spilled to disk.
     #[test]
     fn oversized_chunk_is_cut_but_knowledge_survives_via_spill_pointer() {
         let dir = TempDir::new().expect("tempdir");
@@ -143,6 +146,7 @@ mod tests {
         );
     }
 
+    /// On-disk sources get a path pointer; no second spill of the same bytes.
     #[test]
     fn on_disk_source_gets_a_path_pointer_not_a_spill() {
         let source = Path::new("/workspace/big.log");

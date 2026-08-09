@@ -669,6 +669,7 @@ fn emit_stream_events(
     }
 }
 
+/// Seal mapping, lexicon-at-seal, retained PCM windows, and Layer 1 wiring.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,6 +684,7 @@ mod tests {
     /// text, not audio retention, so any valid rate is representative.
     const TEST_SAMPLE_RATE: u32 = 16_000;
 
+    /// Partial → Preview; each phrase final → UtteranceFinal with rising ids.
     #[test]
     fn emit_maps_partial_and_two_phrase_finals() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -728,6 +730,7 @@ mod tests {
         ));
     }
 
+    /// Build a timed `TranscriptSegment` for seal-window fixture events.
     fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
         TranscriptSegment {
             text: text.to_string(),
@@ -813,8 +816,10 @@ mod tests {
     /// still open surface to the sink immediately (not only after stop).
     #[tokio::test]
     async fn live_previews_surface_before_audio_eof() {
+        /// Test sink that records Preview text only (order of live surface).
         struct CollectSink(Mutex<Vec<String>>);
         impl EventSink for CollectSink {
+            /// Append preview text when present; ignore non-preview events.
             fn on_event(&self, event: &EngineEvent) {
                 if let EngineEvent::Preview { text, .. } = event {
                     self.0.lock().expect("lock").push(text.clone());
@@ -1004,6 +1009,7 @@ mod tests {
     }
 
     impl EnvRestore {
+        /// Snapshot `key`'s current value (or absence) for later restore on drop.
         fn capture(key: &'static str) -> Self {
             Self {
                 key,
@@ -1013,6 +1019,7 @@ mod tests {
     }
 
     impl Drop for EnvRestore {
+        /// Put the env var back exactly as it was when `capture` ran.
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -1021,16 +1028,19 @@ mod tests {
         }
     }
 
+    /// Collecting sink for Layer 1 / SessionFinalised event assertions.
     #[derive(Default)]
     struct RecordingSink(Mutex<Vec<EngineEvent>>);
 
     impl EventSink for RecordingSink {
+        /// Clone every engine event into the mutex-backed log.
         fn on_event(&self, event: &EngineEvent) {
             self.0.lock().expect("lock").push(event.clone());
         }
     }
 
     impl RecordingSink {
+        /// Snapshot of all events received so far (clone under lock).
         fn events(&self) -> Vec<EngineEvent> {
             self.0.lock().expect("lock").clone()
         }
@@ -1247,6 +1257,7 @@ mod tests {
         assert!(tail_patch_enabled(), "phase1 arms Layer 1");
     }
 
+    /// Bridge stdout lines with multiple `final` events parse as phrase seals.
     #[test]
     fn parse_lines_feed_multi_seal_count() {
         let lines = [

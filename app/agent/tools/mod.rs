@@ -6,22 +6,39 @@
 //! separately nameable is what lets a test prove the substrate covers every
 //! core capability without an MCP server running.
 
+/// Clipboard read/write tools (`read_clipboard` / `write_clipboard`).
 pub mod clipboard;
+/// Prompt-layer review-tool + connector-fallback doctrine (no executor changes).
 pub mod doctrine;
+/// Sandboxed `read_file` tool with workspace-root and size bounds.
 pub mod filesystem;
+/// `fetch_github_file` tool shell over the shared GitHub connector.
 pub mod github;
+/// MCP discovery, tool registration, and readiness probes.
 pub mod mcp;
+/// Registers a durable Vibecrafted run monitor on the current thread.
 pub mod monitor_run;
+/// List/search/write/patch/move filesystem tools (beyond `read_file`).
 pub mod native_fs;
+/// Spills oversized tool chunks to disk and returns a follow-up pointer.
 mod output_guard;
+/// Fail-closed path containment and terminal command-shape gates.
 mod path_policy;
+/// Argv-only process run / observe / stop tools with path policy.
 pub mod process;
+/// Native git status/diff/log/commit tools under workspace roots.
 pub mod repo;
+/// Screen capture tool with permission and payload bounds.
 pub mod screenshot;
+/// Local thread-index search (`search_threads`).
 pub mod search_threads;
+/// Frontmost-app and selected-text observation tools.
 pub mod selection;
+/// Path-gated local audio transcription via the Whisper singleton.
 pub mod transcribe_audio;
+/// Focused-app text injection via clipboard paste (then restore).
 pub mod typing;
+/// Workspace-root resolution and `list_projects` enumeration.
 pub mod workspace;
 
 use codescribe_core::agent::ToolRegistry;
@@ -51,10 +68,12 @@ fn register_native_tools(registry: &mut ToolRegistry) {
 }
 
 #[cfg(test)]
+/// Unit tests for native tool registration and capability coverage.
 mod tests {
     use super::*;
     use codescribe_core::agent::{CapabilityOp, ConnectorHealth, resolve_capability};
 
+    /// Asserts the native registry exposes the expected sorted tool name set.
     #[test]
     fn register_all_tools_registers_expected_names() {
         let mut registry = ToolRegistry::new();
@@ -100,6 +119,7 @@ mod tests {
         );
     }
 
+    /// Core capability ops must resolve to registered native tools (no IntelliJ).
     #[test]
     fn native_substrate_covers_core_capabilities_without_intellij() {
         let mut registry = ToolRegistry::new();

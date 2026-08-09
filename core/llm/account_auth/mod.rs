@@ -12,9 +12,13 @@ use crate::config::UserSettings;
 use crate::config::keychain::{delete_key, load_key, save_key};
 use crate::llm::provider::ProviderKind;
 
+/// Device-code OAuth grant for providers that cannot do loopback redirects.
 pub mod device_code;
+/// Paste-code flow: user copies `"code#state"` from the provider's page.
 pub mod paste_code;
+/// PKCE verifier/challenge helpers shared by loopback and paste-code logins.
 pub mod pkce;
+/// Local loopback HTTP server that receives OAuth redirect callbacks.
 pub mod server;
 
 pub use device_code::{
@@ -151,6 +155,7 @@ pub struct ProviderOAuthConfig {
     pub encoding: TokenRequestEncoding,
 }
 
+/// OpenAI account-auth row: loopback redirect, form-encoded token endpoint.
 const OPENAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     provider: ProviderKind::OpenAiResponses,
     tokens_account: OPENAI_ACCOUNT_TOKENS_ACCOUNT,
@@ -174,6 +179,7 @@ const OPENAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     encoding: TokenRequestEncoding::Form,
 };
 
+/// Anthropic account-auth row: paste-code flow, JSON token endpoint.
 const ANTHROPIC_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     provider: ProviderKind::AnthropicMessages,
     tokens_account: ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT,
@@ -196,6 +202,7 @@ const ANTHROPIC_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     encoding: TokenRequestEncoding::Json,
 };
 
+/// xAI account-auth row: pinned 127.0.0.1:56121 loopback and public Grok CLI id.
 const XAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     provider: ProviderKind::XaiResponses,
     tokens_account: XAI_ACCOUNT_TOKENS_ACCOUNT,
@@ -277,6 +284,7 @@ pub enum AccountAuthError {
 }
 
 impl fmt::Display for AccountAuthError {
+    /// Operator-facing text; `NoClientId` names the provider's own setting/env keys.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AccountAuthError::NoClientId { setting, env } => write!(
@@ -303,6 +311,7 @@ impl fmt::Display for AccountAuthError {
 impl std::error::Error for AccountAuthError {}
 
 impl From<std::io::Error> for AccountAuthError {
+    /// Lift I/O failures from the loopback server into the account-auth error enum.
     fn from(error: std::io::Error) -> Self {
         AccountAuthError::Io(error)
     }
@@ -561,7 +570,9 @@ fn refresh_lock(provider: ProviderKind) -> &'static tokio::sync::Mutex<()> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
 
+    /// Process-global map from provider to its async refresh mutex (leaked entries).
     type LockTable = Mutex<HashMap<ProviderKind, &'static tokio::sync::Mutex<()>>>;
+    /// Lazily initialized [`LockTable`]; one entry per provider that has refreshed.
     static LOCKS: OnceLock<LockTable> = OnceLock::new();
 
     let mut table = LOCKS
@@ -678,6 +689,7 @@ fn now_unix() -> i64 {
         .as_secs() as i64
 }
 
+/// Unit tests for client-id resolution, keychain isolation, and registry shape.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,6 +705,8 @@ mod tests {
         (EnvGuard::set_path("CODESCRIBE_DATA_DIR", dir.path()), dir)
     }
 
+    /// Missing client id must surface the shared registration-gate message and
+    /// the failing provider's own setting/env keys (not another provider's).
     #[test]
     #[serial]
     fn no_client_id_reports_registration_gate() {
@@ -710,6 +724,8 @@ mod tests {
         assert!(anthropic.to_string().contains(ANTHROPIC_CLIENT_ID_ENV));
     }
 
+    /// Settings.json client id wins over env and is re-read on every call so a
+    /// Keys-panel save applies without restarting the process.
     #[test]
     #[serial]
     fn settings_client_id_beats_env_and_applies_without_restart() {
@@ -795,6 +811,7 @@ mod tests {
         assert_eq!(status.message, "signed in as maciej@example.com");
     }
 
+    /// Identity for the Keys panel comes from the id_token email claim when present.
     #[test]
     fn signed_in_status_carries_the_id_token_email_when_present() {
         use base64::Engine;
@@ -820,6 +837,7 @@ mod tests {
         assert_eq!(id_token_identity(&no_id_token), None);
     }
 
+    /// Mock keychain path stores and reloads JSON [`AccountTokens`] unchanged.
     #[test]
     #[serial]
     fn keychain_mock_round_trips_serialized_account_tokens() {
@@ -841,6 +859,7 @@ mod tests {
         assert_eq!(loaded.refresh_token.as_deref(), Some("refresh"));
     }
 
+    /// Each provider uses a distinct keychain account so tokens never cross-wire.
     #[test]
     #[serial]
     fn provider_accounts_never_share_a_keychain_slot() {
@@ -890,6 +909,7 @@ mod tests {
         assert!(load_account_tokens(ProviderKind::OpenAiResponses).is_ok());
     }
 
+    /// Client id and issuer resolution is per-provider; sibling env must not leak.
     #[test]
     #[serial]
     fn each_provider_reads_its_own_client_id_and_issuer() {
@@ -1054,6 +1074,7 @@ mod tests {
         );
     }
 
+    /// RAII env mutator for `#[serial]` tests; restores the prior value on drop.
     #[derive(Debug)]
     struct EnvGuard {
         key: &'static str,
@@ -1061,6 +1082,7 @@ mod tests {
     }
 
     impl EnvGuard {
+        /// Set `key` to `value`, remembering the previous process-env state.
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: these process-env tests are serialized with `serial`.
@@ -1068,6 +1090,7 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Set `key` to a filesystem path string, remembering the previous state.
         fn set_path(key: &'static str, value: &std::path::Path) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: these process-env tests are serialized with `serial`.
@@ -1075,6 +1098,7 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Remove `key` from the process env, remembering whether it was set.
         fn unset(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: these process-env tests are serialized with `serial`.
@@ -1084,6 +1108,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the captured prior value (or re-unset) so serial tests stay isolated.
         fn drop(&mut self) {
             match &self.previous {
                 // SAFETY: these process-env tests are serialized with `serial`.

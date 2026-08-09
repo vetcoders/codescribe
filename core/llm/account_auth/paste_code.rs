@@ -168,11 +168,13 @@ pub async fn exchange_pasted_code(
     ))
 }
 
+/// Unit coverage for paste-code split CSRF checks and authorize-URL PKCE wiring.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::llm::account_auth::generate_pkce;
 
+    /// Accepts `code#state` only when state matches; bare code allowed only if no state expected.
     #[test]
     fn split_accepts_matching_state_and_rejects_everything_else() {
         assert_eq!(split_pasted_code("abc#st4te", "st4te").unwrap(), "abc");
@@ -187,6 +189,7 @@ mod tests {
         assert_eq!(split_pasted_code("abc", "").unwrap(), "abc");
     }
 
+    /// Authorize URL must carry S256 challenge, method, and CSRF state for public-client OAuth.
     #[test]
     fn authorize_url_carries_pkce_challenge_and_state() {
         let pkce = generate_pkce();

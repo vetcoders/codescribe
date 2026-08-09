@@ -16,7 +16,9 @@ use crate::config::keychain::KEYCHAIN_ACCOUNTS;
 use crate::llm::lane_truth;
 use crate::llm::provider::{ALL_PROVIDERS, LlmMode, ProviderKind, WireFamily};
 
+/// Wall-clock budget for connect and request; probes must stay cheap for Settings.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Anthropic Messages API version header required by the wire family probe.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// UI-safe outcome of one liveness probe.
@@ -327,6 +329,7 @@ fn env_non_empty(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Classification contract tests and a loopback Responses probe for endpoint truth.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +339,7 @@ mod tests {
     use std::thread;
     use tempfile::TempDir;
 
+    /// Live probe records the normalized `/v1/responses` URL after lane endpoint resolution.
     #[test]
     #[serial]
     fn openai_probe_reports_the_normalized_endpoint_it_called() {
@@ -393,6 +397,7 @@ mod tests {
         );
     }
 
+    /// 2xx means the provider accepted the key and returned a usable response.
     #[test]
     fn classifies_success_as_ok() {
         assert_eq!(
@@ -401,6 +406,7 @@ mod tests {
         );
     }
 
+    /// Auth failures are the only client errors that map to Invalid.
     #[test]
     fn classifies_401_and_403_as_invalid() {
         assert_eq!(
@@ -413,6 +419,7 @@ mod tests {
         );
     }
 
+    /// Quota markers in the body override a non-auth 4xx into NoQuota.
     #[test]
     fn classifies_insufficient_quota_body_as_no_quota() {
         assert_eq!(
@@ -424,6 +431,7 @@ mod tests {
         );
     }
 
+    /// 429 alone is treated as exhausted quota even without a body string.
     #[test]
     fn classifies_429_without_body_as_no_quota() {
         assert_eq!(
@@ -432,6 +440,7 @@ mod tests {
         );
     }
 
+    /// Anthropic low-credit copy is a body-only NoQuota signal on 400.
     #[test]
     fn classifies_anthropic_low_credit_body_as_no_quota() {
         assert_eq!(
@@ -443,6 +452,7 @@ mod tests {
         );
     }
 
+    /// 402 and billing_error body both mean valid key without spendable credit.
     #[test]
     fn classifies_402_billing_error_as_no_quota() {
         assert_eq!(
@@ -454,6 +464,7 @@ mod tests {
         );
     }
 
+    /// Request-level 400 (model missing) still proves the key authenticated.
     #[test]
     fn classifies_400_model_not_found_as_ok() {
         // A 400 with a request-level error (not quota/auth) means the server
@@ -467,6 +478,7 @@ mod tests {
         );
     }
 
+    /// Other 4xx after auth are Ok — probe shape may be wrong, key is live.
     #[test]
     fn classifies_other_client_errors_as_ok() {
         assert_eq!(
@@ -479,6 +491,7 @@ mod tests {
         );
     }
 
+    /// 5xx stays Network/unknown — key validity cannot be asserted.
     #[test]
     fn classifies_server_errors_as_network_unknown() {
         assert_eq!(
@@ -491,12 +504,14 @@ mod tests {
         );
     }
 
+    /// Restores a process env var on drop; tests using it must be `serial`.
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set `key` for the test lifetime and remember the prior value.
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: process-env tests in this module are serialized.
@@ -504,6 +519,7 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Unset `key` for the test lifetime and remember the prior value.
         fn remove(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: process-env tests in this module are serialized.
@@ -513,6 +529,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Put the previous env value back (or remove the key if it was absent).
         fn drop(&mut self) {
             // SAFETY: process-env tests in this module are serialized.
             unsafe {

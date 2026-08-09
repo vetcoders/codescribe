@@ -42,6 +42,7 @@ pub struct CsMcpServer {
 }
 
 impl From<McpServerSummary> for CsMcpServer {
+    /// Map core McpServerSummary into the UniFFI bridge DTO for Swift admin UI.
     fn from(summary: McpServerSummary) -> Self {
         Self {
             name: summary.name,
@@ -78,6 +79,7 @@ pub struct CsMcpServerInput {
 }
 
 impl From<&CsMcpServerInput> for McpServerSpec {
+    /// Map UniFFI CsMcpServerInput into the core MCP config write shape.
     fn from(input: &CsMcpServerInput) -> Self {
         Self {
             name: input.name.clone(),

@@ -44,6 +44,7 @@ pub struct PortableProfile {
     pub remapped_paths: Vec<PathRemap>,
 }
 
+/// One absolute path rewritten for portability (export) or re-expanded (import).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathRemap {
     /// Dotted settings path the remapped value came from.
@@ -279,6 +280,7 @@ fn strip_secrets(value: &mut Value) {
         return;
     };
     // Never export tool grants or permission tool maps (machine-generated).
+    /// Substring key names stripped from exports (substring match, lowercased).
     const SECRET_KEYS: &[&str] = &[
         "api_key",
         "apiKey",
@@ -512,6 +514,7 @@ trait UserSettingsSave {
 }
 
 impl UserSettingsSave for UserSettings {
+    /// Atomically write pretty JSON settings to an arbitrary path (0600).
     fn save_to(&self, path: &Path) -> Result<()> {
         // Prefer the existing save() when path matches the canonical location;
         // otherwise write a v2-compatible JSON blob via serde of UserSettings.
@@ -539,11 +542,13 @@ pub fn redact_for_log(text: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// Portable export/import redaction and dry-run write guarantees.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Export must remap `$HOME` paths, drop grants, and never leak absolutes.
     #[test]
     fn portable_export_strips_absolute_home_paths_and_grants() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
@@ -582,6 +587,7 @@ mod tests {
         );
     }
 
+    /// Dry-run plans must leave the settings file byte-identical.
     #[test]
     fn import_dry_run_does_not_write() {
         let dir = TempDir::new().unwrap();
@@ -606,6 +612,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&settings_path).unwrap(), "{}");
     }
 
+    /// Long alphanumeric tokens collapse to length-only redaction markers.
     #[test]
     fn redact_collapses_long_tokens() {
         let redacted = redact_for_log("token abcdefghijklmnopqrstuvwxyz012345 is secret");

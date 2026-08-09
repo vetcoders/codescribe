@@ -137,6 +137,9 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl AgentProvider for AnthropicProvider {
+    /// Open a streaming Messages turn and return the event receiver immediately.
+    /// Capability policy gates sampling/thinking per model before the body is built;
+    /// HTTP work runs on a spawned task so the caller can await the channel.
     async fn stream(
         &self,
         messages: &[Message],
@@ -210,6 +213,8 @@ impl AgentProvider for AnthropicProvider {
         Ok(rx)
     }
 
+    /// Wrap a tool outcome as a user-role message with one `ToolResult` block.
+    /// Anthropic requires tool results in user turns; this is the session glue.
     fn build_tool_result(
         &self,
         call_id: &str,
@@ -226,6 +231,8 @@ impl AgentProvider for AnthropicProvider {
         )
     }
 
+    /// Build an in-memory image content block from raw bytes and a media type.
+    /// Empty bytes are still accepted here; the request builder skips empty images.
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
         ContentBlock::Image {
             data: data.to_vec(),
@@ -233,10 +240,12 @@ impl AgentProvider for AnthropicProvider {
         }
     }
 
+    /// Expose initial-response and inter-chunk timeouts for the session harness.
     fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
         Some((self.initial_response_timeout, self.inter_chunk_timeout))
     }
 
+    /// Stable provider identity string used in logs and availability gates.
     fn name(&self) -> &str {
         "anthropic-messages"
     }
@@ -882,6 +891,7 @@ fn format_stream_error(error: &AnthropicError) -> String {
 /// falling back to `None` when the body is not the standard Anthropic error
 /// envelope.
 fn parse_http_error_body(body: &str) -> Option<String> {
+    /// Minimal HTTP error body shape: optional nested Anthropic error payload.
     #[derive(Deserialize)]
     struct Envelope {
         error: Option<AnthropicError>,
@@ -1012,17 +1022,20 @@ struct AnthropicError {
 }
 
 #[cfg(test)]
+/// Unit and mockito-backed checks for request shaping and SSE event mapping.
 mod tests {
     use super::*;
     use codescribe_core::agent::AgentAssetStore;
     use serde_json::json;
     use std::time::Duration;
 
+    /// Test helper: one-block text message with the given role.
     fn text_message(role: Role, text: &str) -> Message {
         Message::new(role, vec![ContentBlock::Text(text.to_string())])
     }
 
     #[test]
+    /// Assert system prompt and System-role history fold into one top-level system string.
     fn build_system_folds_prompt_and_system_messages() {
         let messages = vec![
             text_message(Role::System, "history system note"),
@@ -1037,6 +1050,7 @@ mod tests {
     }
 
     #[test]
+    /// Assert model/max_tokens/stream/system hoist and user text block serialization.
     fn build_request_body_hoists_system_and_serializes_user_message() {
         let messages = vec![text_message(Role::User, "hello world")];
         let body = build_request_body(
@@ -1063,6 +1077,7 @@ mod tests {
     }
 
     #[test]
+    /// Capability gate: Opus omits temperature; Sonnet keeps a sanitized value.
     fn opus_strips_temperature_sonnet_keeps_it() {
         let messages = vec![text_message(Role::User, "hi")];
 
@@ -1105,6 +1120,7 @@ mod tests {
     }
 
     #[test]
+    /// Adaptive thinking emits type=adaptive with no budget_tokens; false leaves wire clean.
     fn adaptive_thinking_true_puts_the_thinking_block_on_the_wire() {
         let messages = vec![text_message(Role::User, "hi")];
 
@@ -1129,6 +1145,7 @@ mod tests {
     }
 
     #[test]
+    /// Tool definitions map to Anthropic name/description/input_schema wire shape.
     fn tools_serialize_to_anthropic_input_schema() {
         let tools = vec![ToolDefinition {
             name: "read_file".to_string(),
@@ -1142,6 +1159,7 @@ mod tests {
     }
 
     #[test]
+    /// Assistant tool_use and user tool_result history blocks survive request mapping.
     fn tool_use_and_tool_result_map_to_anthropic_blocks() {
         let assistant = Message::new(
             Role::Assistant,
@@ -1188,6 +1206,7 @@ mod tests {
     }
 
     #[test]
+    /// Large tool outputs send the store reference text, not the full payload body.
     fn stored_tool_output_reference_is_the_only_body_sent_to_anthropic() {
         let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
         let messages = vec![Message::new(
@@ -1208,6 +1227,7 @@ mod tests {
     }
 
     #[test]
+    /// Inline image bytes encode as base64 source with media_type on the wire.
     fn image_block_uses_base64_source() {
         let block = image_block(b"png bytes", "image/png");
         assert_eq!(block["type"], "image");
@@ -1222,6 +1242,7 @@ mod tests {
     }
 
     #[test]
+    /// Empty image payloads are dropped so Anthropic never sees empty base64.
     fn empty_image_bytes_are_skipped() {
         let message = Message::new(
             Role::User,
@@ -1239,6 +1260,7 @@ mod tests {
     }
 
     #[test]
+    /// User messages may carry inline Image blocks that become wire image sources.
     fn user_message_inline_image_rides_into_request_body() {
         // Composer 📎 path: `AgentSession::send` builds a [Text, Image{bytes}]
         // user turn via `build_image_block`. A non-empty inline image must
@@ -1276,6 +1298,7 @@ mod tests {
     }
 
     #[test]
+    /// Tool-result image assets load and encode as base64 inside the result content.
     fn tool_result_carries_image_asset_as_base64() {
         let _env_serial = crate::test_env::data_dir_env_serial();
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
@@ -1296,6 +1319,7 @@ mod tests {
     }
 
     #[test]
+    /// Data-omitted tool images are skipped rather than sent as empty base64 blobs.
     fn tool_result_data_omitted_image_is_skipped_not_sent_as_empty_base64() {
         // D8: a tool-result image restored from history (`data_omitted`) has no
         // bytes. It must be dropped from the request — never serialized as an
@@ -1323,6 +1347,7 @@ mod tests {
     }
 
     #[test]
+    /// ImageAsset paths are read from disk when the request body is built, not earlier.
     fn request_body_loads_image_asset_from_disk_at_request_time() {
         let _env_serial = crate::test_env::data_dir_env_serial();
         // D8: an ImageAsset (screenshot pipeline, C9) rides through
@@ -1356,6 +1381,7 @@ mod tests {
     }
 
     #[test]
+    /// Persisted thread images rehydrate as assets and still enter the next-turn prompt.
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
         // Turn 2 on a restored thread: an inline composer image persisted via
@@ -1385,6 +1411,7 @@ mod tests {
     }
 
     #[test]
+    /// HTTPS always OK; plain HTTP only for loopback; remote HTTP and other schemes fail.
     fn validate_endpoint_rejects_non_loopback_http() {
         assert!(validate_anthropic_endpoint("https://api.anthropic.com/v1/messages").is_ok());
         assert!(validate_anthropic_endpoint("http://127.0.0.1:8080/v1/messages").is_ok());
@@ -1393,6 +1420,7 @@ mod tests {
         assert!(validate_anthropic_endpoint("   ").is_err());
     }
 
+    /// Test fixture: AnthropicProvider pointed at a mock endpoint with short timeouts.
     fn provider_for(endpoint: &str) -> AnthropicProvider {
         AnthropicProvider {
             client: Client::new(),
@@ -1407,6 +1435,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// SSE happy path: text deltas, tool_use assembly, and ResponseDone with message id.
     async fn stream_parses_text_tool_and_terminal_events() {
         let mut server = mockito::Server::new_async().await;
         let body = [
@@ -1469,6 +1498,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// In-band SSE error events become AgentEvent::Error with type and message.
     async fn stream_surfaces_sse_error_event() {
         let mut server = mockito::Server::new_async().await;
         let body = [
@@ -1506,6 +1536,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Non-2xx HTTP bodies map to AgentEvent::Error including status and API message.
     async fn stream_maps_http_error_to_error_event() {
         let mut server = mockito::Server::new_async().await;
         let mock = server

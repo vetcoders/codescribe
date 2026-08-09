@@ -342,12 +342,14 @@ fn normalize_path(path: &Path) -> PathBuf {
     out
 }
 
+/// Unit tests for safe canonicalize, bounded roots, open, and read helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
 
+    /// Existing file path resolves via safe_canonicalize without error.
     #[test]
     fn test_canonicalize_existing_path() {
         let dir = tempdir().unwrap();
@@ -358,12 +360,14 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Missing path fails closed rather than inventing a canonical location.
     #[test]
     fn test_canonicalize_nonexistent_path() {
         let result = safe_canonicalize(Path::new("/nonexistent/path/file.txt"));
         assert!(result.is_err());
     }
 
+    /// Path under the allowed root stays accepted by bounded canonicalize.
     #[test]
     fn test_bounded_canonicalize_within_root() {
         let dir = tempdir().unwrap();
@@ -376,6 +380,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Path outside the root is rejected with an outside-allowed-root error.
     #[test]
     fn test_bounded_canonicalize_outside_root() {
         let dir = tempdir().unwrap();
@@ -393,6 +398,7 @@ mod tests {
         );
     }
 
+    /// safe_open returns a readable handle for a file that exists on disk.
     #[test]
     fn test_safe_open() {
         let dir = tempdir().unwrap();
@@ -403,6 +409,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// safe_read_to_string returns full file contents for a small fixture.
     #[test]
     fn test_safe_read_to_string() {
         let dir = tempdir().unwrap();

@@ -235,6 +235,7 @@ mod tests {
         }
     }
 
+    /// Search index returns a capped, JSON-serializable match list for the agent tool.
     #[test]
     fn search_index_returns_limited_json_ready_matches() {
         let tmp = tempfile::TempDir::new().expect("temp dir should be created");

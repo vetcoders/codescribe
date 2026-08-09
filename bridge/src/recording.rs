@@ -62,6 +62,7 @@ pub struct CsWhisperModelStatus {
 }
 
 impl From<codescribe_core::config::models::WhisperModelStatus> for CsWhisperModelStatus {
+    /// Map core Whisper readiness into the FFI record Settings displays.
     fn from(s: codescribe_core::config::models::WhisperModelStatus) -> Self {
         Self {
             available: s.available,
@@ -234,6 +235,7 @@ pub enum CsLayerSource {
 }
 
 impl From<LayerSource> for CsLayerSource {
+    /// Map a core layer tag onto the bridge-safe UniFFI enum variant.
     fn from(source: LayerSource) -> Self {
         match source {
             LayerSource::TailPatch => Self::TailPatch,
@@ -252,6 +254,7 @@ pub struct CsAnnotationKind {
 }
 
 impl From<&AnnotationKind> for CsAnnotationKind {
+    /// Flatten core annotation kinds into a stringly FFI record Swift can switch.
     fn from(kind: &AnnotationKind) -> Self {
         match kind {
             AnnotationKind::HesitationPause => Self {
@@ -277,6 +280,7 @@ pub struct CsLayerSummary {
 }
 
 impl From<&LayerSummary> for CsLayerSummary {
+    /// Copy session-end layer counters into the FFI summary record.
     fn from(summary: &LayerSummary) -> Self {
         Self {
             tail_patch_replacements: summary.tail_patch_replacements,
@@ -448,7 +452,9 @@ impl ComposerTranscript {
 /// cap bounds the worst case. On exhaustion the streaming splice is returned as
 /// a fallback, so overrun degrades quality, never correctness.
 fn compose_stop_timeout(elapsed: Duration) -> Duration {
+    /// Minimum drain budget so a cold commit + short final pass still fits.
     const FLOOR: Duration = Duration::from_secs(8);
+    /// Hard upper bound so a stalled scheduler never hangs the composer forever.
     const CAP: Duration = Duration::from_secs(30);
     elapsed.mul_f32(0.6).clamp(FLOOR, CAP)
 }
@@ -659,6 +665,8 @@ struct CsEventSink {
 }
 
 impl EventSink for CsEventSink {
+    /// Translate one core `EngineEvent` into the foreign listener contract and
+    /// accumulate finals for the composer return path.
     fn on_event(&self, event: &EngineEvent) {
         match event {
             EngineEvent::VadStart { .. } => self.listener.on_vad_active(true),
@@ -1059,11 +1067,14 @@ pub fn request_mic_permission() -> bool {
     codescribe::os::permissions::request_microphone()
 }
 
+/// Dictation-bridge unit coverage: audio-input resolution, event-sink identity
+/// flow, composer commit boundaries, and final-pass plan mode truth.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    /// Configured match, unavailable fallback, and default-only paths stay honest.
     #[test]
     fn audio_input_resolution_reports_live_match_and_unavailable_fallback() {
         let devices = vec![
@@ -1098,12 +1109,19 @@ mod tests {
     }
 
     impl CsTranscriptionListener for CapturingListener {
+        /// Lifecycle prepare — unused by sink identity tests.
         fn on_recording_preparing(&self) {}
+        /// Lifecycle start — unused by sink identity tests.
         fn on_recording_started(&self) {}
+        /// Lifecycle stop — unused by sink identity tests.
         fn on_recording_stopped(&self) {}
+        /// Lifecycle finalising — unused by sink identity tests.
         fn on_recording_finalising(&self) {}
+        /// Interim preview text — unused by sink identity tests.
         fn on_preview(&self, _text: String) {}
+        /// Live correction text — unused by sink identity tests.
         fn on_correction(&self, _text: String, _previous_text: String) {}
+        /// Record each final so tests can assert utterance_id + text together.
         fn on_final(
             &self,
             utterance_id: u64,
@@ -1114,6 +1132,7 @@ mod tests {
         ) {
             self.final_calls.lock().unwrap().push((utterance_id, text));
         }
+        /// Bounded replace events — unused by the capture fixture.
         fn on_replace_range(
             &self,
             _utterance_id: u64,
@@ -1123,6 +1142,7 @@ mod tests {
             _source: CsLayerSource,
         ) {
         }
+        /// Inline annotations — unused by the capture fixture.
         fn on_insert_annotation(
             &self,
             _utterance_id: u64,
@@ -1131,12 +1151,19 @@ mod tests {
             _kind: CsAnnotationKind,
         ) {
         }
+        /// Context markers — unused by the capture fixture.
         fn on_context_marker(&self, _position: u64, _marker: String) {}
+        /// Session-end summary — unused by the capture fixture.
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
+        /// Delivery-grade final transcript — unused by the capture fixture.
         fn on_final_transcript_ready(&self, _text: String) {}
+        /// VAD active flips — unused by the capture fixture.
         fn on_vad_active(&self, _active: bool) {}
+        /// RMS level ticks — unused by the capture fixture.
         fn on_audio_level(&self, _rms: f32) {}
+        /// No-speech notices — unused by the capture fixture.
         fn on_no_speech(&self, _reason: String) {}
+        /// Recoverable engine errors — unused by the capture fixture.
         fn on_error(&self, _message: String) {}
     }
 
@@ -1323,6 +1350,7 @@ mod tests {
     /// composer UI can never hang indefinitely on a stalled scheduler.
     #[test]
     fn compose_stop_timeout_scales_and_clamps() {
+        /// Allow one-micro drift from floating proportional clamp arithmetic.
         fn assert_duration_close(actual: Duration, expected: Duration) {
             let drift = actual.abs_diff(expected);
             assert!(

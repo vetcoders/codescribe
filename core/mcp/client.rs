@@ -932,6 +932,7 @@ fn disable_sigpipe(stdin: &ChildStdin) {
     // Darwin `sys/fcntl.h`: `#define F_SETNOSIGPIPE 73` — the libc crate does
     // not export this per-fd fcntl command (only the socket-level
     // `SO_NOSIGPIPE`), so pin the value here.
+    /// Darwin fcntl command: mark a fd so broken-pipe writes return EPIPE, not SIGPIPE.
     const F_SETNOSIGPIPE: libc::c_int = 73;
 
     // SAFETY: fcntl on an fd we own for the child's lifetime; F_SETNOSIGPIPE
@@ -1125,6 +1126,7 @@ fn truncate_stderr(raw: &str) -> String {
         + "..."
 }
 
+/// MCP client stdio/HTTP transport, timeout, PATH resolution, and SIGPIPE guards.
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1186,6 +1188,7 @@ mod tests {
         }
     }
 
+    /// Happy-path tools/list over the mock Python stdio server.
     #[tokio::test]
     async fn mcp_lists_tools_over_stdio() {
         let client = McpClient::new(mock_server(""));
@@ -1209,6 +1212,7 @@ mod tests {
         );
     }
 
+    /// Streamable HTTP remote MCP: initialize, session header, tools/list SSE body.
     #[tokio::test]
     async fn mcp_lists_tools_over_remote_streamable_http() {
         use mockito::Matcher;
@@ -1275,6 +1279,7 @@ mod tests {
         list.assert_async().await;
     }
 
+    /// auth_ref over plaintext HTTP is refused before any Keychain secret is read.
     #[tokio::test]
     async fn remote_mcp_refuses_bearer_over_plaintext_http() {
         // review P2-17: a Keychain secret must not be sent in cleartext. The
@@ -1300,6 +1305,7 @@ mod tests {
         );
     }
 
+    /// Bounded reconnect after 503s still delivers tools/list without dropping the call.
     #[tokio::test]
     async fn remote_mcp_reconnects_with_backoff_without_losing_the_call() {
         use tiny_http::{Header, Response, Server, StatusCode};
@@ -1384,6 +1390,7 @@ mod tests {
         worker.join().expect("mock server thread");
     }
 
+    /// Probe records server name/version and negotiated protocol version from initialize.
     #[tokio::test]
     async fn mcp_probe_captures_handshake_identity() {
         let client = McpClient::new(mock_server(""));
@@ -1402,6 +1409,7 @@ mod tests {
         );
     }
 
+    /// tools/call over stdio returns ToolResultContent text from the mock echo tool.
     #[tokio::test]
     async fn mcp_calls_tool_over_stdio() {
         let client = McpClient::new(mock_server(""));
@@ -1417,6 +1425,7 @@ mod tests {
         );
     }
 
+    /// Garbage JSON-RPC from the server surfaces as a Malformed MCP error, not a hang.
     #[tokio::test]
     async fn mcp_malformed_response_errors() {
         let client =
@@ -1454,6 +1463,7 @@ mod tests {
         );
     }
 
+    /// Missing binary path reports command-not-found during tools discovery.
     #[tokio::test]
     async fn mcp_missing_command_reports_command_not_found() {
         let config = McpServerConfig {
@@ -1479,6 +1489,7 @@ mod tests {
         );
     }
 
+    /// GUI-launched apps get Homebrew/cargo/local bins appended to the MCP PATH.
     #[test]
     fn mcp_effective_path_includes_gui_missing_user_bins() {
         let path = effective_mcp_path(None);
@@ -1506,6 +1517,7 @@ mod tests {
         }
     }
 
+    /// Bare command names resolve against the effective MCP PATH, not only process PATH.
     #[test]
     fn mcp_resolves_bare_command_from_config_path() {
         let temp = TempDir::new().expect("tempdir");
@@ -1527,6 +1539,7 @@ mod tests {
         assert_eq!(PathBuf::from(resolved), command_path);
     }
 
+    /// Server crash mid-call becomes a closed-stdout tool-call error, not a panic.
     #[tokio::test]
     async fn mcp_crashed_server_returns_call_error() {
         let client =
@@ -1597,6 +1610,7 @@ mod tests {
         );
     }
 
+    /// Default initialize budget is shorter than request timeout; explicit override unifies both.
     #[test]
     fn mcp_initialize_timeout_defaults_shorter_than_request_timeout() {
         let config = mock_server("");

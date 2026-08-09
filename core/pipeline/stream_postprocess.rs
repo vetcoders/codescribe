@@ -28,10 +28,14 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 
+/// Embedded legacy-format lexicon sources shipped with the binary (programming domain).
+/// Each `(label, jsonl)` pair is compiled at startup into the global rewrite table.
 const BUILTIN_LEXICONS: &[(&str, &str)] = &[(
     "programming",
     include_str!("../../assets/programming.jsonl"),
 )];
+/// Seed-format domain vocabulary baked into the binary and loaded before operator vocab.
+/// Seed rows carry whole-word / case policy so rewrites cannot hit substrings.
 const SEED_JSONL: &str = include_str!("../../assets/seed.jsonl");
 /// Curated operator/command vocabulary. Spoken Polish UI-command phrases and
 /// their Whisper mis-hears normalize to the canonical *code token* the codebase
@@ -49,18 +53,28 @@ const OPERATOR_VOCAB_JSONL: &str = include_str!("../../assets/operator_vocabular
 /// in this file, so they never get capitalized.
 const PROTECTED_TERMS_JSONL: &str = include_str!("../../assets/protected_terms.jsonl");
 
+/// Default cosine similarity above which an interim chunk is a near-duplicate of the last.
+/// Overridable via `CODESCRIBE_STREAM_SIMILARITY`.
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
+/// Default Jaccard novelty floor: chunks at or below this and high similarity may drop.
+/// Overridable via `CODESCRIBE_STREAM_NOVELTY`.
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
+/// Max characters the semantic gate will embed; longer text skips embedding (fail-open).
 const MAX_EMBED_CHARS: usize = 512;
+/// Cap on consecutive gate drops so a genuinely repetitive speaker is never silenced.
 const MAX_DROPS_IN_ROW: u8 = 2;
+/// Filler tokens that fingerprint final-pass drift when newly introduced into a candidate.
 const FINAL_PASS_ARTIFACT_TOKENS: &[&str] = &["going", "use"];
+/// Whisper `initial_prompt` token budget; over-approximated so the decoder never truncates.
 pub const WHISPER_INITIAL_PROMPT_TOKEN_BUDGET: usize = 224;
+/// Fixed prefix for the Whisper vocabulary hint string built by `build_whisper_initial_prompt`.
 const WHISPER_INITIAL_PROMPT_PREFIX: &str = "Vocabulary:";
+/// Env override for Whisper initial-prompt opt-in; wins over persisted config when set.
 pub const STT_INITIAL_PROMPT_ENABLED_ENV: &str = "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED";
 
 lazy_static! {
-    // Whisper sometimes emits trailing emoticon artifacts like ":D", ":-D", "::D", often repeated.
-    // We strip them only at the end of the utterance.
+    /// Matches trailing Whisper `:D` / `:-D` emoticon bursts stripped by `cleanup_artifacts`.
+    /// Applied only at utterance end so mid-text punctuation is never removed.
     static ref TRAILING_SMILEY_D_RE: Regex =
         Regex::new(r"(?i)(?:\s*:+-?d)+(?:\s*:+\s*)*$").expect("trailing :D regex");
 }
@@ -100,6 +114,7 @@ struct SeedNormalization {
 }
 
 impl Default for SeedNormalization {
+    /// Conservative defaults: enabled, case-insensitive, whole-word only.
     fn default() -> Self {
         Self {
             input_variants: Vec::new(),
@@ -145,6 +160,8 @@ struct Lexicon {
     custom_canonicals: Vec<String>,
 }
 
+/// Process-global lexicon singleton shared by streaming, final pass, and quality lanes.
+/// One rewrite table so every path normalizes operator vocabulary identically.
 static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
     let lex = Lexicon::from_builtin();
     info!(
@@ -989,6 +1006,7 @@ impl StreamPostProcessor {
 }
 
 impl Default for StreamPostProcessor {
+    /// Same as [`StreamPostProcessor::new`]: touches the global lexicon on construction.
     fn default() -> Self {
         Self::new()
     }
@@ -1195,18 +1213,21 @@ fn truncate_for_embedding(text: &str) -> String {
     text.chars().take(MAX_EMBED_CHARS).collect()
 }
 
+/// Hermetic unit coverage for lexicon load/reload, prompt opt-in, and final-pass guardrails.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::OsString;
 
+    /// RAII guard that restores a process env var on drop so serial tests cannot leak state.
     struct EnvRestore {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvRestore {
+        /// Snapshot `key`'s current value (or absence) before a test mutates the environment.
         fn capture(key: &'static str) -> Self {
             Self {
                 key,
@@ -1216,6 +1237,7 @@ mod tests {
     }
 
     impl Drop for EnvRestore {
+        /// Restore the captured env value, or remove the key if it was previously unset.
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -1224,6 +1246,7 @@ mod tests {
         }
     }
 
+    /// Builtin programming lexicon rewrites Whisper mis-hears (e.g. `doker` → `Docker`).
     #[test]
     fn test_lexicon_rewrite() {
         let mut processor = StreamPostProcessor::new();
@@ -1235,6 +1258,7 @@ mod tests {
         );
     }
 
+    /// Protected-term family collapses acoustic Loctree variants to brand casing.
     #[test]
     fn test_lexicon_rewrites_loctree_compound_variants() {
         let mut processor = StreamPostProcessor::new();
@@ -1248,6 +1272,7 @@ mod tests {
         );
     }
 
+    /// Empty term lists or a zero token budget produce no Whisper initial prompt.
     #[test]
     fn whisper_initial_prompt_empty_terms_returns_none() {
         assert_eq!(build_whisper_initial_prompt(&[], &[], 224), None);
@@ -1257,6 +1282,7 @@ mod tests {
         );
     }
 
+    /// Protected terms win order; case-insensitive duplicates are dropped once.
     #[test]
     fn whisper_initial_prompt_dedupes_case_and_prioritizes_protected_terms() {
         let protected = vec![
@@ -1279,6 +1305,7 @@ mod tests {
         );
     }
 
+    /// Prompt assembly stops before exceeding the coarse token budget estimate.
     #[test]
     fn whisper_initial_prompt_truncates_to_token_budget() {
         let protected = vec![
@@ -1293,6 +1320,7 @@ mod tests {
         assert_eq!(prompt, "Vocabulary: Loctree.");
     }
 
+    /// Fresh/default config must not inject an initial prompt even when terms exist.
     #[test]
     #[serial]
     fn whisper_initial_prompt_defaults_off_even_with_builtin_terms() {
@@ -1315,6 +1343,7 @@ mod tests {
         );
     }
 
+    /// Setting `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` builds a prompt with protected terms.
     #[test]
     #[serial]
     fn whisper_initial_prompt_is_opt_in() {
@@ -1336,6 +1365,7 @@ mod tests {
         );
     }
 
+    /// Repetition-loop cleanup and whitespace collapse run on every processed chunk.
     #[test]
     fn test_cleanup_and_whitespace() {
         let mut processor = StreamPostProcessor::new();
@@ -1344,6 +1374,7 @@ mod tests {
         assert_eq!(output, "To jest bardzo wazny test systemu.");
     }
 
+    /// Trailing `:D` ASR artifacts are stripped from complete utterances.
     #[test]
     fn test_strip_trailing_smiley_d() {
         let mut processor = StreamPostProcessor::new();
@@ -1352,6 +1383,7 @@ mod tests {
         assert_eq!(output, "Siema, czy jestes tam?");
     }
 
+    /// Short, repetitive, or loop-like text is flagged; ordinary prose is not.
     #[test]
     fn test_is_suspicious_heuristics() {
         assert!(is_suspicious("ok"));
@@ -1361,6 +1393,7 @@ mod tests {
         ));
     }
 
+    /// Final-pass candidates that introduce ≥2 artifact tokens are rejected with a reason.
     #[test]
     fn test_final_pass_guardrail_rejects_artifact_token_drift() {
         let raw = "Co będę robił? Ja chyba coś nagrywam? Ja coś się... Może zhulać, ale w tym momencie myślę, że kwestia";
@@ -1370,6 +1403,7 @@ mod tests {
         assert_eq!(reason, "artifact_token_drift:going,use");
     }
 
+    /// Lexicon-only rewrites (no filler drift) pass the final-pass guardrail.
     #[test]
     fn test_final_pass_guardrail_allows_expected_lexicon_cleanup() {
         let raw = "Uzywam doker do github";
@@ -1378,6 +1412,7 @@ mod tests {
         assert_eq!(final_pass_guardrail_reason(raw, candidate), None);
     }
 
+    /// Custom lexicon mtime change reloads rules without recompiling builtins.
     #[test]
     fn test_hot_reload_picks_up_new_rules() {
         use std::io::Write;
@@ -1425,6 +1460,7 @@ mod tests {
         assert_eq!(lexicon.custom_canonicals, vec!["FooBar".to_string()]);
     }
 
+    /// Overlay correction → custom lexicon → hot-reload teaches the next transcript.
     #[test]
     #[serial]
     fn overlay_correction_chain_teaches_custom_lexicon_for_next_transcript() {
@@ -1519,6 +1555,7 @@ mod tests {
         );
     }
 
+    /// Plain word→word custom rules are rejected as unsafe language-level rewrites.
     #[test]
     fn test_custom_lexicon_skips_plain_word_regression_rules() {
         let json = r#"
@@ -1544,6 +1581,7 @@ mod tests {
         assert_eq!(lexicon.apply(input), input);
     }
 
+    /// Diacritic-only custom rules (e.g. `zazolc` → `zażółć`) remain loadable.
     #[test]
     fn test_custom_lexicon_allows_diacritic_only_rules() {
         let json = r#"{"term":"zażółć","mispronunciations":["zazolc"]}"#;
@@ -1564,6 +1602,7 @@ mod tests {
         assert_eq!(lexicon.apply("zazolc gesla jazn"), "zażółć gesla jazn");
     }
 
+    /// Unchanged custom-file mtime makes `maybe_reload` a no-op.
     #[test]
     fn test_hot_reload_no_change_skips_reload() {
         let dir = tempfile::tempdir().unwrap();
@@ -1594,6 +1633,7 @@ mod tests {
         assert_eq!(lexicon.custom_mtime, mtime_after);
     }
 
+    /// Reloading custom rules must never drop previously compiled builtin rules.
     #[test]
     fn test_hot_reload_preserves_builtin_rules() {
         let dir = tempfile::tempdir().unwrap();
@@ -1639,6 +1679,7 @@ mod tests {
         assert_eq!(lexicon.apply("moj kastom kod"), "moj Custom kod");
     }
 
+    /// Every `process` call applies lexicon rewrites regardless of gate history.
     #[test]
     fn test_postprocessor_always_applies_lexicon_contract() {
         // Contract: every call to process() applies lexicon rewrites
@@ -1664,6 +1705,7 @@ mod tests {
         );
     }
 
+    /// `process` advances session stats (and thus exercised the reload hook path).
     #[test]
     fn test_process_calls_maybe_reload() {
         // Verify that process() calls maybe_reload() by checking stats progression
@@ -1674,6 +1716,7 @@ mod tests {
         assert_eq!(stats.input_chunks, 2, "Both chunks should be counted");
     }
 
+    /// Legacy rows may store mis-hears under `extras.mispronunciations`.
     #[test]
     fn test_extras_mispronunciations_format() {
         // Veterinary entries store mispronunciations in extras.mispronunciations
@@ -1689,6 +1732,7 @@ mod tests {
         assert_eq!(rules[1].replacement, "Acepromazyna");
     }
 
+    /// Top-level and extras mispronunciations merge; case-equal variants are skipped.
     #[test]
     fn test_merged_mispronunciations() {
         // Entry with mispronunciations in both top-level and extras
@@ -1700,6 +1744,7 @@ mod tests {
         assert_eq!(count, 2, "Should skip case-equal + extract 2 from extras");
     }
 
+    /// Full builtin load (incl. vet extras) yields a large compiled rule set.
     #[test]
     fn test_builtin_lexicon_loads_vet_extras() {
         // Integration test: the real builtin lexicon must produce > 798 rules now
@@ -1738,6 +1783,7 @@ mod tests {
         }
     }
 
+    /// Acoustic homophone `Luxury` and locktree variants rewrite to `Loctree`.
     #[test]
     fn test_protected_terms_loctree_not_luxury() {
         let lex = builtin_only_lexicon();
@@ -1752,6 +1798,7 @@ mod tests {
         assert_eq!(lex.apply("Loctree daje sight"), "Loctree daje sight");
     }
 
+    /// Protected source normalizes brand casing (AICX, MCP, GitHub, product names).
     #[test]
     fn test_protected_terms_preserve_brand_casing() {
         let lex = builtin_only_lexicon();
@@ -1767,6 +1814,7 @@ mod tests {
         assert_eq!(lex.apply("git hub"), "GitHub");
     }
 
+    /// Multi-word protected phrases rewrite as whole phrases, not partial tokens.
     #[test]
     fn test_protected_terms_multiword_phrases() {
         let lex = builtin_only_lexicon();
@@ -1784,6 +1832,7 @@ mod tests {
         );
     }
 
+    /// Ordinary English/Polish without protected terms must pass through unchanged.
     #[test]
     fn test_protected_terms_do_not_overcorrect_ordinary_language() {
         let lex = builtin_only_lexicon();
@@ -1796,6 +1845,7 @@ mod tests {
         assert_eq!(lex.apply(pl), pl);
     }
 
+    /// Polish UI command mis-hears normalize to code tokens (clipboard, screenshot, …).
     #[test]
     fn test_polish_ui_command_phrase_preservation() {
         // Regression class: Polish UI command phrases (and their Whisper
@@ -1819,6 +1869,7 @@ mod tests {
         assert_eq!(lex.apply(plain), plain);
     }
 
+    /// `protected_terms_lost` reports canonicals present in raw but missing after a pass.
     #[test]
     fn test_protected_terms_lost_detects_corruption() {
         // Uses the GLOBAL lexicon; builtin protected canonicals (Loctree,
@@ -1831,6 +1882,7 @@ mod tests {
         assert!(none.is_empty());
     }
 
+    /// Whole-word `\b` boundaries must not rewrite substrings inside longer tokens.
     #[test]
     fn python_whole_word_boundary_does_not_corrupt_wordpython() {
         // Regression: build_word_regex uses \b so "Python" must not rewrite
@@ -1855,6 +1907,7 @@ mod tests {
         );
     }
 
+    /// Re-applying the lexicon on canonical text reaches a fixed point without drift.
     #[test]
     fn test_apply_lexicon_is_idempotent_on_canonical() {
         // Re-applying after an LLM pass must reach a fixed point (no oscillation /

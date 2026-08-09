@@ -79,6 +79,7 @@ pub struct HoldBadgeConfig {
 }
 
 impl Default for HoldBadgeConfig {
+    /// Default hold badge: 12 px red dot, 150 ms updates, Hold mode.
     fn default() -> Self {
         Self {
             diameter: 12.0,
@@ -108,10 +109,12 @@ impl HoldBadgeConfig {
     }
 }
 
+/// Mode visual contracts and size-change-without-mutate visible config.
 #[cfg(test)]
 mod tests {
     use super::{BadgeMode, HoldBadgeConfig};
 
+    /// Processing pulses orange; Assistive glows purple and is slightly larger.
     #[test]
     fn hold_badge_modes_encode_processing_and_assistive_affordances() {
         assert_eq!(BadgeMode::Processing.color(), (1.0, 0.5, 0.0, 0.85));
@@ -125,6 +128,7 @@ mod tests {
         assert_eq!(BadgeMode::Assistive.diameter_multiplier(), 1.2);
     }
 
+    /// from_mode keeps layout fields while swapping color/diameter for the mode.
     #[test]
     fn hold_badge_config_from_mode_preserves_layout_and_applies_mode_visuals() {
         let base = HoldBadgeConfig::default();
@@ -146,6 +150,7 @@ mod tests {
         assert_eq!(assistive.update_interval_ms, base.update_interval_ms);
     }
 
+    /// Next show reads new base diameter; already-visible config stays frozen.
     #[test]
     fn badge_size_change_applies_to_next_show_without_mutating_visible_config() {
         let visible = HoldBadgeConfig::from_mode_with_base_diameter(BadgeMode::Hold, 8.0);
@@ -409,6 +414,7 @@ mod imp {
 
             // Extract range. Populated by `AXValueGetValue` through an out-pointer;
             // fields are written by the framework, so `dead_code` on them is spurious.
+            /// C layout for AX selected-text range out-parameter from AXValueGetValue.
             #[repr(C)]
             #[allow(dead_code)]
             struct CFRange {

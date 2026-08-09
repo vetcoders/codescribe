@@ -289,10 +289,15 @@ fn collect_symbolic_conflicts(
 /// Ctrl-based hold gestures always answer `false`; only the modifier-only
 /// gestures (Fn, double Ctrl, double Option) are checked against the registry.
 fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSignature) -> bool {
+    /// Carbon left-Option keycode used by symbolic-hotkey entries.
     const LEFT_OPTION_KEYCODE: i64 = 58;
+    /// Carbon right-Option keycode used by symbolic-hotkey entries.
     const RIGHT_OPTION_KEYCODE: i64 = 61;
+    /// Carbon left-Control keycode used by symbolic-hotkey entries.
     const LEFT_CONTROL_KEYCODE: i64 = 59;
+    /// Carbon right-Control keycode used by symbolic-hotkey entries.
     const RIGHT_CONTROL_KEYCODE: i64 = 62;
+    /// Carbon Fn/Globe keycode; unbound sentinel must not be treated as this.
     const FN_KEYCODE: i64 = 63;
 
     match gesture {
@@ -337,10 +342,15 @@ fn deferred_insert_conflicts_with_symbolic(
     shortcut: DeferredInsertShortcut,
     signature: SymbolicSignature,
 ) -> bool {
+    /// Carbon 'V' keycode for deferred-insert chords.
     const V_KEYCODE: i64 = 9;
+    /// NSEvent Control modifier bit in symbolic-hotkey parameter packs.
     const CONTROL: i64 = 0x0004_0000;
+    /// NSEvent Shift modifier bit in symbolic-hotkey parameter packs.
     const SHIFT: i64 = 0x0002_0000;
+    /// NSEvent Option modifier bit in symbolic-hotkey parameter packs.
     const OPTION: i64 = 0x0008_0000;
+    /// NSEvent Command modifier bit in symbolic-hotkey parameter packs.
     const COMMAND: i64 = 0x0010_0000;
 
     let modifiers = match shortcut {
@@ -367,12 +377,14 @@ fn load_symbolic_signatures() -> Vec<SymbolicSignature> {
     use std::process::Command;
     use tracing::debug;
 
+    /// Root of `com.apple.symbolichotkeys.plist` after `plutil -convert json`.
     #[derive(Debug, Deserialize)]
     struct SymbolicRegistry {
         #[serde(rename = "AppleSymbolicHotKeys")]
         hotkeys: HashMap<String, SymbolicEntry>,
     }
 
+    /// One system symbolic-hotkey slot; disabled or valueless entries are skipped.
     #[derive(Debug, Deserialize)]
     struct SymbolicEntry {
         #[serde(default)]
@@ -381,6 +393,7 @@ fn load_symbolic_signatures() -> Vec<SymbolicSignature> {
         value: Option<SymbolicValue>,
     }
 
+    /// Payload of an enabled slot; needs ≥3 parameters (ASCII, keycode, modifiers).
     #[derive(Debug, Deserialize)]
     struct SymbolicValue {
         #[serde(default)]
@@ -460,11 +473,13 @@ fn load_symbolic_signatures() -> Vec<SymbolicSignature> {
     signatures
 }
 
+/// Conflict-detection unit tests for internal and symbolic hotkey collisions.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ModeBinding, WorkMode};
 
+    /// Build settings with only the three mode bindings set; other fields default.
     fn settings_for(
         dictation: ShortcutBinding,
         formatting: ShortcutBinding,
@@ -489,6 +504,7 @@ mod tests {
         }
     }
 
+    /// Double-Ctrl dictation vs double-Left-Option formatting is an internal clash.
     #[test]
     fn internal_conflict_detects_double_ctrl_vs_left_option() {
         let settings = settings_for(
@@ -501,6 +517,7 @@ mod tests {
         assert_eq!(conflicts[0].gesture, HotkeyGesture::ToggleDoubleLeftOption);
     }
 
+    /// Distinct hold/toggle gestures for the three modes must report no conflicts.
     #[test]
     fn internal_conflict_empty_for_safe_combo() {
         let settings = settings_for(
@@ -512,6 +529,7 @@ mod tests {
         assert!(conflicts.is_empty());
     }
 
+    /// Dictation and assistive sharing one hold binding must surface as a conflict.
     #[test]
     fn internal_conflict_detects_assistive_dictation_binding_collision() {
         let settings = settings_for(
@@ -528,6 +546,7 @@ mod tests {
         );
     }
 
+    /// Both double-Ctrl dictation and assistive hold must stay in the active set.
     #[test]
     fn active_gestures_keeps_assistive_hold_visible_with_double_ctrl_dictation() {
         let bindings = ModeHotkeyBindings {
@@ -546,6 +565,7 @@ mod tests {
         );
     }
 
+    /// macOS Fn tap/double-tap system IDs must not be reported as Hold Fn conflicts.
     #[cfg(target_os = "macos")]
     #[test]
     fn symbolic_conflict_ignores_macos_fn_tap_for_hold_fn() {
@@ -575,6 +595,7 @@ mod tests {
         );
     }
 
+    /// A real Fn keycode with zero modifiers must collide with Hold Fn.
     #[cfg(target_os = "macos")]
     #[test]
     fn symbolic_conflict_detects_raw_fn_hold_signature() {
@@ -626,6 +647,7 @@ mod tests {
         );
     }
 
+    /// Deferred-insert collision requires exact keycode and exact modifier mask.
     #[cfg(target_os = "macos")]
     #[test]
     fn deferred_insert_collision_matches_key_and_exact_modifiers() {

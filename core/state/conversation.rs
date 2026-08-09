@@ -91,10 +91,12 @@ pub fn has_active_conversation() -> bool {
         .unwrap_or(false)
 }
 
+/// Conversation mode isolation: separate mode keys must not share history.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Agent vs dictation (or other) modes keep independent conversation buckets.
     #[test]
     fn test_separate_mode_conversations() {
         // Reset first to ensure clean state

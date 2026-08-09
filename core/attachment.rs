@@ -470,10 +470,12 @@ fn sanitize_filename(name: &str) -> String {
 // Tests
 // ═══════════════════════════════════════════════════════════
 
+/// Kind detection, chip labels, sanitization, vision load, and path parse.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Extension → AttachmentKind matrix including image, pdf, text, and fallback.
     #[test]
     fn test_kind_from_extension() {
         assert_eq!(
@@ -514,6 +516,7 @@ mod tests {
         );
     }
 
+    /// from_path infers Image kind and display_name from the file basename.
     #[test]
     fn test_attachment_from_path() {
         let a = Attachment::from_path(PathBuf::from("/tmp/test.png"), AttachmentSource::Clipboard);
@@ -522,6 +525,7 @@ mod tests {
         assert_eq!(a.sf_symbol(), "photo");
     }
 
+    /// Long names truncate with an ellipsis under the chip width budget.
     #[test]
     fn test_chip_label_truncation() {
         let a = Attachment::from_path(
@@ -533,6 +537,7 @@ mod tests {
         assert!(label.ends_with('…'));
     }
 
+    /// Short names pass through chip_label unchanged.
     #[test]
     fn test_chip_label_short() {
         let a = Attachment::from_path(PathBuf::from("/tmp/a.txt"), AttachmentSource::DragDrop);
@@ -540,6 +545,7 @@ mod tests {
         assert_eq!(label, "a.txt");
     }
 
+    /// Zero max width yields an empty chip label.
     #[test]
     fn test_chip_label_zero_limit() {
         let a = Attachment::from_path(PathBuf::from("/tmp/a.txt"), AttachmentSource::DragDrop);
@@ -547,6 +553,7 @@ mod tests {
         assert_eq!(label, "");
     }
 
+    /// Width of one yields only the ellipsis character.
     #[test]
     fn test_chip_label_limit_one() {
         let a = Attachment::from_path(
@@ -557,6 +564,7 @@ mod tests {
         assert_eq!(label, "…");
     }
 
+    /// Sanitizer replaces path separators, strips leading dots, caps length.
     #[test]
     fn test_sanitize_filename() {
         assert_eq!(sanitize_filename("hello world.txt"), "hello_world.txt");
@@ -568,6 +576,7 @@ mod tests {
         assert_eq!(sanitize_filename(&many_dots), "abc.txt");
     }
 
+    /// Vision MIME map accepts PNG/JPEG/WebP/TIFF; rejects SVG/HEIC/text.
     #[test]
     fn test_image_media_type() {
         assert_eq!(image_media_type(Path::new("a.png")), Some("image/png"));
@@ -582,6 +591,7 @@ mod tests {
         assert_eq!(image_media_type(Path::new("noext")), None);
     }
 
+    /// Plain text without the ATTACHMENTS marker is unchanged with no paths.
     #[test]
     fn test_parse_image_attachment_block_passthrough() {
         // No marker → text returned unchanged, no paths.
@@ -591,6 +601,7 @@ mod tests {
         assert!(paths.is_empty());
     }
 
+    /// Marker block yields paths and strips marker/separator from cleaned text.
     #[test]
     fn test_parse_image_attachment_block_extracts_paths() {
         let text = "Look at these\n\n---\nATTACHMENTS (image paths)\n- /tmp/a.png\n- /tmp/b.jpg\n";
@@ -606,6 +617,7 @@ mod tests {
         assert!(!cleaned.trim_end().ends_with("---"));
     }
 
+    /// Path list ends at a blank line; trailing prose stays in cleaned text.
     #[test]
     fn test_parse_image_attachment_block_stops_at_blank_line() {
         let text = "msg\nATTACHMENTS (image paths)\n- /tmp/a.png\n\ntrailing text kept";
@@ -614,6 +626,7 @@ mod tests {
         assert!(cleaned.contains("trailing text kept"));
     }
 
+    /// Vision load rejects oversize, non-image, and empty PNG payloads.
     #[test]
     fn test_load_image_for_vision_rejects_oversize_and_nonimage() {
         let dir = std::env::temp_dir().join(format!("cs_vision_test_{}", std::process::id()));
@@ -644,6 +657,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Attachment::paths preserves order of the input handles.
     #[test]
     fn test_paths_extraction() {
         let attachments = vec![

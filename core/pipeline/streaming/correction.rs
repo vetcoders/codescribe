@@ -15,8 +15,11 @@ use super::quality_gate::silero_vad_samples_to_ms;
 
 // Partial correction should feel "live" in overlay, not lag by multiple turns.
 // Trigger earlier to improve retranscription visibility in hands-off sessions.
+/// Utterance finals since last partial pass required to fire a Refine re-decode.
 pub(crate) const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 1;
+/// Silero-measured speech ms since last partial pass to fire a Refine re-decode.
 pub(crate) const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 1_800;
+/// Wall-clock ms since last rearm before the timer watchdog fires a partial pass.
 pub(crate) const PARTIAL_PASS_TRIGGER_TIMER_MS: u64 = 3_000;
 
 /// Why a partial correction pass fired. Recorded per run so the Stats event can
@@ -420,10 +423,12 @@ pub(crate) fn schedule_partial_pass(
     }
 }
 
+/// Unit tests for [`merge_corrected_window`] splice / suppress semantics.
 #[cfg(test)]
 mod merge_tests {
     use super::merge_corrected_window;
 
+    /// Tail-only refine: head of baseline must survive verbatim.
     #[test]
     fn corrected_tail_splices_onto_untouched_head() {
         // Hold-mode regression: 52s of speech, correction re-decodes only the
@@ -439,6 +444,7 @@ mod merge_tests {
         );
     }
 
+    /// Snapshot in the middle: newer preview tail appended while Refine ran stays.
     #[test]
     fn corrected_middle_keeps_previews_appended_while_refine_ran() {
         // Previews kept landing after the audio take: the snapshot sits in the
@@ -454,12 +460,14 @@ mod merge_tests {
         );
     }
 
+    /// When snapshot equals baseline, the whole preview is replaced by corrected.
     #[test]
     fn full_window_replacement_when_snapshot_equals_baseline() {
         let merged = merge_corrected_window("cały tekst", "cały tekst", "cały tekst lepszy");
         assert_eq!(merged.as_deref(), Some("cały tekst lepszy"));
     }
 
+    /// Snapshot covering a superset of the post-boundary baseline supersedes all.
     #[test]
     fn superset_window_supersedes_boundary_rewritten_baseline() {
         // Final boundary replaced accumulated text with the commit-lane final;
@@ -472,6 +480,7 @@ mod merge_tests {
         assert_eq!(merged.as_deref(), Some("część pierwsza finalny tekst"));
     }
 
+    /// Unanchorable snapshot returns `None` so callers suppress instead of destroy.
     #[test]
     fn unanchored_snapshot_suppresses_instead_of_destroying() {
         let merged = merge_corrected_window(
@@ -482,6 +491,7 @@ mod merge_tests {
         assert_eq!(merged, None);
     }
 
+    /// Empty snapshot is safe only when baseline is empty; otherwise suppress.
     #[test]
     fn empty_snapshot_only_replaces_empty_baseline() {
         assert_eq!(
@@ -494,6 +504,7 @@ mod merge_tests {
         );
     }
 
+    /// Repeated tokens use `rfind` so the live window, not an earlier echo, anchors.
     #[test]
     fn repeated_phrase_anchors_to_last_occurrence() {
         // rfind: the most recent occurrence is the live window, not an echo

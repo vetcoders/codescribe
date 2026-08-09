@@ -36,6 +36,7 @@ use crate::llm::provider::ProviderKind;
 
 use base64::Engine;
 
+/// Browser page after a successful OAuth callback — tells the user to close it.
 const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Codescribe signed in</title></head>
@@ -385,6 +386,7 @@ pub async fn exchange_code_for_tokens(
     pkce: &PkceCodes,
     code: &str,
 ) -> Result<AccountTokens, AccountAuthError> {
+    /// Minimal issuer JSON body; only fields we persist into `AccountTokens`.
     #[derive(serde::Deserialize)]
     struct TokenResponse {
         access_token: String,
@@ -562,6 +564,7 @@ fn send_response_with_disconnect(
     writer.flush()
 }
 
+/// Loopback OAuth server: roundtrip, state reject, env guards, code exchange.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +574,7 @@ mod tests {
     };
     use serial_test::serial;
 
+    /// OpenAI Responses login options for tests (registry row must exist).
     fn openai_opts(client_id: &str) -> ServerOptions {
         ServerOptions::new(ProviderKind::OpenAiResponses, client_id.to_string())
             .expect("OpenAI has an OAuth registry row")
@@ -649,6 +653,7 @@ mod tests {
         assert!(login.block_until_done().await.is_err());
     }
 
+    /// RAII env override for serial tests; restores prior value on drop.
     #[derive(Debug)]
     struct EnvGuard {
         key: &'static str,
@@ -656,6 +661,7 @@ mod tests {
     }
 
     impl EnvGuard {
+        /// Set `key=value`, capturing the previous state for restore.
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: env-touching tests here are serialized with `serial`.
@@ -663,6 +669,7 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Remove `key`, capturing the previous state for restore.
         fn unset(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: env-touching tests here are serialized with `serial`.
@@ -672,6 +679,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the exact process env captured at set/unset.
         fn drop(&mut self) {
             match &self.previous {
                 // SAFETY: env-touching tests here are serialized with `serial`.
@@ -682,6 +690,7 @@ mod tests {
         }
     }
 
+    /// Authorization-code grant posts form body and maps access/refresh/id.
     #[tokio::test]
     async fn exchange_code_posts_authorization_grant_and_maps_tokens() {
         let mut server = mockito::Server::new_async().await;

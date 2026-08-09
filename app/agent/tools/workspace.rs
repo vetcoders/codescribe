@@ -174,6 +174,7 @@ pub fn workspace_prompt_section() -> String {
     )
 }
 
+/// Workspace root scan + `list_projects` payload contract tests.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +183,7 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
+    /// One-level scan: `.git` dir/file count; nested checkouts and plain dirs skip.
     #[test]
     fn scan_finds_only_git_checkouts_one_level_deep() {
         let tmp = TempDir::new().expect("tempdir");
@@ -207,6 +209,7 @@ mod tests {
         );
     }
 
+    /// `limit` caps returned projects even when more checkouts exist under the root.
     #[test]
     fn scan_respects_limit() {
         let tmp = TempDir::new().expect("tempdir");
@@ -218,12 +221,14 @@ mod tests {
         assert_eq!(projects.len(), 3);
     }
 
+    /// Missing/unreadable roots contribute nothing — not an error path.
     #[test]
     fn scan_skips_missing_root_without_error() {
         let projects = scan_projects(&[PathBuf::from("/nonexistent/xyzzy-workspace")], 100);
         assert!(projects.is_empty());
     }
 
+    /// Overlapping roots de-dupe by absolute path so a checkout appears once.
     #[test]
     fn scan_dedupes_paths_across_overlapping_roots() {
         let tmp = TempDir::new().expect("tempdir");
@@ -236,6 +241,7 @@ mod tests {
         assert_eq!(projects[0].name, "solo");
     }
 
+    /// Leading `~` / `~/` expand via `$HOME`; absolute non-tilde paths pass through.
     #[test]
     fn expand_tilde_replaces_home_prefix() {
         if let Ok(home) = env::var("HOME") {
@@ -246,6 +252,7 @@ mod tests {
         assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
     }
 
+    /// End-to-end: settings roots + scan → payload roots/count/projects match.
     #[test]
     #[serial]
     fn list_projects_returns_all_configured_roots_and_git_projects() {
@@ -293,12 +300,14 @@ mod tests {
         );
     }
 
+    /// RAII process-env restore for serial tests that mutate settings paths.
     struct EnvGuard {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvGuard {
+        /// Set `key` to `value`, restoring the prior value (or absence) on drop.
         fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
             let previous = env::var_os(key);
             // SAFETY: the test mutating process env is serialized.
@@ -306,6 +315,7 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Remove `key` for the duration of the guard; restore previous on drop.
         fn remove(key: &'static str) -> Self {
             let previous = env::var_os(key);
             // SAFETY: the test mutating process env is serialized.
@@ -315,6 +325,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the env var to its pre-guard value or remove it if it was absent.
         fn drop(&mut self) {
             // SAFETY: the test mutating process env is serialized.
             unsafe {

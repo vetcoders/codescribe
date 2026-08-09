@@ -32,6 +32,7 @@ pub struct DecodingParams {
 }
 
 impl Default for DecodingParams {
+    /// Production defaults: greedy decode, n-gram block, timestamps on.
     fn default() -> Self {
         Self {
             temperature: 0.0,        // greedy (mlx_whisper default)
@@ -51,10 +52,12 @@ impl Default for DecodingParams {
     }
 }
 
+/// Pins default timestamp emission and core decode control values.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Segment-aware streaming needs `emit_timestamps` true by default.
     #[test]
     fn default_enables_timestamp_emission_for_segment_aware_pipeline() {
         let params = DecodingParams::default();
@@ -64,6 +67,7 @@ mod tests {
         );
     }
 
+    /// Guard against silent drift of temperature / n-gram / silence thresholds.
     #[test]
     fn default_core_decode_controls_remain_stable() {
         let params = DecodingParams::default();

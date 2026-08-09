@@ -297,6 +297,7 @@ impl StreamingTagParser {
 }
 
 impl Default for StreamingTagParser {
+    /// Same empty state as [`StreamingTagParser::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -485,10 +486,12 @@ fn find_speak_boundary(
     None
 }
 
+/// Streaming tag parser coverage: speak, tool, partial tags, and flush.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A complete `<speak>` chunk emits one Speak event with the body.
     #[test]
     fn parses_speak_single_chunk() {
         let mut p = StreamingTagParser::new();
@@ -496,6 +499,7 @@ mod tests {
         assert_eq!(ev, vec![DemuxEvent::Speak("hi".to_string())]);
     }
 
+    /// `<tool name=…>` captures name + JSON args as a Tool event.
     #[test]
     fn parses_tool_with_name() {
         let mut p = StreamingTagParser::new();
@@ -509,6 +513,7 @@ mod tests {
         );
     }
 
+    /// Plain text and tags interleave without losing surrounding Text spans.
     #[test]
     fn parses_text_and_tags() {
         let mut p = StreamingTagParser::new();
@@ -523,6 +528,7 @@ mod tests {
         );
     }
 
+    /// Tag name split across feeds surfaces Partial then completes as Speak.
     #[test]
     fn handles_partial_tag() {
         let mut p = StreamingTagParser::new();
@@ -532,6 +538,7 @@ mod tests {
         assert_eq!(ev2, vec![DemuxEvent::Speak("hi".to_string())]);
     }
 
+    /// `flush` emits buffered open-speak content when the stream ends mid-tag.
     #[test]
     fn flushes_open_speak() {
         let mut p = StreamingTagParser::new();

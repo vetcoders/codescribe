@@ -351,6 +351,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Dry-run lists plaintext secret keys and leaves the JSON file untouched.
     #[test]
     fn dry_run_detects_plaintext_secrets_without_writing() {
         let dir = TempDir::new().unwrap();
@@ -384,6 +385,7 @@ mod tests {
         assert!(after.contains("BSA_test_not_a_real_key"));
     }
 
+    /// Apply rewrites secrets to `env_refs`, keeps non-secrets, and backups.
     #[test]
     fn apply_rewrites_to_env_refs_and_backups() {
         let dir = TempDir::new().unwrap();
@@ -429,6 +431,7 @@ mod tests {
         assert!(text.contains("ROTATE:"));
     }
 
+    /// Non-secret env keys (PATH, ports) must never be migrated or rewritten.
     #[test]
     fn non_secret_keys_stay_in_env() {
         let dir = TempDir::new().unwrap();
@@ -450,6 +453,7 @@ mod tests {
         assert!(report.migrated.is_empty());
     }
 
+    /// `env_refs` resolve through the keychain and merge over plain `env` values.
     #[test]
     fn resolve_server_env_merges_refs() {
         // In test env, save_key sets process env for the account name.

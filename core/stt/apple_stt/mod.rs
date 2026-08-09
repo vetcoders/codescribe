@@ -36,12 +36,18 @@ use crate::pipeline::contracts::{
     TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
 };
 
+/// Floor macOS major version for the Apple STT path (SpeechAnalyzer era).
 const MIN_SUPPORTED_MACOS_MAJOR: u32 = 26;
+/// Product default locale when none is requested (pl-PL foundation).
 const DEFAULT_LOCALE: &str = "pl-PL";
+/// Bare bridge binary name: PATH lookup and sibling of the .app executable.
 const DEFAULT_BRIDGE_BIN: &str = "codescribe-stt-bridge";
 
+/// Env override for the Swift bridge binary path (wins over bundle/PATH).
 const ENV_STT_BRIDGE: &str = "CODESCRIBE_APPLE_STT_BRIDGE";
+/// Env override for Apple STT locale (normalized to BCP-47-ish tags).
 const ENV_LOCALE: &str = "CODESCRIBE_APPLE_STT_LOCALE";
+/// Env gate: allow auto-download of SpeechTranscriber locale assets.
 const ENV_ALLOW_DOWNLOAD: &str = "CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD";
 /// Opt-in gate for the `DictationTranscriber` PoC lane (W4-A). Read by BOTH
 /// sides: the bridge child inherits it from this process, so one key arms the
@@ -49,7 +55,10 @@ const ENV_ALLOW_DOWNLOAD: &str = "CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD";
 /// operator STOP-1 decision says otherwise.
 pub const ENV_DICTATION_TRANSCRIBER: &str = "CODESCRIBE_APPLE_DICTATION_TRANSCRIBER";
 
+/// Wall-clock budget for one bridge transcribe call (spawn → response).
+/// Must sit above the in-bridge SFSpeech deadline so Whisper can fall through.
 const BRIDGE_TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Wall-clock budget for probe/init bridge calls (asset install can be slow).
 const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// In-bridge SFSpeech recognition deadline (seconds). Must stay under the
 /// Apple final-pass budget (~3 s) and far below `BRIDGE_TRANSCRIBE_TIMEOUT` so
@@ -70,12 +79,14 @@ impl AppleSpeechAnalyzerAdapter {
 }
 
 impl Default for AppleSpeechAnalyzerAdapter {
+    /// Same as [`Self::new`]: zero-sized; runtime state lives in the bridge child.
     fn default() -> Self {
         Self
     }
 }
 
 impl TranscriptionAdapter for AppleSpeechAnalyzerAdapter {
+    /// Transcribe one utterance via the Swift bridge (Apple on-device backends).
     fn transcribe(
         &self,
         utterance: &SpeechUtterance,
@@ -251,6 +262,7 @@ struct BridgeSegment {
 /// identity). That poison was the product padaka: every toggle-start preflight
 /// failed with a stale auth error until full app restart.
 pub fn init() -> Result<()> {
+    /// Process-wide success cache for [`init`]: only `Ok(())` is stored, never failures.
     static INIT_OK: OnceLock<()> = OnceLock::new();
     if INIT_OK.get().is_some() {
         return Ok(());
@@ -663,6 +675,7 @@ fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<Transcript
 /// (partial pass + commit + re-transcribe in the live session). Serialize
 /// all bridge invocations process-wide.
 fn bridge_global_lock() -> &'static Mutex<()> {
+    /// Process-wide mutex serializing all bridge child spawns (AVAudioEngine safety).
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -1061,6 +1074,7 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// and then silently falls back to Candle). Explicit `CODESCRIBE_STT_ENGINE=apple`
 /// bypasses this and still probes + fails loudly.
 pub(crate) fn is_bridge_resolvable() -> bool {
+    /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
     static RESOLVABLE: OnceLock<bool> = OnceLock::new();
     *RESOLVABLE.get_or_init(bridge_binary_resolvable)
 }
@@ -1130,6 +1144,7 @@ fn ensure_supported_platform() -> Result<()> {
 /// Process-cached macOS major version. The failure is cached too — `sw_vers`
 /// cannot start working mid-process, so a retry would only re-pay the spawn.
 fn macos_major_version() -> Result<u32> {
+    /// Cached `sw_vers` major (or error string); detection failures stay sticky.
     static VERSION: OnceLock<std::result::Result<u32, String>> = OnceLock::new();
     let cached =
         VERSION.get_or_init(|| detect_macos_major_version().map_err(|e| format!("{:#}", e)));
@@ -1270,11 +1285,13 @@ impl TempWavFile {
 }
 
 impl Drop for TempWavFile {
+    /// Best-effort unlink of the temp WAV; missing file / IO errors are ignored.
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
+/// Unit tests for bridge protocol, resolver order, probe fall-through, and DT gates.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,6 +1304,7 @@ mod tests {
         installed: false,
     };
 
+    /// Stream NDJSON events are skipped; the closing BridgeResponse summary is kept.
     #[test]
     fn parse_stream_bridge_response_skips_events_keeps_summary() {
         let stdout = r#"
@@ -1303,6 +1321,7 @@ mod tests {
         assert_eq!(resp.backend.as_deref(), Some("sf_speech_recognizer"));
     }
 
+    /// Stream with only progress events (no summary line) must error honestly.
     #[test]
     fn parse_stream_bridge_response_errors_when_only_events() {
         let stdout = "{\"event\":\"ready\"}\n{\"event\":\"end\"}\n";
@@ -1313,6 +1332,7 @@ mod tests {
         );
     }
 
+    /// Explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins; missing path does not fall through.
     #[test]
     #[serial]
     fn bridge_resolvable_honors_explicit_override_path() {
@@ -1345,6 +1365,7 @@ mod tests {
         let _ = std::fs::remove_file(&present);
     }
 
+    /// Resolution order: env override → bundled beside .app → bare PATH command.
     #[test]
     #[serial]
     fn bridge_resolver_prefers_env_then_bundle_then_path() {
@@ -1430,30 +1451,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Adapter must be Send+Sync so engine routers can share it across threads.
     #[test]
     fn adapter_is_send_sync() {
+        /// Compile-time Send+Sync bound check (no runtime body).
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<AppleSpeechAnalyzerAdapter>();
     }
 
+    /// Short language codes expand to the product default region (pl→pl-PL, en→en-US).
     #[test]
     fn locale_normalization_for_short_codes() {
         assert_eq!(normalize_locale("pl"), "pl-PL");
         assert_eq!(normalize_locale("en"), "en-US");
     }
 
+    /// Full tags stay as-is; underscore region separators normalize to hyphen.
     #[test]
     fn locale_normalization_preserves_tags() {
         assert_eq!(normalize_locale("pl-PL"), "pl-PL");
         assert_eq!(normalize_locale("en_GB"), "en-GB");
     }
 
+    /// `sw_vers`-style product versions parse to the major component only.
     #[test]
     fn parse_macos_major_version_standard_formats() {
         assert_eq!(parse_macos_major_version("26.0").unwrap(), 26);
         assert_eq!(parse_macos_major_version("26.1.3\n").unwrap(), 26);
     }
 
+    /// Common truthy/falsy env spellings; unknown tokens stay None (not false).
     #[test]
     fn parse_bool_flag_common_values() {
         assert_eq!(parse_bool_flag("1"), Some(true));
@@ -1463,6 +1490,7 @@ mod tests {
         assert_eq!(parse_bool_flag("maybe"), None);
     }
 
+    /// pl-PL probe ready via SFSpeech on-device (product foundation, not legacy).
     #[test]
     fn probe_pl_via_sf_speech_is_ready() {
         let response: BridgeResponse = serde_json::from_str(
@@ -1490,6 +1518,7 @@ mod tests {
         );
     }
 
+    /// en-US probe prefers SpeechTranscriber when supported and installed.
     #[test]
     fn probe_en_us_prefers_speech_transcriber() {
         let response: BridgeResponse = serde_json::from_str(
@@ -1509,6 +1538,7 @@ mod tests {
         assert_eq!(backend, AppleSttBackend::SpeechTranscriber);
     }
 
+    /// Neither ST nor SF can serve the locale → honest unsupported error.
     #[test]
     fn probe_neither_backend_is_honest_error() {
         let err = preferred_backend_for_probe(false, false, None).unwrap_err();
@@ -1519,6 +1549,7 @@ mod tests {
         );
     }
 
+    /// ST listed but uninstalled falls through to SF when SF is ready.
     #[test]
     fn probe_st_supported_not_installed_falls_to_sf_when_ready() {
         // Bridge fall-through shape: ST was in catalog but not installed; SF
@@ -1544,6 +1575,7 @@ mod tests {
         assert_eq!(backend, AppleSttBackend::SfSpeechRecognizer);
     }
 
+    /// ST uninstalled and SF unavailable refuses readiness (no fake install).
     #[test]
     fn probe_st_supported_not_installed_without_sf_is_not_ready() {
         // When SF cannot serve either, probe may still report ST with
@@ -1556,6 +1588,7 @@ mod tests {
         );
     }
 
+    /// DT is a distinct bridge backend label with its own engine-mode provenance.
     #[test]
     fn dictation_transcriber_backend_round_trips() {
         // W4-A: DT is a third bridge backend label, not an alias of ST.
@@ -1571,6 +1604,7 @@ mod tests {
         assert_eq!(AppleSttBackend::from_bridge("dictation"), None);
     }
 
+    /// DT is SpeechAnalyzer family: Speech Recognition TCC is not required (W4-B).
     #[test]
     fn dictation_transcriber_does_not_require_speech_tcc() {
         // Measured 2026-08-08: DT transcribed the pl-PL parity fixture with
@@ -1588,6 +1622,7 @@ mod tests {
         );
     }
 
+    /// DT lane is opt-in; with the gate closed, pl-PL still resolves to SF.
     #[test]
     fn dictation_lane_is_opt_in_and_never_flips_the_default() {
         // Gate closed: pl-PL (ST-less) must still resolve to SF — the shipped default.
@@ -1618,6 +1653,7 @@ mod tests {
         assert!(open.locale_supported && open.locale_installed);
     }
 
+    /// Layer order stays ST → DT → SF: installed ST outranks an armed DT lane.
     #[test]
     fn dictation_lane_never_outranks_an_installed_speech_transcriber() {
         let out = probe_backend_fallthrough(
@@ -1637,6 +1673,7 @@ mod tests {
         );
     }
 
+    /// DT supported but assets missing reports not-installed (or SF fall-through).
     #[test]
     fn dictation_lane_supported_but_not_installed_is_honest() {
         // DT listed for the locale, assets absent, SF cannot serve: report DT
@@ -1669,6 +1706,7 @@ mod tests {
         assert_eq!(with_sf.backend, Some("sf_speech_recognizer"));
     }
 
+    /// With the DT gate closed, ST/SF fall-through table is unchanged.
     #[test]
     fn dictation_lane_preserves_the_st_sf_fallthrough_when_gate_is_closed() {
         let closed = DT_LANE_CLOSED;
@@ -1689,6 +1727,7 @@ mod tests {
         );
     }
 
+    /// SFSpeech in-bridge deadline sits under Apple (~3s) and bridge (30s) budgets.
     #[test]
     fn sf_speech_deadline_sits_under_bridge_and_apple_budgets() {
         // Const bounds live in const blocks (clippy::assertions_on_constants);
@@ -1744,6 +1783,7 @@ mod tests {
         );
     }
 
+    /// Timeout settle wins; a late recognition callback must not resume again.
     #[test]
     fn sf_speech_settle_timeout_wins_then_callback_is_ignored() {
         let gate = SfSpeechSettleGate::new();
@@ -1860,6 +1900,7 @@ mod tests {
         assert!(speech_recognition_tcc_required(None));
     }
 
+    /// Mic grant is orthogonal to speech_auth: decision API has no mic input.
     #[test]
     fn speech_tcc_matrix_mic_is_orthogonal() {
         // Contract proof: speech_auth_init_decision has no mic input — mic grant
@@ -1876,6 +1917,7 @@ mod tests {
         );
     }
 
+    /// Bridge segments become RawTranscript spans and survive Silero tail-drop mapping.
     #[test]
     fn bridge_response_segments_flow_to_raw_transcript_and_silero_tail_drop() {
         let response: BridgeResponse = serde_json::from_str(

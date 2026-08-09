@@ -23,14 +23,23 @@
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
 mod assistive_delivery;
+/// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
+/// Stop-path final-pass routing, completeness, and budget reporting.
 mod final_pass;
+/// Session telemetry, image attach helpers, assistive send wiring.
 mod helpers;
+/// Hold/toggle timing, agent-send vetoes, stop adjudication policy.
 mod hotkey_policy;
+/// Overlay paste dispositions and deferred-insert registration.
 mod overlay_paste;
+/// Quality-gated auto-paste / clipboard delivery decisions.
 mod quality_delivery;
+/// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
+/// Recording-truth adjudication: which engine/text is authoritative.
 mod truth;
+/// Controller state, hotkey types, and recording truth metadata.
 mod types;
 
 pub use helpers::{
@@ -135,16 +144,23 @@ use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
 };
 
+/// Live overlay: ms of audio held before the first interim emit.
 const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
+/// Live overlay typing animation speed in characters per second.
 const LIVE_PROFILE_TYPING_CPS: f32 = 90.0;
+/// Cap words emitted per live interim chunk (smooth typing feel).
 const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
+/// Seconds between interim emissions when the overlay is visible.
 const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
+/// Longer interim interval when no overlay is watching partials.
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 /// At most one level sample may wait behind the controller worker. The capture
 /// thread never constructs IPC events or timestamps and never accumulates a
 /// backlog when the bridge/UI is slower than CoreAudio.
 const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
 
+/// Test-only latch: when true, process_recording blocks forever.
+/// Armed by hang_process_recording_for_test; cleared by its Drop guard.
 #[cfg(test)]
 static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
 
@@ -163,6 +179,7 @@ fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
 
 #[cfg(test)]
 impl Drop for ProcessRecordingHangGuard {
+    /// Clear PROCESS_RECORDING_TEST_HANG so the hang cannot leak across tests.
     fn drop(&mut self) {
         PROCESS_RECORDING_TEST_HANG.store(false, Ordering::SeqCst);
     }
@@ -243,6 +260,7 @@ impl AtomicFlagGuard {
 }
 
 impl Drop for AtomicFlagGuard {
+    /// Lower the shared AtomicFlagGuard flag when the scope ends.
     fn drop(&mut self) {
         self.flag.store(false, Ordering::SeqCst);
     }
@@ -1848,8 +1866,10 @@ impl RecordingController {
                     tokio::task::spawn_blocking(move || {
                         // Resets playback_active when this scope exits (also on an
                         // unwinding panic; NOT under panic="abort", see above).
+                        /// Clears `playback_active` on exit (unwind path; not panic=abort).
                         struct PlaybackGuard(Arc<AtomicBool>);
                         impl Drop for PlaybackGuard {
+                            /// Clear the playback-active flag when play scope ends.
                             fn drop(&mut self) {
                                 self.0.store(false, Ordering::SeqCst);
                             }
@@ -4069,10 +4089,12 @@ impl RecordingController {
 }
 
 impl Default for RecordingController {
+    /// Build a controller with production defaults (`RecordingController::new`).
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Controller unit/integration tests live in the sibling `tests` submodule.
 #[cfg(test)]
 mod tests;

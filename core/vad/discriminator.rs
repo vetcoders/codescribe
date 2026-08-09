@@ -171,6 +171,7 @@ mod tests {
         VadConfig::default()
     }
 
+    /// All above-threshold windows become `Speech`.
     #[test]
     fn all_speech_classifies_as_speech() {
         let timeline = classify_windows(&[0.9, 0.8, 0.95], &default_config());
@@ -180,6 +181,7 @@ mod tests {
         );
     }
 
+    /// One short silence window is an in-utterance gap, not a boundary.
     #[test]
     fn short_mid_silence_classifies_as_utterance_gap() {
         let timeline = classify_windows(&[0.9, 0.1, 0.92], &default_config());
@@ -189,6 +191,7 @@ mod tests {
         );
     }
 
+    /// Multi-window mid silence above the gap threshold is a sentence boundary.
     #[test]
     fn medium_mid_silence_classifies_as_sentence_boundary() {
         let timeline = classify_windows(&[0.9, 0.1, 0.1, 0.1, 0.92], &default_config());
@@ -204,6 +207,7 @@ mod tests {
         );
     }
 
+    /// Long silence at the end reclassifies as trailing silence for tail-drop.
     #[test]
     fn long_trailing_silence_classifies_as_trailing_silence() {
         let timeline = classify_windows(&[0.9, 0.88, 0.1, 0.1, 0.1, 0.1], &default_config());
@@ -220,6 +224,7 @@ mod tests {
         );
     }
 
+    /// Long silence with speech after it stays a boundary, never trailing.
     #[test]
     fn long_silence_followed_by_more_speech_is_sentence_boundary_not_tail() {
         let timeline = classify_windows(&[0.9, 0.1, 0.1, 0.1, 0.1, 0.92], &default_config());
@@ -236,6 +241,7 @@ mod tests {
         );
     }
 
+    /// Empty probability stream yields an empty class vector (window still 0.5s).
     #[test]
     fn empty_input_returns_empty_timeline() {
         let timeline = classify_windows(&[], &default_config());
@@ -243,6 +249,7 @@ mod tests {
         assert_eq!(timeline.window_sec, 0.5);
     }
 
+    /// `class_at` maps seconds onto windows and rejects negative times.
     #[test]
     fn class_at_returns_correct_window() {
         let timeline = classify_windows(&[0.9, 0.1, 0.92], &default_config());
@@ -252,6 +259,7 @@ mod tests {
         assert_eq!(timeline.class_at(-1.0), None);
     }
 
+    /// Partial range overlap with trailing silence is detected for Whisper filter.
     #[test]
     fn overlaps_trailing_silence_detects_partial_overlap() {
         let timeline = classify_windows(&[0.9, 0.9, 0.1, 0.1, 0.1, 0.1], &default_config());

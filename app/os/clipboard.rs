@@ -175,7 +175,9 @@ impl SyntheticPastePreflight {
 pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
+        /// Whether this process may post CGEvents (synthetic keystrokes).
         fn CGPreflightPostEventAccess() -> bool;
+        /// Whether Accessibility trusts this process for AX automation.
         fn AXIsProcessTrusted() -> bool;
     }
 
@@ -617,11 +619,13 @@ pub fn paste_and_restore(text: &str) -> Result<()> {
     paste_text_smart(text, true)
 }
 
+/// Clipboard snapshot/restore, epoch cancel, and deferred-insert unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Round-trip plain text through set_clipboard / get_clipboard when available.
     #[test]
     #[serial]
     fn test_set_and_get_clipboard() {
@@ -639,6 +643,7 @@ mod tests {
         assert_eq!(retrieved, test_text);
     }
 
+    /// Empty set is a soft no-op (warns) and must not error.
     #[test]
     #[serial]
     fn test_empty_clipboard_warning() {
@@ -648,6 +653,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Capture records non-empty text and reports `is_empty() == false`.
     #[test]
     #[serial]
     fn test_clipboard_snapshot_capture() {
@@ -673,6 +679,7 @@ mod tests {
         assert!(!snapshot.is_empty());
     }
 
+    /// Restore puts prior text back after an intervening set_clipboard.
     #[test]
     #[serial]
     fn test_clipboard_snapshot_restore() {
@@ -711,6 +718,7 @@ mod tests {
         assert_eq!(restored, original);
     }
 
+    /// Empty snapshots clear the pasteboard so deferred insert is lossless.
     #[test]
     #[serial]
     fn empty_clipboard_snapshot_restores_empty_state() {
@@ -749,6 +757,7 @@ mod tests {
         assert!(clipboard.get_text().is_err(), "clipboard should be empty");
     }
 
+    /// A newer set bumps the epoch so a delayed restore cannot clobber it.
     #[test]
     #[serial]
     fn degrade_copy_cancels_pending_paste_restore() {
@@ -789,6 +798,7 @@ mod tests {
         assert_eq!(current, "degraded tagged transcript");
     }
 
+    /// Arming stores text in-process only; the system pasteboard is untouched.
     #[test]
     #[serial]
     fn deferred_insert_arm_does_not_touch_clipboard() {
@@ -811,6 +821,7 @@ mod tests {
         let _ = take_deferred_insert_at(Instant::now());
     }
 
+    /// Latest arm wins; second press after delivery reports NothingToInsert.
     #[test]
     #[serial]
     fn deferred_insert_press_delivers_once_and_rearm_replaces_payload() {
@@ -833,6 +844,7 @@ mod tests {
         );
     }
 
+    /// Delivery path restores the user's clipboard after the temporary paste set.
     #[test]
     #[serial]
     fn deferred_insert_press_restores_user_clipboard_after_delivery() {
@@ -870,6 +882,7 @@ mod tests {
         assert_eq!(restored, "user clipboard before deferred insert");
     }
 
+    /// Past TTL yields Expired, never pastes, and consumes the slot.
     #[test]
     #[serial]
     fn deferred_insert_expiry_never_delivers_stale_text() {
@@ -892,6 +905,7 @@ mod tests {
         );
     }
 
+    /// Soft-skip when the host has no pasteboard; panic on unexpected errors.
     fn skip_if_clipboard_unavailable<T>(result: Result<T>, action: &str) -> Option<T> {
         match result {
             Ok(value) => Some(value),
@@ -903,19 +917,23 @@ mod tests {
         }
     }
 
+    /// Detect arboard "not supported with the current system configuration" hosts.
     fn is_clipboard_unavailable(error: &anyhow::Error) -> bool {
         format!("{error:#}").contains("not supported with the current system configuration")
     }
 
+    /// RAII guard that restores the operator clipboard after each serial test.
     struct ClipboardTestGuard(Option<ClipboardSnapshot>);
 
     impl ClipboardTestGuard {
+        /// Best-effort capture; missing clipboard yields a no-op Drop.
         fn capture() -> Self {
             Self(ClipboardSnapshot::capture().ok())
         }
     }
 
     impl Drop for ClipboardTestGuard {
+        /// Restore the pre-test snapshot if capture succeeded.
         fn drop(&mut self) {
             if let Some(snapshot) = &self.0 {
                 let _ = snapshot.restore();

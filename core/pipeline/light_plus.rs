@@ -189,6 +189,7 @@ fn capitalize_sentences(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Unpunctuated stream gains a capital start and a closing period.
     #[test]
     fn gives_an_unpunctuated_stream_sentence_shape() {
         let apple_like = "no więc wygląda to żenująco jeśli chodzi o obecny kształt";
@@ -200,6 +201,7 @@ mod tests {
         assert!(shaped.ends_with('.'), "a transcript must close: {shaped}");
     }
 
+    /// Applying the pass twice yields the same string (re-delivery safe).
     #[test]
     fn is_idempotent() {
         let once = apply("to to jest  test ,bez kropki");
@@ -207,6 +209,7 @@ mod tests {
         assert_eq!(once, twice, "a re-delivered transcript must not drift");
     }
 
+    /// Capitalisation runs after every terminal mark, not only at the start.
     #[test]
     fn capitalizes_every_sentence_not_just_the_first() {
         assert_eq!(
@@ -215,6 +218,7 @@ mod tests {
         );
     }
 
+    /// Drops repeated words/punct seams; does not invent or delete content words.
     #[test]
     fn collapses_seam_artifacts_without_touching_words() {
         assert_eq!(apply("to to jest jest test"), "To jest test.");
@@ -222,6 +226,7 @@ mod tests {
         assert_eq!(apply("słowo , potem"), "Słowo, potem.");
     }
 
+    /// Hesitation sounds drop; content fillers like `tak`/`no` survive.
     #[test]
     fn removes_hesitation_sounds_only() {
         assert_eq!(apply("yyy no i eee koniec"), "No i koniec.");
@@ -235,6 +240,7 @@ mod tests {
         }
     }
 
+    /// Only raises case at sentence starts — acronyms and proper nouns stay.
     #[test]
     fn never_lowercases_existing_capitals() {
         let shaped = apply("mamy API oraz MCP w Codescribe");
@@ -246,6 +252,7 @@ mod tests {
         );
     }
 
+    /// Already-shaped text is stable; only missing finals gain a period.
     #[test]
     fn leaves_already_shaped_text_alone_except_for_the_final_stop() {
         assert_eq!(apply("Gotowe zdanie."), "Gotowe zdanie.");
@@ -253,6 +260,7 @@ mod tests {
         assert_eq!(apply("Lista:"), "Lista:");
     }
 
+    /// Empty and whitespace-only inputs stay empty strings.
     #[test]
     fn empty_and_whitespace_stay_empty() {
         assert_eq!(apply(""), "");

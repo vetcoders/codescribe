@@ -618,17 +618,20 @@ pub fn open_prompts_folder() {
 }
 
 #[cfg(test)]
+/// Prompt path/read/write/reset contracts against a sandboxed data directory.
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
+    /// RAII override of `CODESCRIBE_DATA_DIR` for serialised prompt tests.
     struct EnvGuard {
         previous: Option<OsString>,
     }
 
     impl EnvGuard {
+        /// Install `value` as `CODESCRIBE_DATA_DIR`, restoring the prior env on drop.
         fn set(value: impl AsRef<OsStr>) -> Self {
             let previous = std::env::var_os("CODESCRIBE_DATA_DIR");
             // SAFETY: every prompt test that mutates process env is serialized.
@@ -638,6 +641,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the previous `CODESCRIBE_DATA_DIR` (or remove it if it was unset).
         fn drop(&mut self) {
             // SAFETY: restores the serialized test's prior process environment.
             unsafe {
@@ -651,6 +655,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Formatting/assistive path helpers resolve under the sandbox with policy suffixes.
     fn test_prompt_paths_api() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -678,6 +683,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Every formatting kind: exact-byte IO, rename-failure safety, backup, reset, audit.
     fn all_formatting_prompts_share_exact_byte_read_write_failure_and_reset_contract() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -764,6 +770,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Missing assistive prompt falls back in-memory and never creates a file on read.
     fn missing_prompt_uses_memory_fallback_without_creating_a_file() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -781,6 +788,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Custom on-disk bytes survive every read probe without rewrite or re-encode.
     fn custom_prompt_bytes_survive_every_read_probe() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -811,6 +819,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Atomic save keeps a backup and writes a reason-tagged digest audit receipt.
     fn atomic_save_keeps_backup_and_reason_tagged_digest_receipt() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -851,6 +860,7 @@ mod tests {
     }
 
     #[test]
+    /// Injected rename failure leaves the original prompt intact and cleans temp files.
     fn injected_rename_failure_never_replaces_or_truncates_the_prompt() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let path = sandbox.path().join("prompts/assistive.txt");

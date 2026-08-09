@@ -235,10 +235,12 @@ pub fn dimension() -> Result<usize> {
     with_embedder(|engine| Ok(engine.dimension()))
 }
 
+/// Similarity math and idle-unload env parsing (no model download required).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Identical vectors must score cosine similarity ≈ 1.0.
     #[test]
     fn test_similarity_function() {
         let a = vec![1.0, 2.0, 3.0];
@@ -247,6 +249,7 @@ mod tests {
         assert!((sim - 1.0).abs() < 0.001);
     }
 
+    /// `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS=0` disables unload; unset → 45 min.
     #[test]
     fn idle_unload_disabled_when_zero() {
         // SAFETY: single-threaded test mutating a process env var it owns.

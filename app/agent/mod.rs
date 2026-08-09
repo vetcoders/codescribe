@@ -10,9 +10,13 @@ use codescribe_core::config::Config;
 use codescribe_core::llm::lane_truth;
 use codescribe_core::llm::provider::WireFamily;
 
+/// Anthropic Messages-family assistive provider client.
 pub mod anthropic_provider;
+/// Resident agent-run monitor (progress, cancel, status surfaces).
 pub mod monitor;
+/// OpenAI Responses-family client (also carries xAI and other Responses vendors).
 pub mod openai_provider;
+/// macOS-only native tool surface (filesystem, process, MCP, guards).
 #[cfg(target_os = "macos")]
 pub mod tools;
 

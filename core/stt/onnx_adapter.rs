@@ -54,6 +54,7 @@ const SUPPRESS_BLANK_TOKENS: [usize; 2] = [220, 50256];
 /// Warn once when users set an initial prompt env override while ONNX is active.
 /// ONNX path currently ignores this feature (experimental parity gap vs candle).
 fn warn_if_initial_prompt_ignored() {
+    /// Latch so the initial-prompt ignore warning fires at most once per process.
     static WARNED: OnceLock<()> = OnceLock::new();
 
     for key in [
@@ -136,6 +137,8 @@ struct OnnxEngine {
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
+/// Process-wide ONNX engine: `Session::run` needs `&mut`, so the engine is
+/// wrapped in a `Mutex` and shared behind `OnceLock`.
 static ENGINE: OnceLock<Mutex<OnnxEngine>> = OnceLock::new();
 
 /// Initialize the ONNX Whisper engine singleton.
@@ -144,7 +147,9 @@ static ENGINE: OnceLock<Mutex<OnnxEngine>> = OnceLock::new();
 /// while others block. If init fails, the error is cached and returned
 /// on subsequent calls (no retry — model path won't change mid-run).
 pub fn init() -> Result<()> {
+    /// Ensures `OnnxEngine::new` runs at most once even under concurrent init.
     static INIT_ONCE: std::sync::Once = std::sync::Once::new();
+    /// Cached init failure text; set on first error, returned on later calls.
     static INIT_ERR: OnceLock<String> = OnceLock::new();
 
     INIT_ONCE.call_once(
@@ -178,9 +183,9 @@ pub(crate) fn transcribe_long_with_segments(
     guard.transcribe_long_raw(audio, sample_rate, language)
 }
 
-/// Transcribe a single chunk via the ONNX engine (blocking lock).
 // FORGOTTEN-GEM(vc-prune 2026-06-10): parked sync transcription contract —
 // see core/stt/mod.rs::candle_transcribe_chunk for the cluster rationale.
+/// Transcribe a single chunk via the ONNX engine (blocking lock).
 #[allow(dead_code)]
 pub(crate) fn transcribe_chunk(
     audio: &[f32],
@@ -627,12 +632,17 @@ impl OnnxWhisperAdapter {
 }
 
 impl Default for OnnxWhisperAdapter {
+    /// Same as [`OnnxWhisperAdapter::new`] — ZST construction only, no init.
     fn default() -> Self {
         Self
     }
 }
 
 impl TranscriptionAdapter for OnnxWhisperAdapter {
+    /// Lock the global ONNX engine and run long-form decode for this utterance.
+    ///
+    /// Requires a prior successful [`init`]; returns `Err` if the engine is
+    /// missing or the mutex is poisoned.
     fn transcribe(
         &self,
         utterance: &SpeechUtterance,
@@ -921,28 +931,33 @@ fn load_mel_filters_from_reader<R: std::io::Read + std::io::Seek>(
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+/// Unit tests for mel filterbank math, logits extraction, and adapter traits.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Filterbank length is `n_mels * (n_fft/2 + 1)` for the Whisper-v3 shape.
     #[test]
     fn mel_filterbank_shape() {
         let filters = compute_mel_filterbank(128, 400, 16000);
         assert_eq!(filters.len(), 128 * 201); // 128 mels × (400/2 + 1) freqs
     }
 
+    /// Every filter weight must be non-negative (triangular Slaney bank).
     #[test]
     fn mel_filterbank_nonnegative() {
         let filters = compute_mel_filterbank(128, 400, 16000);
         assert!(filters.iter().all(|&f| f >= 0.0));
     }
 
+    /// At least one bin must carry energy so pcm_to_mel is not a zero map.
     #[test]
     fn mel_filterbank_not_all_zero() {
         let filters = compute_mel_filterbank(128, 400, 16000);
         assert!(filters.iter().any(|&f| f > 0.0));
     }
 
+    /// Softmax used for no-speech gating must emit probabilities in [0, 1].
     #[test]
     fn softmax_no_speech_is_valid_probability() {
         // Verify the softmax computation produces valid probabilities [0,1]
@@ -964,6 +979,7 @@ mod tests {
         );
     }
 
+    /// Happy path: last sequence row is sliced out of a [batch, seq, vocab] tensor.
     #[test]
     fn last_position_logits_extracts_last_row() {
         // shape [1, 2, 3]: two positions, vocab=3. Last row is [4,5,6].
@@ -972,6 +988,7 @@ mod tests {
         assert_eq!(out, vec![4.0, 5.0, 6.0]);
     }
 
+    /// Malformed decoder shapes return `Err` instead of panicking on index math.
     #[test]
     fn onnx_decode_malformed_shape() {
         // Rank 1 (len < 2) → Err, not panic.
@@ -993,6 +1010,7 @@ mod tests {
     /// Verify adapter satisfies Send + Sync (required by TranscriptionAdapter).
     #[test]
     fn adapter_is_send_sync() {
+        /// Compile-time bound helper: only types that are Send+Sync type-check.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<OnnxWhisperAdapter>();
     }

@@ -140,6 +140,7 @@ mod tests {
         }
     }
 
+    /// Segments in trailing silence are dropped when tail-drop is enabled.
     #[test]
     fn drops_segments_in_trailing_silence() {
         let outcome = map_whisper_segments_to_silero(
@@ -162,6 +163,7 @@ mod tests {
         assert_eq!(outcome.segments.len(), 1);
     }
 
+    /// Speech-class windows keep their Whisper segments unchanged.
     #[test]
     fn keeps_segments_in_speech_regions() {
         let outcome = map_whisper_segments_to_silero(
@@ -175,6 +177,7 @@ mod tests {
         assert_eq!(outcome.segments.len(), 1);
     }
 
+    /// Utterance-gap seams prefix the next segment with an ellipsis.
     #[test]
     fn inserts_ellipsis_for_utterance_gap() {
         let outcome = map_whisper_segments_to_silero(
@@ -195,6 +198,7 @@ mod tests {
         assert_eq!(outcome.segments[1].text, "… dalszy ciąg");
     }
 
+    /// Sentence-boundary gaps close the previous segment with `.` if needed.
     #[test]
     fn appends_period_for_sentence_boundary_without_terminator() {
         let outcome = map_whisper_segments_to_silero(
@@ -215,6 +219,7 @@ mod tests {
         assert_eq!(outcome.segments[0].text, "Pierwsze zdanie.");
     }
 
+    /// With `tail_drop_enabled=false`, trailing-silence segments are kept.
     #[test]
     fn tail_drop_disabled_keeps_all_segments() {
         let outcome = map_whisper_segments_to_silero(
@@ -237,6 +242,7 @@ mod tests {
         assert!(outcome.text.contains("Subscribe"));
     }
 
+    /// `dropped_count` equals the number of trailing-silence segments removed.
     #[test]
     fn dropped_count_matches_dropped_segments() {
         let outcome = map_whisper_segments_to_silero(
@@ -259,6 +265,7 @@ mod tests {
         assert_eq!(outcome.dropped_count, 2);
     }
 
+    /// Diagnostic samples keep only the first three dropped texts.
     #[test]
     fn dropped_text_samples_capped_at_three() {
         let outcome = map_whisper_segments_to_silero(

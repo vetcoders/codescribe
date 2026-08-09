@@ -181,10 +181,13 @@ pub fn check_microphone() -> PermissionStatus {
     PermissionStatus::Granted // Not needed on other platforms
 }
 
+/// Wall-clock budget for the microphone TCC prompt wait (30s).
 #[cfg(target_os = "macos")]
 const MICROPHONE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Poll interval while waiting for mic authorization to settle.
 #[cfg(target_os = "macos")]
 const MICROPHONE_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Timeout waiting for main-thread dispatch of TCC-sensitive work.
 #[cfg(target_os = "macos")]
 const MAIN_THREAD_DISPATCH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -480,10 +483,12 @@ fn full_disk_access_status() -> PermissionStatus {
     }
 }
 
+/// PermissionStatus equality smoke tests (no live TCC dialogs).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Granted equals itself and differs from Denied.
     #[test]
     fn test_permission_status_equality() {
         assert_eq!(PermissionStatus::Granted, PermissionStatus::Granted);

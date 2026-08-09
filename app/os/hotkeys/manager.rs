@@ -43,6 +43,7 @@ struct GlobalHotkeyService {
 
 /// Lazily initialize and borrow the process-global hotkey service.
 fn global_hotkey_service() -> &'static Mutex<GlobalHotkeyService> {
+    /// Process-wide global-hotkey service slot; first installer wins via OnceLock.
     static GLOBAL_HOTKEY_SERVICE: OnceLock<Mutex<GlobalHotkeyService>> = OnceLock::new();
     GLOBAL_HOTKEY_SERVICE.get_or_init(|| Mutex::new(GlobalHotkeyService::default()))
 }
@@ -161,6 +162,7 @@ impl Drop for HotkeyManager {
 mod tests {
     use super::*;
 
+    /// is_global_hotkey_manager_active must return a bool without panicking if unset.
     #[test]
     fn is_global_hotkey_manager_active_returns_bool_safely() {
         // Smoke: getter must not panic on a fresh test runtime. The actual

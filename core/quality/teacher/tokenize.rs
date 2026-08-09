@@ -47,10 +47,12 @@ pub fn normalize_token(token: &str) -> String {
     trimmed.to_lowercase()
 }
 
+/// Token-normalization helpers used by teacher polygon matching.
 #[cfg(test)]
 mod tok_tests {
     use super::*;
 
+    /// normalize lowers case and strips punctuation so polygon tokens compare stably.
     #[test]
     fn normalize_strips_punct_and_case() {
         assert_eq!(normalize_token("Codescribe."), "codescribe");

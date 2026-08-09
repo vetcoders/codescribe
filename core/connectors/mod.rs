@@ -4,10 +4,12 @@
 //! files on disk that become regular `Attachment` objects.
 
 pub mod github;
+/// HTTP web connector helpers (shared client, fetch, page extract).
 pub mod web;
 
 use std::sync::OnceLock;
 
+/// Process-wide reqwest::Client for connector fetches; built once on first use.
 static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// Shared HTTP client for all connectors (connection pooling, single TLS init).

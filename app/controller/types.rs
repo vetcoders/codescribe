@@ -96,6 +96,7 @@ pub enum State {
 }
 
 impl std::fmt::Display for State {
+    /// Uppercase log token (`IDLE`, `REC_HOLD`, …); not the IPC lowercase form.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             State::Idle => write!(f, "IDLE"),
@@ -124,7 +125,9 @@ impl State {
 /// Hotkey event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyType {
+    /// Hold-to-talk recording gesture.
     Hold,
+    /// Toggle start/stop recording gesture.
     Toggle,
     /// Full-duplex conversation mode (Ctrl+Option)
     Conversation,
@@ -133,8 +136,11 @@ pub enum HotkeyType {
 /// Hotkey action types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyAction {
+    /// Physical key-down edge.
     Down,
+    /// Physical key-up edge.
     Up,
+    /// Discrete press (down+up treated as one).
     Press,
 }
 
@@ -158,7 +164,9 @@ pub struct HotkeyInput {
 /// the tree: the live raw-versus-format decision travels as the `force_raw` /
 /// `force_ai` pair on [`HotkeyInput`] and [`TranscriptPipelineParams`].
 pub enum TranscriptionActionContractMode {
+    /// Deliver the raw engine transcript without AI formatting.
     Raw,
+    /// Deliver AI-formatted transcript when the formatter path runs.
     AiFormat,
 }
 
@@ -169,11 +177,17 @@ pub enum TranscriptionActionContractMode {
 /// Persisted into `truth.json`, so the serialized variant names are part of
 /// the on-disk sidecar format.
 pub enum RecordingTranscriptSource {
+    /// Local Whisper final-pass on the saved audio.
     LocalFinalPass,
+    /// Toggle session chose among live layers at stop (adjudicated).
     ToggleSessionAdjudicated,
+    /// Cloud primary STT was the delivered source.
     CloudPrimary,
+    /// Cloud ran as fallback after a primary path failed.
     CloudFallback,
+    /// Live streaming preview was committed as the verdict.
     Streaming,
+    /// Streaming path used after a preferred path degraded.
     StreamingFallback,
 }
 
@@ -195,8 +209,11 @@ impl RecordingTranscriptSource {
 #[serde(rename_all = "snake_case")]
 /// How bad a fallback was, when one was taken. Persisted into `truth.json`.
 pub enum RecordingFallbackClass {
+    /// Fallback quality still acceptable for delivery.
     Acceptable,
+    /// Fallback is noticeably worse; surface a caution.
     Degraded,
+    /// Fallback is unsafe to trust as the delivered truth.
     Unsafe,
 }
 
@@ -373,10 +390,12 @@ pub struct TranscriptProcessOutcome {
     pub delivery_secs: f64,
 }
 
+/// Truth-sidecar disk roundtrip and legacy-flag deserialization tests.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Core metadata fields survive write → read through the sidecar path.
     #[test]
     fn truth_sidecar_roundtrip_preserves_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -406,6 +425,7 @@ mod tests {
         assert_eq!(restored, metadata);
     }
 
+    /// Typed disposition, confidence flags, and sparkline survive disk.
     #[test]
     fn truth_sidecar_roundtrip_preserves_final_pass_disposition_and_flags() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -444,6 +464,7 @@ mod tests {
         );
     }
 
+    /// `ToggleSessionAdjudicated` source and its flags round-trip intact.
     #[test]
     fn truth_sidecar_roundtrip_preserves_toggle_session_adjudicated_source() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -479,6 +500,7 @@ mod tests {
         );
     }
 
+    /// Pre-0.9.3 string confidence flags map to typed variants; unknowns drop.
     #[test]
     fn truth_sidecar_legacy_string_flags_still_deserialize() {
         // Sidecars written before 0.9.3 encoded `confidence_flags` as bare
@@ -526,6 +548,7 @@ mod tests {
         );
     }
 
+    /// `SileroDroppedTailHallucinations { count }` payload survives roundtrip.
     #[test]
     fn truth_sidecar_preserves_silero_drop_count() {
         let temp_dir = tempfile::tempdir().expect("temp dir");

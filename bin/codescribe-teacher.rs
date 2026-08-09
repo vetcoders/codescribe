@@ -167,8 +167,12 @@ fn run(input: TeacherInput, html: Option<PathBuf>, json: bool) -> Result<()> {
 }
 
 // Fixtures captured from e2e_overlay_delivery_parity (01_no-to-dobra.wav, candle).
+
+/// Apple-live under-gen fixture from the 01_no-to-dobra e2e candle sample.
 const PROOF_LIVE: &str = "Teraz po parę słów, korzystając z surowej transkrypcji przez Codescribe mamy już pierwsze słowo do analizy wobec czego chcę, żebyś za chwilę, żebyś wziął ten plik WAV i puść i przychodził go na nasz endpoint. bo muszę mieć pewność czy leksykon działa Więc po prostu po to, aby Duże bazy kodowe przestały być tajemnicą Czarną, dziurą, na agentu veiłej. korzysta z rusta w wersji Toolchain 2024";
 
+/// Whisper over-gen fixture paired with [`PROOF_LIVE`] for the built-in proof.
 const PROOF_WHISPER: &str = "No to dobra, teraz generalnie powiem parę słów korzystając z surowej transkrypcji przez Codescribe. Mamy już pierwsze słowo do analizy, wobec czego chcę, żebyś wziął ten blik Wave i puścił go na... nasz endpoint, bo muszę mieć pewność czy leksykon działa, więc po prostu na temu biuz dupy. LOCK3 to aplikacja stworzona po to aby duże bazy kodowe przestały być tajemnicą i czarną dziurą dla agentów AI. Korzystam z Rust w wersji Tooltrain 2024. Dziękuję.";
 
+/// Human reference transcript for the same candle; grounds lexicon-hint scoring.
 const PROOF_HUMAN: &str = "No to dobra. Teraz generalnie powiem parę słów korzystając z surowej transkrypcji przez Codescribe (mamy już pierwsze słowo do analizy), do czego chcę, żebyś, nie wiem, żebyś wziął ten plik WAV i puścił go na nasz endpoint, bo muszę mieć pewność, hmmm, czy leksykon działa więc po [(niewyraźnie)]. Loctree to aplikacja stworzona po to, aby duże bazy kodowe przestały być tajemnicą i czarną dziurą dla agentów AI. Korzysta z Rusta, w wersji Toolchain 2024.";

@@ -34,6 +34,7 @@ pub struct MoshiConfig {
 }
 
 impl Default for MoshiConfig {
+    /// Moshiko voice under `~/.codescribe/models/` with streaming-friendly defaults.
     fn default() -> Self {
         // Default to moshiko (male voice), paths can be overridden
         // All models in ~/.codescribe/models/ (unified path)
@@ -126,10 +127,12 @@ impl MoshiConfig {
     }
 }
 
+/// Default vs moshika voice selection smoke checks (no model files required).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Default config pins moshiko and a non-zero sampling temperature.
     #[test]
     fn test_default_config() {
         let config = MoshiConfig::default();
@@ -137,6 +140,7 @@ mod tests {
         assert!(config.temperature > 0.0);
     }
 
+    /// `moshika()` flips the voice label (and model path) without reloading files.
     #[test]
     fn test_moshika_config() {
         let config = MoshiConfig::moshika();

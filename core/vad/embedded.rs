@@ -33,10 +33,12 @@ pub fn get_embedded_data() -> Option<&'static [u8]> {
     Some(data::MODEL)
 }
 
+/// Embedded VAD availability and model-byte presence checks.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Reports whether embedded VAD weights are compiled in for this build.
     #[test]
     fn test_embedded_availability() {
         let available = is_embedded_available();

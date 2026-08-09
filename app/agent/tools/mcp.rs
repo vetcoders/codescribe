@@ -1024,6 +1024,8 @@ fn desktop_commander_validator(upstream_tool: &str) -> Option<ToolInputValidator
 /// two, everything else one. Display only; the command sent upstream is
 /// unchanged.
 fn redact_command_for_approval(command: &str) -> String {
+    /// Substring markers that trigger redaction of `KEY=value` tokens or the
+    /// following flag argument(s) in approval previews.
     const SENSITIVE_KEYS: &[&str] = &[
         "token",
         "password",
@@ -1220,6 +1222,8 @@ fn validate_name_part(kind: &str, name: &str) -> Result<()> {
     bail!("MCP {kind} name '{name}' contains unsupported characters")
 }
 
+/// Unit tests for Desktop Commander policy, MCP probe honesty, registration,
+/// and C4 agentic readiness (core gate vs optional operator tooling).
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1235,8 +1239,12 @@ mod tests {
         public_tool_name, redact_command_for_approval, register_mcp_tools_from_config_path,
     };
 
+    /// Pin the Desktop Commander 0.26 tool surface: 26 tools, 15 read-only, 10
+    /// approval-gated, and one Unknown (`give_feedback_to_desktop_commander`).
     #[test]
     fn desktop_commander_026_profile_classifies_all_26_tools() {
+        /// Canonical Desktop Commander 0.26 tool name census used by the profile
+        /// classification pin.
         const TOOLS: &[&str] = &[
             "create_directory",
             "edit_block",
@@ -1294,6 +1302,8 @@ mod tests {
         );
     }
 
+    /// Unclassified Desktop Commander tools stay `ToolRisk::Unknown` so registry
+    /// `decide()` can require approval without hard-denying.
     #[test]
     fn unknown_desktop_commander_tool_carries_unknown_risk_and_gates_at_decide() {
         // Unclassified upstream tools keep Unknown risk; the registry's decide()
@@ -1304,6 +1314,8 @@ mod tests {
         assert!(!policy.requires_approval);
     }
 
+    /// Approval previews redact secret-like tokens and the Desktop Commander
+    /// validator rejects security-policy key aliases on `set_config_value`.
     #[test]
     fn desktop_commander_terminal_preview_redacts_secrets_and_blocks_policy_key_aliases() {
         assert_eq!(
@@ -1322,6 +1334,8 @@ mod tests {
         );
     }
 
+    /// Codescribe policy metadata and cwd are rewritten for preview/path safety
+    /// and must never appear in the payload sent to the MCP server.
     #[test]
     fn desktop_commander_policy_metadata_is_not_sent_upstream() {
         let upstream = prepare_upstream_input(
@@ -1346,6 +1360,8 @@ mod tests {
         assert_eq!(policy.risk, ToolRisk::ReadOnly);
     }
 
+    /// Missing `mcp.json` is a single neutral/optional row — never a hard error —
+    /// and reports as not configured for onboarding.
     #[test]
     fn probe_reports_missing_config_as_optional_not_broken() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1364,6 +1380,8 @@ mod tests {
         assert!(!report.configured());
     }
 
+    /// A present-but-unparseable `mcp.json` surfaces a concrete Bad config error
+    /// and still counts as configured (no setup prompt).
     #[test]
     fn probe_reports_parse_error_with_reason_when_config_present() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1381,6 +1399,8 @@ mod tests {
         assert!(report.configured());
     }
 
+    /// Present config with an empty `mcpServers` map warns and still counts as
+    /// not configured so onboarding can offer setup.
     #[test]
     fn probe_reports_present_config_with_no_servers() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1394,6 +1414,8 @@ mod tests {
         assert!(!report.configured());
     }
 
+    /// Configured servers appear as Warn rows before runtime discovery, with
+    /// "agent not started" when the cache has no handshake yet.
     #[test]
     fn probe_lists_configured_server_before_runtime_discovery() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1425,6 +1447,8 @@ mod tests {
         assert!(report.configured());
     }
 
+    /// End-to-end: register tools from `mcp.json` and dispatch `mcp__mock__echo`
+    /// through the shared tool registry.
     #[tokio::test]
     async fn registers_and_dispatches_mcp_tool_from_config() {
         let temp = tempfile::tempdir().expect("temp dir should be created");
@@ -1526,6 +1550,8 @@ mod tests {
         assert_eq!(names, vec!["mcp__mock__echo".to_string()]);
     }
 
+    /// Public tool names reject server/tool parts with spaces or other unsafe
+    /// characters before registration.
     #[test]
     fn rejects_unsafe_public_tool_name_parts() {
         let error = public_tool_name("bad server", "echo")
@@ -1536,6 +1562,7 @@ mod tests {
         );
     }
 
+    /// Resolve the crate root via `CARGO_MANIFEST_DIR` for fixture paths in tests.
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     }
@@ -1551,6 +1578,7 @@ mod tests {
 
     use super::CoreReadiness;
 
+    /// Locate a labelled readiness/status row or panic with the missing label.
     fn find_row<'a>(
         report: &'a super::AgenticReadinessReport,
         label: &str,
@@ -1574,6 +1602,8 @@ mod tests {
         }
     }
 
+    /// Live core probe must report a non-zero native tool count and non-empty
+    /// provider/key labels in a healthy build.
     #[test]
     fn probe_core_readiness_counts_native_tools() {
         // The real native tool set is compiled in; the count must be non-zero so
@@ -1587,6 +1617,8 @@ mod tests {
         assert!(!core.key_env_key.is_empty());
     }
 
+    /// Keychain-only secret for the *active* assistive key account satisfies core
+    /// readiness even when process env keys are unset.
     #[test]
     #[serial]
     fn lane_truth_keychain_only_secret_sets_probe_core_readiness() {
@@ -1615,6 +1647,8 @@ mod tests {
         );
     }
 
+    /// A passing core gate is READY with zero operator MCP tooling; MCP absence
+    /// cannot flip the agentic verdict.
     #[test]
     fn readiness_is_driven_by_core_gate_not_operator_tooling() {
         // Empty MCP config (no operator tooling at all) but a passing core gate:
@@ -1644,6 +1678,8 @@ mod tests {
         );
     }
 
+    /// Vibecrafted/AICX/Loctree/PRView rows stay Neutral/optional when unconfigured
+    /// and never block readiness.
     #[test]
     fn operator_tooling_absent_is_neutral_optional_and_non_blocking() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1667,6 +1703,8 @@ mod tests {
         }
     }
 
+    /// Full MCP substrate cannot rescue readiness when the core gate has no
+    /// assistive API key.
     #[test]
     fn missing_assistive_key_blocks_readiness_even_with_full_substrate() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1707,6 +1745,7 @@ mod tests {
         );
     }
 
+    /// Zero native tools fail the core gate and block agentic readiness.
     #[test]
     fn no_native_tools_blocks_readiness() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1727,6 +1766,8 @@ mod tests {
         );
     }
 
+    /// Tool workspace roots that resolve fewer paths than Settings must block
+    /// readiness with an explicit mismatch row.
     #[test]
     fn workspace_root_mismatch_blocks_readiness() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1756,6 +1797,8 @@ mod tests {
         );
     }
 
+    /// Configured PRView is informational (Warn before discovery) and never gates
+    /// the ready verdict.
     #[test]
     fn configured_prview_server_is_informational_good_or_warn() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1780,6 +1823,8 @@ mod tests {
         );
     }
 
+    /// Broken `mcp.json` warns on the config row but leaves readiness decided by
+    /// the core gate alone.
     #[test]
     fn broken_mcp_json_is_informational_not_blocking() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1797,6 +1842,8 @@ mod tests {
         assert!(note.value.contains("parse error"), "got: {}", note.value);
     }
 
+    /// Basic-lane MCP probe keeps a single Neutral/optional row when `mcp.json`
+    /// is missing.
     #[test]
     fn basic_probe_stays_neutral_for_missing_config() {
         // The Basic-lane probe is unchanged: a missing mcp.json is a single
@@ -1809,12 +1856,14 @@ mod tests {
         assert_eq!(basic.summary_rows()[0].tone, McpRowTone::Neutral);
     }
 
+    /// Restores a removed process env var on drop for hermetic readiness tests.
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
     impl EnvGuard {
+        /// Remove `key` until this guard drops, then restore prior state.
         fn remove(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: this process-env test is serialized with `serial`.
@@ -1824,6 +1873,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the captured previous env state for this guard's key.
         fn drop(&mut self) {
             match self.previous.as_deref() {
                 Some(value) => {

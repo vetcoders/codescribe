@@ -19,6 +19,7 @@ pub enum StatusSignal {
 /// Renderer-side handler for [`StatusSignal`], shared across threads.
 pub type StatusCallback = Arc<dyn Fn(StatusSignal) + Send + Sync>;
 
+/// Set-once status callback slot; first installer wins, later sets are ignored.
 static STATUS_CALLBACK: OnceLock<StatusCallback> = OnceLock::new();
 
 /// Install the process-wide status callback. The first caller wins; later

@@ -200,10 +200,12 @@ fn atomic_write_private(path: &Path, body: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Spill threshold, under-threshold passthrough, and storage-failure honesty.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Oversized text is written to disk and replaced by a path reference only.
     #[test]
     fn oversized_output_is_written_and_replaced_without_inline_body() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -232,6 +234,7 @@ mod tests {
         );
     }
 
+    /// Small results stay inline and must not create the spill directory.
     #[test]
     fn under_threshold_output_stays_inline_and_does_not_touch_disk() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -245,6 +248,7 @@ mod tests {
         assert!(!root.exists());
     }
 
+    /// On spill failure, history gets an omit marker — never the raw body again.
     #[test]
     fn storage_failure_omits_oversized_body_instead_of_refeeding_it() {
         let temp = tempfile::tempdir().expect("temp dir");

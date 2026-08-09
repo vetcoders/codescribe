@@ -56,7 +56,9 @@ pub(crate) fn env_usize(key: &str, default: usize) -> usize {
 pub(crate) fn inference_max_concurrency() -> usize {
     // Whisper singleton uses a single engine lock; defaulting to 1 avoids queue churn
     // that looks like "parallelism" but mostly adds latency/jitter in preview.
+    /// Default max concurrent Whisper inferences per session (serial by default).
     const DEFAULT_MAX_INFERENCE_CONCURRENCY: usize = 1;
+    /// Hard ceiling on inference concurrency; env overrides cannot exceed this.
     const HARD_MAX_INFERENCE_CONCURRENCY: usize = 4;
     env_usize(
         "CODESCRIBE_MAX_INFERENCE_CONCURRENCY",

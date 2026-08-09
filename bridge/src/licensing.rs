@@ -123,6 +123,7 @@ fn license_error(error: codescribe_core::licensing::LicenseError) -> CsError {
 mod tests {
     use super::*;
 
+    /// Missing public key / license crosses UniFFI as unlicensed, not a hard error.
     #[test]
     fn licensing_absent_key_crosses_bridge_as_unlicensed() {
         let status = license_status(None, None, 1_775_304_000).unwrap();

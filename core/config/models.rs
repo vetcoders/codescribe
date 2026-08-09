@@ -503,6 +503,7 @@ where
     Ok(())
 }
 
+/// ModelManager resolution, completeness gates, and env-override isolation tests.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,12 +511,14 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Restores a single env var on drop; tests must run under `serial`.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set `key` to `value`, remembering the previous value for `Drop`.
         fn set(key: &'static str, value: &Path) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: these tests run under `serial` and restore the prior env.
@@ -523,6 +526,7 @@ mod tests {
             Self { key, prev }
         }
 
+        /// Unset `key`, remembering the previous value for `Drop`.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: these tests run under `serial` and restore the prior env.
@@ -532,6 +536,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the prior env value, or remove the key if it was unset.
         fn drop(&mut self) {
             if let Some(prev) = &self.prev {
                 // SAFETY: these tests run under `serial` and restore the prior env.
@@ -543,6 +548,7 @@ mod tests {
         }
     }
 
+    /// Create a directory that passes `is_complete_whisper_model_dir`.
     fn create_complete_whisper_model(path: &Path) {
         fs::create_dir_all(path).unwrap();
         fs::write(path.join("config.json"), "{}").unwrap();
@@ -551,6 +557,7 @@ mod tests {
         fs::write(path.join("model.safetensors"), "weights").unwrap();
     }
 
+    /// Smoke: `list_models` succeeds against the live models dir.
     #[test]
     #[serial]
     fn test_model_manager_list_models() {
@@ -561,6 +568,7 @@ mod tests {
         println!("Found models: {:?}", models.unwrap());
     }
 
+    /// Non-existent model ids report missing.
     #[test]
     #[serial]
     fn test_model_manager_check_exists() {
@@ -569,6 +577,7 @@ mod tests {
         assert!(!manager.check_model_exists("nonexistent-model-xyz"));
     }
 
+    /// Complete custom models under `CODESCRIBE_MODELS_DIR` are listed and found.
     #[test]
     #[serial]
     fn test_model_manager_custom_models() {
@@ -598,6 +607,7 @@ mod tests {
         }
     }
 
+    /// Incomplete Whisper dirs are neither listed nor treated as existing.
     #[test]
     #[serial]
     fn test_model_manager_rejects_incomplete_whisper_models() {
@@ -618,6 +628,7 @@ mod tests {
         assert_eq!(manager.list_models().unwrap(), vec!["complete-whisper"]);
     }
 
+    /// Complete `CODESCRIBE_MODEL_PATH` wins over the bundled default tier.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_prefers_complete_env_override() {
@@ -637,6 +648,7 @@ mod tests {
         assert_eq!(resolved, canonicalize_or_self(env_model));
     }
 
+    /// HF-style repo ids resolve to a complete snapshot under the cache root.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_uses_hf_repo_id_from_cache() {
@@ -669,6 +681,7 @@ mod tests {
     //    `BaseDirs::new()` does not silently find the developer's real HF cache
     //    and turn the negative path into a false positive.
 
+    /// Point HOME and HF cache env vars at empty temps so real caches cannot leak in.
     fn isolate_from_real_hf_cache(temp_dir: &Path) -> Vec<EnvGuard> {
         let empty_hf_cache = temp_dir.join("empty-hf-cache");
         std::fs::create_dir_all(&empty_hf_cache).unwrap();
@@ -684,6 +697,7 @@ mod tests {
         ]
     }
 
+    /// Incomplete env override does not stick; empty tiers error instead.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_skips_incomplete_env_override() {
@@ -706,6 +720,7 @@ mod tests {
         );
     }
 
+    /// All-empty fallback chain returns guidance mentioning env and `hf download`.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_errors_with_guidance_when_all_tiers_empty() {
@@ -730,6 +745,7 @@ mod tests {
         );
     }
 
+    /// Missing paths return unchanged rather than failing resolution.
     #[test]
     #[serial]
     fn canonicalize_or_self_returns_input_when_path_does_not_exist() {
@@ -738,6 +754,7 @@ mod tests {
         assert_eq!(returned, phantom);
     }
 
+    /// Status surface advertises default model id, repo, and size-hint shape.
     #[test]
     #[serial]
     fn whisper_model_status_reports_default_ids() {
