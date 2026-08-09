@@ -17,6 +17,13 @@ use anyhow::Result;
 use codescribe::whisper::{DecodingParams, LocalWhisperEngine};
 use std::path::PathBuf;
 
+/// Run transcription and then formatting, printing timings and previews at
+/// each stage.
+///
+/// Every stage reports its own cost (model load, decode with RTF, format) so
+/// the summary can attribute the wall clock rather than just totalling it.
+/// Missing LLM configuration stops after the raw transcript instead of
+/// failing — the STT half is still worth seeing on its own.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();

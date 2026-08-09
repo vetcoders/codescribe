@@ -25,6 +25,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use codescribe_core::quality::teacher::{TeacherInput, report_to_html, teach};
 
+/// Command-line entry surface; `about` is set explicitly in `#[command(...)]`.
 #[derive(Parser, Debug)]
 #[command(
     name = "codescribe-teacher",
@@ -35,6 +36,7 @@ struct Cli {
     cmd: Command,
 }
 
+/// The two ways to feed the teacher: built-in fixtures, or three files.
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Run the built-in e2e fixture proof (no audio, pure texts from 01_no-to-dobra).
@@ -63,6 +65,7 @@ enum Command {
     },
 }
 
+/// Parse the command line and hand the assembled [`TeacherInput`] to [`run`].
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
@@ -103,6 +106,11 @@ fn main() -> Result<()> {
     }
 }
 
+/// Run the teacher and print the report; optionally emit JSON and an HTML file.
+///
+/// Exits non-zero only on I/O failure or when both live and whisper are empty —
+/// a "weak" thesis is a finding, not a failure, because this is a proof tool
+/// rather than a CI gate.
 fn run(input: TeacherInput, html: Option<PathBuf>, json: bool) -> Result<()> {
     let report = teach(input);
 

@@ -163,9 +163,15 @@ struct Token {
     char_start: usize,
     /// Char index one past the last char (exclusive).
     char_end: usize,
+    /// Token body with surrounding whitespace stripped.
     text: String,
 }
 
+/// Split on whitespace into tokens carrying char-offset spans.
+///
+/// Offsets are char- not byte-based so Polish diacritics cannot skew the
+/// bounded ranges emitted downstream. Whitespace never enters a token, so
+/// leading/trailing whitespace in a Whisper re-transcription is inert.
 fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut start: Option<usize> = None;
@@ -381,6 +387,8 @@ pub fn compute_tail_patch(
     TailPatchOutcome::Patches(events)
 }
 
+/// Sort key for offset-stable application: the start offset of a
+/// `ReplaceRange`, and 0 for any other event shape.
 fn event_start(event: &EngineEvent) -> usize {
     match event {
         EngineEvent::ReplaceRange { start, .. } => *start,

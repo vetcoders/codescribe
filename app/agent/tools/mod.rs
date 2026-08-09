@@ -1,3 +1,11 @@
+//! The agent's native tool surface — the hands it acts with.
+//!
+//! Registration is split in two on purpose: [`register_native_tools`] installs
+//! the in-process tools and is what the tests assert against, while
+//! [`register_all_tools`] adds the MCP bridge on top. Keeping the native set
+//! separately nameable is what lets a test prove the substrate covers every
+//! core capability without an MCP server running.
+
 pub mod clipboard;
 pub mod doctrine;
 pub mod filesystem;
@@ -18,11 +26,14 @@ pub mod workspace;
 
 use codescribe_core::agent::ToolRegistry;
 
+/// Install the complete tool surface: every native tool plus the MCP bridge.
 pub fn register_all_tools(registry: &mut ToolRegistry) {
     register_native_tools(registry);
     mcp::register(registry);
 }
 
+/// Install only the in-process tools — no MCP, no network dependency — so the
+/// native substrate can be exercised on its own.
 fn register_native_tools(registry: &mut ToolRegistry) {
     screenshot::register(registry);
     clipboard::register(registry);

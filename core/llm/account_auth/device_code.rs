@@ -2,6 +2,22 @@
 // xAI RFC 8628 device grant path is aligned with OpenCode
 // `packages/opencode/src/plugin/xai.ts` (XaiAuthPlugin) — read-only reference.
 
+//! Device-code login for headless / second-screen sign-in.
+//!
+//! Two provider shapes live behind one entry point, and they are not
+//! interchangeable:
+//!
+//! - **OpenAI Codex** — JSON `/api/accounts/deviceauth/{usercode,token}`. The
+//!   poll returns an authorization code plus its PKCE pair, which is then
+//!   exchanged for tokens through the shared server module.
+//! - **xAI** — standard RFC 8628: form-encoded `/oauth2/device/code` and
+//!   `/oauth2/token`, polled with `authorization_pending` / `slow_down`
+//!   backoff. Tokens come straight out of the poll, with no PKCE exchange.
+//!
+//! Callers go through [`request_device_code`] then
+//! [`complete_device_code_login`]; provider dispatch stays internal so no call
+//! site has to know which shape it is talking to.
+
 use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
@@ -18,16 +34,22 @@ use crate::llm::provider::ProviderKind;
 const XAI_DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// OpenCode floor + slow_down increment for xAI device polling.
 const XAI_DEVICE_MIN_INTERVAL_MS: u64 = 1_000;
+/// Added to the poll interval each time the server answers `slow_down`.
 const XAI_DEVICE_SLOW_DOWN_INCREMENT_MS: u64 = 5_000;
+/// Poll interval used when the device-code response omits one.
 const XAI_DEVICE_DEFAULT_INTERVAL_MS: u64 = 5_000;
 
 /// One device-code login attempt. `provider` decides both the issuer default
 /// and the account the resulting tokens are filed under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceAuthConfig {
+    /// Selects the wire shape and the account slot tokens are stored under.
     pub provider: ProviderKind,
+    /// OAuth issuer base URL, env-overridable per provider.
     pub issuer: String,
+    /// Public OAuth client id for this provider.
     pub client_id: String,
+    /// Total budget for the poll loop before the attempt is abandoned.
     pub max_wait: Duration,
 }
 
@@ -43,14 +65,22 @@ impl DeviceAuthConfig {
     }
 }
 
+/// Provider-agnostic handle for an in-flight device login: what to show the
+/// user, and what to poll with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceCode {
+    /// URL the user opens to approve the login.
     pub verification_url: String,
+    /// Short code the user confirms on that page.
     pub user_code: String,
+    /// Opaque poll handle. Codex sends its device-auth id here; xAI sends the
+    /// RFC 8628 `device_code`.
     pub device_auth_id: String,
+    /// Server-suggested poll interval in seconds.
     pub interval: u64,
 }
 
+/// Codex `/deviceauth/usercode` response body.
 #[derive(Debug, Deserialize)]
 struct UserCodeResp {
     device_auth_id: String,
@@ -60,17 +90,21 @@ struct UserCodeResp {
     interval: u64,
 }
 
+/// Codex `/deviceauth/usercode` request body.
 #[derive(Debug, Serialize)]
 struct UserCodeReq {
     client_id: String,
 }
 
+/// Codex `/deviceauth/token` poll request body.
 #[derive(Debug, Serialize)]
 struct TokenPollReq {
     device_auth_id: String,
     user_code: String,
 }
 
+/// Codex poll success: an authorization code plus the PKCE pair needed to
+/// redeem it.
 #[derive(Debug, Deserialize)]
 struct CodeSuccessResp {
     authorization_code: String,
@@ -78,6 +112,10 @@ struct CodeSuccessResp {
     code_verifier: String,
 }
 
+/// Accept a poll interval sent either as a JSON number or as a quoted string.
+///
+/// Codex has shipped both spellings; refusing one would break login on a
+/// response that is otherwise valid.
 fn deserialize_interval<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
@@ -98,6 +136,9 @@ where
     }
 }
 
+/// Begin a device login and return the code to show the user.
+///
+/// Dispatches on `config.provider` to the matching wire shape.
 pub async fn request_device_code(
     config: &DeviceAuthConfig,
 ) -> Result<DeviceCode, AccountAuthError> {
@@ -105,6 +146,8 @@ pub async fn request_device_code(
     request_device_code_with_client(&client, config).await
 }
 
+/// Provider dispatch for the device-code request, over a caller-owned client
+/// so tests can point it at a mock server.
 async fn request_device_code_with_client(
     client: &reqwest::Client,
     config: &DeviceAuthConfig,
@@ -206,6 +249,7 @@ async fn request_xai_device_code(
     })
 }
 
+/// xAI `/oauth2/device/code` response (RFC 8628 device authorization).
 #[derive(Debug, Deserialize)]
 struct XaiDeviceCodeResp {
     device_code: String,
@@ -221,6 +265,7 @@ struct XaiDeviceCodeResp {
     interval: Option<u64>,
 }
 
+/// Build an `application/x-www-form-urlencoded` body from key/value pairs.
 fn urlencoding_form(pairs: &[(&str, &str)]) -> String {
     pairs
         .iter()
@@ -235,6 +280,11 @@ fn urlencoding_form(pairs: &[(&str, &str)]) -> String {
         .join("&")
 }
 
+/// Percent-encode one form value, keeping only the RFC 3986 unreserved set.
+///
+/// Spaces become `%20` rather than `+`: the device-code grant type is a URN
+/// full of colons, and mixing the two space conventions is how these bodies
+/// silently fail to match server-side.
 fn form_urlencoded_escape(value: &str) -> String {
     // Minimal application/x-www-form-urlencoded encoder (spaces as %20, not +).
     let mut out = String::with_capacity(value.len());
@@ -249,6 +299,11 @@ fn form_urlencoded_escape(value: &str) -> String {
     out
 }
 
+/// Block until the user approves the login, then store the resulting tokens.
+///
+/// xAI polls straight to tokens; Codex polls for an authorization code and
+/// redeems it with PKCE. Either way the tokens are filed under the provider's
+/// account slot before returning.
 pub async fn complete_device_code_login(
     config: &DeviceAuthConfig,
     device_code: &DeviceCode,
@@ -382,6 +437,7 @@ async fn poll_xai_device_token(
     }
 }
 
+/// xAI `/oauth2/token` success body.
 #[derive(Debug, Deserialize)]
 struct XaiTokenResp {
     access_token: String,
@@ -395,6 +451,8 @@ struct XaiTokenResp {
     expires_in: Option<u64>,
 }
 
+/// xAI `/oauth2/token` error body. Defaults to empty so an unparseable error
+/// response degrades to "unknown error" instead of failing the poll loop.
 #[derive(Debug, Default, Deserialize)]
 struct XaiDeviceTokenError {
     #[serde(default)]
@@ -403,6 +461,11 @@ struct XaiDeviceTokenError {
     error_description: Option<String>,
 }
 
+/// Poll the Codex device-auth token endpoint until the user approves.
+///
+/// `403`/`404` mean "not approved yet" and are retried within `max_wait`; any
+/// other non-success status is terminal. Each sleep is clamped to the time
+/// actually left, so the loop cannot overshoot its budget.
 async fn poll_for_authorization_code(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -450,6 +513,7 @@ async fn poll_for_authorization_code(
     }
 }
 
+/// Codex accounts API base for an issuer, tolerating a trailing slash.
 fn api_accounts_base(issuer: &str) -> String {
     format!("{}/api/accounts", issuer.trim_end_matches('/'))
 }

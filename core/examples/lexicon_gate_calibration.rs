@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 use codescribe_core::embedder;
 
+/// Nearest-rank percentile of an already-sorted slice; `NaN` when empty.
 fn percentile(sorted: &[f32], p: f64) -> f32 {
     if sorted.is_empty() {
         return f32::NAN;
@@ -30,6 +31,14 @@ fn percentile(sorted: &[f32], p: f64) -> f32 {
     sorted[idx]
 }
 
+/// Score both populations and print the threshold sweep.
+///
+/// The output is deliberately a cost/benefit table rather than a single
+/// recommended number: every threshold that catches more poisoned pairs also
+/// loses accepted rules, and only the operator can price that trade. Pairs
+/// whose embedding came back degenerate are dropped and counted, so a
+/// misbehaving embedder shows up as a number instead of silently skewing the
+/// percentiles.
 fn main() -> anyhow::Result<()> {
     embedder::init()?;
 

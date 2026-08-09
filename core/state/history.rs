@@ -13,28 +13,47 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, error, info, warn};
 
+/// Audio containers an archived recording may use: `m4a` normally, `wav` when
+/// encoding failed and the raw copy was kept as a fallback.
 const AUDIO_ARCHIVE_EXTENSIONS: &[&str] = &["m4a", "wav"];
 
 /// A single history entry
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
+    /// Path of the `.txt` transcript on disk.
     pub path: PathBuf,
+    /// File modification time, used for ordering.
     pub timestamp: DateTime<Local>,
+    /// First line, truncated to 60 characters, for menu display.
     pub preview: String,
+    /// Artifact kind recovered from the filename suffix.
     pub kind: TranscriptKind,
 }
 
+/// Which artifact of a dictation a file holds.
+///
+/// One recording can produce several of these, and the kind is encoded in the
+/// filename suffix — it is what lets history tell a raw draft apart from its
+/// formatted final, and a real transcript apart from a failure marker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptKind {
+    /// Local engine output, before any formatting pass.
     Raw,
+    /// Cloud transcription output.
     Cloud,
+    /// Transcript after a successful LLM formatting pass.
     FormattedTranscript,
+    /// Assistant answer to a spoken instruction, not a transcript of it.
     AssistantInterpretation,
+    /// Formatting failed; the text is the unformatted fallback.
     FormattingFailed,
+    /// The dictation produced no usable transcript.
     Failed,
 }
 
 impl TranscriptKind {
+    /// Filename suffix for this kind. Writes emit these; [`kind_from_suffix`]
+    /// reads them back.
     fn suffix(self) -> &'static str {
         match self {
             TranscriptKind::Raw => "raw",
@@ -46,6 +65,10 @@ impl TranscriptKind {
         }
     }
 
+    /// Whether this artifact is real transcript text a user would want pasted.
+    ///
+    /// Excludes failure markers and assistant answers, so "copy last transcript"
+    /// never hands back "no speech detected" or a chat reply.
     pub fn is_copyable_transcript(self) -> bool {
         matches!(
             self,
@@ -57,11 +80,16 @@ impl TranscriptKind {
     }
 }
 
+/// Tally of one [`migrate_transcriptions`] pass, dry-run or applied.
 #[derive(Debug, Default)]
 pub struct MigrationReport {
+    /// Transcripts renamed to the canonical scheme.
     pub renamed_text: usize,
+    /// Audio files renamed, including orphans with no transcript.
     pub renamed_audio: usize,
+    /// Files already canonical, or skipped as unreadable.
     pub skipped: usize,
+    /// Failures encountered; migration continues past them.
     pub errors: usize,
 }
 
@@ -99,6 +127,10 @@ fn make_slug(text: &str, max_words: usize) -> String {
     }
 }
 
+/// Assemble the canonical stem `HHMMSS[_slug]_kind`.
+///
+/// The slug is omitted entirely when empty, rather than leaving a double
+/// underscore that the parser would have to special-case.
 fn build_base_name(time_base: &str, slug: &str, kind: TranscriptKind) -> String {
     if slug.is_empty() {
         format!("{}_{}", time_base, kind.suffix())
@@ -107,6 +139,10 @@ fn build_base_name(time_base: &str, slug: &str, kind: TranscriptKind) -> String 
     }
 }
 
+/// Recover a kind from a filename suffix, `None` if the suffix is not one.
+///
+/// Accepts the retired `ai` / `ai-failed` spellings so files written before the
+/// rename still classify correctly instead of silently reading as `Raw`.
 fn kind_from_suffix(suffix: &str) -> Option<TranscriptKind> {
     match suffix {
         "raw" => Some(TranscriptKind::Raw),
@@ -119,6 +155,11 @@ fn kind_from_suffix(suffix: &str) -> Option<TranscriptKind> {
     }
 }
 
+/// Split a stem into `(kind, base, collision index)`.
+///
+/// Handles both `..._raw` and `..._raw_1`, the latter produced when two saves
+/// land in the same second. A stem with no recognizable suffix keeps
+/// `default_kind` and is returned whole as the base.
 fn split_kind_and_index(
     stem: &str,
     default_kind: TranscriptKind,
@@ -143,6 +184,11 @@ fn split_kind_and_index(
     (default_kind, stem.to_string(), None)
 }
 
+/// Split a kind-stripped stem into its `HHMMSS` prefix and slug remainder.
+///
+/// Only a leading run of exactly six digits counts as a time base; anything
+/// else is treated as slug text, leaving the caller to source a timestamp from
+/// file metadata instead of misreading arbitrary digits as a clock.
 fn split_time_and_slug(stem: &str) -> (Option<String>, Option<String>) {
     let stem = stem.trim_start_matches('_');
     if stem.len() >= 6 && stem.chars().take(6).all(|c| c.is_ascii_digit()) {
@@ -161,6 +207,7 @@ fn split_time_and_slug(stem: &str) -> (Option<String>, Option<String>) {
     }
 }
 
+/// Derive an `HHMMSS` base from the file's mtime, for names that carry no time.
 fn time_base_from_metadata(path: &Path) -> Option<String> {
     let metadata = fs::metadata(path).ok()?;
     let modified = metadata.modified().ok()?;
@@ -168,11 +215,20 @@ fn time_base_from_metadata(path: &Path) -> Option<String> {
     Some(timestamp.format("%H%M%S").to_string())
 }
 
+/// Rebuild a slug from an existing filename fragment.
+///
+/// Separators become spaces first, so an old `czesc-jak-sie` fragment re-slugs
+/// to the same three words [`make_slug`] would produce from transcript text.
 fn slug_from_hint(hint: &str) -> String {
     let normalized = hint.replace(['_', '-'], " ");
     make_slug(&normalized, 3)
 }
 
+/// Find a stem that collides with no existing transcript or audio file.
+///
+/// The file being renamed is passed as `old_txt` / `old_audio` and excluded
+/// from the check, so a file never counts as a conflict with itself. Appends
+/// `_1`, `_2`, … and gives up after 10 000 attempts, returning `base` unchanged.
 fn choose_unique_base(
     dir: &Path,
     base: &str,
@@ -199,6 +255,7 @@ fn choose_unique_base(
     base.to_string()
 }
 
+/// Locate the audio file paired with a transcript stem, in either container.
 fn existing_audio_for_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
     AUDIO_ARCHIVE_EXTENSIONS
         .iter()
@@ -206,6 +263,10 @@ fn existing_audio_for_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
+/// Build a free audio path for `base`, suffixing on collision.
+///
+/// Conflicts are checked across every known container, so an `m4a` write cannot
+/// land on a stem already taken by a `wav` fallback.
 fn unique_audio_path(dir: &Path, base: &str, extension: &str) -> PathBuf {
     let mut candidate = base.to_string();
     for i in 0..=10_000 {

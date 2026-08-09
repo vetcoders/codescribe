@@ -1,3 +1,17 @@
+//! Screen capture tool (canonical: `take_screenshot`).
+//!
+//! Captures the full screen or the frontmost window through CoreGraphics, then
+//! encodes PNG via ImageIO and files the result in the agent asset store, so the
+//! LLM receives an asset reference rather than an inline blob.
+//!
+//! Two hard gates shape this path:
+//!
+//! - **Permission first.** Capture is refused outright without Screen Recording
+//!   access — a blind `CGDisplay::screenshot` returns a desktop-only frame that
+//!   would silently reach the model as if it were real content.
+//! - **Bounded payload.** Output is downscaled until it fits both
+//!   [`MAX_SCREENSHOT_EDGE`] and [`MAX_SCREENSHOT_BYTES`].
+
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -28,15 +42,22 @@ use image::RgbaImage;
 use image::imageops::FilterType;
 use serde_json::{Value, json};
 
+/// Longest edge kept after downscaling — the vision input limit above which
+/// extra pixels buy no accuracy.
 const MAX_SCREENSHOT_EDGE: u32 = 1568;
+/// Hard cap on the encoded PNG; oversized captures are shrunk until they fit.
 const MAX_SCREENSHOT_BYTES: usize = 5 * 1024 * 1024;
 
+/// What the caller asked to capture.
 #[derive(Clone, Copy)]
 enum CaptureRegion {
+    /// The whole screen, excluding nothing.
     Full,
+    /// Only the frontmost on-screen window, without its framing.
     Frontmost,
 }
 
+/// Register `take_screenshot` as a read-only native tool.
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -47,6 +68,7 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register take_screenshot tool");
 }
 
+/// Wire schema advertised to the model for `take_screenshot`.
 fn screenshot_definition() -> ToolDefinition {
     ToolDefinition {
         name: "take_screenshot".to_string(),
@@ -67,6 +89,8 @@ fn screenshot_definition() -> ToolDefinition {
     }
 }
 
+/// Capture, persist as an asset, and return a text summary plus the image
+/// reference. Failures surface as tool errors, never as an empty capture.
 async fn handle_take_screenshot(input: Value) -> Vec<ToolResultContent> {
     match capture_and_encode(input) {
         Ok(png_bytes) => match AgentAssetStore::save_image(&png_bytes, "image/png") {
@@ -83,10 +107,13 @@ async fn handle_take_screenshot(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Actionable refusal shown when Screen Recording access is missing.
 const SCREEN_RECORDING_DENIED_MESSAGE: &str = "Screen Recording permission is required to capture screenshots. \
 Grant it in System Settings > Privacy & Security > Screen Recording, \
 then restart the app and try again.";
 
+/// Resolve live TCC state, then delegate to
+/// [`capture_and_encode_with_permission`].
 fn capture_and_encode(input: Value) -> Result<Vec<u8>> {
     let granted = permissions::check_screen_recording() == PermissionStatus::Granted;
     capture_and_encode_with_permission(granted, input)
@@ -132,6 +159,7 @@ fn capture_and_encode_with_permission(granted: bool, input: Value) -> Result<Vec
     Ok(encoded)
 }
 
+/// Read the `region` argument, defaulting to full-screen capture.
 fn parse_region(input: &Value) -> Result<CaptureRegion> {
     let region = input
         .get("region")
@@ -145,6 +173,7 @@ fn parse_region(input: &Value) -> Result<CaptureRegion> {
     }
 }
 
+/// Dispatch to the capture path matching `region`.
 fn capture_image(region: CaptureRegion) -> Result<CGImage> {
     match region {
         CaptureRegion::Full => capture_full_screen(),
@@ -152,6 +181,7 @@ fn capture_image(region: CaptureRegion) -> Result<CGImage> {
     }
 }
 
+/// Capture every on-screen window as one composited image.
 fn capture_full_screen() -> Result<CGImage> {
     CGDisplay::screenshot(
         CG_ZERO_RECT,
@@ -164,6 +194,7 @@ fn capture_full_screen() -> Result<CGImage> {
     )
 }
 
+/// Capture just the frontmost window, dropping its window framing.
 fn capture_frontmost_window() -> Result<CGImage> {
     let window_id = frontmost_window_id().context("No frontmost window available for capture")?;
 
@@ -176,6 +207,8 @@ fn capture_frontmost_window() -> Result<CGImage> {
     .context("Failed to capture frontmost window. Screen Recording permission may be required")
 }
 
+/// First on-screen window at layer 0 — the normal application layer, which
+/// skips menu bars, docks, and other chrome living on higher layers.
 fn frontmost_window_id() -> Option<CGWindowID> {
     // Required by spec: discover visible windows using OnScreenOnly, then capture frontmost one.
     let list = CGDisplay::window_list_info(
@@ -209,6 +242,8 @@ fn frontmost_window_id() -> Option<CGWindowID> {
     None
 }
 
+/// Read an `i64` out of a CoreFoundation dictionary, or `None` when the key is
+/// absent or not a number.
 fn cf_i64(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option<i64> {
     dictionary
         .find(key)
@@ -216,12 +251,15 @@ fn cf_i64(dictionary: &CFDictionary<CFString, CFType>, key: &CFString) -> Option
         .and_then(|number| number.to_i64())
 }
 
+/// Longer of the image's two dimensions, for the edge-cap check.
 fn longest_edge(image: &CGImage) -> Result<u32> {
     let width = u32::try_from(image.width()).context("Screenshot width exceeds u32")?;
     let height = u32::try_from(image.height()).context("Screenshot height exceeds u32")?;
     Ok(width.max(height))
 }
 
+/// Scale dimensions so the longest edge fits [`MAX_SCREENSHOT_EDGE`], keeping
+/// aspect ratio. Returns the input unchanged when it already fits.
 fn scaled_dimensions(width: u32, height: u32) -> (u32, u32) {
     let longest = width.max(height);
     if longest <= MAX_SCREENSHOT_EDGE {
@@ -234,6 +272,12 @@ fn scaled_dimensions(width: u32, height: u32) -> (u32, u32) {
     (scaled_width, scaled_height)
 }
 
+/// Next smaller size to try when the encoded PNG still exceeds `max_bytes`.
+///
+/// Scales by the square root of the byte overshoot, clamped to a 0.5..0.9 step
+/// so the search neither overshoots nor stalls, and forces a one-pixel
+/// reduction if rounding would otherwise return the same size — which would
+/// spin the caller's retry loop forever.
 fn shrink_dimensions_for_byte_cap(
     width: u32,
     height: u32,
@@ -259,12 +303,19 @@ fn shrink_dimensions_for_byte_cap(
     }
 }
 
+/// Resize an RGBA buffer with Lanczos3 and re-encode it as PNG.
 fn encode_resized_png(image: &RgbaImage, width: u32, height: u32) -> Result<Vec<u8>> {
     let resized = image::imageops::resize(image, width, height, FilterType::Lanczos3);
     let cg_image = rgba_to_cgimage(&resized)?;
     encode_png(&cg_image)
 }
 
+/// Convert a captured `CGImage` into an RGBA buffer.
+///
+/// CoreGraphics hands back BGRA with a row stride that may exceed `width * 4`,
+/// so channels are swapped and rows are walked by stride. Every offset is
+/// computed with checked arithmetic — a truncated or mis-strided buffer must
+/// fail loudly, not read out of bounds.
 fn cgimage_to_rgba(image: &CGImage) -> Result<RgbaImage> {
     if image.bits_per_component() != 8 || image.bits_per_pixel() != 32 {
         bail!(
@@ -330,6 +381,7 @@ fn cgimage_to_rgba(image: &CGImage) -> Result<RgbaImage> {
     RgbaImage::from_raw(width_u32, height_u32, output).context("Failed to build RGBA screenshot")
 }
 
+/// Wrap an RGBA buffer back into a `CGImage` so ImageIO can encode it.
 fn rgba_to_cgimage(image: &RgbaImage) -> Result<CGImage> {
     let width = usize::try_from(image.width()).context("Resized width exceeds usize")?;
     let height = usize::try_from(image.height()).context("Resized height exceeds usize")?;
@@ -355,6 +407,10 @@ fn rgba_to_cgimage(image: &RgbaImage) -> Result<CGImage> {
     ))
 }
 
+/// Encode a `CGImage` to PNG bytes through ImageIO.
+///
+/// Every early return releases the CFData/destination it allocated: ImageIO is
+/// a manual-retain C API, so a bail on the error path would otherwise leak.
 fn encode_png(image: &CGImage) -> Result<Vec<u8>> {
     let mutable_data = unsafe { CFDataCreateMutable(kCFAllocatorDefault, 0) };
     if mutable_data.is_null() {
@@ -395,6 +451,8 @@ fn encode_png(image: &CGImage) -> Result<Vec<u8>> {
 
 #[link(name = "ImageIO", kind = "framework")]
 unsafe extern "C" {
+    /// Create an image destination writing into `data` for the given UTI.
+    /// Returns null on failure; the caller owns the result and must release it.
     fn CGImageDestinationCreateWithData(
         data: CFMutableDataRef,
         r#type: CFStringRef,
@@ -402,12 +460,15 @@ unsafe extern "C" {
         options: CFDictionaryRef,
     ) -> *mut c_void;
 
+    /// Add one image to a destination. Nothing is written until finalize.
     fn CGImageDestinationAddImage(
         destination: *mut c_void,
         image: core_graphics::sys::CGImageRef,
         properties: CFDictionaryRef,
     );
 
+    /// Flush the destination to its backing data. `false` means the encode
+    /// failed and the backing data must not be trusted.
     fn CGImageDestinationFinalize(destination: *mut c_void) -> bool;
 }
 

@@ -18,6 +18,11 @@ use crate::pipeline::contracts::TranscriptSegment;
 
 // ── helpers ──────────────────────────────────────────────
 
+/// Tuning for one overlap-detection call site.
+///
+/// Each lane gets its own constant instead of a shared default: the live path
+/// runs this at every utterance boundary and keeps a tighter fuzzy window than
+/// the batch-oriented callers.
 #[derive(Debug, Clone, Copy)]
 struct OverlapParams {
     max_window: usize,
@@ -26,16 +31,28 @@ struct OverlapParams {
 }
 
 impl OverlapParams {
+    /// Window size, floored at one word so a zeroed config cannot disable
+    /// overlap detection outright.
     #[inline]
     fn bounded_max_window(self) -> usize {
         self.max_window.max(1)
     }
 
+    /// Shortest span eligible for fuzzy matching, floored at one word.
+    ///
+    /// The floor matters in the other direction too: a low value lets edit
+    /// distance chew through two-word spans, where a single edit is most of the
+    /// text and any two short words look alike.
     #[inline]
     fn bounded_min_fuzzy_overlap(self) -> usize {
         self.min_fuzzy_overlap_words.max(1)
     }
 
+    /// Edit budget for an overlap of `overlap_words`.
+    ///
+    /// Proportional to the span (one error per `denominator` words) so long
+    /// overlaps tolerate real transcription drift, with a floor of one so short
+    /// spans can still match past a single typo.
     #[inline]
     fn max_fuzzy_errors(self, overlap_words: usize) -> usize {
         (overlap_words / self.fuzzy_error_ratio_denominator.max(1)).max(1)
@@ -65,6 +82,12 @@ const LIVE_SUFFIX_OVERLAP_PARAMS: OverlapParams = OverlapParams {
 // to avoid re-emitting jittery boundary segments from overlapping windows.
 const TIMESTAMP_OVERLAP_EPSILON_SEC: f32 = 0.04;
 
+/// Reduce a word to its comparable core: lowercase alphanumerics only.
+///
+/// Punctuation is what differs most between two decodes of the same audio, so
+/// stripping it is what lets "world." and "world" count as the same word. A
+/// token with no alphanumerics at all (a bare dash, an ellipsis) would
+/// normalize to nothing and match everything, so it keeps its lowercased self.
 fn normalize_token_for_overlap(token: &str) -> String {
     let mut out = String::new();
     for ch in token.chars() {
@@ -289,6 +312,10 @@ pub fn strip_suffix_overlap_live(last_suffix: &str, new_text: &str) -> String {
     strip_suffix_overlap_with_params(last_suffix, new_text, LIVE_SUFFIX_OVERLAP_PARAMS)
 }
 
+/// Shared body of the two public suffix-strip entry points.
+///
+/// Deterministic order — exact character match first, bounded fuzzy second,
+/// unchanged text last — so the same inputs always take the same branch.
 fn strip_suffix_overlap_with_params(
     last_suffix: &str,
     new_text: &str,
@@ -309,6 +336,14 @@ fn strip_suffix_overlap_with_params(
     new_text.to_string()
 }
 
+/// Longest case-insensitive character overlap between the suffix and the head
+/// of `new_text`, stripped.
+///
+/// Works in bytes for speed but only ever cuts on real char boundaries — both
+/// sides are indexed through `char_indices`, because Polish diacritics and
+/// emoji are multi-byte and a naive slice panics mid-character. Overlaps below
+/// three bytes are ignored as noise. `Some("")` means the new text was entirely
+/// contained in the suffix; `None` means no overlap was found.
 fn strip_suffix_overlap_exact(last_suffix: &str, new_text: &str) -> Option<String> {
     // Collect valid byte offsets from char boundaries (longest first).
     let suffix_bounds: Vec<usize> = last_suffix.char_indices().map(|(i, _)| i).collect();
@@ -339,6 +374,12 @@ fn strip_suffix_overlap_exact(last_suffix: &str, new_text: &str) -> Option<Strin
     None
 }
 
+/// Word-level fallback for when the exact character match fails.
+///
+/// Catches the two ways a re-transcription drifts without changing what was
+/// said: punctuation moving across the boundary, and a one-word typo inside
+/// the overlap. `Some("")` means the whole new text was already covered;
+/// `None` leaves the text untouched.
 fn strip_suffix_overlap_fuzzy(
     last_suffix: &str,
     new_text: &str,

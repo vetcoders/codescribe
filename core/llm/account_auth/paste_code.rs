@@ -82,12 +82,19 @@ pub fn split_pasted_code<'a>(
 /// Grouped so the verifier and the state can never drift apart from the
 /// authorize call that produced them.
 pub struct PasteCodeExchange<'a> {
+    /// Which provider the resulting tokens belong to.
     pub provider: ProviderKind,
+    /// Token path and request encoding for this provider.
     pub config: ProviderOAuthConfig,
+    /// Issuer base URL; the token path is appended to it.
     pub issuer: &'a str,
+    /// OAuth client id used for the authorize call.
     pub client_id: &'a str,
+    /// Redirect URI registered for the flow — must match the authorize call.
     pub redirect_uri: &'a str,
+    /// PKCE pair whose verifier proves this app started the login.
     pub pkce: &'a PkceCodes,
+    /// CSRF state to check against the one glued to the pasted code.
     pub expected_state: &'a str,
 }
 
@@ -105,6 +112,7 @@ pub async fn exchange_pasted_code(
         pkce,
         expected_state,
     } = exchange;
+    /// The subset of the token-endpoint payload this flow consumes.
     #[derive(serde::Deserialize)]
     struct TokenResponse {
         access_token: String,

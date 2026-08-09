@@ -11,6 +11,10 @@ const WHISPER: &str = "No to dobra, teraz generalnie powiem parę słów korzyst
 /// Human reference for 01_no-to-dobra.
 const HUMAN: &str = "No to dobra. Teraz generalnie powiem parę słów korzystając z surowej transkrypcji przez Codescribe (mamy już pierwsze słowo do analizy), do czego chcę, żebyś, nie wiem, żebyś wziął ten plik WAV i puścił go na nasz endpoint, bo muszę mieć pewność, hmmm, czy leksykon działa więc po [(niewyraźnie)]. Loctree to aplikacja stworzona po to, aby duże bazy kodowe przestały być tajemnicą i czarną dziurą dla agentów AI. Korzysta z Rusta, w wersji Toolchain 2024.";
 
+/// The load-bearing proof: on a real e2e run the Teacher must both flag
+/// disagreement spans and propose the jargon repairs behind them
+/// (LOCK3→Loctree, blik/Wave→WAV, Tooltrain→Toolchain), and the gap≡hallucination
+/// co-location rate must stay non-trivial.
 #[test]
 fn proof_e2e_no_to_dobra_emits_needs_attention_and_lexicon_hints() {
     let report = teach(TeacherInput {
@@ -88,6 +92,9 @@ fn proof_e2e_no_to_dobra_emits_needs_attention_and_lexicon_hints() {
     }
 }
 
+/// The same thesis isolated to one clean pair: where the live lane drops a
+/// jargon word and Whisper invents a lookalike in the hole, that fill must be
+/// flagged and must want the correct term.
 #[test]
 fn synthetic_apple_gap_whisper_fill_is_flagged() {
     // Apple omits jargon; Whisper invents a lookalike in the hole.
@@ -126,6 +133,8 @@ fn synthetic_apple_gap_whisper_fill_is_flagged() {
     );
 }
 
+/// The HTML report must stand on its own — a full document carrying both
+/// named sections, not a fragment needing a host page.
 #[test]
 fn html_report_is_self_contained() {
     let report = teach(TeacherInput {

@@ -1,3 +1,15 @@
+//! Tool registry and permission gate for the agent runtime.
+//!
+//! Every tool the model can call is registered here, and every call passes
+//! through [`ToolRegistry::decide`] before any side effect. Two rules shape the
+//! module: risk decides, not origin — a native tool that types into the
+//! frontmost app is gated exactly like an MCP write; and absence of an operator
+//! preference fails closed, so an unclassified tool asks rather than runs.
+//!
+//! Resolution order is thread override, then durable per-tool rule, then
+//! per-server rule, then legacy grant. Only when none of those speak do the
+//! risk-based migration defaults apply.
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -8,6 +20,8 @@ use anyhow::{Context, Result};
 use super::permissions::{AgentPermissions, PermissionLevel, ToolCapability, tool_identity};
 use super::types::ImageAsset;
 
+/// Wire-level declaration of a tool as the model sees it: the name it calls,
+/// the description it reasons about, and the JSON Schema it must satisfy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolDefinition {
     pub name: String,
@@ -15,6 +29,9 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+/// One item of a tool's result payload. A handler returns a `Vec` of these, so
+/// a single call can mix prose with images; `Error` is carried in-band rather
+/// than as `Err` because the model is meant to read and recover from it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolResultContent {
     Text(String),
@@ -23,11 +40,22 @@ pub enum ToolResultContent {
     Error(String),
 }
 
+/// Boxed future returned by a tool handler. Erased (not `impl Future`) so
+/// handlers of unrelated concrete types can live in the same registry map.
 pub type ToolFuture = Pin<Box<dyn Future<Output = Vec<ToolResultContent>> + Send>>;
+
+/// The executable half of a registered tool. `Send + Sync` because one registry
+/// is shared across the agent's turns and dispatched from async tasks.
 pub type ToolHandler = Box<dyn Fn(serde_json::Value) -> ToolFuture + Send + Sync>;
+
+/// Optional pre-flight input check. It runs inside [`ToolRegistry::decide`]
+/// before any side effect: `Err` becomes a hard deny, `Ok` yields the preview
+/// shown on the operator's approval card.
 pub type ToolInputValidator =
     Arc<dyn Fn(&serde_json::Value) -> Result<ToolCallPreview> + Send + Sync>;
 
+/// Registry of every tool the agent may call, and the single gate that decides
+/// whether a given call is allowed, asked about, or denied.
 pub struct ToolRegistry {
     tools: HashMap<String, RegisteredTool>,
     /// Durable allow/ask/deny policy (settings.json `agent.permissions` +
@@ -45,6 +73,9 @@ pub struct ToolRegistry {
     thread_context_tools: std::collections::HashSet<String>,
 }
 
+/// A tool as stored: what the model sees, what runs, how it is gated, and how
+/// its input is previewed. Kept private so the registry stays the only path
+/// from a tool name to its handler.
 struct RegisteredTool {
     definition: ToolDefinition,
     handler: ToolHandler,
@@ -52,6 +83,9 @@ struct RegisteredTool {
     validator: Option<ToolInputValidator>,
 }
 
+/// Where a tool came from. Origin drives the identity key used for durable
+/// permission rules, not the gate itself — see the risk-first defaults in
+/// [`ToolRegistry::decide`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolOrigin {
     Native,
@@ -61,6 +95,9 @@ pub enum ToolOrigin {
     },
 }
 
+/// What a tool can do to the world. This is the axis the permission gate keys
+/// on when the operator has stored no explicit preference: read-only runs
+/// silently, anything side-effectful asks, destructive is refused outright.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolRisk {
     ReadOnly,
@@ -72,6 +109,8 @@ pub enum ToolRisk {
 }
 
 impl ToolRisk {
+    /// Stable wire/telemetry spelling. Settings and capability listings compare
+    /// these strings, so the mapping is contract, not cosmetics.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReadOnly => "read_only",
@@ -84,6 +123,9 @@ impl ToolRisk {
     }
 }
 
+/// Per-tool execution metadata fixed at registration time. The `requires_approval`
+/// flag is a one-way ratchet: it can force an `Ask` for a tool whose risk class
+/// would otherwise pass, never the reverse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolExecutionPolicy {
     pub origin: ToolOrigin,
@@ -110,6 +152,9 @@ impl ToolExecutionPolicy {
     }
 }
 
+/// Human-readable rendering of a pending call, produced by the tool's
+/// [`ToolInputValidator`]. This is what the operator actually judges, so it
+/// must describe the concrete effect — not restate the tool's description.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolCallPreview {
     pub summary: String,
@@ -118,6 +163,9 @@ pub struct ToolCallPreview {
     pub paths: Vec<String>,
 }
 
+/// A preview bound to the exact call that needs approval. Carrying call,
+/// session, and thread ids means a late answer can only ever release the
+/// request it was issued for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolApprovalRequest {
     pub call_id: String,
@@ -132,6 +180,9 @@ pub struct ToolApprovalRequest {
     pub paths: Vec<String>,
 }
 
+/// Verdict of the permission gate. The three variants are exhaustive by
+/// design: there is no "probably fine" path between running a tool and
+/// refusing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDecision {
     Allow,
@@ -146,6 +197,8 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Empty registry with default (deny-nothing, allow-nothing) policy — every
+    /// tool must be registered before it can be decided on, let alone run.
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
@@ -166,6 +219,9 @@ impl ToolRegistry {
         self.policy = policy;
     }
 
+    /// Re-read settings before every decision instead of trusting the snapshot
+    /// taken at construction. Without this a permission change would only take
+    /// effect on the next app launch.
     pub fn enable_policy_hot_reload(&mut self) {
         self.policy_loader = Some(Arc::new(|| {
             AgentPermissions::load().with_legacy_grants(super::tool_grants::load_granted())
@@ -190,10 +246,13 @@ impl ToolRegistry {
         self.thread_overrides.insert(identity, level);
     }
 
+    /// Drop the turn-scoped overrides. Durable settings rules survive — only
+    /// the choices the operator made for this thread are forgotten.
     pub fn clear_thread_overrides(&mut self) {
         self.thread_overrides.clear();
     }
 
+    /// The durable policy currently installed, for inspection by the UI.
     pub fn permission_policy(&self) -> &AgentPermissions {
         &self.policy
     }
@@ -256,6 +315,10 @@ impl ToolRegistry {
         self.register_with_policy(definition, handler, ToolExecutionPolicy::native(risk), None)
     }
 
+    /// Full registration path used by MCP bridging and by tools that need an
+    /// input validator. Fails rather than replacing when the name is taken:
+    /// silent shadowing would let a later registration inherit an earlier
+    /// tool's approvals.
     pub fn register_with_policy(
         &mut self,
         definition: ToolDefinition,
@@ -279,6 +342,8 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// The tool schemas advertised to the model. Unordered — callers that need
+    /// a stable listing should sort, as [`Self::capabilities`] does.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .values()
@@ -404,6 +469,9 @@ impl ToolRegistry {
         }
     }
 
+    /// Does the operator have a stored preference for this tool (thread, tool,
+    /// or server level)? Separates "the operator decided" from "nobody decided
+    /// yet", which is what lets the migration defaults apply only to the latter.
     fn has_explicit_rule(
         &self,
         policy: &AgentPermissions,
@@ -430,6 +498,8 @@ impl ToolRegistry {
         false
     }
 
+    /// Run a tool. This performs the side effect unconditionally — the gate is
+    /// [`Self::decide`], and callers are responsible for consulting it first.
     pub async fn dispatch(
         &self,
         name: &str,
@@ -464,6 +534,10 @@ impl ToolRegistry {
     }
 }
 
+/// Gate behaviour under test, not plumbing: each case pins one way the
+/// permission decision could silently loosen — grant key mismatch, blanket
+/// server allow, stale policy snapshot, or a secret path hidden behind an
+/// otherwise legitimate read.
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -476,6 +550,8 @@ mod tests {
         ToolResultContent, ToolRisk,
     };
 
+    /// Baseline: a registered handler receives its input and its result reaches
+    /// the caller unchanged.
     #[tokio::test]
     async fn dispatches_registered_tool() {
         let mut registry = ToolRegistry::new();
@@ -512,6 +588,8 @@ mod tests {
         );
     }
 
+    /// Register an MCP-origin tool under a fixed server name, so grant-key and
+    /// server-rule cases below all address the same identity.
     fn register_external(registry: &mut ToolRegistry, name: &str, risk: ToolRisk) {
         registry
             .register_with_policy(
@@ -534,6 +612,9 @@ mod tests {
             .expect("register external tool");
     }
 
+    /// Credential exfiltration guard: reading is allowed in general, so the
+    /// only thing standing between the agent and `.env` is this escalation —
+    /// and not even a durable operator Allow may lift it.
     #[test]
     fn allowed_read_tool_escalates_to_ask_on_secret_path() {
         let mut registry = ToolRegistry::new();
@@ -598,6 +679,8 @@ mod tests {
         ));
     }
 
+    /// Destructive is a floor, not a default: an existing "always allow" grant
+    /// must not be able to reach past it.
     #[test]
     fn external_destructive_tool_is_denied_even_when_granted() {
         let mut registry = ToolRegistry::new();
@@ -611,6 +694,9 @@ mod tests {
         ));
     }
 
+    /// Unknown risk is fail-closed but not fatal: the operator still gets a
+    /// decision to make, otherwise every newly added upstream tool would look
+    /// broken rather than unclassified.
     #[test]
     fn external_unknown_tool_asks_instead_of_denying() {
         let mut registry = ToolRegistry::new();
@@ -624,6 +710,8 @@ mod tests {
         assert_eq!(request.tool, "future_tool");
     }
 
+    /// A grant is scoped to one tool. The second half matters most: a grant for
+    /// a sibling tool leaves this one gated.
     #[test]
     fn granted_external_tool_skips_the_approval_gate() {
         let mut registry = ToolRegistry::new();
@@ -646,6 +734,8 @@ mod tests {
         ));
     }
 
+    /// A permission changed in Settings must apply to the very next tool call,
+    /// including later calls inside an agent turn that is already running.
     #[test]
     fn hot_reload_reads_settings_before_each_decision() {
         let mut registry = ToolRegistry::new();
@@ -674,6 +764,9 @@ mod tests {
         );
     }
 
+    /// The separation the whole design rests on: asking the gate must never run
+    /// the handler. Counts handler invocations to prove it, since a decision
+    /// that ran the tool would still return the right verdict.
     #[test]
     fn deny_blocks_at_decide_without_dispatch_side_effect() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -715,6 +808,8 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 
+    /// Precedence order: the choice made for this thread wins over the durable
+    /// per-tool rule, which in turn wins over the server-wide one.
     #[test]
     fn thread_override_outranks_tool_and_server() {
         let mut registry = ToolRegistry::new();
@@ -742,6 +837,9 @@ mod tests {
         ));
     }
 
+    /// The capability list the UI renders comes from the same map the
+    /// dispatcher reads, so a tool cannot be shown as governed while being
+    /// invisible to the gate (or the reverse).
     #[test]
     fn capability_list_is_registry_truth() {
         let mut registry = ToolRegistry::new();
@@ -756,6 +854,8 @@ mod tests {
         assert!(registry.policy("not_registered").is_none());
     }
 
+    /// Grant keys match on exact tool identity, not casing of the server or a
+    /// near-miss spelling of the tool — a mismatch must fail closed, never open.
     #[test]
     fn always_allow_identity_miss_does_not_skip_gate() {
         let mut registry = ToolRegistry::new();
@@ -778,6 +878,8 @@ mod tests {
         );
     }
 
+    /// The approval request carries the ids of the call that raised it, so a
+    /// verdict can never be applied to a different call, session, or thread.
     #[test]
     fn read_only_allows_and_mutation_binds_approval_identity() {
         let mut registry = ToolRegistry::new();
@@ -819,6 +921,8 @@ mod tests {
         assert_eq!(request.thread_id, "thread-a");
     }
 
+    /// Native counterpart of [`register_external`], for the cases that check
+    /// origin does not buy a tool a weaker gate.
     fn register_native_tool(registry: &mut ToolRegistry, name: &str, risk: ToolRisk) {
         registry
             .register_native(
@@ -833,6 +937,9 @@ mod tests {
             .expect("register native tool");
     }
 
+    /// Being native is not a trust signal. Keystroke injection into the
+    /// frontmost app is as side-effectful as any MCP write, so risk — not
+    /// origin — decides.
     #[test]
     fn native_side_effectful_tools_ask_and_read_only_allows() {
         // review P1-06: the gate used to allow every native tool outright, so
@@ -858,6 +965,8 @@ mod tests {
         );
     }
 
+    /// Forgetting to declare a risk class costs an approval prompt, not an
+    /// unguarded execution — while leaving the operator an explicit way out.
     #[test]
     fn unclassified_native_tool_is_fail_closed() {
         let mut registry = ToolRegistry::new();
@@ -887,6 +996,9 @@ mod tests {
         );
     }
 
+    /// A server-wide Allow consents to the tools the operator saw at the time,
+    /// not to whatever that server exposes later — the classic supply-chain
+    /// widening of an approval already given.
     #[test]
     fn server_allow_does_not_lift_unknown_risk_tools() {
         // review P2-16: a blanket server grant covers the tools the operator

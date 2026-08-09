@@ -20,13 +20,21 @@ enum EmitterCmd {
     Finish,
 }
 
+/// What the delta sink is shown on every update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeltaRenderMode {
+    /// Whole session so far: every committed utterance plus the live preview
+    /// tail. Hands-off dictation — the transcript accumulates, never replaces.
     #[default]
     SessionRendered,
+    /// Only the live preview. Assistive hold-to-talk, where each utterance is
+    /// its own delivery and carrying earlier text forward would re-insert it.
     ActivePreviewOnly,
 }
 
+/// One committed utterance. `text` is the corrected string every later
+/// `ReplaceRange` / `InsertAnnotation` char offset is computed against;
+/// `raw_text` keeps the uncorrected engine output for the quality loop.
 #[derive(Debug, Clone, PartialEq)]
 struct TranscriptUtteranceRecord {
     utterance_id: u64,
@@ -37,6 +45,14 @@ struct TranscriptUtteranceRecord {
     segments: Vec<TranscriptSegment>,
 }
 
+/// Source of truth for the session transcript: everything already committed,
+/// plus the in-flight preview tail.
+///
+/// The split matters. `committed` is canvas — append-only, patched in place but
+/// never rewritten wholesale. `active_preview` is presentation that has not
+/// earned canvas yet and is replaced freely. `last_non_empty_preview` is the
+/// fallback for a final that arrives empty (VAD sealed on a quiet tail), so a
+/// real utterance is not lost to a blank final.
 #[derive(Debug, Default)]
 struct SessionTranscriptState {
     committed: Vec<TranscriptUtteranceRecord>,
@@ -44,10 +60,15 @@ struct SessionTranscriptState {
     last_non_empty_preview: String,
 }
 
+/// Trim a fragment's outer edges. Interior whitespace and newlines survive —
+/// the renderer receives markdown, so collapsing them would flatten structure.
 fn normalize_transcript_fragment(text: &str) -> String {
     text.trim().to_string()
 }
 
+/// Append a fragment to the rendered buffer, inserting a single separating
+/// space only when one is actually needed. Empty fragments are skipped, so a
+/// blank preview cannot leave trailing whitespace on the canvas.
 fn append_rendered_fragment(rendered: &mut String, fragment: &str) {
     let normalized = normalize_transcript_fragment(fragment);
     if normalized.is_empty() {
@@ -61,6 +82,9 @@ fn append_rendered_fragment(rendered: &mut String, fragment: &str) {
 }
 
 impl SessionTranscriptState {
+    /// Replace the live preview tail. Previews supersede each other, so this
+    /// overwrites rather than appends; a non-empty preview is also remembered as
+    /// the fallback an empty final will fall back to.
     fn apply_preview(&mut self, text: &str) {
         let normalized = normalize_transcript_fragment(text);
         self.active_preview = normalized.clone();
@@ -69,6 +93,14 @@ impl SessionTranscriptState {
         }
     }
 
+    /// Route a correction to whatever it actually targets.
+    ///
+    /// A correction can arrive after its utterance was already finalized, so
+    /// when no preview is open the committed list is searched from the tail for
+    /// the exact `previous_text` and patched in place. Only an unmatched
+    /// correction falls through to the preview path — treating it as new
+    /// content. Without the search, a late correction to a non-tail utterance
+    /// would append a duplicate instead of fixing the original.
     fn apply_correction(&mut self, previous_text: &str, text: &str) {
         let previous = normalize_transcript_fragment(previous_text);
         let corrected = normalize_transcript_fragment(text);
@@ -100,6 +132,14 @@ impl SessionTranscriptState {
         }
     }
 
+    /// Promote the current utterance to committed canvas and return the text
+    /// handed to the utterance callback (`None` when there was nothing to
+    /// commit).
+    ///
+    /// An empty `text` falls back to the last non-empty preview, so an utterance
+    /// the engine sealed blank is still delivered. Both preview fields are
+    /// cleared either way — the tail belongs to this utterance and must not leak
+    /// into the next one.
     fn finalize(
         &mut self,
         utterance_id: u64,
@@ -136,11 +176,18 @@ impl SessionTranscriptState {
         Some(committed_text)
     }
 
+    /// Drop the in-flight preview without committing it — used when the engine
+    /// reports no speech, and at session end so an uncommitted tail does not
+    /// outlive the finalized utterances.
     fn clear_live_preview(&mut self) {
         self.active_preview.clear();
         self.last_non_empty_preview.clear();
     }
 
+    /// Render the whole session: committed utterances in order, then the live
+    /// preview tail. Rebuilt from state on every call, so the rendered string is
+    /// always a function of the record list rather than an accumulated buffer
+    /// that could drift from it.
     fn rendered_text(&self) -> String {
         let mut rendered = String::new();
         for utterance in &self.committed {
@@ -216,6 +263,14 @@ pub struct PresentationEmitter {
 }
 
 impl PresentationEmitter {
+    /// Build the emitter and start both background tasks: the `BufferedEmitter`
+    /// tick loop (typing animation) and the FIFO command worker.
+    ///
+    /// Every mutation goes through the command channel, which is what removes
+    /// the fire-and-forget spawn ordering race — target updates and finish
+    /// arrive in emit order. The worker catches panics from the emitter so a
+    /// poisoned animation forces a clean finish instead of leaving the tick loop
+    /// running forever.
     pub fn new(
         transcript_buffer: Arc<Mutex<String>>,
         delta_callback: Option<Arc<dyn DeltaSink>>,
@@ -284,18 +339,26 @@ impl PresentationEmitter {
         }
     }
 
+    /// Install the per-utterance delivery callback (Toggle mode). Called once
+    /// per committed utterance with the text that reached the canvas.
     pub fn set_utterance_callback(&mut self, cb: Option<Arc<dyn Fn(String) + Send + Sync>>) {
         self.utterance_callback = cb;
     }
 
+    /// Choose whether the delta sink sees the whole session or only the live
+    /// preview. See [`DeltaRenderMode`].
     pub fn set_delta_render_mode(&mut self, mode: DeltaRenderMode) {
         self.delta_render_mode = mode;
     }
 
+    /// Install the speech-start callback. Fired once per speech run — the
+    /// emitter de-duplicates repeated `VadStart` events until a `VadEnd`
+    /// re-arms it.
     pub fn set_vad_start_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
         self.vad_start_callback = cb;
     }
 
+    /// Install the silence-boundary callback, fired on every `VadEnd`.
     pub fn set_vad_end_callback(&mut self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
         self.vad_end_callback = cb;
     }

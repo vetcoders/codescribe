@@ -56,6 +56,11 @@ pub fn parse_github_ref(input: &str) -> Option<GitHubRef> {
     parse_github_spec(input)
 }
 
+/// Parse the browser URL form. Accepts `blob`, `raw`, and `tree` links over
+/// http(s); anything else (other hosts, short repo URLs) yields `None` so the
+/// spec parser gets its turn.
+///
+/// Case is preserved throughout — GitHub content paths are case-sensitive.
 fn parse_github_url(url: &str) -> Option<GitHubRef> {
     // Match: https://github.com/owner/repo/blob/ref/path...
     // or:    https://github.com/owner/repo/raw/ref/path...
@@ -85,6 +90,11 @@ fn parse_github_url(url: &str) -> Option<GitHubRef> {
     })
 }
 
+/// Parse the compact spec form: `owner/repo@ref:path`, or `owner/repo:path` with
+/// `main` as the implied ref.
+///
+/// The ref is taken between `@` and the **first** `:`, so refs containing slashes
+/// (`fix/some-branch`) survive intact. Missing owner, repo, or path is `None`.
 fn parse_github_spec(spec: &str) -> Option<GitHubRef> {
     // Format: owner/repo@ref:path or owner/repo:path
     let slash_pos = spec.find('/')?;
@@ -126,6 +136,9 @@ fn parse_github_spec(spec: &str) -> Option<GitHubRef> {
 // Fetch
 // ═══════════════════════════════════════════════════════════
 
+/// Hard ceiling on a fetched blob. Enforced twice — once against the advertised
+/// `Content-Length` and again as a running total while streaming — so a lying or
+/// absent header cannot turn a compressed response into an unbounded allocation.
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10MB
 
 /// Percent-encode a path segment for use in GitHub API URLs.

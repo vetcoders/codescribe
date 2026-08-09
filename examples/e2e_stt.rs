@@ -1,9 +1,21 @@
+//! End-to-end local Whisper check on a short and a medium clip.
+//!
+//! Sample audio is supplied by the operator, not checked in — point
+//! `CODESCRIBE_E2E_AUDIO_SHORT` / `_MEDIUM` at your own files, optionally pin
+//! `CODESCRIBE_E2E_LANG`, and set `CODESCRIBE_E2E_RUN_MEDIUM=0` to skip the
+//! longer of the two.
+//!
+//! Missing tokenizer or mel-filter assets are fetched into the model directory
+//! on first run, so a fresh checkout does not have to be primed by hand.
+
 use anyhow::Result;
 use codescribe::whisper::LocalWhisperEngine;
 use codescribe_core::pipeline::contracts::FileTranscriptionOptions;
 use std::fs;
 use std::path::PathBuf;
 
+/// Ensure the model directory is complete, then transcribe each clip and print
+/// its text alongside the wall time it took.
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();

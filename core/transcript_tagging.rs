@@ -1,17 +1,28 @@
 //! Transcript tagging helpers for paste delivery.
 
+/// Default wrapper: an XML-ish element carrying `{mode}`, `{lang}`, `{text}`.
 pub const DEFAULT_TRANSCRIPT_TAG_TEMPLATE: &str =
     "<codescribe mode=\"{mode}\" lang=\"{lang}\">\n{text}\n</codescribe>";
 
 // Conservative calibration from observed Whisper logs: healthy sessions cluster
 // around avg_logprob ≈ -0.2, suspicious/hallucinated ones around ≈ -1.4.
+/// At or above this average logprob the transcript is labelled `high`.
 const HIGH_CONFIDENCE_AVG_LOGPROB_MIN: f32 = -0.45;
+/// At or below this average logprob the transcript is labelled `low`.
 const LOW_CONFIDENCE_AVG_LOGPROB_MAX: f32 = -1.20;
 
+/// Wrap a transcript in `template` without any quality annotation.
 pub fn wrap_transcript(text: &str, template: &str, mode: &str, lang: &str) -> String {
     wrap_transcript_with_quality(text, template, mode, lang, None, &[] as &[&str])
 }
 
+/// Wrap a transcript, also substituting `{conf}` and `{flags}`.
+///
+/// Blank input stays blank — an empty transcript is never wrapped in a tag. A
+/// template without `{text}` gets the body appended on its own line, so a
+/// misconfigured template can drop the markup but never the user's words. On the
+/// default template the output is byte-identical to [`wrap_transcript`], which
+/// keeps the quality-aware path a drop-in replacement.
 pub fn wrap_transcript_with_quality<F: std::fmt::Display>(
     text: &str,
     template: &str,
@@ -45,6 +56,7 @@ pub fn wrap_transcript_with_quality<F: std::fmt::Display>(
     rendered
 }
 
+/// Bucket an average logprob into `high` / `medium` / `low` / `unknown`.
 fn confidence_label(avg_logprob: Option<f32>) -> &'static str {
     match avg_logprob {
         Some(value) if value >= HIGH_CONFIDENCE_AVG_LOGPROB_MIN => "high",
@@ -54,6 +66,8 @@ fn confidence_label(avg_logprob: Option<f32>) -> &'static str {
     }
 }
 
+/// Covers template substitution, the empty-input and missing-`{text}` edges,
+/// byte-compatibility between the two entry points, and the confidence buckets.
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT_TRANSCRIPT_TAG_TEMPLATE, wrap_transcript};

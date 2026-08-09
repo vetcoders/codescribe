@@ -50,6 +50,8 @@ pub enum LiveStreamEvent {
     },
 }
 
+/// Wire shape of a progress NDJSON line. Every field is optional because one
+/// struct covers all `event` kinds — which key is populated depends on the kind.
 #[derive(Debug, Deserialize)]
 struct StreamEventLine {
     #[serde(default)]
@@ -65,6 +67,8 @@ struct StreamEventLine {
     error: Option<String>,
 }
 
+/// Wire shape of one timed segment inside a `final` event, before validation into
+/// a [`TranscriptSegment`].
 #[derive(Debug, Deserialize)]
 struct StreamSegmentLine {
     text: String,
@@ -154,6 +158,8 @@ impl LiveStreamSession {
         })
     }
 
+    /// The rate declared to the bridge at open time; PCM fed to
+    /// [`LiveStreamSession::write_pcm`] must match it.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -279,6 +285,11 @@ impl Drop for LiveStreamSession {
     }
 }
 
+/// Reader-thread body: parse bridge stdout line by line and forward typed events.
+///
+/// Stops on a terminal event, an unparsable line ending the stream, or a closed
+/// receiver — so a dropped session does not leave this thread pinned to a live
+/// pipe. Lines that fail to parse are skipped rather than killing the session.
 fn read_stream_stdout(stdout: impl std::io::Read, tx: Sender<LiveStreamEvent>) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {

@@ -26,6 +26,11 @@ pub const KEYCHAIN_ACCOUNTS: &[&str] = &[
     "GITHUB_TOKEN",
 ];
 
+/// All Codescribe secrets in a single Keychain item.
+///
+/// One bundled item rather than one item per account: macOS evaluates the item
+/// ACL per access, so N accounts meant N separate authorization decisions on
+/// every launch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct KeychainBundle {
     version: u8,
@@ -45,10 +50,18 @@ static BUNDLE_CACHE: OnceLock<RwLock<Option<KeychainBundle>>> = OnceLock::new();
 static PROCESS_ENV_SEEDS: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock::new();
 static POPULATE_ONCE: Once = Once::new();
 
+/// Process-wide cache of the decoded bundle, created on first use.
+///
+/// `None` inside the lock means "not loaded or deleted", which is distinct from
+/// the lock not existing yet.
 fn bundle_cache() -> &'static RwLock<Option<KeychainBundle>> {
     BUNDLE_CACHE.get_or_init(|| RwLock::new(None))
 }
 
+/// Read the cached bundle, recovering from a poisoned lock.
+///
+/// A panic elsewhere must not turn every later secret lookup into a panic; the
+/// cached bytes are still valid, so the guard is taken via `into_inner()`.
 fn read_bundle_cache() -> Option<KeychainBundle> {
     match bundle_cache().read() {
         Ok(guard) => guard.clone(),
@@ -56,6 +69,7 @@ fn read_bundle_cache() -> Option<KeychainBundle> {
     }
 }
 
+/// Replace the cached bundle, recovering from a poisoned lock. `None` clears it.
 fn write_bundle_cache(bundle: Option<KeychainBundle>) {
     match bundle_cache().write() {
         Ok(mut guard) => {
@@ -67,10 +81,17 @@ fn write_bundle_cache(bundle: Option<KeychainBundle>) {
     }
 }
 
+/// Origin ledger for env vars this process set from Keychain during bootstrap.
+///
+/// Without it, a value copied into the environment is indistinguishable from one
+/// the user exported, and a later Settings save or delete would be shadowed by
+/// the stale process snapshot forever.
 fn process_env_seeds() -> &'static RwLock<BTreeMap<String, String>> {
     PROCESS_ENV_SEEDS.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
 
+/// Record that `account`'s current env value originated from Keychain, not from
+/// the user's environment.
 fn remember_process_env_seed(account: &str, secret: &str) {
     match process_env_seeds().write() {
         Ok(mut guard) => {
@@ -84,6 +105,7 @@ fn remember_process_env_seed(account: &str, secret: &str) {
     }
 }
 
+/// The value this process seeded into `account`, if it seeded one.
 fn process_env_seed(account: &str) -> Option<String> {
     match process_env_seeds().read() {
         Ok(guard) => guard.get(account).cloned(),
@@ -91,12 +113,21 @@ fn process_env_seed(account: &str) -> Option<String> {
     }
 }
 
+/// Serialize the bundle to the on-disk form: JSON, base64, `b64:` prefixed.
+///
+/// The prefix is a format marker, not obfuscation — it lets [`decode_bundle`]
+/// distinguish this encoding from the legacy bare-JSON items.
 fn encode_bundle(bundle: &KeychainBundle) -> Result<Vec<u8>> {
     let json = serde_json::to_string(bundle).context("Failed to serialize bundle")?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
     Ok(format!("b64:{b64}").into_bytes())
 }
 
+/// Parse a stored bundle, accepting both the `b64:` form and legacy bare JSON.
+///
+/// Every failure collapses to `None`: an unreadable item is treated as "no
+/// secrets stored" so a corrupt entry degrades to re-entry rather than an error
+/// on every launch.
 fn decode_bundle(bytes: &[u8]) -> Option<KeychainBundle> {
     let raw = String::from_utf8(bytes.to_vec()).ok()?;
     let json = if let Some(b64) = raw.strip_prefix("b64:") {
@@ -111,6 +142,11 @@ fn decode_bundle(bytes: &[u8]) -> Option<KeychainBundle> {
     serde_json::from_str(&json).ok()
 }
 
+/// Return the bundle from cache, otherwise read it from the Keychain.
+///
+/// A miss can raise a macOS authorization prompt, so this belongs only on paths
+/// where a prompt is acceptable — see [`cached_runtime_key`] for the silent one.
+/// A successful read populates the cache; a decode failure does not.
 fn load_bundle() -> Option<KeychainBundle> {
     if let Some(bundle) = read_bundle_cache() {
         return Some(bundle);
@@ -130,6 +166,7 @@ fn load_bundle() -> Option<KeychainBundle> {
     }
 }
 
+/// Write the bundle to the Keychain and refresh the cache on success.
 fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
     let payload = encode_bundle(bundle)?;
     set_generic_password(SERVICE, BUNDLE_ACCOUNT, &payload)
@@ -284,6 +321,7 @@ pub fn runtime_key(account: &str) -> Option<String> {
     non_empty_secret(load_key(account))
 }
 
+/// Read `account` from the process environment, trimmed, treating blank as unset.
 fn non_empty_env(account: &str) -> Option<String> {
     std::env::var(account)
         .ok()
@@ -291,6 +329,11 @@ fn non_empty_env(account: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// The secret-precedence policy, lifted out of the env for testing.
+///
+/// Mirrors [`cached_runtime_key`] / [`runtime_key`] exactly: an explicit env
+/// value wins, a value this process seeded from Keychain does not, and the
+/// stored value is the fallback.
 #[cfg(test)]
 fn resolve_runtime_key(
     env_value: Option<String>,
@@ -301,10 +344,16 @@ fn resolve_runtime_key(
         .or_else(|| non_empty_secret(stored_value))
 }
 
+/// Keep an env value only when it did *not* come from this process's own
+/// Keychain bootstrap.
+///
+/// Equality against the seed is the discriminator: if they match, the env still
+/// holds our stale copy and the current Keychain value must win instead.
 fn explicit_env_value(env_value: Option<String>, seeded_env_value: Option<&str>) -> Option<String> {
     env_value.filter(|value| seeded_env_value != Some(value))
 }
 
+/// Trim a stored secret and treat a whitespace-only value as absent.
 fn non_empty_secret(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())

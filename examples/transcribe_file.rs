@@ -8,6 +8,10 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Transcribe one file, with the language either given or detected.
+///
+/// Progress and timings go to stderr while only the transcript goes to stdout,
+/// so the output stays pipeable into a file or another tool.
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
 

@@ -20,6 +20,10 @@ use codescribe::qube_report::{
 /// Global mismatch counter for daemon mode
 static PENDING_MISMATCHES: AtomicUsize = AtomicUsize::new(0);
 
+/// CLI surface for the quality loop.
+///
+/// `Clone` is required: daemon mode derives a per-iteration copy with the date
+/// and limit overridden — see [`build_daemon_check_args`].
 #[derive(Parser, Clone)]
 #[command(name = "qube-daemon")]
 #[command(version)]
@@ -130,6 +134,8 @@ struct Args {
     mismatch_threshold: usize,
 }
 
+/// Which transcript counts as ground truth, for metrics and for lexicon mining
+/// (the two are chosen independently).
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 enum ReferenceSourceArg {
     Corpus,
@@ -138,6 +144,11 @@ enum ReferenceSourceArg {
     Ai,
 }
 
+/// Entry point: apply env overrides, then branch to daemon or single-run mode.
+///
+/// The `set_var` calls sit here, at the very top of `main`, because that is the
+/// only point where the process is still single-threaded — the safety contract
+/// those `unsafe` blocks document.
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -173,6 +184,11 @@ async fn run_single(args: &Args) -> Result<()> {
     run_single_with_transcription(args, LocalTranscriptionMode::LocalWhisper).await
 }
 
+/// Assemble the report + loop configuration from CLI args and run one pass.
+///
+/// Every unset path falls back under `Config::config_dir()`, so a bare invocation
+/// works against the standard `~/.codescribe` layout. `local_transcription` is a
+/// parameter rather than a flag because the daemon pins it independently of args.
 async fn run_single_with_transcription(
     args: &Args,
     local_transcription: LocalTranscriptionMode,
@@ -367,6 +383,8 @@ fn send_macos_notification(message: &str, subtitle: &str) {
     let _ = Command::new("osascript").args(["-e", &script]).spawn();
 }
 
+/// Read a boolean env override; accepts `1` or `true` (case-insensitive) and
+/// treats everything else, including an unset variable, as false.
 fn env_bool(key: &str) -> bool {
     std::env::var(key)
         .ok()
@@ -374,6 +392,8 @@ fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Accept either a report directory or the `report.json` inside it, so
+/// `--baseline` takes whichever path the operator has to hand.
 fn resolve_report_path(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.join("report.json")

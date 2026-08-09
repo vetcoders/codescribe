@@ -1,3 +1,17 @@
+//! Live capture wired to the streaming transcription pipeline.
+//!
+//! [`StreamingRecorder`] owns a [`Recorder`] and forwards every captured block
+//! down a bounded channel to `transcription_session`, which emits `EngineEvent`s
+//! to a caller-supplied sink. The channel is deliberately deep
+//! (`AUDIO_BACKLOG_CHUNKS`): a cold Whisper load happens *behind* it, so the
+//! user's first words queue up instead of being dropped while the model loads.
+//!
+//! Shutdown is ordered and matters. Stopping capture is not enough — the session
+//! task has to drain, and the presentation layer ticks on its own task, so both
+//! `stop` paths wait for the transcript to stop growing (bounded to three
+//! seconds) before releasing the sink. Dropping the sink early truncates the
+//! tail of the delivered text.
+
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::pipeline::contracts::EventSink;
 use crate::pipeline::streaming::{SessionConfig, stream_log_path, transcription_session};
@@ -12,6 +26,11 @@ use tracing::{debug, info, warn};
 // the user's first words. The STT session drains this backlog once the model is ready.
 const AUDIO_BACKLOG_CHUNKS: usize = 2048;
 
+/// A recording session that transcribes while it captures.
+///
+/// Configure the sink and any callbacks first, then call
+/// [`StreamingRecorder::start_event_session`]; the sink is cleared on stop, so
+/// it must be set again for each session.
 pub struct StreamingRecorder {
     pub recorder: Recorder,
     transcript_buffer: Arc<Mutex<String>>,
@@ -30,6 +49,10 @@ pub struct StreamingRecorder {
 }
 
 impl StreamingRecorder {
+    /// Build a streaming recorder over a default-configured [`Recorder`].
+    ///
+    /// No sink is attached yet, so `start_event_session` will refuse until
+    /// [`Self::set_event_sink`] is called.
     pub fn new() -> Result<Self> {
         let recorder = Recorder::new()?;
         let sample_rate = recorder.config.sample_rate;
@@ -47,6 +70,10 @@ impl StreamingRecorder {
         })
     }
 
+    /// Build a streaming recorder over a specific [`RecorderConfig`].
+    ///
+    /// The configured sample rate is only provisional — it is corrected to the
+    /// device's actual rate once the stream opens.
     pub fn with_config(config: RecorderConfig) -> Result<Self> {
         let sample_rate = config.sample_rate;
         let recorder = Recorder::with_config(config)?;
@@ -64,10 +91,21 @@ impl StreamingRecorder {
         })
     }
 
+    /// Store a per-utterance text callback.
+    ///
+    /// Note: the stored value is currently never read by this type — completed
+    /// utterances reach consumers as `EngineEvent`s through the event sink
+    /// instead. The live per-utterance callback is the one on the presentation
+    /// emitter, not this one.
     pub fn set_utterance_callback(&mut self, callback: Option<Arc<dyn Fn(String) + Send + Sync>>) {
         self.utterance_callback = callback;
     }
 
+    /// Override how much trailing silence closes an utterance.
+    ///
+    /// Read when the session starts and passed into `SessionConfig`, so it has
+    /// to be set before [`Self::start_event_session`]. `None` keeps the
+    /// pipeline default.
     pub fn set_utterance_silence_sec(&mut self, silence_sec: Option<f32>) {
         self.utterance_silence_sec = silence_sec;
     }
@@ -164,6 +202,12 @@ impl StreamingRecorder {
         Ok(())
     }
 
+    /// Stop the session and return the accumulated transcript plus the WAV path.
+    ///
+    /// Ordered shutdown: stop capture (which drops the sender), await the
+    /// transcription task, let the presentation layer drain, then release the
+    /// sink. Any chunks dropped to backpressure during the session are logged
+    /// here — that counter is the signal that audio was actually lost.
     pub async fn stop(&mut self) -> Result<(String, Option<std::path::PathBuf>)> {
         info!("Stopping streaming recorder...");
 
@@ -209,11 +253,17 @@ impl StreamingRecorder {
         Ok((transcript, audio_path))
     }
 
+    /// Legacy alias for [`Self::stop_and_discard_path`].
     #[deprecated(note = "use stop_and_discard_path instead")]
     pub async fn stop_without_saving(&mut self) -> Result<String> {
         self.stop_and_discard_path().await
     }
 
+    /// Stop the session and return only the transcript.
+    ///
+    /// Same ordered shutdown as [`Self::stop`], but the WAV path is dropped.
+    /// The file itself is still written by the recorder — this discards the
+    /// handle, it does not suppress the write.
     pub async fn stop_and_discard_path(&mut self) -> Result<String> {
         info!("Stopping streaming recorder (discarding audio path)...");
 

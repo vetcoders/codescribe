@@ -28,6 +28,7 @@ struct ToolResultEntry {
     tool_use_id: String,
     /// Flattened, human-readable body of the result.
     body: String,
+    /// Whether the tool reported failure; surfaced in the section header.
     is_error: bool,
 }
 
@@ -107,6 +108,7 @@ pub fn thread_to_markdown(thread: &Thread, assistant_only: bool) -> String {
     out.trim_end().to_string() + "\n"
 }
 
+/// Case-insensitive assistant-role test used by the `assistant_only` filter.
 fn is_assistant(role: &str) -> bool {
     role.eq_ignore_ascii_case("assistant")
 }
@@ -130,6 +132,8 @@ fn role_label(role: &str) -> String {
     }
 }
 
+/// Render a stored UTC timestamp in the reader's local zone for the section
+/// header (minute precision).
 fn local_timestamp(ts: DateTime<Utc>) -> String {
     ts.with_timezone(&Local)
         .format("%Y-%m-%d %H:%M")
@@ -150,6 +154,8 @@ fn build_tool_name_index(messages: &[ThreadMessage]) -> HashMap<String, String> 
     index
 }
 
+/// Recursive worker for [`build_tool_name_index`]: descends arrays and records
+/// the `id` → `name` pair of every `tool_use` object it meets.
 fn gather_tool_names(value: &Value, index: &mut HashMap<String, String>) {
     match value {
         Value::Array(items) => {
@@ -179,6 +185,8 @@ fn collect_tool_results(content: &[Value]) -> Vec<ToolResultEntry> {
     entries
 }
 
+/// Recursive worker for [`collect_tool_results`]: descends arrays and turns
+/// every `tool_result` object into a [`ToolResultEntry`] with a flattened body.
 fn gather_tool_results(value: &Value, entries: &mut Vec<ToolResultEntry>) {
     match value {
         Value::Array(items) => {
@@ -227,6 +235,8 @@ fn flatten_tool_body(content: &Value) -> String {
     join_chunks(chunks)
 }
 
+/// Join collected blocks into one body, dropping blank chunks and separating
+/// the rest by a blank line so Markdown keeps them as distinct paragraphs.
 fn join_chunks(chunks: Vec<String>) -> String {
     chunks
         .iter()

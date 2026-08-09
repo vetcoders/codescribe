@@ -20,6 +20,7 @@ impl Default for WhisperSingletonAdapter {
 }
 
 impl WhisperSingletonAdapter {
+    /// Construct the adapter; the engine itself is the process-wide singleton.
     pub fn new() -> Self {
         Self
     }

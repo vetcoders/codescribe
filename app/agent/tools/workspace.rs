@@ -19,6 +19,10 @@ use serde_json::{Value, json};
 /// root holds hundreds of checkouts.
 const MAX_PROJECTS: usize = 100;
 
+/// Register `list_projects` as a read-only native tool.
+///
+/// Panics if registration fails — a name collision in the tool registry is a
+/// build-time mistake, not a runtime condition worth degrading around.
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -29,6 +33,8 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register list_projects tool");
 }
 
+/// The model-facing tool contract. Takes no parameters — roots come from operator
+/// config, never from the model, so there is nothing here for it to steer.
 fn list_projects_definition() -> ToolDefinition {
     ToolDefinition {
         name: "list_projects".to_string(),
@@ -44,6 +50,8 @@ fn list_projects_definition() -> ToolDefinition {
     }
 }
 
+/// Tool dispatch entry point: resolve roots, scan, and serialize. Input is
+/// ignored by design (see [`list_projects_definition`]).
 async fn handle_list_projects(_input: Value) -> Vec<ToolResultContent> {
     let roots = resolved_roots();
     let payload = list_projects_payload(&roots);
@@ -53,6 +61,8 @@ async fn handle_list_projects(_input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Build the JSON the model sees. Echoes the roots alongside the projects so an
+/// empty result reads as "these roots held nothing" rather than as a failure.
 fn list_projects_payload(roots: &[PathBuf]) -> Value {
     let projects = scan_projects(roots, MAX_PROJECTS);
     json!({

@@ -53,6 +53,10 @@ pub struct BufferedEmitter {
 }
 
 impl BufferedEmitter {
+    /// Build an emitter, reading the typing profile from the environment
+    /// (`CODESCRIBE_BUFFER_DELAY_MS`, `_TYPING_CPS`, `_EMIT_WORDS_MAX`) with the
+    /// golden defaults above as fallback. Speed and word-batch size are clamped,
+    /// so a bad override degrades the animation rather than stalling it.
     pub fn new(
         transcript_buffer: Arc<Mutex<String>>,
         delta_callback: Option<Arc<dyn DeltaSink>>,
@@ -145,11 +149,16 @@ impl BufferedEmitter {
         Some(target)
     }
 
+    /// Overwrite the shared transcript buffer wholesale, bypassing the animation.
+    /// For callers that already hold the authoritative text (e.g. a finalized
+    /// pass) and need the buffer to match immediately.
     pub async fn store_transcript_snapshot(&self, snapshot: String) {
         let mut buffer = self.transcript_buffer.lock().await;
         *buffer = snapshot;
     }
 
+    /// Replace the whole transcript with a corrected version. Blank input is
+    /// ignored — a correction pass must never blank the overlay.
     pub fn push_correction(&mut self, corrected: String) {
         if corrected.trim().is_empty() {
             return;
@@ -157,6 +166,9 @@ impl BufferedEmitter {
         let _ = self.set_target_text(corrected);
     }
 
+    /// Append a newly sealed segment to the target text. Routed through
+    /// [`BufferedEmitter::set_target_text`] so it takes the prefix-growth path and
+    /// queues as an incremental append rather than a correction.
     pub fn push_segment(&mut self, text: String) {
         if text.trim().is_empty() {
             return;
@@ -166,6 +178,13 @@ impl BufferedEmitter {
         let _ = self.set_target_text(target);
     }
 
+    /// Advance the animation by one step; returns `true` once finished and fully
+    /// drained.
+    ///
+    /// Corrections outrank queued appends, but are rate-limited by a 120 ms
+    /// cooldown so a burst of rewrites cannot starve forward progress. The very
+    /// first emission skips the initial buffering delay — instant visible feedback
+    /// that recording is live matters more there than smoothing.
     pub async fn tick(&mut self) -> bool {
         if self.finished
             && self.queue.is_empty()
@@ -241,6 +260,9 @@ impl BufferedEmitter {
             && self.correction_pending.is_none()
     }
 
+    /// Whether the initial buffering window is still open. Before any output the
+    /// answer is `true`, which is why the first-emission bypass in
+    /// [`BufferedEmitter::tick`] is gated on `has_output` rather than on this.
     fn is_buffering(&self) -> bool {
         let Some(start) = self.first_output_at else {
             return true;
@@ -248,10 +270,19 @@ impl BufferedEmitter {
         start.elapsed() < Duration::from_millis(self.initial_delay_ms)
     }
 
+    /// Mark the session complete. The emitter keeps ticking until the queue,
+    /// current segment, and any pending correction have all drained — this stops
+    /// new work, it does not truncate what is already buffered.
     pub fn finish(&mut self) {
         self.finished = true;
     }
 
+    /// Take the next chunk to emit: up to `emit_words_max` words, plus any
+    /// trailing whitespace token so words do not visually collide.
+    ///
+    /// Emitting whole words rather than single characters is what keeps the
+    /// animation readable at 90 cps. Returns `None` when the current segment is
+    /// exhausted, clearing it so the next tick pulls from the queue.
     fn next_emit_chunk(&mut self) -> Option<String> {
         let _ = self.current_segment.as_ref()?;
         if self.current_token_index >= self.current_tokens.len() {
@@ -318,14 +349,21 @@ pub async fn emitter_tick_loop(emitter: Arc<Mutex<BufferedEmitter>>) {
 
 // ── Delta helpers ────────────────────────────────────────────────────────────
 
+/// Encode `before` → `after` as a transcript delta, or `None` when they match.
+/// "Redacted" because the delta carries only the changed span, not the full text.
 pub(crate) fn build_redacted_delta(before: &str, after: &str) -> Option<String> {
     crate::pipeline::contracts::TranscriptDelta::from_diff(before, after).map(|td| td.delta)
 }
 
+/// Apply a delta produced by [`build_redacted_delta`] in place, keeping the
+/// shared transcript buffer in step with what the sink has rendered.
 pub(crate) fn apply_delta_to_string(target: &mut String, delta: &str) {
     crate::pipeline::contracts::TranscriptDelta::from_raw(delta).apply(target);
 }
 
+/// Split text into emission tokens, keeping whitespace runs as tokens of their
+/// own so reassembly is lossless. Text the regex cannot split is returned whole
+/// rather than dropped.
 fn tokenize_for_emit(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for m in TOKEN_RE.find_iter(text) {

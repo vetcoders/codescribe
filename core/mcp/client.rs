@@ -1,3 +1,18 @@
+//! MCP client — stdio and Streamable HTTP transports behind one call surface.
+//!
+//! Every exchange is one-shot: a server is spawned (or an HTTP connection
+//! opened), handshaken, used, and shut down per probe or tool call. That costs a
+//! spawn each time and buys the property that matters here — a hung or crashed
+//! MCP server can never own, stall, or terminate the agent session that invoked
+//! it. Failures degrade to a typed error for that one server.
+//!
+//! ## Key types
+//!
+//! - [`McpClient`] — the call surface: [`McpClient::probe`],
+//!   [`McpClient::list_tools`], [`McpClient::call_tool`]
+//! - [`McpConfigFile`] / [`McpServerConfig`] — `~/.codescribe/mcp.json` shape
+//! - [`McpProbe`] — handshake identity + live tool list from one exchange
+
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -16,13 +31,18 @@ use tracing::{debug, warn};
 use crate::agent::ToolResultContent;
 use crate::config::keychain::runtime_key;
 
+/// MCP specification revision announced in the `initialize` handshake.
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Per-request ceiling when `mcp.json` names none. Generous because a tool call
+/// may legitimately do real work.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A healthy server answers `initialize` in milliseconds — heavy work belongs
 /// to tool calls. A hung server must not stall agent-runtime init for the full
 /// request timeout, so the handshake gets its own, much shorter default.
 /// An explicit `timeout_seconds` in mcp.json overrides this too.
 const DEFAULT_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Budget for each shutdown step (goodbye request, then process wait). A child
+/// that outlives it is killed rather than waited on.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Upper bound on how long a failure-path stderr drain may block. A crashed
 /// server exits and yields EOF well within this; a still-alive server that
@@ -30,8 +50,14 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(200);
 /// Max characters of collapsed stderr carried into a WARN line.
 const STDERR_LOG_MAX_CHARS: usize = 200;
+/// Total attempts for a remote exchange, including the first. Bounded so a
+/// dead connector surfaces as an error instead of retrying indefinitely.
 const REMOTE_RECONNECT_ATTEMPTS: usize = 3;
+/// First backoff step; doubles per retry (250 ms, 500 ms).
 const REMOTE_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
+/// Directories appended to the spawn `PATH`. A GUI-launched app inherits a
+/// minimal environment, so without these a Homebrew-installed server would be
+/// reported as "command not found" despite being installed.
 const FALLBACK_PATHS: &[&str] = &[
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -41,13 +67,18 @@ const FALLBACK_PATHS: &[&str] = &[
     "/sbin",
 ];
 
+/// Parsed `mcp.json`. Mirrors the `mcpServers` shape shared across MCP hosts,
+/// so an existing config file works unchanged.
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpConfigFile {
+    /// Configured servers, keyed by the local name shown in Settings.
     #[serde(rename = "mcpServers", default)]
     pub servers: HashMap<String, McpServerConfig>,
 }
 
 impl McpConfigFile {
+    /// Read and parse the config at `path`. Errors name the path, since this
+    /// surfaces to an operator hand-editing the file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path)
@@ -56,6 +87,9 @@ impl McpConfigFile {
             .with_context(|| format!("Failed to parse MCP config {}", path.display()))
     }
 
+    /// Like [`Self::load`], but a missing file is `Ok(None)` rather than an
+    /// error — having no MCP servers configured is a normal state. A file that
+    /// exists but does not parse still errors.
     pub fn load_optional(path: impl AsRef<Path>) -> Result<Option<Self>> {
         let path = path.as_ref();
         if !path.exists() {
@@ -65,10 +99,15 @@ impl McpConfigFile {
     }
 }
 
+/// One server entry. Transport is implied, not declared: a present [`Self::url`]
+/// selects remote HTTP, otherwise `command` is spawned over stdio.
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpServerConfig {
+    /// Executable to spawn for stdio transport. A bare name is resolved against
+    /// the effective `PATH`; ignored when `url` is set.
     #[serde(default)]
     pub command: String,
+    /// Arguments passed to `command`.
     #[serde(default)]
     pub args: Vec<String>,
     /// Non-secret environment variables (PATH, project paths, …).
@@ -79,8 +118,13 @@ pub struct McpServerConfig {
     /// material). Resolved at spawn via [`crate::mcp::resolve_server_env`].
     #[serde(default)]
     pub env_refs: HashMap<String, String>,
+    /// Whether the server participates in tool discovery. `None` is decided by
+    /// the caller, not here.
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Explicit timeout governing BOTH the handshake and subsequent requests.
+    /// When set it overrides the shorter handshake default — an operator who
+    /// names a number means it for the whole exchange.
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
     /// Streamable HTTP endpoint. When present, this server uses remote transport
@@ -94,12 +138,16 @@ pub struct McpServerConfig {
 }
 
 impl McpServerConfig {
+    /// Per-request timeout: the configured value, else [`DEFAULT_TIMEOUT`].
     fn timeout(&self) -> Duration {
         self.timeout_seconds
             .map(Duration::from_secs)
             .unwrap_or(DEFAULT_TIMEOUT)
     }
 
+    /// Handshake timeout: the configured value, else the much shorter
+    /// [`DEFAULT_INITIALIZE_TIMEOUT`], so one hung server cannot stall agent
+    /// runtime init for the full request budget.
     fn initialize_timeout(&self) -> Duration {
         self.timeout_seconds
             .map(Duration::from_secs)
@@ -107,11 +155,16 @@ impl McpServerConfig {
     }
 }
 
+/// One tool as advertised by a server's `tools/list`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct McpTool {
+    /// Upstream tool name, as it must be spelled when calling it.
     pub name: String,
+    /// Server-supplied description surfaced to the model.
     #[serde(default)]
     pub description: Option<String>,
+    /// JSON Schema for the arguments. Defaults to an empty object schema when
+    /// omitted, so a terse server still yields a callable tool.
     #[serde(rename = "inputSchema", default = "default_input_schema")]
     pub input_schema: Value,
 }
@@ -121,16 +174,23 @@ pub struct McpTool {
 /// probe still succeeds on the strength of a valid `tools/list`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct McpHandshake {
+    /// MCP revision the server answered with.
     #[serde(rename = "protocolVersion", default)]
     pub protocol_version: Option<String>,
+    /// Server's self-reported name and version.
     #[serde(rename = "serverInfo", default)]
     pub server_info: Option<McpServerInfo>,
 }
 
+/// Server's self-reported identity from the handshake. Both fields are
+/// advisory — nothing routes on them; they exist so Settings can show what
+/// actually answered.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct McpServerInfo {
+    /// Server-advertised name.
     #[serde(default)]
     pub name: Option<String>,
+    /// Server-advertised version.
     #[serde(default)]
     pub version: Option<String>,
 }
@@ -152,15 +212,23 @@ impl McpHandshake {
 /// Full result of a health probe: the handshake identity plus the live tools.
 #[derive(Debug, Clone, Default)]
 pub struct McpProbe {
+    /// Identity the server advertised during `initialize`.
     pub handshake: McpHandshake,
+    /// Tools the server currently serves.
     pub tools: Vec<McpTool>,
 }
 
+/// Canonical config location: `$HOME/.codescribe/mcp.json`. Errors only when
+/// `HOME` is unset; the file itself need not exist.
 pub fn default_mcp_config_path() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("HOME environment variable is not set")?;
     Ok(PathBuf::from(home).join(".codescribe").join("mcp.json"))
 }
 
+/// Call surface for one configured MCP server.
+///
+/// Cheap to construct and holds no connection: each call opens its own
+/// transport. Cloning it is fine — clones share nothing but configuration.
 #[derive(Debug, Clone)]
 pub struct McpClient {
     config: McpServerConfig,
@@ -169,6 +237,7 @@ pub struct McpClient {
 }
 
 impl McpClient {
+    /// Build a client, resolving both timeouts from the server config.
     pub fn new(config: McpServerConfig) -> Self {
         let timeout = config.timeout();
         let initialize_timeout = config.initialize_timeout();
@@ -179,12 +248,17 @@ impl McpClient {
         }
     }
 
+    /// Override BOTH the handshake and request timeouts. Mainly a test seam:
+    /// collapsing the two is what lets a test assert a timeout without waiting
+    /// out the production budget.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self.initialize_timeout = timeout;
         self
     }
 
+    /// The server's live tool list. Thin wrapper over [`Self::probe`] that
+    /// discards the handshake identity.
     pub async fn list_tools(&self) -> Result<Vec<McpTool>> {
         Ok(self.probe().await?.tools)
     }
@@ -235,6 +309,13 @@ impl McpClient {
         result
     }
 
+    /// Invoke `name` with `arguments` and return its content blocks.
+    ///
+    /// Remote servers retry with bounded backoff; stdio servers get one attempt
+    /// and their stderr is drained into the failure WARN, so a crash reads as a
+    /// diagnosable tool error rather than an opaque one. A server-reported
+    /// `isError` becomes [`ToolResultContent::Error`], not an `Err` — the call
+    /// reached the tool, and the model should see the failure text.
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Vec<ToolResultContent>> {
         if self.config.url.is_some() {
             return self
@@ -333,16 +414,29 @@ impl McpClient {
 /// call: the registry contract remains identical to stdio while a dead remote
 /// connector cannot own or terminate the surrounding agent session.
 struct RemoteConnection {
+    /// HTTP client, itself carrying the response timeout.
     client: reqwest::Client,
+    /// Validated endpoint URL.
     endpoint: String,
+    /// Bearer read from the Keychain; only ever populated over https.
     bearer_token: Option<String>,
+    /// Session id echoed back by the server, replayed on later requests.
     session_id: Option<String>,
+    /// Next JSON-RPC request id.
     next_id: u64,
+    /// Per-request timeout.
     response_timeout: Duration,
+    /// Handshake timeout.
     initialize_timeout: Duration,
 }
 
 impl RemoteConnection {
+    /// Validate the endpoint and prepare an HTTP client.
+    ///
+    /// Refuses, before any network call: a non-http(s) scheme, credentials
+    /// embedded in the URL, and — the one that matters — an `auth_ref` over
+    /// plaintext http. That last check fires before the Keychain is even read,
+    /// so a misconfigured endpoint cannot put a secret on the wire.
     fn connect(
         config: &McpServerConfig,
         response_timeout: Duration,
@@ -395,6 +489,9 @@ impl RemoteConnection {
         })
     }
 
+    /// Run the `initialize` exchange plus the `notifications/initialized`
+    /// follow-up. A handshake whose shape is slightly off parses to defaults
+    /// rather than failing the probe — identity is advisory, tools are not.
     async fn initialize(&mut self) -> Result<McpHandshake> {
         let result = self
             .request_with_timeout(
@@ -416,11 +513,15 @@ impl RemoteConnection {
         Ok(handshake)
     }
 
+    /// JSON-RPC request under the standard per-request timeout.
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.request_with_timeout(self.response_timeout, method, params)
             .await
     }
 
+    /// JSON-RPC request under an explicit timeout. The response is matched by
+    /// request id, so a batched or interleaved reply cannot be mistaken for
+    /// this call's answer.
     async fn request_with_timeout(
         &mut self,
         response_timeout: Duration,
@@ -443,6 +544,7 @@ impl RemoteConnection {
         parse_remote_response(response, id, method)
     }
 
+    /// Fire-and-forget JSON-RPC notification (no id, no response awaited).
     async fn notification(&mut self, method: &str, params: Value) -> Result<()> {
         let message = json!({
             "jsonrpc": "2.0",
@@ -453,6 +555,11 @@ impl RemoteConnection {
         Ok(())
     }
 
+    /// POST one message and return the raw body with its content type.
+    ///
+    /// Captures any `Mcp-Session-Id` for later requests, and treats a non-2xx
+    /// status as an error naming the endpoint and code — the shape a connector
+    /// outage takes in the Engine tab.
     async fn post(&mut self, message: &Value) -> Result<RemoteResponse> {
         let mut request = self
             .client
@@ -501,11 +608,18 @@ impl RemoteConnection {
     }
 }
 
+/// Raw HTTP response body plus the content type needed to decide how to read
+/// it (Streamable HTTP may answer either plain JSON or an SSE stream).
 struct RemoteResponse {
     content_type: String,
     body: String,
 }
 
+/// Extract the JSON-RPC result matching `id`, handling both response shapes.
+///
+/// SSE bodies are reduced to their `data:` frames; plain bodies parse as one
+/// message. Selecting by id is what makes an interleaved stream safe to read.
+/// A JSON-RPC `error` member becomes an `Err` naming the method.
 fn parse_remote_response(response: RemoteResponse, id: u64, method: &str) -> Result<Value> {
     let messages: Vec<Value> = if response.content_type.contains("text/event-stream") {
         response
@@ -549,19 +663,37 @@ fn warn_handshake_failure(command: &str, phase: &str, error: &anyhow::Error, std
     }
 }
 
+/// One spawned MCP server speaking newline-delimited JSON-RPC over stdio.
+///
+/// Owns the child process for the exchange's lifetime and is consumed by
+/// [`Self::shutdown`], so the process cannot outlive the connection value.
 struct StdioConnection {
+    /// The spawned server process.
     child: Child,
+    /// Request pipe, with SIGPIPE disabled per-fd (see `disable_sigpipe`).
     stdin: ChildStdin,
+    /// Response pipe, read as lines.
     stdout: Lines<BufReader<ChildStdout>>,
     /// Piped stderr, read only on the failure path (see `drain_stderr`). Taken
     /// out once drained so shutdown does not touch it again.
     stderr: Option<ChildStderr>,
+    /// Next JSON-RPC request id.
     next_id: u64,
+    /// Per-request timeout.
     response_timeout: Duration,
+    /// Handshake timeout.
     initialize_timeout: Duration,
 }
 
 impl StdioConnection {
+    /// Spawn the server with Keychain-resolved env and an augmented `PATH`.
+    ///
+    /// Three deliberate choices live here: secrets are resolved from Keychain
+    /// refs at spawn time (never stored in `mcp.json`); a `NotFound` spawn error
+    /// is rewritten into a `command not found` message naming the searched
+    /// `PATH`, because that is the failure operators actually hit; and stderr is
+    /// piped rather than nulled so a server that dies mid-handshake can still
+    /// explain itself.
     async fn spawn(
         config: &McpServerConfig,
         response_timeout: Duration,
@@ -650,6 +782,8 @@ impl StdioConnection {
         truncate_stderr(&String::from_utf8_lossy(&buffer))
     }
 
+    /// Run the `initialize` exchange plus the `notifications/initialized`
+    /// follow-up, under the shorter handshake timeout.
     async fn initialize(&mut self) -> Result<McpHandshake> {
         let result = self
             .request_with_timeout(
@@ -672,11 +806,18 @@ impl StdioConnection {
         Ok(serde_json::from_value(result).unwrap_or_default())
     }
 
+    /// JSON-RPC request under the standard per-request timeout.
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.request_with_timeout(self.response_timeout, method, params)
             .await
     }
 
+    /// JSON-RPC request under an explicit timeout.
+    ///
+    /// Reads lines until one carries the matching id, skipping the server's own
+    /// notifications and log chatter rather than mistaking them for the answer.
+    /// EOF before a reply means the server died mid-exchange and surfaces as a
+    /// "closed stdout" error.
     async fn request_with_timeout(
         &mut self,
         response_timeout: Duration,
@@ -717,6 +858,7 @@ impl StdioConnection {
         }
     }
 
+    /// Fire-and-forget JSON-RPC notification (no id, no response awaited).
     async fn notification(&mut self, method: &str, params: Value) -> Result<()> {
         self.write_message(json!({
             "jsonrpc": "2.0",
@@ -726,6 +868,9 @@ impl StdioConnection {
         .await
     }
 
+    /// Serialize and write one newline-delimited JSON-RPC message, flushing it.
+    /// A write to a dead peer returns EPIPE rather than raising SIGPIPE — see
+    /// [`disable_sigpipe`].
     async fn write_message(&mut self, message: Value) -> Result<()> {
         let mut bytes = serde_json::to_vec(&message).context("Failed to serialize MCP message")?;
         bytes.push(b'\n');
@@ -739,6 +884,13 @@ impl StdioConnection {
             .context("Failed to flush MCP message")
     }
 
+    /// Consume the connection and stop the server.
+    ///
+    /// Sends the JSON-RPC goodbye only to a process still alive, then closes
+    /// stdin and waits — killing the child if it overruns [`SHUTDOWN_TIMEOUT`].
+    /// Skipping the goodbye for an already-exited child is the point: writing
+    /// into its closed stdin is EPIPE noise at best, and in a host that never
+    /// ran Rust's `main` signal setup, fatal at worst.
     async fn shutdown(mut self) -> Result<()> {
         // A child that already exited (we saw EOF / a failed exchange) gets no
         // JSON-RPC goodbye: writing into its closed stdin is at best EPIPE
@@ -788,9 +940,16 @@ fn disable_sigpipe(stdin: &ChildStdin) {
     let _ = unsafe { libc::fcntl(stdin.as_raw_fd(), F_SETNOSIGPIPE, 1) };
 }
 
+/// No-op outside macOS: `F_SETNOSIGPIPE` is a Darwin-specific fcntl.
 #[cfg(not(target_os = "macos"))]
 fn disable_sigpipe(_stdin: &ChildStdin) {}
 
+/// Build the `PATH` a spawned server sees: the server's own configured `PATH`
+/// first, then the process `PATH`, then the user bins and system fallbacks.
+///
+/// Order is precedence, and duplicates are dropped. This exists because a
+/// GUI-launched app inherits a minimal `PATH` — without the fallbacks, servers
+/// that are installed would report as missing.
 fn effective_mcp_path(config_path: Option<&str>) -> OsString {
     let mut entries = Vec::new();
 
@@ -814,6 +973,10 @@ fn effective_mcp_path(config_path: Option<&str>) -> OsString {
     })
 }
 
+/// Resolve a bare command name to the first executable match on
+/// `effective_path`. A command containing `/` is already a path and is returned
+/// unchanged; an unresolvable name is returned as-is so the spawn error names
+/// what the operator actually configured.
 fn resolve_command(command: &str, effective_path: &OsStr) -> OsString {
     if command.contains('/') {
         return OsString::from(command);
@@ -829,12 +992,15 @@ fn resolve_command(command: &str, effective_path: &OsStr) -> OsString {
     OsString::from(command)
 }
 
+/// Split a `PATH`-style string and append each entry, preserving order.
 fn push_path_entries(entries: &mut Vec<PathBuf>, path: &OsStr) {
     for entry in std::env::split_paths(path) {
         push_unique_path(entries, entry);
     }
 }
 
+/// Append `path` unless it is empty or already present, so earlier entries keep
+/// their precedence.
 fn push_unique_path(entries: &mut Vec<PathBuf>, path: PathBuf) {
     if path.as_os_str().is_empty() || entries.iter().any(|existing| existing == &path) {
         return;
@@ -842,6 +1008,8 @@ fn push_unique_path(entries: &mut Vec<PathBuf>, path: PathBuf) {
     entries.push(path);
 }
 
+/// Whether `path` is a regular file with any execute bit set. Unreadable
+/// metadata counts as "not executable" rather than erroring.
 #[cfg(unix)]
 fn is_executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -851,23 +1019,29 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Non-Unix fallback: permission bits are not consulted, only file-ness.
 #[cfg(not(unix))]
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
+/// Wire shape of a `tools/list` result. A server advertising no tools is valid,
+/// hence the default.
 #[derive(Debug, Deserialize)]
 struct ToolsListResult {
     #[serde(default)]
     tools: Vec<McpTool>,
 }
 
+/// Decode a `tools/list` result into the tool list.
 fn parse_tools_list(value: Value) -> Result<Vec<McpTool>> {
     let result: ToolsListResult =
         serde_json::from_value(value).context("Failed to parse MCP tools/list result")?;
     Ok(result.tools)
 }
 
+/// Wire shape of a `tools/call` result: content blocks plus the server's own
+/// success flag.
 #[derive(Debug, Deserialize)]
 struct ToolCallResult {
     #[serde(default)]
@@ -876,21 +1050,30 @@ struct ToolCallResult {
     is_error: bool,
 }
 
+/// One content block from a tool result, tagged by its `type`.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum McpContentBlock {
-    Text {
-        text: String,
-    },
+    /// Plain text payload.
+    Text { text: String },
+    /// Base64 image payload with its MIME type.
     Image {
         data: String,
         #[serde(rename = "mimeType")]
         mime_type: String,
     },
+    /// Any block type this client does not model. Present so an unknown block
+    /// is skipped rather than failing the whole result — future MCP additions
+    /// must not break existing tool calls.
     #[serde(other)]
     Other,
 }
 
+/// Convert a `tools/call` result into the agent's content blocks.
+///
+/// Text under `isError` becomes [`ToolResultContent::Error`]; images are
+/// base64-decoded; unmodelled blocks are dropped. An error result carrying no
+/// content still yields one error block, so a failure is never silent.
 fn parse_tool_call_result(value: Value) -> Result<Vec<ToolResultContent>> {
     let result: ToolCallResult =
         serde_json::from_value(value).context("Failed to parse MCP tools/call result")?;
@@ -922,6 +1105,8 @@ fn parse_tool_call_result(value: Value) -> Result<Vec<ToolResultContent>> {
     Ok(output)
 }
 
+/// Empty object schema used when a server omits `inputSchema`, keeping such a
+/// tool callable instead of rejecting it.
 fn default_input_schema() -> Value {
     json!({ "type": "object" })
 }
@@ -975,6 +1160,9 @@ mod tests {
     /// see `mcp_timeout_errors_without_sleeping_test`.
     const CONTENT_ASSERTION_BACKSTOP: Duration = Duration::from_secs(10);
 
+    /// Config pointing at `tests/fixtures/mock_mcp.py`, whose `mode` argument
+    /// selects the behaviour under test (empty = well-behaved; `malformed`,
+    /// `silent`, `crash-on-call`, `exit-before-initialize` = the failure shapes).
     fn mock_server(mode: &str) -> McpServerConfig {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()

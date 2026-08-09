@@ -51,6 +51,11 @@ fn classify(text: &str) -> bool {
     is_secret_basename(basename)
 }
 
+/// Whether a filename (no directory part) names credential-bearing content.
+///
+/// Covers dotted env files, the MCP config and its backups, the grant store,
+/// conventional credential dotfiles, key material by extension, and the usual
+/// SSH key stems.
 fn is_secret_basename(name: &str) -> bool {
     // Dotted env files: .env, .env.local, .env.debug.example, …
     if name.starts_with(".env") {

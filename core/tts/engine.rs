@@ -316,6 +316,8 @@ fn move_tensors_to_device(
     Ok(result)
 }
 
+/// Constant-only coverage: instantiating the engine needs model weights and a
+/// device, so it is exercised through the singleton and the round-trip example.
 #[cfg(test)]
 mod tests {
     use super::*;

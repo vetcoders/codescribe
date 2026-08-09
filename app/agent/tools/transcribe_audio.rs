@@ -1,3 +1,18 @@
+//! The `transcribe_audio` agent tool: transcribe a local audio file on request.
+//!
+//! Registered as [`ToolRisk::ReadOnly`], which makes the path gate the load-
+//! bearing part of this module. A model-supplied path is untrusted input, so
+//! `validate_audio_path` requires an absolute path to an existing file with a
+//! supported extension, canonicalizes it (collapsing `..` and symlinks), and
+//! only then checks containment in `~/.codescribe` or the agent assets
+//! directory. Canonicalizing *before* the containment check is what stops a
+//! symlink inside an allowed directory from reading arbitrary files.
+//!
+//! Transcription runs through the shared Whisper singleton behind the
+//! `TranscribeAudioEngine` trait, so the JSON contract and the path gate are
+//! testable without loading a model. Silero VAD pre-filters the audio; silent
+//! input returns an empty transcript instead of Whisper's hallucinations.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -21,6 +36,8 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register transcribe_audio tool");
 }
 
+/// The tool schema advertised to the model: name, description, and the
+/// `path` / `language` input contract.
 fn transcribe_audio_definition() -> ToolDefinition {
     ToolDefinition {
         name: "transcribe_audio".to_string(),
@@ -42,6 +59,12 @@ fn transcribe_audio_definition() -> ToolDefinition {
     }
 }
 
+/// Tool entry point: run the real Whisper engine and map the outcome to tool
+/// result content.
+///
+/// Errors become [`ToolResultContent::Error`] rather than propagating, so a bad
+/// path or a missing model is something the model can read and correct instead
+/// of a failed turn.
 async fn handle_transcribe_audio(input: Value) -> Vec<ToolResultContent> {
     match transcribe_audio_from_input_with_engine(&input, &WhisperSingleton) {
         Ok(output) => vec![ToolResultContent::Text(output)],
@@ -49,6 +72,13 @@ async fn handle_transcribe_audio(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// The whole tool body, parameterized over the engine so tests can drive it
+/// without Whisper.
+///
+/// Validates the path, VAD-filters the samples, resolves the language (caller
+/// hint wins over detection), transcribes, and serializes
+/// `TranscribeAudioOutput`. Audio with no detected speech short-circuits to an
+/// empty transcript before language detection or inference is attempted.
 fn transcribe_audio_from_input_with_engine(
     input: &Value,
     engine: &dyn TranscribeAudioEngine,
@@ -130,14 +160,24 @@ fn transcribe_audio_from_input_with_engine(
     })
 }
 
+/// The STT capabilities this tool needs, extracted as a seam for testing.
+///
+/// Production uses `WhisperSingleton`; tests substitute a fake so the path
+/// gate and the JSON output contract can be exercised without a multi-GB model.
 trait TranscribeAudioEngine {
+    /// Ensure the engine is loaded, doing nothing if it already is.
     fn init(&self) -> Result<()>;
+    /// Identifier of the active model, reported back for provenance.
     fn model_id(&self) -> Result<String>;
+    /// Drop non-speech audio, returning the kept samples and the VAD stats.
     fn extract_speech(&self, samples: &[f32], sample_rate: u32) -> Result<(Vec<f32>, VadOutput)>;
+    /// Detect the spoken language, used only when the caller gave no hint.
     fn detect_language(&self, samples: &[f32], sample_rate: u32) -> Result<String>;
+    /// Transcribe speech samples in a known language.
     fn transcribe(&self, samples: &[f32], sample_rate: u32, language: &str) -> Result<String>;
 }
 
+/// Production engine: the process-wide Whisper singleton plus Silero VAD.
 struct WhisperSingleton;
 
 impl TranscribeAudioEngine for WhisperSingleton {
@@ -175,6 +215,13 @@ impl TranscribeAudioEngine for WhisperSingleton {
     }
 }
 
+/// Turn an untrusted path string into a canonical path safe to read, or fail.
+///
+/// Order matters: cheap structural checks (absolute, exists, is a file,
+/// supported extension) run first, then canonicalization resolves `..` and
+/// symlinks, and only the canonical result is containment-checked. Checking
+/// containment before canonicalizing would let a symlink placed inside an
+/// allowed directory escape it.
 fn validate_audio_path(path_str: &str) -> Result<PathBuf> {
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Input path is validated below (absolute, existing file, supported audio extension, canonicalized, and restricted to ~/.codescribe or AgentAssetStore::assets_dir()) before any filesystem read.
     let path = PathBuf::from(path_str);
@@ -199,6 +246,10 @@ fn validate_audio_path(path_str: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// Reject anything that is not a decodable audio container.
+///
+/// Case-insensitive; the error names the accepted extensions so the model can
+/// correct itself rather than retry blindly.
 fn ensure_supported_audio_extension(path: &Path) -> Result<()> {
     let extension = path
         .extension()
@@ -214,6 +265,10 @@ fn ensure_supported_audio_extension(path: &Path) -> Result<()> {
     }
 }
 
+/// Confine reads to `~/.codescribe` or the agent assets directory.
+///
+/// Both roots are canonicalized before comparison so the two sides of the
+/// prefix test are in the same form. Expects an already-canonical `path`.
 fn ensure_allowed_audio_path(path: &Path) -> Result<()> {
     let home_var = std::env::var("HOME").context("HOME environment variable is not set")?;
     let codescribe_dir = canonical_or_original(PathBuf::from(home_var).join(".codescribe"));
@@ -229,14 +284,22 @@ fn ensure_allowed_audio_path(path: &Path) -> Result<()> {
     )
 }
 
+/// Canonicalize an allow-list root, keeping the original if it does not exist.
+///
+/// A missing assets directory must not widen the gate: the non-canonical path is
+/// still a prefix no candidate can match by accident.
 fn canonical_or_original(path: PathBuf) -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
+/// The containment predicate, split out so it is unit-testable against fixed
+/// roots without touching the filesystem or `HOME`.
 fn is_path_allowed(path: &Path, codescribe_dir: &Path, assets_dir: &Path) -> bool {
     path.starts_with(codescribe_dir) || path.starts_with(assets_dir)
 }
 
+/// Sample count as wall-clock seconds, returning `0.0` for a zero sample rate
+/// instead of dividing by zero.
 fn samples_duration_seconds(sample_count: usize, sample_rate: u32) -> f32 {
     if sample_rate == 0 {
         0.0
@@ -245,30 +308,54 @@ fn samples_duration_seconds(sample_count: usize, sample_rate: u32) -> f32 {
     }
 }
 
+/// Render the result as pretty JSON — the tool's actual return payload.
 fn serialize_output(output: TranscribeAudioOutput) -> Result<String> {
     serde_json::to_string_pretty(&output).context("Failed to serialize transcribe_audio output")
 }
 
+/// The JSON the model receives back.
+///
+/// Deliberately more than the transcript: the model needs to distinguish "the
+/// file was silent" from "transcription failed", so duration, speech duration,
+/// and the VAD breakdown travel alongside the text. `Deserialize` exists for the
+/// tests, which parse the payload back to assert on the contract.
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 struct TranscribeAudioOutput {
+    /// Canonical path actually read, after validation.
     path: String,
+    /// Recognized text; empty when VAD found no speech.
     transcript: String,
+    /// Active Whisper model — `"embedded"` or the model directory name.
     model_id: String,
+    /// Language used for decoding, absent when nothing was transcribed.
     detected_language: Option<String>,
+    /// How the language was chosen: `provided`, `detected`, or `none`.
     language_source: String,
+    /// Full audio length in seconds.
     duration_seconds: f32,
+    /// Length of the speech kept by VAD, in seconds.
     speech_duration_seconds: f32,
+    /// Sample rate of the decoded audio, in Hz.
     sample_rate: u32,
+    /// Sample count before VAD filtering.
     input_samples: usize,
+    /// Sample count after VAD filtering.
     speech_samples: usize,
+    /// VAD statistics explaining what was kept and why.
     vad: VadOutput,
 }
 
+/// Serializable projection of the VAD stats, so an empty transcript comes with
+/// the evidence for why it is empty.
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 struct VadOutput {
+    /// Share of analysis windows classified as speech, 0–100.
     speech_pct: f32,
+    /// Windows that cleared the speech threshold.
     speech_windows: usize,
+    /// Windows analyzed in total.
     total_windows: usize,
+    /// Why no speech was found, when that is the outcome.
     no_speech_reason: Option<String>,
 }
 

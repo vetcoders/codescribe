@@ -67,6 +67,12 @@ fn cap_correction_buffer(buf: &mut Vec<f32>, sample_rate: u32, window_sec: f32) 
     drain_n
 }
 
+/// Trim `text` in place to at most `max_chars` **characters**, dropping from
+/// the front. Returns how many characters were dropped.
+///
+/// Counts characters, not bytes: this text is Polish and a byte cut would
+/// split a diacritic. Any word fragment left dangling at the new start is
+/// trimmed away.
 fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
     let char_count = text.chars().count();
     if max_chars == 0 || char_count <= max_chars {
@@ -87,6 +93,11 @@ fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
     drain_chars
 }
 
+/// Append one piece of transcript to the Refine window's text mirror, keeping
+/// it capped.
+///
+/// The mirror tracks `correction_audio_buf`: previews and finals append here as
+/// they append there, so the two stay describable as one slice.
 fn append_to_correction_window_text(window_text: &mut String, text: &str, max_chars: usize) {
     let text = text.trim();
     if text.is_empty() {
@@ -112,6 +123,12 @@ pub struct SessionConfig {
     pub utterance_silence_sec: Option<f32>,
 }
 
+/// What happened to one enqueue attempt.
+///
+/// `enqueued` and `dropped` are independent: making room for a final by
+/// evicting something reports both, and `evicted_final` distinguishes the worst
+/// case — a committed boundary was sacrificed — from evicting a replaceable
+/// interim.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct EnqueueOutcome {
     pub(crate) enqueued: bool,
@@ -119,6 +136,16 @@ pub(crate) struct EnqueueOutcome {
     pub(crate) evicted_final: bool,
 }
 
+/// Queue one work item for inference, applying the backpressure policy when the
+/// queue is full.
+///
+/// Finals and interims are not equal under pressure. An interim is a draft that
+/// a later pass will supersede, so a full queue simply drops an incoming one. A
+/// final is a committed utterance boundary, so it always gets in: first by
+/// evicting the oldest interim, and only if the queue is all finals by evicting
+/// the oldest of those. The invariant is that the *newest* boundary survives —
+/// losing it would truncate the transcript at the end, where the user is
+/// looking.
 pub(crate) fn enqueue_pending_utterance(
     pending: &mut VecDeque<PendingUtteranceWorkItem>,
     item: PendingUtteranceWorkItem,
@@ -180,12 +207,24 @@ pub(super) fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
 }
 
+/// Count a semantic-gate drop, but only for finals.
+///
+/// Interim previews are drafts that get re-decoded; counting their drops would
+/// inflate the session stats with rejections that never cost the user any text.
 fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_final: bool) {
     if is_final && quality_gate_dropped {
         *counter = counter.saturating_add(1);
     }
 }
 
+/// Re-transcribe a sealed utterance's audio and diff it against the text
+/// already committed, producing Layer 1 patch events.
+///
+/// Runs the Whisper pass on a blocking worker so the session loop keeps
+/// draining. `committed_text` must be the exact string that was emitted as
+/// `UtteranceFinal.text`: the resulting `ReplaceRange` offsets are computed
+/// against it, so a differently-trimmed copy would produce patches that land at
+/// the wrong characters. The debug assertion pins that contract in test builds.
 pub(super) async fn compute_tail_patch_job(
     utterance_id: u64,
     committed_text: String,
@@ -212,6 +251,13 @@ pub(super) async fn compute_tail_patch_job(
     .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
 }
 
+/// Forward a tail-patch job's outcome to the sink and report how many
+/// replacements were emitted.
+///
+/// Only `ReplaceRange` events from the tail-patch layer are counted, so the
+/// session's layer summary stays attributable. A failed job is not fatal: the
+/// Layer 0 committed text is already correct enough to keep, so the error
+/// becomes a warning event and the count stays zero.
 pub(super) fn emit_tail_patch_result(
     event_sink: &dyn EventSink,
     result: Result<(u64, TailPatchOutcome)>,
@@ -253,6 +299,11 @@ pub(super) fn emit_tail_patch_result(
     }
 }
 
+/// Emit the session's closing event with its layer accounting.
+///
+/// Only the tail-patch count is populated here — the other layers are applied
+/// outside this session path, so reporting zeros for them is honest rather
+/// than incomplete.
 pub(super) fn emit_session_finalised(
     event_sink: &dyn EventSink,
     session_id: String,
@@ -1412,6 +1463,12 @@ pub(crate) async fn vad_transcription_session(
     );
 }
 
+/// One unit of work waiting to enter the inference pipeline.
+///
+/// Carries three different views of the same speech on purpose — `audio` for
+/// accounting, `gate_audio_samples` for the drop gates, `inference_audio` for
+/// Whisper — because a final boundary must be measured on the whole sealed
+/// segment while only its unaccounted tail may be added to running totals.
 #[derive(Debug)]
 pub(crate) struct PendingUtteranceWorkItem {
     /// Accounting/correction audio: ONLY samples the consumer has not yet seen
@@ -1430,6 +1487,14 @@ pub(crate) struct PendingUtteranceWorkItem {
     pub(crate) speech_vad_samples: u64,
 }
 
+/// Context carried alongside an in-flight inference so the result can be
+/// interpreted when it lands.
+///
+/// The pending item is consumed at submit time, but its outcome is handled
+/// later and out of that scope; this is what survives the crossing. Only the
+/// *length* of the inference audio is kept — the samples themselves are gone —
+/// except for `tail_patch_audio`, retained solely when Layer 1 will need to
+/// re-transcribe.
 #[derive(Debug)]
 struct UtteranceWorkItem {
     audio: Vec<f32>,
@@ -1439,17 +1504,22 @@ struct UtteranceWorkItem {
     speech_vad_samples: u64,
 }
 
+/// [`EventSink`] that keeps only the finalized transcript, joining every
+/// `UtteranceFinal` into one string. Backs [`transcribe_buffered_samples`].
 struct SessionTranscriptCollector {
     transcript: std::sync::Mutex<String>,
 }
 
 impl SessionTranscriptCollector {
+    /// Collector holding an empty transcript.
     fn new() -> Self {
         Self {
             transcript: std::sync::Mutex::new(String::new()),
         }
     }
 
+    /// Append one finalized utterance, space-separated. Empty text is ignored
+    /// so a dropped utterance leaves no gap.
     fn append_utterance(&self, text: &str) {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -1462,6 +1532,7 @@ impl SessionTranscriptCollector {
         transcript.push_str(trimmed);
     }
 
+    /// Snapshot of everything collected so far.
     fn transcript(&self) -> String {
         self.transcript
             .lock()
@@ -1478,17 +1549,21 @@ impl EventSink for SessionTranscriptCollector {
     }
 }
 
+/// [`EventSink`] that records the raw event stream in order, drops included.
+/// Backs [`collect_buffered_engine_events`] and this module's own tests.
 struct SessionEventCollector {
     events: std::sync::Mutex<Vec<EngineEvent>>,
 }
 
 impl SessionEventCollector {
+    /// Collector with no events recorded.
     fn new() -> Self {
         Self {
             events: std::sync::Mutex::new(Vec::new()),
         }
     }
 
+    /// Snapshot of the events recorded so far, in emission order.
     fn events(&self) -> Vec<EngineEvent> {
         self.events
             .lock()

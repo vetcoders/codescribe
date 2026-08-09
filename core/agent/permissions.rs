@@ -28,13 +28,17 @@ use super::tool_grants;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionLevel {
+    /// Run without prompting.
     Allow,
+    /// Prompt the operator for approval on every call.
     #[default]
     Ask,
+    /// Refuse the call outright.
     Deny,
 }
 
 impl PermissionLevel {
+    /// Wire/JSON spelling of this level (`allow` | `ask` | `deny`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Allow => "allow",
@@ -43,6 +47,9 @@ impl PermissionLevel {
         }
     }
 
+    /// Parse a level from its wire spelling (case- and whitespace-insensitive).
+    /// Errors rather than defaulting — an unrecognized level must not silently
+    /// become `Ask`.
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "allow" => Ok(Self::Allow),
@@ -261,12 +268,19 @@ pub fn tool_identity(origin: &ToolOrigin, tool_name: &str) -> String {
 /// registry the dispatcher uses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCapability {
+    /// Registered tool name as the dispatcher exposes it to the model.
     pub name: String,
+    /// Canonical policy key — see [`tool_identity`].
     pub identity: String,
+    /// `mcp` or `native`.
     pub origin: String,
+    /// Owning MCP server, `None` for native tools.
     pub server: Option<String>,
+    /// Risk class label used by the risk-default rules.
     pub risk: String,
+    /// Level [`AgentPermissions::resolve`] currently returns for this tool.
     pub effective: PermissionLevel,
+    /// Whether the tool declares approval-required independently of policy.
     pub requires_approval_flag: bool,
 }
 

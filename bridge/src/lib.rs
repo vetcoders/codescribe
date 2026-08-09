@@ -94,8 +94,11 @@ impl From<std::io::Error> for CsError {
 /// (dictation language) surfaces. Maps 1:1 to `codescribe_core::config::Language`.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsLanguage {
+    /// Let Whisper detect the spoken language per recording.
     Auto,
+    /// Force Polish decoding (`"pl"`).
     Polish,
+    /// Force English decoding (`"en"`).
     English,
 }
 

@@ -19,6 +19,8 @@ pub(crate) const PARTIAL_PASS_TRIGGER_UTTERANCE_FINALS: u32 = 1;
 pub(crate) const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 1_800;
 pub(crate) const PARTIAL_PASS_TRIGGER_TIMER_MS: u64 = 3_000;
 
+/// Why a partial correction pass fired. Recorded per run so the Stats event can
+/// show which condition is actually driving corrections in a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PartialPassTrigger {
     Utterance,
@@ -26,6 +28,10 @@ pub(crate) enum PartialPassTrigger {
     Timer,
 }
 
+/// Which trigger conditions currently hold. More than one can be true at once —
+/// [`primary_reason`] resolves that to a single attributed cause.
+///
+/// [`primary_reason`]: PartialPassTriggerFlags::primary_reason
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct PartialPassTriggerFlags {
     pub(crate) utterance_finals: bool,
@@ -34,6 +40,12 @@ pub(crate) struct PartialPassTriggerFlags {
 }
 
 impl PartialPassTriggerFlags {
+    /// The single trigger this run is attributed to, or `None` when nothing
+    /// fired.
+    ///
+    /// Priority is utterance → speech → timer: the timer is the watchdog that
+    /// only matters when neither speech signal reached its threshold, so
+    /// crediting it while a real one also fired would misreport the cadence.
     pub(crate) fn primary_reason(self) -> Option<PartialPassTrigger> {
         if self.utterance_finals {
             Some(PartialPassTrigger::Utterance)
@@ -47,6 +59,8 @@ impl PartialPassTriggerFlags {
     }
 }
 
+/// Accumulators behind the trigger policy, all measured *since the last
+/// successful partial pass* rather than since session start.
 #[derive(Debug)]
 pub(crate) struct PartialPassTriggerState {
     pub(crate) utterance_finals_since_partial: u32,
@@ -55,6 +69,7 @@ pub(crate) struct PartialPassTriggerState {
 }
 
 impl PartialPassTriggerState {
+    /// Fresh state with the watchdog clock starting at `now`.
     pub(crate) fn new(now: Instant) -> Self {
         Self {
             utterance_finals_since_partial: 0,
@@ -63,6 +78,11 @@ impl PartialPassTriggerState {
         }
     }
 
+    /// Fold one completed inference result into the accumulators.
+    ///
+    /// Speech time is counted from Silero's VAD samples, not from wall clock or
+    /// audio length, so silence between words never advances the speech
+    /// trigger.
     pub(crate) fn observe_speech_event(&mut self, is_final: bool, silero_speech_vad_samples: u64) {
         if is_final {
             self.utterance_finals_since_partial =
@@ -73,6 +93,10 @@ impl PartialPassTriggerState {
             .saturating_add(silero_vad_samples_to_ms(silero_speech_vad_samples));
     }
 
+    /// Test the accumulators against their thresholds. Pure — firing a pass and
+    /// clearing the counters is [`reset_after_success`]'s job.
+    ///
+    /// [`reset_after_success`]: Self::reset_after_success
     pub(crate) fn evaluate(&self, now: Instant) -> PartialPassTriggerFlags {
         let timer_elapsed_ms = now.duration_since(self.timer_baseline).as_millis() as u64;
         PartialPassTriggerFlags {
@@ -84,6 +108,9 @@ impl PartialPassTriggerState {
         }
     }
 
+    /// Rearm all three triggers. Called only when a pass was actually
+    /// submitted — a failed submit leaves the accumulators standing so the next
+    /// loop iteration retries instead of waiting out a fresh window.
     pub(crate) fn reset_after_success(&mut self, now: Instant) {
         self.utterance_finals_since_partial = 0;
         self.silero_speech_ms_since_partial = 0;
@@ -91,6 +118,7 @@ impl PartialPassTriggerState {
     }
 }
 
+/// Milliseconds of measured speech as seconds, for log fields.
 fn silero_speech_seconds(speech_ms: u64) -> f32 {
     speech_ms as f32 / 1_000.0
 }
@@ -113,6 +141,12 @@ pub(crate) fn postprocess_correction_with_snapshot(
     }
 }
 
+/// Whether a returning correction still describes the current transcript.
+///
+/// Boundary revision is the whole test: it advances only on a committed final,
+/// which is the one event that can rewrite the text a correction was computed
+/// against. The text arguments are kept in the signature so a future policy can
+/// tighten this without touching every call site.
 pub(crate) fn correction_is_stale(
     expected_boundary_rev: u64,
     current_boundary_rev: u64,
@@ -233,6 +267,14 @@ pub(crate) fn apply_final_boundary_text(
     true
 }
 
+/// Counters for the partial-pass lane, drained into the session's final Stats
+/// event.
+///
+/// The three failure counters are not interchangeable: `stale` means the
+/// correction came back too late to apply, `coalesced` means a newer pass
+/// superseded one still in flight, and `dropped` means the scheduler never
+/// accepted or completed it. All saturate rather than wrap — telemetry must not
+/// panic a live session.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct PartialPassTelemetry {
     pub(crate) runs_total: u64,
@@ -245,6 +287,7 @@ pub(crate) struct PartialPassTelemetry {
 }
 
 impl PartialPassTelemetry {
+    /// Count one submitted pass against both the total and its trigger.
     pub(crate) fn record_run(&mut self, trigger: PartialPassTrigger) {
         self.runs_total = self.runs_total.saturating_add(1);
         match trigger {
@@ -260,25 +303,45 @@ impl PartialPassTelemetry {
         }
     }
 
+    /// A correction returned but no longer applied to the current transcript.
     pub(crate) fn record_stale(&mut self) {
         self.stale_count = self.stale_count.saturating_add(1);
     }
 
+    /// An in-flight correction was superseded by a newer one.
     pub(crate) fn record_coalesced(&mut self) {
         self.coalesced_count = self.coalesced_count.saturating_add(1);
     }
 
+    /// A correction never produced a usable result — rejected at submit, or
+    /// failed in the scheduler.
     pub(crate) fn record_dropped(&mut self) {
         self.dropped_count = self.dropped_count.saturating_add(1);
     }
 }
 
+/// Resolve trigger flags to the one cause a pass is attributed to.
+///
+/// Free-function seam over [`PartialPassTriggerFlags::primary_reason`] so the
+/// session loop reads as policy rather than method dispatch.
 pub(crate) fn classify_partial_trigger(
     flags: PartialPassTriggerFlags,
 ) -> Option<PartialPassTrigger> {
     flags.primary_reason()
 }
 
+/// Submit the buffered correction window to the Refine lane.
+///
+/// Audio and its text mirror are taken **in lockstep** — both are moved out of
+/// the caller's state in the same call — so `correction_expected_text` always
+/// describes exactly the audio being re-decoded. That pairing is what gives
+/// [`merge_corrected_window`] an anchor when the result returns; without it a
+/// correction has no safe way to splice back in and must be suppressed.
+///
+/// An already-in-flight request is superseded rather than queued: only the
+/// freshest tail is worth correcting. Returns whether the submission was
+/// accepted — `false` leaves the caller's trigger accumulators untouched so the
+/// pass is retried.
 // allow(too_many_arguments): hot-path seam between the audio loop and the STT
 // scheduler; 15 discrete knobs are threaded through by design today. The
 // honest fix is a PartialPassCtx struct — deferred to the streaming.rs

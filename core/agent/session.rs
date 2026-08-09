@@ -1,3 +1,15 @@
+//! Agent turn loop: one [`AgentSession`] owns the message history, the provider
+//! stream, and the tool round-trips for a single conversation.
+//!
+//! [`AgentSession::send`] drives a turn to completion — stream, execute the
+//! tools the model asked for, feed results back, repeat — bounded by a loop
+//! guard counted in provider round-trips rather than tool calls.
+//!
+//! Two safety properties live here and are covered by tests in this file:
+//! tool execution is gated on an approval handler (rejection and timeout must
+//! never start the handler), and every tool summary surfaced to the UI passes
+//! through redaction so secrets in tool output are not rendered.
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -23,20 +35,44 @@ use super::{
 /// Owner: agent session. Configurable via `CODESCRIBE_AGENT_MAX_TURN_ITERATIONS`.
 /// Hitting the guard is an explicit `loop_guard` error — never a fake success.
 const DEFAULT_MAX_ITERATIONS: usize = 200;
+/// Env knob that overrides [`DEFAULT_MAX_ITERATIONS`] for a legitimately long
+/// turn. Named in the `loop_guard` error so the operator can act on it.
 const MAX_ITERATIONS_ENV: &str = "CODESCRIBE_AGENT_MAX_TURN_ITERATIONS";
+
+/// Total attempts to *open* a stream, counting the first. Retries cover
+/// transient transport failures only — see `is_transient_stream_start_error`.
 const AGENT_STREAM_START_RETRY_MAX_ATTEMPTS: usize = 2;
+
+/// Pause before retrying a failed stream start.
 const AGENT_STREAM_START_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+/// How long a tool call waits for the user's approval decision before it is
+/// abandoned. A timeout is a refusal: the handler never runs.
 const TOOL_APPROVAL_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Pending user decision for one tool-approval request.
 pub type ToolApprovalFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
+
+/// Host-supplied callback that asks the user to approve a tool call.
+///
+/// Sessions without a handler (the voice lane) never reach the approval path;
+/// see [`AgentSession::bind_execution_thread`] for how they still carry a
+/// durable thread identity.
 pub type ToolApprovalHandler = Arc<dyn Fn(ToolApprovalRequest) -> ToolApprovalFuture + Send + Sync>;
 
+/// Image supplied alongside the user's text for a turn.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageAttachment {
+    /// Raw encoded image bytes.
     pub data: Vec<u8>,
+    /// MIME type of `data`, passed through to the provider's image block.
     pub media_type: String,
 }
 
+/// A tool call being assembled from streamed fragments.
+///
+/// `args_buffer` accumulates argument deltas; `arguments` is set once the
+/// provider closes the call with parsed JSON.
 #[derive(Debug, Clone)]
 struct PendingToolCall {
     id: String,
@@ -45,6 +81,13 @@ struct PendingToolCall {
     arguments: Option<serde_json::Value>,
 }
 
+/// One conversation: history, provider, tool registry, and the identities that
+/// tie a turn to a durable thread.
+///
+/// `thread_id` is the provider-side response chain (advanced only by clean
+/// terminals), while `execution_thread_id` is the local ThreadStore id used for
+/// approvals and thread-context tool dispatch. The two are deliberately
+/// separate — a provider chain reset must not orphan the local thread.
 pub struct AgentSession {
     pub(crate) messages: Vec<Message>,
     pub(crate) provider: Box<dyn AgentProvider>,
@@ -60,6 +103,10 @@ pub struct AgentSession {
 }
 
 impl AgentSession {
+    /// Start an empty session with a fresh execution id and the loop guard
+    /// resolved from the environment.
+    ///
+    /// Tool approval is absent until [`Self::with_tool_approval`] is applied.
     pub fn new(
         provider: Box<dyn AgentProvider>,
         tools: Arc<ToolRegistry>,
@@ -80,6 +127,8 @@ impl AgentSession {
         }
     }
 
+    /// Attach the approval handler and bind the durable thread id it reports
+    /// (builder style). Without this, side-effectful tools have no way to ask.
     pub fn with_tool_approval(
         mut self,
         thread_id: impl Into<String>,
@@ -90,11 +139,14 @@ impl AgentSession {
         self
     }
 
+    /// Override the per-turn loop guard (builder style). Clamped to at least 1,
+    /// so a zero can never produce a session that refuses every turn.
     pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations.max(1);
         self
     }
 
+    /// Current provider response-chain id, if a clean terminal established one.
     pub fn thread_id(&self) -> Option<&str> {
         self.thread_id.as_deref()
     }
@@ -106,10 +158,17 @@ impl AgentSession {
         self.execution_thread_id = thread_id.into();
     }
 
+    /// Conversation history accumulated so far, oldest first.
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
+    /// Seed the session with rehydrated history (thread reopen).
+    ///
+    /// Large tool outputs are spilled back to the store instead of being
+    /// reinflated into the prompt, and the provider chain id is cleared: the
+    /// restored history is replayed as fresh context rather than chained onto
+    /// a response the provider may no longer hold.
     pub fn restore_messages(&mut self, mut messages: Vec<Message>) {
         if let Err(error) = self.tool_output_store.spill_messages(&mut messages) {
             warn!(%error, "Failed to normalize rehydrated tool-output history");
@@ -149,12 +208,20 @@ impl AgentSession {
             .await;
     }
 
+    /// Inject a tool-output store so a test can assert spill/rehydrate
+    /// behaviour against a temporary directory.
     #[cfg(test)]
     fn with_tool_output_store(mut self, tool_output_store: ToolOutputStore) -> Self {
         self.tool_output_store = tool_output_store;
         self
     }
 
+    /// Open a provider stream, retrying once on a transient start failure.
+    ///
+    /// Retries deliberately do not resend prior context: every attempt after
+    /// the first sets `reset_chain`, so the provider drops any stored
+    /// `previous_response_id` and the retry starts clean instead of inheriting
+    /// the failed attempt's context.
     async fn stream_with_retry(
         &self,
         tool_definitions: &[ToolDefinition],
@@ -220,6 +287,20 @@ impl AgentSession {
         }
     }
 
+    /// Run one user turn to completion.
+    ///
+    /// Appends the user message, then loops: stream provider events, forward
+    /// them to the UI, execute any requested tools (subject to approval), feed
+    /// the results back, and stream again — until the model answers without
+    /// asking for tools.
+    ///
+    /// A dirty terminal resets `thread_id` so the next turn replays instead of
+    /// chaining onto a response the provider abandoned.
+    ///
+    /// # Errors
+    /// Propagates stream-start failure, and returns an explicit `loop_guard`
+    /// error naming [`MAX_ITERATIONS_ENV`] when the round-trip budget is
+    /// exhausted — never a fake success.
     pub async fn send(
         &mut self,
         user_text: String,
@@ -629,6 +710,12 @@ fn configured_max_iterations() -> usize {
         .unwrap_or(DEFAULT_MAX_ITERATIONS)
 }
 
+/// Forward one UI event, then yield.
+///
+/// The yield is load-bearing: it lets the controller's `select!` drain events
+/// between immediately-ready provider chunks, so text renders live instead of
+/// arriving as an end-of-stream dump. A closed receiver is not an error — the
+/// UI simply went away.
 async fn send_ui_event(tx: &Sender<AgentUiEvent>, event: AgentUiEvent) {
     if tx.send(event).await.is_err() {
         debug!("Dropping UI event because receiver is closed");
@@ -640,6 +727,12 @@ async fn send_ui_event(tx: &Sender<AgentUiEvent>, event: AgentUiEvent) {
     tokio::task::yield_now().await;
 }
 
+/// Whether a stream-start failure is worth one retry.
+///
+/// Matched on the lowercased message against a transport/backpressure
+/// vocabulary (timeouts, resets, `429`, `502`, `503`). Deliberately
+/// conservative: an auth or request-shape failure is permanent, and retrying it
+/// only doubles the user's wait before the same error.
 fn is_transient_stream_start_error(error: &anyhow::Error) -> bool {
     let message = error.to_string().to_lowercase();
     [
@@ -686,7 +779,14 @@ fn first_error_line(outputs: &[ToolResultContent]) -> String {
         .unwrap_or_default()
 }
 
+/// Build the one-line tool summary shown in the UI's Tool Activity block.
+///
+/// Prefers the first text output, then an image count, then the first error
+/// message — surfacing the real failure reason rather than a bare count. The
+/// result is always redacted and truncated; the full payload stays in the debug
+/// log.
 fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
+    /// Display budget for one summary line.
     const SUMMARY_MAX_CHARS: usize = 120;
 
     let mut first_text: Option<String> = None;
@@ -735,6 +835,12 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
     "No tool output".to_string()
 }
 
+/// Strip secrets from tool output before it reaches the UI.
+///
+/// JSON is redacted key-wise (structure preserved, sensitive values replaced).
+/// Plain text gets no partial rewrite: if any `key=value` token or bare token
+/// looks sensitive the whole string is replaced, because a half-redacted line
+/// is worse than an opaque one.
 fn redact_tool_summary(text: &str) -> String {
     if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) {
         redact_json_value(&mut value);
@@ -760,6 +866,8 @@ fn redact_tool_summary(text: &str) -> String {
     text.to_string()
 }
 
+/// Recursively replace values under sensitive keys with `[REDACTED]`, walking
+/// objects and arrays in place and leaving the shape intact.
 fn redact_json_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
@@ -780,6 +888,11 @@ fn redact_json_value(value: &mut serde_json::Value) {
     }
 }
 
+/// Whether a key names something secret.
+///
+/// Non-alphanumerics are dropped and the rest lowercased before matching, so
+/// `API_KEY`, `api-key` and `apiKey` all collapse to the same needle and
+/// separator tricks cannot slip a secret past the filter.
 fn contains_sensitive_key(key: &str) -> bool {
     let normalized = key
         .chars()
@@ -800,6 +913,8 @@ fn contains_sensitive_key(key: &str) -> bool {
     .any(|sensitive| normalized.contains(sensitive))
 }
 
+/// Truncate to `max_chars` with an ellipsis, counting characters rather than
+/// bytes so a cut never lands inside a multi-byte character.
 fn truncate_summary(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();

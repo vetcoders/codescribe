@@ -19,6 +19,15 @@ use crate::llm::provider::{ALL_PROVIDERS, LlmMode, ProviderKind, WireFamily};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// UI-safe outcome of one liveness probe.
+///
+/// Deliberately coarse: Settings needs to tell the user what to *do*, so
+/// "provider processed the request" collapses to [`Ok`] even for a 4xx that
+/// only means the probe body was wrong — the key itself authenticated. Only
+/// transport failures and 5xx stay unverifiable ([`Network`]).
+///
+/// [`Ok`]: ApiKeyLivenessStatus::Ok
+/// [`Network`]: ApiKeyLivenessStatus::Network
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiKeyLivenessStatus {
     Ok,
@@ -29,6 +38,11 @@ pub enum ApiKeyLivenessStatus {
     Unsupported,
 }
 
+/// One probe verdict for one Keychain account.
+///
+/// `probed_endpoint` records the URL actually called after lane/provider
+/// resolution — the answer to "which server rejected my key", which is the
+/// difference between a bad key and a misrouted lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiKeyLivenessResult {
     pub account: String,
@@ -38,6 +52,8 @@ pub struct ApiKeyLivenessResult {
 }
 
 impl ApiKeyLivenessResult {
+    /// Verdict with no endpoint attached — for the cases decided before any
+    /// request is made (unknown account, missing key, unsupported probe).
     fn new(account: &str, status: ApiKeyLivenessStatus, message: impl Into<String>) -> Self {
         Self {
             account: account.to_string(),
@@ -47,12 +63,21 @@ impl ApiKeyLivenessResult {
         }
     }
 
+    /// Record the endpoint this verdict came from.
     fn with_probed_endpoint(mut self, endpoint: String) -> Self {
         self.probed_endpoint = Some(endpoint);
         self
     }
 }
 
+/// Probe one Keychain account and classify the result for Settings.
+///
+/// Resolution order is what keeps this honest: unknown accounts and missing
+/// keys are answered without a request; `GITHUB_TOKEN` gets its own REST probe;
+/// everything else resolves to a provider — the three generic lane accounts to
+/// the default one, a vendor's own key through the registry — and is probed by
+/// *wire family*, not by vendor, so a new provider on an existing protocol
+/// gets a real verdict instead of "unsupported".
 pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
     if !KEYCHAIN_ACCOUNTS.contains(&account) {
         return ApiKeyLivenessResult::new(
@@ -160,6 +185,12 @@ pub fn classify_probe_response(status: StatusCode, body: &str) -> ApiKeyLiveness
     ApiKeyLivenessStatus::Network
 }
 
+/// One-token Responses ping.
+///
+/// Endpoint and model resolution splits on who owns the lane config: the
+/// generic lane accounts keep their per-account resolution (they may point at
+/// a self-hosted server), while a vendor's own key is probed against that
+/// vendor's endpoint and model.
 fn probe_responses_key(
     client: &Client,
     config: &Config,
@@ -202,6 +233,8 @@ fn probe_responses_key(
     response_result(account, endpoint, response)
 }
 
+/// One-token Messages ping against the Anthropic wire family, with the
+/// `x-api-key` + `anthropic-version` header pair that endpoint requires.
 fn probe_anthropic_key(
     client: &Client,
     config: &Config,
@@ -231,6 +264,10 @@ fn probe_anthropic_key(
     response_result(account, endpoint, response)
 }
 
+/// Probe a GitHub token with an authenticated `GET /user`.
+///
+/// Not an LLM provider, so it bypasses the registry entirely. The endpoint is
+/// overridable via `CODESCRIBE_GITHUB_PROBE_ENDPOINT` for tests.
 fn probe_github_token(client: &Client, account: &str, api_key: &str) -> ApiKeyLivenessResult {
     let endpoint = env_non_empty("CODESCRIBE_GITHUB_PROBE_ENDPOINT")
         .unwrap_or_else(|| "https://api.github.com/user".to_string());
@@ -243,6 +280,12 @@ fn probe_github_token(client: &Client, account: &str, api_key: &str) -> ApiKeyLi
     response_result(account, endpoint, response)
 }
 
+/// Turn a probe's transport result into a verdict, tagging it with the endpoint
+/// that was called.
+///
+/// This is the request boundary referenced by [`classify_probe_response`]: a
+/// transport failure has no HTTP status to classify, so it is resolved to
+/// [`ApiKeyLivenessStatus::Network`] here rather than there.
 fn response_result(
     account: &str,
     probed_endpoint: String,
@@ -264,6 +307,7 @@ fn response_result(
     result.with_probed_endpoint(probed_endpoint)
 }
 
+/// User-facing sentence for a status. Written for Settings, not for logs.
 fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
     match status {
         ApiKeyLivenessStatus::Ok => "key accepted and quota available",
@@ -275,6 +319,7 @@ fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
     }
 }
 
+/// Read an env var, treating whitespace-only as unset.
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()

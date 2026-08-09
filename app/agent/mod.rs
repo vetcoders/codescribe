@@ -1,3 +1,9 @@
+//! Application-side agent wiring: the concrete provider clients, the resident
+//! run monitor, and the macOS-only native tool surface.
+//!
+//! Provider choice is made by protocol (wire family), not by vendor name, so a
+//! new vendor speaking an existing protocol needs no new client here.
+
 use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
 use codescribe_core::config::Config;

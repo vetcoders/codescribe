@@ -55,6 +55,11 @@ pub type ChunkCallback<'a> = &'a dyn Fn(&str);
 /// cached value keeps the underlying MTL device alive for the process life.
 static PROCESS_DEVICE: OnceLock<Device> = OnceLock::new();
 
+/// The process-lifetime device, created on first use.
+///
+/// Falls back to CPU when Metal is unavailable. Never call `Device::new_metal`
+/// outside this initializer — see [`PROCESS_DEVICE`] for why re-creating the
+/// device is expensive and leaky.
 fn process_device() -> Device {
     PROCESS_DEVICE
         .get_or_init(|| {
@@ -85,6 +90,9 @@ const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
 /// Minimum token budget for the runaway watchdog regardless of audio length, so
 /// very short chunks still get enough headroom to emit normal short utterances.
 const RUNAWAY_MIN_BUDGET: usize = 64;
+/// Whisper's marker introducing previous-context tokens. Everything between it
+/// and the decode prefix is treated by the model as prior context, not as text
+/// to transcribe.
 const WHISPER_START_OF_PREVIOUS_TOKEN: &str = "<|startofprev|>";
 
 /// Token budget for the in-loop runaway watchdog given the chunk audio length.
@@ -102,6 +110,13 @@ fn runaway_token_budget(audio_sec: f32) -> usize {
     (raw as usize).max(RUNAWAY_MIN_BUDGET)
 }
 
+/// Splice an initial prompt in front of the decode prefix and report how many
+/// prompt tokens were kept.
+///
+/// Order matters: `<|startofprev|>`, then the prompt, then the existing prefix
+/// (`<|startoftranscript|>` and friends) — the prompt is *previous context*, so
+/// putting it after the prefix would make the model transcribe it. Capped at
+/// [`WHISPER_INITIAL_PROMPT_TOKEN_BUDGET`]; an empty prompt is a no-op.
 fn prepend_initial_prompt_tokens(
     tokens: &mut Vec<u32>,
     start_of_previous_token: u32,
@@ -120,6 +135,10 @@ fn prepend_initial_prompt_tokens(
     keep
 }
 
+/// Record that a requested final pass was skipped, with the reason.
+///
+/// `None` when no final pass was requested — the caller must not fabricate a
+/// verdict for work nobody asked for.
 fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option<FinalPassVerdict> {
     match options.final_pass {
         FinalPassMode::None => None,
@@ -133,6 +152,12 @@ fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option
     }
 }
 
+/// Adjudicate a final-pass candidate against the raw transcript.
+///
+/// Three outcomes: identical text is `Unchanged`; a candidate that trips
+/// `final_pass_guardrail_reason` is `Rejected` and the **raw text is kept**;
+/// otherwise the candidate wins as `Changed`. The guardrail is what stops
+/// cleanup from silently rewriting words the model actually heard.
 fn finalize_requested_final_pass(
     raw_text: &str,
     candidate_text: String,
@@ -180,6 +205,12 @@ fn finalize_requested_final_pass(
     )
 }
 
+/// Run the requested final pass over a raw transcript.
+///
+/// [`FinalPassMode::None`] returns the raw text untouched.
+/// `EmbeddedLexiconCleanup` runs the stream post-processor; if cleanup empties
+/// the text the result is a `Dropped` verdict with empty output, which the
+/// caller must treat as "no speech" rather than as a transcript.
 fn apply_requested_final_pass(
     raw: &RawTranscript,
     options: FileTranscriptionOptions,
@@ -217,6 +248,12 @@ fn apply_requested_final_pass(
     }
 }
 
+/// Fold a Silero VAD filtering result back into the transcript.
+///
+/// Segments are always replaced, but the **text** is preserved from `raw` when
+/// nothing was actually dropped and the filtered text is merely an equivalent
+/// or a strict subset. Rebuilding text from segments loses punctuation and
+/// casing, so it is only accepted when a real drop justifies it.
 fn apply_silero_filter_outcome(
     raw: &RawTranscript,
     filtered_text: String,
@@ -236,18 +273,28 @@ fn apply_silero_filter_outcome(
     filtered
 }
 
+/// Whether `candidate` is a non-empty, strictly smaller fragment of
+/// `full_text` once both are normalized. Equality is deliberately excluded —
+/// that case is [`is_text_equivalent`].
 fn is_strict_text_subset(candidate: &str, full_text: &str) -> bool {
     let candidate = normalize_transcript_text(candidate);
     let full_text = normalize_transcript_text(full_text);
     !candidate.is_empty() && candidate != full_text && full_text.contains(&candidate)
 }
 
+/// Whether two non-empty texts are the same modulo casing, punctuation and
+/// whitespace.
 fn is_text_equivalent(candidate: &str, full_text: &str) -> bool {
     let candidate = normalize_transcript_text(candidate);
     let full_text = normalize_transcript_text(full_text);
     !candidate.is_empty() && candidate == full_text
 }
 
+/// Reduce a transcript to lowercase alphanumeric words joined by single spaces.
+///
+/// Comparison-only helper: it deliberately destroys punctuation and casing so
+/// that two renderings of the same speech compare equal. Never store its output
+/// as a transcript.
 fn normalize_transcript_text(text: &str) -> String {
     text.split_whitespace()
         .filter_map(|token| {
@@ -267,10 +314,22 @@ fn normalize_transcript_text(text: &str) -> String {
         .join(" ")
 }
 
+/// Whether decoder control tokens should be suppressed at this decode step.
+///
+/// Only before the first generated token: suppressing them later would stop the
+/// model from ever emitting `<|endoftext|>` and turn a normal utterance into a
+/// runaway decode.
 fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
     generated_tokens == 0
 }
 
+/// A loaded Whisper model plus everything one transcription needs: tokenizer,
+/// device, mel filters, timestamp range and decoding parameters.
+///
+/// Construct with [`LocalWhisperEngine::new`] (filesystem) or
+/// [`LocalWhisperEngine::from_embedded`] (binary-embedded weights). Methods take
+/// `&mut self` because decoding mutates model KV-cache state — an engine is not
+/// safe to share across concurrent transcriptions.
 pub struct LocalWhisperEngine {
     model: Model,
     tokenizer: Tokenizer,
@@ -283,6 +342,15 @@ pub struct LocalWhisperEngine {
 }
 
 impl LocalWhisperEngine {
+    /// Load a model from a directory (development / external models).
+    ///
+    /// Expects `config.json` plus `weights.safetensors` or `model.safetensors`.
+    /// MLX-style quantized weights are dequantized during load — see
+    /// [`dequantize_q8`] for the cost this implies.
+    ///
+    /// # Errors
+    /// Missing config or weights, an unreadable tokenizer, or tensor shapes the
+    /// dequantizer cannot reconcile.
     pub fn new(model_path: &Path) -> Result<Self> {
         let device = process_device();
         tracing::debug!("LocalWhisperEngine using device: {:?}", device);
@@ -561,6 +629,14 @@ impl LocalWhisperEngine {
         &self.decoding_params
     }
 
+    /// Transcribe a file end to end and return the full verdict.
+    ///
+    /// The complete path: load and resample the audio, transcribe (chunked for
+    /// long input), apply the Silero VAD filter, then run the requested final
+    /// pass. The returned [`TranscriptionVerdict`] carries both the delivered
+    /// text and the raw text, so a rejected final pass stays auditable.
+    ///
+    /// `language` of `None` triggers detection from the audio itself.
     pub fn transcribe_file_with_language(
         &mut self,
         path: &Path,
@@ -669,12 +745,16 @@ impl LocalWhisperEngine {
         ))
     }
 
+    /// Detect the spoken language of an audio file, returning its Whisper
+    /// language code (e.g. `"pl"`).
     pub fn detect_language_file(&mut self, path: &Path) -> Result<String> {
         let (samples, sample_rate) =
             audio_loader::load_audio_file(path).context("Failed to load audio file")?;
         self.detect_language(&samples, sample_rate)
     }
 
+    /// [`Self::transcribe_file_with_language`] with automatic language
+    /// detection.
     pub fn transcribe_file(
         &mut self,
         path: &Path,
@@ -683,6 +763,10 @@ impl LocalWhisperEngine {
         self.transcribe_file_with_language(path, None, options)
     }
 
+    /// Transcribe in-memory audio, returning text only.
+    ///
+    /// Single-window path: audio longer than one Whisper window should go
+    /// through [`Self::transcribe_long_with_language`] instead.
     pub fn transcribe_with_language(
         &mut self,
         audio: &[f32],
@@ -694,6 +778,11 @@ impl LocalWhisperEngine {
             .text)
     }
 
+    /// Transcribe in-memory audio, keeping segments and quality signals.
+    ///
+    /// Resamples to 16 kHz first; audio that resamples to nothing yields an
+    /// empty [`RawTranscript`] rather than an error. Set `CODESCRIBE_DEBUG_TOKENS`
+    /// to log the raw token stream.
     pub fn transcribe_with_language_segments(
         &mut self,
         audio: &[f32],
@@ -728,6 +817,14 @@ impl LocalWhisperEngine {
         self.transcribe_samples_16k_raw(&samples, language, debug_tokens)
     }
 
+    /// Transcribe arbitrarily long audio by sliding a 25 s window with 5 s of
+    /// overlap.
+    ///
+    /// The overlap exists so a word split across a boundary is still heard
+    /// whole; [`append_with_overlap_dedup`] then removes the duplicated region.
+    /// Segment timestamps are rebased onto the full recording, `avg_logprob` is
+    /// averaged across chunks, and `compression_ratio` reports the **worst**
+    /// chunk — one hallucinating window must not be hidden by good neighbours.
     pub fn transcribe_long_with_language_segments(
         &mut self,
         audio: &[f32],
@@ -887,11 +984,18 @@ impl LocalWhisperEngine {
         Ok(dedup_repetitions(out.trim()))
     }
 
+    /// Detect the spoken language of in-memory audio, resampling to 16 kHz
+    /// first.
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         self.detect_language_16k(&samples)
     }
 
+    /// Language detection on already-16 kHz samples.
+    ///
+    /// Runs a single decoder step over the mel window and picks the highest
+    /// scoring language token, so detection costs one step rather than a full
+    /// decode.
     fn detect_language_16k(&mut self, samples_16k: &[f32]) -> Result<String> {
         let max_samples = 16_000usize * 30;
         let samples = &samples_16k[..samples_16k.len().min(max_samples)];
@@ -951,9 +1055,17 @@ impl LocalWhisperEngine {
         Ok(best_lang)
     }
 
+    /// Enumerate `(token_id, language_code)` pairs to score during detection.
+    ///
+    /// Sweeps the conventional language-token range and keeps the ids this
+    /// tokenizer actually defines, bounded by `vocab_size`. Falls back to a
+    /// small common-language set when the sweep finds nothing, so detection
+    /// still works on a tokenizer that numbers its tokens differently.
     fn language_token_candidates(&self, vocab_size: usize) -> Vec<(u32, String)> {
         // Whisper language tokens are typically in this range.
+        /// First id of the conventional Whisper language-token block.
         const LANG_TOKEN_START: u32 = 50_259;
+        /// Last id of that block (inclusive).
         const LANG_TOKEN_END: u32 = 50_358;
 
         let mut out = Vec::new();
@@ -987,6 +1099,7 @@ impl LocalWhisperEngine {
         out
     }
 
+    /// Text-only wrapper over [`Self::transcribe_samples_16k_raw`].
     fn transcribe_samples_16k(
         &mut self,
         samples_16k: &[f32],
@@ -998,6 +1111,18 @@ impl LocalWhisperEngine {
             .text)
     }
 
+    /// The decode loop: mel spectrogram, encoder pass, then greedy decoding of
+    /// one audio window into text, segments and quality signals.
+    ///
+    /// Three guards run inside the loop and are the reason this function is not
+    /// a thin wrapper over the model:
+    /// - a runaway watchdog ([`runaway_token_budget`]) bails before a
+    ///   hallucination costs the full quadratic decode,
+    /// - [`NgramBlocker`] suppresses repeated n-grams incrementally,
+    /// - the quality gate ([`should_drop_for_quality_gate`]) can discard a
+    ///   window whose logprob and compression ratio both look pathological.
+    ///
+    /// `debug_tokens` logs the raw token stream for diagnosis.
     fn transcribe_samples_16k_raw(
         &mut self,
         samples_16k: &[f32],
@@ -1342,6 +1467,11 @@ impl LocalWhisperEngine {
     }
 }
 
+/// Extract the language code from a `<|xx|>` token, or `None` when the token is
+/// not a language marker.
+///
+/// Accepts only 2–3 ASCII letters between the delimiters, which is what
+/// separates `<|pl|>` from control tokens like `<|notimestamps|>`.
 fn parse_language_token(token: &str) -> Option<&str> {
     if !token.starts_with("<|") || !token.ends_with("|>") {
         return None;
@@ -1357,6 +1487,11 @@ fn parse_language_token(token: &str) -> Option<&str> {
     }
 }
 
+/// Normalize a word for overlap comparison: lowercase, alphanumerics only.
+///
+/// Falls back to the lowercased original when stripping would leave nothing, so
+/// a purely punctuation token still compares as itself instead of matching
+/// every other punctuation token.
 fn normalize_token_for_overlap(token: &str) -> String {
     let mut out = String::new();
     for ch in token.chars() {
@@ -1473,6 +1608,7 @@ pub fn append_with_overlap_dedup(out: &mut String, segment: &str) {
     }
 }
 
+/// Load mel filters from an `.npz` on disk, opened through `safe_path`.
 fn load_mel_filters(path: &Path, n_mels: usize) -> Result<Vec<f32>> {
     let file = safe_path::safe_open(path)?;
     load_mel_filters_from_reader(file, n_mels)
@@ -1515,6 +1651,12 @@ fn load_mel_filters_from_reader<R: Read + std::io::Seek>(
     Ok(data)
 }
 
+/// Rewrite an MLX/OpenAI Whisper tensor name into the Candle naming scheme.
+///
+/// Order is load-bearing and must not be "simplified": cross-attention names
+/// are rewritten before the generic attention rules, otherwise `cross_attn`
+/// would be mangled by the `attn` replacements and the weight would silently
+/// land under the wrong module.
 fn map_tensor_name(name: &str) -> String {
     let mut new_name = name.to_string();
 
@@ -1576,6 +1718,7 @@ struct NgramBlocker {
 }
 
 impl NgramBlocker {
+    /// Create a blocker for `ngram_size`; `0` disables blocking entirely.
     fn new(ngram_size: usize) -> Self {
         Self {
             ngram_size,
@@ -1620,6 +1763,11 @@ impl NgramBlocker {
     }
 }
 
+/// Ratio of raw length to gzip-compressed length.
+///
+/// A hallucinated loop compresses far better than natural speech, so a high
+/// ratio is the repetition signal half of the quality gate. Empty text yields
+/// `0.0`.
 fn compression_ratio(text: &str) -> f32 {
     let original_len = text.len();
     if original_len == 0 {
@@ -1633,6 +1781,12 @@ fn compression_ratio(text: &str) -> f32 {
     original_len as f32 / compressed.len() as f32
 }
 
+/// Whether a decoded window should be discarded as hallucinated.
+///
+/// Requires **both** signals: low confidence (`avg_logprob` under threshold)
+/// and high repetition (`compression_ratio` over threshold). Either alone is
+/// common in legitimate speech — quiet audio scores low, a chant compresses
+/// well — so demanding both is what keeps the gate from eating real words.
 fn should_drop_for_quality_gate(
     avg_logprob: Option<f32>,
     compression_ratio: f32,
@@ -1643,6 +1797,19 @@ fn should_drop_for_quality_gate(
     low_logprob && high_compression
 }
 
+/// Expand MLX-style q8 weights into `F32`.
+///
+/// `packed` holds four uint8 weights per `u32`; each is scaled and offset by
+/// the `scales` / `biases` entry for its 32-element group, producing an
+/// `out_dim × in_dim` tensor.
+///
+/// Cost note: this runs on every cold load and dominates it — measured at
+/// roughly three quarters of Whisper cold-start time (commit `e9d8e5d9`).
+/// Keeping weights resident is what avoids paying it again.
+///
+/// # Errors
+/// Non-`u32` packed input, non-2D tensors, or scale/bias dimensions that do not
+/// match the packed shape.
 fn dequantize_q8(
     packed: &Tensor,
     scales: &Tensor,

@@ -239,12 +239,17 @@ impl ProviderKind {
 /// mode and asks for a bearer header.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
+    /// Static API key from env or Keychain. The default and the only mode any
+    /// request builder uses today.
     #[default]
     ApiKey,
+    /// OAuth tokens obtained by signing in to the provider account, refreshed
+    /// on demand by `account_auth`.
     ProviderAccount,
 }
 
 impl AuthMode {
+    /// Canonical kebab spelling used in env vars and persisted config.
     pub const fn as_str(self) -> &'static str {
         match self {
             AuthMode::ApiKey => "api-key",
@@ -259,6 +264,9 @@ impl std::fmt::Display for AuthMode {
     }
 }
 
+/// Error returned when an auth-mode string cannot be mapped to an [`AuthMode`].
+/// Carries the normalised (trimmed, lowercased) input so the message names what
+/// the operator actually configured.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseAuthModeError(pub String);
 

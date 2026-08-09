@@ -24,6 +24,8 @@ mod loader;
 pub mod migrate;
 pub mod models;
 pub mod portable;
+/// On-disk prompt files (formatting, smart formatting, assistive): built-in
+/// defaults, user overrides, snapshots, and restore-to-default.
 pub mod prompts;
 pub mod settings;
 mod types;

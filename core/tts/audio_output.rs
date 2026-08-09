@@ -15,8 +15,12 @@ use tracing::{debug, info, warn};
 ///
 /// Wraps cpal for cross-platform audio playback.
 pub struct AudioPlayer {
+    /// The default output device chosen at construction.
     device: cpal::Device,
+    /// That device's default stream config — source of the target sample rate,
+    /// channel count, and sample format.
     config: cpal::SupportedStreamConfig,
+    /// When set, [`Self::play`] logs and returns instead of opening a stream.
     is_dummy: bool,
 }
 

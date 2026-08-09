@@ -14,6 +14,10 @@ use codescribe_core::mcp::{
     default_mcp_config_path, format_secret_migration_report, migrate_plaintext_env_secrets,
 };
 
+/// Report what would move, and move it only when `--apply` is present.
+///
+/// Dry-run is the default precisely because the alternative rewrites the
+/// operator's `mcp.json`; the flag has to be typed, not omitted.
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let dry_run = !args.iter().any(|a| a == "--apply");

@@ -1,3 +1,20 @@
+//! On-disk persistence for agent conversation threads.
+//!
+//! Each thread is one pretty-printed JSON file under the `threads/` directory,
+//! written atomically (temp file + rename) and projected into a denormalized
+//! `ThreadIndex` that backs the thread rail and its search. Binary
+//! attachments live beside them in `blobs/`.
+//!
+//! Two invariants shape this module:
+//!
+//! - **Whole-file rewrites are serialized.** Saves replace the entire file, so
+//!   every read-modify-write path holds the module's RMW lock across its whole
+//!   load-modify-save; an unlocked heal could otherwise overwrite an agent
+//!   turn's freshly delivered messages with a stale snapshot.
+//! - **Titles have owners.** A title is heuristic (derived from the first user
+//!   message) only until a manual rename or the title provider claims it; the
+//!   derivation paths never overwrite an owned title.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +43,9 @@ const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 /// load→modify→save so their snapshot cannot go stale mid-flight.
 static THREAD_RMW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One persisted conversation: its identity, title ownership, transcript, and
+/// the provider/model it ran against. This is the whole on-disk record — a save
+/// rewrites the entire struct.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Thread {
     pub id: String,
@@ -60,6 +80,10 @@ impl Thread {
         !self.title_is_custom && !self.title_is_generated
     }
 
+    /// Append a note, optionally anchored to a message index, and bump
+    /// `updated_at`. Returns the created note so the caller can surface its id
+    /// without re-scanning. In-memory only — persist with
+    /// [`ThreadStore::save_thread`].
     pub fn add_note(
         &mut self,
         text: impl Into<String>,
@@ -77,6 +101,9 @@ impl Thread {
     }
 }
 
+/// Storage form of one message. Content blocks are kept as raw JSON rather
+/// than typed variants so a thread written by an older or newer build stays
+/// readable; conversion happens in [`ThreadMessage::to_message`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadMessage {
     pub role: String,
@@ -104,6 +131,9 @@ impl From<&Message> for ThreadMessage {
 }
 
 impl ThreadMessage {
+    /// Rebuild the runtime [`Message`] from stored JSON. Unknown block types
+    /// and unrecognised roles degrade to text/user rather than failing, so a
+    /// thread from a newer build still loads.
     pub fn to_message(&self) -> Message {
         let content = self
             .content
@@ -119,6 +149,7 @@ impl ThreadMessage {
     }
 }
 
+/// A user annotation on a thread, optionally anchored to a message index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadNote {
     pub id: String,
@@ -128,12 +159,15 @@ pub struct ThreadNote {
     pub anchored_to_message: Option<usize>,
 }
 
+/// Cumulative token counts for a thread, as reported by the provider.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input: u64,
     pub output: u64,
 }
 
+/// Handle on a threads directory and its sibling blobs directory. Cheap to
+/// clone; holds no open files and no cached state, so every call re-reads disk.
 #[derive(Debug, Clone)]
 pub struct ThreadStore {
     threads_dir: PathBuf,
@@ -141,11 +175,16 @@ pub struct ThreadStore {
 }
 
 impl ThreadStore {
+    /// Open the store in the app's data directory (honouring
+    /// `CODESCRIBE_DATA_DIR`), creating the directories if needed.
     pub fn new() -> Result<Self> {
         let app_data = app_data_dir();
         Self::new_in(app_data.join(THREADS_DIR_NAME))
     }
 
+    /// Open the store rooted at an explicit threads directory, creating it and
+    /// its `blobs/` child if needed. Used by tests to stay off the real data
+    /// directory.
     pub fn new_in<P: AsRef<Path>>(threads_dir: P) -> Result<Self> {
         let threads_dir = threads_dir.as_ref().to_path_buf();
         let blobs_dir = threads_dir.join(BLOBS_DIR_NAME);
@@ -161,6 +200,9 @@ impl ThreadStore {
         })
     }
 
+    /// Persist a thread and refresh its index row. This is the single durable
+    /// write path: it takes the module's RMW lock, normalizes a degenerate
+    /// heuristic title, writes the JSON atomically, then updates the index.
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
         let _guard = THREAD_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         self.save_thread_locked(thread)
@@ -190,6 +232,9 @@ impl ThreadStore {
         Ok(())
     }
 
+    /// Load a thread, healing a degenerate heuristic title on the way out.
+    /// The returned thread is always usable even when the healing write fails
+    /// (read-only volume): the repair is best-effort and only warns.
     pub fn load_thread(&self, id: &str) -> Result<Thread> {
         let mut thread = self.load_thread_raw(id)?;
         if normalize_heuristic_title(&mut thread) {
@@ -255,6 +300,9 @@ impl ThreadStore {
         Ok(healed)
     }
 
+    /// Read and parse a thread file verbatim, with no title healing. The path
+    /// is re-canonicalized against the threads directory so a symlink cannot
+    /// redirect the read outside it.
     fn load_thread_raw(&self, id: &str) -> Result<Thread> {
         let path = self.thread_path(id)?;
         let path = canonical_existing_child(&self.threads_dir, &path)?;
@@ -264,6 +312,8 @@ impl ThreadStore {
             .with_context(|| format!("Failed to parse thread file: {}", path.display()))
     }
 
+    /// Remove a thread's file and its index row. Succeeds when the file is
+    /// already gone, so a half-deleted state can be cleaned up by re-running.
     pub fn delete_thread(&self, id: &str) -> Result<()> {
         let path = self.thread_path(id)?;
         if path.exists() {
@@ -277,6 +327,9 @@ impl ThreadStore {
         Ok(())
     }
 
+    /// Toggle the favorite flag. Favorites live only in the index projection,
+    /// so this never rewrites the thread file. Returns `false` when no such
+    /// index row exists.
     pub fn set_thread_favorite(&self, id: &str, is_favorite: bool) -> Result<bool> {
         validate_thread_id(id)?;
         let mut index = ThreadIndex::load_or_create(&self.threads_dir)?;
@@ -326,10 +379,15 @@ impl ThreadStore {
         Ok(true)
     }
 
+    /// Public accessor for a thread's file path, validated the same way as
+    /// every internal path construction. The file need not exist.
     pub fn thread_file_path(&self, id: &str) -> Result<PathBuf> {
         self.thread_path(id)
     }
 
+    /// Write a binary attachment into `blobs/` under a sanitized, collision-free
+    /// name and return its path. The caller-supplied name is advisory only —
+    /// directory components and unsafe characters are stripped.
     pub fn save_blob(&self, data: &[u8], name: &str) -> Result<PathBuf> {
         let sanitized = sanitize_filename(name);
         let path = self.unique_blob_path(&sanitized);
@@ -337,14 +395,18 @@ impl ThreadStore {
         Ok(path)
     }
 
+    /// Mint a new thread id: a `t_` prefix, the creation date for at-a-glance
+    /// sorting, and a random suffix for uniqueness within the day.
     pub fn generate_id() -> String {
         format!("t_{}_{}", Utc::now().format("%Y-%m-%d"), random_suffix(6))
     }
 
+    /// Directory holding the thread JSON files and their index.
     pub fn threads_dir(&self) -> &Path {
         &self.threads_dir
     }
 
+    /// Directory holding binary attachments written by [`ThreadStore::save_blob`].
     pub fn blobs_dir(&self) -> &Path {
         &self.blobs_dir
     }
@@ -361,6 +423,9 @@ impl ThreadStore {
         Ok(self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}")))
     }
 
+    /// Pick a free path in `blobs/` for a sanitized file name: the name itself
+    /// when unused, otherwise a random-suffixed variant. After 1024 collisions
+    /// it falls back to a millisecond timestamp rather than looping forever.
     fn unique_blob_path(&self, file_name: &str) -> PathBuf {
         let candidate = self.blobs_dir.join(file_name);
         if !candidate.exists() {
@@ -401,6 +466,9 @@ pub fn title_is_meaningful(title: &str) -> bool {
     !trimmed.starts_with("<<<") && trimmed.chars().any(char::is_alphanumeric)
 }
 
+/// Replace an unreadable heuristic title with one derived from the messages.
+/// Returns whether anything changed. A title owned by the user or the title
+/// provider is left alone, as is any heuristic title that already reads well.
 fn normalize_heuristic_title(thread: &mut Thread) -> bool {
     if !thread.title_is_heuristic() || title_is_meaningful(&thread.title) {
         return false;
@@ -409,6 +477,9 @@ fn normalize_heuristic_title(thread: &mut Thread) -> bool {
     true
 }
 
+/// Derive a title from the first readable line of the first user message,
+/// skipping assistive wire labels. Falls back to [`DEFAULT_THREAD_TITLE`] when
+/// there is no user message or nothing in it survives normalization.
 fn derive_title_from_messages(messages: &[ThreadMessage]) -> String {
     let Some(first_user) = messages
         .iter()
@@ -431,6 +502,10 @@ fn derive_title_from_messages(messages: &[ThreadMessage]) -> String {
     DEFAULT_THREAD_TITLE.to_string()
 }
 
+/// Walk a stored content block and collect every human-readable text chunk in
+/// order. Recurses into arrays and tool results; numeric arrays (raw byte
+/// payloads) and non-text block types are skipped so binary never reaches a
+/// title.
 fn collect_title_text(value: &Value, out: &mut Vec<String>) {
     match value {
         Value::String(text) if !text.trim().is_empty() => out.push(text.to_string()),
@@ -458,6 +533,9 @@ fn collect_title_text(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Turn one candidate line into a title, or reject it. Strips context-bucket
+/// markers, drops assistive wire labels and unreadable lines, collapses
+/// whitespace, and clips to 72 characters.
 fn normalize_title_line(line: &str) -> Option<String> {
     let stripped = strip_context_markers(line);
     let line = stripped.as_deref().unwrap_or(line);
@@ -530,6 +608,9 @@ fn find_context_marker(text: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Whether the letter runs on either side of a removed marker look like halves
+/// of one word, meaning they should be joined without a space. See
+/// [`strip_context_markers`] for why this heuristic exists.
 fn glues_split_word(left: &str, right: &str) -> bool {
     let left_fragment: Vec<char> = left
         .chars()
@@ -540,6 +621,10 @@ fn glues_split_word(left: &str, right: &str) -> bool {
     fragment_lacks_vowel(&left_fragment) || fragment_lacks_vowel(&right_fragment)
 }
 
+/// Whether a letter run is two or more characters with no vowel from
+/// [`TITLE_FRAGMENT_VOWELS`] — the signature of a word fragment rather than a
+/// standalone PL/EN word. Single letters are left alone (they may be real
+/// words).
 fn fragment_lacks_vowel(fragment: &[char]) -> bool {
     fragment.len() >= 2
         && !fragment.iter().any(|ch| {
@@ -548,6 +633,9 @@ fn fragment_lacks_vowel(fragment: &[char]) -> bool {
         })
 }
 
+/// Whether a line is assistive-prompt scaffolding rather than the user's own
+/// words. Covers both the canonical English labels and the Polish ones that
+/// threads persisted before the rename still carry, so neither becomes a title.
 fn is_assistive_wire_label(line: &str) -> bool {
     let lower = line.to_lowercase();
     [
@@ -576,6 +664,10 @@ fn is_assistive_wire_label(line: &str) -> bool {
     .any(|prefix| lower.starts_with(prefix))
 }
 
+/// Root directory for all app-owned data. `CODESCRIBE_DATA_DIR` (tilde
+/// expanded) overrides it — the hook tests and isolated runs rely on — and the
+/// hardcoded Application Support path is the last resort when the platform
+/// directories cannot be resolved.
 pub(crate) fn app_data_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
         return PathBuf::from(shellexpand::tilde(&custom).into_owned());
@@ -589,6 +681,9 @@ pub(crate) fn app_data_dir() -> PathBuf {
         })
 }
 
+/// Reduce a caller-supplied attachment name to a safe leaf file name: drop any
+/// directory components, replace everything outside `[A-Za-z0-9._-]`, fall back
+/// to `blob.bin` when nothing usable remains, and cap the length.
 fn sanitize_filename(name: &str) -> String {
     let raw = Path::new(name)
         .file_name()
@@ -617,6 +712,9 @@ fn sanitize_filename(name: &str) -> String {
     out
 }
 
+/// Reject thread ids that could escape the threads directory once joined into
+/// a path. Called from [`ThreadStore::thread_path`], i.e. at every path
+/// construction rather than at each API entry point.
 fn validate_thread_id(id: &str) -> Result<()> {
     if id.trim().is_empty() {
         bail!("Thread id cannot be empty");
@@ -627,6 +725,10 @@ fn validate_thread_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Canonicalize an existing path and prove it still lives under `base`. This
+/// is the second half of the traversal guard: id validation blocks the obvious
+/// `..`, this blocks a symlink pointing out of the threads directory. Both
+/// paths must exist.
 fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
     let base = base
         .canonicalize()
@@ -644,6 +746,7 @@ fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Wire/storage spelling of a message role.
 fn role_to_string(role: Role) -> &'static str {
     match role {
         Role::User => "user",
@@ -652,6 +755,8 @@ fn role_to_string(role: Role) -> &'static str {
     }
 }
 
+/// Parse a stored role, defaulting to `User`. Deliberately total: an
+/// unrecognised role must not make a whole thread unreadable.
 fn role_from_string(value: &str) -> Role {
     match value.to_ascii_lowercase().as_str() {
         "assistant" => Role::Assistant,
@@ -660,6 +765,9 @@ fn role_from_string(value: &str) -> Role {
     }
 }
 
+/// Project a runtime content block into its storage JSON. Image bytes are
+/// spilled to the shared asset store and referenced by path, so thread files
+/// stay text; see the inline note on the image arm for the degraded cases.
 fn content_block_to_value(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text(text) => json!({
@@ -723,6 +831,10 @@ fn content_block_to_value(block: &ContentBlock) -> Value {
     }
 }
 
+/// Rebuild a runtime content block from storage JSON. The inverse of
+/// [`content_block_to_value`], and likewise total: a missing or unknown `type`
+/// degrades to text rather than failing the load. Legacy `image` entries
+/// restore without bytes, since the thread file never carried them.
 fn value_to_content_block(value: &Value) -> ContentBlock {
     let Some(value_type) = value.get("type").and_then(Value::as_str) else {
         return ContentBlock::Text(value.to_string());
@@ -807,6 +919,9 @@ fn value_to_content_block(value: &Value) -> ContentBlock {
     }
 }
 
+/// Write a file atomically: create the parent, write a sibling `.tmp`, then
+/// rename over the target. A crash mid-write leaves either the old file or the
+/// temp file — never a truncated thread.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -826,6 +941,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Lowercase alphanumeric suffix used to make ids and blob names unique.
 fn random_suffix(len: usize) -> String {
     thread_rng()
         .sample_iter(&Alphanumeric)
@@ -835,6 +951,7 @@ fn random_suffix(len: usize) -> String {
         .to_ascii_lowercase()
 }
 
+/// Mint a note id, shaped like a thread id but with an `n_` prefix.
 fn generate_note_id() -> String {
     format!("n_{}_{}", Utc::now().format("%Y-%m-%d"), random_suffix(6))
 }

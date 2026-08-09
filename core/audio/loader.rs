@@ -1,3 +1,11 @@
+//! Decode audio files to mono `f32` samples, and resample them to the 16 kHz
+//! the speech models expect.
+//!
+//! Container and codec detection is Symphonia's job, so WAV, MP3, m4a and the
+//! rest arrive through one entry point. Every sample format Symphonia can hand
+//! back is downmixed to mono by averaging channels — the models are monophonic,
+//! so discarding the stereo image early keeps every later stage simpler.
+
 use anyhow::{Result, anyhow};
 use std::path::Path;
 use symphonia::core::audio::{AudioBufferRef, Signal};
@@ -7,6 +15,12 @@ use symphonia::core::probe::Hint;
 
 use crate::safe_path;
 
+/// Decode an audio file to `(mono samples, sample rate)`.
+///
+/// The path goes through [`safe_path::safe_open`] first, so this cannot be
+/// pointed at somewhere it should not read. Sample rate is taken from the
+/// first decoded packet; an end-of-stream ends the loop normally, while any
+/// other decode error aborts with context.
 pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     let src = safe_path::safe_open(path)?;
     let mss = MediaSourceStream::new(Box::new(src), Default::default());
@@ -176,6 +190,13 @@ pub fn load_audio_file(path: &Path) -> Result<(Vec<f32>, u32)> {
     Ok((samples, sample_rate))
 }
 
+/// Resample to 16 kHz by linear interpolation.
+///
+/// Audio already at 16 kHz (and empty or rate-less input) is returned
+/// untouched, so the common path costs nothing but a copy. Linear
+/// interpolation is deliberately cheap rather than band-limited: speech
+/// recognition tolerates the aliasing, and the alternative would cost more
+/// than the models gain.
 pub fn resample_to_16k(samples: &[f32], original_rate: u32) -> Vec<f32> {
     if samples.is_empty() || original_rate == 0 {
         return samples.to_vec();

@@ -1,6 +1,14 @@
+//! `fetch_github_file` — pull raw file content from GitHub into the agent's
+//! reasoning, so it can cite code and docs it does not have checked out.
+//!
+//! Parsing and fetching are delegated to `core::connectors::github` rather
+//! than reimplemented here; this module is the tool-registry shell around them.
+
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
+/// Register `fetch_github_file` as a network tool — it makes an outbound
+/// request to an agent-chosen URL, carrying a token when one is configured.
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -34,6 +42,10 @@ fn fetch_github_file_definition() -> ToolDefinition {
     }
 }
 
+/// Parse the reference, fetch the blob, and return content plus provenance
+/// metadata. A parse or fetch failure is reported as a tool error naming the
+/// reference, so the agent can fall back to the local checkout instead of
+/// retry-looping.
 async fn handle_fetch_github_file(input: Value) -> Vec<ToolResultContent> {
     let url_or_spec = input
         .get("url_or_spec")

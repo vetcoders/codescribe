@@ -6,12 +6,15 @@ use codescribe_core::pipeline::contracts::EngineEvent;
 use serial_test::serial;
 use std::time::Duration;
 
+/// A fresh controller starts Idle — no session is implied by construction alone.
 #[tokio::test]
 async fn test_initial_state() {
     let controller = RecordingController::new();
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// The paste target reports the app latched before the overlay took focus, and
+/// `None` when nothing was latched — the delivery path must never guess a target.
 #[tokio::test]
 async fn test_paste_target_app_name_maps_latched_name_and_absence() {
     let controller = RecordingController::new();
@@ -24,6 +27,8 @@ async fn test_paste_target_app_name_maps_latched_name_and_absence() {
     );
 }
 
+/// The segment offset starts at zero, which is what makes the first
+/// `commit_segment` of a toggle session clip from the beginning of the buffer.
 #[tokio::test]
 async fn test_last_segment_audio_offset_initialized_to_zero() {
     // commit_segment relies on this starting at 0 — the first segment of a
@@ -40,6 +45,8 @@ async fn test_last_segment_audio_offset_initialized_to_zero() {
     );
 }
 
+/// Smoke test for the exact atomic ops the segment path uses: advance after a
+/// commit, reset to zero on a new session so no offset leaks between sessions.
 #[tokio::test]
 async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
     // Smoke for the atomic ops that commit_segment + start_toggle_recording use.
@@ -66,6 +73,8 @@ async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
     );
 }
 
+/// The assistive floor raises a too-short hold delay but never lowers a longer
+/// configured one — it is a safety minimum, not an override.
 #[test]
 fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
     assert_eq!(effective_hold_start_delay_ms(200, false), 200);
@@ -73,6 +82,9 @@ fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
     assert_eq!(effective_hold_start_delay_ms(800, true), 800);
 }
 
+/// Cross-module budget guard: the stop watchdog must outlast the default AI
+/// attempt budget, or it would abort a healthy formatting call mid-flight and
+/// report a stall that never happened.
 #[test]
 fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
     assert!(
@@ -81,6 +93,8 @@ fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
     );
 }
 
+/// A hold press does not start recording immediately — it schedules a start
+/// after the configured delay, so a stray tap never opens a session.
 #[tokio::test]
 #[serial]
 async fn test_hold_down_schedules_delayed_start() {
@@ -112,6 +126,8 @@ async fn test_hold_down_schedules_delayed_start() {
     assert_eq!(controller.current_state().await, State::RecHold);
 }
 
+/// The assistive lane waits out the raised floor, not the configured delay: at
+/// 250 ms the controller is still Idle, and only past the floor does it record.
 #[tokio::test]
 #[serial]
 async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
@@ -139,6 +155,8 @@ async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
     assert_eq!(controller.current_state().await, State::RecHold);
 }
 
+/// Releasing before the delay elapses cancels the pending start for good — the
+/// timer must not fire later and open a session the user already abandoned.
 #[tokio::test]
 #[serial]
 async fn test_hold_up_before_delay_cancels() {
@@ -182,6 +200,8 @@ async fn test_hold_up_before_delay_cancels() {
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// The same cancellation holds on the assistive lane: a tap shorter than the
+/// raised floor leaves no session behind, even after the floor would have passed.
 #[tokio::test]
 #[serial]
 async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
@@ -218,6 +238,8 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// Toggle has no delay gate: the press transitions straight to recording. The
+/// hold delay exists to disambiguate hold-vs-tap, which toggle does not need.
 #[tokio::test]
 #[serial]
 async fn test_toggle_starts_immediately() {
@@ -241,6 +263,9 @@ async fn test_toggle_starts_immediately() {
     assert_eq!(controller.current_state().await, State::RecToggle);
 }
 
+/// Hotkeys pressed while Busy are dropped, not errors: the handler returns `Ok`
+/// and the state is unchanged, so an impatient user cannot corrupt a session in
+/// flight or surface a spurious failure.
 #[tokio::test]
 #[serial]
 async fn test_busy_state_ignores_hotkeys() {
@@ -267,6 +292,8 @@ async fn test_busy_state_ignores_hotkeys() {
     assert_eq!(controller.current_state().await, State::Busy);
 }
 
+/// The `Display` strings are a stable contract — they reach logs and receipts,
+/// so renaming a variant must not silently change what operators grep for.
 #[tokio::test]
 async fn test_state_display() {
     assert_eq!(State::Idle.to_string(), "IDLE");
@@ -275,6 +302,8 @@ async fn test_state_display() {
     assert_eq!(State::Busy.to_string(), "BUSY");
 }
 
+/// `reset` is the escape hatch from a stuck Busy state — it forces Idle
+/// unconditionally rather than waiting for whatever hung to finish.
 #[tokio::test]
 async fn test_reset_from_busy() {
     let controller = RecordingController::new();
@@ -289,6 +318,9 @@ async fn test_reset_from_busy() {
     assert!(!controller.is_busy().await);
 }
 
+/// "Recording" covers both capture states and excludes Busy. Busy means audio
+/// has stopped and processing is running — treating it as recording would keep
+/// the microphone indicator lit after the user finished speaking.
 #[tokio::test]
 async fn test_is_recording_states() {
     let controller = RecordingController::new();
@@ -319,6 +351,8 @@ async fn test_is_recording_states() {
 // - Left Double Option → force_ai=true, assistive=false → Formatting mode
 // - Toggle (no force_ai) → respects AI_FORMATTING_ENABLED setting
 
+/// Plain hold (no Shift) arms raw mode and leaves the assistive flag off — the
+/// two mode flags are set from one event and must not bleed into each other.
 #[tokio::test]
 #[serial]
 async fn test_hold_down_sets_force_raw_mode() {
@@ -350,6 +384,12 @@ async fn test_hold_down_sets_force_raw_mode() {
     );
 }
 
+/// The engine label reports what actually ran, never what was configured.
+///
+/// Three cases pin it: an Apple verdict labels Apple; a skipped final pass
+/// reports the live engine instead of a hardcoded Whisper; and an Apple
+/// preference that fell back to Whisper at runtime must say Whisper. Laundering
+/// preference into the label would make receipts lie about the engine used.
 #[test]
 fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
     // Preference-only path (no verdict) stays preference-neutral default.
@@ -397,6 +437,9 @@ fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
     );
 }
 
+/// The stop-path receipt names every phase and its remainder sums to the wall
+/// total. Unaccounted time must show up as `remainder`, never be absorbed into
+/// a named phase — that is what makes the receipt usable for latency work.
 #[test]
 fn test_stop_path_budget_line_format() {
     let budget = StopPathBudget {
@@ -427,6 +470,9 @@ fn test_stop_path_budget_line_format() {
     );
 }
 
+/// The final-pass breakdown accounts for its wall time exactly: queue plus
+/// model load plus inference plus engine overhead equals the total. The split
+/// may neither invent nor lose milliseconds, or cold-load analysis is worthless.
 #[test]
 fn test_final_pass_stages_line_format_and_coverage() {
     let stages = FinalPassStages {
@@ -459,6 +505,9 @@ fn test_final_pass_stages_line_format_and_coverage() {
     );
 }
 
+/// Rounding can make the sub-stages exceed the measured wall total. The derived
+/// overhead saturates at zero instead of underflowing — on unsigned arithmetic
+/// that underflow would print an absurd multi-million-ms overhead.
 #[test]
 fn test_final_pass_stages_overhead_saturates_never_negative() {
     // Rounding jitter can make sub-stage sums exceed the wall total by a few
@@ -1024,6 +1073,9 @@ fn test_dictionary_applies_to_tail_gap_composed_transcript() {
     );
 }
 
+/// Punctuation is not authority. A well-formed sentence with no adjudicator
+/// commit source is Incomplete, and Smart gap-fills its tail — a model that
+/// ends politely mid-thought must not be mistaken for a finished utterance.
 #[test]
 fn test_smart_skip_rejects_missing_commit_source_even_when_punctuated() {
     // Punctuation is not the authority: no adjudicator commit ⇒ Incomplete.
@@ -1052,6 +1104,9 @@ fn test_smart_skip_rejects_missing_commit_source_even_when_punctuated() {
     );
 }
 
+/// Falsifier for the same rule one level up: a committed, punctuated prefix
+/// plus a pending tail is still Incomplete. The prefix's completeness says
+/// nothing about the audio that has not been committed yet.
 #[test]
 fn test_punctuated_prefix_with_pending_tail_must_not_skip() {
     // Falsifier: earlier utterance ends in punctuation, but a pending tail remains.
@@ -1081,6 +1136,9 @@ fn test_punctuated_prefix_with_pending_tail_must_not_skip() {
     );
 }
 
+/// Wiring check for the evidence constructor: every field the session snapshot
+/// carries reaches the completeness verdict. A field dropped here would make
+/// routing silently blind to a signal the engine did report.
 #[test]
 fn test_completeness_evidence_from_session_wires_pending_tail() {
     let session = SessionTelemetrySnapshot {
@@ -1142,6 +1200,8 @@ fn test_append_tail_gap_never_mutates_committed_prefix() {
     }
 }
 
+/// Every empty/blank operand combination behaves sanely: no stray separator, no
+/// panic, and a blank side simply yields the other one trimmed.
 #[test]
 fn test_append_tail_gap_empty_operands() {
     use super::final_pass::append_tail_gap;

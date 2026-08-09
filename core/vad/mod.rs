@@ -254,6 +254,12 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
     )
 }
 
+/// Decide whether a final sub-window fragment is kept by [`extract_speech`].
+///
+/// The trailing chunk is too short to measure with Silero, so the decision is
+/// made from context instead: a fragment at least half a window long is kept
+/// outright, and a shorter one only when it directly continues speech that was
+/// already detected. Otherwise it is trailing room tone.
 fn should_include_trailing_fragment(
     fragment_len: usize,
     window_size: usize,

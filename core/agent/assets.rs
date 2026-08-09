@@ -1,3 +1,12 @@
+//! Disk-backed storage for images the agent session carries.
+//!
+//! Two naming schemes, on purpose: captured screenshots get a timestamp plus a
+//! random suffix (every capture is a distinct asset), while composer-attached
+//! inline images are named by content hash — the whole thread is re-saved every
+//! turn, so identical bytes must resolve to one file instead of accumulating a
+//! copy per save. Reads never trust the requested path: only its file name is
+//! matched against real entries of the assets directory.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -8,13 +17,19 @@ use sha2::{Digest, Sha256};
 
 use super::types::ImageAsset;
 
+/// Namespace for the agent's image asset operations; holds no state.
 pub struct AgentAssetStore;
 
 impl AgentAssetStore {
+    /// Canonical assets directory: `<config-dir>/assets`.
     pub fn assets_dir() -> PathBuf {
         crate::config::Config::config_dir().join("assets")
     }
 
+    /// Persist a captured image under a timestamped, randomly-suffixed id.
+    ///
+    /// Each call mints a new asset — use [`Self::save_inline_image`] when the
+    /// same bytes may be saved repeatedly.
     pub fn save_image(data: &[u8], media_type: &str) -> Result<ImageAsset> {
         let dir = Self::assets_dir();
         std::fs::create_dir_all(&dir)
@@ -100,6 +115,7 @@ impl AgentAssetStore {
     }
 }
 
+/// Trim the media type, falling back to `image/png` when it is blank.
 fn normalize_media_type(media_type: &str) -> String {
     let media_type = media_type.trim();
     if media_type.is_empty() {
@@ -109,6 +125,10 @@ fn normalize_media_type(media_type: &str) -> String {
     }
 }
 
+/// Map a media type onto a fixed file extension, defaulting to `png`.
+///
+/// The return type is `&'static str`, so an unknown media type can never inject
+/// caller-controlled text into the file name.
 fn extension_for_media_type(media_type: &str) -> &'static str {
     match media_type.trim().to_ascii_lowercase().as_str() {
         "image/jpeg" | "image/jpg" => "jpg",
@@ -118,6 +138,8 @@ fn extension_for_media_type(media_type: &str) -> &'static str {
     }
 }
 
+/// Write to a `.tmp` sibling and rename into place, so a reader never observes
+/// a partially written asset.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, data)
@@ -127,6 +149,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Lowercase alphanumeric suffix that keeps same-millisecond captures distinct.
 fn random_suffix(len: usize) -> String {
     thread_rng()
         .sample_iter(&Alphanumeric)
@@ -136,6 +159,7 @@ fn random_suffix(len: usize) -> String {
         .to_ascii_lowercase()
 }
 
+/// Covers extension mapping and the containment guarantees of `read_image`.
 #[cfg(test)]
 mod tests {
     use super::*;

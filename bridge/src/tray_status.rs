@@ -67,16 +67,25 @@ pub struct CsTrayStatusPayload {
     pub generation: u64,
 }
 
+/// Swift-side sink for menu-bar status updates.
 #[uniffi::export(with_foreign)]
 pub trait CsTrayStatusListener: Send + Sync {
+    /// Called once per distinct status change; duplicate snapshots are
+    /// coalesced before they reach here.
     fn on_tray_status(&self, status: CsTrayStatusPayload);
 }
 
+/// UniFFI handle Swift holds to observe tray status.
+///
+/// Deliberately stateless: the listener, the last-forwarded snapshot, and the
+/// generation counter are all process-global, so constructing more than one
+/// handle does not fork the status stream.
 #[derive(uniffi::Object, Default)]
 pub struct CodescribeTrayStatus {}
 
 #[uniffi::export]
 impl CodescribeTrayStatus {
+    /// Initialize logging and install the core-side sink.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -107,25 +116,35 @@ impl CodescribeTrayStatus {
 
 type SharedListener = RwLock<Option<Arc<dyn CsTrayStatusListener>>>;
 
+/// Process-global slot holding the current Swift listener, if one attached.
 fn shared_listener() -> &'static SharedListener {
     static LISTENER: OnceLock<SharedListener> = OnceLock::new();
     LISTENER.get_or_init(|| RwLock::new(None))
 }
 
+/// Last snapshot handed to Swift, kept so duplicate updates can be coalesced.
 fn last_forwarded_status() -> &'static Mutex<Option<TrayStatusSnapshot>> {
     static LAST_FORWARDED: OnceLock<Mutex<Option<TrayStatusSnapshot>>> = OnceLock::new();
     LAST_FORWARDED.get_or_init(|| Mutex::new(None))
 }
 
+/// Counter stamped onto each forwarded payload; strictly increases with every
+/// distinct status so Swift can order deliveries.
 fn generation_counter() -> &'static AtomicU64 {
     static GENERATION: AtomicU64 = AtomicU64::new(0);
     &GENERATION
 }
 
+/// Point the core tray-status API at this bridge.
+///
+/// Re-installing is harmless — the sink is replaced with an identical one —
+/// which is why every entry point can call it unconditionally.
 fn install_sink() {
     tray_status::set_tray_status_sink(Some(Arc::new(publish_tray_status)));
 }
 
+/// Current core status as a bridge payload, stamped with the generation
+/// already in effect rather than a fresh one.
 fn current_payload() -> CsTrayStatusPayload {
     payload_from_status(
         tray_status::current_tray_status_snapshot(),
@@ -133,6 +152,8 @@ fn current_payload() -> CsTrayStatusPayload {
     )
 }
 
+/// Map a core [`TrayStatusSnapshot`] onto the bridge payload, collapsing the
+/// core status into a `(kind, tone)` pair for the Swift menu row.
 fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayStatusPayload {
     let status = snapshot.status;
     let (kind, tone) = match status {
@@ -156,6 +177,12 @@ fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayS
     }
 }
 
+/// The sink installed into the core API: coalesce duplicates, stamp a fresh
+/// generation, hand the payload to Swift.
+///
+/// A change arriving with no listener attached is dropped rather than queued —
+/// Swift re-seeds from [`CodescribeTrayStatus::current_status`] when it
+/// registers, so the menu still opens with the live value.
 fn publish_tray_status(snapshot: TrayStatusSnapshot) {
     let changed = {
         let mut last = last_forwarded_status()

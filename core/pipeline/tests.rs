@@ -142,6 +142,7 @@ mod pipeline_integration {
 
     // ── Test 8: Overlay vs CLI streaming (real audio, opt-in) ───────────────
 
+    /// Is the opt-in real-audio E2E arm enabled via `CODESCRIBE_E2E_STT`?
     fn e2e_enabled() -> bool {
         std::env::var("CODESCRIBE_E2E_STT")
             .ok()
@@ -149,18 +150,25 @@ mod pipeline_integration {
             .unwrap_or(false)
     }
 
+    /// `~/.codescribe/data_assets`, or `None` when it does not exist.
+    ///
+    /// Fixtures live outside the repo on purpose — the recordings are the
+    /// operator's own voice and are not published.
     fn data_assets_dir() -> Option<PathBuf> {
         let home = std::env::var("HOME").ok()?;
         let dir = PathBuf::from(home).join(".codescribe/data_assets");
         if dir.exists() { Some(dir) } else { None }
     }
 
+    /// The `01_no-to-dobra.wav` fixture, when it is present locally.
     fn sample_asset() -> Option<PathBuf> {
         let dir = data_assets_dir()?;
         let path = dir.join("01_no-to-dobra.wav");
         if path.exists() { Some(path) } else { None }
     }
 
+    /// Lowercase and strip punctuation to single-spaced words, keeping Polish
+    /// diacritics so `zażółć` does not degrade into separate tokens.
     fn normalize_text(input: &str) -> String {
         let mut out = String::with_capacity(input.len());
         for ch in input.to_lowercase().chars() {
@@ -184,6 +192,9 @@ mod pipeline_integration {
         out.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
+    /// Fraction of `expected` words that also occur in `actual`.
+    ///
+    /// Asymmetric by construction, so callers take the max of both directions.
     fn word_overlap_ratio(actual: &str, expected: &str) -> f32 {
         let actual_words: std::collections::HashSet<&str> = actual.split_whitespace().collect();
         let expected_words: Vec<&str> = expected.split_whitespace().collect();
@@ -249,4 +260,6 @@ mod pipeline_integration {
 }
 
 // Additional regression-focused tests live in a separate file to minimize conflicts.
+/// Regression cases kept apart from the integration suite above so concurrent
+/// edits to either land without conflicting.
 mod regressions;

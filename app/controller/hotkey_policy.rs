@@ -8,9 +8,15 @@ use super::types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 /// generic hold delay — prevents accidental Emil sessions on short taps.
 const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
 
+/// How long a toggle stop may wait for adjudication (live + final pass) to settle.
 pub(super) const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Stop-path timeout; currently the same budget as [`TOGGLE_STOP_ADJUDICATE_TIMEOUT`].
 pub(super) const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
 
+/// Apply the assistive floor to a configured hold delay.
+///
+/// See `ASSISTIVE_HOLD_START_DELAY_FLOOR_MS` for why assistive holds ignore a
+/// lower configured value.
 pub(super) fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
     if assistive {
         configured_ms.max(ASSISTIVE_HOLD_START_DELAY_FLOOR_MS)
@@ -19,11 +25,16 @@ pub(super) fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool)
     }
 }
 
+/// Test accessor for the adjudication budget.
 #[cfg(test)]
 pub(super) fn toggle_stop_adjudicate_timeout() -> Duration {
     STOP_TIMEOUT
 }
 
+/// Whether the toggle stop path runs a Whisper final pass (`CODESCRIBE_TOGGLE_FINAL_PASS`).
+///
+/// Defaults to enabled; only an explicit falsey value (`0`, `false`, `no`, `off`,
+/// or empty) turns it off.
 pub(super) fn toggle_final_pass_enabled() -> bool {
     std::env::var("CODESCRIBE_TOGGLE_FINAL_PASS")
         .ok()
@@ -36,6 +47,10 @@ pub(super) fn toggle_final_pass_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// Whether this stop should go through adjudication rather than the plain stop path.
+///
+/// Only a non-assistive toggle recording with the final pass enabled qualifies —
+/// assistive turns deliver live and have no Whisper pass to adjudicate against.
 pub(super) fn should_use_toggle_adjudicated_stop(
     current_state: State,
     assistive: bool,
@@ -44,11 +59,17 @@ pub(super) fn should_use_toggle_adjudicated_stop(
     current_state == State::RecToggle && !assistive && toggle_final_pass
 }
 
+/// Whether an event's mode flags (assistive, …) should overwrite the current ones.
+///
+/// A toggle press that *stops* an in-progress toggle recording is excluded: the
+/// stop must not retroactively change the mode the recording started in.
 pub(super) fn should_apply_incoming_mode_flags(current_state: State, event: &HotkeyInput) -> bool {
     matches!(event.action, HotkeyAction::Down | HotkeyAction::Press)
         && !(event.key_type == HotkeyType::Toggle && current_state == State::RecToggle)
 }
 
+/// Whether this input begins a capture: a hold going down, or a toggle /
+/// conversation key being pressed.
 pub(super) fn is_hotkey_start_event(event: &HotkeyInput) -> bool {
     matches!(
         (event.key_type, event.action),

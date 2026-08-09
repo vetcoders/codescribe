@@ -206,6 +206,12 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
 /// - Otherwise final wins only if it keeps at least 40% of stream char count.
 pub const FINAL_PASS_REGRESSION_MIN_STREAM_CHARS: usize = 24;
 
+/// Evaluate the regression rule documented on
+/// [`FINAL_PASS_REGRESSION_MIN_STREAM_CHARS`].
+///
+/// Returns `true` when `final_text` must be rejected in favour of
+/// `streaming_text`. Both sides are compared trimmed and by char count, so
+/// multi-byte transcripts are not penalised for byte length.
 pub fn final_pass_is_length_regression(final_text: &str, streaming_text: &str) -> bool {
     let final_chars = final_text.trim().chars().count();
     let stream_chars = streaming_text.trim().chars().count();
@@ -410,6 +416,9 @@ pub struct TranscriptionEngineVerdict {
 }
 
 impl TranscriptionEngineVerdict {
+    /// Whisper provenance. `fallback_used` is derived, not passed: only
+    /// [`TranscriptionEngineMode::RuntimeFallback`] counts as a fallback, so a
+    /// caller cannot claim a clean embedded run for a degraded one.
     pub const fn whisper(mode: TranscriptionEngineMode) -> Self {
         Self {
             engine: TranscriptionEngine::Whisper,
@@ -418,6 +427,9 @@ impl TranscriptionEngineVerdict {
         }
     }
 
+    /// Apple on-device provenance (SpeechTranscriber / SFSpeechRecognizer /
+    /// DictationTranscriber). Never a fallback — the Apple lane is selected
+    /// deliberately by the router, never reached by degradation.
     pub const fn apple(mode: TranscriptionEngineMode) -> Self {
         Self {
             engine: TranscriptionEngine::Apple,
@@ -427,6 +439,14 @@ impl TranscriptionEngineVerdict {
     }
 }
 
+/// Derive the engine-owned subset of [`TranscriptionConfidenceFlag`] from raw
+/// VAD + decoder metadata.
+///
+/// Single owner of the thresholds (`VERY_LOW_SPEECH_PCT`,
+/// `POSSIBLE_HALLUCINATION_LOGPROB`) so no consumer re-implements the
+/// heuristic. Missing inputs (`None`) never produce a flag — absence of
+/// evidence is not evidence of low confidence. App-level provenance flags are
+/// appended later by the controller truth adjudicator, not here.
 pub(crate) fn collect_confidence_flags(
     vad_speech_pct: Option<f32>,
     avg_logprob: Option<f32>,
@@ -558,6 +578,9 @@ impl std::fmt::Display for TranscriptDelta {
 ///
 /// Implementations: `LocalWhisperEngine` (current), future cloud STT providers.
 pub trait TranscriptionAdapter: Send + Sync {
+    /// Transcribe one VAD-bounded utterance. `language` is a BCP-47-ish hint
+    /// (`None` = engine autodetect). Returns the untouched engine output;
+    /// postprocessing belongs to later pipeline stages.
     fn transcribe(
         &self,
         utterance: &SpeechUtterance,
@@ -569,6 +592,9 @@ pub trait TranscriptionAdapter: Send + Sync {
 ///
 /// This decouples the streaming pipeline from presentation concerns.
 pub trait DeltaSink: Send + Sync {
+    /// Apply one delta to whatever surface this sink owns. Called in producer
+    /// order; implementations must not reorder or coalesce across calls, or the
+    /// append+backspace contract on [`TranscriptDelta`] breaks.
     fn apply(&self, delta: &TranscriptDelta);
 }
 
@@ -747,6 +773,7 @@ pub struct LayerSummary {
     pub annotations_inserted: u64,
 }
 
+/// Why a bounded mutation could not be applied to a committed buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TranscriptEventApplyError {
     InvalidRange {
@@ -783,6 +810,13 @@ impl EngineEvent {
     }
 }
 
+/// Translate a validated char range into a byte range safe for
+/// `String::replace_range` / `insert_str`.
+///
+/// Char offsets are the wire contract (Swift and the engine both count
+/// characters), byte indices are what `String` needs — mixing them is the
+/// classic panic on Polish diacritics. Rejects inverted or out-of-bounds ranges
+/// with [`TranscriptEventApplyError::InvalidRange`] instead of panicking.
 fn char_range_to_byte_range(
     text: &str,
     start: usize,
@@ -798,6 +832,10 @@ fn char_range_to_byte_range(
     Ok((start_byte, end_byte))
 }
 
+/// Byte index of the `offset`-th char, with `text.len()` for the one-past-the-end
+/// position so an empty range at the tail stays representable. Offsets beyond
+/// that clamp to `text.len()` rather than panicking; callers are expected to have
+/// bounds-checked through [`char_range_to_byte_range`] first.
 fn char_offset_to_byte_index(text: &str, offset: usize) -> usize {
     if offset == text.chars().count() {
         return text.len();
@@ -839,6 +877,9 @@ impl std::fmt::Display for DropKind {
 /// Implementations decide how to present events — typing animation,
 /// overlay updates, clipboard paste, IPC streaming, etc.
 pub trait EventSink: Send + Sync {
+    /// Receive one semantic engine event. Called from the engine's own thread,
+    /// so implementations must not block — presentation work belongs on the
+    /// consumer's queue, not on this call.
     fn on_event(&self, event: &EngineEvent);
 }
 
@@ -846,6 +887,10 @@ pub trait EventSink: Send + Sync {
 // Tests
 // ═══════════════════════════════════════════════════════════
 
+/// Contract tests for the types above: `TranscriptDelta` append/backspace
+/// roundtrips (including multi-byte Polish, CJK and emoji), verdict construction
+/// and flag derivation, `EngineEvent` clone/apply behaviour, and serde
+/// roundtrips that pin the wire tokens every consumer parses.
 #[cfg(test)]
 mod tests {
     use super::*;

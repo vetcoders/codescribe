@@ -3,13 +3,18 @@
 //! Release builds: Model file included directly in binary (~2.3MB).
 //! Debug builds: Empty slice, use runtime file path instead.
 
+/// Model bytes generated into `OUT_DIR` by the build script when the
+/// `embed_vad` cfg is set.
 #[cfg(embed_vad)]
 mod data {
     include!(concat!(env!("OUT_DIR"), "/embedded_vad_data.rs"));
 }
 
+/// Stand-in with the same shape when nothing was embedded — an empty slice, so
+/// the availability check answers `false` without any `cfg` at the call site.
 #[cfg(not(embed_vad))]
 mod data {
+    /// Empty placeholder for the embedded model bytes.
     pub static MODEL: &[u8] = &[];
 }
 

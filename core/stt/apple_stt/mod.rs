@@ -62,6 +62,8 @@ const SF_SPEECH_RECOGNITION_DEADLINE_SECS: f64 = 2.5;
 pub struct AppleSpeechAnalyzerAdapter;
 
 impl AppleSpeechAnalyzerAdapter {
+    /// Construct the adapter. Zero-sized: all state lives in the bridge child
+    /// process and the process-wide `OnceLock` caches below.
     pub fn new() -> Self {
         Self
     }
@@ -83,6 +85,12 @@ impl TranscriptionAdapter for AppleSpeechAnalyzerAdapter {
     }
 }
 
+/// One protocol-v1 request line written to the bridge child's stdin.
+///
+/// Borrows its strings from the caller so a request can be built without
+/// allocating per invocation; `audio_path` is omitted from the wire entirely
+/// for commands that carry audio over stdin (`stream`) or carry none (`probe`,
+/// `request_auth`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct BridgeRequest<'a> {
@@ -97,13 +105,18 @@ struct BridgeRequest<'a> {
 /// Apple bridge backend selected for a locale (matches Swift `AppleSttBackend`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppleSttBackend {
+    /// `SpeechTranscriber` (`SpeechAnalyzer`) — first choice when the locale is
+    /// both supported and installed.
     SpeechTranscriber,
     /// `DictationTranscriber` (SpeechAnalyzer family) — opt-in PoC lane (W4-A).
     DictationTranscriber,
+    /// `SFSpeechRecognizer` on-device — the pl-PL product foundation, used when
+    /// the SpeechAnalyzer family cannot serve the locale.
     SfSpeechRecognizer,
 }
 
 impl AppleSttBackend {
+    /// Wire label as emitted and understood by the Swift bridge.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SpeechTranscriber => "speech_transcriber",
@@ -112,6 +125,8 @@ impl AppleSttBackend {
         }
     }
 
+    /// Parse a bridge `backend` label (case-insensitive). `None` for an unknown
+    /// label, so a newer bridge cannot silently masquerade as a known backend.
     pub fn from_bridge(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "speech_transcriber" => Some(Self::SpeechTranscriber),
@@ -121,6 +136,8 @@ impl AppleSttBackend {
         }
     }
 
+    /// Map to the pipeline-level engine mode carried in a transcription verdict
+    /// (provenance for final-pass adjudication and the Active STT status line).
     pub fn engine_mode(self) -> TranscriptionEngineMode {
         match self {
             Self::SpeechTranscriber => TranscriptionEngineMode::SpeechTranscriber,
@@ -178,6 +195,13 @@ pub fn speech_auth_init_decision(
     }
 }
 
+/// One protocol-v1 response line read from the bridge child's stdout.
+///
+/// Every field is `#[serde(default)]` on purpose: a single response shape
+/// serves `probe`, `transcribe`, `transcribe_live`, `request_auth` and the
+/// closing line of a `stream` session, and each command populates a different
+/// subset. A missing field must degrade to "not reported", never to a parse
+/// error that hides an otherwise usable response.
 #[derive(Debug, Deserialize, Default)]
 struct BridgeResponse {
     #[serde(default)]
@@ -203,11 +227,15 @@ struct BridgeResponse {
 }
 
 impl BridgeResponse {
+    /// Success under either spelling the bridge may use: the boolean `ok` flag
+    /// or a textual `status: "ok"`.
     fn is_ok(&self) -> bool {
         self.ok || self.status.eq_ignore_ascii_case("ok")
     }
 }
 
+/// One timestamped span from a bridge transcription result, in seconds
+/// relative to the start of the audio.
 #[derive(Debug, Deserialize)]
 struct BridgeSegment {
     text: String,
@@ -236,6 +264,9 @@ pub fn init() -> Result<()> {
     }
 }
 
+/// Uncached init body: platform gate → probe → Speech TCC gate → locale
+/// readiness. Every `bail!` here is a user-actionable message, because this is
+/// the error the start-recording preflight surfaces verbatim.
 fn init_impl() -> Result<()> {
     ensure_supported_platform()?;
     let locale = resolved_locale(None);
@@ -397,6 +428,14 @@ fn transcribe_file_with_backend(
     Ok((raw_transcript_from_bridge_response(response), backend))
 }
 
+/// Live-path entry point: transcribe in-memory PCM through the bridge.
+///
+/// Defaults to streaming v2 (one long-lived recognition request fed raw PCM,
+/// the system-dictation shape). The older per-request WAV window path measured
+/// 0.228 parity against system Apple live, which is why streaming exists; it
+/// stays reachable through `CODESCRIBE_APPLE_STT_LIVE_MODE` as an A/B escape
+/// hatch. The host timeout is sized from audio wall-clock plus the bridge's
+/// post-EOF settle grace, so a slow settle is not mistaken for a hang.
 fn transcribe_via_bridge(
     audio: &[f32],
     sample_rate: u32,
@@ -586,6 +625,8 @@ fn parse_stream_bridge_response(stdout: &str) -> Result<BridgeResponse> {
     bail!("Apple STT bridge stream returned no response lines")
 }
 
+/// Convert a successful bridge response into the pipeline transcript contract,
+/// dropping segments that fail the timestamp sanity check.
 fn raw_transcript_from_bridge_response(response: BridgeResponse) -> RawTranscript {
     let segments = response
         .segments
@@ -599,6 +640,9 @@ fn raw_transcript_from_bridge_response(response: BridgeResponse) -> RawTranscrip
     }
 }
 
+/// Validate one bridge segment. Rejects empty text and any non-finite or
+/// inverted timestamp pair, so downstream tail/gap arithmetic never runs on a
+/// NaN or a negative-length span.
 fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<TranscriptSegment> {
     let text = seg.text.trim().to_string();
     if text.is_empty()
@@ -623,6 +667,10 @@ fn bridge_global_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Run one request/response bridge command end to end: spawn, write the JSON
+/// request line, close stdin so the child can finish, then parse the single
+/// response line. A bridge-reported error becomes an `Err` carrying the
+/// bridge's own message, so caller context stacks on top of the real cause.
 fn run_bridge_with_timeout(
     request: &BridgeRequest<'_>,
     timeout: Option<std::time::Duration>,
@@ -760,6 +808,8 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
     }
 }
 
+/// Router-facing reduction of a `probe` response: can this locale be served,
+/// by which backend, and what does Speech TCC currently say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProbeResult {
     supported: bool,
@@ -782,6 +832,9 @@ fn interpret_probe_response(response: &BridgeResponse) -> ProbeResult {
     }
 }
 
+/// Ask the bridge which backend can serve `locale`. Uses the generous probe
+/// budget: with `allow_download` set, the bridge may install SpeechTranscriber
+/// assets during this call.
 fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
     let request = BridgeRequest {
         protocol_version: 1,
@@ -795,6 +848,9 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
     Ok(interpret_probe_response(&response))
 }
 
+/// Trigger the system Speech Recognition authorization prompt through the
+/// bridge. Called at most once per init, only on the SF path, and always
+/// followed by a re-probe — the response itself is not the auth truth.
 fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<BridgeResponse> {
     let request = BridgeRequest {
         protocol_version: 1,
@@ -858,15 +914,21 @@ pub fn dictation_transcriber_enabled() -> bool {
 }
 
 impl DictationLane {
+    /// Lane can actually serve the locale right now (armed, supported, installed).
     fn ready(self) -> bool {
         self.enabled && self.supported && self.installed
     }
 
+    /// Lane merely *knows* the locale (armed and supported, assets absent).
+    /// Drives the "assets missing" negative path rather than "unsupported".
     fn listed(self) -> bool {
         self.enabled && self.supported
     }
 }
 
+/// Resolve the backend for a locale from the three lane snapshots, in the
+/// layer order ST → DT → SF. See [`ProbeFallthrough`] for the negative-path
+/// contract when nothing is ready.
 pub fn probe_backend_fallthrough(
     st_supported: bool,
     st_installed: bool,
@@ -917,6 +979,7 @@ pub struct SfSpeechSettleGate {
 }
 
 impl SfSpeechSettleGate {
+    /// A fresh, unsettled gate.
     pub fn new() -> Self {
         Self {
             settled: std::sync::atomic::AtomicBool::new(false),
@@ -935,16 +998,22 @@ impl SfSpeechSettleGate {
             .is_ok()
     }
 
+    /// Observe whether the race has already been decided. Read-only: this never
+    /// claims the settle, so it cannot be used in place of [`Self::try_settle`].
     pub fn is_settled(&self) -> bool {
         self.settled.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
+/// Bridge binary to spawn, resolved against the running executable.
 fn bridge_binary() -> PathBuf {
     let current_exe = std::env::current_exe().ok();
     bridge_binary_for_current_exe(current_exe.as_deref())
 }
 
+/// Resolution order: explicit env override → bridge bundled beside the `.app`
+/// executable → bare command name left for `PATH` lookup at spawn time.
+/// Testable seam: `current_exe` is injected rather than read from the process.
 fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
     if let Some(override_bin) = bridge_override_binary() {
         return override_bin;
@@ -953,6 +1022,7 @@ fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
     bundled_bridge_binary_for_exe(current_exe).unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
 }
 
+/// The `CODESCRIBE_APPLE_STT_BRIDGE` override, if set to a non-blank value.
 fn bridge_override_binary() -> Option<PathBuf> {
     match std::env::var(ENV_STT_BRIDGE) {
         Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
@@ -960,6 +1030,11 @@ fn bridge_override_binary() -> Option<PathBuf> {
     }
 }
 
+/// The bridge shipped inside the app bundle, beside the main executable.
+///
+/// Requires the full `<name>.app/Contents/MacOS/` shape before accepting a
+/// sibling file: a loose binary in some unrelated directory named `MacOS` must
+/// not be mistaken for a bundled, co-signed bridge.
 fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> {
     let executable_dir = current_exe?.parent()?;
     let contents_dir = executable_dir.parent()?;
@@ -990,11 +1065,15 @@ pub(crate) fn is_bridge_resolvable() -> bool {
     *RESOLVABLE.get_or_init(bridge_binary_resolvable)
 }
 
+/// Uncached body behind [`is_bridge_resolvable`].
 fn bridge_binary_resolvable() -> bool {
     let current_exe = std::env::current_exe().ok();
     bridge_binary_resolvable_for_current_exe(current_exe.as_deref())
 }
 
+/// Mirrors [`bridge_binary_for_current_exe`] resolution, but answers "does it
+/// exist" instead of "what would we spawn". An explicit override is checked as
+/// a real file: a broken override must fail here rather than at spawn time.
 fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool {
     if let Some(override_bin) = bridge_override_binary() {
         return bridge_candidate_resolvable(&override_bin);
@@ -1006,6 +1085,8 @@ fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool 
     which_in_path(DEFAULT_BRIDGE_BIN).is_some()
 }
 
+/// A path-like candidate must exist as a file; a bare command name is looked
+/// up on `PATH` instead.
 fn bridge_candidate_resolvable(candidate: &Path) -> bool {
     let bin = candidate.to_string_lossy();
     if candidate.is_absolute() || bin.contains(std::path::MAIN_SEPARATOR) {
@@ -1015,6 +1096,7 @@ fn bridge_candidate_resolvable(candidate: &Path) -> bool {
     which_in_path(&bin).is_some()
 }
 
+/// Minimal `which`: first `PATH` entry containing `bin` as a file.
 fn which_in_path(bin: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     std::env::split_paths(&paths)
@@ -1022,6 +1104,9 @@ fn which_in_path(bin: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Hard gate: macOS at or above [`MIN_SUPPORTED_MACOS_MAJOR`]. Fails with a
+/// message naming the detected version, because this is the first thing an
+/// operator sees when Apple STT refuses to initialize.
 fn ensure_supported_platform() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!(
@@ -1042,6 +1127,8 @@ fn ensure_supported_platform() -> Result<()> {
     Ok(())
 }
 
+/// Process-cached macOS major version. The failure is cached too — `sw_vers`
+/// cannot start working mid-process, so a retry would only re-pay the spawn.
 fn macos_major_version() -> Result<u32> {
     static VERSION: OnceLock<std::result::Result<u32, String>> = OnceLock::new();
     let cached =
@@ -1052,6 +1139,8 @@ fn macos_major_version() -> Result<u32> {
     }
 }
 
+/// Read the OS version via `sw_vers -productVersion`. Non-macOS targets fail
+/// fast instead of guessing.
 fn detect_macos_major_version() -> Result<u32> {
     #[cfg(not(target_os = "macos"))]
     {
@@ -1072,6 +1161,7 @@ fn detect_macos_major_version() -> Result<u32> {
     }
 }
 
+/// Take the leading component of a `26`, `26.1`, `26.1.2`-shaped version.
 fn parse_macos_major_version(version: &str) -> Result<u32> {
     let major_str = version
         .trim()
@@ -1084,6 +1174,8 @@ fn parse_macos_major_version(version: &str) -> Result<u32> {
     Ok(major)
 }
 
+/// Locale for a request: `CODESCRIBE_APPLE_STT_LOCALE` wins, then the caller's
+/// language hint, then [`DEFAULT_LOCALE`].
 fn resolved_locale(language: Option<&str>) -> String {
     if let Ok(override_locale) = std::env::var(ENV_LOCALE) {
         let trimmed = override_locale.trim();
@@ -1098,6 +1190,9 @@ fn resolved_locale(language: Option<&str>) -> String {
     }
 }
 
+/// Normalize to the BCP-47 shape Apple expects: `_` becomes `-`, and the bare
+/// language codes the product actually ships get their region back
+/// (`pl` → `pl-PL`, `en` → `en-US`). Anything else passes through untouched.
 fn normalize_locale(locale: &str) -> String {
     let normalized = locale.trim().replace('_', "-");
     if normalized.is_empty() {
@@ -1111,6 +1206,8 @@ fn normalize_locale(locale: &str) -> String {
     }
 }
 
+/// Read a boolean env flag. An unset *or* unparseable value yields `default`,
+/// so a typo never silently flips a lane the operator did not arm.
 fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(value) => parse_bool_flag(&value).unwrap_or(default),
@@ -1118,6 +1215,7 @@ fn env_bool(name: &str, default: bool) -> bool {
     }
 }
 
+/// Parse the accepted boolean spellings; `None` for anything unrecognized.
 fn parse_bool_flag(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -1126,11 +1224,18 @@ fn parse_bool_flag(value: &str) -> Option<bool> {
     }
 }
 
+/// Scratch WAV handed to the bridge by path, removed on drop.
+///
+/// Only the legacy `transcribe_live` A/B path needs this; the product default
+/// (`stream`) feeds PCM over stdin and never touches the filesystem.
 struct TempWavFile {
     path: PathBuf,
 }
 
 impl TempWavFile {
+    /// Write mono PCM16 to a uniquely-named file in the system temp directory.
+    /// Samples are clamped before scaling so out-of-range input wraps to the
+    /// rail instead of overflowing into the opposite sign.
     fn write(samples: &[f32], sample_rate: u32) -> Result<Self> {
         if sample_rate == 0 {
             bail!("sample_rate must be > 0");
@@ -1158,6 +1263,7 @@ impl TempWavFile {
         Ok(Self { path })
     }
 
+    /// Path to hand to the bridge. Valid only while this guard is alive.
     fn path(&self) -> &Path {
         &self.path
     }

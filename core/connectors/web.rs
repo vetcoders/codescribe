@@ -56,6 +56,10 @@ fn is_private_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Classify an IPv4 address as private/internal.
+///
+/// Covers RFC 1918 ranges, link-local (`169.254.0.0/16` — the cloud metadata
+/// service address lives here), loopback, and the unspecified `0.0.0.0/8` block.
 fn is_private_ipv4(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     match octets[0] {
@@ -69,6 +73,8 @@ fn is_private_ipv4(ip: Ipv4Addr) -> bool {
     }
 }
 
+/// Classify an IPv6 address as private/internal: loopback (`::1`), unspecified
+/// (`::`), link-local (`fe80::/10`), and unique-local (`fc00::/7`).
 fn is_private_ipv6(ip: Ipv6Addr) -> bool {
     ip.is_loopback() || ip.is_unspecified() || ip.is_unicast_link_local() || ip.is_unique_local()
 }

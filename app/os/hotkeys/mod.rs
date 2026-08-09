@@ -6,6 +6,23 @@
 // splitting the implementation by responsibility: runtime config, pure gesture
 // detection, platform event taps, and process-global runtime ownership.
 
+//! Global hotkey capture: the stable `crate::os::hotkeys::*` facade.
+//!
+//! This module holds no logic of its own — it is a re-export surface over four
+//! submodules that split what used to live in one file. Consumers import from
+//! here, not from the submodules, so the internal split can move without
+//! breaking call sites.
+//!
+//! - `config` — runtime-tunable bindings and thresholds (hold delay, double-tap
+//!   window, exclusive mode), readable and writable while the app runs.
+//! - `detector` — the pure gesture state machine over key/modifier snapshots.
+//! - `platform` — the macOS `CGEventTap` feeding that state machine.
+//! - `manager` — process-global ownership of the tap, plus the enable/disable gate.
+//!
+//! The seam worth knowing: gesture recognition carries no platform types, so
+//! hold and double-tap behaviour is testable without an event tap or an
+//! accessibility grant. Each submodule documents itself in depth.
+
 mod config;
 mod detector;
 mod manager;

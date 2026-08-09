@@ -16,6 +16,13 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Time each fixture through the production stop-path and print the stage
+/// breakdown.
+///
+/// `engine_overhead_ms` is what the total leaves over once lock wait, model
+/// load and decode are subtracted — the part no instrumented stage claims, and
+/// therefore the one worth watching. The default fixture sequence repeats the
+/// first clip so the cold and warm costs of the same audio sit side by side.
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 

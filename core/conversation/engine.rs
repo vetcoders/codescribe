@@ -28,8 +28,11 @@ use super::{FRAME_SAMPLES, NUM_CODEBOOKS, SAMPLE_RATE};
 /// Uses linear interpolation for efficiency. For production use with
 /// critical quality needs, consider rubato or similar library.
 pub struct Resampler24k {
+    /// Scratch output buffer, reused across calls to avoid per-frame allocation.
     buffer: Vec<f32>,
+    /// Output/input rate ratio; `1.0` (within tolerance) means passthrough.
     ratio: f32,
+    /// Rate this resampler was built for — a change forces a rebuild.
     input_rate: u32,
 }
 

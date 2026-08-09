@@ -42,6 +42,7 @@ use codescribe_core::agent::{
 };
 use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
+/// Value of the mandatory `anthropic-version` header.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Anthropic requires `max_tokens` on every request; used only when the caller
 /// leaves `options.max_tokens` unset. Doctrine (operator, 2026-08-05): the
@@ -52,20 +53,35 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// against this same limit, which made the old 8192 doubly throttling.
 const DEFAULT_MAX_TOKENS: u32 = 128_000;
 
+/// How long to wait for response headers before giving up.
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
+/// How long a started stream may stall between chunks before giving up.
 const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
+/// Transport-level ceiling on the whole request; generous, since a long tool
+/// turn is legitimate and the finer timeouts above do the real policing.
 const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
+/// Absolute wall-clock stop for one stream — the backstop that ends a
+/// connection which keeps trickling chunks forever without ever terminating.
 const STREAM_DEADLINE: Duration = Duration::from_secs(10 * 60);
 
+/// Agent provider speaking the Anthropic Messages API over SSE.
 #[derive(Clone)]
 pub struct AnthropicProvider {
+    /// Shared HTTP client.
     client: Client,
+    /// Messages endpoint URL; validated before every send.
     endpoint: String,
+    /// Sent as `x-api-key`. Anthropic always authenticates, so this is required.
     api_key: String,
+    /// Pinned API version sent with each request.
     anthropic_version: String,
+    /// Model used when the caller leaves `StreamOptions::model` blank.
     default_model: String,
+    /// `max_tokens` fallback — the API requires the field on every request.
     default_max_tokens: u32,
+    /// Deadline for response headers.
     initial_response_timeout: Duration,
+    /// Deadline between chunks of an already-started stream.
     inter_chunk_timeout: Duration,
 }
 
@@ -257,6 +273,15 @@ fn build_system(prompt: Option<&str>, messages: &[Message]) -> Option<String> {
     }
 }
 
+/// Assemble the Messages request body.
+///
+/// Optional parameters are inserted only when they apply: `thinking` only in
+/// adaptive form and only where the model supports it (a manual `budget_tokens`
+/// is a hard 400 on Opus), `temperature` only when the capability gate allowed
+/// it through, `tools` only when non-empty.
+///
+/// # Errors
+/// Returns an error if a message fails to project onto the wire shape.
 fn build_request_body(
     model: &str,
     system: Option<String>,
@@ -295,6 +320,7 @@ fn build_request_body(
     Ok(Value::Object(body))
 }
 
+/// Project tool definitions onto Anthropic's `input_schema` tool shape.
 fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<Value> {
     tools
         .iter()
@@ -308,6 +334,14 @@ fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<Value> {
         .collect()
 }
 
+/// Convert history into the `messages` array.
+///
+/// System turns are dropped here because [`build_system`] already hoisted them
+/// into the top-level `system` field, and messages that project to no content
+/// are dropped because the API rejects an empty `content`.
+///
+/// # Errors
+/// Returns an error if an image asset referenced by a block cannot be read.
 fn build_anthropic_messages(messages: &[Message]) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     for message in messages {
@@ -328,6 +362,11 @@ fn build_anthropic_messages(messages: &[Message]) -> Result<Vec<Value>> {
     Ok(out)
 }
 
+/// Project one message's content blocks onto the wire.
+///
+/// Byte-less images restored from history are skipped loudly: an empty base64
+/// payload makes Anthropic reject the whole request, so dropping one block
+/// beats losing the turn.
 fn message_content_blocks(message: &Message) -> Result<Vec<Value>> {
     let mut blocks = Vec::new();
     for block in &message.content {
@@ -372,6 +411,12 @@ fn message_content_blocks(message: &Message) -> Result<Vec<Value>> {
     Ok(blocks)
 }
 
+/// Build one `tool_result` block for a user turn.
+///
+/// Never emits empty content: a result that projects to nothing gets a plain
+/// success/failure sentence, because a silent tool result reads to the model as
+/// the tool having done nothing. `is_error` is set only when true, matching the
+/// wire convention.
 fn tool_result_block(tool_use_id: &str, content: &[ContentBlock], is_error: bool) -> Result<Value> {
     let mut inner = Vec::new();
     for block in content {
@@ -418,6 +463,10 @@ fn tool_result_block(tool_use_id: &str, content: &[ContentBlock], is_error: bool
     Ok(Value::Object(result))
 }
 
+/// Load a stored image asset and inline it as a base64 image block.
+///
+/// # Errors
+/// Returns an error if the asset cannot be read from the store.
 fn image_asset_block(asset: &ImageAsset) -> Result<Value> {
     // Tainted-path guard: asset paths ride through conversation state, so the
     // read goes through the store, which honors only the file name re-rooted
@@ -426,6 +475,7 @@ fn image_asset_block(asset: &ImageAsset) -> Result<Value> {
     Ok(image_block(&data, &asset.media_type))
 }
 
+/// Base64 image block, defaulting a blank media type to PNG.
 fn image_block(data: &[u8], media_type: &str) -> Value {
     let media_type = {
         let normalized = media_type.trim();
@@ -445,6 +495,7 @@ fn image_block(data: &[u8], media_type: &str) -> Value {
     })
 }
 
+/// Wire spelling of a role. Anthropic knows only `user` and `assistant`.
 fn role_str(role: Role) -> &'static str {
     match role {
         Role::Assistant => "assistant",
@@ -457,6 +508,20 @@ fn role_str(role: Role) -> &'static str {
 
 // allow(too_many_arguments): task entry point for one Anthropic SSE stream; all
 // values are owned moves into the spawned task.
+/// Drive one Messages SSE stream, emitting [`AgentEvent`]s onto `tx`.
+///
+/// Reads the byte stream line by line, keying off each `data:` payload's own
+/// `type` and ignoring `event:` lines and SSE comments. Three separate clocks
+/// bound it: the initial-response timeout, the inter-chunk timeout, and
+/// [`STREAM_DEADLINE`] as a global backstop.
+///
+/// On EOF without a terminal the stream ended early, so a dirty
+/// [`AgentEvent::ResponseDone`] is emitted — the session must learn that the
+/// turn was cut short rather than treating silence as success.
+///
+/// # Errors
+/// Returns an error for an invalid endpoint, a failed or non-2xx request, a
+/// read failure, or any of the three timeouts firing.
 #[allow(clippy::too_many_arguments)]
 async fn run_anthropic_stream(
     client: Client,
@@ -579,19 +644,28 @@ async fn run_anthropic_stream(
     Ok(())
 }
 
+/// Mutable state accumulated across one stream's chunks.
 #[derive(Default)]
 struct StreamState {
+    /// Message id from `message_start`, reported as the response id.
     message_id: Option<String>,
+    /// Assistant text accumulated from `text_delta`s, flushed at `message_stop`.
     assistant_text: String,
+    /// Latest `stop_reason` seen on a `message_delta`.
     stop_reason: Option<String>,
     /// index -> in-flight tool_use block (id, name, accumulated JSON).
     tool_blocks: HashMap<u64, ToolBlock>,
+    /// Whether a terminal event was already sent, so EOF does not send a second.
     terminal_emitted: bool,
 }
 
+/// A `tool_use` block being streamed in, keyed by its content-block index.
 struct ToolBlock {
+    /// Tool call id echoed back with the result.
     id: String,
+    /// Tool name; defaulted when the start event omitted it.
     name: String,
+    /// Arguments JSON accumulated from `input_json_delta` fragments.
     json_buffer: String,
 }
 
@@ -786,10 +860,15 @@ async fn handle_chunk(
     }
 }
 
+/// Send one event, collapsing a dropped consumer into `Err(())`.
+///
+/// A gone receiver is a normal end-of-session, not a stream failure, so callers
+/// treat it as "stop reading" rather than propagating an error.
 async fn send(tx: &mpsc::Sender<AgentEvent>, event: AgentEvent) -> Result<(), ()> {
     tx.send(event).await.map_err(|_| ())
 }
 
+/// Render an error envelope as `type: message`, using whichever parts exist.
 fn format_stream_error(error: &AnthropicError) -> String {
     match (error.error_type.as_deref(), error.message.as_deref()) {
         (Some(kind), Some(message)) => format!("{kind}: {message}"),
@@ -811,6 +890,16 @@ fn parse_http_error_body(body: &str) -> Option<String> {
     envelope.error.map(|error| format_stream_error(&error))
 }
 
+/// Parse and vet the endpoint URL before it is ever sent to.
+///
+/// HTTPS is required, with plain HTTP allowed only for loopback hosts — a
+/// local endpoint is a legitimate configuration, but shipping an API key over
+/// cleartext to a remote host is not. This is also the SSRF guard the request
+/// builder's `nosemgrep` annotation points at.
+///
+/// # Errors
+/// Returns an error for an empty or unparseable URL, a missing host, or any
+/// scheme other than HTTPS (or loopback HTTP).
 fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() {
@@ -831,6 +920,7 @@ fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
     Ok(url)
 }
 
+/// Read a `u64` env override, falling back on absent or unparseable values.
 fn parse_env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -840,56 +930,83 @@ fn parse_env_u64(key: &str, default: u64) -> u64 {
 
 // ── SSE wire types ───────────────────────────────────────────────────────────
 
+/// One decoded SSE `data:` payload.
+///
+/// A single flat shape covering every event type: the union is wide but sparse,
+/// so each field is optional and only the arms named by `chunk_type` read them.
+/// Unknown event types deserialize cleanly and are ignored, which keeps a new
+/// server-side lifecycle event from breaking the stream.
 #[derive(Debug, Deserialize)]
 struct AnthropicChunk {
+    /// Event discriminant, e.g. `content_block_delta` or `message_stop`.
     #[serde(rename = "type")]
     chunk_type: String,
+    /// Content-block index the event refers to, where applicable.
     #[serde(default)]
     index: Option<u64>,
+    /// Message envelope, present on `message_start`.
     #[serde(default)]
     message: Option<AnthropicMessageMeta>,
+    /// Block descriptor, present on `content_block_start`.
     #[serde(default)]
     content_block: Option<AnthropicContentBlockMeta>,
+    /// Incremental payload, present on the `*_delta` events.
     #[serde(default)]
     delta: Option<AnthropicDelta>,
+    /// Error envelope, present on `error`.
     #[serde(default)]
     error: Option<AnthropicError>,
 }
 
+/// Message envelope carried by `message_start`.
 #[derive(Debug, Deserialize)]
 struct AnthropicMessageMeta {
+    /// Message id, reported as the response id on the terminal event.
     #[serde(default)]
     id: String,
 }
 
+/// Content-block descriptor carried by `content_block_start`.
 #[derive(Debug, Deserialize)]
 struct AnthropicContentBlockMeta {
+    /// Block kind; only `tool_use` needs tracking.
     #[serde(rename = "type")]
     block_type: String,
+    /// Tool call id, on a `tool_use` block.
     #[serde(default)]
     id: Option<String>,
+    /// Tool name, on a `tool_use` block.
     #[serde(default)]
     name: Option<String>,
 }
 
+/// Incremental payload shared by the `*_delta` events.
 #[derive(Debug, Deserialize)]
 struct AnthropicDelta {
+    /// Which delta this is: `text_delta`, `input_json_delta`, `thinking_delta`.
     #[serde(rename = "type", default)]
     delta_type: Option<String>,
+    /// Assistant text fragment.
     #[serde(default)]
     text: Option<String>,
+    /// Tool-arguments JSON fragment.
     #[serde(default)]
     partial_json: Option<String>,
+    /// Reasoning-summary fragment.
     #[serde(default)]
     thinking: Option<String>,
+    /// Terminal reason, on `message_delta`.
     #[serde(default)]
     stop_reason: Option<String>,
 }
 
+/// Anthropic's error envelope, used for both SSE and HTTP error bodies.
 #[derive(Debug, Deserialize)]
 struct AnthropicError {
+    /// Machine-readable error class.
     #[serde(rename = "type", default)]
     error_type: Option<String>,
+    /// Human-readable detail.
     #[serde(default)]
     message: Option<String>,
 }

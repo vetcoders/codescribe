@@ -16,27 +16,53 @@ use crate::safe_path::{
     safe_read_to_string_bounded,
 };
 
+/// WER/CER delta that counts as a real regression rather than run-to-run noise.
 const DEFAULT_REGRESSION_THRESHOLD: f32 = 0.02;
+/// Fallback for `CODESCRIBE_STREAM_SIMILARITY` when neither the process env nor
+/// the config `.env` pins one — the gate must still have a number to tune from.
 const DEFAULT_SIMILARITY: f32 = 0.93;
+/// Fallback for `CODESCRIBE_STREAM_NOVELTY`, same reasoning as the similarity default.
 const DEFAULT_NOVELTY: f32 = 0.12;
 
+/// One run of the quality loop: which batch to evaluate, what to compare it
+/// against, and which tuning surfaces the loop may touch.
+///
+/// The `update_*` flags are deliberately separate from `apply_updates`: the loop
+/// always *proposes* what each enabled surface would change, and only writes
+/// when `apply_updates` is set. That keeps a dry run informative instead of silent.
 #[derive(Debug, Clone)]
 pub struct QubeDaemonConfig {
+    /// Batch-report settings forwarded to [`crate::qube_report::run`].
     pub report_config: QualityReportConfig,
+    /// Explicit baseline to diff against. `None` ⇒ fall back to the last history entry.
     pub baseline_report: Option<PathBuf>,
+    /// JSONL log of previous runs, used both as history and as baseline source.
     pub history_path: PathBuf,
+    /// Metric delta above which a per-entry change is reported as a regression.
     pub regression_threshold: f32,
+    /// Write proposed updates to disk. When false the loop reports only.
     pub apply_updates: bool,
+    /// Allow lexicon suggestions to be derived and (with `apply_updates`) written.
     pub update_lexicon: bool,
+    /// Which transcript column counts as ground truth for lexicon mining.
     pub lexicon_source: LexiconSource,
+    /// Allow similarity/novelty gate thresholds to be retuned.
     pub update_gate: bool,
+    /// Allow the formatting prompt tuning file to be regenerated.
     pub update_prompts: bool,
+    /// Allow the embeddings on/off switch to be flipped.
     pub update_embeddings: bool,
+    /// Cap on suggestions per run. `0` ⇒ no cap.
     pub max_lexicon_updates: usize,
     /// Minimum occurrence count for lexicon suggestions (default: 2)
     pub lexicon_min_count: usize,
 }
 
+/// Which transcript column the loop treats as ground truth when mining
+/// misrecognition pairs. The three differ in trust, not just in origin: a
+/// human corpus is authoritative, cloud STT is a second opinion, and an
+/// AI-formatted transcript already passed through an LLM that may have
+/// rewritten words Whisper actually heard correctly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexiconSource {
     /// Reference from corpus .txt files (human-written)
@@ -48,6 +74,8 @@ pub enum LexiconSource {
 }
 
 impl LexiconSource {
+    /// Stable short tag for report/analysis output. Persisted in `analysis.md`,
+    /// so these strings are a read contract, not a display detail.
     fn as_str(self) -> &'static str {
         match self {
             LexiconSource::Corpus => "corpus",
@@ -57,44 +85,76 @@ impl LexiconSource {
     }
 }
 
+/// The full verdict of one loop run, serialized to `analysis.json` and rendered
+/// to `analysis.md` beside the batch report.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoopAnalysis {
+    /// RFC 3339 local timestamp of the analysis (not of the batch run).
     pub generated_at: String,
+    /// Absolute path of the report this analysis describes.
     pub current_report: String,
+    /// Absolute path of the report it was diffed against, if any.
     pub baseline_report: Option<String>,
+    /// Aggregate counts and rates for the run.
     pub summary: LoopSummary,
+    /// Per-entry, per-metric regressions above the configured threshold.
     pub regressions: Vec<RegressionFinding>,
+    /// Tuning actions proposed (and, when applying, performed) this run.
     pub updates: Vec<UpdateAction>,
 }
 
+/// Aggregate view of one run. Every rate is `Option` because a rate over zero
+/// samples is unknown, not zero — reporting `0.00` there would read as "healthy".
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LoopSummary {
+    /// Entries in the current report.
     pub total_entries: usize,
+    /// Entries also present in the baseline, i.e. actually diffed.
     pub compared_entries: usize,
+    /// Metric comparisons that got worse by more than the threshold.
     pub regression_count: usize,
+    /// Metric comparisons that improved by more than the threshold.
     pub improvement_count: usize,
+    /// Share of entries where postprocessing made WER worse than raw.
     pub post_worse_ratio: Option<f32>,
+    /// Share of entries where LLM formatting made WER worse than postprocessing.
     pub ai_worse_ratio: Option<f32>,
+    /// Share of stream chunks dropped by the similarity/novelty gate.
     pub gate_drop_rate: Option<f32>,
+    /// Share of stream chunks flagged suspicious by the postprocessor.
     pub suspicious_rate: Option<f32>,
 }
 
+/// One metric on one entry that got worse than the baseline by more than the
+/// configured threshold.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegressionFinding {
+    /// Report entry id (shared key between current and baseline reports).
     pub id: String,
+    /// Metric name, e.g. `raw_wer` or `post_cer`.
     pub metric: String,
+    /// Value in the current report.
     pub current: f32,
+    /// Value in the baseline report.
     pub baseline: f32,
+    /// `current - baseline`; positive because these metrics are error rates.
     pub delta: f32,
 }
 
+/// One tuning action the loop proposed. `applied` separates "we would change
+/// this" from "we changed this", so a dry run is still a full report.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateAction {
+    /// Surface touched: `gate_thresholds`, `embeddings`, `prompt_tuning`, `lexicon`.
     pub kind: String,
+    /// Human-readable before/after plus the reason it fired.
     pub detail: String,
+    /// Whether it was actually written to disk this run.
     pub applied: bool,
 }
 
+/// One line of `quality_history.jsonl`. Doubles as the implicit baseline source
+/// for the next run, which is why it stores the report path and not just metrics.
 #[derive(Debug, Serialize, Deserialize)]
 struct LoopHistoryEntry {
     generated_at: String,
@@ -103,6 +163,15 @@ struct LoopHistoryEntry {
     summary: ReportSummary,
 }
 
+/// Run one full quality loop: evaluate the batch, diff it against a baseline,
+/// propose (and optionally apply) tuning updates, then persist the analysis and
+/// append to history.
+///
+/// Returns the canonicalized report directory, which now also holds
+/// `analysis.json` and `analysis.md`.
+///
+/// Every path is resolved through `safe_path` against the config root, so a
+/// report or baseline pointing outside it is an error rather than a write.
 pub async fn run(config: QubeDaemonConfig) -> Result<PathBuf> {
     let config_root = Config::config_dir();
     let report_config = normalize_report_config(&config.report_config, &config_root)?;
@@ -174,12 +243,17 @@ pub async fn run(config: QubeDaemonConfig) -> Result<PathBuf> {
     Ok(output_root)
 }
 
+/// Read and parse a `report.json`, refusing paths that escape `root`.
 fn load_report(path: &Path, root: &Path) -> Result<QualityReport> {
     let data = safe_read_to_string_bounded(path, root)
         .with_context(|| format!("Failed to read report {}", path.display()))?;
     serde_json::from_str(&data).context("Failed to parse report.json")
 }
 
+/// Resolve the report config's input/output directories against `root`.
+///
+/// A missing input directory fails here rather than producing an empty report:
+/// zero entries and "the folder was wrong" look identical downstream.
 fn normalize_report_config(
     config: &QualityReportConfig,
     root: &Path,
@@ -197,10 +271,16 @@ fn normalize_report_config(
     Ok(normalized)
 }
 
+/// Bound the history log path to `root`. The file need not exist yet.
 fn resolve_history_path(path: &Path, root: &Path) -> Result<PathBuf> {
     safe_prepare_path(path, root)
 }
 
+/// Pick what this run is compared against: an explicitly configured baseline,
+/// else the newest history entry, else nothing.
+///
+/// The history candidate is rejected when it points at the run's own output —
+/// diffing a report against itself would report a perfectly healthy zero.
 fn resolve_baseline(
     config: &QubeDaemonConfig,
     output_dir: &Path,
@@ -228,6 +308,7 @@ fn resolve_baseline(
     Ok(None)
 }
 
+/// Accept either a report directory or the `report.json` inside it.
 fn resolve_report_path(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.join("report.json")
@@ -236,6 +317,10 @@ fn resolve_report_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Newest parseable entry in the history log, scanning from the end.
+///
+/// Unparseable trailing lines are skipped rather than fatal: history is
+/// append-only and a torn last write must not blind the next run to the whole log.
 fn read_last_history(path: &Path, root: &Path) -> Result<Option<LoopHistoryEntry>> {
     let content = safe_read_to_string_bounded(path, root).ok();
     let content = match content {
@@ -254,6 +339,8 @@ fn read_last_history(path: &Path, root: &Path) -> Result<Option<LoopHistoryEntry
     Ok(None)
 }
 
+/// Append this run to the history log as one JSONL line, so the next run can
+/// use it as an implicit baseline.
 fn append_history(
     path: &Path,
     root: &Path,
@@ -271,6 +358,8 @@ fn append_history(
     safe_append_line_bounded(path, root, &line)
 }
 
+/// Write `analysis.json` (machine) and `analysis.md` (operator) into the report
+/// directory, bounded to that directory.
 fn write_analysis_files(output_dir: &Path, analysis: &LoopAnalysis) -> Result<()> {
     let json_path = output_dir.join("analysis.json");
     let md_path = output_dir.join("analysis.md");
@@ -284,6 +373,10 @@ fn write_analysis_files(output_dir: &Path, analysis: &LoopAnalysis) -> Result<()
     Ok(())
 }
 
+/// Render the analysis as operator-readable Markdown.
+///
+/// The regression table is capped at 50 rows: past that it stops being a
+/// summary, and the full set is already in `analysis.json`.
 fn render_analysis_markdown(analysis: &LoopAnalysis) -> String {
     let mut out = String::new();
     out.push_str("# Codescribe Quality Loop Analysis\n\n");
@@ -341,6 +434,11 @@ fn render_analysis_markdown(analysis: &LoopAnalysis) -> String {
     out
 }
 
+/// Diff every shared entry across all eight WER/CER metrics and summarize.
+///
+/// Entries missing from the baseline are skipped rather than counted as new
+/// regressions — a corpus that grew is not a quality drop. With no baseline at
+/// all the summary is still produced, just with zero comparisons.
 fn analyze_regressions(
     report: &QualityReport,
     baseline: Option<&QualityReport>,
@@ -454,6 +552,11 @@ fn analyze_regressions(
     (regressions, summary)
 }
 
+/// Classify one metric delta as regression, improvement, or noise, pushing into
+/// the caller's accumulators.
+///
+/// A metric absent on either side is skipped entirely: "not measured" is not
+/// the same as "unchanged", and treating it as 0.0 would invent findings.
 fn compare_metric(
     id: &str,
     metric: &str,
@@ -480,8 +583,14 @@ fn compare_metric(
     }
 }
 
+/// Stage-over-stage health of one report: does each pipeline stage help or hurt?
+///
+/// These are the inputs the tuning proposals branch on, extracted once so the
+/// four `propose_*` functions read the same numbers.
 struct QualitySignals {
+    /// Share of entries where postprocessing was worse than raw STT.
     post_worse_ratio: Option<f32>,
+    /// Share of entries where LLM formatting was worse than postprocessing.
     ai_worse_ratio: Option<f32>,
     avg_raw_wer: Option<f32>,
     avg_post_wer: Option<f32>,
@@ -489,6 +598,8 @@ struct QualitySignals {
 }
 
 impl QualitySignals {
+    /// Count per-stage degradations, applying `threshold` so run-to-run noise
+    /// is not read as a stage making things worse.
     fn from_report(report: &QualityReport, threshold: f32) -> Self {
         let mut post_worse = 0usize;
         let mut post_total = 0usize;
@@ -520,6 +631,8 @@ impl QualitySignals {
     }
 }
 
+/// Rate over a possibly empty sample. `None` on an empty denominator, so
+/// "nothing measured" never renders as a healthy `0.00`.
 fn ratio(numer: usize, denom: usize) -> Option<f32> {
     if denom == 0 {
         None
@@ -528,14 +641,20 @@ fn ratio(numer: usize, denom: usize) -> Option<f32> {
     }
 }
 
+/// Stream-postprocessor counters summed across every entry in a report.
 struct PostprocessStats {
     input_chunks: u64,
     gate_drops: u64,
     suspicious: u64,
+    /// `Some` only when every entry agreed. A report mixing embeddings-on and
+    /// embeddings-off runs has no single answer, and guessing one would let the
+    /// loop flip a switch based on entries that never used it.
     embeddings_enabled: Option<bool>,
 }
 
 impl PostprocessStats {
+    /// Sum counters over entries that carry postprocess stats, collapsing the
+    /// embeddings flag to `None` on disagreement.
     fn from_report(report: &QualityReport) -> Self {
         let mut input = 0u64;
         let mut gate = 0u64;
@@ -564,6 +683,7 @@ impl PostprocessStats {
         }
     }
 
+    /// Share of input chunks the gate discarded. `None` when nothing was seen.
     fn gate_drop_rate(&self) -> Option<f32> {
         if self.input_chunks == 0 {
             None
@@ -572,6 +692,7 @@ impl PostprocessStats {
         }
     }
 
+    /// Share of input chunks flagged suspicious. `None` when nothing was seen.
     fn suspicious_rate(&self) -> Option<f32> {
         if self.input_chunks == 0 {
             None
@@ -581,6 +702,14 @@ impl PostprocessStats {
     }
 }
 
+/// Nudge the stream gate's similarity/novelty thresholds in the config `.env`.
+///
+/// Two opposite failure modes, one knob pair: postprocessing making WER worse
+/// means the gate is dropping good text (relax it), while a clean WER alongside
+/// a high suspicious rate means junk is getting through (tighten it). Steps are
+/// ±0.01 and clamped, so the loop drifts rather than lurches.
+///
+/// `Ok(None)` when the numbers say nothing needs changing.
 fn propose_gate_update(
     signals: &QualitySignals,
     stats: &PostprocessStats,
@@ -662,6 +791,14 @@ fn propose_gate_update(
     }))
 }
 
+/// Flip `CODESCRIBE_STREAM_DISABLE_EMBEDDINGS` when the evidence points one way.
+///
+/// Off + many suspicious chunks ⇒ the semantic gate would earn its cost, turn
+/// it on. On + postprocessing hurting WER while the gate drops heavily ⇒ it is
+/// cutting good text, turn it off. Anything else leaves the switch alone.
+///
+/// Requires a report where every entry agreed on the current state; see
+/// [`PostprocessStats::embeddings_enabled`].
 fn propose_embedding_update(
     signals: &QualitySignals,
     stats: &PostprocessStats,
@@ -718,6 +855,12 @@ fn propose_embedding_update(
     Ok(None)
 }
 
+/// Regenerate `prompts/formatting_tuning.txt` when the LLM formatting stage is
+/// making transcripts worse.
+///
+/// The remedy is always the same restraint block (keep wording, keep technical
+/// terms, keep tags) because the observed failure is always the same one: the
+/// formatter paraphrasing text the recognizer got right.
 fn propose_prompt_tuning(
     signals: &QualitySignals,
     report: &QualityReport,
@@ -777,6 +920,8 @@ fn propose_prompt_tuning(
     }))
 }
 
+/// Mine recurring misrecognitions from the batch and offer them as
+/// `lexicon.custom.jsonl` rules.
 fn propose_lexicon_updates(
     report: &QualityReport,
     max_updates: usize,
@@ -816,6 +961,7 @@ fn propose_lexicon_updates(
     }))
 }
 
+/// One mined rule candidate: `mis` was heard where `term` was said, `count` times.
 #[derive(Debug)]
 struct LexiconSuggestion {
     term: String,
@@ -823,6 +969,14 @@ struct LexiconSuggestion {
     count: usize,
 }
 
+/// Align reference against raw STT per entry and count recurring substitutions.
+///
+/// Three filters keep this from learning noise: both tokens must be eligible,
+/// case-only differences are not misrecognitions, and the edit distance ceiling
+/// of 4 is deliberately loose for Polish inflection (`odpowiedział` ↔
+/// `odpowiadał`) rather than the usual 1–2.
+///
+/// Results are sorted by frequency and truncated to `max_updates` (`0` ⇒ no cap).
 fn extract_lexicon_suggestions(
     report: &QualityReport,
     max_updates: usize,
@@ -879,12 +1033,19 @@ fn extract_lexicon_suggestions(
     suggestions
 }
 
+/// On-disk shape of one `lexicon.custom.jsonl` row: one canonical term with its
+/// known misrecognitions.
 #[derive(Debug, Serialize, Deserialize)]
 struct LexiconEntry {
     term: String,
     mispronunciations: Vec<String>,
 }
 
+/// Merge suggestions into the custom lexicon, returning whether anything changed.
+///
+/// Read-merge-rewrite rather than append: variants live in a set per term, so
+/// re-running the loop on a similar batch is idempotent. Output is sorted by
+/// term and variant to keep the file diffable.
 fn apply_lexicon_suggestions(
     path: &Path,
     root: &Path,
@@ -920,6 +1081,8 @@ fn apply_lexicon_suggestions(
     Ok(changed)
 }
 
+/// Load the custom lexicon as `term -> variants`. A missing or partly corrupt
+/// file yields whatever parsed; this is a merge input, not an integrity check.
 fn read_custom_lexicon(path: &Path, root: &Path) -> HashMap<String, HashSet<String>> {
     let mut map: HashMap<String, HashSet<String>> = HashMap::new();
     let content = safe_read_to_string_bounded(path, root).unwrap_or_default();
@@ -938,6 +1101,9 @@ fn read_custom_lexicon(path: &Path, root: &Path) -> HashMap<String, HashSet<Stri
     map
 }
 
+/// Lowercase and split into alphanumeric tokens, treating punctuation as a
+/// separator. Polish diacritics survive — `is_alphanumeric` is Unicode-aware,
+/// so folding to ASCII here would merge distinct words.
 fn normalize_tokens(text: &str) -> Vec<String> {
     let mut normalized = String::with_capacity(text.len());
     for ch in text.to_lowercase().chars() {
@@ -953,6 +1119,11 @@ fn normalize_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Reject tokens too short or too numeric to be worth a lexicon rule.
+///
+/// Note the length test is on bytes, so a 2-char Polish word with diacritics
+/// can pass where its ASCII counterpart would not — acceptable for a mining
+/// heuristic whose output is capped and frequency-filtered anyway.
 fn token_eligible(token: &str) -> bool {
     if token.len() < 3 {
         return false;
@@ -963,6 +1134,12 @@ fn token_eligible(token: &str) -> bool {
     true
 }
 
+/// Word-level edit-distance alignment returning only substitutions as
+/// `(reference, hypothesis)` pairs.
+///
+/// Pure insertions and deletions are dropped: they have no counterpart word, so
+/// they cannot become a `variant -> canonical` rule. Cost is O(n·m) in tokens,
+/// which is fine for utterance-sized inputs.
 fn align_tokens(reference: &[String], hypothesis: &[String]) -> Vec<(String, String)> {
     let n = reference.len();
     let m = hypothesis.len();
@@ -1019,12 +1196,15 @@ fn align_tokens(reference: &[String], hypothesis: &[String]) -> Vec<(String, Str
     subs
 }
 
+/// Levenshtein distance in Unicode chars (not bytes) between two words.
 fn word_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
     levenshtein(&a_chars, &b_chars)
 }
 
+/// Two-row Levenshtein over any comparable sequence — used for chars here and
+/// generic so token-level callers could share it.
 fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut cur = vec![0usize; b.len() + 1];
@@ -1041,6 +1221,10 @@ fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
     prev[b.len()]
 }
 
+/// Read a float knob: process env first, then the config `.env`, then `default`.
+///
+/// Process env wins so an operator's shell override is never silently retuned
+/// by what the loop last wrote to the file.
 fn read_env_f32(path: &Path, root: &Path, key: &str, default: f32) -> f32 {
     if let Ok(value) = std::env::var(key)
         && let Ok(parsed) = value.parse::<f32>()
@@ -1057,6 +1241,7 @@ fn read_env_f32(path: &Path, root: &Path, key: &str, default: f32) -> f32 {
     default
 }
 
+/// First `KEY=value` match in a `.env` file, skipping blanks and `#` comments.
 fn read_env_value(path: &Path, root: &Path, key: &str) -> Option<String> {
     let content = safe_read_to_string_bounded(path, root).ok()?;
     for line in content.lines() {
@@ -1074,6 +1259,11 @@ fn read_env_value(path: &Path, root: &Path, key: &str) -> Option<String> {
     None
 }
 
+/// Set `key=value` in a `.env` file, rewriting the existing line or appending.
+///
+/// Returns whether the file actually changed, so a no-op retune is reported as
+/// `applied: false` instead of claiming a write that never happened. Unrelated
+/// lines are preserved verbatim.
 fn update_env_var(path: &Path, root: &Path, key: &str, value: &str) -> Result<bool> {
     let mut lines = Vec::new();
     let mut found = false;
@@ -1116,14 +1306,20 @@ fn update_env_var(path: &Path, root: &Path, key: &str, value: &str) -> Result<bo
 /// Daemon state stored in qube_daemon.json
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QubeDaemonState {
+    /// Corrections awaiting operator review; drives the tray badge count.
     pub pending_mismatches: usize,
+    /// RFC 3339 timestamp of the last state write. Absent on legacy files.
     #[serde(default)]
     pub last_check: String,
+    /// Directory of the newest report, source of the "open report" action.
     pub latest_report: Option<String>,
+    /// Whether the quality daemon is usable at all. Defaults to `true` so state
+    /// files written before this field existed do not read as unavailable.
     #[serde(default = "default_daemon_available")]
     pub available: bool,
 }
 
+/// Serde default for [`QubeDaemonState::available`] — see that field.
 fn default_daemon_available() -> bool {
     true
 }
@@ -1133,12 +1329,18 @@ pub fn daemon_state_path() -> PathBuf {
     Config::config_dir().join("qube_daemon.json")
 }
 
+/// Canonical history log location: `<config>/reports/quality_history.jsonl`.
 fn daemon_history_path() -> PathBuf {
     Config::config_dir()
         .join("reports")
         .join("quality_history.jsonl")
 }
 
+/// Newest report directory recorded in the history log, or `None` if the log is
+/// missing, empty, or has no parseable line.
+///
+/// Deliberately reads only `report_dir`: the tray needs a path to open, and a
+/// narrow shape keeps this working across history-schema changes.
 fn read_latest_report_from_history(path: &Path, root: &Path) -> Option<String> {
     #[derive(Deserialize)]
     struct DaemonHistoryEntry {
@@ -1155,6 +1357,12 @@ fn read_latest_report_from_history(path: &Path, root: &Path) -> Option<String> {
         .map(|entry| entry.report_dir)
 }
 
+/// Serialize daemon state to `path`, bounded to `root`.
+///
+/// `root` is canonicalized and the target rebased onto it before the bounded
+/// write: on macOS `~/.codescribe` frequently sits behind a `/var` → `/private/var`
+/// symlink, and comparing an uncanonicalized path against a canonical root
+/// rejects a perfectly legitimate write.
 fn write_daemon_state_file(path: &Path, root: &Path, state: &QubeDaemonState) -> Result<()> {
     fs::create_dir_all(root)
         .with_context(|| format!("Failed to create config directory {}", root.display()))?;
@@ -1168,6 +1376,8 @@ fn write_daemon_state_file(path: &Path, root: &Path, state: &QubeDaemonState) ->
         .with_context(|| format!("Failed to write daemon state {}", target_path.display()))
 }
 
+/// Path-injected core of [`write_daemon_state`], kept separate so tests can
+/// drive it against a scratch directory instead of the real config dir.
 fn write_daemon_state_with_paths(
     state_path: &Path,
     history_path: &Path,

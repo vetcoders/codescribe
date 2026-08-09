@@ -14,12 +14,15 @@ pub struct CallbackSink {
 }
 
 impl CallbackSink {
+    /// Wrap an already-shared closure. See [`from_callback`] to wrap a bare one.
     pub fn new(callback: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
         Self { callback }
     }
 }
 
 impl DeltaSink for CallbackSink {
+    /// Forward only the delta text; the rest of the [`TranscriptDelta`] is
+    /// dropped, since the wrapped closure takes a plain `&str`.
     fn apply(&self, delta: &TranscriptDelta) {
         (self.callback)(&delta.delta);
     }
@@ -48,18 +51,26 @@ impl Default for CollectorSink {
 }
 
 impl CollectorSink {
+    /// An empty collector.
     pub fn new() -> Self {
         Self {
             collected: Mutex::new(Vec::new()),
         }
     }
 
+    /// Snapshot the deltas seen so far, in arrival order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned. Deliberate for a test helper: a panicked
+    /// producer should fail the assertion rather than be papered over.
     pub fn collected(&self) -> Vec<String> {
         self.collected.lock().unwrap().clone()
     }
 }
 
 impl DeltaSink for CollectorSink {
+    /// Record the delta text, discarding the rest of the delta.
     fn apply(&self, delta: &TranscriptDelta) {
         self.collected.lock().unwrap().push(delta.delta.clone());
     }
@@ -80,6 +91,11 @@ pub struct DeltaSinkAdapter {
     state: Mutex<DeltaSinkState>,
 }
 
+/// Diffing state carried between events.
+///
+/// `last_text` is the text already emitted for the utterance in progress;
+/// `needs_separator` records that an utterance closed with content, so the next
+/// one is prefixed with a space instead of being glued onto it.
 #[derive(Debug, Default)]
 struct DeltaSinkState {
     last_text: String,
@@ -87,6 +103,7 @@ struct DeltaSinkState {
 }
 
 impl DeltaSinkAdapter {
+    /// Wrap a delta sink so it can be driven by `EngineEvent`s.
     pub fn new(sink: Arc<dyn DeltaSink>) -> Self {
         Self {
             inner: sink,
@@ -101,6 +118,14 @@ impl DeltaSinkAdapter {
 }
 
 impl EventSink for DeltaSinkAdapter {
+    /// Translate text-bearing events into deltas; ignore everything else.
+    ///
+    /// `Preview` and `UtteranceFinal` diff against `last_text`. `Correction`
+    /// diffs against the event's own `previous_text` when the utterance has
+    /// already been finalized, which is what stops a late correction from
+    /// re-emitting text the consumer already has. `NoSpeech` clears the diff
+    /// base so the next utterance starts clean. Drops, stats and VAD events have
+    /// no representation in the `DeltaSink` protocol and are discarded.
     fn on_event(&self, event: &EngineEvent) {
         // Poison-recovery on the real-time delta path: if a prior panic poisoned
         // `last_text`, recover the inner guard (`into_inner`) and keep emitting
@@ -143,6 +168,12 @@ impl EventSink for DeltaSinkAdapter {
     }
 }
 
+/// Emit the difference between `state.last_text` and `text`, then advance the
+/// diff base.
+///
+/// When a previous utterance closed with content, the first text of the next one
+/// is emitted as an explicit space-prefixed append rather than a diff — a diff
+/// against an empty base would run the two utterances together.
 fn emit_text_delta(sink: &Arc<dyn DeltaSink>, state: &mut DeltaSinkState, text: &str) {
     if state.last_text.is_empty() && state.needs_separator && !text.is_empty() {
         let delta = TranscriptDelta::append(format!(" {text}"));
@@ -164,16 +195,22 @@ pub struct FanoutEventSink {
 }
 
 impl FanoutEventSink {
+    /// Fan out to `sinks`, which are notified in the given order.
     pub fn new(sinks: Vec<Arc<dyn EventSink>>) -> Self {
         Self { sinks }
     }
 
+    /// The two-sink case, already boxed as an `Arc<dyn EventSink>`.
     pub fn pair(a: Arc<dyn EventSink>, b: Arc<dyn EventSink>) -> Arc<dyn EventSink> {
         Arc::new(Self::new(vec![a, b]))
     }
 }
 
 impl EventSink for FanoutEventSink {
+    /// Deliver to every sink in order, synchronously on the caller's thread.
+    ///
+    /// No isolation between sinks: a slow one delays the rest, and a panicking
+    /// one stops the remaining sinks from seeing the event at all.
     fn on_event(&self, event: &EngineEvent) {
         for sink in &self.sinks {
             sink.on_event(event);
@@ -193,16 +230,25 @@ impl Default for CollectorEventSink {
 }
 
 impl CollectorEventSink {
+    /// An empty collector.
     pub fn new() -> Self {
         Self {
             events: Mutex::new(Vec::new()),
         }
     }
 
+    /// Every event seen so far, in arrival order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned — see [`CollectorSink::collected`] for why
+    /// that is the wanted behaviour in a test helper. The same applies to the
+    /// filtered accessors below.
     pub fn events(&self) -> Vec<EngineEvent> {
         self.events.lock().unwrap().clone()
     }
 
+    /// Text of every `Preview` event, in order.
     pub fn previews(&self) -> Vec<String> {
         self.events
             .lock()
@@ -215,6 +261,7 @@ impl CollectorEventSink {
             .collect()
     }
 
+    /// Every `Drop` event as a `(kind, text)` pair — what was suppressed and why.
     pub fn drops(&self) -> Vec<(crate::pipeline::contracts::DropKind, String)> {
         self.events
             .lock()
@@ -227,6 +274,7 @@ impl CollectorEventSink {
             .collect()
     }
 
+    /// Text of every `UtteranceFinal` event, in order.
     pub fn finals(&self) -> Vec<String> {
         self.events
             .lock()
@@ -241,6 +289,7 @@ impl CollectorEventSink {
 }
 
 impl EventSink for CollectorEventSink {
+    /// Record every event verbatim, with no filtering.
     fn on_event(&self, event: &EngineEvent) {
         self.events.lock().unwrap().push(event.clone());
     }

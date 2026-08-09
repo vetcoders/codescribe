@@ -22,7 +22,9 @@ pub enum AiMode {
 /// Conversation sessions - separate stream per mode
 #[derive(Default)]
 struct ConversationState {
+    /// Chain id for the formatting stream, or `None` before its first response.
     formatting_response_id: Option<String>,
+    /// Chain id for the assistive stream, or `None` before its first response.
     assistive_response_id: Option<String>,
 }
 

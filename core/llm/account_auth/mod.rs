@@ -24,24 +24,43 @@ pub use paste_code::{PasteCodeExchange, exchange_pasted_code, split_pasted_code}
 pub use pkce::{PkceCodes, challenge_for_verifier, generate_pkce};
 pub use server::{LoginServer, ServerOptions, exchange_code_for_tokens, run_login_server};
 
+/// Keychain account holding OpenAI's serialized [`AccountTokens`]. Doubles as
+/// the env var name of the test/dev token-injection channel.
 pub const OPENAI_ACCOUNT_TOKENS_ACCOUNT: &str = "LLM_OPENAI_ACCOUNT_TOKENS";
 /// Router key of the operator-configurable client id (settings.json, non-secret).
 pub const OPENAI_CLIENT_ID_SETTING: &str = "LLM_OPENAI_OAUTH_CLIENT_ID";
+/// Dev/CI env fallback for OpenAI's client id, checked after settings.
 pub const OPENAI_CLIENT_ID_ENV: &str = "CODESCRIBE_OPENAI_OAUTH_CLIENT_ID";
+/// Env override for OpenAI's issuer base URL.
 pub const OPENAI_ISSUER_ENV: &str = "CODESCRIBE_OPENAI_OAUTH_ISSUER";
+/// OpenAI's issuer, and the fallback [`issuer_for`] returns for a provider with
+/// no registry row.
 pub const DEFAULT_ISSUER: &str = "https://auth.openai.com";
+/// Operator-facing text for "this provider has no client id yet". Shared by the
+/// error and the status message so the UI never shows two spellings of one state.
 pub const NO_CLIENT_ID_MESSAGE: &str = "awaiting app registration";
 
+/// Keychain account holding Anthropic's serialized [`AccountTokens`].
 pub const ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT: &str = "LLM_ANTHROPIC_ACCOUNT_TOKENS";
+/// Settings router key for Anthropic's operator-pasted client id.
 pub const ANTHROPIC_CLIENT_ID_SETTING: &str = "LLM_ANTHROPIC_OAUTH_CLIENT_ID";
+/// Dev/CI env fallback for Anthropic's client id.
 pub const ANTHROPIC_CLIENT_ID_ENV: &str = "CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID";
+/// Env override for Anthropic's issuer base URL.
 pub const ANTHROPIC_ISSUER_ENV: &str = "CODESCRIBE_ANTHROPIC_OAUTH_ISSUER";
+/// Anthropic's console issuer — the paste-code flow's authorize page and token
+/// endpoint both live here.
 pub const ANTHROPIC_DEFAULT_ISSUER: &str = "https://console.anthropic.com";
 
+/// Keychain account holding xAI's serialized [`AccountTokens`].
 pub const XAI_ACCOUNT_TOKENS_ACCOUNT: &str = "LLM_XAI_ACCOUNT_TOKENS";
+/// Settings router key for xAI's operator-pasted client id.
 pub const XAI_CLIENT_ID_SETTING: &str = "LLM_XAI_OAUTH_CLIENT_ID";
+/// Dev/CI env fallback for xAI's client id.
 pub const XAI_CLIENT_ID_ENV: &str = "CODESCRIBE_XAI_OAUTH_CLIENT_ID";
+/// Env override for xAI's issuer base URL.
 pub const XAI_ISSUER_ENV: &str = "CODESCRIBE_XAI_OAUTH_ISSUER";
+/// xAI's issuer base URL.
 pub const XAI_DEFAULT_ISSUER: &str = "https://auth.x.ai";
 
 /// The client id xAI publishes for the Grok CLI — a **public** desktop OAuth
@@ -58,7 +77,9 @@ pub const XAI_GROK_CLI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 /// endpoint takes JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenRequestEncoding {
+    /// `application/x-www-form-urlencoded` body.
     Form,
+    /// JSON body.
     Json,
 }
 
@@ -99,6 +120,7 @@ pub struct ProviderOAuthConfig {
     pub default_client_id: Option<&'static str>,
     /// Env override for the issuer base URL.
     pub issuer_env: &'static str,
+    /// Issuer used when the env override is unset.
     pub default_issuer: &'static str,
     /// Path appended to the issuer for the authorize endpoint. Unused by
     /// [`LoginFlow::PasteCode`] rows, whose authorize page can live on a
@@ -122,7 +144,10 @@ pub struct ProviderOAuthConfig {
     pub scope: &'static str,
     /// Extra authorize-URL query pairs this provider requires.
     pub extra_authorize_params: &'static [(&'static str, &'static str)],
+    /// How the authorization code comes back — the one property the login entry
+    /// point must branch on. See [`LoginFlow`].
     pub login_flow: LoginFlow,
+    /// Body encoding this provider's token endpoint expects.
     pub encoding: TokenRequestEncoding,
 }
 
@@ -208,6 +233,7 @@ const XAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
 const PROVIDER_OAUTH_REGISTRY: [ProviderOAuthConfig; 3] =
     [OPENAI_OAUTH, ANTHROPIC_OAUTH, XAI_OAUTH];
 
+/// Look up a provider's registry row, or `UnsupportedProvider` if it has none.
 pub fn provider_oauth_config(
     provider: ProviderKind,
 ) -> Result<ProviderOAuthConfig, AccountAuthError> {
@@ -218,8 +244,15 @@ pub fn provider_oauth_config(
         .ok_or_else(|| AccountAuthError::UnsupportedProvider(provider.as_str().to_string()))
 }
 
+/// How long before actual expiry a token is treated as already expired, so a
+/// request is never sent with a token that dies in flight.
 const REFRESH_SKEW: Duration = Duration::from_secs(60);
 
+/// Everything that can go wrong on the provider-account path.
+///
+/// The variants deliberately separate "not configured" from "not signed in"
+/// from "the provider said no": each one asks the operator for a different next
+/// action, and collapsing them would make the Keys panel unhelpful.
 #[derive(Debug)]
 pub enum AccountAuthError {
     /// No client id configured for a provider. Carries that provider's own
@@ -229,10 +262,16 @@ pub enum AccountAuthError {
         setting: &'static str,
         env: &'static str,
     },
+    /// Provider has no row in the OAuth registry — account auth simply does not
+    /// exist for it. See [`provider_oauth_config`].
     UnsupportedProvider(String),
+    /// No stored tokens for a provider that does support account auth.
     NotSignedIn(String),
+    /// Keychain read/write or (de)serialization of the stored tokens failed.
     Storage(String),
+    /// The token request never completed (transport-level).
     Http(String),
+    /// The provider answered, and the answer was a refusal.
     OAuth(String),
     Io(std::io::Error),
 }
@@ -269,17 +308,34 @@ impl From<std::io::Error> for AccountAuthError {
     }
 }
 
+/// One provider's stored OAuth tokens, serialized as JSON into the Keychain.
+///
+/// Expiry is persisted as an absolute Unix timestamp rather than the
+/// `expires_in` the provider returns: a relative lifetime is meaningless once
+/// it has been sitting in storage across an app restart.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccountTokens {
+    /// Provider tag, from `ProviderKind::as_str`.
     pub provider: String,
+    /// Bearer credential for API calls.
     pub access_token: String,
+    /// Used to mint a new access token. `None` ⇒ sign-in ends at expiry.
     pub refresh_token: Option<String>,
+    /// Identity JWT, kept only for the display label. Never authorization.
     pub id_token: Option<String>,
+    /// Normally `"Bearer"`; defaulted when the provider omits it.
     pub token_type: String,
+    /// Absolute expiry. `None` ⇒ the provider declared no lifetime, so the
+    /// token is never proactively refreshed.
     pub expires_at_unix: Option<i64>,
 }
 
 impl AccountTokens {
+    /// Build a token set from a provider's token response, converting the
+    /// relative `expires_in` into an absolute timestamp.
+    ///
+    /// `token_type` defaults to `"Bearer"`; overflow on the expiry addition
+    /// yields `None`, i.e. "no known expiry", never a wrapped past instant.
     pub fn new(
         provider: ProviderKind,
         access_token: String,
@@ -299,6 +355,8 @@ impl AccountTokens {
         }
     }
 
+    /// Whether the token expires within `skew` of now. Tokens with no recorded
+    /// expiry answer `false` — unknown lifetime is not the same as expiring.
     pub fn expires_within(&self, skew: Duration) -> bool {
         let Some(expires_at) = self.expires_at_unix else {
             return false;
@@ -308,14 +366,24 @@ impl AccountTokens {
     }
 }
 
+/// What the Keys panel shows for one provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountAuthStatus {
     pub provider: ProviderKind,
+    /// Tokens are stored for this provider.
     pub signed_in: bool,
+    /// A client id resolved from settings, env, or a published default.
     pub client_id_configured: bool,
+    /// Operator-facing one-liner for the current state.
     pub message: String,
 }
 
+/// Current sign-in state for one provider, safe to call for any provider.
+///
+/// The gate is reported before sign-in: with no client id there is nothing the
+/// operator can do about tokens yet, so "awaiting app registration" outranks
+/// "not signed in" as the message. Never fails — an unsupported provider simply
+/// reads as not configured, not signed in.
 pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
     let client_id_configured = client_id_for_provider(provider).is_ok();
     let tokens = load_account_tokens(provider).ok();
@@ -338,6 +406,9 @@ pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
     }
 }
 
+/// Resolved client id for a provider, or [`AccountAuthError::NoClientId`]
+/// carrying that provider's own setting and env keys so the message names the
+/// field the operator has to fill.
 pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountAuthError> {
     let config = provider_oauth_config(provider)?;
     configured_client_id_for(config).ok_or(AccountAuthError::NoClientId {
@@ -369,6 +440,8 @@ fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
         .or_else(|| config.default_client_id.map(str::to_string))
 }
 
+/// Trim and reject blanks. A whitespace-only settings field is an empty one,
+/// not a configured client id.
 fn non_empty_trimmed(value: String) -> Option<String> {
     let value = value.trim().to_string();
     (!value.is_empty()).then_some(value)
@@ -404,6 +477,7 @@ pub fn issuer_for(provider: ProviderKind) -> String {
         .unwrap_or_else(|| config.default_issuer.to_string())
 }
 
+/// Persist a provider's tokens into its own Keychain slot.
 pub fn store_account_tokens(
     provider: ProviderKind,
     tokens: &AccountTokens,
@@ -415,6 +489,10 @@ pub fn store_account_tokens(
     save_key(account, &payload).map_err(|error| AccountAuthError::Storage(error.to_string()))
 }
 
+/// Load a provider's stored tokens, or [`AccountAuthError::NotSignedIn`].
+///
+/// An env var named after the Keychain account is checked first: that is the
+/// injection channel used by tests and CI, which must not touch a real Keychain.
 pub fn load_account_tokens(provider: ProviderKind) -> Result<AccountTokens, AccountAuthError> {
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
@@ -426,6 +504,10 @@ pub fn load_account_tokens(provider: ProviderKind) -> Result<AccountTokens, Acco
     serde_json::from_str(&payload).map_err(|error| AccountAuthError::Storage(error.to_string()))
 }
 
+/// Sign out of one provider: delete the Keychain entry and clear the env mirror.
+///
+/// Both are required — leaving the env override in place would let the next
+/// [`load_account_tokens`] resurrect the session the operator just ended.
 pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthError> {
     ensure_provider_supported(provider)?;
     let account = token_account(provider)?;
@@ -438,6 +520,7 @@ pub fn clear_account_tokens(provider: ProviderKind) -> Result<(), AccountAuthErr
     Ok(())
 }
 
+/// Ready-to-send `Authorization` value (`Bearer <token>`), refreshing if needed.
 pub async fn authorization_header(provider: ProviderKind) -> Result<String, AccountAuthError> {
     Ok(format!("Bearer {}", access_token(provider).await?))
 }
@@ -492,6 +575,11 @@ fn refresh_lock(provider: ProviderKind) -> &'static tokio::sync::Mutex<()> {
         .or_insert_with(|| Box::leak(Box::new(tokio::sync::Mutex::new(()))))
 }
 
+/// Exchange a refresh token for a fresh set and store the result.
+///
+/// Unsynchronized on purpose — [`access_token`] is the path that serializes
+/// refreshes. Calling this directly against a provider that rotates its refresh
+/// token concurrently invites the sign-out race described there.
 pub async fn refresh_tokens(
     provider: ProviderKind,
     tokens: AccountTokens,
@@ -508,6 +596,8 @@ pub async fn refresh_tokens(
     Ok(refreshed)
 }
 
+/// The refresh round trip itself: POST to the provider's token endpoint in its
+/// own body encoding and parse the response. Stores nothing.
 async fn refresh_provider_tokens(
     provider: ProviderKind,
     config: ProviderOAuthConfig,
@@ -515,6 +605,8 @@ async fn refresh_provider_tokens(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<AccountTokens, AccountAuthError> {
+    /// Token-endpoint response. Every field but `access_token` is optional —
+    /// providers differ in what they return on refresh.
     #[derive(Deserialize)]
     struct RefreshResponse {
         access_token: String,
@@ -567,14 +659,18 @@ async fn refresh_provider_tokens(
     ))
 }
 
+/// Keychain account name for a provider's tokens.
 fn token_account(provider: ProviderKind) -> Result<&'static str, AccountAuthError> {
     Ok(provider_oauth_config(provider)?.tokens_account)
 }
 
+/// Guard that a provider has a registry row, discarding the row itself.
 fn ensure_provider_supported(provider: ProviderKind) -> Result<(), AccountAuthError> {
     provider_oauth_config(provider).map(|_| ())
 }
 
+/// Current Unix time in seconds. A clock before the epoch yields `0`, which
+/// reads as "already expired" and triggers a refresh — the safe direction.
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

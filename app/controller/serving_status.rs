@@ -19,13 +19,16 @@ pub struct LastServingVerdict {
     pub fallback_used: bool,
 }
 
+/// Push listener for serving-status changes (see [`set_serving_status_sink`]).
 type ServingStatusSink = Arc<dyn Fn(LastServingVerdict) + Send + Sync + 'static>;
 
+/// Process-global slot holding the most recent verdict.
 fn store() -> &'static RwLock<Option<LastServingVerdict>> {
     static STORE: OnceLock<RwLock<Option<LastServingVerdict>>> = OnceLock::new();
     STORE.get_or_init(|| RwLock::new(None))
 }
 
+/// Process-global slot holding the optional push listener.
 fn sink_slot() -> &'static RwLock<Option<ServingStatusSink>> {
     static SINK: OnceLock<RwLock<Option<ServingStatusSink>>> = OnceLock::new();
     SINK.get_or_init(|| RwLock::new(None))

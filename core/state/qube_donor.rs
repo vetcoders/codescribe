@@ -161,6 +161,12 @@ pub fn try_persist_qube_donor_at_stop(
     }
 }
 
+/// Pick a free `<session_ts>[_n].{wav,txt}` pair inside `day_dir`.
+///
+/// Second-resolution timestamps collide when two sessions stop within the same
+/// second, so a numeric suffix is appended. Both extensions must be free
+/// together: `qube-daemon` pairs files by stem, so a half-taken stem would mate
+/// one session's audio with another's transcript.
 fn unique_pair_paths(day_dir: &Path, session_ts: &str) -> (PathBuf, PathBuf) {
     let base_wav = day_dir.join(format!("{session_ts}.wav"));
     let base_txt = day_dir.join(format!("{session_ts}.txt"));
@@ -178,6 +184,9 @@ fn unique_pair_paths(day_dir: &Path, session_ts: &str) -> (PathBuf, PathBuf) {
     (base_wav, base_txt)
 }
 
+/// Frame count from the WAV header, used to skip header-only or silent captures.
+/// `Err` means the file could not be parsed as WAV at all — the caller treats
+/// that as "unknown", not as "empty".
 fn wav_sample_count(path: &Path) -> Result<u64, String> {
     let reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
     Ok(reader.duration() as u64)
