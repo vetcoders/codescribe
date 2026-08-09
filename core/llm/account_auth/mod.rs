@@ -97,16 +97,21 @@ pub enum TokenRequestEncoding {
 /// How the authorization code gets back to Codescribe.
 ///
 /// This is the one provider property the login *entry point* must branch on:
-/// the two flows need different machinery (a local HTTP listener vs. a text
-/// field), so a mismatch has to be refused rather than approximated.
+/// the flows need different machinery (loopback HTTP, paste field, or RFC 8628
+/// device poll), so a mismatch has to be refused rather than approximated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginFlow {
     /// Provider redirects to a loopback listener this app binds
-    /// (`{callback_host}:{port}{callback_path}`) — OpenAI, and xAI later.
+    /// (`{callback_host}:{port}{callback_path}`) — OpenAI ChatGPT.
     Loopback,
     /// Provider renders `"<code>#<state>"` on its own page for the user to
     /// paste back — Anthropic's console flow. See [`paste_code`].
     PasteCode,
+    /// RFC 8628 device authorization: open a verification URL (any device),
+    /// poll the token endpoint. OpenCode's SuperGrok path for xAI — no
+    /// loopback server, so consent cannot hang waiting on `127.0.0.1:56121`.
+    /// See [`device_code`].
+    DeviceCode,
 }
 
 /// Everything that differs between providers in one place, so adding a
@@ -211,35 +216,33 @@ const ANTHROPIC_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     encoding: TokenRequestEncoding::Json,
 };
 
-/// xAI account-auth row: pinned 127.0.0.1:56121 loopback and public Grok CLI id.
+/// xAI account-auth row: RFC 8628 device code (OpenCode SuperGrok path) and
+/// public Grok CLI client id. Loopback redirect metadata is retained for
+/// documentation / NOTICE; the product sign-in path is device-code only.
 const XAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     provider: ProviderKind::XaiResponses,
     tokens_account: XAI_ACCOUNT_TOKENS_ACCOUNT,
     client_id_setting: XAI_CLIENT_ID_SETTING,
     client_id_env: XAI_CLIENT_ID_ENV,
     client_id_from_settings: |settings| settings.xai_oauth_client_id.clone(),
-    // The one row that ships an id: xAI publishes this one for third-party
-    // desktop clients (see `XAI_GROK_CLI_CLIENT_ID`). An operator with their own
-    // registration still wins — settings and env are both checked first.
+    // xAI publishes this id for third-party desktop clients
+    // (`XAI_GROK_CLI_CLIENT_ID`). Operator settings/env still win.
     default_client_id: Some(XAI_GROK_CLI_CLIENT_ID),
     issuer_env: XAI_ISSUER_ENV,
     default_issuer: XAI_DEFAULT_ISSUER,
     authorize_path: "/oauth2/authorize",
     token_path: "/oauth2/token",
-    // Pinned by xAI's registration for the published client: the literal
-    // `127.0.0.1` (not `localhost`) on port 56121, path `/callback`. These are
-    // not interchangeable — a mismatch is rejected at the authorize step.
+    // Historical Grok-CLI loopback registration (OpenCode abandoned this path
+    // for SuperGrok in favour of device code). Kept so NOTICE/tests stay honest
+    // about the published client; Codescribe does not bind this port for login.
     callback_path: "/callback",
     callback_host: "127.0.0.1",
     preferred_port: 56121,
     scope: "openid profile email offline_access grok-cli:access api:access",
-    // OpenCode packages/opencode/src/plugin/xai.ts (XaiAuthPlugin):
-    // `plan=generic` is required for the Grok-CLI public client loopback flow;
-    // without it accounts.x.ai rejects non-allowlisted clients. `referrer`
-    // is best-effort attribution in xAI's OAuth logs (OpenCode uses
-    // "opencode"; we attribute Codescribe).
+    // Loopback-only extras (plan=generic). Device-code request body uses
+    // client_id + scope + referrer=codescribe in `device_code.rs`.
     extra_authorize_params: &[("plan", "generic"), ("referrer", "codescribe")],
-    login_flow: LoginFlow::Loopback,
+    login_flow: LoginFlow::DeviceCode,
     encoding: TokenRequestEncoding::Form,
 };
 
@@ -1089,25 +1092,28 @@ mod tests {
         assert_eq!(row.default_issuer, "https://auth.x.ai");
         assert_eq!(row.authorize_path, "/oauth2/authorize");
         assert_eq!(row.token_path, "/oauth2/token");
-        assert_eq!(row.login_flow, LoginFlow::Loopback);
+        // Product sign-in is device-code (OpenCode SuperGrok); loopback metadata
+        // is retained only as the published client's historical registration.
+        assert_eq!(row.login_flow, LoginFlow::DeviceCode);
         assert_eq!(row.encoding, TokenRequestEncoding::Form);
         // The api:access scope is what makes the token usable for inference;
         // dropping it yields a token that signs in but cannot call the model.
         assert!(row.scope.contains("api:access"));
         assert!(row.scope.contains("grok-cli:access"));
         assert!(row.scope.contains("offline_access"));
-        // OpenCode xai.ts contract — plan=generic is load-bearing for loopback.
+        // Loopback extras retained for any future authorize URL; device path
+        // attributes via referrer in the device-code form body.
         assert!(
             row.extra_authorize_params
                 .iter()
                 .any(|(k, v)| *k == "plan" && *v == "generic"),
-            "xAI authorize must send plan=generic (OpenCode XaiAuthPlugin)"
+            "xAI authorize extras still carry plan=generic (Grok-CLI contract)"
         );
         assert!(
             row.extra_authorize_params
                 .iter()
                 .any(|(k, v)| *k == "referrer" && *v == "codescribe"),
-            "xAI authorize should attribute Codescribe as referrer"
+            "xAI authorize extras should attribute Codescribe as referrer"
         );
     }
 

@@ -3027,6 +3027,128 @@ impl RecordingController {
                         }
                     }
                 }
+            } else if matches!(action, FinalPassAction::PunctuationRepass)
+                && let Some(path) = &audio_path
+            {
+                // Smart + shape-deficient: everything was heard, nothing was
+                // shaped. Whisper transcribes the whole file, but ONLY its
+                // punctuation and capitalization are adopted onto the committed
+                // words (word sequence invariant — the append-only doctrine
+                // holds). A weak alignment ships the committed text untouched.
+                local_final_pass_attempted = true;
+                let wav_path = path.as_path().to_path_buf();
+                let lang = language_opt.map(str::to_string);
+                let committed_text = streaming_text.trim().to_string();
+
+                info!(
+                    "Running final-pass punctuation transplant (mode=smart live_engine={} committed_chars={}): {}",
+                    if prefer_apple { "apple" } else { "whisper" },
+                    committed_text.chars().count(),
+                    wav_path.display()
+                );
+
+                let final_pass_started = std::time::Instant::now();
+                match tokio::task::spawn_blocking(move || {
+                    let queue_wait_ms = final_pass_started.elapsed().as_millis() as u64;
+                    let verdict =
+                        codescribe_core::stt::transcribe_file_verdict(&wav_path, lang.as_deref());
+                    let timing = codescribe_core::stt::whisper::take_final_pass_timing();
+                    (verdict, queue_wait_ms, timing)
+                })
+                .await
+                {
+                    Ok((Ok(shape_verdict), queue_wait_ms, timing)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages = FinalPassStages {
+                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                            model_load_ms: timing.model_load_ms,
+                            cold_load: timing.cold_load,
+                            inference_ms: timing.inference_ms,
+                            postprocess_ms: 0,
+                            delivery_ms: 0,
+                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                        };
+                        let transplant =
+                            codescribe_core::stt::punctuation_transplant::transplant_punctuation(
+                                &committed_text,
+                                &shape_verdict.text,
+                            );
+                        let (text, disposition, reason) = match transplant {
+                            Some(outcome) => {
+                                info!(
+                                    "final_pass_punctuation_transplant aligned_ratio={:.3} punctuation_added={} capitalization_changes={}",
+                                    outcome.aligned_ratio,
+                                    outcome.punctuation_added,
+                                    outcome.capitalization_changes,
+                                );
+                                let changed = outcome.text != committed_text;
+                                (
+                                    outcome.text,
+                                    if changed {
+                                        FinalPassDisposition::Changed
+                                    } else {
+                                        FinalPassDisposition::Unchanged
+                                    },
+                                    "shape_punctuation_transplant",
+                                )
+                            }
+                            None => {
+                                info!(
+                                    "final_pass_punctuation_transplant declined — transcripts disagree; committed text ships untouched",
+                                );
+                                (
+                                    committed_text.clone(),
+                                    FinalPassDisposition::Unchanged,
+                                    "shape_transplant_low_alignment",
+                                )
+                            }
+                        };
+                        let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                            text: text.clone(),
+                            ..Default::default()
+                        };
+                        local_final_pass_verdict = Some(
+                            codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                                text,
+                                raw,
+                                None,
+                                codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                                codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                                    codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                                ),
+                                Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                                    mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                                    disposition,
+                                    reason: Some(reason.to_string()),
+                                    lexicon_rewrites: 0,
+                                    repetition_cleanups: 0,
+                                }),
+                            ),
+                        );
+                    }
+                    Ok((Err(e), queue_wait_ms, timing)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages = FinalPassStages {
+                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                            model_load_ms: timing.model_load_ms,
+                            cold_load: timing.cold_load,
+                            inference_ms: timing.inference_ms,
+                            postprocess_ms: 0,
+                            delivery_ms: 0,
+                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                        };
+                        warn!(
+                            "Final-pass punctuation transplant failed (committed text ships untouched): {}",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages.final_pass_total_ms =
+                            (final_pass_secs * 1000.0).round() as u64;
+                        warn!("Final-pass punctuation transplant task failed: {}", e);
+                    }
+                }
             } else if let Some(path) = &audio_path {
                 local_final_pass_attempted = true;
                 let wav_path = path.as_path().to_path_buf();

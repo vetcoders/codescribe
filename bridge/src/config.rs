@@ -786,14 +786,16 @@ impl CodescribeConfig {
             .collect()
     }
 
-    /// Start provider-account login for the selected provider. Every endpoint —
-    /// issuer, authorize path, callback port — comes from that provider's OAuth
-    /// registry row, so the browser is never sent to another vendor's login.
-    /// Gated by the provider's own configured client id (its settings key, its
-    /// dev-env fallback); absent client id returns a config error whose message
-    /// contains "awaiting app registration". Providers whose flow is not a
-    /// loopback callback (Anthropic pastes a code) are refused here rather than
-    /// half-served.
+    /// Start provider-account login for the selected provider.
+    ///
+    /// Flow is chosen from the provider's OAuth registry row:
+    /// - **Loopback** (OpenAI): bind local callback, open authorize URL.
+    /// - **Device code** (xAI / OpenCode SuperGrok): request RFC 8628 device
+    ///   code, open verification URL (no `127.0.0.1` listener — consent cannot
+    ///   hang waiting on a dead loopback port).
+    /// - **Paste code** (Anthropic): refused here until a paste UI lands.
+    ///
+    /// Gated by the provider's client id (settings / env / shipped default).
     pub fn start_account_login(
         &self,
         provider_id: String,
@@ -803,41 +805,81 @@ impl CodescribeConfig {
         })?;
         let client_id =
             account_auth::client_id_for_provider(provider).map_err(account_auth_to_cs)?;
-        let opts =
-            account_auth::ServerOptions::new(provider, client_id).map_err(account_auth_to_cs)?;
+        let oauth = account_auth::provider_oauth_config(provider).map_err(account_auth_to_cs)?;
 
-        let login = account_auth_runtime()?
-            .block_on(account_auth::run_login_server(opts))
-            .map_err(account_auth_to_cs)?;
-        let auth_url = login.auth_url.clone();
-        let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
-            msg: "account login state lock poisoned".to_string(),
-        })?;
-        if let Some(previous) = guard.take() {
-            previous.cancel();
+        // Supersede any prior attempt (loopback or device) so fixed ports and
+        // poll loops never race two logins.
+        {
+            let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                msg: "account login state lock poisoned".to_string(),
+            })?;
+            if let Some(previous) = guard.take() {
+                previous.cancel();
+            }
         }
-        *guard = Some(login);
 
-        Ok(CsAccountLoginResult {
-            provider_id: provider.as_str().to_string(),
-            status: "started".to_string(),
-            message: "open the browser to finish sign-in".to_string(),
-            auth_url: Some(auth_url),
-            signed_in: false,
-            client_id_configured: true,
-        })
+        match oauth.login_flow {
+            account_auth::LoginFlow::DeviceCode => {
+                let mut config = account_auth::DeviceAuthConfig::new(provider, client_id);
+                // Await will re-clamp; start uses the full default budget.
+                config.max_wait = std::time::Duration::from_secs(15 * 60);
+                let device = account_auth_runtime()?
+                    .block_on(account_auth::request_device_code(&config))
+                    .map_err(account_auth_to_cs)?;
+                let auth_url = device.verification_url.clone();
+                let user_code = device.user_code.clone();
+                let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                    msg: "account login state lock poisoned".to_string(),
+                })?;
+                *guard = Some(PendingAccountLogin::Device { config, device });
+                Ok(CsAccountLoginResult {
+                    provider_id: provider.as_str().to_string(),
+                    status: "started".to_string(),
+                    message: format!(
+                        "open the browser and approve access (code {user_code} if asked)"
+                    ),
+                    auth_url: Some(auth_url),
+                    signed_in: false,
+                    client_id_configured: true,
+                })
+            }
+            account_auth::LoginFlow::Loopback => {
+                let opts = account_auth::ServerOptions::new(provider, client_id)
+                    .map_err(account_auth_to_cs)?;
+                let login = account_auth_runtime()?
+                    .block_on(account_auth::run_login_server(opts))
+                    .map_err(account_auth_to_cs)?;
+                let auth_url = login.auth_url.clone();
+                let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                    msg: "account login state lock poisoned".to_string(),
+                })?;
+                *guard = Some(PendingAccountLogin::Loopback(login));
+                Ok(CsAccountLoginResult {
+                    provider_id: provider.as_str().to_string(),
+                    status: "started".to_string(),
+                    message: "open the browser to finish sign-in".to_string(),
+                    auth_url: Some(auth_url),
+                    signed_in: false,
+                    client_id_configured: true,
+                })
+            }
+            account_auth::LoginFlow::PasteCode => Err(CsError::Config {
+                msg: format!(
+                    "{} signs in by pasting a code; that UI is not wired yet",
+                    provider.display_name()
+                ),
+            }),
+        }
     }
 
     /// Block until the in-flight provider-account login completes, fails, or
     /// times out. Swift calls this from a background queue right after
-    /// `start_account_login` opened the browser. On timeout (user closed the
-    /// browser, walked away) the local callback server is shut down — honest
-    /// status, no zombie port. A second `start_account_login` while pending
-    /// cancels the first, so this returns "failed" for the superseded attempt.
+    /// `start_account_login` opened the browser. On timeout the pending
+    /// loopback server is shut down (or the device poll is abandoned). A
+    /// second `start_account_login` while pending cancels the first.
     ///
     /// P2-09: 300s default (from caller) is intentional; OAuth human steps can
-    /// exceed short timeouts. No configurability knob added. P2-08: discovery
-    /// flows share this; cancel is best-effort via supersede + teardown.
+    /// exceed short timeouts. No configurability knobs.
     pub fn await_account_login(
         &self,
         provider_id: String,
@@ -860,32 +902,59 @@ impl CodescribeConfig {
             ));
         };
 
-        let cancel = login.cancel_handle();
-        let outcome = account_auth_runtime()?.block_on(async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(timeout_seconds.max(1)),
-                login.block_until_done(),
-            )
-            .await
-        });
-
-        match outcome {
-            Ok(Ok(())) => {
-                let message = account_auth::account_status(provider).message;
-                Ok(account_login_result(provider, "signed_in", &message))
+        let timeout = std::time::Duration::from_secs(timeout_seconds.max(1));
+        match login {
+            PendingAccountLogin::Loopback(login) => {
+                let cancel = login.cancel_handle();
+                let outcome = account_auth_runtime()?.block_on(async move {
+                    tokio::time::timeout(timeout, login.block_until_done()).await
+                });
+                match outcome {
+                    Ok(Ok(())) => {
+                        let message = account_auth::account_status(provider).message;
+                        Ok(account_login_result(provider, "signed_in", &message))
+                    }
+                    Ok(Err(error)) => {
+                        Ok(account_login_result(provider, "failed", &error.to_string()))
+                    }
+                    Err(_elapsed) => {
+                        cancel.shutdown();
+                        let message = format!(
+                            "sign-in was not completed within {timeout_seconds}s; the local login server was shut down"
+                        );
+                        Ok(account_login_result(provider, "timeout", &message))
+                    }
+                }
             }
-            Ok(Err(error)) => Ok(account_login_result(provider, "failed", &error.to_string())),
-            Err(_elapsed) => {
-                cancel.shutdown();
-                let message = format!(
-                    "sign-in was not completed within {timeout_seconds}s; the local login server was shut down"
-                );
-                Ok(account_login_result(provider, "timeout", &message))
+            PendingAccountLogin::Device { mut config, device } => {
+                config.max_wait = timeout;
+                let outcome = account_auth_runtime()?.block_on(async move {
+                    tokio::time::timeout(
+                        timeout,
+                        account_auth::complete_device_code_login(&config, &device),
+                    )
+                    .await
+                });
+                match outcome {
+                    Ok(Ok(())) => {
+                        let message = account_auth::account_status(provider).message;
+                        Ok(account_login_result(provider, "signed_in", &message))
+                    }
+                    Ok(Err(error)) => {
+                        Ok(account_login_result(provider, "failed", &error.to_string()))
+                    }
+                    Err(_elapsed) => {
+                        let message = format!(
+                            "sign-in was not completed within {timeout_seconds}s; device authorization abandoned"
+                        );
+                        Ok(account_login_result(provider, "timeout", &message))
+                    }
+                }
             }
         }
     }
 
-    /// Cancel any in-flight provider-account login and free the callback port.
+    /// Cancel any in-flight provider-account login (loopback port or device poll).
     pub fn cancel_account_login(&self) {
         if let Ok(mut guard) = active_account_login().lock()
             && let Some(login) = guard.take()
@@ -1868,12 +1937,32 @@ fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
     }
 }
 
-/// The single in-flight login server, if any. At most one sign-in can be
-/// pending: starting a second supersedes and cancels the first, which is what
-/// frees the fixed loopback callback port for the new attempt.
-fn active_account_login() -> &'static Mutex<Option<account_auth::LoginServer>> {
-    /// At most one in-flight login server; a new start cancels the previous.
-    static ACTIVE: OnceLock<Mutex<Option<account_auth::LoginServer>>> = OnceLock::new();
+/// One in-flight account login — either a loopback callback server (OpenAI)
+/// or an RFC 8628 device-code poll handle (xAI SuperGrok / OpenCode path).
+enum PendingAccountLogin {
+    Loopback(account_auth::LoginServer),
+    Device {
+        config: account_auth::DeviceAuthConfig,
+        device: account_auth::DeviceCode,
+    },
+}
+
+impl PendingAccountLogin {
+    /// Abandon this attempt. Loopback shuts the listener; device just drops
+    /// (the awaiter times out or is superseded by a new start).
+    fn cancel(self) {
+        match self {
+            Self::Loopback(login) => login.cancel(),
+            Self::Device { .. } => {}
+        }
+    }
+}
+
+/// The single in-flight login, if any. At most one sign-in can be pending:
+/// starting a second supersedes and cancels the first.
+fn active_account_login() -> &'static Mutex<Option<PendingAccountLogin>> {
+    /// At most one in-flight login; a new start cancels the previous.
+    static ACTIVE: OnceLock<Mutex<Option<PendingAccountLogin>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(None))
 }
 

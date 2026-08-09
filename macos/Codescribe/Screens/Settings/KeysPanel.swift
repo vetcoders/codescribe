@@ -740,7 +740,13 @@ private struct AccountLoginRow: View {
                         } else {
                             CSIconView(icon: .accountVerified, size: 12, weight: .semibold)
                         }
-                        Text(loginPending ? "Waiting for browser…" : "Sign in with \(accountBrand)")
+                        Text(
+                            loginPending
+                                ? (provider.id == "xai-responses"
+                                    ? "Approve in browser…"
+                                    : "Waiting for browser…")
+                                : "Sign in with \(accountBrand)"
+                        )
                             .font(CSFont.ui(12, .semibold))
                     }
                     .foregroundStyle(

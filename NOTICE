@@ -35,11 +35,12 @@ xAI (Grok / Grok CLI public client id):
     b1a00492-073a-47ea-816f-4c329264a828
 
 This is the client id xAI publishes for the Grok CLI as a public desktop OAuth
-client, registered against the loopback redirect http://127.0.0.1:56121/callback.
-Codescribe uses it as the default so xAI sign-in works without the operator
-registering an application; it is not a private registration and Codescribe does
-not claim to be the Grok CLI. Override with LLM_XAI_OAUTH_CLIENT_ID or
-CODESCRIBE_XAI_OAUTH_CLIENT_ID.
+client. Codescribe uses it as the default so xAI sign-in works without the
+operator registering an application; it is not a private registration and
+Codescribe does not claim to be the Grok CLI. Product sign-in follows OpenCode's
+SuperGrok path: RFC 8628 device authorization (open a verification URL, poll
+for tokens) — not a local loopback callback on 127.0.0.1:56121. Override with
+LLM_XAI_OAUTH_CLIENT_ID or CODESCRIBE_XAI_OAUTH_CLIENT_ID.
 
 Anthropic account login stays gated on the operator supplying their own
 registration (paste-code flow; no shipped default).
