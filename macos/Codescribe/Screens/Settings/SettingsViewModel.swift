@@ -2069,8 +2069,11 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Match any assistive provider row whose Keychain API-key account equals
+    /// `account`. Used so OpenAI, Anthropic, and xAI each render their own
+    /// account-login row under their key card (not OpenAI-only).
     func providerForKeyAccount(_ account: String) -> CsProviderOption? {
-        providers.first { $0.apiKeyAccount == account && $0.id == "openai-responses" }
+        providers.first { $0.apiKeyAccount == account }
     }
 
     /// Full "Sign in with ChatGPT" click-through: start the local callback
@@ -2151,10 +2154,23 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    /// Persist the OAuth client id (non-secret; settings.json). Takes effect on
-    /// the next click — the core re-reads settings per resolution.
+    /// Persist the OAuth client id (non-secret; settings.json) for the provider
+    /// that owns it. Takes effect on the next click — the core re-reads settings
+    /// per resolution. Advanced override only; shipped defaults cover OpenAI + xAI.
     func saveOauthClientId(providerId: String, value: String) {
-        persist("LLM_OPENAI_OAUTH_CLIENT_ID", value.trimmingCharacters(in: .whitespacesAndNewlines))
+        let settingKey: String
+        switch providerId {
+        case "openai-responses":
+            settingKey = "LLM_OPENAI_OAUTH_CLIENT_ID"
+        case "anthropic-messages":
+            settingKey = "LLM_ANTHROPIC_OAUTH_CLIENT_ID"
+        case "xai-responses":
+            settingKey = "LLM_XAI_OAUTH_CLIENT_ID"
+        default:
+            lastError = "No OAuth client-id setting for provider \(providerId)"
+            return
+        }
+        persist(settingKey, value.trimmingCharacters(in: .whitespacesAndNewlines))
         accountLoginNotices[providerId] = nil
         if let engine {
             providers = engine.availableProviders()

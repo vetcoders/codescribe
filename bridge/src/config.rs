@@ -261,17 +261,16 @@ pub struct CsProviderOption {
     pub api_key_set: bool,
     /// True when provider-account tokens are stored for this provider.
     pub account_signed_in: bool,
-    /// True when the account-login flow can start. For OpenAI this requires a
-    /// configured OAuth client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, or
-    /// dev env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); until then Settings
-    /// renders the disabled "Sign in with ChatGPT" affordance.
+    /// True when the account-login flow can start. OpenAI and xAI ship public
+    /// desktop client ids (see `NOTICE`); operator settings/env still override.
+    /// Anthropic stays gated until the operator pastes a registration.
     pub account_login_enabled: bool,
     /// Human-readable account status ("signed in as <email>", "not signed in",
     /// or "awaiting app registration"). Never contains secrets.
     pub account_status_message: String,
-    /// Operator-configured OAuth client id (settings → env resolution). A
-    /// non-secret app identity — shown and editable in the Keys panel. `None`
-    /// means the account login is still gated on app registration.
+    /// Resolved OAuth client id (settings → env → shipped default). Non-secret
+    /// app identity. The Keys panel no longer surfaces this for editing by
+    /// default; advanced override still goes through settings keys.
     pub oauth_client_id: Option<String>,
     /// Always empty for live Settings; retained for bridge compatibility with
     /// older Swift bindings and preview seed objects.
@@ -777,14 +776,10 @@ impl CodescribeConfig {
                     account_signed_in: account_status.signed_in,
                     account_login_enabled: account_status.client_id_configured,
                     account_status_message: account_status.message,
-                    // Only OpenAI's id is surfaced for editing: the Keys panel
-                    // saves through the single `LLM_OPENAI_OAUTH_CLIENT_ID`
-                    // router key, so exposing another provider's id here would
-                    // let a save write it into OpenAI's slot. Widening this
-                    // needs the settings key to travel with the row (W6-C).
-                    oauth_client_id: matches!(kind, ProviderKind::OpenAiResponses)
-                        .then(|| account_auth::client_id_for_provider(*kind).ok())
-                        .flatten(),
+                    // Resolved id (including shipped defaults) for diagnostics;
+                    // the Keys panel hides the field by default. Per-provider
+                    // settings keys are used if an advanced override is saved.
+                    oauth_client_id: account_auth::client_id_for_provider(*kind).ok(),
                     models: Vec::new(),
                 }
             })

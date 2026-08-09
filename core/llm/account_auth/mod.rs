@@ -67,9 +67,16 @@ pub const XAI_ISSUER_ENV: &str = "CODESCRIBE_XAI_OAUTH_ISSUER";
 /// xAI's issuer base URL.
 pub const XAI_DEFAULT_ISSUER: &str = "https://auth.x.ai";
 
+/// The client id OpenAI's Codex CLI uses for the ChatGPT desktop loopback
+/// OAuth flow — a **public** app id (`app_…`), not a secret. Shipped so
+/// "Sign in with ChatGPT" works without the operator pasting a registration.
+/// Disclosed in `NOTICE`. Redirect contract: `localhost` wildcard port path
+/// `/auth/callback` (Codex-compatible preferred port 1455).
+pub const OPENAI_CODEX_CLI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
 /// The client id xAI publishes for the Grok CLI — a **public** desktop OAuth
-/// client, not a private registration lifted from another product. It is the
-/// only id this table ships by default, and it is disclosed in `NOTICE`.
+/// client, not a private registration lifted from another product. Shipped as
+/// the xAI row default and disclosed in `NOTICE`.
 ///
 /// The redirect URI is not free to choose: xAI registered this client against
 /// `http://127.0.0.1:56121/callback` exactly, so the loopback host and port
@@ -162,7 +169,9 @@ const OPENAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
     client_id_setting: OPENAI_CLIENT_ID_SETTING,
     client_id_env: OPENAI_CLIENT_ID_ENV,
     client_id_from_settings: |settings| settings.openai_oauth_client_id.clone(),
-    default_client_id: None,
+    // Codex CLI public app id — see `OPENAI_CODEX_CLI_CLIENT_ID` + NOTICE.
+    // Operator override via settings/env still wins.
+    default_client_id: Some(OPENAI_CODEX_CLI_CLIENT_ID),
     issuer_env: OPENAI_ISSUER_ENV,
     default_issuer: DEFAULT_ISSUER,
     authorize_path: "/oauth/authorize",
@@ -432,11 +441,9 @@ pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountA
 /// save takes effect on the very next click, no restart, and env never freezes
 /// over a saved setting.
 ///
-/// Only ids a vendor **publishes** for third-party desktop clients may ship as
-/// a `default_client_id` — today that is xAI's Grok CLI id alone. Reusing a
-/// vendor's *private* registration (the trick some CLI ports lean on) would
-/// make Codescribe impersonate that application, so OpenAI and Anthropic stay
-/// gated on the operator pasting their own.
+/// Only **public** desktop OAuth client ids may ship as `default_client_id` —
+/// today OpenAI's Codex CLI app id and xAI's Grok CLI id (both disclosed in
+/// `NOTICE`). Anthropic stays gated on the operator pasting their own.
 fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
     let settings = UserSettings::load();
     (config.client_id_from_settings)(&settings)
@@ -707,21 +714,25 @@ mod tests {
 
     /// Missing client id must surface the shared registration-gate message and
     /// the failing provider's own setting/env keys (not another provider's).
+    /// Anthropic is the remaining no-default row; OpenAI and xAI ship public ids.
     #[test]
     #[serial]
     fn no_client_id_reports_registration_gate() {
         let (_data_dir, _dir) = isolated_settings_dir("gate");
-        let _guard = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
-        // Pin the Anthropic env too: the operator's dotenv is inherited by the
+        // Pin the Anthropic env: the operator's dotenv is inherited by the
         // test process, so an unpinned var makes this pass or fail by machine.
         let _anthropic_guard = EnvGuard::unset(ANTHROPIC_CLIENT_ID_ENV);
-        let err = client_id_for_provider(ProviderKind::OpenAiResponses).unwrap_err();
-        assert!(matches!(err, AccountAuthError::NoClientId { .. }));
-        assert!(err.to_string().contains(NO_CLIENT_ID_MESSAGE));
-        // The message must name *this* provider's fields, not OpenAI's by reflex.
         let anthropic = client_id_for_provider(ProviderKind::AnthropicMessages).unwrap_err();
+        assert!(matches!(anthropic, AccountAuthError::NoClientId { .. }));
+        assert!(anthropic.to_string().contains(NO_CLIENT_ID_MESSAGE));
+        // The message must name *this* provider's fields, not OpenAI's by reflex.
         assert!(anthropic.to_string().contains(ANTHROPIC_CLIENT_ID_SETTING));
         assert!(anthropic.to_string().contains(ANTHROPIC_CLIENT_ID_ENV));
+        // OpenAI is never gated when unset — Codex public app id is the default.
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            OPENAI_CODEX_CLI_CLIENT_ID
+        );
     }
 
     /// Settings.json client id wins over env and is re-read on every call so a
@@ -764,8 +775,10 @@ mod tests {
         );
     }
 
-    /// The three UI states the Keys panel renders, in the order an operator
-    /// walks them: registration gate → not signed in → signed in as <email>.
+    /// Keys panel states for providers that ship a default client id (OpenAI):
+    /// not signed in (login enabled via Codex default) → signed in as <email>.
+    /// Anthropic still has the registration gate; that path is covered by
+    /// `no_client_id_reports_registration_gate`.
     #[test]
     #[serial]
     fn account_status_maps_gate_then_not_signed_in_then_signed_in() {
@@ -775,13 +788,14 @@ mod tests {
         let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
         let _env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
 
-        // 1. No client id anywhere ⇒ registration gate, button disabled.
+        // 1. OpenAI with no operator paste ⇒ Codex default is configured,
+        //    sign-in is enabled, tokens absent.
         let status = account_status(ProviderKind::OpenAiResponses);
-        assert!(!status.client_id_configured);
+        assert!(status.client_id_configured);
         assert!(!status.signed_in);
-        assert_eq!(status.message, NO_CLIENT_ID_MESSAGE);
+        assert_eq!(status.message, "not signed in");
 
-        // 2. Operator pastes a client id in Settings ⇒ gate lifts mid-process.
+        // 2. Operator override still applies mid-process (settings win).
         UserSettings {
             openai_oauth_client_id: Some("app_registered".to_string()),
             ..Default::default()
@@ -792,6 +806,10 @@ mod tests {
         assert!(status.client_id_configured);
         assert!(!status.signed_in);
         assert_eq!(status.message, "not signed in");
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            "app_registered"
+        );
 
         // 3. Stored tokens with an id_token email ⇒ signed in as <email>.
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -918,12 +936,12 @@ mod tests {
         let _anthropic_env = EnvGuard::set(ANTHROPIC_CLIENT_ID_ENV, "anthropic-from-env");
         let _issuer = EnvGuard::unset(ANTHROPIC_ISSUER_ENV);
 
-        // OpenAI has neither setting nor env ⇒ still gated on registration,
-        // even though Anthropic's env id is present.
-        assert!(matches!(
-            client_id_for_provider(ProviderKind::OpenAiResponses),
-            Err(AccountAuthError::NoClientId { .. })
-        ));
+        // OpenAI has neither setting nor env ⇒ Codex public app id, never
+        // Anthropic's env value.
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            OPENAI_CODEX_CLI_CLIENT_ID
+        );
         assert_eq!(
             client_id_for_provider(ProviderKind::AnthropicMessages).unwrap(),
             "anthropic-from-env"
@@ -1018,17 +1036,17 @@ mod tests {
     }
 
     /// A shipped `default_client_id` is a deliberate, disclosed decision — never
-    /// a silent lift of someone else's registration. This is the allowlist: any
-    /// row that grows a default without being added here fails, which is exactly
-    /// the copy-paste this guard exists to catch.
+    /// a silent private registration. This is the allowlist: any row that grows
+    /// a default without being added here fails, which is exactly the copy-paste
+    /// this guard exists to catch.
     ///
-    /// xAI's entry is the Grok CLI id, which xAI publishes for third-party
-    /// desktop clients and `NOTICE` discloses. OpenAI and Anthropic publish no
-    /// such id, so they stay gated on the operator's own registration.
+    /// OpenAI: Codex CLI public `app_…` id. xAI: Grok CLI public UUID. Both are
+    /// disclosed in `NOTICE`. Anthropic has no shipped default.
     #[test]
     fn only_vendor_published_client_ids_ship_by_default() {
         for row in PROVIDER_OAUTH_REGISTRY {
             let expected = match row.provider {
+                ProviderKind::OpenAiResponses => Some(OPENAI_CODEX_CLI_CLIENT_ID),
                 ProviderKind::XaiResponses => Some(XAI_GROK_CLI_CLIENT_ID),
                 _ => None,
             };
@@ -1038,6 +1056,25 @@ mod tests {
                 row.provider
             );
         }
+    }
+
+    /// OpenAI sign-in must not require a Keys-panel paste when nothing is
+    /// configured — the Codex public app id is the shipped default.
+    #[test]
+    #[serial]
+    fn openai_resolves_codex_cli_client_id_without_settings() {
+        let (_data_dir, _dir) = isolated_settings_dir("openai_default_client_id");
+        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        UserSettings {
+            openai_oauth_client_id: None,
+            ..Default::default()
+        }
+        .save()
+        .expect("persist empty openai client id");
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            OPENAI_CODEX_CLI_CLIENT_ID
+        );
     }
 
     /// xAI registered its published client against one exact redirect URI. A
