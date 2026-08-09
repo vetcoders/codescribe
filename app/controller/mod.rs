@@ -2818,6 +2818,9 @@ impl RecordingController {
                 local_final_pass_attempted = true;
                 let reason = match completeness {
                     StreamingCompleteness::Complete => "complete_streaming_transcript",
+                    // Unreachable through the Smart mapping (shape routes to
+                    // PunctuationRepass), reachable if a future mode skips on it.
+                    StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
                     StreamingCompleteness::Incomplete { reason } => reason,
                 };
                 let commit_src = completeness_evidence
@@ -3853,17 +3856,63 @@ impl RecordingController {
             formatted_text.len(),
             mode_label
         );
-        let quality_probe =
+        let mut quality_probe =
             ActionQualityProbe::from_transcripts(&raw_text, &formatted_text, &postprocess_stats);
+        // Meaning axis for LLM-formatted deliveries only. Character ratios
+        // cannot see a model that changed the sense while keeping the length;
+        // MiniLM can (floor calibrated in core::pipeline::semantic_guard, with
+        // its same-word-inversion blindspot documented there). Scoped to the
+        // LLM lane on purpose: Light+-only and raw deliveries never pay the
+        // embedder (stop-path latency is a first-class budget), and the guard
+        // is fail-open — no embedder means no verdict, never a block.
+        if !force_raw
+            && !is_ai_noop
+            && matches!(
+                output_kind,
+                crate::state::history::TranscriptKind::FormattedTranscript
+            )
+        {
+            let guard_started = std::time::Instant::now();
+            let raw_for_guard = raw_text.clone();
+            let formatted_for_guard = formatted_text.clone();
+            quality_probe.semantic_cosine = tokio::task::spawn_blocking(move || {
+                codescribe_core::pipeline::semantic_guard::formatting_semantic_cosine(
+                    &raw_for_guard,
+                    &formatted_for_guard,
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(cosine) = quality_probe.semantic_cosine {
+                info!(
+                    "semantic_guard cosine={:.3} floor={:.2} verdict={} took_ms={}",
+                    cosine,
+                    codescribe_core::pipeline::semantic_guard::FORMATTING_SEMANTIC_FLOOR,
+                    if codescribe_core::pipeline::semantic_guard::formatting_meaning_diverged(
+                        cosine
+                    ) {
+                        "diverged"
+                    } else {
+                        "kept"
+                    },
+                    guard_started.elapsed().as_millis()
+                );
+            }
+        }
         info!(
-            "Action quality guardrail: mode={} assistive={} raw_chars={} final_chars={} diff_raw_final={:.3} correction_ratio={:.3} drop_ratio={:.3} route_independent=true",
+            "Action quality guardrail: mode={} assistive={} raw_chars={} final_chars={} diff_raw_final={:.3} correction_ratio={:.3} drop_ratio={:.3} semantic_cosine={} route_independent=true",
             mode_label,
             assistive,
             quality_probe.raw_chars,
             quality_probe.final_chars,
             quality_probe.raw_final_diff_ratio,
             quality_probe.correction_ratio,
-            quality_probe.drop_ratio
+            quality_probe.drop_ratio,
+            quality_probe
+                .semantic_cosine
+                .map(|c| format!("{c:.3}"))
+                .unwrap_or_else(|| "none".to_string())
         );
         let quality_commit_trigger = if !assistive {
             evaluate_quality_commit_trigger(force_raw, &quality_probe, output_kind)

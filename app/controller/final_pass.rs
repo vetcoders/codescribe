@@ -5,9 +5,17 @@
 //!   mode in which a full-file re-pass is permitted.
 //! - **Smart**: Whisper may final-pass **individual utterances only** — never the
 //!   whole file. When streaming completeness is adjudicated Complete, nothing runs
-//!   at stop. When incomplete, only the uncommitted audio tail (from the last
-//!   committed utterance end) is transcribed and **appended** to the committed
-//!   streaming text; committed text stays immutable (append-only doctrine).
+//!   at stop. When complete-but-shapeless (long wall of words, no sentence
+//!   terminals — the shape row, operator 2026-08-09), Whisper transcribes the
+//!   file but only its punctuation/capitalization is adopted onto the committed
+//!   words (`punctuation_transplant`; word sequence invariant at THIS stage
+//!   because shape is the deficit here — live word corrections belong to the
+//!   Layer 1 tail patch, which is a core element, on by default). When
+//!   incomplete, only the uncommitted audio tail (from the last committed
+//!   utterance end) is transcribed and **appended** to the committed streaming
+//!   text. The doctrine behind all of this forbids TRUNCATING overlay text and
+//!   DROPPING transcripts the user already saw (the pre-0.8.0 full-replace
+//!   failure) — it does not forbid live correction of committed words.
 //!   Pair with `CODESCRIBE_LAYERED_TRANSCRIPTION` (orthogonal toggle) for live
 //!   Whisper tail-patches during hold — Smart does not force layered on.
 //! - **Off**: hard off at stop — zero Whisper invocation on the stop path;
@@ -32,10 +40,41 @@ pub(crate) use codescribe_core::config::{FinalPassRoutingMode, final_pass_routin
 pub(crate) enum StreamingCompleteness {
     /// The adjudicator sealed the transcript: committed, covered, no pending tail.
     Complete,
+    /// Coverage is complete but the transcript is a wall of words: long text
+    /// with (almost) no sentence-terminal punctuation. Everything was heard —
+    /// nothing was shaped. Measured root cause of "final pass tak wkurwiał"
+    /// (2026-08-09): Apple live commits ~1 period per ~1050 chars of Polish
+    /// while Whisper over the same audio produces 9, and Smart's
+    /// coverage-only Complete skipped the only pass that carries sentences.
+    CompleteShapeDeficient,
     /// Something is missing; `reason` is the stable telemetry label for which
     /// check failed (`no_speech`, `empty`, `pending_tail`, `partial_pending`,
     /// `no_commit_source`, `no_coverage`).
     Incomplete { reason: &'static str },
+}
+
+/// Below this length shape is not judged: a short note legitimately has no
+/// terminal punctuation and must keep skipping the final pass.
+const SHAPE_MIN_CHARS: usize = 320;
+/// A transcript with more characters per sentence terminal than this reads as
+/// unshaped. Grounded in the 2026-08-09 measurement: human reference ≈ 175
+/// chars/terminal, Whisper ≈ 141, Apple's wall ≈ 1052 — the floor sits far
+/// from natural prose so lists and long clauses do not trip it.
+const SHAPE_MAX_CHARS_PER_TERMINAL: usize = 400;
+
+/// True when a coverage-complete transcript is long enough to need sentences
+/// and carries (almost) none.
+pub(crate) fn transcript_shape_deficient(text: &str) -> bool {
+    let text = text.trim();
+    let chars = text.chars().count();
+    if chars < SHAPE_MIN_CHARS {
+        return false;
+    }
+    let terminals = text
+        .chars()
+        .filter(|c| matches!(c, '.' | '!' | '?' | '…'))
+        .count();
+    terminals == 0 || chars / terminals > SHAPE_MAX_CHARS_PER_TERMINAL
 }
 
 /// Recorder/adjudicator evidence for Smart final-pass skip.
@@ -119,6 +158,13 @@ pub(crate) fn assess_streaming_completeness(
         return StreamingCompleteness::Incomplete {
             reason: "no_coverage",
         };
+    }
+    // Coverage says everything was heard; shape asks whether anything was
+    // shaped. A long wall of words routes to the punctuation transplant
+    // instead of a silent skip (operator decision 2026-08-09, superseding the
+    // 2026-08-05 coverage-only mapping).
+    if transcript_shape_deficient(text) {
+        return StreamingCompleteness::CompleteShapeDeficient;
     }
     StreamingCompleteness::Complete
 }
@@ -287,13 +333,22 @@ pub(crate) enum FinalPassAction {
     /// utterance end) and APPEND it to the committed streaming text. Committed
     /// text is immutable.
     TailGapFill,
+    /// Run Whisper over the whole file, but adopt ONLY punctuation and
+    /// capitalization onto the committed words via word alignment
+    /// (`codescribe_core::stt::punctuation_transplant`). The committed word
+    /// sequence is invariant — this is shape transfer, not a re-pass; a weak
+    /// alignment delivers the committed text untouched.
+    PunctuationRepass,
 }
 
 /// Canonical stop-path routing decision. Settings / `FINAL_PASS_MODE` is law.
 ///
-/// Hard mapping (operator 2026-08-05):
+/// Hard mapping (operator 2026-08-05, shape row added 2026-08-09):
 /// - `Always` → `FullFileRepass`, regardless of completeness.
 /// - `Smart` + `Complete` → `SkipStreamingFinal`.
+/// - `Smart` + `CompleteShapeDeficient` → `PunctuationRepass` (words stay
+///   committed; only sentence shape is adopted — the operator's answer to a
+///   1052-char delivery carrying one period while Whisper heard nine).
 /// - `Smart` + `Incomplete{..}` → `TailGapFill` (per-utterance / tail only,
 ///   **never** a full-file re-pass).
 /// - `Off` → `SkipStreamingFinal`, regardless of completeness.
@@ -309,6 +364,7 @@ pub(crate) fn final_pass_action(
         FinalPassRoutingMode::Off => FinalPassAction::SkipStreamingFinal,
         FinalPassRoutingMode::Smart => match completeness {
             StreamingCompleteness::Complete => FinalPassAction::SkipStreamingFinal,
+            StreamingCompleteness::CompleteShapeDeficient => FinalPassAction::PunctuationRepass,
             StreamingCompleteness::Incomplete { .. } => FinalPassAction::TailGapFill,
         },
     }

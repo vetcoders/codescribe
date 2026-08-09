@@ -761,6 +761,66 @@ fn test_final_pass_action_on_complete_streaming_evidence() {
         "Off is off — no silent Always rewrite (live engine is not an input at all)"
     );
 
+    // The 2026-08-09 wall: coverage-complete, 1052 chars, one period. Smart
+    // must route to the punctuation transplant instead of a silent skip.
+    let wall = format!(
+        "{} kropka",
+        "dobra zróbmy tak najpierw sprawdź ten plik potem zobacz testy ".repeat(18)
+    );
+    assert!(wall.chars().count() > 1000);
+    let shapeless = assess_streaming_completeness_fields(
+        &wall,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        wall.chars().count(),
+        4,
+    );
+    assert_eq!(shapeless, StreamingCompleteness::CompleteShapeDeficient);
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, shapeless),
+        FinalPassAction::PunctuationRepass,
+        "Smart+shape-deficient adopts Whisper's sentence shape, words stay committed"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, shapeless),
+        FinalPassAction::SkipStreamingFinal,
+        "Off stays off even for a wall of words"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, shapeless),
+        FinalPassAction::FullFileRepass,
+        "Always keeps its full re-pass regardless of shape"
+    );
+
+    // Short notes legitimately carry no terminal punctuation — never flagged.
+    let short_note = assess_streaming_completeness_fields(
+        "kup mleko i chleb po drodze",
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        27,
+        1,
+    );
+    assert_eq!(short_note, StreamingCompleteness::Complete);
+
+    // Naturally punctuated long prose stays Complete (human ≈175 chars/terminal).
+    let prose = "To jest zdanie pierwsze, całkiem naturalnej długości. A tutaj mamy zdanie drugie, też rozsądne. "
+        .repeat(6);
+    assert!(prose.chars().count() > 320);
+    let shaped = assess_streaming_completeness_fields(
+        &prose,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        prose.chars().count(),
+        3,
+    );
+    assert_eq!(shaped, StreamingCompleteness::Complete);
+
     let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
     assert!(matches!(
         empty,
@@ -3725,6 +3785,66 @@ fn test_quality_gate_catches_short_ai_rewrites_in_danger_zone() {
         crate::state::history::TranscriptKind::FormattedTranscript,
     );
     assert_eq!(trigger, Some("high_rewrite_ratio"));
+}
+
+#[test]
+fn test_quality_gate_triggers_commit_on_semantic_divergence() {
+    // A formatting pass that keeps length but changes meaning: character
+    // ratios stay quiet, only the semantic axis can see it. Cosines are the
+    // measured populations from core::pipeline::semantic_guard's calibration.
+    let stats = crate::stream_postprocess::StreamPostProcessStats {
+        input_chunks: 4,
+        dropped_chunks: 0,
+        ..Default::default()
+    };
+    // Append-only formatting (trailing period) keeps every character heuristic
+    // quiet: TranscriptDelta diffs by common prefix/suffix, so mid-string
+    // comma insertion would read as a ~0.9 correction ratio and fire the char
+    // gate before the semantic axis is ever consulted — this test isolates the
+    // semantic branch on purpose.
+    let raw = "zamów proszę odczynniki do laboratorium na przyszły tydzień";
+    let formatted = "zamów proszę odczynniki do laboratorium na przyszły tydzień.";
+    let mut probe = ActionQualityProbe::from_transcripts(raw, formatted, &stats);
+
+    probe.semantic_cosine = Some(0.253);
+    assert_eq!(
+        evaluate_quality_commit_trigger(
+            false,
+            &probe,
+            crate::state::history::TranscriptKind::FormattedTranscript,
+        ),
+        Some("semantic_divergence")
+    );
+
+    // Meaning kept → the semantic axis stays silent and nothing else fires.
+    probe.semantic_cosine = Some(0.95);
+    assert!(
+        evaluate_quality_commit_trigger(
+            false,
+            &probe,
+            crate::state::history::TranscriptKind::FormattedTranscript,
+        )
+        .is_none()
+    );
+
+    // No verdict (fail-open) must behave exactly like the pre-guard gate.
+    probe.semantic_cosine = None;
+    assert!(
+        evaluate_quality_commit_trigger(
+            false,
+            &probe,
+            crate::state::history::TranscriptKind::FormattedTranscript,
+        )
+        .is_none()
+    );
+
+    // Raw lane: even a catastrophic cosine must not fire — the user was
+    // promised their literal words, and the guard judges only AI formatting.
+    probe.semantic_cosine = Some(0.1);
+    assert!(
+        evaluate_quality_commit_trigger(true, &probe, crate::state::history::TranscriptKind::Raw)
+            .is_none()
+    );
 }
 
 #[test]
