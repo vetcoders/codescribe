@@ -38,6 +38,10 @@ name = "qube-daemon"
 path = "bin/qube_daemon.rs"
 
 [[bin]]
+name = "codescribe"
+path = "bin/codescribe.rs"
+
+[[bin]]
 name = "codescribe-teacher"
 path = "bin/codescribe-teacher.rs"
 
