@@ -134,9 +134,11 @@ release-qube: dist-preflight
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing qube tools (slim: Silero + MiniLM; Whisper from cache / Settings)..."
+	@echo "Installing qube tools + codescribe CLI (slim: Silero + MiniLM; Whisper from cache / Settings)..."
+	@echo "Local install uses the development license verifier — same contract as install-app."
 	@./scripts/download-embedder.sh || true
-	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo install --path . --force
+	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
+	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
@@ -145,7 +147,8 @@ install:
 
 install-no-embed:
 	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
-	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
+	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
+	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
