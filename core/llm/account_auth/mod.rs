@@ -47,54 +47,141 @@ pub enum TokenRequestEncoding {
     Json,
 }
 
+/// How the authorization code gets back to Codescribe.
+///
+/// This is the one provider property the login *entry point* must branch on:
+/// the two flows need different machinery (a local HTTP listener vs. a text
+/// field), so a mismatch has to be refused rather than approximated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginFlow {
+    /// Provider redirects to a loopback listener this app binds
+    /// (`{callback_host}:{port}{callback_path}`) — OpenAI, and xAI later.
+    Loopback,
+    /// Provider renders `"<code>#<state>"` on its own page for the user to
+    /// paste back — Anthropic's console flow. See [`paste_code`].
+    PasteCode,
+}
+
 /// Everything that differs between providers in one place, so adding a
 /// provider is a table row rather than a new `match` arm in five functions.
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderOAuthConfig {
+    /// Which provider this row describes.
+    pub provider: ProviderKind,
     /// Keychain account name holding the serialized `AccountTokens`.
     pub tokens_account: &'static str,
     /// Settings router key for the operator-pasted client id (non-secret).
     pub client_id_setting: &'static str,
     /// Dev/CI env fallback for the client id.
     pub client_id_env: &'static str,
+    /// Reads this provider's operator-pasted client id out of a settings
+    /// snapshot. The row carries its own accessor so resolving a client id
+    /// never becomes a `match` over setting keys.
+    pub client_id_from_settings: fn(&UserSettings) -> Option<String>,
+    /// A client id the vendor publishes for desktop apps, used only when the
+    /// operator configured none. `None` ⇒ the provider stays gated on
+    /// registration; Codescribe never borrows another application's identity.
+    pub default_client_id: Option<&'static str>,
     /// Env override for the issuer base URL.
     pub issuer_env: &'static str,
     pub default_issuer: &'static str,
+    /// Path appended to the issuer for the authorize endpoint. Unused by
+    /// [`LoginFlow::PasteCode`] rows, whose authorize page can live on a
+    /// different host than the token endpoint.
+    pub authorize_path: &'static str,
     /// Path appended to the issuer for the token endpoint.
     pub token_path: &'static str,
+    /// Redirect path the provider is registered to call back on — appended to
+    /// the loopback origin for [`LoginFlow::Loopback`], to the issuer for
+    /// [`LoginFlow::PasteCode`].
+    pub callback_path: &'static str,
+    /// Loopback redirect host. Some providers pin the literal `127.0.0.1`
+    /// rather than `localhost`; they are not interchangeable in a registered
+    /// redirect URI. Empty for non-loopback rows.
+    pub callback_host: &'static str,
+    /// Port the provider's registered redirect URI expects. `0` ⇒ any free
+    /// port (the provider accepts a wildcard loopback port). Unused by
+    /// non-loopback rows.
+    pub preferred_port: u16,
+    /// OAuth scopes requested at authorize time.
+    pub scope: &'static str,
+    /// Extra authorize-URL query pairs this provider requires.
+    pub extra_authorize_params: &'static [(&'static str, &'static str)],
+    pub login_flow: LoginFlow,
     pub encoding: TokenRequestEncoding,
 }
+
+const OPENAI_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
+    provider: ProviderKind::OpenAiResponses,
+    tokens_account: OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+    client_id_setting: OPENAI_CLIENT_ID_SETTING,
+    client_id_env: OPENAI_CLIENT_ID_ENV,
+    client_id_from_settings: |settings| settings.openai_oauth_client_id.clone(),
+    default_client_id: None,
+    issuer_env: OPENAI_ISSUER_ENV,
+    default_issuer: DEFAULT_ISSUER,
+    authorize_path: "/oauth/authorize",
+    token_path: "/oauth/token",
+    callback_path: "/auth/callback",
+    callback_host: "localhost",
+    preferred_port: 1455,
+    scope: "openid profile email offline_access",
+    extra_authorize_params: &[
+        ("id_token_add_organizations", "true"),
+        ("codescribe_account_flow", "true"),
+    ],
+    login_flow: LoginFlow::Loopback,
+    encoding: TokenRequestEncoding::Form,
+};
+
+const ANTHROPIC_OAUTH: ProviderOAuthConfig = ProviderOAuthConfig {
+    provider: ProviderKind::AnthropicMessages,
+    tokens_account: ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT,
+    client_id_setting: ANTHROPIC_CLIENT_ID_SETTING,
+    client_id_env: ANTHROPIC_CLIENT_ID_ENV,
+    client_id_from_settings: |settings| settings.anthropic_oauth_client_id.clone(),
+    default_client_id: None,
+    issuer_env: ANTHROPIC_ISSUER_ENV,
+    default_issuer: ANTHROPIC_DEFAULT_ISSUER,
+    authorize_path: "/oauth/authorize",
+    token_path: "/v1/oauth/token",
+    // Anthropic redirects to a page on the issuer host that renders the code;
+    // there is no loopback origin to fill in.
+    callback_path: "/oauth/code/callback",
+    callback_host: "",
+    preferred_port: 0,
+    scope: "user:profile user:inference",
+    extra_authorize_params: &[],
+    login_flow: LoginFlow::PasteCode,
+    encoding: TokenRequestEncoding::Json,
+};
+
+/// The OAuth registry: one row per provider that can sign in with an account.
+/// A provider absent from this table has no account auth — [`provider_oauth_config`]
+/// answers `UnsupportedProvider`, which is the honest answer, not a panic.
+const PROVIDER_OAUTH_REGISTRY: [ProviderOAuthConfig; 2] = [OPENAI_OAUTH, ANTHROPIC_OAUTH];
 
 pub fn provider_oauth_config(
     provider: ProviderKind,
 ) -> Result<ProviderOAuthConfig, AccountAuthError> {
-    match provider {
-        ProviderKind::OpenAiResponses => Ok(ProviderOAuthConfig {
-            tokens_account: OPENAI_ACCOUNT_TOKENS_ACCOUNT,
-            client_id_setting: OPENAI_CLIENT_ID_SETTING,
-            client_id_env: OPENAI_CLIENT_ID_ENV,
-            issuer_env: OPENAI_ISSUER_ENV,
-            default_issuer: DEFAULT_ISSUER,
-            token_path: "/oauth/token",
-            encoding: TokenRequestEncoding::Form,
-        }),
-        ProviderKind::AnthropicMessages => Ok(ProviderOAuthConfig {
-            tokens_account: ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT,
-            client_id_setting: ANTHROPIC_CLIENT_ID_SETTING,
-            client_id_env: ANTHROPIC_CLIENT_ID_ENV,
-            issuer_env: ANTHROPIC_ISSUER_ENV,
-            default_issuer: ANTHROPIC_DEFAULT_ISSUER,
-            token_path: "/v1/oauth/token",
-            encoding: TokenRequestEncoding::Json,
-        }),
-    }
+    PROVIDER_OAUTH_REGISTRY
+        .iter()
+        .find(|row| row.provider == provider)
+        .copied()
+        .ok_or_else(|| AccountAuthError::UnsupportedProvider(provider.as_str().to_string()))
 }
 
 const REFRESH_SKEW: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub enum AccountAuthError {
-    NoClientId,
+    /// No client id configured for a provider. Carries that provider's own
+    /// setting/env keys so the message tells the operator which field to fill —
+    /// naming OpenAI's keys during an Anthropic sign-in is worse than useless.
+    NoClientId {
+        setting: &'static str,
+        env: &'static str,
+    },
     UnsupportedProvider(String),
     NotSignedIn(String),
     Storage(String),
@@ -106,10 +193,10 @@ pub enum AccountAuthError {
 impl fmt::Display for AccountAuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AccountAuthError::NoClientId => write!(
+            AccountAuthError::NoClientId { setting, env } => write!(
                 f,
                 "{NO_CLIENT_ID_MESSAGE}; paste the registered client id in Settings → Keys \
-                 ({OPENAI_CLIENT_ID_SETTING}) or set {OPENAI_CLIENT_ID_ENV}"
+                 ({setting}) or set {env}"
             ),
             AccountAuthError::UnsupportedProvider(provider) => {
                 write!(f, "provider account auth is not available for {provider}")
@@ -206,38 +293,32 @@ pub fn account_status(provider: ProviderKind) -> AccountAuthStatus {
 
 pub fn client_id_for_provider(provider: ProviderKind) -> Result<String, AccountAuthError> {
     let config = provider_oauth_config(provider)?;
-    configured_client_id_for(config).ok_or(AccountAuthError::NoClientId)
+    configured_client_id_for(config).ok_or(AccountAuthError::NoClientId {
+        setting: config.client_id_setting,
+        env: config.client_id_env,
+    })
 }
 
-/// Operator-configured OAuth client id for the default (OpenAI) provider.
-/// Kept for existing callers; new code should use [`client_id_for_provider`].
-pub fn configured_client_id() -> Option<String> {
-    provider_oauth_config(ProviderKind::OpenAiResponses)
-        .ok()
-        .and_then(configured_client_id_for)
-}
-
-/// Operator-configured OAuth client id, or `None` (⇒ "awaiting app
-/// registration"). Reads the persisted settings snapshot on every call — a Keys
-/// panel save takes effect on the very next click, no restart — with the dev
-/// env var as the fallback, never the other way around (no frozen env).
+/// Client id for a provider, or `None` (⇒ "awaiting app registration").
+/// Resolution order is operator settings → dev env var → the row's published
+/// default. Reads the persisted settings snapshot on every call — a Keys panel
+/// save takes effect on the very next click, no restart, and env never freezes
+/// over a saved setting.
 ///
-/// No client id ships hardcoded. Reusing another vendor's registered client id
-/// (the trick some CLI ports lean on) would make Codescribe impersonate that
-/// application to the provider; every provider here waits for its own
-/// registration instead.
+/// No client id ships hardcoded today: both rows carry `default_client_id:
+/// None`. Reusing another vendor's *private* registration (the trick some CLI
+/// ports lean on) would make Codescribe impersonate that application; the field
+/// exists only for ids a vendor publishes for third-party desktop clients.
 fn configured_client_id_for(config: ProviderOAuthConfig) -> Option<String> {
     let settings = UserSettings::load();
-    let from_settings = match config.client_id_setting {
-        OPENAI_CLIENT_ID_SETTING => settings.openai_oauth_client_id.clone(),
-        ANTHROPIC_CLIENT_ID_SETTING => settings.anthropic_oauth_client_id.clone(),
-        _ => None,
-    };
-    from_settings.and_then(non_empty_trimmed).or_else(|| {
-        std::env::var(config.client_id_env)
-            .ok()
-            .and_then(non_empty_trimmed)
-    })
+    (config.client_id_from_settings)(&settings)
+        .and_then(non_empty_trimmed)
+        .or_else(|| {
+            std::env::var(config.client_id_env)
+                .ok()
+                .and_then(non_empty_trimmed)
+        })
+        .or_else(|| config.default_client_id.map(str::to_string))
 }
 
 fn non_empty_trimmed(value: String) -> Option<String> {
@@ -261,10 +342,6 @@ fn id_token_identity(tokens: &AccountTokens) -> Option<String> {
             .and_then(serde_json::Value::as_str)
             .and_then(|value| non_empty_trimmed(value.to_string()))
     })
-}
-
-pub fn issuer_from_env() -> String {
-    issuer_for(ProviderKind::OpenAiResponses)
 }
 
 /// Issuer base URL for `provider`: env override, else the provider default.
@@ -345,14 +422,26 @@ pub async fn access_token(provider: ProviderKind) -> Result<String, AccountAuthE
 /// Per-provider refresh mutex. Held across the network round trip AND the
 /// storage write, so the winner's rotated token is durable before the next
 /// caller re-reads.
+///
+/// Keyed by provider rather than one static per vendor: the map grows a lock
+/// the first time a provider refreshes, so a new registry row needs no edit
+/// here. The leak is bounded by the number of providers that ever refresh.
 fn refresh_lock(provider: ProviderKind) -> &'static tokio::sync::Mutex<()> {
-    use std::sync::OnceLock;
-    static OPENAI: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    static ANTHROPIC: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    match provider {
-        ProviderKind::OpenAiResponses => OPENAI.get_or_init(Default::default),
-        ProviderKind::AnthropicMessages => ANTHROPIC.get_or_init(Default::default),
-    }
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    type LockTable = Mutex<HashMap<ProviderKind, &'static tokio::sync::Mutex<()>>>;
+    static LOCKS: OnceLock<LockTable> = OnceLock::new();
+
+    let mut table = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        // A panic while merely inserting into this map cannot corrupt it, so a
+        // poisoned guard is safe to take over — refusing would break refresh.
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    table
+        .entry(provider)
+        .or_insert_with(|| Box::leak(Box::new(tokio::sync::Mutex::new(()))))
 }
 
 pub async fn refresh_tokens(
@@ -465,9 +554,16 @@ mod tests {
     fn no_client_id_reports_registration_gate() {
         let (_data_dir, _dir) = isolated_settings_dir("gate");
         let _guard = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        // Pin the Anthropic env too: the operator's dotenv is inherited by the
+        // test process, so an unpinned var makes this pass or fail by machine.
+        let _anthropic_guard = EnvGuard::unset(ANTHROPIC_CLIENT_ID_ENV);
         let err = client_id_for_provider(ProviderKind::OpenAiResponses).unwrap_err();
-        assert!(matches!(err, AccountAuthError::NoClientId));
+        assert!(matches!(err, AccountAuthError::NoClientId { .. }));
         assert!(err.to_string().contains(NO_CLIENT_ID_MESSAGE));
+        // The message must name *this* provider's fields, not OpenAI's by reflex.
+        let anthropic = client_id_for_provider(ProviderKind::AnthropicMessages).unwrap_err();
+        assert!(anthropic.to_string().contains(ANTHROPIC_CLIENT_ID_SETTING));
+        assert!(anthropic.to_string().contains(ANTHROPIC_CLIENT_ID_ENV));
     }
 
     #[test]
@@ -662,7 +758,7 @@ mod tests {
         // even though Anthropic's env id is present.
         assert!(matches!(
             client_id_for_provider(ProviderKind::OpenAiResponses),
-            Err(AccountAuthError::NoClientId)
+            Err(AccountAuthError::NoClientId { .. })
         ));
         assert_eq!(
             client_id_for_provider(ProviderKind::AnthropicMessages).unwrap(),
@@ -673,6 +769,102 @@ mod tests {
             ANTHROPIC_DEFAULT_ISSUER
         );
         assert_eq!(issuer_for(ProviderKind::OpenAiResponses), DEFAULT_ISSUER);
+    }
+
+    /// The registry is the substrate every other guarantee rests on: a row
+    /// pointing at another row's keychain account or settings key would hand
+    /// one vendor another vendor's credential. Adding a provider by copy-paste
+    /// is exactly how that happens, so it is pinned here rather than reviewed.
+    #[test]
+    fn oauth_rows_never_share_an_account_or_a_client_id_channel() {
+        let mut accounts: Vec<&str> = Vec::new();
+        let mut settings_keys: Vec<&str> = Vec::new();
+        let mut envs: Vec<&str> = Vec::new();
+        for row in PROVIDER_OAUTH_REGISTRY {
+            assert_eq!(
+                provider_oauth_config(row.provider).unwrap().tokens_account,
+                row.tokens_account,
+                "{} resolves to a different row than it declares",
+                row.provider
+            );
+            assert!(row.token_path.starts_with('/'), "{}", row.provider);
+            assert!(row.callback_path.starts_with('/'), "{}", row.provider);
+            if row.login_flow == LoginFlow::Loopback {
+                assert!(
+                    !row.callback_host.is_empty(),
+                    "{} needs a loopback host for its registered redirect URI",
+                    row.provider
+                );
+            }
+            accounts.push(row.tokens_account);
+            settings_keys.push(row.client_id_setting);
+            envs.push(row.client_id_env);
+        }
+        for list in [&accounts, &settings_keys, &envs] {
+            let mut sorted = list.clone();
+            sorted.sort_unstable();
+            let before = sorted.len();
+            sorted.dedup();
+            assert_eq!(
+                before,
+                sorted.len(),
+                "duplicate OAuth row value in {list:?}"
+            );
+        }
+    }
+
+    /// Every provider that can be selected in Settings must resolve to a row —
+    /// or fail loudly. A silent `UnsupportedProvider` on a provider the picker
+    /// offers is a dead sign-in button with no explanation.
+    #[test]
+    fn every_selectable_provider_has_an_oauth_row() {
+        use crate::llm::provider::ALL_PROVIDERS;
+        for provider in ALL_PROVIDERS {
+            assert!(
+                provider_oauth_config(provider).is_ok(),
+                "{provider} is selectable but has no OAuth row"
+            );
+        }
+    }
+
+    /// Client-id resolution reads the row's own accessor, so each provider sees
+    /// only its own saved value — no cross-reads through a shared settings key.
+    #[test]
+    #[serial]
+    fn each_row_reads_only_its_own_saved_client_id() {
+        let (_data_dir, _dir) = isolated_settings_dir("row_accessor");
+        let _openai_env = EnvGuard::unset(OPENAI_CLIENT_ID_ENV);
+        let _anthropic_env = EnvGuard::unset(ANTHROPIC_CLIENT_ID_ENV);
+
+        UserSettings {
+            openai_oauth_client_id: Some("openai-app".to_string()),
+            ..Default::default()
+        }
+        .save()
+        .expect("persist client id");
+
+        assert_eq!(
+            client_id_for_provider(ProviderKind::OpenAiResponses).unwrap(),
+            "openai-app"
+        );
+        assert!(matches!(
+            client_id_for_provider(ProviderKind::AnthropicMessages),
+            Err(AccountAuthError::NoClientId { .. })
+        ));
+    }
+
+    /// No row ships a client id today; the field exists for vendor-published
+    /// desktop ids. If one ever lands here it must be a deliberate edit, not a
+    /// silent lift of someone else's registration.
+    #[test]
+    fn no_row_ships_a_borrowed_client_id() {
+        for row in PROVIDER_OAUTH_REGISTRY {
+            assert_eq!(
+                row.default_client_id, None,
+                "{} ships a hardcoded client id",
+                row.provider
+            );
+        }
     }
 
     #[derive(Debug)]

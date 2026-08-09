@@ -740,8 +740,13 @@ impl CodescribeConfig {
                     account_signed_in: account_status.signed_in,
                     account_login_enabled: account_status.client_id_configured,
                     account_status_message: account_status.message,
+                    // Only OpenAI's id is surfaced for editing: the Keys panel
+                    // saves through the single `LLM_OPENAI_OAUTH_CLIENT_ID`
+                    // router key, so exposing another provider's id here would
+                    // let a save write it into OpenAI's slot. Widening this
+                    // needs the settings key to travel with the row (W6-C).
                     oauth_client_id: matches!(kind, ProviderKind::OpenAiResponses)
-                        .then(account_auth::configured_client_id)
+                        .then(|| account_auth::client_id_for_provider(*kind).ok())
                         .flatten(),
                     models: Vec::new(),
                 }
@@ -749,11 +754,14 @@ impl CodescribeConfig {
             .collect()
     }
 
-    /// Start provider-account login for the selected provider. Today this is
-    /// only supported for OpenAI Responses and is gated by the configured OAuth
-    /// client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, dev-env fallback
-    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); absent client id returns a config
-    /// error whose message contains "awaiting app registration".
+    /// Start provider-account login for the selected provider. Every endpoint —
+    /// issuer, authorize path, callback port — comes from that provider's OAuth
+    /// registry row, so the browser is never sent to another vendor's login.
+    /// Gated by the provider's own configured client id (its settings key, its
+    /// dev-env fallback); absent client id returns a config error whose message
+    /// contains "awaiting app registration". Providers whose flow is not a
+    /// loopback callback (Anthropic pastes a code) are refused here rather than
+    /// half-served.
     pub fn start_account_login(
         &self,
         provider_id: String,
@@ -763,8 +771,8 @@ impl CodescribeConfig {
         })?;
         let client_id =
             account_auth::client_id_for_provider(provider).map_err(account_auth_to_cs)?;
-        let mut opts = account_auth::ServerOptions::new(client_id);
-        opts.issuer = account_auth::issuer_from_env();
+        let opts =
+            account_auth::ServerOptions::new(provider, client_id).map_err(account_auth_to_cs)?;
 
         let login = account_auth_runtime()?
             .block_on(account_auth::run_login_server(opts))

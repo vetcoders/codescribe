@@ -26,11 +26,11 @@ use crate::llm::account_auth;
 
 use tracing::warn;
 
-/// Canonical LLM provider identity — the wire protocol a request targets.
+/// Canonical LLM provider identity — one variant per vendor product.
 ///
-/// The string forms are the stable on-the-wire / env-var spellings. New
-/// providers append variants here; the request layer branches on this enum
-/// rather than sniffing endpoints.
+/// The variant is only a handle: every property of a provider lives in its
+/// [`ProviderIdentity`] row in [`PROVIDER_REGISTRY`]. Adding a vendor is a row
+/// plus a variant, never a new arm in `as_str`/`display_name`/`api_key_env_key`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
     /// OpenAI Responses API (`/v1/responses`). The default.
@@ -39,31 +39,98 @@ pub enum ProviderKind {
     AnthropicMessages,
 }
 
+/// The request/response protocol a provider speaks.
+///
+/// Deliberately separate from [`ProviderKind`]: several vendors ship the same
+/// wire protocol (xAI serves the OpenAI Responses shape), so request builders
+/// and capability policy branch on the *family*, never on the vendor name.
+/// Without this split, every protocol-compatible vendor would fork the request
+/// layer for no reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WireFamily {
+    /// OpenAI Responses (`/v1/responses`, `previous_response_id` chaining).
+    OpenAiResponses,
+    /// Anthropic Messages (`/v1/messages`, adaptive thinking, refusal stops).
+    AnthropicMessages,
+}
+
+/// Everything the identity layer knows about one provider, as data.
+///
+/// This is the row a new vendor adds. Keep it free of behaviour: OAuth details
+/// live in `account_auth::ProviderOAuthConfig`, per-model request limits in
+/// [`CapabilityPolicy`].
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderIdentity {
+    /// The enum handle this row describes.
+    pub kind: ProviderKind,
+    /// Canonical lowercase-kebab spelling used in env vars and persisted config.
+    pub canonical: &'static str,
+    /// Extra accepted spellings (already lowercased) for [`FromStr`]. The bare
+    /// vendor name belongs here so `LLM_ASSISTIVE_PROVIDER=openai` keeps working.
+    pub aliases: &'static [&'static str],
+    /// Human-readable label for provider pickers (Settings UI).
+    pub display_name: &'static str,
+    /// Env var / Keychain account holding the assistive-lane API key. Every
+    /// provider owns a distinct account so the secrets coexist and switching
+    /// providers never overwrites a key.
+    pub api_key_env_key: &'static str,
+    /// Protocol this provider speaks — what request builders branch on.
+    pub wire_family: WireFamily,
+}
+
+const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
+    kind: ProviderKind::OpenAiResponses,
+    canonical: "openai-responses",
+    aliases: &["openai", "openai_responses"],
+    display_name: "OpenAI (Responses)",
+    api_key_env_key: "LLM_ASSISTIVE_API_KEY",
+    wire_family: WireFamily::OpenAiResponses,
+};
+
+const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
+    kind: ProviderKind::AnthropicMessages,
+    canonical: "anthropic-messages",
+    aliases: &["anthropic", "anthropic_messages"],
+    display_name: "Anthropic (Messages)",
+    api_key_env_key: "LLM_ANTHROPIC_API_KEY",
+    wire_family: WireFamily::AnthropicMessages,
+};
+
+/// Every provider identity, in Settings-picker order. One row per vendor —
+/// this array plus the matching `ProviderKind` variant is the whole cost of a
+/// new provider at the identity layer.
+pub const PROVIDER_REGISTRY: [ProviderIdentity; 2] = [OPENAI_IDENTITY, ANTHROPIC_IDENTITY];
+
 impl ProviderKind {
+    /// This provider's registry row.
+    pub const fn identity(self) -> &'static ProviderIdentity {
+        match self {
+            ProviderKind::OpenAiResponses => &OPENAI_IDENTITY,
+            ProviderKind::AnthropicMessages => &ANTHROPIC_IDENTITY,
+        }
+    }
+
     /// Canonical lowercase-kebab spelling used in env vars and persisted config.
     pub const fn as_str(self) -> &'static str {
-        match self {
-            ProviderKind::OpenAiResponses => "openai-responses",
-            ProviderKind::AnthropicMessages => "anthropic-messages",
-        }
+        self.identity().canonical
     }
 
     /// Human-readable label for provider pickers (Settings UI).
     pub const fn display_name(self) -> &'static str {
-        match self {
-            ProviderKind::OpenAiResponses => "OpenAI (Responses)",
-            ProviderKind::AnthropicMessages => "Anthropic (Messages)",
-        }
+        self.identity().display_name
     }
 
     /// Env var / Keychain account holding the assistive-lane API key for this
     /// provider. OpenAI shares the assistive-lane key; Anthropic has its own so
     /// the two secrets coexist and switching providers never overwrites a key.
     pub const fn api_key_env_key(self) -> &'static str {
-        match self {
-            ProviderKind::OpenAiResponses => "LLM_ASSISTIVE_API_KEY",
-            ProviderKind::AnthropicMessages => "LLM_ANTHROPIC_API_KEY",
-        }
+        self.identity().api_key_env_key
+    }
+
+    /// The protocol this provider speaks. Branch on this, not on the variant,
+    /// whenever the question is "what shape does the request take".
+    pub const fn wire_family(self) -> WireFamily {
+        self.identity().wire_family
     }
 }
 
@@ -124,9 +191,11 @@ impl FromStr for AuthMode {
     }
 }
 
-/// Every provider identity, in Settings-picker order. The request layer branches
-/// on [`ProviderKind`]; Settings discovers model options via live provider APIs.
-pub const ALL_PROVIDERS: [ProviderKind; 2] = [
+/// Every provider handle, in [`PROVIDER_REGISTRY`] order. Settings discovers
+/// model options via live provider APIs. Kept as its own const because Rust has
+/// no stable const `map`; `registry_and_all_providers_stay_in_lockstep` is the
+/// test that keeps the two from drifting.
+pub const ALL_PROVIDERS: [ProviderKind; PROVIDER_REGISTRY.len()] = [
     ProviderKind::OpenAiResponses,
     ProviderKind::AnthropicMessages,
 ];
@@ -151,11 +220,12 @@ pub struct ParseProviderError(pub String);
 
 impl std::fmt::Display for ParseProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "unknown LLM provider '{}' (expected 'openai-responses' or 'anthropic-messages')",
-            self.0
-        )
+        let expected = PROVIDER_REGISTRY
+            .iter()
+            .map(|row| format!("'{}'", row.canonical))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "unknown LLM provider '{}' (expected {expected})", self.0)
     }
 }
 
@@ -164,18 +234,17 @@ impl std::error::Error for ParseProviderError {}
 impl FromStr for ProviderKind {
     type Err = ParseProviderError;
 
-    /// Parse a provider identity. Case-insensitive, surrounding whitespace
-    /// trimmed. Accepts the canonical kebab spelling plus the bare vendor name
-    /// as a friendly alias. Anything else is an error (callers decide whether to
-    /// fall back to the default — see [`resolve_provider`]).
+    /// Parse a provider identity against the registry. Case-insensitive,
+    /// surrounding whitespace trimmed. Accepts each row's canonical kebab
+    /// spelling plus its declared aliases. Anything else is an error (callers
+    /// decide whether to fall back to the default — see [`resolve_provider`]).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "openai-responses" | "openai" | "openai_responses" => Ok(ProviderKind::OpenAiResponses),
-            "anthropic-messages" | "anthropic" | "anthropic_messages" => {
-                Ok(ProviderKind::AnthropicMessages)
-            }
-            other => Err(ParseProviderError(other.to_string())),
-        }
+        let needle = s.trim().to_ascii_lowercase();
+        PROVIDER_REGISTRY
+            .iter()
+            .find(|row| row.canonical == needle || row.aliases.contains(&needle.as_str()))
+            .map(|row| row.kind)
+            .ok_or(ParseProviderError(needle))
     }
 }
 
@@ -301,12 +370,14 @@ pub fn provider_supports_vision(provider: ProviderKind, model: &str) -> bool {
 
 /// Resolve the capability policy for a `(provider, model)` pair.
 ///
-/// This is the per-model matrix from CORRECTION.md. OpenAI ignores `model` (its
-/// policy is uniform and permissive); Anthropic branches on model family.
+/// This is the per-model matrix from CORRECTION.md, keyed by [`WireFamily`] so
+/// a vendor that serves an existing protocol inherits its policy instead of
+/// forking one. OpenAI Responses ignores `model` (its policy is uniform and
+/// permissive); Anthropic Messages branches on model family.
 pub fn capability_policy(provider: ProviderKind, model: &str) -> CapabilityPolicy {
-    match provider {
-        ProviderKind::OpenAiResponses => openai_policy(),
-        ProviderKind::AnthropicMessages => anthropic_policy_for_model(model),
+    match provider.wire_family() {
+        WireFamily::OpenAiResponses => openai_policy(),
+        WireFamily::AnthropicMessages => anthropic_policy_for_model(model),
     }
 }
 
@@ -522,6 +593,88 @@ mod tests {
         for kind in ALL_PROVIDERS {
             assert!(!kind.display_name().is_empty());
             assert!(!kind.api_key_env_key().is_empty());
+        }
+    }
+
+    /// `ALL_PROVIDERS` is hand-written (no stable const `map`), so it can only
+    /// stay honest if a test pins it to the registry — order included, because
+    /// Settings renders the picker in that order.
+    #[test]
+    fn registry_and_all_providers_stay_in_lockstep() {
+        let from_registry: Vec<ProviderKind> =
+            PROVIDER_REGISTRY.iter().map(|row| row.kind).collect();
+        assert_eq!(from_registry, ALL_PROVIDERS.to_vec());
+        for row in PROVIDER_REGISTRY {
+            assert_eq!(
+                row.kind.identity().canonical,
+                row.canonical,
+                "{} resolves to a different registry row than it declares",
+                row.canonical
+            );
+        }
+    }
+
+    /// A new vendor copy-pasting a row is the realistic mistake: two providers
+    /// sharing a spelling would make `from_str` pick one arbitrarily, and a
+    /// shared key account would let one vendor read the other's secret.
+    #[test]
+    fn registry_rows_never_share_a_spelling_or_a_key_account() {
+        let mut spellings: Vec<&str> = Vec::new();
+        let mut accounts: Vec<&str> = Vec::new();
+        let mut labels: Vec<&str> = Vec::new();
+        for row in PROVIDER_REGISTRY {
+            spellings.push(row.canonical);
+            spellings.extend(row.aliases);
+            accounts.push(row.api_key_env_key);
+            labels.push(row.display_name);
+        }
+        for list in [&spellings, &accounts, &labels] {
+            let mut sorted = list.clone();
+            sorted.sort_unstable();
+            let before = sorted.len();
+            sorted.dedup();
+            assert_eq!(before, sorted.len(), "duplicate registry value in {list:?}");
+        }
+    }
+
+    #[test]
+    fn every_registry_spelling_parses_back_to_its_row() {
+        for row in PROVIDER_REGISTRY {
+            assert_eq!(ProviderKind::from_str(row.canonical), Ok(row.kind));
+            for alias in row.aliases {
+                assert_eq!(ProviderKind::from_str(alias), Ok(row.kind));
+                assert_eq!(
+                    ProviderKind::from_str(&alias.to_ascii_uppercase()),
+                    Ok(row.kind)
+                );
+            }
+        }
+    }
+
+    /// Capability policy is keyed by wire family, so a future vendor speaking
+    /// the Responses protocol inherits the OpenAI policy instead of forking it.
+    #[test]
+    fn capability_policy_follows_the_wire_family() {
+        assert_eq!(
+            ProviderKind::OpenAiResponses.wire_family(),
+            WireFamily::OpenAiResponses
+        );
+        assert_eq!(
+            ProviderKind::AnthropicMessages.wire_family(),
+            WireFamily::AnthropicMessages
+        );
+        for row in PROVIDER_REGISTRY {
+            let policy = capability_policy(row.kind, "claude-opus-4-8");
+            match row.wire_family {
+                WireFamily::OpenAiResponses => {
+                    assert!(policy.previous_response_id);
+                    assert!(!policy.refusal_stop_reason);
+                }
+                WireFamily::AnthropicMessages => {
+                    assert!(!policy.previous_response_id);
+                    assert!(policy.refusal_stop_reason);
+                }
+            }
         }
     }
 
