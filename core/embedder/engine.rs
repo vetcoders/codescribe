@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, Tensor};
@@ -24,12 +25,49 @@ const ENV_EMBEDDER_REPO: &str = "CODESCRIBE_EMBEDDER_REPO";
 /// Whisper: idle-unload must not call `Device::new_metal` again).
 static PROCESS_DEVICE: OnceLock<Device> = OnceLock::new();
 
+/// Set once the accelerated backend has been caught returning non-finite output.
+/// Checked ahead of `PROCESS_DEVICE` so the demotion survives idle-unload without
+/// having to re-derive the (already-created) Metal device.
+static FORCE_CPU: AtomicBool = AtomicBool::new(false);
+
+/// Permanently demote this process's embedder to the CPU. Called by the loader's
+/// self-test; there is no way back, because a backend that produced NaN once has
+/// no claim on the next inference.
+pub(super) fn demote_to_cpu() {
+    FORCE_CPU.store(true, Ordering::Relaxed);
+}
+
+pub(super) fn is_demoted_to_cpu() -> bool {
+    FORCE_CPU.load(Ordering::Relaxed)
+}
+
+/// Force the embedder onto a specific Candle device. Exists because a silent
+/// backend fault is otherwise indistinguishable from bad weights: the embedder
+/// was found returning 384 dimensions of NaN for every input, and the only way
+/// to separate "Metal produced NaN" from "the model loads wrong" is to run the
+/// same weights on the CPU. `cpu` forces CPU; anything else keeps the default
+/// Metal-with-CPU-fallback.
+const ENV_EMBEDDER_DEVICE: &str = "CODESCRIBE_EMBEDDER_DEVICE";
+
 fn process_device() -> Device {
+    if is_demoted_to_cpu() {
+        return Device::Cpu;
+    }
     PROCESS_DEVICE
         .get_or_init(|| {
-            let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+            let forced_cpu = std::env::var(ENV_EMBEDDER_DEVICE)
+                .map(|value| value.trim().eq_ignore_ascii_case("cpu"))
+                .unwrap_or(false);
+            let device = if forced_cpu {
+                Device::Cpu
+            } else {
+                Device::new_metal(0).unwrap_or(Device::Cpu)
+            };
             info!("Embedder process device acquired once: {device:?}");
             device
+            // NOTE: correctness of this device is not assumed — `init` runs a
+            // finite-output self-test and falls back to CPU when the backend
+            // returns NaN. See `assert_backend_produces_finite_vectors`.
         })
         .clone()
 }
@@ -38,6 +76,25 @@ fn process_device() -> Device {
 /// Used by the idle reaper to prune the Metal free-buffer pool after unload.
 pub(super) fn cached_process_device() -> Option<Device> {
     PROCESS_DEVICE.get().cloned()
+}
+
+/// Weight dtype for the embedder. **Always f32** — this is a correctness fix,
+/// not a preference.
+///
+/// `Device::bf16_default_to_f32()` reports bf16 as available on Metal, and
+/// candle's bf16 BERT path on this stack returns NaN for every dimension of
+/// every input (measured 2026-08-09, macOS 27.0: 384/384 NaN in bf16, unit-norm
+/// vectors and sensible similarities in f32 on the same weights and the same
+/// Metal device). Nothing ever surfaced because the only consumer compares the
+/// result against a threshold, and every comparison with NaN is false — the
+/// semantic gate read as "nothing to drop" while it was in fact blind, across
+/// 378 real deliveries.
+///
+/// MiniLM is 384-dimensional and already small; f32 costs little and is the
+/// only dtype proven to produce numbers here. Do not "optimise" this back to
+/// bf16 without re-running the finite-output check on the target OS.
+fn embedder_dtype(_device: &Device) -> DType {
+    DType::F32
 }
 
 /// Configuration for the embedder
@@ -137,7 +194,7 @@ impl EmbedderEngine {
 
         let tokenizer = prepare_tokenizer(tokenizer, &config, max_length)?;
 
-        let dtype = device.bf16_default_to_f32();
+        let dtype = embedder_dtype(&device);
         let tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
             .context("Failed to deserialize embedded model weights")?;
         let tensors = move_tensors_to_device(tensors, &device, dtype)?;
@@ -182,7 +239,7 @@ impl EmbedderEngine {
             .map_err(|e| anyhow!("Failed to load tokenizer: {}", e))?;
         let tokenizer = prepare_tokenizer(tokenizer, &config, max_length)?;
 
-        let dtype = device.bf16_default_to_f32();
+        let dtype = embedder_dtype(&device);
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&weights_path], dtype, &device)
                 .context("Failed to load embedder weights")?
