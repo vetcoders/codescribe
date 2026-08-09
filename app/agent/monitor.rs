@@ -396,6 +396,7 @@ fn tick_default() -> Result<()> {
 }
 
 #[cfg(test)]
+/// Run-monitor registration, tick progression, stall/recovery, and failure heartbeats.
 mod tests {
     use std::fs;
 
@@ -404,6 +405,7 @@ mod tests {
     use super::*;
     use codescribe_core::agent::run_monitor::RunMonitorState;
 
+    /// Isolated temp stores + control-plane run dir for one monitor test case.
     struct Harness {
         _tmp: TempDir,
         store: RunMonitorStore,
@@ -413,6 +415,7 @@ mod tests {
         run_dir: PathBuf,
     }
 
+    /// Spin up temp monitor/thread stores and a control-plane run directory for `run_id`.
     fn harness(run_id: &str) -> Harness {
         let tmp = TempDir::new().unwrap();
         let store = RunMonitorStore::new_in(tmp.path().join("monitors")).unwrap();
@@ -432,10 +435,12 @@ mod tests {
         }
     }
 
+    /// Overwrite the run's `meta.json` with the given body (test control-plane fixture).
     fn write_meta(harness: &Harness, body: &str) {
         fs::write(harness.run_dir.join("meta.json"), body).unwrap();
     }
 
+    /// Seed a composer-sourced agent thread so heartbeat delivery has a target.
     fn seed_thread(harness: &Harness, thread_id: &str) {
         let at = Utc::now();
         harness
@@ -467,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    /// Active→completed path: silent progress, one final heartbeat, no duplicates after done.
     fn launched_run_progresses_and_final_state_surfaces_without_prompting() {
         let run_id = "work-260801-000000-1";
         let thread_id = "t_2026-08-01_monitor";
@@ -572,6 +578,7 @@ mod tests {
     }
 
     #[test]
+    /// Failed runs post one heartbeat with a length-bounded transcript excerpt.
     fn failed_run_surfaces_failure_with_bounded_excerpt() {
         let run_id = "work-260801-000000-2";
         let thread_id = "t_2026-08-01_fail";
@@ -615,6 +622,7 @@ mod tests {
     }
 
     #[test]
+    /// Stall and recovery each notify once; repeated ticks in the same state stay silent.
     fn stall_then_recovery_notifies_each_transition_once() {
         let run_id = "work-260801-000000-3";
         let thread_id = "t_2026-08-01_stall";
@@ -685,6 +693,7 @@ mod tests {
     }
 
     #[test]
+    /// Registration requires an existing run dir and a bound thread; escapes are rejected.
     fn registration_rejects_unknown_runs_and_unbound_threads() {
         let harness = harness("work-known");
         write_meta(&harness, r#"{"status":"active"}"#);

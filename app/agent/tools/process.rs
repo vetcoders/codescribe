@@ -68,6 +68,7 @@ struct TrackedProcess {
 /// Only pids started through `run_process` are addressable — observe and stop
 /// refuse anything else, so the agent cannot signal arbitrary processes.
 fn process_table() -> &'static Mutex<HashMap<u32, TrackedProcess>> {
+    /// OnceLock process table: only agent-spawned pids are trackable.
     static TABLE: OnceLock<Mutex<HashMap<u32, TrackedProcess>>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -616,11 +617,13 @@ fn sanitize_argv_arg(arg: &str) -> Result<OsString> {
     Ok(OsString::from(arg.to_owned()))
 }
 
+/// Terminal policy, sanitized child env, and safe printf timeout path.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Shell pipes/operators fail validate_terminal; plain printf is allowed.
     #[test]
     fn terminal_policy_blocks_shell_operators_via_synthetic_line() {
         let tmp = TempDir::new().unwrap();
@@ -630,6 +633,7 @@ mod tests {
         assert!(path_policy::validate_terminal("printf a | bash", cwd, &roots).is_err());
     }
 
+    /// Child env strips LLM API secrets while preserving PATH for tools.
     #[test]
     fn sanitized_child_env_drops_llm_secrets_but_keeps_path() {
         let secret_key = "LLM_ASSISTIVE_API_KEY";
@@ -674,6 +678,7 @@ mod tests {
         assert!(path_out.status.success());
     }
 
+    /// run_with_timeout succeeds for a short safe printf child.
     #[test]
     fn run_printf_when_roots_allow() {
         // Direct command without workspace settings: path_policy needs roots.

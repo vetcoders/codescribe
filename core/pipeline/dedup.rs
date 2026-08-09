@@ -59,18 +59,21 @@ impl OverlapParams {
     }
 }
 
+/// Chunk-append overlap: 30-word window, fuzzy from 3 words, 1 err / 3 words.
 const CHUNK_OVERLAP_PARAMS: OverlapParams = OverlapParams {
     max_window: 30,
     min_fuzzy_overlap_words: 3,
     fuzzy_error_ratio_denominator: 3,
 };
 
+/// Default suffix-strip knobs for batch-style callers (16-word window).
 const DEFAULT_SUFFIX_OVERLAP_PARAMS: OverlapParams = OverlapParams {
     max_window: 16,
     min_fuzzy_overlap_words: 3,
     fuzzy_error_ratio_denominator: 3,
 };
 
+/// Live utterance-boundary suffix strip: tighter 12-word fuzzy window.
 const LIVE_SUFFIX_OVERLAP_PARAMS: OverlapParams = OverlapParams {
     // Live path runs this for every utterance boundary, keep the fuzzy window tighter.
     max_window: 12,
@@ -80,6 +83,7 @@ const LIVE_SUFFIX_OVERLAP_PARAMS: OverlapParams = OverlapParams {
 
 // Whisper timestamp tokens are quantized to 20ms. We keep a small tolerance
 // to avoid re-emitting jittery boundary segments from overlapping windows.
+/// Whisper 20ms quantize slack so boundary segments are not re-emitted.
 const TIMESTAMP_OVERLAP_EPSILON_SEC: f32 = 0.04;
 
 /// Reduce a word to its comparable core: lowercase alphanumerics only.
@@ -424,6 +428,7 @@ fn strip_suffix_overlap_fuzzy(
     Some(stripped)
 }
 
+/// Overlap contract tests: chunk, suffix (exact/fuzzy/live), and timestamp paths.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,6 +436,7 @@ mod tests {
 
     // ── chunk dedup ──────────────────────────────────────
 
+    /// Exact word suffix/prefix at chunk boundary is stripped once.
     #[test]
     fn test_chunk_dedup_exact() {
         let mut out = "Hello world this is".to_string();
@@ -438,6 +444,7 @@ mod tests {
         assert_eq!(out, "Hello world this is a test");
     }
 
+    /// One-word typo inside a ≥3-word overlap still dedups under fuzzy budget.
     #[test]
     fn test_chunk_dedup_fuzzy() {
         // 1-word edit in a 3-word overlap region → should still dedup
@@ -451,6 +458,7 @@ mod tests {
         assert_eq!(out2, "one two three four five six");
     }
 
+    /// Unrelated segments append with a single joining space and no strip.
     #[test]
     fn test_chunk_dedup_no_overlap() {
         let mut out = "Hello world".to_string();
@@ -460,24 +468,28 @@ mod tests {
 
     // ── suffix overlap ───────────────────────────────────
 
+    /// Exact char suffix/prefix match strips the repeated head of new text.
     #[test]
     fn test_suffix_overlap_basic() {
         let result = strip_suffix_overlap("Hello world.", "world. And more.");
         assert_eq!(result, "And more.");
     }
 
+    /// No shared boundary leaves the new text unchanged.
     #[test]
     fn test_suffix_overlap_no_match() {
         let result = strip_suffix_overlap("Hello world.", "Something else.");
         assert_eq!(result, "Something else.");
     }
 
+    /// Empty prior suffix is a no-op (returns new text as-is).
     #[test]
     fn test_suffix_overlap_empty() {
         let result = strip_suffix_overlap("", "Hello world.");
         assert_eq!(result, "Hello world.");
     }
 
+    /// Multi-byte Polish chars must not panic mid-slice on char boundaries.
     #[test]
     fn test_suffix_overlap_polish_diacritics() {
         // "ż" is 2 bytes in UTF-8 — old code would panic slicing mid-char
@@ -485,6 +497,7 @@ mod tests {
         assert_eq!(result, "Dziękuję.");
     }
 
+    /// 4-byte emoji at the boundary stays on real char indices, not byte cuts.
     #[test]
     fn test_suffix_overlap_emoji() {
         // 🐕 is 4 bytes — stress-test char boundary logic
@@ -492,6 +505,7 @@ mod tests {
         assert_eq!(result, "Koniec.");
     }
 
+    /// Punctuation drift fails exact char match; word fallback still dedups.
     #[test]
     fn test_suffix_overlap_word_fallback_punctuation_drift() {
         // Exact char suffix fails on "." vs " " boundary, word fallback should dedup.
@@ -499,6 +513,7 @@ mod tests {
         assert_eq!(result, "very much.");
     }
 
+    /// Fuzzy word fallback absorbs a one-letter typo inside a longer span.
     #[test]
     fn test_suffix_overlap_word_fallback_fuzzy_typo() {
         // "feeling" vs "feelingg" should still dedup in a larger overlap window.
@@ -509,6 +524,7 @@ mod tests {
         assert_eq!(result, "today");
     }
 
+    /// Live path uses tighter window but still fuzzy-matches a 1-letter typo.
     #[test]
     fn test_suffix_overlap_live_fuzzy_typo() {
         let result = strip_suffix_overlap_live(
@@ -518,6 +534,7 @@ mod tests {
         assert_eq!(result, "today");
     }
 
+    /// Live min fuzzy length is 3 words — 2-word typos stay strict-only.
     #[test]
     fn test_suffix_overlap_live_small_windows_do_not_trigger_fuzzy() {
         // 2-word span stays strict-only in live mode (min fuzzy overlap = 3).
@@ -527,12 +544,14 @@ mod tests {
 
     // ── timestamp overlap ────────────────────────────────
 
+    /// Empty segment list returns None so callers fall back to text dedup.
     #[test]
     fn test_timestamp_overlap_fallback_when_segments_absent() {
         let result = strip_segment_overlap(Some(1.0), &[]);
         assert!(result.is_none());
     }
 
+    /// Segments ending at/under last_emitted_end_ts + epsilon are dropped.
     #[test]
     fn test_timestamp_overlap_drops_already_emitted_segments() {
         let segments = vec![
@@ -554,6 +573,7 @@ mod tests {
         assert_eq!(result.1, Some(1.20));
     }
 
+    /// Fully overlapped window yields empty text and no newest end ts.
     #[test]
     fn test_timestamp_overlap_returns_empty_when_all_segments_overlap() {
         let segments = vec![
@@ -575,6 +595,7 @@ mod tests {
         assert!(result.1.is_none());
     }
 
+    /// First emission (no prior end ts) concatenates all finite segments.
     #[test]
     fn test_timestamp_overlap_handles_initial_emission() {
         let segments = vec![

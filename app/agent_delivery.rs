@@ -47,30 +47,34 @@ pub enum AgentDeliveryEvent {
         thread_id: String,
         user_text: String,
     },
+    /// Streaming assistant text token(s) for the live chat bubble.
     TextDelta(String),
+    /// Final assembled assistant text for this turn.
     TextDone(String),
+    /// Streaming reasoning/thinking token(s) when the provider emits them.
     ReasoningDelta(String),
-    ToolExecuting {
-        name: String,
-        id: String,
-    },
+    /// A tool call began; `id` correlates with the later [`ToolResult`].
+    ToolExecuting { name: String, id: String },
+    /// Tool call finished; `is_error` marks a failed tool without ending the turn.
     ToolResult {
         name: String,
         id: String,
         summary: String,
         is_error: bool,
     },
+    /// Successful terminal: the turn is complete and the UI may settle.
     Done,
+    /// Provider or runtime failure; distinct from user-initiated [`Cancelled`].
     Error(String),
     /// The keyed voice turn was explicitly stopped. This is a terminal event,
     /// distinct from provider failure: Swift preserves partial text and settles
     /// pending tools without rendering an error or refreshing persisted history.
-    Cancelled {
-        thread_id: String,
-    },
+    Cancelled { thread_id: String },
 }
 
+/// Process-global broadcast sender for agent delivery events (lazy init).
 static AGENT_DELIVERY_TX: OnceLock<broadcast::Sender<AgentDeliveryEvent>> = OnceLock::new();
+/// Process-global registry of cancellable voice turns (lazy init).
 static AGENT_DELIVERY_TURNS: OnceLock<AgentDeliveryTurnRegistry> = OnceLock::new();
 
 /// Process-global map of cancellable voice turns, keyed by delivery thread id.
@@ -197,6 +201,7 @@ impl AgentDeliveryTurnCancellation {
 }
 
 impl Drop for AgentDeliveryTurnCancellation {
+    /// Disarm the cancellation window so early returns leave no phantom entry.
     fn drop(&mut self) {
         let _ = self.finish();
     }
@@ -243,6 +248,7 @@ pub fn subscribe_agent_delivery() -> broadcast::Receiver<AgentDeliveryEvent> {
     sender().subscribe()
 }
 
+/// Delivery channel, turn registry, and publish ordering tests.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +272,7 @@ mod tests {
         panic!("expected event never arrived on the delivery channel");
     }
 
+    /// A published `TurnStarted` is visible to a live subscriber.
     #[tokio::test]
     async fn published_turn_started_reaches_a_subscriber() {
         // Unique thread id so a concurrent test on the shared global channel can
@@ -289,6 +296,7 @@ mod tests {
         );
     }
 
+    /// Same-sender events keep FIFO order under interleaved global traffic.
     #[tokio::test]
     async fn delta_then_done_preserve_sender_order() {
         // A single sender guarantees per-channel FIFO for its own events even
@@ -314,6 +322,7 @@ mod tests {
         assert_eq!(second, AgentDeliveryEvent::Error(tag.to_string()));
     }
 
+    /// Stop cancels via the short registry mutex and `finish` removes the row.
     #[tokio::test]
     async fn keyed_turn_registry_cancels_without_runtime_mutex_and_cleans_up() {
         let thread_id = "registry_cancel_without_runtime_mutex";
@@ -331,6 +340,7 @@ mod tests {
         );
     }
 
+    /// Publish with no subscriber must not panic or block (disk owns durability).
     #[test]
     fn publish_without_subscriber_is_silent() {
         // No subscriber attached: the send returns Err internally but the public

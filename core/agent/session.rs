@@ -927,6 +927,8 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
     truncated
 }
 
+/// Unit tests for the agent turn loop: stop restore, loop guard, tool approval,
+/// stream retry, and summary redaction contracts.
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -946,10 +948,13 @@ mod tests {
         ToolResultContent, ToolRisk,
     };
 
+    /// Test provider that always requests `loop_tool` so the session hits the
+    /// per-turn iteration guard instead of completing.
     struct LoopingProvider;
 
     #[async_trait]
     impl AgentProvider for LoopingProvider {
+        /// Emit one ready tool call every round to force iteration growth.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -973,6 +978,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user tool-result message (trait stub).
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -989,6 +995,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block for multimodal tool results (trait stub).
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -996,16 +1003,19 @@ mod tests {
             }
         }
 
+        /// Stable provider label for logs and retry diagnostics.
         fn name(&self) -> &str {
             "looping-provider"
         }
     }
 
+    /// Test provider that dequeues a pre-scripted event batch per `stream` call.
     struct ScriptedProvider {
         scripted_events: Mutex<VecDeque<Vec<AgentEvent>>>,
     }
 
     impl ScriptedProvider {
+        /// Queue one event list per future stream open (FIFO).
         fn new(scripted_events: Vec<Vec<AgentEvent>>) -> Self {
             Self {
                 scripted_events: Mutex::new(scripted_events.into()),
@@ -1015,6 +1025,7 @@ mod tests {
 
     #[async_trait]
     impl AgentProvider for ScriptedProvider {
+        /// Pop the next scripted batch; empty queue yields an empty stream.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -1037,6 +1048,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user tool-result message (trait stub).
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -1053,6 +1065,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block for multimodal tool results (trait stub).
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -1060,17 +1073,20 @@ mod tests {
             }
         }
 
+        /// Stable provider label for logs and retry diagnostics.
         fn name(&self) -> &str {
             "scripted-provider"
         }
     }
 
+    /// Test provider that fails once with a transient error, then succeeds.
     struct RetryThenSuccessProvider {
         attempts: Arc<AtomicUsize>,
     }
 
     #[async_trait]
     impl AgentProvider for RetryThenSuccessProvider {
+        /// First open fails with a timeout-like message; later opens stream cleanly.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -1095,6 +1111,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user tool-result message (trait stub).
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -1111,6 +1128,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block for multimodal tool results (trait stub).
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -1118,17 +1136,20 @@ mod tests {
             }
         }
 
+        /// Stable provider label for logs and retry diagnostics.
         fn name(&self) -> &str {
             "retry-then-success-provider"
         }
     }
 
+    /// Test provider that always fails stream open with a non-transient error.
     struct PermanentFailureProvider {
         attempts: Arc<AtomicUsize>,
     }
 
     #[async_trait]
     impl AgentProvider for PermanentFailureProvider {
+        /// Always fail immediately; attempt counter proves no retry was scheduled.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -1139,6 +1160,7 @@ mod tests {
             Err(anyhow::anyhow!("authentication failed"))
         }
 
+        /// Wrap tool output as a user tool-result message (trait stub).
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -1155,6 +1177,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block for multimodal tool results (trait stub).
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -1162,11 +1185,13 @@ mod tests {
             }
         }
 
+        /// Stable provider label for logs and retry diagnostics.
         fn name(&self) -> &str {
             "permanent-failure-provider"
         }
     }
 
+    /// Stop must restore the pre-turn provider chain id, discarding mid-turn growth.
     #[tokio::test]
     async fn restore_after_user_stop_keeps_pre_turn_thread_id() {
         let (ui_tx, _ui_rx) = mpsc::channel(4);
@@ -1200,6 +1225,7 @@ mod tests {
         assert_eq!(session.thread_id(), Some("resp_prior"));
     }
 
+    /// Reopen seeds history and clears the provider chain so restore is not chained.
     #[test]
     fn restore_messages_seeds_history_and_clears_provider_thread_id() {
         let (ui_tx, _ui_rx) = mpsc::channel(4);
@@ -1223,6 +1249,7 @@ mod tests {
         assert_eq!(session.thread_id(), None);
     }
 
+    /// Spilled tool-output references stay as pointers; rehydrate does not rewrite disk.
     #[test]
     fn restore_messages_keeps_stored_tool_reference_without_reinflating() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1261,6 +1288,7 @@ mod tests {
         assert_eq!(session.thread_id(), None);
     }
 
+    /// Looping tool rounds must surface an explicit `loop_guard` error at the cap.
     #[tokio::test]
     async fn stops_when_iteration_limit_is_reached() {
         let mut registry = ToolRegistry::new();
@@ -1308,6 +1336,7 @@ mod tests {
     /// completion under the default loop-guard budget, not die mid-work.
     #[tokio::test]
     async fn long_multi_tool_turn_outlives_old_arbitrary_limit() {
+        /// Provider rounds above the historical 25-iteration cap (must still complete).
         const ROUNDS_ABOVE_OLD_LIMIT: usize = 30;
 
         let mut registry = ToolRegistry::new();
@@ -1375,6 +1404,7 @@ mod tests {
         drain.await.expect("ui drain task should finish");
     }
 
+    /// Text-only turn adopts a clean response id and emits TextDone + Done.
     #[tokio::test]
     async fn send_completes_successfully_without_tool_calls() {
         let provider = ScriptedProvider::new(vec![vec![
@@ -1428,6 +1458,7 @@ mod tests {
         );
     }
 
+    /// First TextDelta must reach the UI before `send` finishes a ready stream.
     #[tokio::test]
     async fn send_yields_after_text_delta_before_finishing_buffered_stream() {
         let provider = ScriptedProvider::new(vec![vec![
@@ -1468,6 +1499,7 @@ mod tests {
             .expect("agent session should complete after yielding first delta");
     }
 
+    /// Missing tool becomes an error tool_result; turn recovers without fatal UI error.
     #[tokio::test]
     async fn send_executes_buffered_tool_call_and_handles_tool_failure_fallback() {
         let provider = ScriptedProvider::new(vec![
@@ -1603,6 +1635,7 @@ mod tests {
         );
     }
 
+    /// Approval binds call/thread identity first; allow-once starts the handler after.
     #[tokio::test]
     async fn approval_is_bound_before_handler_starts_and_allow_once_resumes_exact_call() {
         let provider = ScriptedProvider::new(vec![
@@ -1702,6 +1735,7 @@ mod tests {
         assert!(handler_started.load(Ordering::SeqCst));
     }
 
+    /// Rejected approval never invokes the tool handler; the turn still completes.
     #[tokio::test]
     async fn rejected_approval_never_starts_handler() {
         let provider = ScriptedProvider::new(vec![
@@ -1762,6 +1796,7 @@ mod tests {
         assert!(!handler_started.load(Ordering::SeqCst));
     }
 
+    /// Approval timeout is a refusal: the handler must never start.
     #[tokio::test]
     async fn timed_out_approval_never_starts_handler() {
         let provider = ScriptedProvider::new(vec![
@@ -1824,6 +1859,7 @@ mod tests {
         assert!(!handler_started.load(Ordering::SeqCst));
     }
 
+    /// Structured JSON keys and plain-text secret tokens both redact for UI summaries.
     #[test]
     fn tool_summary_redacts_structured_and_plain_secrets() {
         assert_eq!(
@@ -1840,6 +1876,7 @@ mod tests {
         );
     }
 
+    /// Transient stream-start failures retry once, then adopt the recovered response.
     #[tokio::test]
     async fn send_retries_once_for_transient_stream_start_failure() {
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -2012,6 +2049,7 @@ mod tests {
         );
     }
 
+    /// Auth/non-transient stream-start errors fail fast with a single attempt.
     #[tokio::test]
     async fn send_does_not_retry_non_transient_stream_start_failure() {
         let attempts = Arc::new(AtomicUsize::new(0));

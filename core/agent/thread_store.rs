@@ -30,9 +30,13 @@ use tracing::{debug, warn};
 use super::thread_index::ThreadIndex;
 use super::types::{ContentBlock, Message, Role};
 
+/// Subdirectory under app data holding per-thread JSON files.
 const THREADS_DIR_NAME: &str = "threads";
+/// Sibling of threads/ for binary attachments (images and other blobs).
 const BLOBS_DIR_NAME: &str = "blobs";
+/// File extension for persisted thread records.
 const THREAD_FILE_EXT: &str = "json";
+/// Placeholder title until heuristic/custom/generated ownership claims one.
 const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 
 /// Serializes every thread-file read-modify-write in this process. Thread JSON
@@ -114,6 +118,7 @@ pub struct ThreadMessage {
 }
 
 impl From<&Message> for ThreadMessage {
+    /// Convert a runtime message into storage form (content blocks as JSON).
     fn from(message: &Message) -> Self {
         let content = message
             .content
@@ -956,6 +961,7 @@ fn generate_note_id() -> String {
     format!("n_{}_{}", Utc::now().format("%Y-%m-%d"), random_suffix(6))
 }
 
+/// Persistence, title ownership, index projection, and image-asset round-trips.
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -966,6 +972,7 @@ mod tests {
 
     use super::*;
 
+    /// Fixture thread with notes, dual messages, summary, and token usage.
     fn sample_thread(id: String, updated_at: DateTime<Utc>) -> Thread {
         Thread {
             id,
@@ -1006,6 +1013,7 @@ mod tests {
         }
     }
 
+    /// Save then load yields equal Thread and a single index row.
     #[test]
     fn round_trip_save_and_load_thread() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1023,6 +1031,7 @@ mod tests {
         Ok(())
     }
 
+    /// Degenerate `<<<` title is replaced from PL assistive wire before persist.
     #[test]
     fn save_replaces_assistive_delimiter_title_before_json_and_index_persist() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1046,6 +1055,7 @@ mod tests {
         Ok(())
     }
 
+    /// EN and legacy PL wire labels never become derived titles.
     #[test]
     fn assistive_wire_labels_are_skipped_in_both_label_languages() {
         // Canonical EN labels (current wires) and legacy PL labels (threads
@@ -1077,6 +1087,7 @@ mod tests {
         );
     }
 
+    /// EN assistive wire yields the user instruction as the derived title.
     #[test]
     fn save_replaces_assistive_delimiter_title_for_english_wire() -> Result<()> {
         // EN mirror of the PL fixture above: the canonical wire produced after
@@ -1099,6 +1110,7 @@ mod tests {
         Ok(())
     }
 
+    /// Mid-word selection markers rejoin in titles; message bodies stay raw.
     #[test]
     fn save_strips_context_bucket_marker_and_rejoins_split_word_in_title() -> Result<()> {
         // Incident input, verbatim: a selection capture landed mid-word and the
@@ -1128,6 +1140,7 @@ mod tests {
         Ok(())
     }
 
+    /// Boundary markers collapse spaces; mid-word glues; non-markers stay.
     #[test]
     fn title_markers_at_word_boundaries_collapse_to_single_space() {
         assert_eq!(
@@ -1171,6 +1184,7 @@ mod tests {
         );
     }
 
+    /// Marker strip still enforces the 72-character title clip.
     #[test]
     fn title_marker_strip_still_clips_at_72_chars() {
         let padding = "x".repeat(100);
@@ -1181,6 +1195,7 @@ mod tests {
         assert!(!title.contains("selection"));
     }
 
+    /// Pre-0.13 `<<<` titles heal on file, index, and markdown export once.
     #[test]
     fn legacy_delimiter_fixture_heals_file_index_and_export_idempotently() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1217,6 +1232,7 @@ mod tests {
         Ok(())
     }
 
+    /// Legacy `input_text`/`output_text` aliases restore as plain Text blocks.
     #[test]
     fn legacy_openai_text_aliases_restore_as_plain_text() {
         let message = ThreadMessage {
@@ -1241,6 +1257,7 @@ mod tests {
         }
     }
 
+    /// Delete removes the thread file and its denormalized index entry.
     #[test]
     fn delete_removes_thread_and_index_entry() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1258,6 +1275,7 @@ mod tests {
         Ok(())
     }
 
+    /// Blobs land under blobs/ with sanitized names and exact bytes.
     #[test]
     fn save_blob_writes_binary_data() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1270,6 +1288,7 @@ mod tests {
         Ok(())
     }
 
+    /// Freshly minted thread ids do not collide across a short burst.
     #[test]
     fn generated_ids_are_unique() {
         let mut seen = HashSet::new();
@@ -1279,6 +1298,7 @@ mod tests {
         }
     }
 
+    /// Notes accept an optional message-index anchor and land on the thread.
     #[test]
     fn add_note_supports_optional_message_anchor() {
         let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
@@ -1288,6 +1308,7 @@ mod tests {
         assert!(thread.notes.iter().any(|value| value.id == note.id));
     }
 
+    /// Save upserts the index; stale summary text stops matching search.
     #[test]
     fn save_thread_updates_index_search_results() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1324,6 +1345,7 @@ mod tests {
         Ok(())
     }
 
+    /// Favoriting updates the index summary without rewriting message bodies.
     #[test]
     fn set_thread_favorite_updates_index_entry() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1347,6 +1369,7 @@ mod tests {
         Ok(())
     }
 
+    /// Manual rename trims, marks custom, clears generated, and syncs index.
     #[test]
     fn set_thread_title_marks_custom_and_persists() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1389,6 +1412,7 @@ mod tests {
         Ok(())
     }
 
+    /// Missing `title_is_generated` deserializes as false (heuristic state).
     #[test]
     fn legacy_thread_json_defaults_generated_ownership_to_false() -> Result<()> {
         let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
@@ -1404,6 +1428,7 @@ mod tests {
         Ok(())
     }
 
+    /// Generated then custom titles are exclusive ownership transitions.
     #[test]
     fn generated_and_custom_title_transitions_are_exclusive() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1442,6 +1467,7 @@ mod tests {
         Ok(())
     }
 
+    /// Generated titles reject blanks/delimiters and never overwrite custom.
     #[test]
     fn generated_title_rejects_blank_missing_and_custom_without_mutation() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1476,6 +1502,7 @@ mod tests {
         Ok(())
     }
 
+    /// Inline image bytes persist as disk assets and restore without raw JSON.
     #[test]
     fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1522,6 +1549,7 @@ mod tests {
         Ok(())
     }
 
+    /// Identical image bytes map to one asset path and are not rewritten.
     #[test]
     fn inline_image_asset_is_written_once_across_saves() -> Result<()> {
         let block = ContentBlock::Image {
@@ -1556,6 +1584,7 @@ mod tests {
         Ok(())
     }
 
+    /// Legacy data_omitted images restore empty and re-persist the marker.
     #[test]
     fn legacy_data_omitted_image_restores_without_bytes_and_repersists_safely() {
         let legacy = json!({
@@ -1585,6 +1614,7 @@ mod tests {
         );
     }
 
+    /// Thread paths end with `{id}.json` and reject path-traversal ids.
     #[test]
     fn thread_file_path_validates_id() -> Result<()> {
         let tmp = TempDir::new()?;

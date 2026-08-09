@@ -384,18 +384,21 @@ pub fn transcribe_chunk(
     with_engine(|engine| engine.transcribe_with_language(samples, sample_rate, language))
 }
 
+/// Whisper singleton: prompt opt-in, idle unload, model path precedence, load.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::OsString;
 
+    /// RAII capture of one process env key for serial restoration on drop.
     struct EnvRestore {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvRestore {
+        /// Snapshot `key`'s current value (or absence) before a test mutates it.
         fn capture(key: &'static str) -> Self {
             Self {
                 key,
@@ -405,6 +408,7 @@ mod tests {
     }
 
     impl Drop for EnvRestore {
+        /// Restore the exact process env captured at `capture`.
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -413,6 +417,7 @@ mod tests {
         }
     }
 
+    /// Initial prompt for file transcription stays off unless explicitly opted in.
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_defaults_off() {
@@ -434,6 +439,7 @@ mod tests {
         assert_eq!(file_transcription_initial_prompt(), None);
     }
 
+    /// Opt-in env builds the file-transcription initial prompt (contains lexicon terms).
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_is_opt_in() {
@@ -457,6 +463,7 @@ mod tests {
         assert!(prompt.contains("Loctree"));
     }
 
+    /// `0` disables idle unload; explicit secs win; default is 2700s weight unload.
     #[test]
     fn idle_unload_disabled_when_zero() {
         // SAFETY: single-threaded test mutating a process env var it owns.
@@ -469,6 +476,7 @@ mod tests {
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(2700)));
     }
 
+    /// LOCAL_MODEL precedence: process env > UserSettings > env file on disk.
     #[test]
     #[serial]
     fn configured_local_model_prefers_env_then_settings_then_env_file() {
@@ -495,6 +503,7 @@ mod tests {
         assert_eq!(configured_local_model(), "runtime-model");
     }
 
+    /// Resolved model path must load; empty PCM no-op stays empty (soft-skip if no model).
     #[test]
     #[serial]
     fn test_model_path_resolution_and_real_whisper_noop_load() {

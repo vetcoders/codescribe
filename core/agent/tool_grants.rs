@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+/// On-disk grants schema version; bump when GrantsFile shape changes.
 const VERSION: u32 = 1;
 
 /// Canonical grants file location: `$HOME/.codescribe/tool_grants.json`.
@@ -58,6 +59,7 @@ struct GrantsFile {
 }
 
 impl Default for GrantsFile {
+    /// Empty grants file at current VERSION with stable empty map.
     fn default() -> Self {
         Self {
             version: VERSION,
@@ -170,10 +172,12 @@ fn write_atomic(path: &Path, file: &GrantsFile) -> Result<()> {
     Ok(())
 }
 
+/// Grant persistence: round-trip, corrupt-file block, key case rules.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Grant writes survive load; revoke drops only the named key.
     #[test]
     fn grant_roundtrips_and_revoke_removes() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -192,6 +196,7 @@ mod tests {
         assert_eq!(granted.len(), 1);
     }
 
+    /// Missing → empty grants; junk JSON blocks grant writes fail-closed.
     #[test]
     fn missing_file_is_empty_and_unparsable_file_blocks_mutation() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -203,6 +208,7 @@ mod tests {
         assert!(grant_at(&path, "srv", "tool").is_err());
     }
 
+    /// Server segment lowercased; upstream tool name keeps case.
     #[test]
     fn grant_key_is_case_insensitive_on_server_only() {
         assert_eq!(

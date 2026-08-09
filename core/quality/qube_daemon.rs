@@ -1342,6 +1342,7 @@ fn daemon_history_path() -> PathBuf {
 /// Deliberately reads only `report_dir`: the tray needs a path to open, and a
 /// narrow shape keeps this working across history-schema changes.
 fn read_latest_report_from_history(path: &Path, root: &Path) -> Option<String> {
+    /// Minimal JSONL history line: only `report_dir` for tray open-path resolution.
     #[derive(Deserialize)]
     struct DaemonHistoryEntry {
         report_dir: String,
@@ -1447,6 +1448,7 @@ pub fn open_latest_report() -> bool {
     false
 }
 
+/// Hermetic unit coverage for quality-loop helpers and daemon state I/O.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1455,6 +1457,7 @@ mod tests {
     };
     use crate::stream_postprocess::StreamPostProcessStats;
 
+    /// Blank `ReportEnvironment` fixture — no endpoints or keys, corpus reference.
     fn mock_environment() -> ReportEnvironment {
         ReportEnvironment {
             stt_endpoint: None,
@@ -1469,6 +1472,7 @@ mod tests {
         }
     }
 
+    /// Minimal `ReportEntry` with `id`-derived audio paths and default metrics.
     fn mock_entry(id: &str) -> ReportEntry {
         ReportEntry {
             id: id.to_string(),
@@ -1484,6 +1488,7 @@ mod tests {
         }
     }
 
+    /// Quality report shell around `entries` with fixed timestamp and blank env.
     fn mock_report(entries: Vec<ReportEntry>) -> QualityReport {
         QualityReport {
             generated_at: "2026-01-23T12:00:00+01:00".into(),
@@ -1493,6 +1498,7 @@ mod tests {
         }
     }
 
+    /// State write must take the last non-empty history line as `latest_report`.
     #[test]
     fn test_write_daemon_state_with_paths_uses_latest_history_entry() {
         let tmp = tempfile::TempDir::new().expect("temp dir");
@@ -1528,6 +1534,7 @@ mod tests {
         assert!(loaded.available);
     }
 
+    /// Corrupt history JSONL must not fail the write; `latest_report` stays None.
     #[test]
     fn test_write_daemon_state_with_paths_tolerates_invalid_history() {
         let tmp = tempfile::TempDir::new().expect("temp dir");
@@ -1545,6 +1552,7 @@ mod tests {
         assert!(state.available);
     }
 
+    /// Legacy state JSON without `available` still deserializes with default true.
     #[test]
     fn test_quality_daemon_state_backward_compatible_defaults() {
         let raw = r#"{
@@ -1561,12 +1569,14 @@ mod tests {
 
     // ─── normalize_tokens ────────────────────────────────────────────
 
+    /// Lowercases and splits plain ASCII words on whitespace.
     #[test]
     fn test_normalize_tokens_basic() {
         let tokens = normalize_tokens("Hello World");
         assert_eq!(tokens, vec!["hello", "world"]);
     }
 
+    /// Punctuation becomes token boundaries (not attached to neighboring words).
     #[test]
     fn test_normalize_tokens_punctuation_to_space() {
         let tokens = normalize_tokens("Codescribe's test-case, version 2.0!");
@@ -1576,12 +1586,14 @@ mod tests {
         );
     }
 
+    /// Polish diacritics survive lowercasing and stay single tokens.
     #[test]
     fn test_normalize_tokens_polish_diacritics() {
         let tokens = normalize_tokens("Źródło działania systemu");
         assert_eq!(tokens, vec!["źródło", "działania", "systemu"]);
     }
 
+    /// Runs of spaces/newlines collapse; empty tokens are dropped.
     #[test]
     fn test_normalize_tokens_extra_whitespace() {
         let tokens = normalize_tokens("  foo   bar  \n baz  ");
@@ -1590,18 +1602,21 @@ mod tests {
 
     // ─── token_eligible ──────────────────────────────────────────────
 
+    /// Tokens shorter than 3 chars are ineligible for lexicon mining.
     #[test]
     fn test_token_eligible_too_short() {
         assert!(!token_eligible("ab"));
         assert!(!token_eligible("x"));
     }
 
+    /// Pure digit strings are excluded from lexicon suggestions.
     #[test]
     fn test_token_eligible_all_digits() {
         assert!(!token_eligible("123"));
         assert!(!token_eligible("007"));
     }
 
+    /// Letterful tokens of length ≥3 (incl. digits/diacritics) stay eligible.
     #[test]
     fn test_token_eligible_valid() {
         assert!(token_eligible("foo"));
@@ -1611,21 +1626,25 @@ mod tests {
 
     // ─── word_distance / levenshtein ─────────────────────────────────
 
+    /// Identical strings score Levenshtein distance 0.
     #[test]
     fn test_word_distance_identical() {
         assert_eq!(word_distance("hello", "hello"), 0);
     }
 
+    /// Single-character substitution costs distance 1.
     #[test]
     fn test_word_distance_one_sub() {
         assert_eq!(word_distance("cat", "bat"), 1);
     }
 
+    /// Classic kitten/sitting case pins multi-edit distance at 3.
     #[test]
     fn test_word_distance_insertion_deletion() {
         assert_eq!(word_distance("kitten", "sitting"), 3);
     }
 
+    /// Near-morphology Polish pairs stay within the lexicon distance cap of 4.
     #[test]
     fn test_word_distance_polish_morphology() {
         // odpowiedział vs odpowiadał - should be within 4
@@ -1634,6 +1653,7 @@ mod tests {
         assert!(word_distance("remontu", "remotea") <= 4);
     }
 
+    /// Unrelated words exceed the distance-4 filter used by lexicon mining.
     #[test]
     fn test_word_distance_completely_different() {
         assert!(word_distance("python", "javascript") > 4);
@@ -1641,6 +1661,7 @@ mod tests {
 
     // ─── align_tokens ────────────────────────────────────────────────
 
+    /// Perfect alignment yields no substitution pairs.
     #[test]
     fn test_align_tokens_identical() {
         let ref_tokens = vec!["ala".into(), "ma".into(), "kota".into()];
@@ -1649,6 +1670,7 @@ mod tests {
         assert!(subs.is_empty());
     }
 
+    /// One token rewrite at the same index surfaces as a single (ref, hyp) pair.
     #[test]
     fn test_align_tokens_single_substitution() {
         let ref_tokens = vec!["ala".into(), "ma".into(), "kota".into()];
@@ -1658,6 +1680,7 @@ mod tests {
         assert_eq!(subs[0], ("kota".to_string(), "psa".to_string()));
     }
 
+    /// Longer near-miss rewrites still count as one aligned substitution.
     #[test]
     fn test_align_tokens_multiple_substitutions() {
         let ref_tokens = vec!["system".into(), "działa".into(), "poprawnie".into()];
@@ -1670,6 +1693,7 @@ mod tests {
         );
     }
 
+    /// Insertions/deletions do not mint lexicon pairs — only true substitutions.
     #[test]
     fn test_align_tokens_insertion_not_a_substitution() {
         // Insertion: hypothesis has extra word - NOT counted as substitution
@@ -1681,6 +1705,7 @@ mod tests {
 
     // ─── compare_metric ──────────────────────────────────────────────
 
+    /// Metric rise above threshold records a regression, not an improvement.
     #[test]
     fn test_compare_metric_regression() {
         let mut regressions = Vec::new();
@@ -1699,6 +1724,7 @@ mod tests {
         assert_eq!(improvements, 0);
     }
 
+    /// Metric drop past threshold increments the improvement counter only.
     #[test]
     fn test_compare_metric_improvement() {
         let mut regressions = Vec::new();
@@ -1716,6 +1742,7 @@ mod tests {
         assert_eq!(improvements, 1);
     }
 
+    /// Noise-sized deltas inside the threshold band are ignored both ways.
     #[test]
     fn test_compare_metric_within_threshold() {
         let mut regressions = Vec::new();
@@ -1733,6 +1760,7 @@ mod tests {
         assert_eq!(improvements, 0);
     }
 
+    /// Missing current or baseline metric values skip comparison entirely.
     #[test]
     fn test_compare_metric_none_values_skip() {
         let mut regressions = Vec::new();
@@ -1761,6 +1789,7 @@ mod tests {
 
     // ─── QualitySignals::from_report ─────────────────────────────────
 
+    /// `post_worse_ratio` is the share of entries where post-WER exceeds raw-WER.
     #[test]
     fn test_quality_signals_post_worse_ratio() {
         let mut entries = vec![];
@@ -1778,6 +1807,7 @@ mod tests {
         assert!((ratio - 2.0 / 3.0).abs() < 0.01);
     }
 
+    /// Empty reports leave both post/ai worse ratios as None (no division by zero).
     #[test]
     fn test_quality_signals_empty_report() {
         let report = mock_report(vec![]);
@@ -1788,6 +1818,7 @@ mod tests {
 
     // ─── PostprocessStats::from_report ───────────────────────────────
 
+    /// Per-entry stream stats sum across the report; embeddings flag is OR-ish last.
     #[test]
     fn test_postprocess_stats_aggregation() {
         let mut entries = vec![];
@@ -1813,6 +1844,7 @@ mod tests {
         assert_eq!(stats.embeddings_enabled, Some(true));
     }
 
+    /// Gate drop rate is gate_drops / input_chunks when input_chunks > 0.
     #[test]
     fn test_postprocess_stats_gate_drop_rate() {
         let mut entry = mock_entry("e1");
@@ -1827,6 +1859,7 @@ mod tests {
         assert!((rate - 0.25).abs() < 0.001);
     }
 
+    /// Zero-entry reports yield None rates rather than 0.0 false confidence.
     #[test]
     fn test_postprocess_stats_no_entries() {
         let report = mock_report(vec![]);
@@ -1837,6 +1870,7 @@ mod tests {
 
     // ─── extract_lexicon_suggestions ─────────────────────────────────
 
+    /// Repeated near-miss pairs above min_count become lexicon suggestions.
     #[test]
     fn test_extract_lexicon_suggestions_finds_mismatches() {
         let mut entries = vec![];
@@ -1855,6 +1889,7 @@ mod tests {
         assert_eq!(suggestions[0].count, 3);
     }
 
+    /// A single occurrence below min_count produces no suggestion.
     #[test]
     fn test_extract_lexicon_suggestions_respects_min_count() {
         let mut entry = mock_entry("e1");
@@ -1866,6 +1901,7 @@ mod tests {
         assert!(suggestions.is_empty());
     }
 
+    /// Output is hard-capped by max_updates even when more pairs qualify.
     #[test]
     fn test_extract_lexicon_suggestions_respects_max_updates() {
         let mut entries = vec![];
@@ -1880,6 +1916,7 @@ mod tests {
         assert_eq!(suggestions.len(), 2);
     }
 
+    /// High Levenshtein distance pairs never enter the lexicon suggestion set.
     #[test]
     fn test_extract_lexicon_suggestions_filters_high_distance() {
         let mut entries = vec![];
@@ -1895,6 +1932,7 @@ mod tests {
         assert!(suggestions.is_empty());
     }
 
+    /// Cloud column is used as reference when LexiconSource::Cloud is selected.
     #[test]
     fn test_extract_lexicon_suggestions_cloud_source() {
         let mut entries = vec![];
@@ -1912,6 +1950,7 @@ mod tests {
         assert_eq!(suggestions[0].mis, "transkrypsja");
     }
 
+    /// Case-only differences normalize away and must not become substitutions.
     #[test]
     fn test_extract_lexicon_case_insensitive_skips_same_word() {
         let mut entries = vec![];
@@ -1929,6 +1968,7 @@ mod tests {
 
     // ─── analyze_regressions ─────────────────────────────────────────
 
+    /// Without a baseline, regression list is empty and compared_entries is 0.
     #[test]
     fn test_analyze_regressions_no_baseline() {
         let report = mock_report(vec![mock_entry("e1")]);
@@ -1937,6 +1977,7 @@ mod tests {
         assert_eq!(summary.compared_entries, 0);
     }
 
+    /// Same-id entry with higher raw_wer past threshold becomes a finding.
     #[test]
     fn test_analyze_regressions_detects_wer_regression() {
         let mut current_entry = mock_entry("e1");
@@ -1955,6 +1996,7 @@ mod tests {
 
     // ─── LexiconSource ──────────────────────────────────────────────
 
+    /// Stable short tags for analysis markdown: corpus / cloud / ai.
     #[test]
     fn test_lexicon_source_as_str() {
         assert_eq!(LexiconSource::Corpus.as_str(), "corpus");
@@ -1964,6 +2006,7 @@ mod tests {
 
     // ─── render_analysis_markdown ────────────────────────────────────
 
+    /// Analysis markdown always includes summary, regressions, and updates headers.
     #[test]
     fn test_render_analysis_markdown_contains_sections() {
         let analysis = LoopAnalysis {

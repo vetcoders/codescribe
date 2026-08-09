@@ -322,6 +322,7 @@ fn move_tensors_to_device(
 mod tests {
     use super::*;
 
+    /// Pins CSM default output sample rate at 24 kHz for audio path contracts.
     #[test]
     fn test_sample_rate() {
         assert_eq!(SAMPLE_RATE, 24000);

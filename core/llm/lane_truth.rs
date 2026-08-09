@@ -568,6 +568,8 @@ fn non_empty_option(value: Option<String>) -> Option<String> {
     value.and_then(non_empty)
 }
 
+/// Hermetic unit tests for secret/endpoint/model precedence and assistive
+/// availability. Env mutations are serialized via `serial` + [`EnvGuard`].
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +578,8 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
+    /// Non-empty process env wins over Keychain for the same account, and the
+    /// returned value is trimmed.
     #[test]
     #[serial]
     fn secret_prefers_a_non_empty_env_value() {
@@ -589,6 +593,8 @@ mod tests {
         );
     }
 
+    /// Empty or unset env falls through to the injected Keychain loader so a
+    /// whitespace-only env cannot mask a stored secret.
     #[test]
     #[serial]
     fn secret_falls_back_to_keychain_when_env_is_empty_or_unset() {
@@ -610,6 +616,8 @@ mod tests {
         );
     }
 
+    /// Endpoint precedence: lane env → shared env → config → compiled default,
+    /// each step normalized to an OpenAI Responses URL.
     #[test]
     #[serial]
     fn assistive_endpoint_uses_lane_then_shared_then_config_then_default() {
@@ -648,6 +656,8 @@ mod tests {
         );
     }
 
+    /// Fresh `UserSettings` beat a bootstrap-seeded env so Settings changes apply
+    /// without restarting the process.
     #[test]
     #[serial]
     fn persisted_lane_endpoint_beats_a_stale_bootstrap_env_value() {
@@ -667,6 +677,8 @@ mod tests {
         );
     }
 
+    /// OpenRouter and Libraxis bases gain a trailing `/responses` path segment
+    /// without double-appending when already complete.
     #[test]
     fn responses_endpoint_normalizes_openrouter_and_libraxis_bases() {
         assert_eq!(
@@ -679,6 +691,8 @@ mod tests {
         );
     }
 
+    /// Model resolution prefers persisted lane settings over stale env, then the
+    /// lane's compiled default when nothing is set.
     #[test]
     #[serial]
     fn lane_models_use_fresh_settings_and_lane_defaults() {
@@ -714,6 +728,8 @@ mod tests {
         );
     }
 
+    /// Formatting identity keeps OpenAI Responses and the fresh formatting model
+    /// from settings, ignoring a stale bootstrap env model.
     #[test]
     #[serial]
     fn formatting_identity_honors_persisted_formatting_model_default() {
@@ -730,6 +746,8 @@ mod tests {
         assert_eq!(model, "fresh-formatting-default");
     }
 
+    /// Assistive provider parsing delegates to the registry resolver when only
+    /// env is set (no persisted provider field).
     #[test]
     #[serial]
     fn provider_delegates_to_the_canonical_provider_resolver() {
@@ -741,6 +759,8 @@ mod tests {
         );
     }
 
+    /// Anthropic formatting identity uses the Claude model from settings, not the
+    /// stale bootstrap model left in env.
     #[test]
     #[serial]
     fn formatting_identity_keeps_a_fresh_claude_model_for_anthropic() {
@@ -780,6 +800,8 @@ mod tests {
         ]
     }
 
+    /// Stored ChatGPT OAuth tokens alone make the official OpenAI endpoint
+    /// available without any API key.
     #[test]
     #[serial]
     fn signed_in_chatgpt_account_alone_makes_the_official_endpoint_available() {
@@ -797,6 +819,8 @@ mod tests {
         assert!(ready.account_auth);
     }
 
+    /// Signed-in ChatGPT account auth wins over a stored assistive API key for
+    /// how the lane authenticates at startup.
     #[test]
     #[serial]
     fn signed_in_chatgpt_account_wins_over_stored_api_key() {
@@ -823,6 +847,8 @@ mod tests {
         assert!(ready.account_auth);
     }
 
+    /// Account bearer tokens must not attach to key-optional non-official hosts;
+    /// the lane stays available unauthenticated instead.
     #[test]
     #[serial]
     fn account_tokens_never_ride_to_a_key_optional_endpoint() {
@@ -846,6 +872,8 @@ mod tests {
         assert_eq!(ready.api_key, None);
     }
 
+    /// Default unconfigured assistive lane is unavailable and the reason names the
+    /// key account plus the suggested key-optional endpoint.
     #[test]
     #[serial]
     fn unconfigured_lane_is_unavailable_with_an_actionable_reason() {
@@ -863,6 +891,8 @@ mod tests {
         assert!(reason.contains(SUGGESTED_KEY_OPTIONAL_ENDPOINT), "{reason}");
     }
 
+    /// A Libraxis-style key-optional endpoint is available with no API key and no
+    /// account tokens.
     #[test]
     #[serial]
     fn key_optional_endpoint_is_available_without_any_api_key() {
@@ -879,6 +909,8 @@ mod tests {
         assert_eq!(ready.api_key, None);
     }
 
+    /// A Keychain-only assistive key is enough to arm the official OpenAI
+    /// Responses endpoint.
     #[test]
     #[serial]
     fn keychain_only_key_makes_the_official_endpoint_available() {
@@ -894,6 +926,8 @@ mod tests {
         assert_eq!(ready.endpoint, DEFAULT_OPENAI_RESPONSES_ENDPOINT);
     }
 
+    /// An Anthropic assistive lane without a key names `LLM_ANTHROPIC_API_KEY`
+    /// (and Anthropic) in the unavailable reason — not the OpenAI account.
     #[test]
     #[serial]
     fn anthropic_lane_without_its_key_names_the_anthropic_account() {
@@ -910,6 +944,8 @@ mod tests {
         assert!(reason.contains("Anthropic"), "{reason}");
     }
 
+    /// Self-hosted Anthropic endpoints are key-optional and normalize to a
+    /// `/messages` path without requiring an API key.
     #[test]
     #[serial]
     fn self_hosted_anthropic_lane_is_available_without_an_api_key() {
@@ -927,6 +963,8 @@ mod tests {
         assert_eq!(ready.api_key, None);
     }
 
+    /// Official OpenAI/Anthropic/xAI hosts require keys regardless of host casing;
+    /// generic OpenAI-compatible hosts do not.
     #[test]
     fn official_api_hosts_require_keys_case_insensitively() {
         assert!(endpoint_requires_api_key("https://API.OPENAI.COM/v1"));
@@ -1049,6 +1087,8 @@ mod tests {
         assert!(reason.contains("xAI (Grok)"), "{reason}");
     }
 
+    /// Saving a key-optional endpoint in settings flips availability on the next
+    /// resolution without clearing stale bootstrap env or restarting.
     #[test]
     #[serial]
     fn fresh_settings_endpoint_flips_availability_without_a_restart() {
@@ -1076,6 +1116,8 @@ mod tests {
         assert_eq!(after.endpoint, "https://api.libraxis.cloud/v1/responses");
     }
 
+    /// Anthropic identity keeps a Claude model; OpenAI Responses drops a leftover
+    /// Claude id and falls back to the assistive default.
     #[test]
     #[serial]
     fn anthropic_identity_uses_a_claude_model_and_openai_identity_never_does() {
@@ -1108,6 +1150,8 @@ mod tests {
         );
     }
 
+    /// After reload, a persisted assistive provider beats a stale bootstrap env
+    /// value written before Settings was saved.
     #[test]
     #[serial]
     fn persisted_assistive_provider_beats_a_stale_bootstrap_env_after_reload() {
@@ -1131,9 +1175,13 @@ mod tests {
         );
     }
 
+    /// Snapshot fields must match the individual resolvers across a multi-lane
+    /// truth table so FFI projections cannot drift from live resolution.
     #[test]
     #[serial]
     fn lane_truth_snapshot_matches_individual_resolvers_across_truth_table() {
+        /// One row of the snapshot-vs-resolver parity table: settings, env, and
+        /// injected keys for a single lane under test.
         struct SnapshotCase {
             name: &'static str,
             lane: LaneTruthLane,
@@ -1364,6 +1412,8 @@ mod tests {
         }
     }
 
+    /// Extend [`lane_env_guards`] with main/formatting accounts so snapshot parity
+    /// cases start from a fully clean process env.
     fn snapshot_env_guards() -> Vec<EnvGuard> {
         let mut guards = lane_env_guards();
         guards.extend([
@@ -1376,12 +1426,16 @@ mod tests {
         guards
     }
 
+    /// Restores a process env var to its prior state on drop; used only inside
+    /// `serial` tests that mutate env.
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set `key` for the duration of this guard, restoring the previous value
+        /// (or absence) on drop.
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: these process-env tests are serialized with `serial`.
@@ -1389,6 +1443,8 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Remove `key` for the duration of this guard, restoring the previous value
+        /// (or absence) on drop.
         fn remove(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: these process-env tests are serialized with `serial`.
@@ -1398,6 +1454,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the captured previous env state for this guard's key.
         fn drop(&mut self) {
             match self.previous.as_deref() {
                 Some(value) => {

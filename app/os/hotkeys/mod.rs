@@ -23,9 +23,13 @@
 //! hold and double-tap behaviour is testable without an event tap or an
 //! accessibility grant. Each submodule documents itself in depth.
 
+/// Runtime-tunable bindings and thresholds (hold delay, double-tap, exclusive).
 mod config;
+/// Pure gesture state machine over key/modifier snapshots (no platform types).
 mod detector;
+/// Process-global ownership of the tap plus enable/disable gate.
 mod manager;
+/// macOS `CGEventTap` that feeds the detector state machine.
 mod platform;
 
 pub use config::{

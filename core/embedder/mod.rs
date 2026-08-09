@@ -23,7 +23,9 @@
 //! ```
 
 pub mod embedded;
+/// Local embedding engine (Candle/model load + vectorize text).
 pub mod engine;
+/// Process-wide embedder singleton and model path resolution.
 pub mod singleton;
 
 pub use engine::{EmbedderConfig, EmbedderEngine};

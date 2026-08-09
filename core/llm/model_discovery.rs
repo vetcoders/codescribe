@@ -28,8 +28,11 @@ use crate::llm::provider::{LlmMode, ProviderKind, WireFamily};
 /// provider additionally aborts the in-flight request (per-provider generation
 /// registry below), so this timeout is the worst case, not the supersede path.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Last-good models cache filename under the Codescribe config dir.
 const CACHE_FILE_NAME: &str = "model_discovery_cache.json";
+/// Anthropic Models API URL (not OpenAI-compatible `/v1/models`).
 const ANTHROPIC_MODELS_ENDPOINT: &str = "https://api.anthropic.com/v1/models";
+/// Required `anthropic-version` header for the Models endpoint.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// One discovered provider model. `id` is sent on the wire; `display_name` is
@@ -129,6 +132,7 @@ impl ModelDiscoveryError {
 }
 
 impl std::fmt::Display for ModelDiscoveryError {
+    /// `provider: code: message` — never interpolates key material.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoKey { provider, env_key } => {
@@ -214,6 +218,7 @@ struct GenerationSlot {
 /// providers in one refresh batch — an Anthropic refresh must never abort an
 /// in-flight OpenAI fetch (mirrors the per-provider counters in Swift).
 fn generation_registry() -> &'static Mutex<HashMap<ProviderKind, GenerationSlot>> {
+    /// Process-wide per-provider discovery generation + cancel handles.
     static REGISTRY: OnceLock<Mutex<HashMap<ProviderKind, GenerationSlot>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -261,6 +266,7 @@ type AfterClaimHook = Box<dyn FnOnce(ProviderKind) + Send>;
 /// since the slot — like the generation registry — is global state.
 #[cfg(test)]
 fn test_after_claim_hook() -> &'static Mutex<Option<AfterClaimHook>> {
+    /// Armed cancel-interference hook; tests must be `#[serial]`.
     static HOOK: OnceLock<Mutex<Option<AfterClaimHook>>> = OnceLock::new();
     HOOK.get_or_init(|| Mutex::new(None))
 }
@@ -1096,6 +1102,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restores or clears the env var so serial tests stay isolated.
         fn drop(&mut self) {
             match self.prev.as_deref() {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },

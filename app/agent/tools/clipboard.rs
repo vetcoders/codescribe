@@ -163,6 +163,7 @@ fn read_clipboard_image_png() -> Result<Option<Vec<u8>>> {
 mod tests {
     use super::*;
 
+    /// Text path wins when the text accessor succeeds (image is not consulted).
     #[test]
     fn read_clipboard_returns_text_first() {
         let result = read_clipboard_with(
@@ -177,6 +178,7 @@ mod tests {
         );
     }
 
+    /// When text fails, a successful image accessor becomes PNG tool content.
     #[test]
     fn read_clipboard_falls_back_to_image() {
         let result = read_clipboard_with(
@@ -194,6 +196,7 @@ mod tests {
         );
     }
 
+    /// Write path invokes the injected setter with the JSON `text` field.
     #[test]
     fn write_clipboard_uses_setter() {
         let input = json!({ "text": "Paste me" });

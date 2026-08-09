@@ -181,6 +181,7 @@ trait TranscribeAudioEngine {
 struct WhisperSingleton;
 
 impl TranscribeAudioEngine for WhisperSingleton {
+    /// Lazy-init the process-wide Whisper singleton when not already loaded.
     fn init(&self) -> Result<()> {
         if whisper::is_initialized() {
             return Ok(());
@@ -188,6 +189,7 @@ impl TranscribeAudioEngine for WhisperSingleton {
         whisper::init()
     }
 
+    /// Report `embedded` or the on-disk model directory name for provenance.
     fn model_id(&self) -> Result<String> {
         if whisper::embedded::is_embedded_available() {
             return Ok("embedded".to_string());
@@ -201,15 +203,18 @@ impl TranscribeAudioEngine for WhisperSingleton {
             .unwrap_or_else(|| path.display().to_string()))
     }
 
+    /// Run Silero VAD and project stats into the tool's `VadOutput` shape.
     fn extract_speech(&self, samples: &[f32], sample_rate: u32) -> Result<(Vec<f32>, VadOutput)> {
         let (speech_samples, stats) = vad::extract_speech(samples, sample_rate);
         Ok((speech_samples, VadOutput::from(stats)))
     }
 
+    /// Detect language on speech samples when the caller omitted a hint.
     fn detect_language(&self, samples: &[f32], sample_rate: u32) -> Result<String> {
         whisper::detect_language(samples, sample_rate)
     }
 
+    /// Transcribe speech with Whisper using the resolved language code.
     fn transcribe(&self, samples: &[f32], sample_rate: u32, language: &str) -> Result<String> {
         whisper::transcribe(samples, sample_rate, Some(language))
     }
@@ -360,6 +365,7 @@ struct VadOutput {
 }
 
 impl From<vad::VadExtractStats> for VadOutput {
+    /// Project core VAD extract stats into the JSON-facing `VadOutput`.
     fn from(stats: vad::VadExtractStats) -> Self {
         Self {
             speech_pct: stats.speech_pct,
@@ -370,22 +376,27 @@ impl From<vad::VadExtractStats> for VadOutput {
     }
 }
 
+/// Path-gate and JSON-contract tests with a fake engine (no real Whisper).
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Deterministic STT stand-in so path validation and output shape are unit-tested.
     struct FakeEngine;
 
     impl TranscribeAudioEngine for FakeEngine {
+        /// No-op init for the fake engine.
         fn init(&self) -> Result<()> {
             Ok(())
         }
 
+        /// Stable fake model id returned in tool output.
         fn model_id(&self) -> Result<String> {
             Ok("fake-whisper".to_string())
         }
 
+        /// Pass-through speech: keep all samples and report 100% speech VAD stats.
         fn extract_speech(
             &self,
             samples: &[f32],
@@ -402,10 +413,12 @@ mod tests {
             ))
         }
 
+        /// Always report Polish so language-source assertions stay deterministic.
         fn detect_language(&self, _samples: &[f32], _sample_rate: u32) -> Result<String> {
             Ok("pl".to_string())
         }
 
+        /// Assert non-empty speech + `pl`, then return a fixed Polish transcript.
         fn transcribe(&self, samples: &[f32], _sample_rate: u32, language: &str) -> Result<String> {
             assert_eq!(language, "pl");
             assert!(!samples.is_empty());
@@ -413,6 +426,7 @@ mod tests {
         }
     }
 
+    /// Happy path: allowed assets-dir WAV yields structured transcript JSON.
     #[test]
     #[serial]
     fn transcribes_allowed_audio_path_with_mock_engine() {
@@ -441,6 +455,7 @@ mod tests {
         std::fs::remove_file(audio_path).ok();
     }
 
+    /// Paths outside `~/.codescribe` / assets roots are rejected before decode.
     #[test]
     fn rejects_audio_paths_outside_allowed_roots() {
         let path = PathBuf::from("/tmp/codescribe-outside.wav");
@@ -453,6 +468,7 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    /// Prefix containment accepts codescribe and assets roots, rejects others.
     #[test]
     fn allows_paths_under_codescribe_or_assets_roots() {
         let codescribe_dir = PathBuf::from("/Users/tester/.codescribe");
@@ -475,6 +491,7 @@ mod tests {
         ));
     }
 
+    /// Write a short mono 16 kHz sine WAV for path-gate transcription tests.
     fn write_fixture_wav(path: &Path) {
         let spec = hound::WavSpec {
             channels: 1,

@@ -68,7 +68,9 @@ pub enum AiFormatStatus {
     AiNoop,
 }
 
+/// Streaming assistant-token callback delivered as each chunk arrives.
 pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
+/// Streaming reasoning-token callback, kept separate from assistant text.
 pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Result of a formatting request: the text to use plus how it was obtained.
@@ -113,13 +115,17 @@ struct MemoryMessage {
     content: String,
 }
 
+/// Process-global Ollama turn buffer; hosted providers use `previous_response_id`.
 static OLLAMA_MEMORY: OnceLock<RwLock<Vec<MemoryMessage>>> = OnceLock::new();
+/// Soft cap on retained Ollama memory text; older turns are pruned FIFO.
 const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 
 // Retry count is "extra attempts after the first request". Default 0 keeps
 // daily-driver formatting fail-fast instead of multiplying deterministic
 // provider/parser failures into long cascades.
+/// Extra attempts after the first request; 0 = fail-fast for daily formatting.
 const DEFAULT_AI_MAX_RETRIES: u32 = 0;
+/// Sleep between retries when [`DEFAULT_AI_MAX_RETRIES`] is raised via env.
 const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
 // Bumped from 30s → 90s (2026-05-13). Operator observed
 // "Agent SSE inter-chunk timeout after 30s" mid-stream from chat overlay
@@ -131,18 +137,31 @@ const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
 // keeps streams alive across realistic backend hiccups without making
 // stalled requests linger forever. Env override `CODESCRIBE_AI_*_MS`
 // still wins for power users (operator can lower for fast models).
+/// Per-attempt wall budget for hosted providers before the attempt is abandoned.
 const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 90_000;
+/// Tighter per-attempt budget for local Ollama so a dead daemon fails fast.
 const DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS: u64 = 5_000;
+/// Max silence between SSE chunks mid-stream before the attempt is abandoned.
 const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
+/// reqwest overall request timeout for the shared AI HTTP client.
 const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
+/// TCP connect deadline for the shared AI HTTP client.
 const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
+/// Idle keep-alive for pooled connections on the shared AI HTTP client.
 const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
+/// TCP keepalive probe interval for the shared AI HTTP client.
 const DEFAULT_AI_TCP_KEEPALIVE_MS: u64 = 30_000;
+/// Anthropic Messages API version header value.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Default `max_tokens` for Anthropic formatting/chat when env is unset.
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u32 = 8192;
+/// Wall budget for auto-generating a thread title after the first turn.
 const THREAD_TITLE_TIMEOUT: Duration = Duration::from_secs(8);
+/// Completion token budget for the thread-title request.
 const THREAD_TITLE_MAX_TOKENS: u32 = 24;
+/// Hard clip length for a generated title before it is stored on the thread.
 const THREAD_TITLE_MAX_CHARS: usize = 72;
+/// System prompt for the thread-title generator; asks for a short noun phrase.
 const THREAD_TITLE_PROMPT: &str = "Create a concise 3-6 word title for this conversation. \
 Use the user's language and a descriptive noun phrase. Return only the title on one line, \
 with no quotes, bullet, label, or decorative punctuation.";
@@ -925,6 +944,7 @@ fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
 /// or cannot see an attachment still knows something was sent.
 fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
     // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    /// Cap on image parts per Responses request; surplus paths are dropped.
     const MAX_IMAGES: usize = 16;
 
     let (mut cleaned, mut image_paths) =
@@ -966,6 +986,7 @@ fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
 /// present, because Anthropic rejects a blank text block alongside content.
 fn build_anthropic_user_content(user_message: &str) -> Vec<AnthropicContentBlock> {
     // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    /// Cap on image parts per Anthropic request; surplus paths are dropped.
     const MAX_IMAGES: usize = 16;
 
     let (mut cleaned, mut image_paths) =
@@ -2276,11 +2297,13 @@ mod tests {
     use serde_json::json;
     use serial_test::serial;
 
+    /// Env keys cleared/pinned around Anthropic formatting unit tests.
     const ANTHROPIC_TEST_ENV_KEYS: &[&str] = &[
         "LLM_FORMATTING_TEMPERATURE",
         "LLM_TEMPERATURE",
         "CODESCRIBE_ANTHROPIC_MAX_TOKENS",
     ];
+    /// Env flag set in the lane-truth child process so nested tests skip re-spawn.
     const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
 
     /// RAII holder that restores one env var to its prior value on drop.

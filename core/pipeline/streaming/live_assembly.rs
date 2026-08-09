@@ -199,6 +199,7 @@ mod tests {
         );
     }
 
+    /// Multiple UtteranceFinal seals must append freezed segments into the full live string.
     #[test]
     fn multi_final_freezed_append_builds_full_transcript() {
         let events = vec![
@@ -235,6 +236,7 @@ mod tests {
         assert_eq!(assembly.streaming_floor(), "pierwsze zdanie drugie zdanie");
     }
 
+    /// Single-final tail-only shape is the engine-failure bar (no multi-seal freezed arc).
     #[test]
     fn single_final_tail_shape_is_detectable_as_engine_failure_bar() {
         // Known broken product shape: one short sealed final for a long clip.
@@ -340,6 +342,7 @@ mod tests {
         assert_eq!(assembly.freezed, vec!["tekst po fakcie".to_string()]);
     }
 
+    /// Preview/Correction replace the open tail only; freezed segments stay immutable.
     #[test]
     fn preview_replaces_open_tail_without_freezing() {
         let events = vec![

@@ -111,18 +111,21 @@ pub fn open_today_note() {
     }
 }
 
+/// Notes sink tests: raw append, internal newlines, blank-line separators.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
 
+    /// Restores `CODESCRIBE_NOTES_DIR` after each serial test.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Snapshot then set an env var for the duration of the guard.
         fn set(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
             unsafe { std::env::set_var(key, value) };
@@ -131,6 +134,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Put the previous value back (or unset) when the guard leaves scope.
         fn drop(&mut self) {
             unsafe {
                 match &self.prev {
@@ -141,6 +145,7 @@ mod tests {
         }
     }
 
+    /// Entry is written verbatim with no date header or bullet scaffolding.
     #[test]
     #[serial]
     fn test_append_quick_note_writes_raw_entry() {
@@ -162,6 +167,7 @@ mod tests {
         assert!(body.ends_with("\n\n"));
     }
 
+    /// Multi-line selections keep internal newlines after edge trim.
     #[test]
     #[serial]
     fn test_append_quick_note_preserves_internal_newlines() {
@@ -178,6 +184,7 @@ mod tests {
         assert!(body.contains("Ala\nma kota"));
     }
 
+    /// Consecutive appends separate entries with exactly one blank line.
     #[test]
     #[serial]
     fn test_append_quick_note_blank_line_between_entries() {

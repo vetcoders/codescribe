@@ -24,6 +24,7 @@ pub struct GitHubRef {
 }
 
 impl std::fmt::Display for GitHubRef {
+    /// Render as `owner/repo@ref:path` (the compact spec form).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -257,10 +258,12 @@ pub fn load_github_token() -> Option<String> {
 // Tests
 // ═══════════════════════════════════════════════════════════
 
+/// Parser, Display, and percent-encoding unit tests (no network).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `blob` URLs parse into owner/repo/ref/path with case preserved.
     #[test]
     fn test_parse_github_url_blob() {
         let gh = parse_github_ref("https://github.com/vetcoders/codescribe/blob/main/src/lib.rs");
@@ -278,6 +281,7 @@ mod tests {
         );
     }
 
+    /// `raw` URLs parse the same shape as `blob` links.
     #[test]
     fn test_parse_github_url_raw() {
         let gh = parse_github_ref(
@@ -294,6 +298,7 @@ mod tests {
         );
     }
 
+    /// Full spec form keeps branch names that contain slashes.
     #[test]
     fn test_parse_github_spec_full() {
         let gh = parse_github_ref("Vetcoders/Codescribe@fix/multiple-fixes:core/lib.rs");
@@ -308,6 +313,7 @@ mod tests {
         );
     }
 
+    /// Spec without `@ref` defaults the git ref to `main`.
     #[test]
     fn test_parse_github_spec_default_ref() {
         let gh = parse_github_ref("Vetcoders/Codescribe:core/lib.rs");
@@ -322,6 +328,7 @@ mod tests {
         );
     }
 
+    /// Empty, incomplete, and non-GitHub hosts yield `None`.
     #[test]
     fn test_parse_github_invalid() {
         assert_eq!(parse_github_ref("not a github ref"), None);
@@ -330,6 +337,7 @@ mod tests {
         assert_eq!(parse_github_ref("https://gitlab.com/a/b/blob/main/x"), None);
     }
 
+    /// Deep nested paths after the ref survive URL splitting.
     #[test]
     fn test_parse_github_url_deep_path() {
         let gh = parse_github_ref("https://github.com/org/repo/blob/v2.0/src/deep/nested/file.rs");
@@ -340,6 +348,7 @@ mod tests {
         assert_eq!(gh.path, "src/deep/nested/file.rs");
     }
 
+    /// Display matches the compact `owner/repo@ref:path` form.
     #[test]
     fn test_github_ref_display() {
         let gh = GitHubRef {
@@ -351,12 +360,14 @@ mod tests {
         assert_eq!(gh.to_string(), "owner/repo@main:src/lib.rs");
     }
 
+    /// Alphanumeric, hyphen, underscore, and dot stay unencoded in params.
     #[test]
     fn test_percent_encode_param_safe() {
         assert_eq!(percent_encode_param("Vetcoders"), "Vetcoders");
         assert_eq!(percent_encode_param("my-repo_v2"), "my-repo_v2");
     }
 
+    /// Slash, space, and brace characters are percent-encoded in params.
     #[test]
     fn test_percent_encode_param_special() {
         assert_eq!(percent_encode_param("a/b"), "a%2Fb");
@@ -364,6 +375,7 @@ mod tests {
         assert_eq!(percent_encode_param("ref@{0}"), "ref%40%7B0%7D");
     }
 
+    /// Path encoding keeps `/` separators while encoding spaces.
     #[test]
     fn test_percent_encode_path_preserves_slashes() {
         assert_eq!(percent_encode_path("src/lib.rs"), "src/lib.rs");
@@ -373,6 +385,7 @@ mod tests {
         );
     }
 
+    /// Path traversal and query-injection characters are fully encoded away.
     #[test]
     fn test_injection_attempt_encoded() {
         // Path traversal attempt

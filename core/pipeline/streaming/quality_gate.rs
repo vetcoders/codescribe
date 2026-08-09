@@ -276,10 +276,12 @@ fn is_repetition_hallucination(lower: &str) -> bool {
     false
 }
 
+/// Hallucination heuristics: exact lists, confidence gates, and repetition.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Known filler phrases still trip; whitelist and normal speech stay clean.
     #[test]
     fn hallucination_existing_matches_preserved() {
         // Exact-match list entries still flagged.
@@ -303,6 +305,7 @@ mod tests {
         ));
     }
 
+    /// Polish technical terms only flag when confidence is clearly low.
     #[test]
     fn hallucination_polish_exact_terms_require_low_confidence() {
         assert!(!is_hallucination_with_quality(
@@ -332,6 +335,7 @@ mod tests {
         ));
     }
 
+    /// Long single-word and phrase loops are treated as Whisper hallucinations.
     #[test]
     fn hallucination_repetition_detected() {
         // Single word looped many times (long enough to be implausible speech).
@@ -348,6 +352,7 @@ mod tests {
         ));
     }
 
+    /// Short natural repeats and varied speech stay below the hallucination bar.
     #[test]
     fn hallucination_legit_repeat() {
         // Short legitimate repeats must NOT be flagged (below min-words gate).

@@ -427,6 +427,7 @@ pub struct CodescribeConfig {}
 /// recording worker threads start. Persisted settings remain the source of
 /// truth; an explicit launch-time process override keeps precedence.
 fn bootstrap_audio_input_runtime() {
+    /// Once-only seed of `AUDIO_INPUT_DEVICE` from persisted config at boot.
     static AUDIO_INPUT_BOOTSTRAP: Once = Once::new();
     AUDIO_INPUT_BOOTSTRAP.call_once(|| {
         if cfg!(test) || std::env::var_os("AUDIO_INPUT_DEVICE").is_some() {
@@ -1858,6 +1859,7 @@ fn key_present(account: &str) -> bool {
 /// between them. A build failure is cached and returned as a config error rather
 /// than retried per call.
 fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
+    /// Process-wide OAuth login reactor; build errors are cached as strings.
     static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     match RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -1875,6 +1877,7 @@ fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
 /// pending: starting a second supersedes and cancels the first, which is what
 /// frees the fixed loopback callback port for the new attempt.
 fn active_account_login() -> &'static Mutex<Option<account_auth::LoginServer>> {
+    /// At most one in-flight login server; a new start cancels the previous.
     static ACTIVE: OnceLock<Mutex<Option<account_auth::LoginServer>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(None))
 }

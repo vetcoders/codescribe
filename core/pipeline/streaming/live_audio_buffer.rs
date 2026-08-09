@@ -166,11 +166,14 @@ impl LiveAudioBuffer {
     }
 }
 
+/// Retention, window honesty, commit release, and F3 end_ts mapping fixtures.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Session sample rate used by all retention fixtures (16 kHz mono).
     const RATE: u32 = 16_000;
+    /// Capture-sized push quantum so tests exercise chunk quantisation.
     const CHUNK: usize = 1024;
 
     /// Push `samples` through the buffer in capture-sized chunks, the way the
@@ -187,6 +190,7 @@ mod tests {
         (0..len).map(|i| i as f32).collect()
     }
 
+    /// Half-open `[1s, 2s)` resolves to exactly one second of ramp samples.
     #[test]
     fn window_returns_the_requested_span_at_session_rate() {
         let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
@@ -198,6 +202,7 @@ mod tests {
         assert_eq!(*window.last().unwrap(), (2 * RATE - 1) as f32);
     }
 
+    /// Window bounds need not land on CHUNK multiples (cross-chunk honesty).
     #[test]
     fn window_spans_capture_chunk_boundaries() {
         let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
@@ -210,6 +215,7 @@ mod tests {
         assert_eq!(*window.last().unwrap(), 2399.0);
     }
 
+    /// Cap drop-oldest: evicted ranges are `None`, not silently short.
     #[test]
     fn cap_evicts_oldest_and_evicted_ranges_report_none() {
         // 1 s cap, 3 s pushed — the first two seconds are gone.
@@ -229,6 +235,7 @@ mod tests {
         assert_eq!(window[0], (RATE as f32) * 2.5);
     }
 
+    /// `committed_through` frees retained PCM that can never be re-cut.
     #[test]
     fn committed_through_releases_retained_samples() {
         let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
@@ -265,6 +272,7 @@ mod tests {
         assert_eq!(buffer.len(), RATE as usize);
     }
 
+    /// Past-end: small overshoot clamps; large overshoot / past start refuse.
     #[test]
     fn window_past_the_audio_seen_so_far_is_refused_but_the_edge_is_clamped() {
         let mut buffer = LiveAudioBuffer::new(RATE, DEFAULT_RETENTION_SECS);
@@ -340,6 +348,7 @@ mod tests {
     /// bridge probe answers, and it is stated as such in the report.
     #[test]
     fn utterance_end_ts_maps_to_its_audio_window_within_tolerance() {
+        /// F3 go/no-go edge tolerance (seconds) for end_ts → PCM mapping.
         const TOLERANCE: f32 = 0.2;
         let spans = [(0.5f32, 2.0f32), (2.5, 4.0), (4.4, 5.6)];
         let session = fixture_session(6.0, &spans);

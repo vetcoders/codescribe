@@ -84,6 +84,7 @@ pub enum FinalPassMode {
 }
 
 impl std::fmt::Display for FinalPassMode {
+    /// Wire-token Display for [`FinalPassMode`] (snake_case for logs/UI).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => write!(f, "none"),
@@ -104,6 +105,7 @@ pub enum FinalPassDisposition {
 }
 
 impl std::fmt::Display for FinalPassDisposition {
+    /// Wire-token Display for [`FinalPassDisposition`] (snake_case for logs/UI).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Skipped => write!(f, "skipped"),
@@ -125,7 +127,9 @@ pub struct FinalPassVerdict {
     pub repetition_cleanups: u64,
 }
 
+/// VAD speech-% threshold at/below which [`TranscriptionConfidenceFlag::VeryLowSpeech`] fires.
 const VERY_LOW_SPEECH_PCT: f32 = 6.0;
+/// Avg logprob ceiling for [`TranscriptionConfidenceFlag::PossibleHallucinationLogprob`].
 const POSSIBLE_HALLUCINATION_LOGPROB: f32 = -1.0;
 
 /// Engine-owned confidence flags derived from VAD + Whisper quality metadata,
@@ -171,6 +175,7 @@ pub enum TranscriptionConfidenceFlag {
 }
 
 impl std::fmt::Display for TranscriptionConfidenceFlag {
+    /// Wire-token Display for confidence flags; structured variants encode payload.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::VeryLowSpeech => write!(f, "very_low_speech"),
@@ -326,6 +331,7 @@ pub enum VadClass {
 }
 
 impl std::fmt::Display for VadClass {
+    /// Wire-token Display for [`VadClass`] (matches serde `snake_case` tokens).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Speech => write!(f, "speech"),
@@ -351,6 +357,7 @@ pub enum TranscriptionSource {
 }
 
 impl std::fmt::Display for TranscriptionSource {
+    /// Wire-token Display for [`TranscriptionSource`] provenance labels.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::LocalFinalPass => write!(f, "local_final_pass"),
@@ -371,6 +378,7 @@ pub enum TranscriptionEngine {
 }
 
 impl std::fmt::Display for TranscriptionEngine {
+    /// Wire-token Display for [`TranscriptionEngine`] (`whisper` / `apple`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Whisper => write!(f, "whisper"),
@@ -396,6 +404,7 @@ pub enum TranscriptionEngineMode {
 }
 
 impl std::fmt::Display for TranscriptionEngineMode {
+    /// Wire-token Display for [`TranscriptionEngineMode`] provisioning path.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmbeddedDefault => write!(f, "embedded_default"),
@@ -565,6 +574,7 @@ impl TranscriptDelta {
 }
 
 impl std::fmt::Display for TranscriptDelta {
+    /// Display the raw delta payload (includes literal backspace chars).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.delta)
     }
@@ -862,6 +872,7 @@ pub enum DropKind {
 }
 
 impl std::fmt::Display for DropKind {
+    /// Human/debug label for [`DropKind`] (PascalCase, not serde tokens).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DropKind::Hallucination => write!(f, "Hallucination"),
@@ -897,6 +908,7 @@ mod tests {
 
     // ── TranscriptDelta roundtrip ──
 
+    /// Append-only delta extends the buffer without rewriting the prefix.
     #[test]
     fn delta_append_roundtrip() {
         let mut buf = String::from("Hello");
@@ -905,6 +917,7 @@ mod tests {
         assert_eq!(buf, "Hello world");
     }
 
+    /// Replace emits N backspaces then append; applies as a tail rewrite.
     #[test]
     fn delta_replace_roundtrip() {
         let mut buf = String::from("Hello worl");
@@ -914,6 +927,7 @@ mod tests {
         assert_eq!(buf, "Hello world!");
     }
 
+    /// `from_diff` + `apply` roundtrips a mid-string Polish correction.
     #[test]
     fn delta_from_diff_roundtrip() {
         let before = "Cześć, jestem lekarzem";
@@ -925,11 +939,13 @@ mod tests {
         assert_eq!(buf, after);
     }
 
+    /// Identical before/after yields `None` (no empty delta noise).
     #[test]
     fn delta_from_diff_identical_returns_none() {
         assert!(TranscriptDelta::from_diff("same", "same").is_none());
     }
 
+    /// Full replacement when common prefix is empty still roundtrips.
     #[test]
     fn delta_from_diff_complete_replacement() {
         let before = "abc";
@@ -940,6 +956,7 @@ mod tests {
         assert_eq!(buf, after);
     }
 
+    /// Empty→text is pure append (`is_append_only`).
     #[test]
     fn delta_from_diff_empty_to_text() {
         let delta = TranscriptDelta::from_diff("", "hello").unwrap();
@@ -949,6 +966,7 @@ mod tests {
         assert!(delta.is_append_only());
     }
 
+    /// Text→empty is pure delete (`is_delete_only`).
     #[test]
     fn delta_from_diff_text_to_empty() {
         let delta = TranscriptDelta::from_diff("hello", "").unwrap();
@@ -958,6 +976,7 @@ mod tests {
         assert!(delta.is_delete_only());
     }
 
+    /// Backspace on empty buffer is a no-op (never panics).
     #[test]
     fn delta_apply_backspace_underflow_is_noop() {
         let mut buf = String::new();
@@ -965,6 +984,7 @@ mod tests {
         assert_eq!(buf, "abc");
     }
 
+    /// Multi-byte Polish diacritics use char counts, not bytes.
     #[test]
     fn delta_from_diff_unicode_polish() {
         let before = "Zółty pies";
@@ -975,6 +995,7 @@ mod tests {
         assert_eq!(buf, after);
     }
 
+    /// Streaming-style append of a completion suffix on a shared stem.
     #[test]
     fn delta_backspace_sequence() {
         // Simulate Whisper correcting "transkryp" → "transkrypcja"
@@ -984,6 +1005,7 @@ mod tests {
         assert_eq!(buf, "transkrypcja");
     }
 
+    /// Multi-chunk append/replace simulation mirrors live Whisper previews.
     #[test]
     fn delta_multi_step_simulation() {
         // Simulate streaming: chunk1 → chunk2 (with correction) → chunk3
@@ -1002,6 +1024,7 @@ mod tests {
         assert_eq!(buf, "Witaj, świecie!");
     }
 
+    /// CJK appends are char-safe and remain append-only.
     #[test]
     fn delta_from_diff_multibyte_cjk() {
         let before = "日本語テスト";
@@ -1013,6 +1036,7 @@ mod tests {
         assert!(delta.is_append_only());
     }
 
+    /// Emoji replacement deletes one char then appends (grapheme as char).
     #[test]
     fn delta_from_diff_emoji_replacement() {
         let before = "Hello 🌍";
@@ -1023,6 +1047,7 @@ mod tests {
         assert_eq!(buf, after);
     }
 
+    /// Mixed replace payload contains both backspaces and new text.
     #[test]
     fn delta_from_diff_mixed_replace_contains_backspace_and_append() {
         let before = "alpha beta";
@@ -1038,6 +1063,7 @@ mod tests {
 
     // ── SpeechUtterance ──
 
+    /// `SpeechUtterance::duration` is end_ts − start_ts in seconds.
     #[test]
     fn utterance_duration() {
         let u = SpeechUtterance {
@@ -1051,6 +1077,7 @@ mod tests {
 
     // ── RawTranscript ──
 
+    /// Default raw transcript is empty text with no segments.
     #[test]
     fn raw_transcript_default_has_no_segments() {
         let rt = RawTranscript::default();
@@ -1060,6 +1087,7 @@ mod tests {
 
     // ── EngineEvent ──
 
+    /// Preview events clone field-for-field (rev + utterance-local text).
     #[test]
     fn engine_event_preview_clone() {
         let event = EngineEvent::Preview {
@@ -1075,6 +1103,7 @@ mod tests {
         }
     }
 
+    /// NoSpeech reason string survives clone for sink presentation.
     #[test]
     fn engine_event_no_speech_clone() {
         let event = EngineEvent::NoSpeech {
@@ -1088,6 +1117,7 @@ mod tests {
         }
     }
 
+    /// DropKind Display labels stay stable for telemetry string matching.
     #[test]
     fn engine_event_drop_kind_display() {
         assert_eq!(DropKind::Hallucination.to_string(), "Hallucination");
@@ -1096,6 +1126,7 @@ mod tests {
         assert_eq!(DropKind::FilteredEmpty.to_string(), "FilteredEmpty");
     }
 
+    /// Stats event preserves partial-pass counters for session telemetry.
     #[test]
     fn engine_event_stats_fields() {
         let event = EngineEvent::Stats {
@@ -1130,6 +1161,7 @@ mod tests {
         }
     }
 
+    /// UtteranceFinal carries text, VAD%, logprob, and quality-gate fields.
     #[test]
     fn engine_event_utterance_final_roundtrip() {
         let event = EngineEvent::UtteranceFinal {
@@ -1179,6 +1211,7 @@ mod tests {
         }
     }
 
+    /// ReplaceRange serde + apply rewrites a char range on committed text.
     #[test]
     fn engine_event_replace_range_roundtrip_clone_and_apply() {
         let event = EngineEvent::ReplaceRange {
@@ -1214,6 +1247,7 @@ mod tests {
         assert_eq!(committed, "hello world");
     }
 
+    /// InsertAnnotation serde + apply injects at a char position.
     #[test]
     fn engine_event_insert_annotation_roundtrip_clone_and_apply() {
         let event = EngineEvent::InsertAnnotation {
@@ -1246,6 +1280,7 @@ mod tests {
         assert_eq!(committed, "Pacjent [śmiech] spokojny");
     }
 
+    /// SessionFinalised serdes; apply_to_committed_text is a deliberate noop.
     #[test]
     fn engine_event_session_finalised_roundtrip_and_noop_apply() {
         let event = EngineEvent::SessionFinalised {
@@ -1282,6 +1317,7 @@ mod tests {
 
     // ── RawTranscript confidence metadata ──
 
+    /// Default confidence fields are unset / not quality-dropped.
     #[test]
     fn raw_transcript_default_has_no_confidence() {
         let rt = RawTranscript::default();
@@ -1290,6 +1326,7 @@ mod tests {
         assert!(!rt.quality_gate_dropped);
     }
 
+    /// Raw transcript can carry logprob + compression without a drop flag.
     #[test]
     fn raw_transcript_carries_confidence_metadata() {
         let rt = RawTranscript {
@@ -1304,6 +1341,7 @@ mod tests {
         assert!(!rt.quality_gate_dropped);
     }
 
+    /// Quality-gate drop keeps metrics so consumers can still diagnose.
     #[test]
     fn raw_transcript_quality_gate_dropped_preserves_metadata() {
         let rt = RawTranscript {
@@ -1317,6 +1355,7 @@ mod tests {
         assert!(rt.avg_logprob.unwrap() < -1.0);
     }
 
+    /// Default file options leave final-pass mode at `None` (opt-in only).
     #[test]
     fn file_transcription_options_default_disables_final_pass() {
         let options = FileTranscriptionOptions::default();
@@ -1325,6 +1364,7 @@ mod tests {
 
     // ── TranscriptionVerdict ──
 
+    /// Empty verdict with VAD no_speech still surfaces VeryLowSpeech flag.
     #[test]
     fn verdict_no_speech_carries_vad_truth() {
         let verdict = TranscriptionVerdict::from_parts(
@@ -1362,6 +1402,7 @@ mod tests {
         );
     }
 
+    /// Speech verdict preserves text, VAD sparkline, engine fallback, final-pass.
     #[test]
     fn verdict_with_speech_carries_full_truth() {
         let verdict = TranscriptionVerdict::from_parts(
@@ -1412,6 +1453,7 @@ mod tests {
         assert!(verdict.engine.fallback_used);
     }
 
+    /// TranscriptionSource Display tokens match snake_case wire labels.
     #[test]
     fn transcription_source_display() {
         assert_eq!(
@@ -1445,6 +1487,7 @@ mod tests {
         );
     }
 
+    /// FinalPassMode/Disposition Display tokens match serde snake_case.
     #[test]
     fn final_pass_display_contract() {
         assert_eq!(FinalPassMode::None.to_string(), "none");
@@ -1475,6 +1518,7 @@ mod tests {
         );
     }
 
+    /// from_parts materializes engine flags from VAD% + logprob heuristics.
     #[test]
     fn verdict_derives_engine_confidence_flags() {
         let verdict = TranscriptionVerdict::from_parts(
@@ -1509,6 +1553,7 @@ mod tests {
         );
     }
 
+    /// Silero tail-drop count appends SileroDroppedTailHallucinations flag.
     #[test]
     fn verdict_from_parts_with_silero_drops_adds_typed_flag() {
         let verdict = TranscriptionVerdict::from_parts_with_silero_drops(
@@ -1540,6 +1585,7 @@ mod tests {
 
     // ── Truth QA: UtteranceFinal confidence contract ──
 
+    /// UtteranceFinal can embed precomputed confidence_flags for sinks.
     #[test]
     fn utterance_final_carries_confidence_metadata() {
         let event = EngineEvent::UtteranceFinal {
@@ -1584,6 +1630,7 @@ mod tests {
         }
     }
 
+    /// Quality-gate-dropped UtteranceFinal still ships logprob metadata.
     #[test]
     fn utterance_final_quality_gate_truth() {
         let event = EngineEvent::UtteranceFinal {
@@ -1627,6 +1674,7 @@ mod tests {
 
     // ── Truth QA: Serialization roundtrip ──
 
+    /// Full TranscriptionVerdict JSON roundtrip preserves nested truth.
     #[test]
     fn verdict_serialization_roundtrip_preserves_all_truth() {
         let verdict = TranscriptionVerdict::from_parts(
@@ -1684,6 +1732,7 @@ mod tests {
         assert_eq!(fp.lexicon_rewrites, 2);
     }
 
+    /// Empty sparkline is skipped on serialize (skip_serializing_if empty).
     #[test]
     fn verdict_no_speech_serialization_omits_empty_sparkline() {
         let verdict = TranscriptionVerdict::from_parts(
@@ -1718,6 +1767,7 @@ mod tests {
         );
     }
 
+    /// Non-empty VAD sparkline survives construction and field access.
     #[test]
     fn verdict_sparkline_preserved_through_vad() {
         let sparkline = "▁▁▃▅▇████▇▅▃▁▁▁";
@@ -1745,6 +1795,7 @@ mod tests {
 
     // ── Serde roundtrip edge cases for the truth-surface verdict structs ──
 
+    /// Every FinalPassDisposition serdes as its snake_case token.
     #[test]
     fn final_pass_verdict_serde_roundtrip_covers_all_dispositions() {
         let cases = [
@@ -1768,6 +1819,7 @@ mod tests {
         }
     }
 
+    /// Optional final-pass reason None survives serde roundtrip.
     #[test]
     fn final_pass_verdict_serde_preserves_none_reason() {
         let verdict = FinalPassVerdict {
@@ -1786,6 +1838,7 @@ mod tests {
         assert!(restored.reason.is_none());
     }
 
+    /// VadVerdict no_speech_reason survives JSON roundtrip.
     #[test]
     fn vad_verdict_serde_roundtrip_preserves_no_speech_reason() {
         let verdict = VadVerdict {
@@ -1811,6 +1864,7 @@ mod tests {
         assert!(restored.sparkline.is_empty());
     }
 
+    /// Present sparkline is not stripped by serde defaults.
     #[test]
     fn vad_verdict_serde_roundtrip_preserves_sparkline_when_present() {
         let sparkline = "▁▃▇█▇▃▁";
@@ -1830,6 +1884,7 @@ mod tests {
         assert!(restored.no_speech_reason.is_none());
     }
 
+    /// Missing sparkline field deserializes to empty String via default.
     #[test]
     fn vad_verdict_deserialize_accepts_missing_sparkline_via_default() {
         // Older snapshots may omit the sparkline field entirely; serde(default)
@@ -1846,6 +1901,7 @@ mod tests {
         assert_eq!(restored.speech_pct, 50.0);
     }
 
+    /// All VadClass variants serde under snake_case wire tokens.
     #[test]
     fn vad_class_serde_roundtrip_covers_all_variants() {
         let cases = [
@@ -1861,6 +1917,7 @@ mod tests {
         }
     }
 
+    /// VadClass Display string equals the serde rename token.
     #[test]
     fn vad_class_display_matches_serde_token() {
         let cases = [
@@ -1875,6 +1932,7 @@ mod tests {
         }
     }
 
+    /// All TranscriptionConfidenceFlag variants (incl. payload) serde.
     #[test]
     fn confidence_flag_serde_roundtrip_covers_all_variants() {
         let cases = [
@@ -1927,6 +1985,7 @@ mod tests {
         );
     }
 
+    /// Legacy plain string confidence tokens still deserialize.
     #[test]
     fn confidence_flag_legacy_strings_still_deserialize() {
         // Guard-rail: pre-0.9.3 truth.json files stored flags as bare strings
@@ -1982,6 +2041,7 @@ mod tests {
         }
     }
 
+    /// Short final vs long stream is length regression (div0 Apple collapse).
     #[test]
     fn final_pass_length_regression_div0_apple_file_collapse() {
         // div0 2026-07-23: ~98s audio, stream 56 chars, Apple file final 12 chars.
@@ -1990,6 +2050,7 @@ mod tests {
         assert!(final_pass_is_length_regression("Im wystarczy", stream));
     }
 
+    /// Thin stream and comparable finals do not trip regression guard.
     #[test]
     fn final_pass_length_regression_spares_cold_start_and_comparable_finals() {
         // Empty/thin live → final must still recover (cold Whisper / cold Apple).
@@ -2008,6 +2069,7 @@ mod tests {
         ));
     }
 
+    /// from_parts builds a verdict with derived flags and provenance intact.
     #[test]
     fn transcription_verdict_from_parts_roundtrip() {
         let verdict = TranscriptionVerdict::from_parts(

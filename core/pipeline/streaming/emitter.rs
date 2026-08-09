@@ -16,11 +16,15 @@ use super::stream_log::append_to_stream_log;
 use super::tuning::{buffered_correction_prefix_ratio, env_f32, env_u64, env_usize};
 
 // Golden runtime profile (balanced for low-latency preview + stable quality).
+/// Initial hold before the first typed emission (ms); skips on the very first output.
 const DEFAULT_BUFFER_DELAY_MS: u64 = 280;
+/// Default typing speed in characters per second for the animation.
 const DEFAULT_TYPING_CPS: f32 = 90.0;
+/// Max words released per tick so the overlay does not dump whole phrases at once.
 const DEFAULT_EMIT_WORDS_MAX: usize = 2;
 
 lazy_static! {
+    /// Token splitter: whitespace runs or non-space chunks (with trailing space).
     static ref TOKEN_RE: Regex = Regex::new(r"\s+|\S+\s*").expect("token regex");
 }
 
@@ -200,6 +204,7 @@ impl BufferedEmitter {
             return false;
         }
 
+        /// Min gap between redacted-delta corrections so the UI is not storm-corrected.
         const CORRECTION_COOLDOWN_MS: u64 = 120;
         if let Some(ref _corrected) = self.correction_pending {
             let can_correct = self

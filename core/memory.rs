@@ -88,15 +88,18 @@ unsafe extern "C" {
     fn malloc_zone_pressure_relief(zone: *mut core::ffi::c_void, goal: usize) -> usize;
 }
 
+/// Heap release and Metal free-pool prune safety (no-op / terminate / callable).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// CPU devices return immediately without attempting Metal encoder rotation.
     #[test]
     fn reclaim_metal_buffer_pool_is_noop_on_cpu() {
         reclaim_metal_buffer_pool(&candle_core::Device::Cpu);
     }
 
+    /// On Metal, reclaim must finish a bounded rotation and stay idempotent.
     #[test]
     fn reclaim_metal_buffer_pool_terminates_on_metal() {
         // The deterministic claim is a bounded call count: the reclaim must
@@ -111,6 +114,7 @@ mod tests {
         reclaim_metal_buffer_pool(&device); // idempotent on an empty pool
     }
 
+    /// `release_freed_heap` is always safe to call (no-op off macOS).
     #[test]
     fn release_freed_heap_is_callable_and_safe() {
         // Allocate and drop a large buffer so there is something to reclaim,

@@ -287,12 +287,15 @@ fn collect_text(value: &Value, out: &mut Vec<String>, dive_tool_result: bool) {
     }
 }
 
+/// Markdown export contract tests: role attribution, tool-result lifting, and
+/// scope filters against the pure formatter (no filesystem).
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;
     use serde_json::json;
 
+    /// Build a single-text-block `ThreadMessage` at a fixed UTC timestamp.
     fn message(role: &str, text: &str) -> super::super::thread_store::ThreadMessage {
         super::super::thread_store::ThreadMessage {
             role: role.to_string(),
@@ -302,6 +305,7 @@ mod tests {
         }
     }
 
+    /// Fixture thread with a non-empty title so heading assertions are stable.
     fn thread(messages: Vec<super::super::thread_store::ThreadMessage>) -> Thread {
         Thread {
             id: "t_test".to_string(),
@@ -321,6 +325,7 @@ mod tests {
         }
     }
 
+    /// Full export: title heading, scope metadata, role sections, and body text.
     #[test]
     fn renders_heading_scope_roles_and_body() {
         let md = thread_to_markdown(
@@ -342,6 +347,7 @@ mod tests {
         assert!(md.ends_with('\n'));
     }
 
+    /// Legacy OpenAI `input_text` / `output_text` blocks flatten like `text`.
     #[test]
     fn renders_legacy_openai_text_alias_blocks() {
         let timestamp = Utc.with_ymd_and_hms(2026, 7, 2, 9, 31, 0).unwrap();
@@ -369,6 +375,7 @@ mod tests {
         assert!(!md.contains("output_text"), "\n{md}");
     }
 
+    /// `assistant_only` keeps assistant prose and drops user (and other) turns.
     #[test]
     fn assistant_only_drops_non_assistant_turns() {
         let md = thread_to_markdown(
@@ -385,6 +392,7 @@ mod tests {
         assert!(md.contains("Done — here is the summary."));
     }
 
+    /// Fenced code and list newlines must survive export (no whitespace collapse).
     #[test]
     fn preserves_code_fences_and_line_breaks_in_export() {
         // Regression: the .md export must keep fenced code blocks and list line
@@ -402,6 +410,7 @@ mod tests {
         );
     }
 
+    /// Pure `tool_use` turns emit no section; only visible prose creates headers.
     #[test]
     fn skips_turns_with_no_visible_text() {
         // A tool-use-only turn (no plain text) should not emit a section.
@@ -423,6 +432,7 @@ mod tests {
         assert!(md.contains("Result ready."));
     }
 
+    /// User-role `tool_result` renders as `## Tool · name`, never `## User`.
     #[test]
     fn tool_result_is_attributed_to_tool_not_user() {
         // A user-role message that merely carries a tool_result must render
@@ -468,6 +478,7 @@ mod tests {
         assert!(md.contains("thanks!"));
     }
 
+    /// Orphan tool results use "Tool result"; `is_error` is flagged in the header.
     #[test]
     fn tool_result_without_matching_tool_use_falls_back_and_flags_errors() {
         // No assistant tool_use to resolve the name -> "Tool result"; is_error
@@ -492,6 +503,7 @@ mod tests {
         assert!(!md.contains("## User"), "no user attribution:\n{md}");
     }
 
+    /// Spill references export as the stored path string, not a fake inline body.
     #[test]
     fn stored_tool_output_reference_exports_honestly_without_inline_body() {
         let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
@@ -513,6 +525,7 @@ mod tests {
         assert!(!md.contains("monster inline body"));
     }
 
+    /// Assistant-only scope excludes tool results carried in user-role messages.
     #[test]
     fn assistant_only_drops_tool_results_carried_by_user() {
         // Tool results live in user-role messages, so assistant_only export

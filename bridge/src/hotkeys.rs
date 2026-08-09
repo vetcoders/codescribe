@@ -28,8 +28,14 @@ use crate::agent_delivery::{
 use crate::recording::{CsAnnotationKind, CsLayerSummary, CsTranscriptionListener};
 use crate::{CsError, CsLanguage};
 
+/// Shared process-wide slot for the lazily-created `RecordingController`.
+/// Mutex so the first hotkey/FFI path wins construction; `Option` until first use.
 type SharedController = Arc<Mutex<Option<Arc<RecordingController>>>>;
+/// Shared process-wide slot for the Swift overlay transcription listener.
+/// `RwLock` because the forwarder reads on every event and Swift writes once.
 type SharedListener = Arc<RwLock<Option<Arc<dyn CsTranscriptionListener>>>>;
+/// Shared process-wide slot for the Swift UI-only app-action listener.
+/// Same shape as the overlay listener; never carries audio or model payload.
 type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>;
 
 /// Foreign callback for UI-only global commands. These actions are deliberately
@@ -54,9 +60,14 @@ pub enum CsAgentCaptureCommand {
     Toggle,
 }
 
+/// Capture ownership sentinel: no lane currently owns the microphone.
 const CAPTURE_OWNER_NONE: u8 = 0;
+/// Capture ownership: the legacy overlay / `RecordingController` owns the mic.
 const CAPTURE_OWNER_OVERLAY: u8 = 1;
+/// Capture ownership: the Agent composer microphone owns the mic.
 const CAPTURE_OWNER_AGENT: u8 = 2;
+/// Process-wide exclusive capture owner (overlay vs Agent). Atomic so hotkey
+/// and FFI paths can claim/release without holding a heavier lock.
 static CAPTURE_OWNER: AtomicU8 = AtomicU8::new(CAPTURE_OWNER_NONE);
 
 /// Try to become the single process-wide capture owner for the Agent lane.
@@ -153,6 +164,7 @@ fn overlay_owned_assistive_hold_fallback(event: &HotkeyEvent) -> Option<HotkeyEv
 
 /// Process-global slot for the lazily-created `RecordingController`.
 fn shared_controller() -> SharedController {
+    /// Once-initialized shared controller store for this process.
     static CONTROLLER: OnceLock<SharedController> = OnceLock::new();
     Arc::clone(CONTROLLER.get_or_init(|| Arc::new(Mutex::new(None))))
 }
@@ -160,12 +172,14 @@ fn shared_controller() -> SharedController {
 /// Process-global slot for the Swift overlay listener. `RwLock` because the
 /// event forwarder reads it on every broadcast and Swift writes it once.
 fn shared_listener() -> SharedListener {
+    /// Once-initialized overlay transcription-listener store.
     static LISTENER: OnceLock<SharedListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
 }
 
 /// Process-global slot for the Swift app-action listener (UI-only commands).
 fn shared_app_action_listener() -> SharedAppActionListener {
+    /// Once-initialized app-action listener store (UI-only commands).
     static LISTENER: OnceLock<SharedAppActionListener> = OnceLock::new();
     Arc::clone(LISTENER.get_or_init(|| Arc::new(RwLock::new(None))))
 }
@@ -302,6 +316,7 @@ fn normalize_paste_target_app_name(name: Option<String>) -> Option<String> {
 /// starts. Lets sync surfaces (e.g. the Settings config writer) schedule async
 /// controller work on the runtime the shared controller already lives on.
 fn shared_runtime_handle() -> &'static OnceLock<Handle> {
+    /// Once-initialized tokio handle captured when the hotkey tap starts.
     static HANDLE: OnceLock<Handle> = OnceLock::new();
     &HANDLE
 }
@@ -939,6 +954,7 @@ pub enum CsPasteOutcome {
 }
 
 impl From<codescribe::controller::OverlayPasteDelivery> for CsPasteOutcome {
+    /// Map core overlay paste delivery into the UniFFI `CsPasteOutcome` enum.
     fn from(value: codescribe::controller::OverlayPasteDelivery) -> Self {
         match value {
             codescribe::controller::OverlayPasteDelivery::Pasted => Self::Pasted,
@@ -969,6 +985,7 @@ pub struct CsPasteResult {
 }
 
 impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
+    /// Map core overlay paste result (delivery + app names) into FFI form.
     fn from(value: codescribe::controller::OverlayPasteResult) -> Self {
         Self {
             outcome: value.delivery.into(),
@@ -1134,6 +1151,7 @@ async fn dispatch_recording_hotkey_event(
 mod format_level_tests {
     use super::*;
 
+    /// Unknown level strings must fail config-side, not silently no-op.
     #[tokio::test]
     async fn format_text_for_level_rejects_unknown_level() {
         let hotkeys = CodescribeHotkeys::default();
@@ -1143,6 +1161,7 @@ mod format_level_tests {
         assert!(matches!(result, Err(CsError::Config { .. })));
     }
 
+    /// Manual format must act: `off` is rejected rather than a silent pass-through.
     #[tokio::test]
     async fn format_text_for_level_rejects_off() {
         let hotkeys = CodescribeHotkeys::default();
@@ -1152,6 +1171,7 @@ mod format_level_tests {
         assert!(matches!(result, Err(CsError::Config { .. })));
     }
 
+    /// Legacy aliases (e.g. `creative` → Max) still normalize via FormattingPolicy.
     #[tokio::test]
     async fn format_text_for_level_accepts_legacy_alias_shape() {
         // Aliases normalize through the same FormattingPolicy owner as C01;
@@ -1173,6 +1193,7 @@ mod dispatch_tests {
     use super::*;
     use codescribe::os::hotkeys::{DoubleTapBlockReason, DoubleTapGesture};
 
+    /// Detector already owns blocked-double-tap tray truth; bridge stays silent.
     #[tokio::test]
     #[serial_test::serial]
     async fn blocked_double_tap_does_not_publish_tray_conflict() {
@@ -1202,21 +1223,25 @@ mod app_action_tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    /// Test double that counts `on_show_agent` / `on_agent_capture` invocations.
     struct CountingAppActionListener {
         show_agent_calls: AtomicUsize,
         capture_calls: AtomicUsize,
     }
 
     impl CsAppActionListener for CountingAppActionListener {
+        /// Count ShowAgent UI callbacks (no recording side effects).
         fn on_show_agent(&self) {
             self.show_agent_calls.fetch_add(1, Ordering::SeqCst);
         }
 
+        /// Count Agent capture commands (start/stop/toggle) without acting.
         fn on_agent_capture(&self, _command: CsAgentCaptureCommand) {
             self.capture_calls.fetch_add(1, Ordering::SeqCst);
         }
     }
 
+    /// Agent claim blocks overlay claim; release restores NONE for the next owner.
     #[test]
     #[serial_test::serial]
     fn capture_owner_is_atomic_and_mutually_exclusive() {
@@ -1237,6 +1262,7 @@ mod app_action_tests {
         assert_eq!(CAPTURE_OWNER.load(Ordering::SeqCst), CAPTURE_OWNER_NONE);
     }
 
+    /// Chat/Selection hold Down→Start and Up→Stop; pure mapping, no ownership.
     #[test]
     fn assistive_hold_maps_to_agent_start_and_stop() {
         assert_eq!(
@@ -1255,6 +1281,7 @@ mod app_action_tests {
         );
     }
 
+    /// Mid-recording assistive upgrade cannot migrate ownership; release stays raw.
     #[test]
     #[serial_test::serial]
     fn overlay_owned_assistive_release_still_stops_the_overlay_owner() {
@@ -1272,6 +1299,7 @@ mod app_action_tests {
         CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
     }
 
+    /// ShowAgent is UI-only; recording/assistive arming/preparing stay untouched.
     #[test]
     #[serial_test::serial]
     fn show_agent_routes_without_recording_or_preparing_payload() {
@@ -1354,6 +1382,7 @@ mod app_action_tests {
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
     }
 
+    /// Stop on an AGENT-owned capture must not re-arm trigger selection at send.
     #[test]
     #[serial_test::serial]
     fn assistive_stop_does_not_recapture_at_send_time() {
@@ -1405,6 +1434,7 @@ pub enum CsWorkMode {
 }
 
 impl From<WorkMode> for CsWorkMode {
+    /// Core `WorkMode` → UniFFI `CsWorkMode` (closed three-mode set).
     fn from(mode: WorkMode) -> Self {
         match mode {
             WorkMode::Dictation => CsWorkMode::Dictation,
@@ -1415,6 +1445,7 @@ impl From<WorkMode> for CsWorkMode {
 }
 
 impl From<CsWorkMode> for WorkMode {
+    /// UniFFI `CsWorkMode` → core `WorkMode` for settings persistence.
     fn from(mode: CsWorkMode) -> Self {
         match mode {
             CsWorkMode::Dictation => WorkMode::Dictation,
@@ -1441,6 +1472,7 @@ pub enum CsShortcutBinding {
 }
 
 impl From<ShortcutBinding> for CsShortcutBinding {
+    /// Core `ShortcutBinding` → UniFFI picker enum (closed gesture set).
     fn from(binding: ShortcutBinding) -> Self {
         match binding {
             ShortcutBinding::Disabled => CsShortcutBinding::Disabled,
@@ -1457,6 +1489,7 @@ impl From<ShortcutBinding> for CsShortcutBinding {
 }
 
 impl From<CsShortcutBinding> for ShortcutBinding {
+    /// UniFFI `CsShortcutBinding` → core binding for validation and save.
     fn from(binding: CsShortcutBinding) -> Self {
         match binding {
             CsShortcutBinding::Disabled => ShortcutBinding::Disabled,
@@ -1500,12 +1533,14 @@ pub struct CsHotkeyConflict {
     pub blocking: bool,
 }
 
+/// Closed enumeration of work modes used by Settings round-trips and tests.
 const ALL_WORK_MODES: [WorkMode; 3] = [
     WorkMode::Dictation,
     WorkMode::Formatting,
     WorkMode::Assistive,
 ];
 
+/// Closed gesture set offered by the Settings picker (`HOTKEYS_CONTRACT`).
 const ALL_SHORTCUT_BINDINGS: [ShortcutBinding; 9] = [
     ShortcutBinding::Disabled,
     ShortcutBinding::HoldFn,
@@ -1700,9 +1735,11 @@ mod mode_binding_tests {
     use serial_test::serial;
     use std::sync::Mutex;
 
+    /// Serializes `CODESCRIBE_DATA_DIR` mutation for the persist/read-back test.
     // Serializes the CODESCRIBE_DATA_DIR-mutating test below within this module.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Every core work mode survives a UniFFI round-trip without loss.
     #[test]
     fn work_mode_ffi_round_trips() {
         for mode in ALL_WORK_MODES {
@@ -1711,6 +1748,7 @@ mod mode_binding_tests {
         }
     }
 
+    /// Re-arm rebuilds only when the tap is down and both TCC gates are granted.
     #[test]
     fn rearm_gate_rebuilds_only_when_inactive_and_fully_granted() {
         use PermissionStatus::{Denied, Granted, NotDetermined};
@@ -1734,6 +1772,7 @@ mod mode_binding_tests {
         assert!(!should_rearm_hotkey_tap(true, Denied, Denied));
     }
 
+    /// Every closed-set gesture survives a UniFFI round-trip without loss.
     #[test]
     fn shortcut_binding_ffi_round_trips() {
         for binding in ALL_SHORTCUT_BINDINGS {
@@ -1742,6 +1781,7 @@ mod mode_binding_tests {
         }
     }
 
+    /// Settings picker options match `ALL_SHORTCUT_BINDINGS` length and labels.
     #[test]
     fn available_bindings_cover_the_closed_set() {
         let options = CodescribeHotkeys::new().available_bindings();
@@ -1752,6 +1792,7 @@ mod mode_binding_tests {
         }
     }
 
+    /// Build a three-mode candidate binding set for `validate_bindings` tests.
     fn candidate(
         dictation: CsShortcutBinding,
         formatting: CsShortcutBinding,
@@ -1764,6 +1805,7 @@ mod mode_binding_tests {
         ]
     }
 
+    /// Reachability collisions (e.g. DoubleCtrl vs DoubleLeftOption) are blocking.
     #[test]
     fn validate_flags_internal_reachability_conflict_as_blocking() {
         // Dictation=DoubleCtrl steals the toggle path from Formatting=DoubleLeftOption.
@@ -1778,6 +1820,7 @@ mod mode_binding_tests {
         );
     }
 
+    /// A hold-only profile with disabled toggles validates with zero conflicts.
     #[test]
     fn validate_is_clean_for_a_safe_hold_only_profile() {
         // HoldCtrl never collides with macOS symbolic hotkeys and Disabled toggles
@@ -1793,6 +1836,7 @@ mod mode_binding_tests {
         );
     }
 
+    /// Persist/read-back cycle against an isolated `CODESCRIBE_DATA_DIR`.
     #[test]
     #[serial]
     fn set_mode_binding_persists_and_reads_back_through_the_bridge() {
@@ -1846,6 +1890,7 @@ mod paste_target_mapping_tests {
     use super::{CsPasteOutcome, CsPasteResult, normalize_paste_target_app_name};
     use codescribe::controller::{OverlayPasteDelivery, OverlayPasteResult};
 
+    /// Non-empty app names trim and stay present across the bridge mapping.
     #[test]
     fn bridge_mapping_keeps_present_app_name() {
         assert_eq!(
@@ -1854,6 +1899,7 @@ mod paste_target_mapping_tests {
         );
     }
 
+    /// None / whitespace-only names collapse to absent for Swift labels.
     #[test]
     fn bridge_mapping_returns_absent_for_unknown_or_empty_name() {
         assert_eq!(normalize_paste_target_app_name(None), None);
@@ -1863,6 +1909,7 @@ mod paste_target_mapping_tests {
         );
     }
 
+    /// Accessibility denial keeps observed app names intact on the FFI result.
     #[test]
     fn accessibility_denial_maps_with_delivery_app_truth() {
         let result = CsPasteResult::from(OverlayPasteResult {
@@ -1906,11 +1953,13 @@ mod preparing_compensation_tests {
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Mutex as AsyncMutex;
 
+    /// Async mutex serializing process-global PREPARING/listener/controller state.
     // Serializes the process-global PREPARING_PENDING / shared_listener /
     // shared_controller these tests mutate, so parallel runs don't interleave.
     // Async-aware so the guard can be held across the `.await` points below.
     static TEST_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
+    /// Capturing transcription listener for optimistic-overlay compensation tests.
     #[derive(Default)]
     struct RecordingLifecycleListener {
         preparing: AtomicUsize,
@@ -1922,24 +1971,30 @@ mod preparing_compensation_tests {
     }
 
     impl RecordingLifecycleListener {
+        /// Count of `on_recording_preparing` callbacks observed.
         fn preparing(&self) -> usize {
             self.preparing.load(Ordering::SeqCst)
         }
+        /// Count of `on_recording_started` callbacks observed.
         fn started(&self) -> usize {
             self.started.load(Ordering::SeqCst)
         }
+        /// Count of `on_recording_stopped` callbacks observed.
         fn stopped(&self) -> usize {
             self.stopped.load(Ordering::SeqCst)
         }
+        /// Count of `on_recording_finalising` callbacks observed.
         fn finalising(&self) -> usize {
             self.finalising.load(Ordering::SeqCst)
         }
+        /// Snapshot of RMS audio-level samples the listener captured.
         fn audio_levels(&self) -> Vec<f32> {
             self.audio_levels
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
         }
+        /// Snapshot of context markers `(position, label)` the listener captured.
         fn context_markers(&self) -> Vec<(u64, String)> {
             self.context_markers
                 .lock()
@@ -1949,20 +2004,27 @@ mod preparing_compensation_tests {
     }
 
     impl CsTranscriptionListener for RecordingLifecycleListener {
+        /// Count preparing overlay shows for compensation assertions.
         fn on_recording_preparing(&self) {
             self.preparing.fetch_add(1, Ordering::SeqCst);
         }
+        /// Count real start transitions from the broadcast forwarder.
         fn on_recording_started(&self) {
             self.started.fetch_add(1, Ordering::SeqCst);
         }
+        /// Count terminal stop events (broadcast or compensating).
         fn on_recording_stopped(&self) {
             self.stopped.fetch_add(1, Ordering::SeqCst);
         }
+        /// Count busy→finalising transitions for the hold-release sequence.
         fn on_recording_finalising(&self) {
             self.finalising.fetch_add(1, Ordering::SeqCst);
         }
+        /// No-op: preview text is not under test in this suite.
         fn on_preview(&self, _text: String) {}
+        /// No-op: mid-stream corrections are not under test in this suite.
         fn on_correction(&self, _text: String, _previous_text: String) {}
+        /// No-op: utterance finals are not under test in this suite.
         fn on_final(
             &self,
             _utterance_id: u64,
@@ -1972,6 +2034,7 @@ mod preparing_compensation_tests {
             _confidence_flags: Vec<String>,
         ) {
         }
+        /// No-op: layered replace-range patches are not under test here.
         fn on_replace_range(
             &self,
             _utterance_id: u64,
@@ -1981,6 +2044,7 @@ mod preparing_compensation_tests {
             _source: crate::recording::CsLayerSource,
         ) {
         }
+        /// No-op: annotation inserts are not under test in this suite.
         fn on_insert_annotation(
             &self,
             _utterance_id: u64,
@@ -1989,22 +2053,29 @@ mod preparing_compensation_tests {
             _kind: CsAnnotationKind,
         ) {
         }
+        /// Capture selection/context markers for forwarder assertions.
         fn on_context_marker(&self, position: u64, marker: String) {
             self.context_markers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push((position, marker));
         }
+        /// No-op: session finalisation summary is not under test here.
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
+        /// No-op: final transcript ready is not under test in this suite.
         fn on_final_transcript_ready(&self, _text: String) {}
+        /// No-op: VAD active toggles are not under test in this suite.
         fn on_vad_active(&self, _active: bool) {}
+        /// Capture RMS samples so audio-level forwarding can be asserted.
         fn on_audio_level(&self, rms: f32) {
             self.audio_levels
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(rms);
         }
+        /// No-op: no-speech reasons are not under test in this suite.
         fn on_no_speech(&self, _reason: String) {}
+        /// No-op: error messages are not under test in this suite.
         fn on_error(&self, _message: String) {}
     }
 
@@ -2023,6 +2094,7 @@ mod preparing_compensation_tests {
         (listener, controller)
     }
 
+    /// Clear shared listener/controller stores and the preparing flag after a test.
     fn teardown() {
         *shared_listener().write().unwrap_or_else(|e| e.into_inner()) = None;
         *shared_controller()
@@ -2031,6 +2103,7 @@ mod preparing_compensation_tests {
         PREPARING_PENDING.store(false, Ordering::SeqCst);
     }
 
+    /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.
     #[test]
     fn recording_audio_level_payload_forwards_rms() {
         let listener = Arc::new(RecordingLifecycleListener::default());
@@ -2041,6 +2114,7 @@ mod preparing_compensation_tests {
         assert_eq!(listener.audio_levels(), vec![0.125]);
     }
 
+    /// ContextMarker IPC payload forwards position + label to the listener.
     #[test]
     fn context_marker_payload_forwards_position_and_label() {
         let listener = Arc::new(RecordingLifecycleListener::default());

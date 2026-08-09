@@ -150,6 +150,8 @@ fn clear_thermal_tray_status_if_current() {
 /// declared once per process because the runtime rejects a duplicate name.
 #[cfg(target_os = "macos")]
 fn thermal_observer_class() -> *const Class {
+    /// Pointer-sized cache for the registered ObjC class; `OnceLock` makes init
+    /// process-wide and race-free.
     static CLASS: OnceLock<usize> = OnceLock::new();
     *CLASS.get_or_init(|| {
         let superclass = Class::get("NSObject").expect("NSObject class missing");
@@ -177,11 +179,13 @@ unsafe fn ns_string(value: &str) -> *mut Object {
     msg_send![cls, stringWithUTF8String: c_str.as_ptr()]
 }
 
+/// Probe install idempotency and thermal-only tray recovery.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
 
+    /// Install publishes a level; a second call must not panic or drift.
     #[test]
     fn install_thermal_probe_publishes_a_level_and_is_idempotent() {
         // On macOS this genuinely registers the NSProcessInfo thermal observer
@@ -200,6 +204,7 @@ mod tests {
         );
     }
 
+    /// Recovery clears Thermal→Idle but leaves Listening (and peers) alone.
     #[test]
     #[serial_test::serial]
     fn thermal_recovery_clears_only_thermal_tray_status() {

@@ -72,11 +72,13 @@ pub fn final_pass_routing_mode() -> FinalPassRoutingMode {
     FinalPassRoutingMode::Smart
 }
 
+/// Final-pass routing mode defaults and env override coverage.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Default routing is Smart; CODESCRIBE_FINAL_PASS_* env values override when valid.
     #[test]
     #[serial]
     fn test_final_pass_routing_mode_defaults_smart_and_honors_env() {

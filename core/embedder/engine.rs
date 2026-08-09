@@ -17,8 +17,11 @@ use tracing::{debug, info};
 use super::embedded;
 use crate::{hf_cache, safe_path};
 
+/// Default tokenizer max sequence length when config omits an override.
 const DEFAULT_MAX_LENGTH: usize = 512;
+/// Hugging Face repo id used when no explicit model path is set.
 const DEFAULT_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
+/// Env override for the embedder HF repo (debug / alternate weights).
 const ENV_EMBEDDER_REPO: &str = "CODESCRIBE_EMBEDDER_REPO";
 
 /// Process-lifetime Candle device for the embedder (same Metal-leak rationale as
@@ -117,6 +120,7 @@ pub struct EmbedderConfig {
 }
 
 impl Default for EmbedderConfig {
+    /// Prefer embedded weights; path and max_length left for runtime resolution.
     fn default() -> Self {
         Self {
             model_path: None,
@@ -567,10 +571,12 @@ fn move_tensors_to_device(
     Ok(result)
 }
 
+/// Cosine-similarity helpers used by semantic gates (no model load).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Identical unit vectors score ~1.0.
     #[test]
     fn test_similarity_identical() {
         let a = vec![1.0, 0.0, 0.0];
@@ -579,6 +585,7 @@ mod tests {
         assert!((sim - 1.0).abs() < 0.001);
     }
 
+    /// Orthogonal unit vectors score ~0.0.
     #[test]
     fn test_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];

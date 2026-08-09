@@ -1528,6 +1528,7 @@ mod tests {
     }
 
     impl Drop for TestEnvGuard {
+        /// Restore the captured env value (or absence) when the guard leaves scope.
         fn drop(&mut self) {
             restore_env_for_test(self.key, self.previous.take());
         }
@@ -1586,6 +1587,7 @@ mod tests {
         ]
     }
 
+    /// Write one key via single or batch path, then reload `UserSettings` for compare.
     fn save_snapshot(key: &str, value: &str, batch: bool) -> UserSettings {
         let _tmp = setup_isolated_data_dir();
         let config = Config::default();
@@ -1599,6 +1601,7 @@ mod tests {
         UserSettings::load()
     }
 
+    /// Assert a promoted LLM optional field is absent in loaded settings.
     fn assert_optional_override_absent(settings: &UserSettings, key: &str) {
         let actual = match key {
             "LLM_ENDPOINT" => settings.llm_endpoint.as_deref(),
@@ -1613,6 +1616,7 @@ mod tests {
         assert_eq!(actual, None, "{key} must be unset, got {actual:?}");
     }
 
+    /// Promoted save must land in settings.json and must not set process env.
     #[test]
     #[serial]
     fn save_to_env_persists_promoted_setting_without_process_env_mutation() {
@@ -1630,6 +1634,7 @@ mod tests {
         );
     }
 
+    /// HOLD_ARM_MODIFIER string values persist and resolve to the enum on load.
     #[test]
     #[serial]
     fn hold_arm_modifier_roundtrips_through_persistence_and_fresh_load() {
@@ -1652,6 +1657,7 @@ mod tests {
         }
     }
 
+    /// Badge/indicator keys stay env-managed; settings.json bytes must not change.
     #[test]
     #[serial]
     fn hold_indicator_ui_writes_existing_env_keys_without_settings_json_drift() {
@@ -1721,6 +1727,7 @@ mod tests {
         );
     }
 
+    /// AUTO_PASTE single/batch writes reload live without shadowing process env.
     #[test]
     #[serial]
     fn auto_paste_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
@@ -1748,6 +1755,7 @@ mod tests {
         assert!(std::env::var("AUTO_PASTE_ENABLED").is_err());
     }
 
+    /// FORMATTING_LEVEL aliases normalize identically on single and batch paths.
     #[test]
     #[serial]
     fn formatting_policy_single_and_batch_writes_normalize_every_alias() {
@@ -1798,6 +1806,7 @@ mod tests {
         }
     }
 
+    /// Blank LLM override removes the JSON path and restores lane_truth fallback.
     #[test]
     #[serial]
     fn empty_llm_override_unsets_json_path_and_restores_resolved_fallback() {
@@ -1848,6 +1857,7 @@ mod tests {
         );
     }
 
+    /// Blank assistive provider removes the JSON path and restores default provider.
     #[test]
     #[serial]
     fn empty_assistive_provider_unsets_json_path_and_restores_default() {
@@ -1884,6 +1894,7 @@ mod tests {
         );
     }
 
+    /// Single and batch LLM writes must produce bit-identical UserSettings snapshots.
     #[test]
     #[serial]
     fn llm_key_single_and_batch_writes_produce_identical_settings_snapshots() {
@@ -1896,6 +1907,7 @@ mod tests {
         }
     }
 
+    /// Batch blank LLM overrides clear every optional JSON path and restore defaults.
     #[test]
     #[serial]
     fn save_to_env_many_blank_llm_overrides_remove_json_paths_and_restore_fallbacks() {
@@ -1949,6 +1961,7 @@ mod tests {
         );
     }
 
+    /// Batch promoted settings persist without mutating process env or creating .env.
     #[test]
     #[serial]
     fn save_to_env_many_persists_batch_without_process_env_mutation() {
@@ -1979,6 +1992,7 @@ mod tests {
         );
     }
 
+    /// Load seeds OpenAI Responses endpoint/model defaults without requiring API keys.
     #[test]
     #[serial]
     fn load_injects_openai_responses_defaults_without_api_key() {
@@ -2028,6 +2042,7 @@ mod tests {
         assert!(std::env::var("LLM_ASSISTIVE_API_KEY").is_err());
     }
 
+    /// apply_user_settings copies hold/double-tap/silence/exclusive timing into Config.
     #[test]
     #[serial]
     fn test_hotkey_timing_params_applied_from_settings() {
@@ -2063,6 +2078,7 @@ mod tests {
         restore_env_for_test("HOLD_EXCLUSIVE", prev_hold_exclusive);
     }
 
+    /// settings.json can disable local STT; load must honor that flag.
     #[test]
     #[serial]
     fn test_load_respects_use_local_stt_from_settings_json() {
@@ -2079,6 +2095,7 @@ mod tests {
         );
     }
 
+    /// Whisper initial_prompt stays off until settings explicitly opts in.
     #[test]
     #[serial]
     fn test_stt_initial_prompt_defaults_off_and_requires_opt_in() {
@@ -2107,6 +2124,7 @@ mod tests {
         );
     }
 
+    /// Explicit process env can force STT initial_prompt off over settings.json.
     #[test]
     #[serial]
     fn test_runtime_env_can_force_stt_initial_prompt_off_over_settings() {
@@ -2125,6 +2143,7 @@ mod tests {
         );
     }
 
+    /// settings.json can disable the live transcription overlay.
     #[test]
     #[serial]
     fn test_load_respects_transcription_overlay_enabled_from_settings_json() {
@@ -2142,6 +2161,7 @@ mod tests {
         );
     }
 
+    /// settings.json can switch UI-initiated recording from dictation to assistive.
     #[test]
     #[serial]
     fn test_load_respects_tray_start_assistive_from_settings_json() {
@@ -2165,6 +2185,7 @@ mod tests {
         );
     }
 
+    /// Legacy .env USE_LOCAL_STT migrates into settings.json on first load.
     #[test]
     #[serial]
     fn test_load_migrates_use_local_stt_from_env_file_before_settings_json_exists() {
@@ -2182,6 +2203,7 @@ mod tests {
         assert!(UserSettings::settings_path().exists());
     }
 
+    /// Promoted settings.json keys beat stale .env values and are not re-injected.
     #[test]
     #[serial]
     fn test_load_prefers_settings_json_over_promoted_env_file_values() {
@@ -2210,6 +2232,7 @@ mod tests {
         restore_env_for_test("AI_FORMATTING_ENABLED", previous);
     }
 
+    /// Non-promoted env-managed keys (e.g. STT_API_KEY) still load from optional .env.
     #[test]
     #[serial]
     fn test_load_still_honors_env_managed_values_from_optional_env_file() {
@@ -2223,6 +2246,7 @@ mod tests {
         assert_eq!(config.stt_api_key.as_deref(), Some("test-from-env-file"));
     }
 
+    /// Explicit runtime env must not synthesize or persist into settings.json.
     #[test]
     #[serial]
     fn test_runtime_env_does_not_persist_into_settings_during_migration() {

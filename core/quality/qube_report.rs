@@ -28,6 +28,7 @@ use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
+/// Max chars of AI-formatted text echoed into log previews (truncates longer).
 const AI_LOG_PREVIEW_CHARS: usize = 80;
 
 /// Everything one report run needs: where the corpus lives, where artifacts go,
@@ -154,6 +155,7 @@ pub enum ReportTranscriptState {
 }
 
 impl std::fmt::Display for ReportTranscriptState {
+    /// Formats the state as a stable snake_case token for JSON/HTML surfaces.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TextCommitted => write!(f, "text_committed"),
@@ -1915,10 +1917,12 @@ fn avg(values: &[f32]) -> Option<f32> {
     }
 }
 
+/// Unit tests for raw-semantics classification, summary tallies, and helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Pins VAD-empty vs quality-gate-drop vs committed-text as distinct states.
     #[test]
     fn classify_raw_semantics_distinguishes_no_speech_and_gate_drop() {
         let no_speech = classify_raw_semantics(
@@ -1954,6 +1958,7 @@ mod tests {
         assert_eq!(committed.state, ReportTranscriptState::TextCommitted);
     }
 
+    /// Ensures finish() tallies each raw-semantics bucket independently.
     #[test]
     fn totals_finish_counts_raw_semantics_separately() {
         let mut totals = Totals::default();
@@ -1986,6 +1991,7 @@ mod tests {
         assert_eq!(summary.raw_no_speech_detected, 1);
     }
 
+    /// Cloud ref still reads endpoint/key even when local STT mode is on.
     #[test]
     fn cloud_reference_credentials_ignore_local_committed_transcript_mode() {
         let mut config = Config {
@@ -2007,6 +2013,7 @@ mod tests {
         assert_eq!(cloud_reference_credentials(&config), None);
     }
 
+    /// Spot-checks WER on a one-token substitution (ala ma kota → ala ma psa).
     #[test]
     fn test_word_error_rate() {
         let (ref_tokens, _) = normalize_for_eval("ala ma kota");
@@ -2015,6 +2022,7 @@ mod tests {
         assert!((wer - 0.333).abs() < 0.01);
     }
 
+    /// Escapes <>&"' so report HTML cannot inject markup from transcripts.
     #[test]
     fn test_html_escape() {
         let input = "<tag>&\"'";

@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use std::sync::{Once, OnceLock, RwLock};
 use tracing::{debug, info};
 
+/// Keychain service identity for every Codescribe generic-password item.
 const SERVICE: &str = "com.vetcoders.codescribe";
+/// Account name of the single bundled secret item (all API keys together).
 const BUNDLE_ACCOUNT: &str = "codescribe_keychain_bundle_v1";
 
 /// Known API key accounts stored in Keychain.
@@ -38,6 +40,7 @@ struct KeychainBundle {
 }
 
 impl Default for KeychainBundle {
+    /// Empty bundle at schema version 1 — used before first Keychain load or write.
     fn default() -> Self {
         Self {
             version: 1,
@@ -46,8 +49,11 @@ impl Default for KeychainBundle {
     }
 }
 
+/// Process-wide decoded Keychain bundle cache; `None` means unloaded or deleted.
 static BUNDLE_CACHE: OnceLock<RwLock<Option<KeychainBundle>>> = OnceLock::new();
+/// Ledger of env values this process seeded from Keychain (not user-exported).
 static PROCESS_ENV_SEEDS: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock::new();
+/// Ensures `populate_env_from_keychain` mutates process env at most once.
 static POPULATE_ONCE: Once = Once::new();
 
 /// Process-wide cache of the decoded bundle, created on first use.
@@ -427,10 +433,12 @@ pub fn populate_env_from_keychain() {
     });
 }
 
+/// Keychain bypass and runtime-key priority regressions (no live Keychain I/O).
 #[cfg(test)]
 mod tests {
     use super::{is_xctest_host_by_signals, keychain_disabled_by_signals, resolve_runtime_key};
 
+    /// Any single XCTest host marker is enough — Xcode has rotated which env it sets.
     #[test]
     fn any_xctest_marker_identifies_the_swift_test_host() {
         // The Swift suite is a test run that looks like production to every other signal in
@@ -443,6 +451,7 @@ mod tests {
         assert!(is_xctest_host_by_signals(true, true, true));
     }
 
+    /// Zero markers must never trip the XCTest host detector (would drop persisted keys).
     #[test]
     fn a_production_launch_is_never_mistaken_for_an_xctest_host() {
         // The whole value of this detector is that it cannot fire for a user launch: it would
@@ -450,6 +459,7 @@ mod tests {
         assert!(!is_xctest_host_by_signals(false, false, false));
     }
 
+    /// Explicit disable flag turns Keychain off regardless of data-dir or CI signals.
     #[test]
     fn disable_keychain_flag_is_honored() {
         // Explicit user opt-out disables Keychain regardless of other signals.
@@ -457,6 +467,7 @@ mod tests {
         assert!(keychain_disabled_by_signals(true, true, true));
     }
 
+    /// `CODESCRIBE_DATA_DIR` and CI alone must not silently disable Keychain persistence.
     #[test]
     fn data_dir_and_ci_do_not_disable_keychain() {
         // Regression: setting CODESCRIBE_DATA_DIR (a documented data-dir override) or CI
@@ -467,6 +478,7 @@ mod tests {
         assert!(!keychain_disabled_by_signals(false, false, false));
     }
 
+    /// User-exported env wins over a Keychain-stored secret for the same account.
     #[test]
     fn explicit_process_env_keeps_priority_over_keychain() {
         assert_eq!(
@@ -480,6 +492,7 @@ mod tests {
         );
     }
 
+    /// A later Keychain write must replace the bootstrap seed left in process env.
     #[test]
     fn updated_keychain_replaces_bootstrap_seed() {
         assert_eq!(
@@ -493,6 +506,7 @@ mod tests {
         );
     }
 
+    /// Deleting the Keychain entry invalidates a matching bootstrap seed in process env.
     #[test]
     fn deleted_keychain_entry_invalidates_bootstrap_seed() {
         assert_eq!(

@@ -9,7 +9,9 @@ use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 use std::process::Command;
 
+/// macOS afconvert binary path used to re-encode archived audio to AAC.
 const AFCONVERT: &str = "/usr/bin/afconvert";
+/// Target AAC bitrate (bits/s) for archived dictation audio via afconvert.
 const AAC_BITRATE_BPS: &str = "64000";
 
 /// Encode a recording archive copy as AAC inside an m4a container.

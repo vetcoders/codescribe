@@ -29,6 +29,7 @@ pub struct CsTokenUsage {
 }
 
 impl From<&TokenUsage> for CsTokenUsage {
+    /// Map core cumulative token counters into the UniFFI record.
     fn from(usage: &TokenUsage) -> Self {
         Self {
             input: usage.input,
@@ -59,6 +60,7 @@ pub struct CsThreadSummary {
 }
 
 impl From<&ThreadSummary> for CsThreadSummary {
+    /// Flatten datetimes to epoch-ms; omit index-only `search_text`.
     fn from(summary: &ThreadSummary) -> Self {
         Self {
             id: summary.id.clone(),
@@ -93,6 +95,7 @@ pub struct CsThreadMessage {
 }
 
 impl From<&ThreadMessage> for CsThreadMessage {
+    /// Flatten content for display; keep full structured payload in `raw_json`.
     fn from(message: &ThreadMessage) -> Self {
         Self {
             role: message.role.clone(),
@@ -114,6 +117,7 @@ pub struct CsThreadNote {
 }
 
 impl From<&ThreadNote> for CsThreadNote {
+    /// Map note fields; widen anchored message index to `u64` for UniFFI.
     fn from(note: &ThreadNote) -> Self {
         Self {
             id: note.id.clone(),
@@ -142,6 +146,7 @@ pub struct CsThread {
 }
 
 impl From<&Thread> for CsThread {
+    /// Full thread map: notes/messages recursively converted; times as epoch-ms.
     fn from(thread: &Thread) -> Self {
         Self {
             id: thread.id.clone(),
@@ -171,6 +176,7 @@ pub struct CsThreadFilter {
 }
 
 impl From<CsThreadFilter> for ThreadFilter {
+    /// Pass UniFFI list filter fields straight into the core index filter.
     fn from(filter: CsThreadFilter) -> Self {
         Self {
             mode: filter.mode,
@@ -194,6 +200,7 @@ pub enum CsTranscriptKind {
 }
 
 impl From<TranscriptKind> for CsTranscriptKind {
+    /// Exhaustive mirror of core history kind variants for UniFFI.
     fn from(kind: TranscriptKind) -> Self {
         match kind {
             TranscriptKind::Raw => CsTranscriptKind::Raw,
@@ -218,6 +225,7 @@ pub struct CsHistoryEntry {
 }
 
 impl From<HistoryEntry> for CsHistoryEntry {
+    /// Path as String; local timestamp as epoch-ms; kind mapped into CsTranscriptKind.
     fn from(entry: HistoryEntry) -> Self {
         Self {
             path: entry.path.to_string_lossy().into_owned(),
@@ -447,6 +455,7 @@ fn collect_message_text(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Display-side content flatten tests (newlines, aliases, binary skip).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +472,7 @@ mod tests {
         assert_eq!(flatten_message_text(&content), raw);
     }
 
+    /// Distinct text blocks join with a blank line so markdown structure holds.
     #[test]
     fn flatten_separates_distinct_text_blocks_with_a_blank_line() {
         let content = vec![
@@ -475,6 +485,7 @@ mod tests {
         );
     }
 
+    /// Legacy OpenAI input_text/output_text aliases surface as display prose.
     #[test]
     fn flatten_surfaces_openai_text_alias_blocks() {
         let content = vec![
@@ -487,6 +498,7 @@ mod tests {
         );
     }
 
+    /// Numeric arrays and blank text blocks contribute nothing to display text.
     #[test]
     fn flatten_skips_binary_arrays_and_blank_blocks() {
         let content = vec![

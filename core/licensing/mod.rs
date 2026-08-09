@@ -20,8 +20,11 @@ pub use key_contract::{
     DEV_LICENSE_PUBLIC_KEY_FINGERPRINT, DEV_LICENSE_PUBLIC_KEY_HEX, LICENSE_PUBLIC_KEY_ENV,
 };
 
+/// Wire prefix for Codescribe keys (`CSK1.<payload>.<signature>`).
 pub const LICENSE_PREFIX: &str = "CSK1";
+/// Default paid SKU that unlocks agentic features under the stock policy.
 pub const DEFAULT_AGENTIC_SKU: &str = "agentic-lifetime";
+/// Days of offline use after last online validation before grace expires.
 pub const OFFLINE_GRACE_DAYS: i64 = 30;
 
 /// SHA-256 of the RFC 8032 development public key. Release builds compare
@@ -129,6 +132,7 @@ impl LicensePolicy {
 }
 
 impl Default for LicensePolicy {
+    /// Stock product policy: only [`DEFAULT_AGENTIC_SKU`] is agentic-entitled.
     fn default() -> Self {
         Self::new([DEFAULT_AGENTIC_SKU.to_string()])
     }
@@ -158,6 +162,7 @@ pub enum LicenseError {
 }
 
 impl fmt::Display for LicenseError {
+    /// Stable user-facing reason strings for each verification failure class.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidFormat => write!(f, "license key must have three dot-separated parts"),
@@ -323,12 +328,14 @@ pub mod test_util {
     }
 }
 
+/// CSK1 verify/evaluate and policy-boundary unit tests (dev signing key only).
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, TimeZone};
 
     use super::*;
 
+    /// Valid v1 claims with the default agentic SKU and a one-year updates window.
     fn claims() -> LicenseClaims {
         LicenseClaims {
             v: 1,
@@ -340,10 +347,12 @@ mod tests {
         }
     }
 
+    /// Fixed evaluation clock at 2026-08-04 12:00 UTC for deterministic grace math.
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 4, 12, 0, 0).unwrap()
     }
 
+    /// Signed default-SKU key evaluates Active and passes stock agentic policy.
     #[test]
     fn licensing_valid_key_is_active_and_entitles_agentic() {
         let key = test_util::sign_dev_license(&claims());
@@ -352,6 +361,7 @@ mod tests {
         assert!(status.allows_agentic(&LicensePolicy::default()));
     }
 
+    /// Bad signature, wrong prefix, and schema-invalid claims each map distinctly.
     #[test]
     fn licensing_rejects_bad_signature_schema_and_prefix() {
         let valid = test_util::sign_dev_license(&claims());
@@ -376,6 +386,7 @@ mod tests {
         ));
     }
 
+    /// Offline age from last_online_validation yields GraceOffline with days_left.
     #[test]
     fn licensing_grace_counts_from_last_online_validation() {
         let key = test_util::sign_dev_license(&claims());
@@ -384,6 +395,7 @@ mod tests {
         assert_eq!(status.state, LicenseState::GraceOffline { days_left: 18 });
     }
 
+    /// Day 29 stays in grace; day 30 flips to ExpiredUpdates.
     #[test]
     fn licensing_thirty_day_boundary_flips_state() {
         let key = test_util::sign_dev_license(&claims());
@@ -395,6 +407,7 @@ mod tests {
         assert_eq!(at_30.state, LicenseState::ExpiredUpdates);
     }
 
+    /// A policy with a different paid-SKU set denies the default agentic key.
     #[test]
     fn licensing_paid_sku_boundary_is_configurable() {
         let key = test_util::sign_dev_license(&claims());

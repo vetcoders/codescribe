@@ -15,7 +15,9 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 
+/// Env flag name for opt-in donor (`on`/`1`/`true`/`yes`; default hard-off).
 const ENV_KEY: &str = "CODESCRIBE_QUBE_DONOR";
+/// Directory under the codescribe data root where donor WAV/TXT pairs land.
 const INBOX_DIRNAME: &str = "qube_inbox";
 
 /// Whether opt-in qube donor is enabled (`on`/`1`/`true`/`yes`). Default: off.
@@ -192,17 +194,21 @@ fn wav_sample_count(path: &Path) -> Result<u64, String> {
     Ok(reader.duration() as u64)
 }
 
+/// Opt-in donor gate, date-subfolder layout, and zero-sample skip contracts.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::sync::{Mutex, OnceLock};
 
+    /// Process-wide mutex so serial donor tests do not race env mutation.
     fn env_lock() -> &'static Mutex<()> {
+        /// Shared lock behind [`env_lock`]; held for the duration of each test.
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    /// Write a mono 16 kHz int16 WAV fixture for donor path tests.
     fn write_test_wav(path: &Path, samples: &[i16]) {
         let spec = hound::WavSpec {
             channels: 1,
@@ -217,6 +223,7 @@ mod tests {
         writer.finalize().expect("finalize");
     }
 
+    /// Unset env → donor disabled (hard-off default).
     #[test]
     #[serial]
     fn donor_optin_disabled_by_default() {
@@ -227,6 +234,7 @@ mod tests {
         assert!(!qube_donor_enabled());
     }
 
+    /// `on` enables; `off` (and other non-truthy values) disable.
     #[test]
     #[serial]
     fn donor_optin_parses_on_off() {
@@ -244,6 +252,7 @@ mod tests {
         }
     }
 
+    /// Enabled path: matching-stem WAV+TXT under `qube_inbox/<day>/`.
     #[test]
     #[serial]
     fn donor_optin_writes_wav_txt_layout_when_on() {
@@ -289,6 +298,7 @@ mod tests {
         }
     }
 
+    /// Default-off never creates the inbox tree or pair files.
     #[test]
     #[serial]
     fn donor_optin_off_writes_no_files() {
@@ -313,6 +323,7 @@ mod tests {
         }
     }
 
+    /// Header-only / zero-sample WAV is skipped even when donor is on.
     #[test]
     #[serial]
     fn donor_optin_skips_zero_sample_wav() {

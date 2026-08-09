@@ -13,7 +13,9 @@
 //! error, and callers degrade to native tools only.
 
 pub mod client;
+/// On-disk MCP server config load/save and secret-aware field handling.
 pub mod config_store;
+/// One-shot migration of legacy MCP secrets into the current secret store.
 pub mod secret_migration;
 
 pub use client::{

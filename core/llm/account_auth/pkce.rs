@@ -40,10 +40,12 @@ pub fn challenge_for_verifier(code_verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
+/// RFC 7636 vector + generated-verifier length/challenge self-consistency checks.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Pins challenge_for_verifier to the RFC 7636 Appendix B S256 test vector.
     #[test]
     fn pkce_challenge_matches_rfc7636_vector() {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -53,6 +55,7 @@ mod tests {
         );
     }
 
+    /// Fresh verifiers stay in the 43..128 char band and match their stored challenge.
     #[test]
     fn generated_verifier_uses_valid_pkce_length() {
         let codes = generate_pkce();

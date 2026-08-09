@@ -1681,6 +1681,7 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
     (assistant_text, reasoning_text)
 }
 
+/// Unit and mockito SSE tests for auth, channel extraction, and agent events.
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1693,6 +1694,7 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    /// Done-text wins over the delta buffer in `fallback_reasoning`.
     #[test]
     fn fallback_reasoning_prefers_done_text() {
         let reasoning =
@@ -1700,18 +1702,21 @@ mod tests {
         assert_eq!(reasoning.as_deref(), Some("final reasoning"));
     }
 
+    /// Without done-text, a trimmed non-empty delta becomes the reasoning summary.
     #[test]
     fn fallback_reasoning_uses_trimmed_delta() {
         let reasoning = fallback_reasoning(None, "  partial reasoning  ".to_string());
         assert_eq!(reasoning.as_deref(), Some("partial reasoning"));
     }
 
+    /// Whitespace-only delta and missing done-text yield `None`.
     #[test]
     fn fallback_reasoning_returns_none_for_empty_values() {
         let reasoning = fallback_reasoning(None, "   ".to_string());
         assert_eq!(reasoning, None);
     }
 
+    /// Content is available when either delta or done-text has non-blank text.
     #[test]
     fn reasoning_content_available_tracks_delta_or_done_text() {
         assert!(reasoning_content_available(&None, "thinking"));
@@ -1722,6 +1727,7 @@ mod tests {
         assert!(!reasoning_content_available(&Some("   ".to_string()), ""));
     }
 
+    /// Reasoning-only SSE completion still yields summary text (and assistant mirror).
     #[tokio::test]
     async fn stream_returns_reasoning_summary_when_reasoning_only_stream_completes() {
         let mut server = mockito::Server::new_async().await;
@@ -1768,6 +1774,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Named SSE `error` events bail with the provider code/message, not empty-content.
     #[tokio::test]
     async fn stream_bails_with_specific_sse_error_event() {
         let mut server = mockito::Server::new_async().await;
@@ -1812,6 +1819,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Full output-item/content-part lifecycle maps to assistant + reasoning text.
     #[tokio::test]
     async fn stream_handles_output_item_and_content_part_lifecycle_events() {
         let mut server = mockito::Server::new_async().await;
@@ -1880,6 +1888,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Message and reasoning items concatenate into assistant and summary channels.
     #[test]
     fn extract_output_channels_collects_assistant_and_reasoning() {
         let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
@@ -1907,6 +1916,7 @@ mod tests {
         assert_eq!(reasoning.as_deref(), Some("r1r2r3"));
     }
 
+    /// Blank or unknown content parts do not invent assistant or reasoning text.
     #[test]
     fn extract_output_channels_ignores_blank_and_unknown_parts() {
         let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
@@ -1927,6 +1937,7 @@ mod tests {
         assert_eq!(reasoning, None);
     }
 
+    /// Function-call start → args delta → done becomes the tool-call agent events.
     #[test]
     fn parse_agent_event_handles_function_call_lifecycle() {
         let mut tracker = ToolCallTracker::default();
@@ -1988,6 +1999,7 @@ mod tests {
         );
     }
 
+    /// When done omits `arguments`, buffered deltas are parsed as the call args.
     #[test]
     fn parse_agent_event_uses_delta_buffer_when_done_has_no_arguments() {
         let mut tracker = ToolCallTracker::default();
@@ -2277,6 +2289,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Default auth mode attaches both Bearer and `x-api-key` with the same secret.
     #[test]
     fn apply_auth_headers_sets_both_bearer_and_x_api_key() {
         let client = Client::new();
@@ -2304,6 +2317,7 @@ mod tests {
         );
     }
 
+    /// OAuth lanes use Bearer-only so a stray `x-api-key` is never sent.
     #[test]
     fn apply_auth_headers_keeps_oauth_tokens_bearer_only() {
         let client = Client::new();
@@ -2325,6 +2339,7 @@ mod tests {
         assert!(request.headers().get("x-api-key").is_none());
     }
 
+    /// Empty/whitespace API keys attach no auth headers (key-optional endpoints).
     #[test]
     fn apply_auth_headers_skips_auth_entirely_for_an_empty_key() {
         let client = Client::new();
@@ -2343,6 +2358,7 @@ mod tests {
         assert!(request.headers().get("x-api-key").is_none());
     }
 
+    /// Public HTTPS and loopback HTTP pass the SSRF gate; others are not tested here.
     #[test]
     fn validated_endpoint_url_allows_https_public_and_loopback_http() {
         let public = validated_endpoint_url("https://1.1.1.1/v1/responses")
@@ -2354,6 +2370,7 @@ mod tests {
         assert_eq!(localhost.as_str(), "http://127.0.0.1:11434/v1/responses");
     }
 
+    /// Plain public HTTP and private-network hosts are rejected by URL validation.
     #[test]
     fn validated_endpoint_url_rejects_plain_http_and_private_remote_hosts() {
         let public_http = validated_endpoint_url("http://1.1.1.1/v1/responses")

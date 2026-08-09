@@ -269,6 +269,7 @@ pub fn validate_terminal(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<
     }) {
         bail!("Command is blocked by Codescribe terminal policy: {program}");
     }
+    /// Substrings that mark credential stores, browser profiles, or policy files as off-limits.
     const FORBIDDEN_TARGETS: &[&str] = &[
         "/library/keychains",
         "/login.keychain",
@@ -508,6 +509,7 @@ fn expand_tilde(path: String) -> PathBuf {
 }
 
 #[cfg(test)]
+/// Workspace containment, symlink escape, and terminal command policy unit tests.
 mod tests {
     use std::fs;
 
@@ -516,6 +518,7 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Existing and new paths must stay under workspace roots; `..` escapes are denied.
     fn existing_and_new_targets_stay_inside_workspace() {
         let root = TempDir::new().expect("root");
         let roots = vec![root.path().to_path_buf()];
@@ -540,6 +543,7 @@ mod tests {
     }
 
     #[test]
+    /// Empty roots or paths outside every root fail closed.
     fn empty_roots_and_outside_paths_are_denied() {
         let root = TempDir::new().expect("root");
         let outside = TempDir::new().expect("outside");
@@ -551,6 +555,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    /// Symlinks that resolve outside the workspace root are denied.
     fn symlink_escape_is_denied() {
         use std::os::unix::fs::symlink;
 
@@ -562,6 +567,7 @@ mod tests {
     }
 
     #[test]
+    /// Privilege escalation and destructive disk/rm commands are blocked.
     fn terminal_blocks_privilege_and_disk_commands() {
         let root = TempDir::new().expect("root");
         let roots = vec![root.path().to_path_buf()];
@@ -591,6 +597,7 @@ mod tests {
     }
 
     #[test]
+    /// Interpreters, shells, pipes, redirects, and multi-command operators are blocked.
     fn terminal_blocks_interpreters_and_shell_operators() {
         let root = TempDir::new().expect("root");
         let roots = vec![root.path().to_path_buf()];
@@ -617,6 +624,7 @@ mod tests {
     }
 
     #[test]
+    /// Relative and tilde path tokens are bounded to the workspace (no home/escape reads).
     fn terminal_bounds_relative_and_tilde_paths() {
         let root = TempDir::new().expect("root");
         let roots = vec![root.path().to_path_buf()];
@@ -631,6 +639,7 @@ mod tests {
     }
 
     #[test]
+    /// Path sanitizer returns rebuilt absolute strings, never raw PathBuf display.
     fn path_sanitizer_rebuilds_absolute_string_never_raw_pathbuf() {
         let root = TempDir::new().expect("root");
         let cwd = root.path();

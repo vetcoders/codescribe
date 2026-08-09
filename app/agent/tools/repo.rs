@@ -310,6 +310,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// git_status tool returns a structured status against a temporary git repo fixture.
     #[test]
     fn git_status_on_temp_repo() {
         let tmp = TempDir::new().unwrap();

@@ -18,6 +18,7 @@ unsafe extern "C" {}
 
 use crate::os::Id;
 
+/// Once guard for macOS notification authorization request (no re-prompt spam).
 static AUTH_ONCE: Once = Once::new();
 
 /// Bridge a Rust `&str` into an autoreleased `NSString`. A string containing

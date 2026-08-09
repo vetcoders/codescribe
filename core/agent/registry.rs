@@ -191,6 +191,7 @@ pub enum ToolDecision {
 }
 
 impl Default for ToolRegistry {
+    /// Default agent registry: empty tool map until host/runtime registration fills it.
     fn default() -> Self {
         Self::new()
     }

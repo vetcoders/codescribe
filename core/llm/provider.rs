@@ -108,6 +108,7 @@ const DEFAULT_XAI_RESPONSES_ENDPOINT: &str = "https://api.x.ai/v1/responses";
 /// lighter formatting model sets `LLM_FORMATTING_MODEL` after discovery.
 const DEFAULT_XAI_MODEL: &str = "grok-4.5";
 
+/// Registry row for OpenAI Responses — catch-all prefixes and default-lane seeds.
 const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::OpenAiResponses,
     canonical: "openai-responses",
@@ -123,6 +124,7 @@ const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     assistive_model: crate::config::DEFAULT_ASSISTIVE_MODEL,
 };
 
+/// Registry row for Anthropic Messages — claude prefixes and dual-lane seeds.
 const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::AnthropicMessages,
     canonical: "anthropic-messages",
@@ -137,6 +139,7 @@ const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
     assistive_model: "claude-opus-4-8",
 };
 
+/// Registry row for xAI Grok on the Responses wire — grok prefixes, shared seeds.
 const XAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::XaiResponses,
     canonical: "xai-responses",
@@ -259,6 +262,7 @@ impl AuthMode {
 }
 
 impl std::fmt::Display for AuthMode {
+    /// Write the canonical kebab spelling (`api-key` / `provider-account`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -271,6 +275,7 @@ impl std::fmt::Display for AuthMode {
 pub struct ParseAuthModeError(pub String);
 
 impl std::fmt::Display for ParseAuthModeError {
+    /// Operator-facing message naming the rejected auth-mode string.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -283,8 +288,10 @@ impl std::fmt::Display for ParseAuthModeError {
 impl std::error::Error for ParseAuthModeError {}
 
 impl FromStr for AuthMode {
+    /// Error type for unknown auth-mode spellings.
     type Err = ParseAuthModeError;
 
+    /// Parse kebab/snake/bare aliases into [`AuthMode`]; unknown spellings err.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "api-key" | "api_key" | "apikey" | "key" => Ok(AuthMode::ApiKey),
@@ -315,6 +322,7 @@ impl Default for ProviderKind {
 }
 
 impl std::fmt::Display for ProviderKind {
+    /// Write the canonical registry spelling used in env and settings.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -325,6 +333,7 @@ impl std::fmt::Display for ProviderKind {
 pub struct ParseProviderError(pub String);
 
 impl std::fmt::Display for ParseProviderError {
+    /// Operator-facing message listing every accepted canonical spelling.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let expected = PROVIDER_REGISTRY
             .iter()
@@ -338,6 +347,7 @@ impl std::fmt::Display for ParseProviderError {
 impl std::error::Error for ParseProviderError {}
 
 impl FromStr for ProviderKind {
+    /// Error type for unknown provider identity strings.
     type Err = ParseProviderError;
 
     /// Parse a provider identity against the registry. Case-insensitive,
@@ -569,6 +579,7 @@ pub async fn provider_account_authorization_header(
     account_auth::authorization_header(provider).await.map(Some)
 }
 
+/// Unit tests pinning registry identity, capability policy, and env resolution.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +587,7 @@ mod tests {
 
     // ---- identity defaults ----
 
+    /// OpenAI Responses is Default; AuthMode defaults to ApiKey.
     #[test]
     fn default_provider_is_openai() {
         assert_eq!(ProviderKind::default(), ProviderKind::OpenAiResponses);
@@ -583,6 +595,7 @@ mod tests {
         assert_eq!(AuthMode::default(), AuthMode::ApiKey);
     }
 
+    /// Canonical `as_str` values parse back through `FromStr`.
     #[test]
     fn as_str_roundtrips_through_from_str() {
         for kind in [
@@ -595,6 +608,7 @@ mod tests {
 
     // ---- provider parsing ----
 
+    /// Accepts canonical kebab plus vendor aliases, case- and whitespace-tolerant.
     #[test]
     fn parses_canonical_and_alias_spellings() {
         assert_eq!(
@@ -615,6 +629,7 @@ mod tests {
         );
     }
 
+    /// Unknown provider spellings surface `ParseProviderError`, not a silent pick.
     #[test]
     fn invalid_provider_is_an_error() {
         let err = ProviderKind::from_str("gemini").unwrap_err();
@@ -622,6 +637,7 @@ mod tests {
         assert!(err.to_string().contains("gemini"));
     }
 
+    /// Auth-mode aliases map correctly; unknown values reject.
     #[test]
     fn parses_auth_mode_spellings() {
         assert_eq!(AuthMode::from_str("api-key"), Ok(AuthMode::ApiKey));
@@ -634,6 +650,7 @@ mod tests {
 
     // ---- per-model capability policy ----
 
+    /// OpenAI policy stays permissive so the Responses request path is untouched.
     #[test]
     fn openai_policy_is_permissive_and_unchanged() {
         // The OpenAI request path must not be perturbed: sampling allowed,
@@ -655,6 +672,7 @@ mod tests {
         );
     }
 
+    /// Opus-4.8: no sampling params, hard-400 budget_tokens, strip temperature.
     #[test]
     fn opus_4_8_rejects_sampling_and_hard_400s_budget_tokens() {
         let p = capability_policy(ProviderKind::AnthropicMessages, "claude-opus-4-8");
@@ -671,6 +689,7 @@ mod tests {
         assert_eq!(p.sanitize_temperature(Some(0.7)), None);
     }
 
+    /// Sonnet-4.6: temperature allowed; budget_tokens deprecated not hard-400.
     #[test]
     fn sonnet_4_6_tolerates_temperature_and_deprecates_budget_tokens() {
         let p = capability_policy(ProviderKind::AnthropicMessages, "claude-sonnet-4-6");
@@ -684,6 +703,7 @@ mod tests {
         assert_eq!(p.sanitize_temperature(Some(0.3)), Some(0.3));
     }
 
+    /// Unrecognised Anthropic models inherit the strict (Opus) policy.
     #[test]
     fn unknown_anthropic_model_falls_back_to_strict_policy() {
         // Safety: omitting sampling can't 400; sending it can. Unknown ⇒ strict.
@@ -694,6 +714,7 @@ mod tests {
 
     // ---- provider identity (display / key account) ----
 
+    /// Every handle exposes a non-empty display label and key-account env name.
     #[test]
     fn every_provider_has_display_name_and_key_account() {
         for kind in ALL_PROVIDERS {
@@ -743,6 +764,7 @@ mod tests {
         }
     }
 
+    /// Every canonical and alias spelling resolves to its registry row.
     #[test]
     fn every_registry_spelling_parses_back_to_its_row() {
         for row in PROVIDER_REGISTRY {
@@ -859,6 +881,7 @@ mod tests {
         }
     }
 
+    /// Anthropic keeps a separate Keychain/env account from OpenAI.
     #[test]
     fn anthropic_key_account_is_distinct_from_openai() {
         assert_eq!(
@@ -871,6 +894,7 @@ mod tests {
         );
     }
 
+    /// Default OpenAI and Anthropic models (incl. unknown) accept vision input.
     #[test]
     fn default_and_unknown_models_are_vision_capable() {
         assert!(provider_supports_vision(
@@ -889,6 +913,7 @@ mod tests {
 
     // ---- env resolution (serialized: mutates process env) ----
 
+    /// Unset/empty provider env falls back to OpenAI for both lanes.
     #[test]
     #[serial]
     fn resolve_provider_defaults_to_openai_when_unset() {
@@ -912,6 +937,7 @@ mod tests {
         restore("LLM_ASSISTIVE_PROVIDER", prev_a);
     }
 
+    /// Formatting and assistive provider env keys resolve independently.
     #[test]
     #[serial]
     fn resolve_provider_reads_mode_specific_values() {
@@ -935,6 +961,7 @@ mod tests {
         restore("LLM_ASSISTIVE_PROVIDER", prev_a);
     }
 
+    /// Invalid provider env logs and falls back to OpenAI, never another vendor.
     #[test]
     #[serial]
     fn resolve_provider_falls_back_to_openai_on_invalid() {
@@ -949,6 +976,7 @@ mod tests {
         restore("LLM_ASSISTIVE_PROVIDER", prev);
     }
 
+    /// Unset auth-mode env defaults both lanes to ApiKey.
     #[test]
     #[serial]
     fn resolve_auth_mode_defaults_to_api_key_when_unset() {
@@ -966,6 +994,7 @@ mod tests {
         restore("LLM_ASSISTIVE_AUTH_MODE", prev_a);
     }
 
+    /// Per-lane auth-mode env works; invalid values fall back to ApiKey.
     #[test]
     #[serial]
     fn resolve_auth_mode_reads_mode_specific_values_and_falls_back_on_invalid() {
@@ -986,6 +1015,7 @@ mod tests {
         restore("LLM_ASSISTIVE_AUTH_MODE", prev_a);
     }
 
+    /// ApiKey mode yields no Authorization header from the account path.
     #[tokio::test]
     #[serial]
     async fn api_key_mode_returns_no_provider_account_header() {
@@ -1003,6 +1033,7 @@ mod tests {
         restore("LLM_ASSISTIVE_AUTH_MODE", prev);
     }
 
+    /// ProviderAccount mode refreshes an expired token and returns Bearer.
     #[tokio::test]
     #[serial]
     async fn provider_account_mode_refreshes_expired_token_and_returns_bearer() {
@@ -1076,6 +1107,7 @@ mod tests {
         restore("CODESCRIBE_DATA_DIR", prev_data_dir);
     }
 
+    /// Restore a process env var to its previous value (or remove if unset).
     fn restore(key: &str, prev: Option<String>) {
         match prev {
             Some(v) => unsafe { std::env::set_var(key, v) },

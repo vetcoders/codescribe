@@ -625,6 +625,8 @@ struct PendingApprovalGuard {
 }
 
 impl Drop for PendingApprovalGuard {
+    /// Remove this call's pending row so a finished awaiter cannot be resolved
+    /// again by a stale Swift approval card.
     fn drop(&mut self) {
         recover(self.broker.pending.lock()).remove(&self.key);
     }
@@ -718,6 +720,8 @@ struct TurnGuard {
 }
 
 impl Drop for TurnGuard {
+    /// Abort the spawned turn task (no-op if finished) and drop its registry
+    /// entry so cancelled and completed turns never leak abort handles.
     fn drop(&mut self) {
         self.abort.abort();
         self.registry.deregister(&self.thread_id, self.token);
@@ -873,6 +877,9 @@ async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
     }
 }
 
+/// Unit coverage for composer attachment validation, turn cancellation, and
+/// the approval broker — exercises the real `drive_turn` path with a scripted
+/// provider so no live model is required.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -893,12 +900,14 @@ mod tests {
         }
     }
 
+    /// An empty attachment list must yield zero vision payloads, not invent one.
     #[test]
     fn empty_attachments_yield_no_images() {
         let images = validate_composer_attachments(&[]).unwrap();
         assert!(images.is_empty());
     }
 
+    /// A readable PNG path loads through core vision loading into one attachment.
     #[test]
     fn valid_image_loads_as_vision_attachment() {
         let dir = tmp_dir("valid");
@@ -913,6 +922,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Bad paths surface named, readable errors — never a silent skip of the file.
     #[test]
     fn unreadable_or_nonimage_is_a_readable_error_not_a_silent_drop() {
         let dir = tmp_dir("bad");
@@ -933,6 +943,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Exceeding `MAX_COMPOSER_VISION_IMAGES` is rejected before any image loads.
     #[test]
     fn too_many_images_is_rejected() {
         let attachments: Vec<CsAttachment> = (0..=MAX_COMPOSER_VISION_IMAGES)
@@ -976,6 +987,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentProvider for ScriptedProvider {
+        /// Pop one scripted event batch and feed it through a channel, matching
+        /// the real provider stream shape without hitting the network.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -997,6 +1010,8 @@ mod tests {
             Ok(rx)
         }
 
+        /// Build a user tool-result message for a completed call, as live
+        /// providers do when feeding the next model turn.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -1013,6 +1028,7 @@ mod tests {
             )
         }
 
+        /// Wrap raw image bytes as a content block for vision-capable turns.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -1020,6 +1036,7 @@ mod tests {
             }
         }
 
+        /// Stable provider label used in diagnostics and test logs.
         fn name(&self) -> &str {
             "scripted-provider"
         }
@@ -1043,19 +1060,27 @@ mod tests {
     }
 
     impl CsAgentListener for RecordingListener {
+        /// Streaming text deltas are ignored; cancellation tests key on tools.
         fn on_text_delta(&self, _delta: String) {}
+        /// Count successful final text emissions (must stay 0 after cancel).
         fn on_text_done(&self, _text: String) {
             self.text_done_count.fetch_add(1, Ordering::SeqCst);
         }
+        /// Reasoning deltas are unused by these cancellation fixtures.
         fn on_reasoning_delta(&self, _delta: String) {}
+        /// Arm `tool_started` so cancel tests wait until the tool is mid-flight.
         fn on_tool_executing(&self, _name: String, _id: String) {
             self.tool_started.store(true, Ordering::SeqCst);
         }
+        /// Approval requests are not asserted by the cancellation suite.
         fn on_tool_approval_requested(&self, _request: CsToolApprovalRequest) {}
+        /// Tool result payloads are not asserted by the cancellation suite.
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
+        /// Count successful Done terminals (must stay 0 after cancel).
         fn on_done(&self) {
             self.done_count.fetch_add(1, Ordering::SeqCst);
         }
+        /// Count listener errors; provider failures must use throw-only instead.
         fn on_error(&self, _message: String) {
             self.error_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -1174,6 +1199,8 @@ mod tests {
         flag.load(Ordering::SeqCst)
     }
 
+    /// Provider stream errors throw once as `CsError::Agent` and must not also
+    /// land on `on_error` (no double-signalling to Swift).
     #[tokio::test]
     async fn provider_error_is_reported_once_via_throw_only() {
         let listener = Arc::new(RecordingListener::default());
@@ -1211,6 +1238,8 @@ mod tests {
         );
     }
 
+    /// Cancelling mid-tool aborts before the delayed side effect, surfaces a
+    /// readable cancel error, and leaves the thread ready for a next turn.
     #[tokio::test]
     async fn cancel_turn_aborts_in_flight_tool_before_its_side_effect() {
         let side_effect = Arc::new(AtomicBool::new(false));
@@ -1290,6 +1319,8 @@ mod tests {
         assert!(messages.iter().any(|m| m.role == Role::Assistant));
     }
 
+    /// Dropping the `drive_turn` future (UniFFI cancel path) must abort the
+    /// inner task via `TurnGuard`, not leave a tool running detached.
     #[tokio::test]
     async fn dropping_the_turn_future_aborts_the_spawned_task() {
         let side_effect = Arc::new(AtomicBool::new(false));
@@ -1332,6 +1363,7 @@ mod tests {
         );
     }
 
+    /// Cancel on an idle thread is a quiet false — no panic on registry or FFI.
     #[test]
     fn cancel_with_no_active_turn_is_a_noop() {
         let turns = TurnRegistry::default();
@@ -1342,6 +1374,7 @@ mod tests {
         assert!(!agent.cancel_turn("idle-thread".to_string()));
     }
 
+    /// Resolve must match session + thread + call exactly; wrong keys stay pending.
     #[tokio::test]
     async fn approval_broker_resumes_only_the_exact_session_thread_and_call() {
         let broker = Arc::new(ApprovalBroker::default());
@@ -1367,6 +1400,7 @@ mod tests {
         assert!(pending.await);
     }
 
+    /// Dropping a thread's pending approvals resolves each awaiter as denied.
     #[tokio::test]
     async fn cancelling_thread_rejects_pending_approval() {
         let broker = Arc::new(ApprovalBroker::default());
@@ -1389,6 +1423,8 @@ mod tests {
         assert!(!pending.await);
     }
 
+    /// A cancel after successful completion is a no-op; the finished text stands
+    /// and the thread still accepts a subsequent turn.
     #[tokio::test]
     async fn completed_turn_is_not_broken_by_a_late_cancel() {
         let listener = Arc::new(RecordingListener::default());

@@ -72,6 +72,7 @@ fn confidence_label(avg_logprob: Option<f32>) -> &'static str {
 mod tests {
     use super::{DEFAULT_TRANSCRIPT_TAG_TEMPLATE, wrap_transcript};
 
+    /// Default XML-ish template substitutes mode/lang and wraps body text.
     #[test]
     fn wrap_transcript_uses_default_template() {
         let wrapped = wrap_transcript(
@@ -87,6 +88,7 @@ mod tests {
         );
     }
 
+    /// Custom templates honor `{lang}`, `{mode}`, and `{text}` placeholders.
     #[test]
     fn wrap_transcript_uses_custom_template_and_placeholders() {
         let wrapped = wrap_transcript("hello", "[{lang}:{mode}] {text}", "format", "en");
@@ -94,6 +96,7 @@ mod tests {
         assert_eq!(wrapped, "[en:format] hello");
     }
 
+    /// Whitespace-only input stays unwrapped (never emits an empty tag shell).
     #[test]
     fn wrap_transcript_leaves_empty_text_unwrapped() {
         assert_eq!(
@@ -107,6 +110,7 @@ mod tests {
         );
     }
 
+    /// Missing `{text}` still appends body on a new line (never drop words).
     #[test]
     fn wrap_transcript_appends_when_template_has_no_text_placeholder() {
         let wrapped = wrap_transcript("body", "<tag mode=\"{mode}\">", "dictation", "pl");
@@ -114,6 +118,7 @@ mod tests {
         assert_eq!(wrapped, "<tag mode=\"dictation\">\nbody");
     }
 
+    /// Literal special chars and a `{text}` token in the body stay intact.
     #[test]
     fn wrap_transcript_preserves_special_characters() {
         let text = "5 < 7 & \"quotes\" {text}";
@@ -122,6 +127,7 @@ mod tests {
         assert!(wrapped.contains(text));
     }
 
+    /// Quality path fills `{conf}`/`{flags}` from logprob and flag list.
     #[test]
     fn wrap_transcript_with_quality_renders_confidence_and_flags() {
         let wrapped = super::wrap_transcript_with_quality(
@@ -139,6 +145,7 @@ mod tests {
         );
     }
 
+    /// Missing logprob → `unknown`; empty flags render as an empty slot.
     #[test]
     fn wrap_transcript_with_quality_reports_unknown_confidence_and_empty_flags() {
         let wrapped = super::wrap_transcript_with_quality(
@@ -153,6 +160,7 @@ mod tests {
         assert_eq!(wrapped, "[unknown|] body");
     }
 
+    /// Default template is byte-identical between plain and quality-aware wrap.
     #[test]
     fn wrap_transcript_old_template_is_byte_compatible_with_quality_helper() {
         let old = wrap_transcript("body", DEFAULT_TRANSCRIPT_TAG_TEMPLATE, "dictation", "pl");
@@ -168,6 +176,7 @@ mod tests {
         assert_eq!(new, old);
     }
 
+    /// Confidence buckets: high ≥ -0.45, low ≤ -1.20, else medium; None unknown.
     #[test]
     fn confidence_thresholds_are_conservative() {
         assert_eq!(super::confidence_label(Some(-0.20)), "high");

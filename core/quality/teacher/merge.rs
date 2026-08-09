@@ -114,10 +114,12 @@ pub fn merge_live_whisper(live: &str, whisper: &str) -> MergedDelivery {
     }
 }
 
+/// Doctrine guards: gap-fill, live floor, and empty-side modes.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Whisper InsertB fills Apple under-gen gaps; substitutes keep live floor.
     #[test]
     fn merge_fills_whisper_excess_into_live_gaps() {
         // Apple under-gen (missing openers) + Whisper fill — 85% thesis shape.
@@ -142,6 +144,7 @@ mod tests {
         );
     }
 
+    /// Live tokens (plik/WAV) must survive; full Whisper replace is forbidden.
     #[test]
     fn merge_does_not_full_replace_live_with_whisper() {
         let live = "plik WAV na endpoint leksykon działa Toolchain";
@@ -155,6 +158,7 @@ mod tests {
         );
     }
 
+    /// Empty live/whisper combinations select Empty / LiveOnly / WhisperOnly.
     #[test]
     fn empty_sides() {
         assert_eq!(merge_live_whisper("", "").mode, MergeMode::Empty);

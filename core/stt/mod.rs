@@ -24,13 +24,18 @@
 //! commit boundary must resolve to a skip rather than a whole-file re-pass
 //! appended onto text the user already sees.
 
+/// Candle Whisper singleton adapter implementing `TranscriptionAdapter`.
 pub mod adapter;
+/// Apple SpeechAnalyzer live STT bridge (letter-level canvas; live lane only).
 pub mod apple_stt;
+/// ONNX Whisper runtime adapter selected via `CODESCRIBE_STT_ENGINE=onnx`.
 pub mod onnx_adapter;
 /// Serialized STT request scheduler: live, commit, and refine lanes with
 /// supersede semantics for stale requests and thermal-pressure backoff.
 pub mod scheduler;
+/// Layer-1 on-the-go Whisper tail-patch helpers for append-only gap fill.
 pub mod tail_patcher;
+/// Candle Whisper engine, singleton, and file final-pass routes.
 pub mod whisper;
 
 use crate::pipeline::contracts::RawTranscript;
@@ -38,6 +43,7 @@ use crate::pipeline::contracts::TranscriptionAdapter;
 use std::sync::OnceLock;
 use tracing::warn;
 
+/// Env key selecting STT backend (`candle`/`whisper`/`onnx`/`apple`/`auto`).
 const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
 
 /// Which STT backend the router dispatches to.
@@ -130,6 +136,7 @@ pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
 /// Warn once per process that Apple was requested but Candle is serving.
 /// Latched through a `OnceLock` so a per-chunk fallback cannot flood the log.
 fn warn_apple_fallback(context: &str, error: &anyhow::Error) {
+    /// Process-once latch so repeated fallbacks do not flood tracing logs.
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
         warn!(
@@ -263,6 +270,7 @@ pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
 /// Warn once that a domain-vocabulary `initial_prompt` is being dropped —
 /// only Candle Whisper can consume one.
 fn warn_initial_prompt_unsupported(engine: &str) {
+    /// Process-once latch so repeated fallbacks do not flood tracing logs.
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
         warn!(
@@ -739,22 +747,26 @@ pub(crate) fn try_transcribe_long_with_segments(
     }
 }
 
+/// Engine-selection, live-only, and Smart-mode tail-gap doctrine unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Restores `CODESCRIBE_STT_ENGINE` after each serial engine-selection test.
     struct EnvGuard {
         previous: Option<String>,
     }
 
     impl EnvGuard {
+        /// Clear the STT engine env var for the duration of the test, then restore.
         fn unset() -> Self {
             let previous = std::env::var(ENV_STT_ENGINE).ok();
             unsafe { std::env::remove_var(ENV_STT_ENGINE) };
             Self { previous }
         }
 
+        /// Pin `CODESCRIBE_STT_ENGINE` to `value` for this test scope, then restore.
         fn set(value: &str) -> Self {
             let previous = std::env::var(ENV_STT_ENGINE).ok();
             unsafe { std::env::set_var(ENV_STT_ENGINE, value) };
@@ -763,6 +775,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the prior env value (or remove the key) when the guard leaves scope.
         fn drop(&mut self) {
             match self.previous.as_deref() {
                 Some(value) => unsafe { std::env::set_var(ENV_STT_ENGINE, value) },
@@ -771,6 +784,7 @@ mod tests {
         }
     }
 
+    /// Unset engine env must resolve through the platform Apple-or-Candle auto policy.
     #[test]
     #[serial]
     fn selected_engine_defaults_to_platform_auto_policy() {
@@ -783,6 +797,7 @@ mod tests {
         assert_eq!(selected_engine(), expected);
     }
 
+    /// Explicit candle/onnx/apple env values must pin the selected engine.
     #[test]
     #[serial]
     fn selected_engine_respects_explicit_overrides() {
@@ -796,6 +811,7 @@ mod tests {
         assert_eq!(selected_engine(), SttEngine::Apple);
     }
 
+    /// `auto` alias defers to the same platform default as an unset env.
     #[test]
     #[serial]
     fn selected_engine_auto_alias_uses_platform_default() {
@@ -803,6 +819,7 @@ mod tests {
         assert_eq!(selected_engine(), default_engine());
     }
 
+    /// Non-Apple preference must not require Apple bridge/TCC preflight.
     #[test]
     #[serial]
     fn preflight_apple_live_ready_is_noop_when_engine_is_not_apple() {
@@ -811,6 +828,7 @@ mod tests {
         assert_eq!(preferred_engine_label(), "local_whisper");
     }
 
+    /// Live-only helper surfaces Apple bridge failures instead of silent swap.
     #[test]
     fn run_apple_live_only_surfaces_bridge_errors() {
         // Low-level helper still surfaces Apple failures; emergency Whisper is
@@ -826,6 +844,7 @@ mod tests {
         );
     }
 
+    /// File final-pass stays Whisper-only even when live engine is Apple.
     #[test]
     fn file_final_pass_is_whisper_policy_even_when_live_engine_is_apple() {
         // Source-level product invariant: Apple arm of transcribe_file_verdict
@@ -857,6 +876,7 @@ mod tests {
     // Smart-mode tail-gap primitive (append-only doctrine)
     // ═══════════════════════════════════════════════════════
 
+    /// Tail start index clamps non-positive/beyond-duration boundaries safely.
     #[test]
     fn tail_gap_start_index_is_clamped_sample_math() {
         // Whole file: a non-positive boundary means "nothing committed yet".
@@ -876,6 +896,7 @@ mod tests {
         assert_eq!(tail_gap_start_index(32_000, 0, 1.0), 0);
     }
 
+    /// Silent WAV tail short-circuits to empty transcript without model load.
     #[test]
     fn whisper_tail_gap_transcribe_file_returns_empty_for_silent_tail() {
         // ~2s of digital silence @16k: VAD finds no speech, so the gap-fill
@@ -898,6 +919,7 @@ mod tests {
         );
     }
 
+    /// Boundary past file duration yields empty gap-fill, never an error.
     #[test]
     fn whisper_tail_gap_transcribe_file_beyond_duration_is_empty() {
         let dir = tempfile::tempdir().expect("tempdir");

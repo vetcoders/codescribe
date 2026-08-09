@@ -247,6 +247,7 @@ mod macos {
     }
 
     impl Drop for RunningGuard {
+        /// Release the process-wide listener slot so a later start can re-acquire it.
         fn drop(&mut self) {
             RUNNING.store(false, Ordering::SeqCst);
         }
@@ -377,6 +378,9 @@ mod macos {
     }
 
     impl Drop for EventTapResources {
+        /// Claim each CF handle via atomic swap and tear it down once.
+        ///
+        /// Races with `request_stop()` are safe: the loser of each swap sees null and no-ops.
         fn drop(&mut self) {
             // Use atomic swap to claim ownership of each resource. If
             // `request_stop()` already swapped a pointer to null, we get null
@@ -468,6 +472,7 @@ mod macos {
     }
 
     impl Drop for HotkeyRuntime {
+        /// Ensure worker join + slot release even when callers skip explicit `shutdown()`.
         fn drop(&mut self) {
             self.shutdown();
         }
@@ -770,12 +775,17 @@ mod macos {
     }
 
     #[cfg(test)]
+    /// Lifecycle and pure-logic unit tests for the CGEventTap runtime.
+    ///
+    /// Serialised by `LIFECYCLE_TEST_LOCK` so the process-wide `RUNNING` slot is not shared.
     mod tests {
         use super::*;
         use std::sync::Mutex;
 
+        /// Serialises lifecycle tests that mutate the process-wide `RUNNING` guard.
         static LIFECYCLE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+        /// Build a `HotkeyRuntime` with a cooperative mock worker (no real event tap).
         fn spawn_test_runtime() -> HotkeyRuntime {
             let running_guard = RunningGuard::acquire().expect("test runtime should acquire guard");
             let control = Arc::new(RuntimeControl::default());
@@ -789,6 +799,7 @@ mod macos {
         }
 
         #[test]
+        /// Disabled-tap CGEventType sentinels and named constants must match the detector.
         fn is_tap_disabled_event_detects_disabled_sentinels() {
             assert!(is_tap_disabled_event(0xFFFF_FFFE));
             assert!(is_tap_disabled_event(0xFFFF_FFFF));
@@ -804,6 +815,7 @@ mod macos {
         }
 
         #[test]
+        /// `RunningGuard` is exclusive: second acquire fails until the first drops.
         fn running_guard_blocks_double_start() {
             let _guard = LIFECYCLE_TEST_LOCK
                 .lock()
@@ -820,6 +832,7 @@ mod macos {
         }
 
         #[test]
+        /// Calling `shutdown()` twice must not panic or leave `RUNNING` stuck true.
         fn runtime_shutdown_is_idempotent() {
             let _guard = LIFECYCLE_TEST_LOCK
                 .lock()
@@ -834,6 +847,7 @@ mod macos {
         }
 
         #[test]
+        /// Dropping a runtime stops its worker and clears the listener slot without panic.
         fn runtime_drop_stops_worker_without_panic() {
             let _guard = LIFECYCLE_TEST_LOCK
                 .lock()

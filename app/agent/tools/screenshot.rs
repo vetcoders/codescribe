@@ -472,16 +472,19 @@ unsafe extern "C" {
     fn CGImageDestinationFinalize(destination: *mut c_void) -> bool;
 }
 
+/// Region parse defaults, scale/byte-cap shrink, and TCC refusal path.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Empty JSON region input maps to CaptureRegion::Full.
     #[test]
     fn parse_region_defaults_to_full() {
         let region = parse_region(&json!({})).expect("parse region should succeed");
         assert!(matches!(region, CaptureRegion::Full));
     }
 
+    /// Large frames scale down so the long edge respects the max edge cap.
     #[test]
     fn scaled_dimensions_respect_max_edge() {
         let (w, h) = scaled_dimensions(4000, 2000);
@@ -489,6 +492,7 @@ mod tests {
         assert_eq!(h, 784);
     }
 
+    /// Byte-cap shrink reduces both dimensions when estimated size is over budget.
     #[test]
     fn shrink_dimensions_for_byte_cap_reduces_large_pngs_progressively() {
         let (w, h) = shrink_dimensions_for_byte_cap(1568, 784, 10 * 1024 * 1024, 5 * 1024 * 1024);
@@ -499,6 +503,7 @@ mod tests {
         assert!(h >= 1);
     }
 
+    /// Denied Screen Recording short-circuits before capture with clear error.
     #[test]
     fn capture_refuses_when_screen_recording_denied() {
         // granted=false must short-circuit BEFORE any capture and return an

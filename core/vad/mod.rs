@@ -24,9 +24,13 @@
 //! model on every call. The cache is invalidated when sample rate changes.
 
 pub mod config;
+/// Window classification helpers shared by extract and timeline consumers.
 pub mod discriminator;
+/// Bundled Silero ONNX bytes for zero-install bootstrap.
 pub mod embedded;
+/// User-model install paths and on-disk Silero asset resolution.
 pub mod install;
+/// ONNX Runtime Silero wrapper (`SileroVad`, `AccumulatingVad`, resampler).
 pub mod silero_ort;
 
 use std::cell::RefCell;
@@ -361,10 +365,12 @@ pub fn extract_speech_trim_edges(samples: &[f32], sample_rate: u32) -> Vec<f32> 
     }
 }
 
+/// Unit tests for trailing-fragment policy, extract reasons, and commit-lane slabs.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Short trailing fragment is kept only when it continues prior speech.
     #[test]
     fn trailing_fragment_requires_speech_context() {
         assert!(!should_include_trailing_fragment(1000, 8000, false, false));
@@ -372,12 +378,14 @@ mod tests {
         assert!(should_include_trailing_fragment(1000, 8000, true, true));
     }
 
+    /// Empty/zero-window fragments are never kept as speech tails.
     #[test]
     fn very_small_or_empty_trailing_fragment_is_not_kept() {
         assert!(!should_include_trailing_fragment(0, 8000, true, true));
         assert!(!should_include_trailing_fragment(10, 0, true, true));
     }
 
+    /// Empty audio returns empty samples and the `vad_input_empty` reason.
     #[test]
     fn empty_input_returns_no_speech_output() {
         let (samples, stats) = extract_speech(&[], SAMPLE_RATE);
@@ -389,6 +397,7 @@ mod tests {
         assert!(stats.probabilities.is_empty());
     }
 
+    /// Zero sample rate is a distinct no-speech reason, not a generic empty.
     #[test]
     fn invalid_sample_rate_reports_specific_no_speech_reason() {
         let (samples, stats) = extract_speech(&[0.0; 1024], 0);
@@ -400,6 +409,7 @@ mod tests {
         assert!(stats.probabilities.is_empty());
     }
 
+    /// Multi-window silence keeps continuous Silero state and measures every window.
     #[test]
     fn multi_window_extraction_runs_with_continuous_state() {
         // 1.5s at 16kHz => 3 windows of EXTRACT_WINDOW_MS (500ms). With the
@@ -414,6 +424,7 @@ mod tests {
         assert_eq!(stats.speech_windows, 0);
     }
 
+    /// Slab bounds span first..=last speech so interior pauses stay inside.
     #[test]
     fn slab_bounds_keeps_interior_pause() {
         // speech, pause, speech => the interior pause window (index 1) must stay
@@ -426,12 +437,14 @@ mod tests {
         );
     }
 
+    /// Pure silence and empty input yield no slab.
     #[test]
     fn slab_bounds_none_on_pure_silence() {
         assert_eq!(speech_slab_bounds(&[false, false, false]), None);
         assert_eq!(speech_slab_bounds(&[]), None);
     }
 
+    /// Single-window and trailing-edge speech produce tight inclusive bounds.
     #[test]
     fn slab_bounds_single_and_edge_windows() {
         assert_eq!(speech_slab_bounds(&[true]), Some((0, 0)));
@@ -439,6 +452,7 @@ mod tests {
         assert_eq!(speech_slab_bounds(&[false, true]), Some((1, 1)));
     }
 
+    /// Commit lane fails open on audio shorter than one VAD window.
     #[test]
     fn trim_edges_returns_full_audio_on_short_input() {
         // Shorter than one window: the commit lane must NOT drop it.
@@ -448,6 +462,7 @@ mod tests {
         assert_eq!(out.len(), samples.len());
     }
 
+    /// Measured pure silence trims to empty for the commit-lane contract.
     #[test]
     fn trim_edges_pure_silence_returns_empty() {
         // Several full windows of silence => genuine no-speech => empty (commit
@@ -461,6 +476,7 @@ mod tests {
         );
     }
 
+    /// Too-short audio reports `vad_audio_too_short` with zero windows measured.
     #[test]
     fn short_audio_reports_vad_audio_too_short() {
         let samples = vec![0.0; (SAMPLE_RATE as usize / 10).max(1)];

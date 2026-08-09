@@ -25,6 +25,7 @@ pub struct FinalPassTiming {
 }
 
 thread_local! {
+    /// Per-thread last final-pass stage costs; taken then reset by the caller.
     static LAST_TIMING: Cell<FinalPassTiming> = const { Cell::new(FinalPassTiming {
         lock_wait_ms: 0,
         model_load_ms: 0,
@@ -61,10 +62,12 @@ pub fn take_final_pass_timing() -> FinalPassTiming {
     LAST_TIMING.with(|cell| cell.replace(FinalPassTiming::default()))
 }
 
+/// Acquire resets stale inference; take drains the thread-local cell.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A second acquire zeroes inference_ms; take then returns defaults.
     #[test]
     fn acquire_resets_stale_inference_and_take_resets_all() {
         record_engine_acquire(3, 1200, true);
@@ -83,6 +86,7 @@ mod tests {
         assert_eq!(take_final_pass_timing(), FinalPassTiming::default());
     }
 
+    /// `record_inference_ms` layers onto the acquire fields without clearing them.
     #[test]
     fn inference_layers_on_top_of_acquire() {
         record_engine_acquire(2, 800, true);

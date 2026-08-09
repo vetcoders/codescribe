@@ -146,6 +146,7 @@ pub enum EngineEventWire {
 }
 
 impl From<&EngineEvent> for EngineEventWire {
+    /// Narrow `EngineEvent` to wire form; drops `UtteranceFinal::raw_text` at the boundary.
     fn from(value: &EngineEvent) -> Self {
         match value {
             EngineEvent::VadStart { speech_prob, ts_ms } => Self::VadStart {
@@ -282,15 +283,18 @@ fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
     }
 }
 
+/// Wire serialization contracts and rejection of retired engine event variants.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
 
+    /// Test helper: force a JSON value into an object map or panic with context.
     fn must_object(value: Value) -> serde_json::Map<String, Value> {
         value.as_object().cloned().expect("json object")
     }
 
+    /// Pins that unfiltered `raw_text` never serializes on the IPC utterance_final wire.
     #[test]
     fn utterance_final_wire_omits_raw_text() {
         let event = EngineEvent::UtteranceFinal {
@@ -349,6 +353,7 @@ mod tests {
         );
     }
 
+    /// Engine payloads carry the outer `event: "engine"` tag on the wire.
     #[test]
     fn ipc_event_payload_serialization_is_engine_tagged() {
         let payload = IpcEventPayload::Engine(EngineEventWire::Preview {
@@ -361,6 +366,7 @@ mod tests {
         assert_eq!(obj.get("event").and_then(Value::as_str), Some("engine"));
     }
 
+    /// Audio-level IPC payload keeps the capture RMS field for overlay meters.
     #[test]
     fn audio_level_payload_serializes_rms() {
         let payload = IpcEventPayload::AudioLevel { rms: 0.25 };
@@ -376,6 +382,7 @@ mod tests {
         );
     }
 
+    /// Context-marker wire carries character offset plus the marker token string.
     #[test]
     fn context_marker_payload_serializes_position_and_marker() {
         let payload = IpcEventPayload::ContextMarker {
@@ -389,6 +396,7 @@ mod tests {
         assert_eq!(value["marker"], "{selection_2}");
     }
 
+    /// NoSpeech reason string survives engine→wire conversion for UI diagnostics.
     #[test]
     fn no_speech_event_serializes_reason() {
         let event = EngineEvent::NoSpeech {
@@ -404,6 +412,7 @@ mod tests {
         );
     }
 
+    /// Stats wire preserves partial-pass counters used by layered transcription telemetry.
     #[test]
     fn stats_event_serializes_partial_pass_fields() {
         let event = EngineEvent::Stats {
@@ -439,6 +448,7 @@ mod tests {
         );
     }
 
+    /// ReplaceRange keeps utterance span, text, and LayerSource spelling on the wire.
     #[test]
     fn replace_range_event_serializes_typed_wire_payload() {
         let event = EngineEvent::ReplaceRange {
@@ -467,6 +477,7 @@ mod tests {
         );
     }
 
+    /// InsertAnnotation serializes position, text, and AnnotationKind discriminators.
     #[test]
     fn insert_annotation_event_serializes_typed_wire_payload() {
         let event = EngineEvent::InsertAnnotation {
@@ -493,6 +504,7 @@ mod tests {
         );
     }
 
+    /// SessionFinalised carries session_id plus nested layer_summary counters.
     #[test]
     fn session_finalised_event_serializes_typed_wire_payload() {
         let event = EngineEvent::SessionFinalised {
@@ -534,6 +546,7 @@ mod tests {
         );
     }
 
+    /// Retired `vad_fallback` wire must fail deserialize rather than revive.
     #[test]
     fn legacy_vad_fallback_wire_is_rejected() {
         let legacy_json = serde_json::json!({
@@ -549,6 +562,7 @@ mod tests {
         );
     }
 
+    /// Removed variants (`vad_fallback`, `delta`, `worker_status`) are hard-rejected on parse.
     #[test]
     fn removed_legacy_wire_variants_are_rejected() {
         let legacy_payloads = [

@@ -2041,10 +2041,12 @@ pub fn dedup_repetitions(text: &str) -> String {
     dedup_repeated_words(&pass1)
 }
 
+/// Dedup helpers, n-gram parity, quality gate, Silero filter, and final-pass tests.
 #[cfg(test)]
 mod dedup_tests {
     use super::*;
 
+    /// Adjacent identical words collapse to a single occurrence.
     #[test]
     fn test_dedup_repeated_words() {
         assert_eq!(
@@ -2058,6 +2060,7 @@ mod dedup_tests {
         );
     }
 
+    /// Adjacent repeated multi-word phrases collapse once, punctuation-tolerant.
     #[test]
     fn test_dedup_repeated_phrases() {
         assert_eq!(
@@ -2070,6 +2073,7 @@ mod dedup_tests {
         );
     }
 
+    /// Phrase pass then word pass removes both kinds of Whisper stutter.
     #[test]
     fn test_dedup_repetitions_combined() {
         let input = "który zajmuje który zajmuje 56 GB. 56 GB. test test";
@@ -2094,6 +2098,7 @@ mod dedup_tests {
         blocked
     }
 
+    /// Step through `seq` and assert incremental blocker matches full-scan blocks.
     fn assert_ngram_parity(ngram_size: usize, seq: &[u32]) {
         let mut blocker = NgramBlocker::new(ngram_size);
         let mut all: Vec<u32> = Vec::new();
@@ -2119,6 +2124,7 @@ mod dedup_tests {
         }
     }
 
+    /// Token budget floors short audio and stops a runaway before max_new_tokens.
     #[test]
     fn runaway_watchdog_bails() {
         // 1s of audio with 5 words/s cap, 2 tokens/word, 2x margin => 20 tokens,
@@ -2159,6 +2165,7 @@ mod dedup_tests {
         assert_eq!(runaway_token_budget(-5.0), RUNAWAY_MIN_BUDGET);
     }
 
+    /// Initial prompt tokens sit after start-of-prev and before the decode prefix.
     #[test]
     fn initial_prompt_tokens_are_previous_context_before_current_decode_prefix() {
         let without_prompt = vec![1_u32, 2, 3];
@@ -2172,6 +2179,7 @@ mod dedup_tests {
         assert_eq!(&with_prompt[4..], without_prompt.as_slice());
     }
 
+    /// Oversized prompts are truncated to `WHISPER_INITIAL_PROMPT_TOKEN_BUDGET`.
     #[test]
     fn initial_prompt_tokens_are_capped_before_decode() {
         let mut tokens = vec![1_u32, 2, 3];
@@ -2193,6 +2201,7 @@ mod dedup_tests {
         );
     }
 
+    /// Incremental n-gram blocker matches full-scan blocks across sizes and edges.
     #[test]
     fn ngram_block_parity() {
         // Repetition-heavy synthetic sequence exercises the block path.
@@ -2208,6 +2217,7 @@ mod dedup_tests {
         assert_ngram_parity(1, &[42, 42, 42, 42]);
     }
 
+    /// Drop requires both low avg logprob and high compression ratio together.
     #[test]
     fn quality_gate_requires_both_logprob_and_compression_signals() {
         let params = DecodingParams::default();
@@ -2216,6 +2226,7 @@ mod dedup_tests {
         assert!(should_drop_for_quality_gate(Some(-3.0), 3.0, &params));
     }
 
+    /// Zero dropped segments keeps the original raw text (not the re-joined filter).
     #[test]
     fn silero_filter_preserves_raw_text_when_no_segments_were_dropped() {
         let segments = vec![crate::pipeline::contracts::TranscriptSegment {
@@ -2235,6 +2246,7 @@ mod dedup_tests {
         assert_eq!(filtered.segments, raw.segments);
     }
 
+    /// Case/punctuation-only filter text still preserves raw when nothing was dropped.
     #[test]
     fn silero_filter_preserves_raw_text_when_no_drop_only_case_or_punctuation_differs() {
         let segments = vec![crate::pipeline::contracts::TranscriptSegment {
@@ -2259,6 +2271,7 @@ mod dedup_tests {
         ));
     }
 
+    /// When segments are dropped, filtered text and segment list replace raw.
     #[test]
     fn silero_filter_uses_filtered_text_when_segments_were_dropped() {
         let raw_segments = vec![
@@ -2291,6 +2304,7 @@ mod dedup_tests {
         assert_eq!(filtered.segments, filtered_segments);
     }
 
+    /// Control-token suppression applies only at decode step zero.
     #[test]
     fn decoder_control_tokens_are_only_suppressed_before_first_token() {
         assert!(should_suppress_decoder_control_tokens(0));
@@ -2298,6 +2312,7 @@ mod dedup_tests {
         assert!(!should_suppress_decoder_control_tokens(15));
     }
 
+    /// Embedded lexicon cleanup reports Changed with rewrite counts.
     #[test]
     fn requested_final_pass_reports_embedded_lexicon_changes() {
         let raw = RawTranscript {
@@ -2319,6 +2334,7 @@ mod dedup_tests {
         assert_eq!(final_pass.lexicon_rewrites, 1);
     }
 
+    /// Known no-speech skip path records Skipped with the VAD reason.
     #[test]
     fn requested_final_pass_skips_when_no_speech_already_known() {
         let final_pass = skipped_final_pass(
@@ -2333,6 +2349,7 @@ mod dedup_tests {
         assert_eq!(final_pass.reason.as_deref(), Some("vad_no_speech_detected"));
     }
 
+    /// Artifact-token drift rejects the candidate and keeps the raw transcript.
     #[test]
     fn requested_final_pass_rejects_artifact_token_drift_and_keeps_raw() {
         let raw = "zastanawiam się co ośreda, że ta funkcja już teoretycznie obsolesi legacy";

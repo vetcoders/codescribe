@@ -1627,6 +1627,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user `ToolResult` message for the no-op test provider.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -1643,6 +1644,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -1650,6 +1652,7 @@ mod tests {
             }
         }
 
+        /// Stable provider name shown in tests and diagnostics.
         fn name(&self) -> &str {
             "noop-test-provider"
         }
@@ -2028,6 +2031,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user `ToolResult` message for the completing test provider.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -2044,6 +2048,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -2051,6 +2056,7 @@ mod tests {
             }
         }
 
+        /// Stable provider name shown in tests and diagnostics.
         fn name(&self) -> &str {
             "completing-test-provider"
         }
@@ -2395,6 +2401,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user `ToolResult` message for the scripted test provider.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -2411,6 +2418,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -2418,6 +2426,7 @@ mod tests {
             }
         }
 
+        /// Stable provider name shown in tests and diagnostics.
         fn name(&self) -> &str {
             "scripted-controller-provider"
         }

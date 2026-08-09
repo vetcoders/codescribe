@@ -120,6 +120,7 @@ pub struct TailPatchConfig {
 }
 
 impl Default for TailPatchConfig {
+    /// Conservative default: skip the patch if more than half the tokens would change.
     fn default() -> Self {
         Self {
             max_change_ratio: 0.5,
@@ -396,6 +397,7 @@ fn event_start(event: &EngineEvent) -> usize {
     }
 }
 
+/// Pure unit tests for Layer-1 tail-patch diff outcomes and phase parsing.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,6 +415,7 @@ mod tests {
         buf
     }
 
+    /// Exact re-transcription match must yield `NoChange` (no empty ReplaceRange).
     #[test]
     fn identical_text_is_no_change() {
         let cfg = TailPatchConfig::default();
@@ -420,6 +423,7 @@ mod tests {
         assert_eq!(outcome, TailPatchOutcome::NoChange);
     }
 
+    /// Empty Layer-0 floor has nothing to patch against; always `Skipped`.
     #[test]
     fn empty_committed_is_skipped() {
         let cfg = TailPatchConfig::default();
@@ -427,6 +431,7 @@ mod tests {
         assert!(matches!(outcome, TailPatchOutcome::Skipped { .. }));
     }
 
+    /// Substitution fixes a mixed-language mishear without full-buffer rewrite.
     #[test]
     fn single_substitution_corrects_mixed_language_token() {
         // Layer 0 (Apple, PL-dominant) misheard the English place name.
@@ -449,6 +454,7 @@ mod tests {
         );
     }
 
+    /// Insertion fills a token Apple dropped while preserving surrounding text.
     #[test]
     fn insertion_fills_missing_token() {
         // Whisper recovered a technical term Apple dropped entirely.
@@ -463,6 +469,7 @@ mod tests {
         );
     }
 
+    /// Leading insertion anchors at char 0 with a trailing space in the patch text.
     #[test]
     fn leading_insertion_anchors_at_start() {
         let cfg = TailPatchConfig::default();
@@ -472,6 +479,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), "witaj świecie cześć");
     }
 
+    /// Leading/trailing whitespace in Whisper output must not enter offsets.
     #[test]
     fn retranscribed_whitespace_never_skews_offsets() {
         // Whisper output routinely carries leading/trailing whitespace. tokenize
@@ -484,6 +492,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), "ala ma psa");
     }
 
+    /// v1 never deletes tokens the user already saw (deletions stay on Layer 0).
     #[test]
     fn deletion_is_left_intact_in_v1() {
         // Whisper saw fewer words; v1 must not remove text the user already saw.
@@ -495,6 +504,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), committed);
     }
 
+    /// Change ratio above the safety threshold skips the whole patch wholesale.
     #[test]
     fn divergent_retranscription_is_skipped() {
         let cfg = TailPatchConfig::default();
@@ -506,6 +516,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), committed);
     }
 
+    /// Multiple substitutions emit descending-by-start for offset-stable apply.
     #[test]
     fn multiple_edits_apply_offset_stable() {
         // Two independent substitutions in one utterance; applying all emitted
@@ -530,6 +541,7 @@ mod tests {
         );
     }
 
+    /// Polish diacritics: offsets are char-based so apply never corrupts UTF-8.
     #[test]
     fn unicode_offsets_are_char_based() {
         // Polish diacritics: offsets must be char- not byte-based or the apply
@@ -544,6 +556,7 @@ mod tests {
         );
     }
 
+    /// Default config lands on the 0.5 unit-interval safety threshold.
     #[test]
     fn config_from_env_clamps_to_unit_interval() {
         // Out-of-range / garbage values fall back to default.
@@ -551,6 +564,7 @@ mod tests {
         assert_eq!(cfg.max_change_ratio, 0.5);
     }
 
+    /// Accepts `phaseN` / bare digits in 1..=4; rejects out-of-range and off tokens.
     #[test]
     fn layered_phase_parses_phase_prefix() {
         // Pure parse — no process env (suite stays deterministic under parallel exec).
@@ -564,6 +578,7 @@ mod tests {
         assert_eq!(parse_layered_phase_value("0"), None);
     }
 
+    /// FINAL_PASS_MODE vocabulary must never parse as a layered phase.
     #[test]
     fn layered_phase_rejects_final_pass_mode_tokens() {
         // Orthogonality: FINAL_PASS_MODE vocabulary must never enable Layer 1.

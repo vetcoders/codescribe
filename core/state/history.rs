@@ -878,12 +878,14 @@ pub fn clear_history() {
     }
 }
 
+/// History path, save/retrieve, family collapse, and audio-archive regressions.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
 
+    /// Write a short PCM16 sine WAV fixture for m4a archive size/decode checks.
     fn write_pcm16_sine_wav(path: &Path, sample_rate: u32, seconds: u32) {
         let spec = hound::WavSpec {
             channels: 1,
@@ -903,12 +905,14 @@ mod tests {
         writer.finalize().expect("finalize wav fixture");
     }
 
+    /// Restores a process env var on drop so serial history tests do not leak dirs.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Point `key` at a temp data dir, capturing the previous value for restore.
         fn set_to_temp_dir(key: &'static str, dir: &TempDir) -> Self {
             let prev = std::env::var(key).ok();
             unsafe {
@@ -919,6 +923,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore or remove the env var when the guard leaves scope.
         fn drop(&mut self) {
             unsafe {
                 match &self.prev {
@@ -929,6 +934,7 @@ mod tests {
         }
     }
 
+    /// transcriptions_dir lives under CODESCRIBE_DATA_DIR and includes the day path.
     #[test]
     #[serial]
     fn test_transcriptions_dir() {
@@ -945,6 +951,7 @@ mod tests {
         assert!(dir.starts_with(&tmp_canon));
     }
 
+    /// save_entry writes a .txt raw artifact with preview equal to the stored text.
     #[test]
     #[serial]
     fn test_save_and_retrieve() {
@@ -969,6 +976,7 @@ mod tests {
         let _ = fs::remove_file(&entry.path);
     }
 
+    /// save_entry_with_timestamp stamps the entry with the provided local time.
     #[test]
     #[serial]
     fn test_save_entry_with_timestamp() {
@@ -989,6 +997,7 @@ mod tests {
         let _ = fs::remove_file(&entry.path);
     }
 
+    /// Same-second same-slug raw saves collapse to one recent row (newest wins).
     #[test]
     #[serial]
     fn test_recent_entries_collapse_same_second_save_family() {
@@ -1046,6 +1055,7 @@ mod tests {
         }
     }
 
+    /// HistoryEntry::label includes the transcript preview for UI display.
     #[test]
     #[serial]
     fn test_entry_label() {
@@ -1060,6 +1070,7 @@ mod tests {
         assert!(label.contains("Hello world"));
     }
 
+    /// Shared slug_hint aligns base filenames across raw vs formatted kinds.
     #[test]
     #[serial]
     fn test_save_entry_with_slug_hint_consistency() {
@@ -1088,6 +1099,7 @@ mod tests {
         assert_eq!(raw_base, ai_base, "Slug hint should align base name");
     }
 
+    /// recent_entries recovers TranscriptKind from the on-disk filename suffix.
     #[test]
     #[serial]
     fn test_recent_entries_parses_kind_from_filename_suffix() {
@@ -1114,6 +1126,7 @@ mod tests {
         }));
     }
 
+    /// latest_copyable_entry skips Failed artifacts that latest_entry still surfaces.
     #[test]
     #[serial]
     fn test_latest_copyable_entry_skips_failed_artifacts() {
@@ -1143,6 +1156,7 @@ mod tests {
         assert_eq!(copyable.kind, TranscriptKind::Raw);
     }
 
+    /// macOS: save_audio archives to smaller m4a that still decodes near source duration.
     #[test]
     #[serial]
     #[cfg(target_os = "macos")]

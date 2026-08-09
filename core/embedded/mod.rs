@@ -44,12 +44,15 @@ pub trait EmbeddedAsset {
 pub struct WhisperAsset;
 
 impl EmbeddedAsset for WhisperAsset {
+    /// Canonical asset id used in `snapshot()` rows and diagnostics.
     const NAME: &'static str = "whisper";
 
+    /// True when this build compiled Whisper weights into the binary.
     fn is_embedded_available() -> bool {
         crate::stt::whisper::embedded::is_embedded_available()
     }
 
+    /// Sum of embedded Whisper slices; `0` when the asset is not compiled in.
     fn total_size() -> usize {
         crate::stt::whisper::embedded::get_embedded_data()
             .map(|m| m.total_size())
@@ -61,12 +64,15 @@ impl EmbeddedAsset for WhisperAsset {
 pub struct EmbedderAsset;
 
 impl EmbeddedAsset for EmbedderAsset {
+    /// Canonical asset id used in `snapshot()` rows and diagnostics.
     const NAME: &'static str = "embedder";
 
+    /// True when this build compiled MiniLM embedder weights into the binary.
     fn is_embedded_available() -> bool {
         crate::embedder::embedded::is_embedded_available()
     }
 
+    /// Sum of embedded embedder slices; `0` when the asset is not compiled in.
     fn total_size() -> usize {
         crate::embedder::embedded::get_embedded_data()
             .map(|m| m.total_size())
@@ -78,12 +84,15 @@ impl EmbeddedAsset for EmbedderAsset {
 pub struct VadAsset;
 
 impl EmbeddedAsset for VadAsset {
+    /// Canonical asset id used in `snapshot()` rows and diagnostics.
     const NAME: &'static str = "silero_vad";
 
+    /// True when this build compiled the Silero VAD ONNX blob into the binary.
     fn is_embedded_available() -> bool {
         crate::vad::embedded::is_embedded_available()
     }
 
+    /// Byte length of the embedded VAD blob; `0` when not compiled in.
     fn total_size() -> usize {
         crate::vad::embedded::get_embedded_data()
             .map(|b| b.len())
@@ -95,12 +104,15 @@ impl EmbeddedAsset for VadAsset {
 pub struct TtsAsset;
 
 impl EmbeddedAsset for TtsAsset {
+    /// Canonical asset id used in `snapshot()` rows and diagnostics.
     const NAME: &'static str = "tts";
 
+    /// True when this build compiled CSM-1B TTS assets into the binary.
     fn is_embedded_available() -> bool {
         crate::tts::embedded::is_embedded_available()
     }
 
+    /// Sum of embedded TTS slices; `0` when the asset is not compiled in.
     fn total_size() -> usize {
         crate::tts::embedded::get_embedded_data()
             .map(|t| t.total_size())
@@ -127,10 +139,12 @@ fn report<A: EmbeddedAsset>() -> (&'static str, bool, usize) {
     (A::NAME, A::is_embedded_available(), A::total_size())
 }
 
+/// Contract tests for the cross-asset embedded metadata surface.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `snapshot()` always lists the four canonical assets in fixed order.
     #[test]
     fn snapshot_lists_all_four_assets() {
         let snap = snapshot();
@@ -138,6 +152,7 @@ mod tests {
         assert_eq!(names, ["whisper", "embedder", "silero_vad", "tts"]);
     }
 
+    /// Unavailable assets must report size 0 (never a phantom non-zero footprint).
     #[test]
     fn total_size_is_zero_when_not_embedded() {
         // VAD is small enough that builds usually embed it; this test only

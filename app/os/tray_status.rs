@@ -147,12 +147,14 @@ impl TrayStatusSnapshot {
 
 /// Process-wide store of the latest snapshot, seeded idle on first access.
 fn current_status_store() -> &'static RwLock<TrayStatusSnapshot> {
+    /// Process-wide latest tray snapshot; seeded Idle on first access.
     static CURRENT_STATUS: OnceLock<RwLock<TrayStatusSnapshot>> = OnceLock::new();
     CURRENT_STATUS.get_or_init(|| RwLock::new(TrayStatusSnapshot::new(TrayStatus::Idle, false)))
 }
 
 /// Process-wide slot holding the bridge sink, empty until Swift registers one.
 fn tray_status_sink_store() -> &'static RwLock<Option<TrayStatusSink>> {
+    /// Optional UniFFI/Swift sink slot; empty until bridge registers.
     static TRAY_STATUS_SINK: OnceLock<RwLock<Option<TrayStatusSink>>> = OnceLock::new();
     TRAY_STATUS_SINK.get_or_init(|| RwLock::new(None))
 }
@@ -259,10 +261,12 @@ fn notify_tray_status(snapshot: TrayStatusSnapshot) {
     }
 }
 
+/// Assistive-visible predicate for starting/listening vs terminal states.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Starting and Listening with assistive lane count as assistive-visible.
     #[test]
     fn assistive_visible_covers_starting_and_listening_only() {
         // The assistive lane is set before the pipeline emits `Listening`, so the
@@ -276,6 +280,7 @@ mod tests {
         }
     }
 
+    /// Idle/Success/Thinking and non-assistive lanes stay non-assistive.
     #[test]
     fn assistive_visible_ignores_terminal_and_non_assistive_states() {
         assert!(!TrayStatusSnapshot::new(TrayStatus::Idle, true).is_assistive_visible());

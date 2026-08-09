@@ -897,12 +897,14 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
     Ok(())
 }
 
+/// Recorder defaults, auto-silence gating, streaming buffer cap, and downmix.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 
+    /// Default config tracks Silero hang_sec; SAMPLE_RATE/CHANNELS stay 16k mono.
     #[test]
     fn test_recorder_config_default() {
         let config = RecorderConfig::default();
@@ -915,6 +917,7 @@ mod tests {
         );
     }
 
+    /// Absent/falsey env → off; any other non-empty value opts auto-silence in.
     #[test]
     fn auto_silence_env_parser_defaults_off_and_honors_opt_in() {
         assert!(
@@ -935,6 +938,7 @@ mod tests {
         }
     }
 
+    /// Callback registration survives when auto_silence is false (emission gated).
     #[test]
     fn vad_stop_callback_is_retained_but_inert_when_auto_silence_disabled() {
         let config = RecorderConfig {
@@ -951,6 +955,7 @@ mod tests {
         );
     }
 
+    /// With auto_silence on, set_on_vad_stop arms the retained callback slot.
     #[test]
     fn vad_stop_callback_is_armed_when_auto_silence_enabled() {
         let config = RecorderConfig {
@@ -967,6 +972,7 @@ mod tests {
         );
     }
 
+    /// Emission needs both auto_silence and a registered callback (AND gate).
     #[test]
     fn vad_stop_callback_emission_is_gated_by_auto_silence() {
         assert!(
@@ -983,6 +989,7 @@ mod tests {
         );
     }
 
+    /// Cap drops oldest i16 samples and advances absolute start offset.
     #[test]
     fn streaming_i16_buffer_is_capped_and_tracks_absolute_offset() {
         let mut buf = VecDeque::new();
@@ -1012,6 +1019,7 @@ mod tests {
         );
     }
 
+    /// Interleaved N-channel PCM averages to mono; mono input is identity.
     #[test]
     fn downmix_to_mono_averages_interleaved_native_channels() {
         let stereo = [1.0, -1.0, 0.25, 0.75, -0.50, -0.25];
@@ -1028,6 +1036,7 @@ mod tests {
         assert_eq!(downmix_to_mono(&already_mono, 1), already_mono);
     }
 
+    /// Default `Recorder::new` constructs without error (device open deferred).
     #[tokio::test]
     async fn test_recorder_new() {
         let recorder = Recorder::new();

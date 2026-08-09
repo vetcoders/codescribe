@@ -13,9 +13,13 @@ mod data {
 /// Empty stand-ins for the daily build, which resolves Whisper at runtime.
 #[cfg(not(embed_model))]
 mod data {
+    /// Empty `config.json` stand-in when Whisper is not build-time embedded.
     pub static CONFIG: &[u8] = &[];
+    /// Empty tokenizer stand-in for the daily (non-fat) build.
     pub static TOKENIZER: &[u8] = &[];
+    /// Empty mel filterbank stand-in for the daily (non-fat) build.
     pub static MEL_FILTERS: &[u8] = &[];
+    /// Empty weights stand-in; runtime resolves models from disk/HF instead.
     pub static WEIGHTS: &[u8] = &[];
 }
 
@@ -58,10 +62,12 @@ impl EmbeddedModel {
     }
 }
 
+/// Compile-flag gates for present vs absent embedded Whisper payloads.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Fat builds (`embed_model`) must ship non-empty config/tokenizer/weights.
     #[test]
     #[cfg(embed_model)]
     fn embedded_payload_is_available_when_compiled_in() {
@@ -74,6 +80,7 @@ mod tests {
         assert!(model.total_size() > 0);
     }
 
+    /// Daily builds leave the payload empty so `get_embedded_data` is None.
     #[test]
     #[cfg(not(embed_model))]
     fn embedded_payload_is_absent_when_not_compiled_in() {

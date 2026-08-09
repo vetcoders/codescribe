@@ -25,6 +25,7 @@ use serde_json::{Map, Value};
 
 use crate::mcp::{McpClient, McpConfigFile, McpServerConfig, default_mcp_config_path};
 
+/// JSON object key for the server map inside `mcp.json` (`mcpServers`).
 const SERVERS_KEY: &str = "mcpServers";
 
 /// A server row for the management UI: identity + spawn shape + the NAMES of any
@@ -200,6 +201,7 @@ pub fn test_server_blocking(name: &str, timeout: Duration) -> Result<usize> {
     Ok(probe_server_blocking(name, timeout)?.tool_count)
 }
 
+/// Path-explicit twin of [`test_server_blocking`] for temp-dir integration tests.
 #[cfg(test)]
 fn test_server_blocking_at(path: &Path, name: &str, timeout: Duration) -> Result<usize> {
     Ok(probe_server_blocking_at(path, name, timeout)?.tool_count)
@@ -441,6 +443,7 @@ fn validate_server_spec(spec: &McpServerSpec) -> Result<()> {
     Ok(())
 }
 
+/// Temp-dir CRUD, permission, preservation, and mock-server probe tests.
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -449,6 +452,7 @@ mod tests {
 
     use super::*;
 
+    /// Local enabled server fixture with no remote endpoint or auth_ref.
     fn spec(name: &str, command: &str, args: &[&str]) -> McpServerSpec {
         McpServerSpec {
             name: name.to_string(),
@@ -460,10 +464,12 @@ mod tests {
         }
     }
 
+    /// Parse `mcp.json` as a raw JSON value for field-preservation assertions.
     fn read_raw(path: &Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("parse")
     }
 
+    /// Add two servers; list is sorted by name and returns command/args/enabled.
     #[test]
     fn add_then_list_roundtrips() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -484,6 +490,7 @@ mod tests {
         assert!(servers[1].enabled);
     }
 
+    /// Fresh and re-written `mcp.json` must be mode 0o600 (env secrets on disk).
     #[cfg(unix)]
     #[test]
     fn writes_land_with_owner_only_permissions() {
@@ -504,6 +511,7 @@ mod tests {
         assert_eq!(mode, 0o600, "mutation must tighten a loose mcp.json");
     }
 
+    /// Remote rows store url + auth_ref only; never raw tokens in the file body.
     #[test]
     fn remote_server_persists_only_endpoint_and_keychain_reference() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -531,6 +539,7 @@ mod tests {
         assert!(listed[0].command.is_empty());
     }
 
+    /// Adding a peer must not strip foreign top-level keys or sibling env blocks.
     #[test]
     fn add_preserves_unknown_fields() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -564,6 +573,7 @@ mod tests {
         assert_eq!(raw["mcpServers"]["added"]["command"], json!("added-cmd"));
     }
 
+    /// Update rewrites spawn shape only; env, timeouts, and custom keys survive.
     #[test]
     fn update_preserves_env_and_custom_keys() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -601,6 +611,7 @@ mod tests {
         assert_eq!(raw["mcpServers"]["srv"]["weird"], json!([1, 2, 3]));
     }
 
+    /// Remove is named-only; missing names error rather than no-op.
     #[test]
     fn remove_deletes_only_the_named_server() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -620,6 +631,7 @@ mod tests {
         assert!(remove_server_at(&path, "ghost").is_err());
     }
 
+    /// Unparseable config blocks every mutation and keeps original bytes.
     #[test]
     fn invalid_json_is_never_clobbered() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -635,6 +647,7 @@ mod tests {
         );
     }
 
+    /// Invalid names and empty commands fail before any file is created.
     #[test]
     fn rejects_invalid_names_and_empty_command() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -647,6 +660,7 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// Duplicate names error without overwriting the first entry's command.
     #[test]
     fn duplicate_add_is_rejected() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -660,6 +674,7 @@ mod tests {
         );
     }
 
+    /// Atomic write must re-load cleanly through the typed `McpConfigFile` loader.
     #[test]
     fn written_config_is_valid_and_reparses_through_typed_loader() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -672,6 +687,7 @@ mod tests {
         assert_eq!(server.args, vec!["one".to_string(), "two".to_string()]);
     }
 
+    /// Mock MCP fixture exposes exactly one tool through the blocking probe.
     #[test]
     fn test_server_blocking_lists_mock_tools() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -688,6 +704,7 @@ mod tests {
         assert_eq!(count, 1, "mock server exposes one tool");
     }
 
+    /// Probe returns mock handshake name/version/protocol plus tool_count.
     #[test]
     fn probe_server_blocking_reports_handshake_identity() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -708,6 +725,7 @@ mod tests {
         assert_eq!(summary.protocol_version.as_deref(), Some("2025-06-18"));
     }
 
+    /// Probing a name absent from config is a hard error.
     #[test]
     fn test_server_blocking_errors_for_missing_server() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -716,6 +734,7 @@ mod tests {
         assert!(test_server_blocking_at(&path, "absent", Duration::from_secs(1)).is_err());
     }
 
+    /// Workspace root from `CARGO_MANIFEST_DIR` so fixtures resolve under tests/.
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()

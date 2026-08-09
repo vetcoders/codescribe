@@ -6,8 +6,11 @@
 //! - `history` - Transcript history management (~/.codescribe/transcriptions/)
 
 pub mod conversation;
+/// Persisted transcription/session history store and query helpers.
 pub mod history;
+/// User notes and selection-linked note persistence.
 pub mod notes;
+/// Qube donor state: opt-in recording of WAV + transcript pairs for training.
 pub mod qube_donor;
 
 // Re-export main types (public API for GUI apps)

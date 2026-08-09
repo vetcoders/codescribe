@@ -84,6 +84,7 @@ pub struct AgentPermissions {
 }
 
 impl Default for AgentPermissions {
+    /// Migration defaults: read-only allow, side-effects ask, global ask.
     fn default() -> Self {
         Self {
             default: PermissionLevel::Ask,
@@ -284,11 +285,13 @@ pub struct ToolCapability {
     pub requires_approval_flag: bool,
 }
 
+/// Permission resolution precedence and identity key tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::registry::ToolOrigin;
 
+    /// Build an MCP origin for identity/resolution fixtures.
     fn mcp(server: &str, tool: &str) -> ToolOrigin {
         ToolOrigin::Mcp {
             server: server.to_string(),
@@ -296,6 +299,7 @@ mod tests {
         }
     }
 
+    /// Thread > tool > server > risk defaults, in that order.
     #[test]
     fn precedence_thread_over_tool_over_server_over_risk() {
         let mut policy = AgentPermissions {
@@ -357,6 +361,7 @@ mod tests {
         );
     }
 
+    /// Missing maps fall through Unknown→ask, ReadOnly→allow, Destructive→deny.
     #[test]
     fn absent_levels_fall_through_deterministically() {
         let policy = AgentPermissions::default();
@@ -374,6 +379,7 @@ mod tests {
         );
     }
 
+    /// Server name is lowercased; upstream tool case and native prefix matter.
     #[test]
     fn identity_is_single_key_server_case_insensitive() {
         let a = tool_identity(
@@ -400,6 +406,7 @@ mod tests {
         );
     }
 
+    /// `resolve_for_origin` applies the thread override map by identity key.
     #[test]
     fn resolve_for_origin_honours_thread_map() {
         let policy = AgentPermissions::default();
@@ -413,6 +420,7 @@ mod tests {
         );
     }
 
+    /// Legacy always-allow keys fill gaps only — existing Deny stays.
     #[test]
     fn legacy_grants_merge_as_allow_without_clobbering_deny() {
         let mut policy = AgentPermissions::default();

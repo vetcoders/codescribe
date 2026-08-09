@@ -109,6 +109,9 @@ pub fn mark_onboarding_done() {
     let _ = fs::write(setup_done, "done");
 }
 
+/// TCC scopes that must be Granted before `setup_done` may remain valid.
+///
+/// Full Disk Access is intentionally absent — optional step, never a gate.
 const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 5] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
@@ -296,6 +299,7 @@ pub fn should_show_onboarding() -> bool {
     !setup_done_path().exists()
 }
 
+/// Resume-flow layout, required-permission gates, and legacy marker remaps.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +369,7 @@ mod tests {
         );
     }
 
+    /// All five required grants leave `setup_done` intact (no resume step).
     #[test]
     fn all_required_permissions_granted_keeps_setup_done() {
         assert_eq!(
@@ -456,6 +461,7 @@ mod tests {
         assert_eq!(parse_onboarding_progress("not-a-number"), None);
     }
 
+    /// Bundle path under `*.app/Contents/MacOS/` vs bare cargo/bin install.
     #[test]
     fn app_bundle_detection_matches_bundle_layout() {
         assert!(executable_is_app_bundle(std::path::Path::new(

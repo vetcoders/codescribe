@@ -47,6 +47,7 @@ struct SelectionItem {
     payload: SelectionPayload,
 }
 
+/// How a captured pasteboard image is stored on disk for the vision path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ImagePayload {
     /// Stored under `context/images/`; referenced via vision marker block.
@@ -356,10 +357,12 @@ impl ContextBucket {
     }
 }
 
+/// Selection/image capture, spill, vision markers, and archive contracts.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Labels stay ordered (`selection_N`) and emit matching open/close tags.
     #[test]
     fn three_selections_keep_order_and_explicit_tags() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -383,6 +386,7 @@ mod tests {
         );
     }
 
+    /// Oversize selection spills to disk; wire body carries PATH only, not text.
     #[test]
     fn oversized_selection_is_persisted_and_message_contains_path_only() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -408,6 +412,7 @@ mod tests {
         assert!(message.contains("<selection_1>"));
     }
 
+    /// Inline limit is UTF-8 bytes, not Unicode scalar count (multi-byte spill).
     #[test]
     fn byte_limit_counts_utf8_bytes() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -422,6 +427,7 @@ mod tests {
         assert!(!message.contains("żż"));
     }
 
+    /// Whitespace-only selection is a silent no-op (no marker, no archive dirt).
     #[test]
     fn empty_selection_is_a_silent_noop() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -437,6 +443,7 @@ mod tests {
         assert_eq!(bucket.append_to_message("voice"), "voice");
     }
 
+    /// PNG capture writes under images/ and appends the vision path marker list.
     #[test]
     fn image_capture_stores_file_and_emits_vision_marker() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -461,6 +468,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
     }
 
+    /// Oversized images still persist and append a path (honest degrade, no drop).
     #[test]
     fn oversized_image_still_persists_and_appends_path() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -473,6 +481,7 @@ mod tests {
         assert_eq!(bucket.image_count(), 1);
     }
 
+    /// Empty PNG byte slice is a silent no-op — no file, no marker.
     #[test]
     fn empty_image_is_noop() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -481,6 +490,7 @@ mod tests {
         assert!(bucket.is_empty());
     }
 
+    /// Archive writes inline files + spill/image paths, then clears memory.
     #[test]
     fn archive_preserves_inline_and_spill_truth_then_resets() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -528,6 +538,7 @@ mod tests {
         );
     }
 
+    /// Empty bucket archives to `None` and creates no archive directory.
     #[test]
     fn archive_of_empty_bucket_creates_nothing() {
         let temp = tempfile::tempdir().expect("temp dir");

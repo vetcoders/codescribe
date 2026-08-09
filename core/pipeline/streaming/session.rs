@@ -444,6 +444,7 @@ pub(crate) async fn vad_transcription_session(
     let mut boundary_rev: u64 = 0;
 
     // Decouple audio ingestion from Whisper inference.
+    /// Cap on queued utterance work items between audio ingest and Whisper inference.
     const MAX_PENDING_UTTERANCES: usize = 64;
     let mut pending_utterances: VecDeque<PendingUtteranceWorkItem> = VecDeque::new();
     let mut dropped_utterances: u64 = 0;
@@ -1542,6 +1543,7 @@ impl SessionTranscriptCollector {
 }
 
 impl EventSink for SessionTranscriptCollector {
+    /// Append only `UtteranceFinal` text into the session transcript buffer.
     fn on_event(&self, event: &EngineEvent) {
         if let EngineEvent::UtteranceFinal { text, .. } = event {
             self.append_utterance(text);
@@ -1573,6 +1575,7 @@ impl SessionEventCollector {
 }
 
 impl EventSink for SessionEventCollector {
+    /// Clone every engine event (including drops) into the ordered collector buffer.
     fn on_event(&self, event: &EngineEvent) {
         self.events
             .lock()
@@ -1671,10 +1674,12 @@ pub async fn collect_buffered_engine_events(
 }
 
 #[cfg(test)]
+/// Unit tests for semantic-gate counters, tail-patch emit, and correction windows.
 mod session_tests {
     use super::*;
 
     #[test]
+    /// Quality-gate drops increment only for final utterances, never interim previews.
     fn semantic_gate_drop_counter_tracks_quality_gate_flag() {
         let mut drops = 0;
         record_semantic_gate_drop(&mut drops, false, true);
@@ -1691,6 +1696,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Successful tail-patch outcomes surface as `ReplaceRange` engine events.
     fn tail_patch_result_emits_replace_range_events() {
         let collector = SessionEventCollector::new();
         let emitted = emit_tail_patch_result(
@@ -1721,6 +1727,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Trimmed final_text is the sole offset baseline for tail-patch apply.
     fn final_text_trim_contract_keeps_tail_patch_offsets_aligned() {
         // Simulate the emit site: accumulated_text carries whitespace, the single
         // trim owner produces final_text, and that SAME string is both
@@ -1752,6 +1759,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Session end emits `SessionFinalised` carrying the layer replacement summary.
     fn session_finalised_emits_layer_summary() {
         let collector = SessionEventCollector::new();
         emit_session_finalised(&collector, "session-test".to_string(), 3);
@@ -1771,6 +1779,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Correction audio buffer drains oldest samples so length never exceeds the window.
     fn correction_buffer_window_cap() {
         let sr = 16_000u32;
         let window = CORRECTION_WINDOW_SEC;
@@ -1805,6 +1814,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Correction text window evicts the oldest head and keeps the freshest tail.
     fn correction_window_text_cap_keeps_recent_tail() {
         let max_chars = 64usize;
         let mut window_text = String::new();

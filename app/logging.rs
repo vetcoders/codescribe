@@ -14,6 +14,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Once;
 
+/// Once guard so tracing/logging subscribers install exactly once per process.
 static INIT: Once = Once::new();
 
 /// Install the global tracing subscriber (stderr + file) and the panic hook.

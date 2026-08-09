@@ -23,7 +23,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::thread_store::{Thread, ThreadMessage};
 
+/// On-disk filename for the denormalized thread index under the threads dir.
 const INDEX_FILE_NAME: &str = "index.json";
+/// Schema version for `index.json`. Bump forces rebuild from thread files on load.
 const INDEX_VERSION: u32 = 3;
 
 /// On-disk shape of `index.json`: a schema version plus the summary rows.
@@ -34,6 +36,7 @@ pub struct ThreadIndexData {
 }
 
 impl Default for ThreadIndexData {
+    /// Empty index at the current `INDEX_VERSION` (no summary rows yet).
     fn default() -> Self {
         Self {
             version: INDEX_VERSION,
@@ -348,6 +351,7 @@ fn build_search_text(
     latest_note: Option<&str>,
     latest_message: Option<&str>,
 ) -> String {
+    /// Hard cap on precomputed search haystack size so `index.json` stays bounded.
     const MAX_SEARCH_TEXT_BYTES: usize = 16_384;
     let mut out = String::with_capacity(1024);
     append_search_chunk(&mut out, &thread.title, MAX_SEARCH_TEXT_BYTES);
@@ -644,6 +648,7 @@ fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Index load/migrate/search/list/favorite contract tests against temp dirs.
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -654,6 +659,7 @@ mod tests {
     use super::*;
     use crate::agent::thread_store::{Thread, ThreadMessage, TokenUsage};
 
+    /// Minimal thread fixture with fixed tags, one message, and token usage.
     fn sample_thread(
         id: &str,
         title: &str,
@@ -688,6 +694,7 @@ mod tests {
         }
     }
 
+    /// AND search requires every term; results sort newest-updated first.
     #[test]
     fn search_matches_all_words_and_sorts_by_latest() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -729,6 +736,7 @@ mod tests {
         Ok(())
     }
 
+    /// List filter ANDs mode, favorites, notes, and tag constraints.
     #[test]
     fn list_applies_filters() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -767,6 +775,7 @@ mod tests {
         Ok(())
     }
 
+    /// Search haystack includes assistant message and note body text.
     #[test]
     fn search_includes_message_and_note_text() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -804,6 +813,7 @@ mod tests {
         Ok(())
     }
 
+    /// Legacy input_text/output_text feed preview/search without leaking type tags.
     #[test]
     fn legacy_openai_text_aliases_feed_preview_and_search_without_type_leak() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -856,6 +866,7 @@ mod tests {
         Ok(())
     }
 
+    /// Stale index version rebuilds from thread files and preserves favorites.
     #[test]
     fn load_migrates_legacy_index_summaries_from_thread_files() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -936,6 +947,7 @@ mod tests {
         Ok(())
     }
 
+    /// Truncation lands on grapheme boundaries; first-cluster-too-large is dropped.
     #[test]
     fn append_search_chunk_respects_grapheme_boundary_at_limit() {
         let mut out = "x".repeat(16_382);
@@ -972,6 +984,7 @@ mod tests {
         assert!(out.len() <= 16_384);
     }
 
+    /// Favorite flag survives reload from disk after set_favorite.
     #[test]
     fn set_favorite_persists_to_disk() -> Result<()> {
         let tmp = TempDir::new()?;

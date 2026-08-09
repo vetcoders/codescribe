@@ -224,6 +224,7 @@ impl ModifierFlags {
 }
 
 impl Default for ModifierFlags {
+    /// Empty modifier requirement: no ctrl/alt/shift/cmd demanded.
     fn default() -> Self {
         Self::new()
     }
@@ -335,6 +336,7 @@ pub struct HotkeyDetector {
 }
 
 impl Default for HotkeyDetector {
+    /// Fresh detector with all hold, tap, and one-shot chord latches cleared.
     fn default() -> Self {
         Self {
             hold_active: false,
@@ -927,10 +929,12 @@ fn compute_hold_mode(
 }
 
 #[cfg(test)]
+/// Table-driven and synthetic-time tests for hold, double-tap, and command chords.
 mod tests {
     use super::super::config::ModeHotkeyBindings;
     use super::*;
 
+    /// Build a HotkeyRuntimeConfig with fixed hold delay and double-tap window for tests.
     fn test_config(
         dictation: ShortcutBinding,
         formatting: ShortcutBinding,
@@ -950,6 +954,7 @@ mod tests {
         }
     }
 
+    /// Shorthand HotkeyModifierSnapshot constructor for compact test tables.
     fn mods(
         ctrl: bool,
         option: bool,
@@ -967,6 +972,7 @@ mod tests {
     }
 
     #[test]
+    /// ⌘⇧Space emits ShowAgent once per physical press; repeats and wrong mods are silent.
     fn detector_show_agent_command_table_emits_once_per_space_press() {
         let config = test_config(
             ShortcutBinding::HoldFn,
@@ -1026,6 +1032,7 @@ mod tests {
     }
 
     #[test]
+    /// Configured deferred-insert chord fires InsertHere once; key-repeat is suppressed.
     fn detector_deferred_insert_command_uses_configured_chord_once_per_press() {
         let mut config = test_config(
             ShortcutBinding::HoldFn,
@@ -1101,6 +1108,7 @@ mod tests {
     }
 
     #[test]
+    /// Hold mode follows arm modifier and optional assistive Shift without exclusive force.
     fn compute_hold_mode_respects_modifiers() {
         use crate::config::HoldArmModifier;
         // Fn base + default Shift arm: Shift arms, Cmd does not.
@@ -1235,6 +1243,7 @@ mod tests {
     }
 
     #[test]
+    /// When hold_exclusive is set, non-raw modes collapse to Raw regardless of arm.
     fn compute_hold_mode_exclusive_forces_raw() {
         use crate::config::HoldArmModifier;
         assert_eq!(
@@ -1260,6 +1269,7 @@ mod tests {
     }
 
     #[test]
+    /// Fn hold produces one Hold(Down) after delay and matching Hold(Up) on release.
     fn detector_fn_hold_emits_down_and_up_for_one_physical_hold() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1301,6 +1311,7 @@ mod tests {
     }
 
     #[test]
+    /// ModifierFlags::ctrl_only marks only the Control bit.
     fn test_modifier_flags_ctrl_only() {
         let flags = ModifierFlags::ctrl_only();
         assert!(flags.ctrl);
@@ -1310,6 +1321,7 @@ mod tests {
     }
 
     #[test]
+    /// Exclusive match requires exact flag equality with the binding requirement.
     fn test_matches_exclusive_mode() {
         let required = ModifierFlags::ctrl_only();
         let current = ModifierFlags {
@@ -1338,6 +1350,7 @@ mod tests {
     }
 
     #[test]
+    /// Non-exclusive match allows extra modifiers beyond the required set.
     fn test_matches_non_exclusive_mode() {
         let required = ModifierFlags::ctrl_only();
         let current = ModifierFlags {
@@ -1350,6 +1363,7 @@ mod tests {
     }
 
     #[test]
+    /// Assistive marker is the Shift bit on ModifierFlags.
     fn test_is_assistive() {
         let flags = ModifierFlags {
             ctrl: true,
@@ -1369,6 +1383,7 @@ mod tests {
     }
 
     #[test]
+    /// Left Option double-tap fires only inside the configured interval window.
     fn detector_option_double_tap_window_table() {
         let table = [(200_u64, true), (201_u64, false)];
 
@@ -1435,6 +1450,7 @@ mod tests {
     }
 
     #[test]
+    /// Right Option double-tap routes to ToggleAssistive, not formatting toggle.
     fn detector_right_option_double_tap_emits_toggle_assistive() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1494,6 +1510,7 @@ mod tests {
     }
 
     #[test]
+    /// Disabled binding still surfaces DoubleTapBlocked with BindingDisabled reason.
     fn detector_reports_disabled_option_double_tap() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1553,6 +1570,7 @@ mod tests {
     }
 
     #[test]
+    /// Diagnostic lines use stable gesture= and reason= tokens for log scraping.
     fn blocked_double_tap_diagnostic_line_uses_stable_reason_tokens() {
         assert_eq!(
             blocked_double_tap_diagnostic_line(
@@ -1590,12 +1608,15 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         #[derive(Clone, Default)]
+        /// Thread-safe in-memory writer that captures tracing_subscriber output in tests.
         struct Buf(Arc<Mutex<Vec<u8>>>);
         impl Write for Buf {
+            /// Append bytes into the shared buffer; always reports full write length.
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
                 self.0.lock().unwrap().extend_from_slice(buf);
                 Ok(buf.len())
             }
+            /// No-op flush — buffer is already durable in memory for the assertion.
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }
@@ -1705,6 +1726,7 @@ mod tests {
     }
 
     #[test]
+    /// Active modifier combo blocks Option double-tap with ModifierComboActive.
     fn detector_reports_modifier_blocked_option_double_tap() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1764,6 +1786,7 @@ mod tests {
     }
 
     #[test]
+    /// A real key during hold delay cancels the pending hold before Down is emitted.
     fn detector_cancels_hold_on_keydown_during_delay() {
         let mut detector = HotkeyDetector::default();
         let mut config = test_config(
@@ -1819,6 +1842,7 @@ mod tests {
     }
 
     #[test]
+    /// Ctrl+Alt hold binding requires Option present before hold tracking starts.
     fn detector_hold_ctrl_alt_requires_option_before_starting_hold() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1862,6 +1886,7 @@ mod tests {
     }
 
     #[test]
+    /// Legacy assistive hold path still emits Down/Up for the configured binding.
     fn detector_releases_legacy_assistive_hold_binding() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1909,6 +1934,7 @@ mod tests {
     }
 
     #[test]
+    /// After an Option combo with another key, double-tap state resets cleanly.
     fn detector_resets_combo_flags_after_option_combo() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -2022,6 +2048,7 @@ mod tests {
     }
 
     #[test]
+    /// Double Control toggles raw mode; combo activity prevents a false double-tap.
     fn detector_raw_toggle_double_ctrl_and_combo_reset() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(

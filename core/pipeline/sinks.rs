@@ -45,6 +45,7 @@ pub struct CollectorSink {
 }
 
 impl Default for CollectorSink {
+    /// Empty collector — same as [`CollectorSink::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -224,6 +225,7 @@ pub struct CollectorEventSink {
 }
 
 impl Default for CollectorEventSink {
+    /// Empty event collector — same as [`CollectorEventSink::new`].
     fn default() -> Self {
         Self::new()
     }
@@ -295,11 +297,13 @@ impl EventSink for CollectorEventSink {
     }
 }
 
+/// Unit tests for delta/event sink adapters, collectors, and fanout.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// CallbackSink forwards TranscriptDelta text into the wrapped closure.
     #[test]
     fn test_callback_sink_forwards() {
         let received = Arc::new(Mutex::new(String::new()));
@@ -311,6 +315,7 @@ mod tests {
         assert_eq!(*received.lock().unwrap(), "hello");
     }
 
+    /// `from_callback` builds an Arc DeltaSink that accumulates successive deltas.
     #[test]
     fn test_from_callback_convenience() {
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -323,6 +328,7 @@ mod tests {
         assert_eq!(*received.lock().unwrap(), vec!["alpha", "beta"]);
     }
 
+    /// CollectorSink records every applied delta string in arrival order.
     #[test]
     fn test_collector_sink_collects() {
         let sink = CollectorSink::new();
@@ -334,6 +340,7 @@ mod tests {
 
     // ── DeltaSinkAdapter ──
 
+    /// Preview events emit only the suffix diff against the previous preview text.
     #[test]
     fn test_delta_sink_adapter_preview_diff() {
         let collector = Arc::new(CollectorSink::new());
@@ -355,6 +362,7 @@ mod tests {
         assert_eq!(collector.collected()[1], " world");
     }
 
+    /// Correction events produce a delta that rewrites the prior preview buffer.
     #[test]
     fn test_delta_sink_adapter_correction() {
         let collector = Arc::new(CollectorSink::new());
@@ -380,6 +388,7 @@ mod tests {
         assert_eq!(buf, "Hello world");
     }
 
+    /// After UtteranceFinal, the next utterance is space-separated, not glued.
     #[test]
     fn test_delta_sink_adapter_utterance_final_resets() {
         let collector = Arc::new(CollectorSink::new());
@@ -418,6 +427,7 @@ mod tests {
         assert_eq!(rendered, "First Second");
     }
 
+    /// Post-final Correction extends committed text without re-emitting the final.
     #[test]
     fn test_delta_sink_adapter_correction_after_utterance_final_does_not_duplicate() {
         let collector = Arc::new(CollectorSink::new());
@@ -460,6 +470,7 @@ mod tests {
         assert_eq!(rendered, "First fixed Second");
     }
 
+    /// NoSpeech clears preview state so the next preview is a fresh full emission.
     #[test]
     fn test_delta_sink_adapter_no_speech_resets_preview_state() {
         let collector = Arc::new(CollectorSink::new());
@@ -482,6 +493,7 @@ mod tests {
         assert_eq!(deltas.last().map(String::as_str), Some("Second"));
     }
 
+    /// VAD/Drop/Stats events produce no delta strings on the legacy DeltaSink path.
     #[test]
     fn test_delta_sink_adapter_ignores_non_text_events() {
         let collector = Arc::new(CollectorSink::new());
@@ -517,6 +529,7 @@ mod tests {
 
     // ── CollectorEventSink ──
 
+    /// CollectorEventSink stores every engine event and filters previews/drops/finals.
     #[test]
     fn test_collector_event_sink_collects_all() {
         let sink = CollectorEventSink::new();
@@ -549,6 +562,7 @@ mod tests {
         assert_eq!(sink.finals(), vec!["hello world"]);
     }
 
+    /// FanoutEventSink delivers each event to every configured child sink.
     #[test]
     fn test_fanout_event_sink_forwards_to_all() {
         let a = Arc::new(CollectorEventSink::new());

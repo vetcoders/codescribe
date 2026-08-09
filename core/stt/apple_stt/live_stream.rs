@@ -216,6 +216,7 @@ impl LiveStreamSession {
         // the bridge's own settle grace means the child is wedged (alive but
         // mute). Without this, a 1-second clip waited the full 45s floor with
         // the overlay stuck in "finalising" and no way to cancel.
+        /// Silence budget after the last event before a wedged bridge is killed.
         const IDLE_CUTOFF: Duration = Duration::from_secs(10);
         let mut last_event_at = std::time::Instant::now();
 
@@ -275,6 +276,7 @@ impl LiveStreamSession {
 }
 
 impl Drop for LiveStreamSession {
+    /// Best-effort teardown: close stdin, kill the bridge child, join the reader.
     fn drop(&mut self) {
         drop(self.stdin.take());
         let _ = self.child.kill();
@@ -393,10 +395,12 @@ pub fn progressive_live_enabled() -> bool {
     !mode.eq_ignore_ascii_case("wav") && !mode.eq_ignore_ascii_case("transcribe_live")
 }
 
+/// Bridge stdout line parsers for progressive multi-seal events.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Partial, phrase-final, and summary JSON lines map to the typed event enum.
     #[test]
     fn parse_partial_and_final_and_summary() {
         let partial =
@@ -431,6 +435,7 @@ mod tests {
         }
     }
 
+    /// Each `final` event is its own sealed phrase; summary is not a full replace.
     #[test]
     fn multi_phrase_finals_are_independent_seals() {
         let lines = [

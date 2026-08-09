@@ -557,15 +557,18 @@ fn move_path_from_input(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// Path-policy bounded write/list/move coverage for the native FS tool.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Canonicalize a temp dir into the path-policy root list shape.
     fn roots_of(tmp: &TempDir) -> Vec<PathBuf> {
         path_policy::canonical_roots(&[tmp.path().to_path_buf()])
     }
 
+    /// Write, in-place patch, and rename stay inside the validated workspace root.
     #[test]
     fn list_and_search_and_write_patch_move_roundtrip() {
         let tmp = TempDir::new().unwrap();
@@ -598,6 +601,7 @@ mod tests {
         assert!(to.exists());
     }
 
+    /// Targets outside every workspace root are rejected before write.
     #[test]
     fn write_rejects_outside_workspace() {
         let tmp = TempDir::new().unwrap();

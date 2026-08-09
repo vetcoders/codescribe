@@ -29,6 +29,7 @@ pub mod agent_delivery;
 pub mod logging;
 /// macOS platform layer: hotkeys, clipboard, onboarding, permissions.
 pub mod os;
+/// Test-only helpers for isolating app env vars and temp config roots.
 #[cfg(test)]
 pub(crate) mod test_env;
 

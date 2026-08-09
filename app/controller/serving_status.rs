@@ -24,12 +24,14 @@ type ServingStatusSink = Arc<dyn Fn(LastServingVerdict) + Send + Sync + 'static>
 
 /// Process-global slot holding the most recent verdict.
 fn store() -> &'static RwLock<Option<LastServingVerdict>> {
+    /// Lazy once-cell for the last published serving verdict.
     static STORE: OnceLock<RwLock<Option<LastServingVerdict>>> = OnceLock::new();
     STORE.get_or_init(|| RwLock::new(None))
 }
 
 /// Process-global slot holding the optional push listener.
 fn sink_slot() -> &'static RwLock<Option<ServingStatusSink>> {
+    /// Lazy once-cell for the optional serving-status push listener.
     static SINK: OnceLock<RwLock<Option<ServingStatusSink>>> = OnceLock::new();
     SINK.get_or_init(|| RwLock::new(None))
 }
@@ -77,10 +79,12 @@ pub fn clear_last_serving() {
 // Label formatting lives Swift-side (`formatActiveSTT` in SettingsViewModel,
 // covered by SettingsTruthTests) — one display owner, no duplicate here.
 
+/// Publish/snapshot owner round-trips for Settings "Active STT".
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `publish_last_serving` is visible to `current_last_serving` until cleared.
     #[test]
     fn publish_and_current_roundtrip() {
         clear_last_serving();

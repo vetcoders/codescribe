@@ -14,8 +14,11 @@
 //! own module paths.
 
 pub mod overlay_quality;
+/// Background Qube donor daemon: opt-in stop-path WAV/transcript persistence.
 pub mod qube_daemon;
+/// Qube report types and serialization for quality/donor telemetry surfaces.
 pub mod qube_report;
+/// Teacher loop: attention flags, lexicon feedback, polygon token helpers.
 pub mod teacher;
 
 pub use teacher::{

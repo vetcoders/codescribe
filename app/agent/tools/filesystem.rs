@@ -181,6 +181,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Fresh UserSettings workspace roots (and own storage) are the live sandbox set.
     #[test]
     #[serial]
     fn sandbox_derives_roots_from_fresh_settings() {
@@ -241,6 +242,7 @@ mod tests {
         );
     }
 
+    /// Explicit roots admit workspace + Codescribe storage; HOME-like paths deny.
     #[test]
     fn sandbox_allows_only_workspace_roots_and_codescribe_storage() {
         let tmp = TempDir::new().expect("tempdir");
@@ -286,6 +288,7 @@ mod tests {
         );
     }
 
+    /// Symlinks that canonicalize outside every allowed root are denied.
     #[cfg(target_family = "unix")]
     #[test]
     fn sandbox_rejects_symlink_escape() {
@@ -340,6 +343,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore or clear the prior env value when the guard leaves scope.
         fn drop(&mut self) {
             // SAFETY: the test mutating process env is serialized.
             unsafe {

@@ -109,6 +109,7 @@ pub enum ConversationState {
 }
 
 impl Default for ConversationContext {
+    /// Empty idle context with no system prompt and an empty turn history.
     fn default() -> Self {
         Self::new()
     }
@@ -250,10 +251,12 @@ impl ConversationContext {
     }
 }
 
+/// Unit coverage for history bounds and turn accounting.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Fresh context starts idle with zero turns.
     #[test]
     fn test_context_creation() {
         let ctx = ConversationContext::new();
@@ -261,6 +264,7 @@ mod tests {
         assert_eq!(ctx.turn_count(), 0);
     }
 
+    /// User and assistant turns accumulate independently in history.
     #[test]
     fn test_add_turns() {
         let mut ctx = ConversationContext::new();
@@ -271,6 +275,7 @@ mod tests {
         assert_eq!(ctx.turn_count(), 2);
     }
 
+    /// History is hard-capped at [`MAX_HISTORY_TURNS`]; older turns drop first.
     #[test]
     fn test_max_history() {
         let mut ctx = ConversationContext::new();
