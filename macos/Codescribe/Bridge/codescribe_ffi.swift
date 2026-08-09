@@ -1396,11 +1396,14 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func signOutAccount(providerId: String) throws
 
     /**
-     * Start provider-account login for the selected provider. Today this is
-     * only supported for OpenAI Responses and is gated by the configured OAuth
-     * client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, dev-env fallback
-     * `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); absent client id returns a config
-     * error whose message contains "awaiting app registration".
+     * Start provider-account login for the selected provider. Every endpoint —
+     * issuer, authorize path, callback port — comes from that provider's OAuth
+     * registry row, so the browser is never sent to another vendor's login.
+     * Gated by the provider's own configured client id (its settings key, its
+     * dev-env fallback); absent client id returns a config error whose message
+     * contains "awaiting app registration". Providers whose flow is not a
+     * loopback callback (Anthropic pastes a code) are refused here rather than
+     * half-served.
      */
     func startAccountLogin(providerId: String) throws  -> CsAccountLoginResult
 
@@ -1984,11 +1987,14 @@ open func signOutAccount(providerId: String)throws   {try rustCallWithError(FfiC
 }
 
     /**
-     * Start provider-account login for the selected provider. Today this is
-     * only supported for OpenAI Responses and is gated by the configured OAuth
-     * client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, dev-env fallback
-     * `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); absent client id returns a config
-     * error whose message contains "awaiting app registration".
+     * Start provider-account login for the selected provider. Every endpoint —
+     * issuer, authorize path, callback port — comes from that provider's OAuth
+     * registry row, so the browser is never sent to another vendor's login.
+     * Gated by the provider's own configured client id (its settings key, its
+     * dev-env fallback); absent client id returns a config error whose message
+     * contains "awaiting app registration". Providers whose flow is not a
+     * loopback callback (Anthropic pastes a code) are refused here rather than
+     * half-served.
      */
 open func startAccountLogin(providerId: String)throws  -> CsAccountLoginResult  {
     return try  FfiConverterTypeCsAccountLoginResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -7484,6 +7490,13 @@ public struct CsKeyStatus: Equatable, Hashable {
      * OpenAI assistive key so both providers can be configured at once.
      */
     public var llmAnthropicApiKeySet: Bool
+    /**
+     * xAI assistive-lane key (`LLM_XAI_API_KEY`). Present for the same reason
+     * as the Anthropic field: the Keys panel lists a row per Keychain account
+     * and reads its indicator from this record, so an account without a field
+     * here renders as permanently "not set" even after the operator saves it.
+     */
+    public var llmXaiApiKeySet: Bool
     public var githubTokenSet: Bool
 
     // Default memberwise initializers are never public by default, so we
@@ -7492,12 +7505,19 @@ public struct CsKeyStatus: Equatable, Hashable {
         /**
          * Anthropic assistive-lane key (`LLM_ANTHROPIC_API_KEY`) — separate from the
          * OpenAI assistive key so both providers can be configured at once.
-         */llmAnthropicApiKeySet: Bool, githubTokenSet: Bool) {
+         */llmAnthropicApiKeySet: Bool,
+        /**
+         * xAI assistive-lane key (`LLM_XAI_API_KEY`). Present for the same reason
+         * as the Anthropic field: the Keys panel lists a row per Keychain account
+         * and reads its indicator from this record, so an account without a field
+         * here renders as permanently "not set" even after the operator saves it.
+         */llmXaiApiKeySet: Bool, githubTokenSet: Bool) {
         self.llmApiKeySet = llmApiKeySet
         self.sttApiKeySet = sttApiKeySet
         self.llmFormattingApiKeySet = llmFormattingApiKeySet
         self.llmAssistiveApiKeySet = llmAssistiveApiKeySet
         self.llmAnthropicApiKeySet = llmAnthropicApiKeySet
+        self.llmXaiApiKeySet = llmXaiApiKeySet
         self.githubTokenSet = githubTokenSet
     }
 
@@ -7520,6 +7540,7 @@ public struct FfiConverterTypeCsKeyStatus: FfiConverterRustBuffer {
                 llmFormattingApiKeySet: FfiConverterBool.read(from: &buf),
                 llmAssistiveApiKeySet: FfiConverterBool.read(from: &buf),
                 llmAnthropicApiKeySet: FfiConverterBool.read(from: &buf),
+                llmXaiApiKeySet: FfiConverterBool.read(from: &buf),
                 githubTokenSet: FfiConverterBool.read(from: &buf)
         )
     }
@@ -7530,6 +7551,7 @@ public struct FfiConverterTypeCsKeyStatus: FfiConverterRustBuffer {
         FfiConverterBool.write(value.llmFormattingApiKeySet, into: &buf)
         FfiConverterBool.write(value.llmAssistiveApiKeySet, into: &buf)
         FfiConverterBool.write(value.llmAnthropicApiKeySet, into: &buf)
+        FfiConverterBool.write(value.llmXaiApiKeySet, into: &buf)
         FfiConverterBool.write(value.githubTokenSet, into: &buf)
     }
 }
@@ -13100,7 +13122,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_sign_out_account() != 25379) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_start_account_login() != 61449) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_start_account_login() != 8219) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_api_key() != 58988) {

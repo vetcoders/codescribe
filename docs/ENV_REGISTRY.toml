@@ -889,6 +889,35 @@ reload = "restart"
 category = "llm"
 description = "Override the Anthropic OAuth issuer base URL used for account login (proxies and staging only)"
 
+[vars.LLM_XAI_API_KEY]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+secret = true
+description = "xAI (Grok) API key for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses. Stored in the Codescribe Keychain bundle under its own account, so it coexists with the OpenAI and Anthropic keys"
+
+[vars.LLM_XAI_ENDPOINT]
+default = "https://api.x.ai/v1/responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "xAI Responses API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses (override for proxies). xAI speaks the OpenAI Responses protocol, so this lane uses the Responses request builder unchanged"
+
+[vars.CODESCRIBE_XAI_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the xAI account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_XAI_OAUTH_CLIENT_ID. Unlike OpenAI/Anthropic, leaving both unset still works: xAI publishes a desktop client id that ships as the default (see NOTICE)"
+
+[vars.CODESCRIBE_XAI_OAUTH_ISSUER]
+default = "https://auth.x.ai"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the xAI OAuth issuer base URL used for account login (proxies and staging only). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
+
 [vars.LLM_USE_STREAMING]
 default = "1"
 type = "bool"
