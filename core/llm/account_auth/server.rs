@@ -148,8 +148,8 @@ pub async fn run_login_server(opts: ServerOptions) -> Result<LoginServer, Accoun
     // file the tokens under whichever provider the code happened to name.
     if config.login_flow != LoginFlow::Loopback {
         return Err(AccountAuthError::UnsupportedProvider(format!(
-            "{} signs in by pasting a code, not through a local callback server",
-            opts.provider
+            "{} does not use a local callback server (login flow: {:?})",
+            opts.provider, config.login_flow
         )));
     }
     let pkce = generate_pkce();
@@ -231,6 +231,10 @@ pub async fn run_login_server(opts: ServerOptions) -> Result<LoginServer, Accoun
 /// [`ResponseAndExit`]: HandledRequest::ResponseAndExit
 enum HandledRequest {
     Response(Response<Cursor<Vec<u8>>>),
+    /// Kept for rare 302 paths (e.g. future multi-hop success pages). Callback
+    /// completion now uses [`ResponseAndExit`] so login does not depend on a
+    /// second hop to `localhost` (IPv6 trap on `127.0.0.1`-bound listeners).
+    #[allow(dead_code)]
     Redirect(Header),
     ResponseAndExit {
         headers: Vec<Header>,
@@ -335,12 +339,24 @@ async fn process_request(
                             .with_status_code(500),
                     );
                 }
-                let success_url = format!("http://localhost:{actual_port}/success");
-                match Header::from_bytes(&b"Location"[..], success_url.as_bytes()) {
-                    Ok(header) => HandledRequest::Redirect(header),
-                    Err(_) => HandledRequest::Response(
-                        Response::from_string("Internal Server Error").with_status_code(500),
-                    ),
+                // Serve success HTML on the callback response itself. Do NOT
+                // 302 to `http://localhost:{port}/success`: on macOS
+                // `localhost` often resolves to `::1` while we bind only
+                // `127.0.0.1`, so the second hop fails and `block_until_done`
+                // never sees `/success` even though tokens are already stored.
+                // Completing here also keeps the auth code out of a second URL.
+                let _ = actual_port; // port still used by bind/authorize URL
+                let headers = match Header::from_bytes(
+                    &b"Content-Type"[..],
+                    &b"text/html; charset=utf-8"[..],
+                ) {
+                    Ok(header) => vec![header],
+                    Err(_) => Vec::new(),
+                };
+                HandledRequest::ResponseAndExit {
+                    headers,
+                    body: SUCCESS_HTML.as_bytes().to_vec(),
+                    result: Ok(()),
                 }
             }
             Err(error) => HandledRequest::Response(
@@ -801,7 +817,7 @@ mod tests {
         assert!(matches!(
             error,
             AccountAuthError::UnsupportedProvider(ref message)
-                if message.contains("pasting a code")
+                if message.contains("does not use a local callback server")
         ));
         // Nothing was stored for anyone — least of all under OpenAI.
         assert!(load_account_tokens(ProviderKind::OpenAiResponses).is_err());

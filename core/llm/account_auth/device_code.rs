@@ -207,9 +207,12 @@ async fn request_xai_device_code(
         .post(&url)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .header("Accept", "application/json")
+        // OpenCode XaiAuthPlugin: client_id + scope + referrer (attribution).
+        // No plan=generic here — that is loopback-authorize only.
         .body(urlencoding_form(&[
             ("client_id", config.client_id.as_str()),
             ("scope", oauth.scope),
+            ("referrer", "codescribe"),
         ]))
         .send()
         .await
@@ -601,7 +604,7 @@ mod tests {
             .mock("POST", "/oauth2/device/code")
             .match_header("content-type", "application/x-www-form-urlencoded")
             .match_body(Matcher::Regex(
-                r"client_id=b1a00492.*scope=openid".to_string(),
+                r"client_id=b1a00492.*scope=openid.*referrer=codescribe".to_string(),
             ))
             .with_status(200)
             .with_body(
