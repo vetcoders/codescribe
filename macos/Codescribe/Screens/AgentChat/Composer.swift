@@ -445,12 +445,20 @@ struct Composer: View {
                    let final = store.dictationFinalPreview,
                    final != store.dictationLivePreview {
                     DisclosureGroup(store.dictationDeliverySource == .final ? "Live capture" : "Final-pass alternative") {
-                        Text(store.dictationDeliverySource == .final ? store.dictationLivePreview : final)
-                            .font(CSFont.ui(11.5 * textScale))
-                            .foregroundStyle(CSColor.textFaint)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 4)
+                        // Bounded on purpose: an unbounded Text with a long
+                        // transcript grew the composer past the window and
+                        // wrecked the split-view layout on expand (operator
+                        // screenshot, 2026-08-09). The alternative scrolls
+                        // inside its own strip instead.
+                        ScrollView {
+                            Text(store.dictationDeliverySource == .final ? store.dictationLivePreview : final)
+                                .font(CSFont.ui(11.5 * textScale))
+                                .foregroundStyle(CSColor.textFaint)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 4)
+                        }
+                        .frame(maxHeight: 140)
                     }
                     .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(CSColor.textFaintAlt)
