@@ -493,7 +493,7 @@ extension CsSettings {
         formattingLevel: "correction",
         whisperModel: "whisper-large-v3-turbo",
         layeredTranscription: nil,
-        agentWorkspaceRoots: ["~/Git"],
+        agentWorkspaceRoots: ["~/.codescribe"],
         bufferDelayMs: nil,
         typingCps: nil,
         emitWordsMax: nil,

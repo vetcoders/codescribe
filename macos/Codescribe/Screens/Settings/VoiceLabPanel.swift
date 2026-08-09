@@ -226,7 +226,7 @@ struct VoiceLabPanel: View {
                     }
                     .font(CSFont.mono(11, .semibold))
                     .foregroundStyle(CSColor.chromeAccent)
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .disabled(model.voiceLabTeachPending)
                     .accessibilityLabel("Teach dictionary from corrections and proposed rules")
                     Button("Refresh") {
@@ -234,7 +234,7 @@ struct VoiceLabPanel: View {
                     }
                     .font(CSFont.mono(11, .semibold))
                     .foregroundStyle(CSColor.chromeAccent)
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
                 }
             }

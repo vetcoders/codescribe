@@ -128,7 +128,7 @@ struct UserPanel: View {
                 Button("Restore default") {
                     model.restoreDefaultTranscriptTagTemplate()
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .font(CSFont.mono(10.5, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
                 .accessibilityLabel("Restore default transcript tag template")
@@ -318,7 +318,7 @@ private struct ResetAppDataSection: View {
                             .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
                     )
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .padding(.top, 13)
             .accessibilityLabel("Reset app data. Destructive action.")
             .accessibilityHint("Shows the live impact, names whether base prompts are preserved, and requires typing RESET before data moves to Trash.")

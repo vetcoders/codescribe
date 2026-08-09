@@ -92,7 +92,7 @@ struct AgentStatusSection: View {
                         .foregroundStyle(CSColor.textFaint)
                 }
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .help("Cached initialize + tools/list result per configured server")
 
             if probesExpanded {
@@ -128,7 +128,7 @@ struct AgentStatusSection: View {
                         .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                 )
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
         }
     }
 

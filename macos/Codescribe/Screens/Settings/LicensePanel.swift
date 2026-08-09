@@ -75,7 +75,7 @@ struct LicensePanel: View {
                     Button("Remove license", role: .destructive) {
                         model.removeLicense()
                     }
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .foregroundStyle(CSColor.dangerLight)
                 }
             }

@@ -216,7 +216,7 @@ private struct LanguageIdentityPicker: View {
                             )
                     )
                 }
-                .buttonStyle(.csFocusRing(cornerRadius: 8))
+                .csFocusRing(cornerRadius: 8)
                 .accessibilityLabel(choice.accessibilityLabel)
                 .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
                 .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -298,7 +298,7 @@ private struct PermissionChecklistRow: View {
                         .font(CSFont.mono(11, .semibold))
                         .foregroundStyle(CSColor.terracottaLight)
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
             }
         }
         .padding(.horizontal, 15)
@@ -371,7 +371,7 @@ private struct QuickStartCard: View {
             )
             .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         }
-        .buttonStyle(.csFocusRing(cornerRadius: CSRadius.card))
+        .csFocusRing(cornerRadius: CSRadius.card)
         .onHover { hovered = $0 }
         .accessibilityLabel(title)
         .accessibilityHint(subtitle)

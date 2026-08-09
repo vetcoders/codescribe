@@ -246,7 +246,7 @@ private struct PromptEditor: View {
                         .strokeBorder(CSColor.chromeAccent.opacity(0.28), lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .help(editing ? "Save the prompt" : "Edit the raw markdown")
     }
 
@@ -254,7 +254,7 @@ private struct PromptEditor: View {
         Button("Restore…") {
             confirmingRestore = true
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .font(CSFont.ui(11.5, .semibold))
         .foregroundStyle(CSColor.textMutedAlt)
         .help("Restore only \(title.lowercased())")

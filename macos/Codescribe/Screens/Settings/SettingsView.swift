@@ -255,7 +255,7 @@ private struct SettingsHealthFooter: View {
         Group {
             if let target = health.targetSection {
                 Button { model.select(target) } label: { content(health) }
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .help("Open \(target.title) settings")
             } else {
                 content(health)

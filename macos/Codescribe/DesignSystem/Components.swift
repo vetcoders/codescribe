@@ -116,9 +116,11 @@ extension View {
 /// AppKit's default ring is a squarish halo that ignores a custom chip's
 /// corner radius — on the dark glass surfaces it reads as a grey box stamped
 /// across the control (operator screenshots 2026-08-09, next to Claude
-/// Desktop's accent ring as the bar to clear). This style disables the system
-/// effect and draws its own: an accent ring 3pt outside the content, rounded
-/// to `cornerRadius + 3` so the inner and outer curves stay concentric.
+/// Desktop's accent ring as the bar to clear). This style draws our ring —
+/// an accent stroke 3pt outside the content, rounded to `cornerRadius + 3`
+/// so the inner and outer curves stay concentric. Suppressing the system
+/// halo is the adopting Button's job: use `View.csFocusRing(cornerRadius:)`,
+/// never `.buttonStyle(.csFocusRing(...))` alone.
 ///
 /// Keyboard-only by construction: `CSFocusPolicy` releases focus after
 /// pointer clicks, so the ring appears exactly when a keyboard user is
@@ -130,7 +132,6 @@ struct CSFocusRingButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.82 : 1)
-            .focusEffectDisabled()
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius + 3, style: .continuous)
                     .strokeBorder(
@@ -148,6 +149,21 @@ extension ButtonStyle where Self == CSFocusRingButtonStyle {
     /// `.plain` on custom-drawn chips, cards, and segments.
     static func csFocusRing(cornerRadius: CGFloat) -> CSFocusRingButtonStyle {
         CSFocusRingButtonStyle(cornerRadius: cornerRadius)
+    }
+}
+
+extension View {
+    /// The one correct way to adopt the Codescribe focus ring on a Button.
+    ///
+    /// `focusEffectDisabled()` is an environment write and only flows DOWN the
+    /// tree — inside `makeBody` it reaches the label's descendants, never the
+    /// Button that actually draws AppKit's grey halo. So the kill switch must
+    /// ride on the Button itself, paired here with the style so the two can't
+    /// drift apart (adopting the style alone leaves the system ring stacked
+    /// on top of ours — operator screenshot 2026-08-09, the "stodoła").
+    func csFocusRing(cornerRadius: CGFloat) -> some View {
+        buttonStyle(.csFocusRing(cornerRadius: cornerRadius))
+            .focusEffectDisabled()
     }
 }
 

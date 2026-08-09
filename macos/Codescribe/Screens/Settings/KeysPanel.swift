@@ -298,7 +298,7 @@ private struct LLMLaneEditor: View {
         Button("Save", action: action)
             .font(CSFont.ui(11.5, .semibold))
             .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.chromeAccent)
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .disabled(draft.isEmpty)
             .accessibilityLabel(accessibilityLabel)
     }
@@ -311,7 +311,7 @@ private struct LLMLaneEditor: View {
         Button("Reset", action: action)
             .font(CSFont.ui(11.5, .semibold))
             .foregroundStyle(CSColor.textMutedAlt)
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .help(help)
             .accessibilityLabel(accessibilityLabel)
     }
@@ -337,7 +337,7 @@ struct WorkspaceRootsSection: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionLabel("Agent workspace roots")
 
-            Text("Directories the assistant scans to resolve a project name to a path (list_projects). One level deep; git checkouts only.")
+            Text("Directories the assistant scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped.")
                 .font(CSFont.ui(11.5))
                 .lineSpacing(2)
                 .foregroundStyle(CSColor.textMutedAlt)
@@ -357,7 +357,7 @@ struct WorkspaceRootsSection: View {
                     Label("Add root", systemImage: "plus")
                         .font(CSFont.ui(12, .semibold))
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .foregroundStyle(CSColor.textBody)
 
                 Spacer()
@@ -370,7 +370,7 @@ struct WorkspaceRootsSection: View {
                         .font(CSFont.ui(12, .semibold))
                         .foregroundStyle(isDirty ? CSColor.textHigh : CSColor.textFaint)
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!isDirty)
             }
             .padding(.top, 12)
@@ -385,7 +385,7 @@ struct WorkspaceRootsSection: View {
     private func rootRow(index: Int) -> some View {
         HStack(spacing: 10) {
             existsDot(for: rows[index])
-            TextField("~/Git", text: Binding(
+            TextField("/path/to/checkouts", text: Binding(
                 get: { index < rows.count ? rows[index] : "" },
                 set: { if index < rows.count { rows[index] = $0 } }
             ))
@@ -399,7 +399,7 @@ struct WorkspaceRootsSection: View {
             } label: {
                 CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.textFaint)
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -425,7 +425,9 @@ struct WorkspaceRootsSection: View {
 
     private func syncFromModel() {
         rows = model.agentWorkspaceRoots
-        if rows.isEmpty { rows = ["~/Git"] }
+        // Mirror of the runtime default (DEFAULT_AGENT_WORKSPACE_ROOT): with no
+        // configured roots the tool really scans the app's own data dir.
+        if rows.isEmpty { rows = ["~/.codescribe"] }
     }
 
     private func cleaned(_ input: [String]) -> [String] {
@@ -517,7 +519,7 @@ private struct KeyRow: View {
                                 .strokeBorder(CSColor.chromeAccent.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(draft.isEmpty)
 
                 Button(action: onTest) {
@@ -543,7 +545,7 @@ private struct KeyRow: View {
                             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(probePending || !isSet)
                 .help(isSet ? "Test this key" : "Save a key first to test it")
 
@@ -564,7 +566,7 @@ private struct KeyRow: View {
                                 .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!isSet)
                 .help("Remove this key from the Keychain")
             }
@@ -764,7 +766,7 @@ private struct AccountLoginRow: View {
                             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!provider.accountLoginEnabled || loginPending)
                 .help(provider.accountStatusMessage)
             }
@@ -862,7 +864,7 @@ private struct AccountActionButton: View {
                         .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .disabled(!enabled)
     }
 }
