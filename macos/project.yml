@@ -49,13 +49,15 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CSBuildCommit: $(CS_BUILD_COMMIT)
         CSBuiltAt: $(CS_BUILT_AT)
-        # Sparkle 2 update channel. Feed lives in site/public (deployed via
-        # GitHub Pages); enclosures point at GitHub Releases DMGs. The EdDSA
-        # public key is injected at build time (scripts/build-app.sh reads
-        # SPARKLE_ED_PUBLIC_KEY from the environment) — the private key never
-        # enters the repo. An empty key means Sparkle logs an error and rejects
-        # every update instead of accepting unsigned feeds (fail-closed).
-        SUFeedURL: https://vetcoders.github.io/codescribe/appcast.xml
+        # Sparkle 2 update channel. Feed lives in site/public, served from
+        # codescribe.vetcoders.io (Caddy on the ops VPS — the GitHub Pages
+        # path was never live and 404'd in every shipped bundle); enclosures
+        # point at GitHub Releases DMGs. The EdDSA public key is injected at
+        # build time (scripts/build-app.sh reads SPARKLE_ED_PUBLIC_KEY from
+        # the environment) — the private key never enters the repo. An empty
+        # key means Sparkle logs an error and rejects every update instead of
+        # accepting unsigned feeds (fail-closed).
+        SUFeedURL: https://codescribe.vetcoders.io/appcast.xml
         SUPublicEDKey: $(SPARKLE_ED_PUBLIC_KEY)
         SUEnableAutomaticChecks: true
         LSUIElement: true

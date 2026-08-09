@@ -1,0 +1,31 @@
+# systemd unit for the codescribe licence issuer (ops VPS).
+# Install: /etc/systemd/system/codescribe-license.service
+# Secret:  /etc/codescribe/license-signer.env — root:root 0600, read by systemd
+#          as root BEFORE dropping to User=, so the service user never needs
+#          read access to the seed file itself.
+#
+#   CODESCRIBE_LICENSE_SIGNER_SEED_HEX=<64-hex>
+#
+# Created by Vetcoders (c)2026
+
+[Unit]
+Description=codescribe CSK1 licence issuer (codescribe.vetcoders.io /api/license)
+After=network.target
+
+[Service]
+Type=simple
+User=libraxis
+EnvironmentFile=/etc/codescribe/license-signer.env
+ExecStart=/usr/bin/node /srv/codescribe-license/server.mjs
+Restart=on-failure
+RestartSec=3
+
+# The service holds a production signing key in memory — keep the blast
+# radius small.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

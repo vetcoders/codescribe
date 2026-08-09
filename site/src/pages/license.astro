@@ -1,0 +1,126 @@
+---
+import Layout from '../layouts/Layout.astro';
+import LegalPage from '../components/LegalPage.astro';
+---
+
+<Layout
+  title="Get a licence — codescribe"
+  description="Generate your codescribe licence code. Open beta: enter your email, paste the code into Settings → License."
+  path="license"
+>
+  <LegalPage title="Get a licence" eyebrow="Open beta · Licence">
+    <p>
+      Codescribe is in open beta. Enter your email and you get a licence code
+      on the spot — paste it into <strong>Settings → License</strong> in the
+      app. The code is bound to a hash of your email; the email itself never
+      leaves this form in plain text and we do not build a mailing list from
+      it.
+    </p>
+
+    <form id="licence-form" autocomplete="email">
+      <label for="licence-email">Email</label>
+      <div class="licence-row">
+        <input
+          id="licence-email"
+          name="email"
+          type="email"
+          required
+          placeholder="you@example.com"
+          inputmode="email"
+        />
+        <button type="submit" id="licence-submit">Generate licence</button>
+      </div>
+    </form>
+
+    <div id="licence-result" hidden>
+      <h2>Your licence code</h2>
+      <pre id="licence-code" tabindex="0"></pre>
+      <p>
+        <button type="button" id="licence-copy">Copy code</button>
+        <span id="licence-meta"></span>
+      </p>
+      <p>
+        Open the app → <strong>Settings → License</strong> → paste the code.
+        Keep it somewhere safe; the same code works on up to the listed number
+        of machines.
+      </p>
+    </div>
+
+    <p id="licence-error" role="alert" hidden></p>
+
+    <h2>What the code contains</h2>
+    <ul>
+      <li>A SHA-256 hash of your email — not the email itself</li>
+      <li>Issue date and the date until which updates are covered</li>
+      <li>A seat limit (how many Macs may use the code)</li>
+      <li>An Ed25519 signature the app verifies fully offline</li>
+    </ul>
+    <p>
+      Validation happens inside the app against a public key baked into the
+      build — no account, no phone-home, no activation server.
+    </p>
+  </LegalPage>
+</Layout>
+
+<style>
+  .licence-row {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .licence-row input {
+    flex: 1 1 260px;
+    padding: 0.55rem 0.75rem;
+    font: inherit;
+  }
+  #licence-code {
+    white-space: pre-wrap;
+    word-break: break-all;
+    user-select: all;
+  }
+</style>
+
+<script>
+  const form = document.getElementById('licence-form') as HTMLFormElement;
+  const emailInput = document.getElementById('licence-email') as HTMLInputElement;
+  const submit = document.getElementById('licence-submit') as HTMLButtonElement;
+  const result = document.getElementById('licence-result') as HTMLElement;
+  const codeEl = document.getElementById('licence-code') as HTMLElement;
+  const metaEl = document.getElementById('licence-meta') as HTMLElement;
+  const errorEl = document.getElementById('licence-error') as HTMLElement;
+  const copyBtn = document.getElementById('licence-copy') as HTMLButtonElement;
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    errorEl.hidden = true;
+    result.hidden = true;
+    submit.disabled = true;
+    submit.textContent = 'Generating…';
+    try {
+      // Same origin — the issuer runs behind /api on this host.
+      const response = await fetch('/api/license/issue', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: emailInput.value }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+      codeEl.textContent = body.license;
+      metaEl.textContent = `${body.sku} · issued ${body.issued} · updates until ${body.updates_until} · ${body.seat_limit} seat(s)`;
+      result.hidden = false;
+    } catch (error) {
+      errorEl.textContent =
+        error instanceof Error ? error.message : 'Licence service is unreachable — try again in a minute.';
+      errorEl.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Generate licence';
+    }
+  });
+
+  copyBtn.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(codeEl.textContent ?? '');
+    copyBtn.textContent = 'Copied';
+    setTimeout(() => (copyBtn.textContent = 'Copy code'), 1500);
+  });
+</script>

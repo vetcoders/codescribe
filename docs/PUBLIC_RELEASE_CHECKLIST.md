@@ -50,7 +50,7 @@ code cuts.
       scoped `NSExceptionDomains` entry with a justification in this checklist — never
       `NSAllowsArbitraryLoads`.
 - [ ] **`SUFeedURL` is HTTPS on a host we control.** Currently
-      `https://vetcoders.github.io/codescribe/appcast.xml` (`macos/project.yml`). A plain-HTTP or
+      `https://codescribe.vetcoders.io/appcast.xml` (`macos/project.yml`). A plain-HTTP or
       third-party feed is an update-channel takeover, not a convenience.
 - [ ] **The feed actually resolves.** `curl -sSI "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' /Applications/Codescribe.app/Contents/Info.plist)"` returns `200`, not `404`.
       `site/public/appcast.xml` exists on feature branches, but GitHub Pages deploys from the
