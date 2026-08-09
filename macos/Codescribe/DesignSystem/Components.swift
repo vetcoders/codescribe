@@ -111,6 +111,46 @@ extension View {
     }
 }
 
+/// Keyboard focus ring that follows the control's own rounded geometry.
+///
+/// AppKit's default ring is a squarish halo that ignores a custom chip's
+/// corner radius — on the dark glass surfaces it reads as a grey box stamped
+/// across the control (operator screenshots 2026-08-09, next to Claude
+/// Desktop's accent ring as the bar to clear). This style disables the system
+/// effect and draws its own: an accent ring 3pt outside the content, rounded
+/// to `cornerRadius + 3` so the inner and outer curves stay concentric.
+///
+/// Keyboard-only by construction: `CSFocusPolicy` releases focus after
+/// pointer clicks, so the ring appears exactly when a keyboard user is
+/// navigating — the accessibility cue stays, only its geometry is ours.
+struct CSFocusRingButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat
+    @Environment(\.isFocused) private var isFocused
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .focusEffectDisabled()
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius + 3, style: .continuous)
+                    .strokeBorder(
+                        CSColor.chromeAccent.opacity(isFocused ? 0.85 : 0),
+                        lineWidth: 2
+                    )
+                    .padding(-3)
+            )
+            .animation(.easeOut(duration: 0.12), value: isFocused)
+    }
+}
+
+extension ButtonStyle where Self == CSFocusRingButtonStyle {
+    /// Plain-look button carrying the Codescribe focus ring. Use instead of
+    /// `.plain` on custom-drawn chips, cards, and segments.
+    static func csFocusRing(cornerRadius: CGFloat) -> CSFocusRingButtonStyle {
+        CSFocusRingButtonStyle(cornerRadius: cornerRadius)
+    }
+}
+
 /// Dark glass container: ultraThinMaterial tinted + hairline border + deep shadow.
 struct GlassPanel<Content: View>: View {
     var cornerRadius: CGFloat = CSRadius.window
