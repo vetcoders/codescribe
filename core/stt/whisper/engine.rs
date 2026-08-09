@@ -334,16 +334,31 @@ impl LocalWhisperEngine {
         let config: Config = serde_json::from_value(new_config_json)
             .context("Failed to build Config from MLX values")?;
 
+        // Phase timings for the cold load. "Preloaded, zero latency" is the
+        // product's claim, and the operator's logs show 56 cold loads costing a
+        // median of 9.2 s (p90 21.9 s, worst 34.9 s, 805 s in total) because the
+        // idle reaper drops the weights every 45 minutes and this function then
+        // rebuilds them from scratch. A single aggregate number cannot say
+        // whether to attack the read, the dequantisation, or the GPU upload, so
+        // each phase reports its own cost.
+        let load_started = std::time::Instant::now();
+        let read_secs;
+        let plain_secs;
+        let dequant_secs;
+
         let vb = unsafe {
             let tensors = candle_core::safetensors::MmapedSafetensors::new(&weights_path)?;
             let mut raw_tensors: HashMap<String, Tensor> = HashMap::new();
 
             // Load everything on CPU first so we can dequantize packed weights.
+            let read_started = std::time::Instant::now();
             for (name, view) in tensors.tensors() {
                 let loaded = view.load(&Device::Cpu)?;
                 raw_tensors.insert(name.to_string(), loaded);
             }
+            read_secs = read_started.elapsed().as_secs_f64();
 
+            let plain_started = std::time::Instant::now();
             let mut tensor_map = HashMap::new();
             let mut quantized_weights: Vec<String> = Vec::new();
 
@@ -376,7 +391,10 @@ impl LocalWhisperEngine {
                 tensor_map.insert(mapped_name, t);
             }
 
+            plain_secs = plain_started.elapsed().as_secs_f64();
+
             // Second pass: dequantize packed q8 weights.
+            let dequant_started = std::time::Instant::now();
             for weight_name in quantized_weights {
                 let base = weight_name.trim_end_matches(".weight");
                 let packed = raw_tensors
@@ -403,11 +421,21 @@ impl LocalWhisperEngine {
 
                 tensor_map.insert(mapped_name, dequant);
             }
+            dequant_secs = dequant_started.elapsed().as_secs_f64();
 
             candle_nn::VarBuilder::from_tensors(tensor_map, DType::F32, &device)
         };
 
+        let build_started = std::time::Instant::now();
         let model = Model::load(&vb, config.clone()).context("Failed to create Whisper Model")?;
+        tracing::info!(
+            "whisper_cold_load_phases total={:.2}s read={:.2}s plain_tensors={:.2}s dequantize_q8={:.2}s build_model={:.2}s",
+            load_started.elapsed().as_secs_f64(),
+            read_secs,
+            plain_secs,
+            dequant_secs,
+            build_started.elapsed().as_secs_f64()
+        );
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             anyhow!(
