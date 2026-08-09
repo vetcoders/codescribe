@@ -10,6 +10,7 @@
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help \
+        dist-preflight dist-preflight-signed \
         dmg dmg-signed release-standard release-full release-dmgs notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks
 
@@ -32,6 +33,29 @@ CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODE
 # not exported to recipe children, which is exactly how `make release-standard`
 # used to reach --sign with an empty identity.
 CODESCRIBE_DIST_CODESIGN_IDENTITY ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(CODESCRIBE_CODESIGN_IDENTITY))
+# The production licence verification key has the same resolution problem the
+# signing identity above already solved: CI passes it as a repository variable
+# (release.yml), a local checkout had no source at all, and core/build.rs only
+# discovers it is missing ~2 minutes into cargo — as a bare panic that names
+# neither make nor where to get the key. Resolve it from the canonical secrets
+# file so distribution targets are self-sufficient.
+#
+# Deliberately a SEPARATE variable from CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:
+# install-app and scripts/smoke-macos27.sh disarm distribution keying with
+# `env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX`, and that must keep working — a
+# plain `?=` fallback here would silently re-arm the production key in a local
+# build that deliberately wants the development verifier.
+CODESCRIBE_LICENSE_PUBLIC_KEY_FILE ?= $(HOME)/.vibecrafted/secrets/codescribe/license-public.hex
+CODESCRIBE_DIST_LICENSE_KEY = $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(shell cat $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
+# Sparkle's update-verification public key has the same missing-local-source
+# problem: release.yml supplies SPARKLE_ED_PUBLIC_KEY as a repository variable,
+# macos/project.yml substitutes it into SUPublicEDKey, and
+# scripts/verify-dmg-payload.sh refuses a bundle whose key is empty ("Sparkle
+# would reject every update"). A local `make release-standard` had no way to
+# supply it, so a locally cut release failed the gate at the very last check —
+# after codesigning, notarisation and stapling had already been paid for.
+CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE ?= $(HOME)/.vibecrafted/secrets/codescribe/sparkle-public.b64
+CODESCRIBE_DIST_SPARKLE_KEY = $(if $(SPARKLE_ED_PUBLIC_KEY),$(SPARKLE_ED_PUBLIC_KEY),$(shell cat $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
 CODESCRIBE_APP_NAME ?= Codescribe
 CODESCRIBE_DISPLAY_NAME ?= Codescribe
 # SwiftUI app build profile for `make app` / `make app-bindings`
@@ -76,18 +100,20 @@ build:
 
 # Slim public default: Silero VAD + MiniLM. Whisper is runtime/cache/Settings download.
 # Do NOT set CODESCRIBE_EMBED_WHISPER here — that is the fat experimental SKU only.
-release-codescribe:
+release-codescribe: dist-preflight
 	@echo "Building codescribe-ffi (release dylib, embedded: Silero + MiniLM; Whisper runtime)..."
 	@echo "  The app front-end is no longer a Rust bin; this builds the UniFFI bridge dylib."
 	@echo "  Produce the runnable SwiftUI app with: make app PROFILE=release"
 	@echo "  Fat Whisper embed: make release-codescribe-embedded"
-	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo build --release -p codescribe-ffi
+	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo build --release -p codescribe-ffi
 
 # Optional fat SKU / offline curiosity: bake Whisper into the dylib (~1GB+).
 # Not the daily release path. Pair with `make release-full` for a _full DMG.
-release-codescribe-embedded: ensure-models
+release-codescribe-embedded: dist-preflight ensure-models
 	@echo "Building codescribe-ffi (FAT: Silero + MiniLM + Whisper embedded)..."
-	@CODESCRIBE_EMBED_WHISPER=1 cargo build --release -p codescribe-ffi
+	@CODESCRIBE_EMBED_WHISPER=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 cargo build --release -p codescribe-ffi
 
 # ── SwiftUI app (macos/) via the codescribe-ffi UniFFI bridge ────────────────
 # Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
@@ -100,9 +126,10 @@ app-bindings:
 	@echo "Regenerating UniFFI Swift bindings + Xcode project (PROFILE=$(PROFILE), no xcodebuild)..."
 	@SKIP_XCODEBUILD=1 ./scripts/build-app.sh $(PROFILE)
 
-release-qube:
+release-qube: dist-preflight
 	@echo "Building qube-* (release, runtime model resolve from HF cache)..."
-	@CODESCRIBE_NO_EMBED=1 cargo build --release --target-dir target-noembed --bin qube-daemon --bin qube-report
+	@CODESCRIBE_NO_EMBED=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 cargo build --release --target-dir target-noembed --bin qube-daemon --bin qube-report
 
 release: release-codescribe release-qube
 
@@ -1038,19 +1065,64 @@ help:
 # Release & Distribution
 # ============================================================================
 
-# Daily slim DMG (public default): Silero + MiniLM, Whisper NOT embedded.
-dmg:
-	@./scripts/build-dmg.sh
+# Distribution preflight — fail in a second, not two minutes into cargo.
+# Every release-profile build needs the production licence key; core/build.rs
+# panics without it, but only after compiling codescribe-core.
+dist-preflight:
+	@key='$(CODESCRIBE_DIST_LICENSE_KEY)'; \
+	if [ $${#key} -ne 64 ] || [ -n "$$(printf '%s' "$$key" | tr -d '0-9a-fA-F')" ]; then \
+		echo "ERROR: distribution builds need the production licence verification key (64 hex chars)."; \
+		echo "  looked in: \$$CODESCRIBE_LICENSE_PUBLIC_KEY_HEX, then $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)"; \
+		echo "  fix either:"; \
+		echo "    printf %s <64-hex> > $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)"; \
+		echo "    export CODESCRIBE_LICENSE_PUBLIC_KEY_HEX=<64-hex>"; \
+		echo "  note: 'VAR=x make a && make b' scopes VAR to 'make a' only — use export,"; \
+		echo "        or the second command builds without the key and dies inside build.rs."; \
+		exit 1; \
+	fi
+	@echo "dist preflight: licence key OK (64 hex from $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),environment,$(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)))"
 
-dmg-signed:
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign
+# Signed artifacts additionally need a Developer ID (not the Apple Development
+# identity `make install-app` prefers for TCC stability).
+dist-preflight-signed: dist-preflight
+	@ident='$(CODESCRIBE_DIST_CODESIGN_IDENTITY)'; \
+	if [ -z "$$ident" ] || [ "$$ident" = "-" ]; then \
+		echo "ERROR: signed distribution needs a 'Developer ID Application' identity."; \
+		echo "  check with: security find-identity -v -p codesigning"; \
+		echo "  override with: make ... CODESCRIBE_DIST_CODESIGN_IDENTITY='Developer ID Application: ...'"; \
+		exit 1; \
+	fi
+	@echo "dist preflight: signing identity OK ($(CODESCRIBE_DIST_CODESIGN_IDENTITY))"
+	@sk='$(CODESCRIBE_DIST_SPARKLE_KEY)'; \
+	if [ -z "$$sk" ] || [ "$$(printf '%s' "$$sk" | base64 -d 2>/dev/null | wc -c | tr -d ' ')" != "32" ]; then \
+		echo "ERROR: signed distribution needs the Sparkle update public key (Ed25519, base64)."; \
+		echo "  looked in: \$$SPARKLE_ED_PUBLIC_KEY, then $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)"; \
+		echo "  without it the bundle ships an empty SUPublicEDKey and"; \
+		echo "  scripts/verify-dmg-payload.sh refuses the DMG *after* notarisation —"; \
+		echo "  the most expensive place in the pipeline to discover a missing input."; \
+		exit 1; \
+	fi
+	@echo "dist preflight: Sparkle public key OK (32-byte Ed25519 from $(if $(SPARKLE_ED_PUBLIC_KEY),environment,$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)))"
+
+# Daily slim DMG (public default): Silero + MiniLM, Whisper NOT embedded.
+dmg: dist-preflight
+	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" ./scripts/build-dmg.sh
+
+dmg-signed: dist-preflight-signed
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
+	 ./scripts/build-dmg.sh --sign
 
 # Daily signed+notarized public artifact (same as make dmg-signed + notarize).
 # Does NOT download/embed Whisper. Apple STT works out of the box; Whisper is
 # opt-in via Settings → Dictation download (or make download-model).
 # Ends with the fail-closed payload gate (signed ≠ complete; see 0.13.2 MiniLM miss).
-release-standard:
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize
+release-standard: dist-preflight-signed
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
+	 ./scripts/build-dmg.sh --sign --notarize
 	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
 	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
 	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}.dmg 2>/dev/null | head -1); \
@@ -1062,8 +1134,11 @@ release-standard:
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
 # Ends with the fail-closed payload gate (full = Silero + MiniLM + Whisper).
-release-full: ensure-models
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
+release-full: dist-preflight-signed ensure-models
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
+	 ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
 	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
 	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
 	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}_full.dmg 2>/dev/null | head -1); \
