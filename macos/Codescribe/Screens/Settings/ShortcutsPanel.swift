@@ -366,7 +366,7 @@ struct ShortcutsPanel: View {
                     .font(CSFont.ui(12.5, .semibold))
                     .foregroundStyle(CSColor.textMuted)
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
 
             Spacer(minLength: 0)
 
@@ -383,7 +383,7 @@ struct ShortcutsPanel: View {
                                   : CSColor.surfaceRaised(0.03))
                     )
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .disabled(!model.canSaveBindings)
         }
     }

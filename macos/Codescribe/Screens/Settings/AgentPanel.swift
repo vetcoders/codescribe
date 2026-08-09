@@ -45,25 +45,29 @@ struct AgentPanel: View {
     }
 
     /// The nil route (a deep link that named no page) lands on lanes,
-    /// mirroring the `page` switch below.
+    /// mirroring the `page` switch below. Pages of other sections cannot
+    /// reach this panel, so they clamp to lanes too.
     private var current: SettingsPage {
-        model.page ?? .agentLanes
+        switch model.page {
+        case .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
+            return model.page ?? .agentLanes
+        default:
+            return .agentLanes
+        }
     }
 
     private var headline: String {
         switch current {
-        case .agentLanes: return "Request lanes."
         case .agentWorkspace: return "Workspace roots."
         case .agentStatus: return "Capabilities."
         case .agentTools: return "Tool permissions."
         case .agentMcp: return "MCP servers."
+        default: return "Request lanes."
         }
     }
 
     private var blurb: String {
         switch current {
-        case .agentLanes:
-            return "Provider, endpoint, and model per request path. The resolved runtime truth is below the editors."
         case .agentWorkspace:
             return "Directories the agent may read and write. Everything outside them is out of reach."
         case .agentStatus:
@@ -72,6 +76,8 @@ struct AgentPanel: View {
             return "Allow, ask, or deny — per tool. Deny wins over everything."
         case .agentMcp:
             return "External MCP servers the agent can call, and their transports."
+        default:
+            return "Provider, endpoint, and model per request path. The resolved runtime truth is below the editors."
         }
     }
 
