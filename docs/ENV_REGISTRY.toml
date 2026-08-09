@@ -1546,11 +1546,11 @@ category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
 
 [vars.AGENT_WORKSPACE_ROOTS]
-default = "~/Git"
+default = "~/.codescribe"
 type = "string"
 reload = "restart"
 category = "assistive"
-description = "Colon-separated workspace root directories the agent's list_projects tool scans (one level deep) to resolve a project name to an absolute path. Defaults to ~/Git."
+description = "Colon-separated workspace root directories the agent's list_projects tool scans (recursively, bounded depth, build/hidden dirs pruned) to resolve a project name to an absolute path. Defaults to ~/.codescribe — always exists, holds no checkouts, imposes no directory convention."
 
 [vars.ASSISTIVE_CONTEXT_PROMPT_MAX_CHARS]
 default = "5000"

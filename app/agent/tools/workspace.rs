@@ -3,9 +3,10 @@
 //!
 //! The agent must resolve a project *name* ("vista") to an absolute path before
 //! calling path-hungry tools (prview / loctree / vc_*). Without this it guesses
-//! (`~/vista`, `~/dev/vista`, …) and misses the operator's convention that repos
-//! live under `~/Git`. This tool enumerates the git checkouts under the
-//! configured workspace roots so the model never has to guess.
+//! (`~/vista`, `~/dev/vista`, …) and misses wherever the operator actually keeps
+//! repos. This tool enumerates the git checkouts under the configured workspace
+//! roots — recursively, so a root like `/Volumes/workspace` surfaces checkouts
+//! nested under org/suite directories too — and the model never has to guess.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -16,8 +17,19 @@ use codescribe_core::config::Config;
 use serde_json::{Value, json};
 
 /// Upper bound on returned repositories — keeps the tool result bounded even if a
-/// root holds hundreds of checkouts.
+/// root holds hundreds of checkouts. Hitting it sets `truncated` in the payload
+/// so the cap is never silent.
 const MAX_PROJECTS: usize = 100;
+
+/// How many levels below each root the scanner descends. Depth 1 is a root's
+/// direct children; 4 reaches org/suite/repo nesting like
+/// `workspace/org/suite/checkout` without turning the scan into a disk walk.
+const MAX_SCAN_DEPTH: usize = 4;
+
+/// Directory names never descended into: build outputs and dependency caches
+/// that cannot hold the operator's own checkouts but multiply readdir cost.
+/// Dot-prefixed directories are pruned by the same check that skips `.git`.
+const SCAN_PRUNE: &[&str] = &["node_modules", "target", "vendor", "Pods", "DerivedData"];
 
 /// Register `list_projects` as a read-only native tool.
 ///
@@ -64,13 +76,14 @@ async fn handle_list_projects(_input: Value) -> Vec<ToolResultContent> {
 /// Build the JSON the model sees. Echoes the roots alongside the projects so an
 /// empty result reads as "these roots held nothing" rather than as a failure.
 fn list_projects_payload(roots: &[PathBuf]) -> Value {
-    let projects = scan_projects(roots, MAX_PROJECTS);
+    let (projects, truncated) = scan_projects(roots, MAX_PROJECTS);
     json!({
         "roots": roots
             .iter()
             .map(|root| root.display().to_string())
             .collect::<Vec<_>>(),
         "count": projects.len(),
+        "truncated": truncated,
         "projects": projects
             .iter()
             .map(|project| json!({ "name": project.name, "path": project.path }))
@@ -112,46 +125,59 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Scan each root one level deep and collect directories that are git checkouts
-/// (contain a `.git` entry — dir OR file, to catch worktrees/submodules). No
-/// recursion; bounded by `limit`; duplicate paths across roots are de-duped.
-fn scan_projects(roots: &[PathBuf], limit: usize) -> Vec<Project> {
+/// Scan each root recursively (bounded by [`MAX_SCAN_DEPTH`]) and collect
+/// directories that are git checkouts (contain a `.git` entry — dir OR file, to
+/// catch worktrees/submodules). Breadth-first with sorted children, so shallow
+/// checkouts come first and the order is deterministic. Checkouts are also
+/// descended into — suites keep nested repos. Hidden and build/dependency
+/// directories ([`SCAN_PRUNE`]) are skipped; duplicate paths across overlapping
+/// roots are de-duped. The bool is true when `limit` cut the scan short.
+fn scan_projects(roots: &[PathBuf], limit: usize) -> (Vec<Project>, bool) {
     let mut projects = Vec::new();
     let mut seen = HashSet::new();
+    let mut queue: std::collections::VecDeque<(PathBuf, usize)> =
+        roots.iter().map(|root| (root.clone(), 0usize)).collect();
 
-    for root in roots {
-        let Ok(entries) = fs::read_dir(root) else {
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(entries) = fs::read_dir(&dir) else {
             // Missing / unreadable root is not an error — just contributes nothing.
             continue;
         };
 
-        let mut dirs: Vec<PathBuf> = entries
+        let mut children: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| path.is_dir())
             .collect();
-        dirs.sort();
+        children.sort();
 
-        for dir in dirs {
-            if projects.len() >= limit {
-                return projects;
-            }
-            if !is_git_checkout(&dir) {
-                continue;
-            }
-            let path = dir.display().to_string();
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            let name = dir
+        for child in children {
+            let name = child
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.clone());
-            projects.push(Project { name, path });
+                .unwrap_or_default();
+            if name.starts_with('.') || SCAN_PRUNE.contains(&name.as_str()) {
+                continue;
+            }
+            if is_git_checkout(&child) {
+                if projects.len() >= limit {
+                    return (projects, true);
+                }
+                let path = child.display().to_string();
+                if seen.insert(path.clone()) {
+                    projects.push(Project {
+                        name: name.clone(),
+                        path,
+                    });
+                }
+            }
+            if depth + 1 < MAX_SCAN_DEPTH {
+                queue.push_back((child, depth + 1));
+            }
         }
     }
 
-    projects
+    (projects, false)
 }
 
 /// A directory is a git checkout when it holds a `.git` entry (a directory for a
@@ -183,9 +209,11 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
-    /// One-level scan: `.git` dir/file count; nested checkouts and plain dirs skip.
+    /// Recursive scan: `.git` dir/file both count; nested checkouts are found
+    /// (org/suite layouts); prune list and dot-dirs are never descended into;
+    /// nothing below `MAX_SCAN_DEPTH` is reached.
     #[test]
-    fn scan_finds_only_git_checkouts_one_level_deep() {
+    fn scan_finds_git_checkouts_recursively_with_prune_and_depth_cap() {
         let tmp = TempDir::new().expect("tempdir");
         let root = tmp.path();
 
@@ -194,14 +222,30 @@ mod tests {
         // repo B: worktree/submodule style (.git file)
         fs::create_dir_all(root.join("beta")).unwrap();
         fs::write(root.join("beta").join(".git"), "gitdir: /elsewhere").unwrap();
-        // plain dir without .git → skipped
-        fs::create_dir_all(root.join("plain")).unwrap();
-        // repo nested TWO levels deep → must NOT be found (no recursion)
+        // plain dir without .git → not listed, but descended into:
+        // org/suite nesting two levels down IS found now.
         fs::create_dir_all(root.join("plain").join("nested").join(".git")).unwrap();
+        // checkout nested inside another checkout (suite keeps nested repos)
+        fs::create_dir_all(root.join("alpha").join("inner").join(".git")).unwrap();
+        // pruned surfaces: build/dependency dirs and dot-dirs stay invisible
+        fs::create_dir_all(root.join("node_modules").join("dep").join(".git")).unwrap();
+        fs::create_dir_all(root.join(".hidden").join("repo").join(".git")).unwrap();
+        // below the depth cap (depth 5) → unreachable
+        fs::create_dir_all(
+            root.join("a1")
+                .join("a2")
+                .join("a3")
+                .join("a4")
+                .join("a5")
+                .join(".git"),
+        )
+        .unwrap();
 
-        let projects = scan_projects(&[root.to_path_buf()], 100);
+        let (projects, truncated) = scan_projects(&[root.to_path_buf()], 100);
         let names: Vec<&str> = projects.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, vec!["alpha", "beta"]);
+        // BFS: depth-1 checkouts first, then deeper ones in sorted order.
+        assert_eq!(names, vec!["alpha", "beta", "inner", "nested"]);
+        assert!(!truncated);
         assert!(
             projects
                 .iter()
@@ -209,23 +253,26 @@ mod tests {
         );
     }
 
-    /// `limit` caps returned projects even when more checkouts exist under the root.
+    /// `limit` caps returned projects AND reports the cut — never a silent cap.
     #[test]
-    fn scan_respects_limit() {
+    fn scan_respects_limit_and_reports_truncation() {
         let tmp = TempDir::new().expect("tempdir");
         let root = tmp.path();
         for i in 0..5 {
             fs::create_dir_all(root.join(format!("repo{i}")).join(".git")).unwrap();
         }
-        let projects = scan_projects(&[root.to_path_buf()], 3);
+        let (projects, truncated) = scan_projects(&[root.to_path_buf()], 3);
         assert_eq!(projects.len(), 3);
+        assert!(truncated);
     }
 
     /// Missing/unreadable roots contribute nothing — not an error path.
     #[test]
     fn scan_skips_missing_root_without_error() {
-        let projects = scan_projects(&[PathBuf::from("/nonexistent/xyzzy-workspace")], 100);
+        let (projects, truncated) =
+            scan_projects(&[PathBuf::from("/nonexistent/xyzzy-workspace")], 100);
         assert!(projects.is_empty());
+        assert!(!truncated);
     }
 
     /// Overlapping roots de-dupe by absolute path so a checkout appears once.
@@ -236,7 +283,7 @@ mod tests {
         fs::create_dir_all(root.join("solo").join(".git")).unwrap();
 
         // Same root listed twice: the checkout must appear once.
-        let projects = scan_projects(&[root.to_path_buf(), root.to_path_buf()], 100);
+        let (projects, _) = scan_projects(&[root.to_path_buf(), root.to_path_buf()], 100);
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "solo");
     }
@@ -287,6 +334,7 @@ mod tests {
         let expected = json!({
             "roots": [root_a.display().to_string(), root_b.display().to_string()],
             "count": 3,
+            "truncated": false,
             "projects": [
                 { "name": "alpha", "path": root_a.join("alpha").display().to_string() },
                 { "name": "gamma", "path": root_a.join("gamma").display().to_string() },

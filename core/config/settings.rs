@@ -66,7 +66,13 @@ impl FormattingPolicy {
 }
 
 /// Built-in workspace root used only when no user-managed roots exist.
-pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/Git";
+///
+/// Deliberately the app's own data dir: it always exists (green "exists" dot
+/// from first launch) and holds no git checkouts, so a fresh install lists
+/// nothing instead of inventing a directory convention. The previous `~/Git`
+/// default was an accidental import from another operator's layout, not a
+/// chosen contract (removed 2026-08-09).
+pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/.codescribe";
 
 /// Trim workspace-root entries and discard empty rows while preserving the
 /// operator's order. This is the canonical normalization boundary shared by
@@ -233,7 +239,7 @@ pub struct UserSettings {
     /// project name to an absolute path. The Settings UI sends the
     /// `AGENT_WORKSPACE_ROOTS` wire key, but this field in durable
     /// `settings.json` is the source of truth. `None`/absent means the built-in
-    /// default (`~/Git`).
+    /// default (`~/.codescribe` — exists everywhere, holds no checkouts).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_workspace_roots: Option<Vec<String>>,
 

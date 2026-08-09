@@ -121,9 +121,10 @@ pub struct CsSettings {
     pub layered_transcription: Option<String>,
     /// Workspace root directories the agent scans (`list_projects` tool) to
     /// resolve project names to paths (`AGENT_WORKSPACE_ROOTS`, colon-joined on
-    /// the wire). Effective value: never empty here — defaults to `["~/Git"]` so
-    /// the Settings UI always shows the root the tool will actually scan. Written
-    /// back via `update_config` with the same key (env-managed, NOT promoted).
+    /// the wire). Effective value: never empty here — defaults to
+    /// `["~/.codescribe"]` so the Settings UI always shows the root the tool
+    /// will actually scan. Written back via `update_config` with the same key
+    /// (env-managed, NOT promoted).
     pub agent_workspace_roots: Vec<String>,
     pub buffer_delay_ms: Option<u64>,
     pub typing_cps: Option<f32>,
@@ -2593,8 +2594,8 @@ mod settings_snapshot_tests {
 
     /// Workspace roots must round-trip through durable settings.json and be
     /// rebuilt identically by a brand-new bridge handle. The failure this pins:
-    /// a fresh instance falling back to the `["~/Git"]` default and quietly
-    /// discarding the operator's configured roots.
+    /// a fresh instance falling back to the `["~/.codescribe"]` default and
+    /// quietly discarding the operator's configured roots.
     #[test]
     #[serial]
     fn workspace_roots_persist_across_fresh_config_instances() {
@@ -2629,7 +2630,7 @@ mod settings_snapshot_tests {
         }
 
         // A new bridge object has no in-memory carryover; it must reconstruct
-        // the exact list from settings.json and must not replace it with ~/Git.
+        // the exact list from settings.json, never the built-in default.
         let fresh = CodescribeConfig::new().load_settings();
         assert_eq!(fresh.agent_workspace_roots, expected);
         let second_fresh = CodescribeConfig::new().load_settings();
