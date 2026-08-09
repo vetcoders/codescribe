@@ -33,6 +33,15 @@ struct AgentChatView: View {
                     ideal: sidebarMode.idealWidth,
                     max: sidebarMode.maximumWidth
                 )
+                // Identity keyed on the mode. `navigationSplitViewColumnWidth`
+                // is read when the column is built; changing its values on an
+                // existing column left the divider where the user (or a restored
+                // autosave) had put it, so "Collapse sidebar" kept a 200-500pt
+                // band and merely re-centred the strip inside it — the collapsed
+                // rail the operator reported as dots floating in a void. A new
+                // identity rebuilds the column so the compact 56pt clamp is
+                // applied instead of inherited.
+                .id(sidebarMode)
                 .toolbar(removing: .sidebarToggle)
         } detail: {
             ThreadDetail(

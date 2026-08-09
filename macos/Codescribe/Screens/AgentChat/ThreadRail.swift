@@ -60,30 +60,42 @@ struct ThreadRail: View {
             ScrollView {
                 LazyVStack(spacing: 6) {
                     ForEach(filteredThreads) { thread in
+                        let title = ThreadRowTitle.displayTitle(for: thread)
+                        let isActive = thread.id == store.selectedThreadID
                         Button {
                             store.select(thread.id)
                         } label: {
-                            Circle()
-                                .fill(
-                                    thread.id == store.selectedThreadID
-                                        ? CSColor.chromeAccent
-                                        : CSColor.textFaintAlt.opacity(0.5)
+                            Text(ThreadRowTitle.compactMonogram(for: thread))
+                                .font(CSFont.ui(11, .semibold))
+                                .foregroundStyle(
+                                    isActive ? CSColor.chromeAccent : CSColor.textMuted
                                 )
-                                .frame(width: 7, height: 7)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
                                 .frame(width: 28, height: 28)
                                 .background(
-                                    thread.id == store.selectedThreadID
+                                    isActive
                                         ? CSColor.chromeAccent.opacity(0.12)
-                                        : .clear
+                                        : CSColor.surfaceRaised(0.03)
                                 )
                                 .clipShape(
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(
+                                            isActive
+                                                ? CSColor.chromeAccent.opacity(0.45)
+                                                : CSColor.hairline(0.08),
+                                            lineWidth: 1
+                                        )
+                                )
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help(ThreadRowTitle.displayTitle(for: thread))
-                        .accessibilityLabel(ThreadRowTitle.displayTitle(for: thread))
+                        .help(title)
+                        .accessibilityLabel(title)
+                        .accessibilityAddTraits(isActive ? [.isSelected] : [])
                     }
                 }
                 .padding(.vertical, 4)
@@ -293,6 +305,28 @@ enum ThreadRowTitle {
             now: now,
             calendar: calendar
         )
+    }
+
+    /// Identity for the collapsed rail. The strip used to draw one anonymous
+    /// 7pt dot per thread — a vertical row of identical dots that told the user
+    /// nothing and forced a hover-and-wait tooltip to pick a conversation
+    /// (UI_DIVERGENCE_AUDIT pkt 2). Two initials from the display title carry
+    /// enough identity at 28pt; the digit/letter scan keeps titles that open
+    /// with punctuation or an emoji from yielding a blank tile.
+    static func compactMonogram(
+        for thread: ChatThread,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        let title = displayTitle(for: thread, now: now, calendar: calendar)
+        let words = title
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .prefix(2)
+        let initials = words.compactMap { $0.first }.map(String.init).joined()
+        // `displayTitle` always resolves to a string carrying a letter or digit
+        // (ThreadTitlePolicy rejects the rest and the date fallback never is),
+        // so the dot is a guard against a future title source, not a live case.
+        return initials.isEmpty ? "•" : initials.uppercased()
     }
 }
 
