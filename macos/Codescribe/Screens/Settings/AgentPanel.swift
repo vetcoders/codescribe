@@ -14,9 +14,14 @@ struct AgentPanel: View {
 
     @ObservedObject var model: SettingsViewModel
 
+    /// One page at a time. Five independent subsystems (lanes, roots,
+    /// capabilities, tool permissions, MCP servers — the last two alone are
+    /// ~800 lines) used to stack into a single scroll where finding anything
+    /// meant wheeling past four subsystems you did not come for. The rail's
+    /// tree addresses each directly; this view renders only what was asked for.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            EyebrowLabel(text: "Settings · \(SettingsSection.agent.title)")
+            EyebrowLabel(text: "Settings · \(SettingsSection.agent.title)\(pageEyebrow)")
             Text("How your agent works.")
                 .font(CSFont.ui(26, .bold))
                 .tracking(-0.5)
@@ -29,28 +34,42 @@ struct AgentPanel: View {
                 .foregroundStyle(CSColor.textMutedAlt)
                 .padding(.top, 8)
 
+            // Resolved LLM truth stays on every page: it is the answer to "which
+            // provider am I actually talking to", and it was the one block worth
+            // re-reading regardless of which subsystem you came to change.
             runtimeRows
                 .padding(.top, 20)
 
-            SettingsSectionLabel("LLM lanes")
-                .padding(.top, 22)
-            LLMLanesSection(model: model)
-                .padding(.top, 11)
-
-            WorkspaceRootsSection(model: model)
-                .padding(.top, 30)
-
-            AgentStatusSection(model: model)
-                .padding(.top, 30)
-
-            ToolPermissionsSection(model: model)
-                .padding(.top, 30)
-
-            MCPServersSection(model: model)
-                .padding(.top, 26)
+            page
+                .padding(.top, 24)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
+    }
+
+    private var pageEyebrow: String {
+        model.page.map { " · \($0.title)" } ?? ""
+    }
+
+    @ViewBuilder
+    private var page: some View {
+        switch model.page {
+        case .agentWorkspace:
+            WorkspaceRootsSection(model: model)
+        case .agentStatus:
+            AgentStatusSection(model: model)
+        case .agentTools:
+            ToolPermissionsSection(model: model)
+        case .agentMcp:
+            MCPServersSection(model: model)
+        default:
+            // `.agentLanes` and the nil route (deep link that named no page).
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsSectionLabel("LLM lanes")
+                LLMLanesSection(model: model)
+                    .padding(.top, 11)
+            }
+        }
     }
 
     // MARK: - Resolved LLM truth (read-only)

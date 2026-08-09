@@ -290,6 +290,104 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
+/// A page inside a section. Long panels (Agent stacks five independent
+/// subsystems; Dictation grew four hand-rolled collapsibles) become one page per
+/// subsystem instead of one endless scroll.
+///
+/// Pages live in the SIDEBAR TREE rather than in tabs on purpose: a tab is
+/// invisible to the settings search and to deep links, so "mcp" or a health
+/// footer pointing at a broken lane could never land on it. As tree children
+/// they are addressable by exactly the same mechanisms as a top-level section.
+enum SettingsPage: String, CaseIterable, Identifiable {
+    // Agent
+    case agentLanes
+    case agentWorkspace
+    case agentStatus
+    case agentTools
+    case agentMcp
+
+    var id: String { rawValue }
+
+    var section: SettingsSection {
+        switch self {
+        case .agentLanes, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
+            return .agent
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .agentLanes: return "LLM lanes"
+        case .agentWorkspace: return "Workspace roots"
+        case .agentStatus: return "Capabilities"
+        case .agentTools: return "Tool permissions"
+        case .agentMcp: return "MCP servers"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .agentLanes: return "arrow.triangle.branch"
+        case .agentWorkspace: return "folder"
+        case .agentStatus: return "checklist"
+        case .agentTools: return "lock.shield"
+        case .agentMcp: return "server.rack"
+        }
+    }
+
+    var searchKeywords: [String] {
+        switch self {
+        case .agentLanes: return ["provider", "model", "endpoint", "assistive", "formatting"]
+        case .agentWorkspace: return ["roots", "directory", "repo", "path"]
+        case .agentStatus: return ["capability", "native", "enhanced", "readiness"]
+        case .agentTools: return ["permission", "allow", "ask", "deny", "tool"]
+        case .agentMcp: return ["mcp", "server", "stdio", "transport"]
+        }
+    }
+
+    static func pages(in section: SettingsSection) -> [SettingsPage] {
+        allCases.filter { $0.section == section }
+    }
+
+    /// Pages a query should surface, so search reaches inside a long section
+    /// instead of stopping at its title.
+    static func matching(query: String) -> [SettingsPage] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return allCases }
+        return allCases.filter { page in
+            page.title.lowercased().contains(needle)
+                || page.searchKeywords.contains { $0.contains(needle) }
+        }
+    }
+}
+
+/// One selectable row in the rail: a section, or a page inside it.
+enum SettingsRoute: Hashable, Identifiable {
+    case section(SettingsSection)
+    case page(SettingsPage)
+
+    var id: String {
+        switch self {
+        case .section(let section): return "section:\(section.rawValue)"
+        case .page(let page): return "page:\(page.rawValue)"
+        }
+    }
+
+    var section: SettingsSection {
+        switch self {
+        case .section(let section): return section
+        case .page(let page): return page.section
+        }
+    }
+
+    var page: SettingsPage? {
+        switch self {
+        case .section: return nil
+        case .page(let page): return page
+        }
+    }
+}
+
 /// Sidebar sections. Order is the rail's top-to-bottom order.
 enum SettingsSectionGroup: String, CaseIterable, Identifiable {
     case setup
@@ -708,6 +806,9 @@ enum SettingsQuickStartAction: String, CaseIterable {
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var section: SettingsSection = .creator
+    /// Page within `section`, when that section is paginated. Always kept
+    /// consistent with `section` by the `select` overloads — never written raw.
+    @Published private(set) var page: SettingsPage?
 
     /// Dictation seam for the "Open overlay" quick-start card. Defaulted to the
     /// live tray toggle but only dereferenced on click, so unit tests can inject
@@ -1181,12 +1282,35 @@ final class SettingsViewModel: ObservableObject {
     func select(_ target: SettingsSection) {
         guard target.availability == .available else { return }
         section = target
+        // Landing on a section shows its first page; sections without pages keep
+        // page == nil and render whole.
+        page = SettingsPage.pages(in: target).first
         if target == .agent {
             refreshAssistiveModelDiscovery()
         }
         if target == .engine {
             refreshServingStatus()
         }
+    }
+
+    /// Select a specific page. Routes through `select` so the section's refresh
+    /// side effects fire exactly once regardless of which row the user clicked.
+    func select(_ target: SettingsPage) {
+        select(target.section)
+        page = target
+    }
+
+    func select(_ route: SettingsRoute) {
+        switch route {
+        case .section(let section): select(section)
+        case .page(let page): select(page)
+        }
+    }
+
+    /// The rail row that should read as selected for the current state.
+    var route: SettingsRoute {
+        if let page { return .page(page) }
+        return .section(section)
     }
 
     // MARK: - Reset app data (recoverable destructive action)
