@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::config::keychain::KEYCHAIN_ACCOUNTS;
 use crate::llm::lane_truth;
-use crate::llm::provider::{LlmMode, ProviderKind};
+use crate::llm::provider::{ALL_PROVIDERS, LlmMode, ProviderKind, WireFamily};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -94,17 +94,36 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         }
     };
 
-    match account {
+    if account == "GITHUB_TOKEN" {
+        return probe_github_token(&client, account, &api_key);
+    }
+
+    // The lane accounts belong to the default provider; every other account is
+    // some provider's own key, resolved through the registry so a new vendor
+    // gets a real probe instead of "unsupported".
+    let provider = match account {
         "LLM_API_KEY" | "LLM_FORMATTING_API_KEY" | "LLM_ASSISTIVE_API_KEY" => {
-            probe_openai_key(&client, &config, account, &api_key)
+            Some(ProviderKind::default())
         }
-        "LLM_ANTHROPIC_API_KEY" => probe_anthropic_key(&client, &config, account, &api_key),
-        "GITHUB_TOKEN" => probe_github_token(&client, account, &api_key),
-        _ => ApiKeyLivenessResult::new(
+        _ => ALL_PROVIDERS
+            .into_iter()
+            .find(|kind| kind.api_key_env_key() == account),
+    };
+    let Some(provider) = provider else {
+        return ApiKeyLivenessResult::new(
             account,
             ApiKeyLivenessStatus::Unsupported,
             "no liveness probe is available for this key",
-        ),
+        );
+    };
+
+    // Probe shape follows the protocol, not the vendor: xAI answers the same
+    // Responses ping as OpenAI.
+    match provider.wire_family() {
+        WireFamily::OpenAiResponses => {
+            probe_responses_key(&client, &config, provider, account, &api_key)
+        }
+        WireFamily::AnthropicMessages => probe_anthropic_key(&client, &config, account, &api_key),
     }
 }
 
@@ -141,14 +160,27 @@ pub fn classify_probe_response(status: StatusCode, body: &str) -> ApiKeyLiveness
     ApiKeyLivenessStatus::Network
 }
 
-fn probe_openai_key(
+fn probe_responses_key(
     client: &Client,
     config: &Config,
+    provider: ProviderKind,
     account: &str,
     api_key: &str,
 ) -> ApiKeyLivenessResult {
-    let endpoint = lane_truth::endpoint_for_account(config, account);
-    let model = lane_truth::model_for_account(config, account);
+    // The three lane accounts keep their per-account endpoint/model resolution
+    // (they can point at a self-hosted server); a vendor's own key is probed
+    // against that vendor's endpoint and model.
+    let (endpoint, model) = if provider.owns_generic_lane_config() {
+        (
+            lane_truth::endpoint_for_account(config, account),
+            lane_truth::model_for_account(config, account),
+        )
+    } else {
+        (
+            lane_truth::provider_endpoint(LlmMode::Assistive, provider, config),
+            lane_truth::model_for_provider(LlmMode::Assistive, provider, config),
+        )
+    };
     let request = json!({
         "model": model,
         "input": [{
@@ -297,9 +329,10 @@ mod tests {
             .connect_timeout(PROBE_TIMEOUT)
             .build()
             .expect("build probe client");
-        let result = probe_openai_key(
+        let result = probe_responses_key(
             &client,
             &Config::default(),
+            ProviderKind::OpenAiResponses,
             "LLM_ASSISTIVE_API_KEY",
             "test-key",
         );

@@ -17,7 +17,7 @@ use crate::audio::load_audio_file;
 use crate::client;
 use crate::config::Config;
 use crate::llm::lane_truth;
-use crate::llm::provider::{LlmMode, ProviderKind};
+use crate::llm::provider::LlmMode;
 use crate::pipeline::contracts::RawTranscript;
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
@@ -1433,13 +1433,11 @@ fn snapshot_environment(
 ) -> ReportEnvironment {
     let config = Config::load();
     let (formatting_provider, formatting_model) = lane_truth::formatting_identity(&config);
-    let formatting_endpoint = lane_truth::endpoint(LlmMode::Formatting, &config);
-    let formatting_endpoint = match formatting_provider {
-        ProviderKind::OpenAiResponses => formatting_endpoint,
-        ProviderKind::AnthropicMessages => {
-            lane_truth::normalize_anthropic_messages_endpoint(&formatting_endpoint)
-        }
-    };
+    // Ask the registry for the provider's own endpoint. The previous shape took
+    // the OpenAI lane endpoint and re-pathed it, which reported an OpenAI host
+    // carrying an Anthropic path whenever the formatting lane was not OpenAI.
+    let formatting_endpoint =
+        lane_truth::provider_endpoint(LlmMode::Formatting, formatting_provider, &config);
     ReportEnvironment {
         stt_endpoint: config.stt_endpoint.clone(),
         stt_api_key_present: config

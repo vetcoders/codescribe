@@ -133,6 +133,13 @@ pub struct UserSettings {
     /// `CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID` is the dev-only fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_oauth_client_id: Option<String>,
+    /// Same contract as `openai_oauth_client_id`, for xAI account login. Unlike
+    /// the other two, xAI publishes a desktop client id, so leaving this unset
+    /// still yields a working sign-in; setting it overrides that default with
+    /// the operator's own registration. Env `CODESCRIBE_XAI_OAUTH_CLIENT_ID` is
+    /// the dev-only fallback between the two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xai_oauth_client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_zoom: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -465,6 +472,9 @@ struct SystemV2 {
     // Anthropic account-login OAuth client id (non-secret app identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     anthropic_oauth_client_id: Option<String>,
+    // xAI account-login OAuth client id (non-secret app identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    xai_oauth_client_id: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -508,6 +518,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     // in settings.json (NOT the Keychain); env stays the dev fallback.
     "LLM_OPENAI_OAUTH_CLIENT_ID",
     "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
+    "LLM_XAI_OAUTH_CLIENT_ID",
     // Promoted from .env
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
@@ -633,6 +644,7 @@ impl UserSettings {
                 agent_workspace_roots: self.agent_workspace_roots.clone(),
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
                 anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
+                xai_oauth_client_id: self.xai_oauth_client_id.clone(),
             }),
             agent: match (
                 self.agent_permissions.clone(),
@@ -792,6 +804,10 @@ impl UserSettings {
                 .system
                 .as_ref()
                 .and_then(|s| s.anthropic_oauth_client_id.clone()),
+            xai_oauth_client_id: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.xai_oauth_client_id.clone()),
             agent_enter_sends: v2.interaction.as_ref().and_then(|i| i.agent_enter_sends),
             buffer_delay_ms: v2
                 .speech
@@ -1096,6 +1112,11 @@ impl UserSettings {
             "LLM_ANTHROPIC_OAUTH_CLIENT_ID" => {
                 let trimmed = value.trim();
                 self.anthropic_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
+            "LLM_XAI_OAUTH_CLIENT_ID" => {
+                // Empty clears back to xAI's published desktop client id.
+                let trimmed = value.trim();
+                self.xai_oauth_client_id = (!trimmed.is_empty()).then(|| trimmed.to_owned());
             }
             "FORMATTING_LEVEL" => match FormattingPolicy::parse(value) {
                 Ok(policy) => self.formatting_level = Some(policy.as_str().to_string()),

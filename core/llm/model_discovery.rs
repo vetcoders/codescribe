@@ -19,7 +19,7 @@ use tracing::warn;
 
 use crate::config::Config;
 use crate::llm::lane_truth;
-use crate::llm::provider::{LlmMode, ProviderKind};
+use crate::llm::provider::{LlmMode, ProviderKind, WireFamily};
 
 /// 5s client timeout for live /models discovery.
 /// P2-09: short to keep Settings responsive. If provider is slow, we degrade to
@@ -296,11 +296,13 @@ pub fn discover_models(
 
     let fetched = runtime.block_on(async {
         let fetch = async {
-            match provider {
-                ProviderKind::OpenAiResponses => {
-                    fetch_openai_models(&client, &config, &api_key).await
+            // Discovery follows the protocol, not the vendor: every Responses
+            // provider serves the same OpenAI-compatible `/v1/models`.
+            match provider.wire_family() {
+                WireFamily::OpenAiResponses => {
+                    fetch_openai_models(&client, &config, provider, &api_key).await
                 }
-                ProviderKind::AnthropicMessages => fetch_anthropic_models(&client, &api_key).await,
+                WireFamily::AnthropicMessages => fetch_anthropic_models(&client, &api_key).await,
             }
         };
         // `biased` polls the cancel channel first: a pre-fired cancel aborts
@@ -359,10 +361,10 @@ fn commit_fetch_outcome(
 async fn fetch_openai_models(
     client: &Client,
     config: &Config,
+    provider: ProviderKind,
     api_key: &str,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
-    let provider = ProviderKind::OpenAiResponses;
-    let endpoint = lane_truth::endpoint(LlmMode::Assistive, config);
+    let endpoint = lane_truth::provider_endpoint(LlmMode::Assistive, provider, config);
     let endpoint = openai_models_endpoint(&endpoint)?;
 
     let response = client

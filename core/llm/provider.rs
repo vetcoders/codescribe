@@ -37,6 +37,8 @@ pub enum ProviderKind {
     OpenAiResponses,
     /// Anthropic Messages API (`/v1/messages`).
     AnthropicMessages,
+    /// xAI Grok, served over the OpenAI Responses protocol at `api.x.ai`.
+    XaiResponses,
 }
 
 /// The request/response protocol a provider speaks.
@@ -76,7 +78,35 @@ pub struct ProviderIdentity {
     pub api_key_env_key: &'static str,
     /// Protocol this provider speaks — what request builders branch on.
     pub wire_family: WireFamily,
+    /// Model-id prefixes this vendor serves. A configured model matching another
+    /// row's prefix is refused for this provider, because sending it would 404
+    /// on the wire and read to the user as a broken key.
+    ///
+    /// Empty ⇒ this is the **catch-all** row: it accepts every id no other row
+    /// claims. OpenAI holds that position, which is why a future `o5-preview`
+    /// works without this table learning about it.
+    pub model_prefixes: &'static [&'static str],
+    /// Env override for this provider's wire endpoint.
+    pub endpoint_env: &'static str,
+    /// Endpoint used when neither the env override nor — for the default
+    /// provider only — the generic lane settings supply one.
+    pub default_endpoint: &'static str,
+    /// Seed model for the formatting lane before live discovery runs.
+    pub formatting_model: &'static str,
+    /// Seed model for the assistive lane before live discovery runs.
+    pub assistive_model: &'static str,
 }
+
+/// Anthropic's own wire defaults. They live beside the row that uses them so a
+/// vendor's endpoint and models are one block to read, not three files.
+const DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
+/// xAI serves the Responses protocol from its OpenAI-compatible base URL.
+const DEFAULT_XAI_RESPONSES_ENDPOINT: &str = "https://api.x.ai/v1/responses";
+/// Current Grok model at the time of this cut. Both lanes share it: it is only
+/// a seed until Settings runs live discovery, and naming one verified id beats
+/// guessing a cheaper one that may already be retired. An operator who wants a
+/// lighter formatting model sets `LLM_FORMATTING_MODEL` after discovery.
+const DEFAULT_XAI_MODEL: &str = "grok-4.5";
 
 const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     kind: ProviderKind::OpenAiResponses,
@@ -85,6 +115,12 @@ const OPENAI_IDENTITY: ProviderIdentity = ProviderIdentity {
     display_name: "OpenAI (Responses)",
     api_key_env_key: "LLM_ASSISTIVE_API_KEY",
     wire_family: WireFamily::OpenAiResponses,
+    // Catch-all row: OpenAI serves every id no other vendor claims.
+    model_prefixes: &[],
+    endpoint_env: "LLM_ASSISTIVE_ENDPOINT",
+    default_endpoint: crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT,
+    formatting_model: crate::config::DEFAULT_FORMATTING_MODEL,
+    assistive_model: crate::config::DEFAULT_ASSISTIVE_MODEL,
 };
 
 const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
@@ -94,12 +130,34 @@ const ANTHROPIC_IDENTITY: ProviderIdentity = ProviderIdentity {
     display_name: "Anthropic (Messages)",
     api_key_env_key: "LLM_ANTHROPIC_API_KEY",
     wire_family: WireFamily::AnthropicMessages,
+    model_prefixes: &["claude"],
+    endpoint_env: "LLM_ANTHROPIC_ENDPOINT",
+    default_endpoint: DEFAULT_ANTHROPIC_MESSAGES_ENDPOINT,
+    formatting_model: "claude-sonnet-4-6",
+    assistive_model: "claude-opus-4-8",
+};
+
+const XAI_IDENTITY: ProviderIdentity = ProviderIdentity {
+    kind: ProviderKind::XaiResponses,
+    canonical: "xai-responses",
+    aliases: &["xai", "grok", "xai_responses"],
+    display_name: "xAI (Grok)",
+    api_key_env_key: "LLM_XAI_API_KEY",
+    // Same protocol as OpenAI: request builders and capability policy reach xAI
+    // through the wire family, so no send path learns the word "xai".
+    wire_family: WireFamily::OpenAiResponses,
+    model_prefixes: &["grok"],
+    endpoint_env: "LLM_XAI_ENDPOINT",
+    default_endpoint: DEFAULT_XAI_RESPONSES_ENDPOINT,
+    formatting_model: DEFAULT_XAI_MODEL,
+    assistive_model: DEFAULT_XAI_MODEL,
 };
 
 /// Every provider identity, in Settings-picker order. One row per vendor —
 /// this array plus the matching `ProviderKind` variant is the whole cost of a
 /// new provider at the identity layer.
-pub const PROVIDER_REGISTRY: [ProviderIdentity; 2] = [OPENAI_IDENTITY, ANTHROPIC_IDENTITY];
+pub const PROVIDER_REGISTRY: [ProviderIdentity; 3] =
+    [OPENAI_IDENTITY, ANTHROPIC_IDENTITY, XAI_IDENTITY];
 
 impl ProviderKind {
     /// This provider's registry row.
@@ -107,6 +165,7 @@ impl ProviderKind {
         match self {
             ProviderKind::OpenAiResponses => &OPENAI_IDENTITY,
             ProviderKind::AnthropicMessages => &ANTHROPIC_IDENTITY,
+            ProviderKind::XaiResponses => &XAI_IDENTITY,
         }
     }
 
@@ -131,6 +190,44 @@ impl ProviderKind {
     /// whenever the question is "what shape does the request take".
     pub const fn wire_family(self) -> WireFamily {
         self.identity().wire_family
+    }
+
+    /// Whether `model` is an id this provider actually serves.
+    ///
+    /// A row that declares prefixes owns exactly those. The catch-all row (no
+    /// prefixes) owns everything the other rows do not claim, so OpenAI keeps
+    /// accepting unreleased ids while still refusing `claude-*` and `grok-*`.
+    pub fn owns_model(self, model: &str) -> bool {
+        let prefixes = self.identity().model_prefixes;
+        if !prefixes.is_empty() {
+            return prefixes.iter().any(|prefix| model.starts_with(prefix));
+        }
+        !PROVIDER_REGISTRY.iter().any(|row| {
+            row.kind != self
+                && row
+                    .model_prefixes
+                    .iter()
+                    .any(|prefix| model.starts_with(prefix))
+        })
+    }
+
+    /// This provider's seed model for `lane`, used until live discovery answers.
+    pub const fn default_model(self, lane: LlmMode) -> &'static str {
+        match lane {
+            LlmMode::Formatting => self.identity().formatting_model,
+            LlmMode::Assistive => self.identity().assistive_model,
+        }
+    }
+
+    /// Whether the un-prefixed lane configuration (`LLM_ENDPOINT`, `LLM_MODEL`,
+    /// `settings.llm_endpoint`, …) describes this provider.
+    ///
+    /// Those keys predate multi-provider support, so they mean the default
+    /// provider and nothing else. This is a guard, not a formality: an operator
+    /// whose `LLM_ENDPOINT` points at `api.openai.com` and who then switches the
+    /// lane to Anthropic must not have Anthropic traffic sent to OpenAI's host.
+    pub fn owns_generic_lane_config(self) -> bool {
+        self == ProviderKind::default()
     }
 }
 
@@ -198,6 +295,7 @@ impl FromStr for AuthMode {
 pub const ALL_PROVIDERS: [ProviderKind; PROVIDER_REGISTRY.len()] = [
     ProviderKind::OpenAiResponses,
     ProviderKind::AnthropicMessages,
+    ProviderKind::XaiResponses,
 ];
 
 impl Default for ProviderKind {
@@ -646,6 +744,81 @@ mod tests {
                 assert_eq!(
                     ProviderKind::from_str(&alias.to_ascii_uppercase()),
                     Ok(row.kind)
+                );
+            }
+        }
+    }
+
+    /// xAI is a registry row, not a fork: it speaks the Responses protocol, so
+    /// every request builder must reach it through [`WireFamily`] and never
+    /// through a vendor name. The spellings are pinned because they are written
+    /// into `settings.json` and env by operators.
+    #[test]
+    fn xai_is_a_registry_row_on_the_responses_wire() {
+        let xai = ProviderKind::XaiResponses;
+        assert_eq!(xai.as_str(), "xai-responses");
+        assert_eq!(ProviderKind::from_str("xai"), Ok(xai));
+        assert_eq!(ProviderKind::from_str("grok"), Ok(xai));
+        assert_eq!(xai.wire_family(), WireFamily::OpenAiResponses);
+        assert_eq!(xai.api_key_env_key(), "LLM_XAI_API_KEY");
+        assert_eq!(
+            xai.identity().default_endpoint,
+            "https://api.x.ai/v1/responses"
+        );
+        // Sharing the Responses wire must also hand xAI the Responses policy —
+        // chaining via `previous_response_id`, no Anthropic refusal branch.
+        let policy = capability_policy(xai, "grok-4.5");
+        assert!(policy.previous_response_id);
+        assert!(!policy.refusal_stop_reason);
+    }
+
+    /// A model id belongs to exactly one vendor. Without this, a lane switched
+    /// to xAI would happily send `claude-opus-4-8` to `api.x.ai` (and the other
+    /// way round) — a guaranteed 404 that looks like a broken key.
+    #[test]
+    fn model_prefixes_route_each_model_id_to_its_vendor() {
+        use ProviderKind::*;
+        assert!(AnthropicMessages.owns_model("claude-opus-4-8"));
+        assert!(!AnthropicMessages.owns_model("gpt-5.5"));
+        assert!(!AnthropicMessages.owns_model("grok-4.5"));
+
+        assert!(XaiResponses.owns_model("grok-4.5"));
+        assert!(!XaiResponses.owns_model("gpt-5.5"));
+        assert!(!XaiResponses.owns_model("claude-opus-4-8"));
+
+        // OpenAI is the catch-all row: it keeps accepting every id no other row
+        // claims, so a future `o5-preview` needs no table edit.
+        assert!(OpenAiResponses.owns_model("gpt-5.5"));
+        assert!(OpenAiResponses.owns_model("o5-preview"));
+        assert!(!OpenAiResponses.owns_model("claude-opus-4-8"));
+        assert!(!OpenAiResponses.owns_model("grok-4.5"));
+    }
+
+    /// The un-prefixed `LLM_ENDPOINT` / `LLM_MODEL` keys predate multi-provider
+    /// support, so they describe the default provider and nobody else. Letting a
+    /// second vendor read them would point its traffic at an OpenAI host.
+    #[test]
+    fn generic_lane_config_belongs_to_the_default_provider() {
+        for kind in ALL_PROVIDERS {
+            assert_eq!(
+                kind.owns_generic_lane_config(),
+                kind == ProviderKind::default(),
+                "{kind} disagrees with the default provider about the generic lane keys"
+            );
+        }
+    }
+
+    /// Every row must name a lane default it actually serves — a seed pointing
+    /// at another vendor's model would 404 before live discovery ever runs.
+    #[test]
+    fn every_row_seeds_lane_defaults_it_owns() {
+        for kind in ALL_PROVIDERS {
+            for lane in [LlmMode::Formatting, LlmMode::Assistive] {
+                let seed = kind.default_model(lane);
+                assert!(!seed.is_empty(), "{kind} has no {lane:?} default model");
+                assert!(
+                    kind.owns_model(seed),
+                    "{kind} seeds {lane:?} with '{seed}', which belongs to another vendor"
                 );
             }
         }
