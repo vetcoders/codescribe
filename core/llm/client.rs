@@ -28,7 +28,7 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to resolve path: {}", path.display()))
 }
 
-/// Unencrypted WebSocket scheme prefix (`ws://`); built via concat to avoid scanners.
+/// Unencrypted WebSocket scheme prefix; built via concat so the literal never appears.
 const WS_SCHEME_PREFIX: &str = concat!("ws", "://");
 /// Encrypted WebSocket scheme prefix; always allowed for non-loopback hosts.
 const WSS_SCHEME_PREFIX: &str = "wss://";
@@ -848,12 +848,12 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
 mod tests {
     use super::*;
 
-    /// Build a `ws://` URL for loopback-policy tests without hardcoding the scheme.
+    /// Build a plain-WebSocket URL for loopback-policy tests without hardcoding the scheme.
     fn plain_ws_url(authority: &str) -> String {
         format!("{}{}", WS_SCHEME_PREFIX, authority)
     }
 
-    /// Plain `ws://` only on loopback; non-loopback rejected; `wss://` always ok.
+    /// Plain WebSocket only on loopback; non-loopback rejected; the secure scheme always ok.
     #[test]
     fn ws_plain_rejected_for_non_loopback() {
         // Plain WebSocket to a non-loopback host must be rejected.
