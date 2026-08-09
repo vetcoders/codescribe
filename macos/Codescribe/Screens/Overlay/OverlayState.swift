@@ -896,6 +896,16 @@ final class OverlayState: ObservableObject {
 
     private func captureQualityIfEdited(action: String) {
         guard mode == .formatted else { return }
+        // `commitOverlayQualityRecord` is a free FFI function, not a call on the
+        // injected `engine` — so a mocked engine does NOT stop it, and the XCTest
+        // suite was appending two synthetic corrections ("original delivered
+        // transcript here with user fix") to the OPERATOR'S live
+        // ~/.codescribe/quality/corrections.jsonl on every run. 276 of 501 rows
+        // in the real store came from test runs, and they surfaced in Settings ›
+        // Dictionary as if the user had made them (operator screenshot
+        // 2026-08-09 14:21, three seconds after a suite finished). The keychain
+        // test-host gate landed earlier did not cover this path.
+        guard !QualityCaptureHost.isRunningTests else { return }
         let delivered = deliveredText.trimmingCharacters(in: .whitespacesAndNewlines)
         let edited = formattedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !edited.isEmpty, delivered != edited else { return }
