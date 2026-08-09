@@ -169,7 +169,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO` (HOT RELOADED; default `0.5`) — próg bezpieczeństwa Layer 1: jeśli udział zmienionych znaków wobec zatwierdzonej wypowiedzi przekracza tę wartość, cała łatka jest **odrzucana** zamiast nałożona. Dzięki temu rozbieżna re-transkrypcja nigdy nie nadpisze żywego płótna.
 - `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` (RESTART NEEDED; default `0`) — uzbraja ścieżkę PoC `DictationTranscriber` (W4-A): moduł SpeechAnalyzer stojący za SYSTEMOWYM dyktowaniem, jedyny analizator Apple, którego katalog zawiera pl-PL. Domyślnie **wyłączone** — nieuzbrojony rung nie istnieje, a kolejność backendów jest bajt w bajt taka jak w wersji wydanej. Klucz czytają obie strony (proces Rust i dziedziczący go bridge), więc jeden wpis uzbraja całą ścieżkę. **To nie jest domyślna ścieżka produktu** — przełączenie jest decyzją operatora.
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
-- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
+- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `2700` = 45 min; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu. **Cena przeładowania jest realna:** zmierzone `total 6.79 s`, z czego `5.19 s` to sama dekwantyzacja q8→F32 liczona od nowa (`cargo run --release --example whisper_load_probe`). `0` kupuje zerową latencję kosztem trzymanego RSS
 
 ### Streaming / VAD / buffer
 
@@ -185,7 +185,8 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_DISABLE_EMBEDDINGS` (HOT RELOADED)
-- `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności embedder MiniLM jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
+- `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `2700` = 45 min; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności embedder MiniLM jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu (zmierzony zimny start: ~0,9 s)
+- `CODESCRIBE_EMBEDDER_DEVICE` (RESTART NEEDED; `cpu` wymusza CPU, inaczej Metal z fallbackiem) — przełącznik diagnostyczny. Powstał, bo backend potrafi zwracać wartości nie-liczbowe po cichu: na macOS 27 / Metal ten model dawał 384 wymiary NaN dla każdego wejścia w bf16, a te same wagi w f32 liczyły poprawnie. Ładowanie ma teraz samotest skończoności i samo degraduje proces do CPU, gdy backend zwróci NaN
 
 ### LLM (formatting/assistive)
 
