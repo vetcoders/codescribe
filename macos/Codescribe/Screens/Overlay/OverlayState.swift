@@ -461,18 +461,21 @@ final class OverlayState: ObservableObject {
     }
 
     /// Text shown in the listening body, in the SAME prominent slot that renders
-    /// "listening…"/"starting…" during capture. The transcribing phase wins over any
-    /// committed text so the post-capture state surfaces "transcribing…" here (not the
-    /// raw streaming assembly) — the main-status counterpart to the header pill.
-    /// During final pass we keep the assembled transcript visible (user sees result
-    /// while AI formatting runs) — status/footer communicate the phase.
+    /// "listening…"/"starting…" during capture.
+    ///
+    /// CAPTURED WORDS ALWAYS WIN OVER PHASE. The previous shape let the
+    /// transcribing phase replace the live canvas with "transcribing…", so
+    /// stopping a recording made the user's own words vanish behind a spinner
+    /// until the final text swapped in — the operator dictated the bug report
+    /// into the very canvas that then ate it (2026-08-09 20:13): "wyłączenie
+    /// nagrywania zastępuje tekst … i podmienia dopiero ostateczny tekst a tego
+    /// ma nie być". The overlay doctrine forbids exactly this class: never drop
+    /// visible transcript. Phase placeholders render only on an EMPTY canvas;
+    /// the header pill carries the phase otherwise.
     var listeningDisplay: String {
-        if isFinalPass {
-            // Keep the captured assembly visible during final pass / AI formatting.
-            return !liveText.isEmpty ? liveText : "final pass…"
-        }
-        if transcribing { return "transcribing…" }
         if !liveText.isEmpty { return liveText }
+        if isFinalPass { return "final pass…" }
+        if transcribing { return "transcribing…" }
         return warmingUp ? "starting…" : "listening…"
     }
 
