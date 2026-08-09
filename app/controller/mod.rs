@@ -3834,16 +3834,18 @@ impl RecordingController {
         // the product's only producer of sentences, so a dead key or an offline
         // provider silently downgraded a formatted delivery to a word stream.
         //
-        // RAW is excluded on purpose. `force_raw` (Ctrl hold) and the Toggle-OFF
-        // branch promise the user their literal words; shaping them there would break
-        // that contract — a controller test pins it, and it caught this exact mistake
-        // when the pass was first wired into the shared post-process step.
-        let formatted_text =
-            if force_raw || matches!(output_kind, crate::state::history::TranscriptKind::Raw) {
-                formatted_text
-            } else {
-                codescribe_core::pipeline::light_plus::apply(&formatted_text)
-            };
+        // Only `force_raw` (Ctrl hold) promises literal words — that is the one
+        // lane a controller test pins. The first wiring also exempted every
+        // `TranscriptKind::Raw`, which silently included Toggle-OFF and the
+        // no-key fallbacks — i.e. the entire no-LLM mode, the very place the
+        // deterministic floor exists for. Operator, 2026-08-09: "co z tym
+        // Light+ co przywróciłeś a go w ogóle nie ma?!" — with AI formatting
+        // disabled every delivery was Raw, so Light+ never ran at all.
+        let formatted_text = if force_raw {
+            formatted_text
+        } else {
+            codescribe_core::pipeline::light_plus::apply(&formatted_text)
+        };
 
         let format_secs = format_started.elapsed().as_secs_f64();
         let mode_label =

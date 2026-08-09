@@ -1776,9 +1776,13 @@ async fn assistive_pipeline_emits_same_final_overlay_event_and_preserves_trigger
         .await
         .expect("assistive transcript pipeline");
 
+    // Assistive without a usable AI key rides the deterministic Light+ floor
+    // (capitalized, terminal period) — only Ctrl-hold force_raw is literal
+    // (operator contract update, 2026-08-09). The assertion under test here is
+    // the trigger-context retention below, not text literalness.
     assert_eq!(
         final_transcript_text(&mut events).await,
-        "unified final transcript"
+        "Unified final transcript."
     );
     *controller.assistive_context.write().await = Some(AssistiveContext {
         frontmost_app: Some("Changed".to_string()),
@@ -2357,7 +2361,11 @@ async fn test_toggle_adjudicated_respects_settings_default_without_hotkey_overri
         .expect("settings-default pipeline succeeds");
     let final_text = final_transcript_text(&mut events).await;
 
-    assert_eq!(final_text, "literal transcript");
+    // The toggle route without a usable AI key gets the deterministic Light+
+    // floor (capitalized, terminal period) — only Ctrl-hold force_raw promises
+    // literal words (operator, 2026-08-09: with AI formatting disabled every
+    // delivery was Raw and Light+ never ran at all).
+    assert_eq!(final_text, "Literal transcript.");
     let metadata = latest_truth_metadata(temp_dir.path());
     assert_eq!(
         metadata.mode.as_deref(),
