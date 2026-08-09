@@ -1,5 +1,6 @@
 pub mod contracts;
 pub mod dedup;
+pub mod light_plus;
 pub mod sinks;
 pub mod stream_postprocess;
 pub mod streaming;
