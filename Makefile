@@ -10,7 +10,7 @@
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help \
-        dist-preflight dist-preflight-signed \
+        dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-full release-dmgs notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks
 
@@ -291,6 +291,8 @@ bump-major:
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto (semgrep.yml runs semgrep directly, not this target)
 # gate: verify class=hermetic ci=yes -- the workspace test set + doctests + env registry + this ledger; the command rust.yml runs
+# gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
+# gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity (scripts/canaries.sh --host)
 # gate: verify-dmg class=operator ci=no -- fail-closed payload check against an already-built DMG; release.yml runs the same check via scripts/verify-dmg-payload.sh, not via this target
 # gate: test class=operator ci=no -- workspace tests + #[ignore] real-API tests + STT pipeline; sources ~/.codescribe/.env and opens Console
 # gate: test-quick class=operator ci=no -- workspace tests only, but still sources ~/.codescribe/.env and opens Console
@@ -956,6 +958,24 @@ verify:
 .PHONY: gate-ledger
 gate-ledger:
 	@bash scripts/validate-gates.sh --list
+
+# ── Canaries: claims vs. execution truth ─────────────────────────────────────
+# The env registry says which vars EXIST; the gate ledger says what gates RUN.
+# Neither checks whether a VALUE the repo claims is still the value the code
+# executes — the gap every recent expensive surprise lived in (docs said the
+# idle-unload default was 300 s while the code ran 2700 s; a benchmark measured
+# a hard-coded model path; a release died on its LAST gate over a key with no
+# local source). scripts/canaries.sh is the catalog: every row names the
+# incident it was born from. `--list` prints the catalog without running it.
+verify-canaries:
+	@bash scripts/canaries.sh
+
+smoke-canaries:
+	@bash scripts/canaries.sh --host
+
+.PHONY: canary-catalog
+canary-catalog:
+	@bash scripts/canaries.sh --list
 
 semgrep:
 	@semgrep scan --config auto --error --quiet .
