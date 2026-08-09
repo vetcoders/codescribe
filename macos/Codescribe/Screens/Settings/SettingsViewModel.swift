@@ -229,6 +229,82 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     }
 
     var isInteractive: Bool { availability == .available }
+
+    /// Sidebar grouping. A flat ten-item list forces the user to read every row;
+    /// native sidebars carry `Section` headers for free, so the rail states what
+    /// each area is FOR instead of relying on the reader's memory.
+    var group: SettingsSectionGroup {
+        switch self {
+        case .creator, .shortcuts, .audio: return .setup
+        case .keys, .agent, .prompts, .engine, .voiceLab: return .intelligence
+        case .license, .user: return .account
+        }
+    }
+
+    /// SF Symbol for the sidebar row. System symbols follow the user's theme,
+    /// accent and accessibility sizes; the previous hand-drawn 7pt dots did not.
+    var symbol: String {
+        switch self {
+        case .creator: return "wand.and.stars"
+        case .shortcuts: return "keyboard"
+        case .keys: return "key.horizontal"
+        case .agent: return "cpu"
+        case .prompts: return "text.bubble"
+        case .engine: return "waveform"
+        case .audio: return "mic"
+        case .voiceLab: return "character.book.closed"
+        case .license: return "checkmark.seal"
+        case .user: return "person.crop.circle"
+        }
+    }
+
+    /// Extra terms the settings search matches beyond the visible title, so the
+    /// user can look for what a panel DOES ("api key", "mikrofon") instead of
+    /// having to guess the tab name.
+    var searchKeywords: [String] {
+        switch self {
+        case .creator: return ["setup", "onboarding", "permissions", "quick start", "language"]
+        case .shortcuts: return ["hotkey", "keyboard", "shortcut", "trigger", "hold", "toggle"]
+        case .keys: return ["api key", "provider", "openai", "anthropic", "endpoint", "model", "token"]
+        case .agent: return ["mcp", "tools", "workspace", "permissions", "server"]
+        case .prompts: return ["system prompt", "persona", "assistive", "instructions"]
+        case .engine: return ["stt", "whisper", "apple", "speech", "transcription", "final pass"]
+        case .audio: return ["microphone", "mikrofon", "input", "device", "levels"]
+        case .voiceLab: return ["lexicon", "dictionary", "vocabulary", "corrections", "słownik"]
+        case .license: return ["subscription", "activation", "trial", "billing"]
+        case .user: return ["account", "profile", "sign in", "identity"]
+        }
+    }
+
+    /// Sections a query should reveal. An empty query keeps the full rail; a
+    /// query matches the visible title first, then the keyword aliases. Pure so
+    /// the search contract is testable without rendering the window.
+    static func matching(query: String) -> [SettingsSection] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let visible = allCases.filter { $0.availability != .hidden }
+        guard !needle.isEmpty else { return visible }
+        return visible.filter { section in
+            section.title.lowercased().contains(needle)
+                || section.searchKeywords.contains { $0.contains(needle) }
+        }
+    }
+}
+
+/// Sidebar sections. Order is the rail's top-to-bottom order.
+enum SettingsSectionGroup: String, CaseIterable, Identifiable {
+    case setup
+    case intelligence
+    case account
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .setup: return "Setup"
+        case .intelligence: return "Intelligence"
+        case .account: return "Account"
+        }
+    }
 }
 
 enum SettingsKeyState: Equatable {

@@ -5,23 +5,51 @@ import XCTest
 
 @MainActor
 final class SettingsTruthTests: XCTestCase {
-    func testRailKeyboardFocusMapsToDSHairlineWithoutChangingActiveFill() {
+    /// The rail is a native `List(.sidebar)` now: selection fill, focus ring and
+    /// keyboard navigation belong to AppKit, so the app owns only the CONTENT —
+    /// which group a section sits in, its symbol, and what the search matches.
+    func testEverySectionDeclaresItsGroupAndASymbolForTheNativeSidebar() {
+        let visible = SettingsSection.allCases.filter { $0.availability != .hidden }
+        XCTAssertEqual(visible.count, 10)
+
+        for section in visible {
+            XCTAssertFalse(section.symbol.isEmpty, "\(section.rawValue) needs an SF Symbol")
+            XCTAssertFalse(section.searchKeywords.isEmpty, "\(section.rawValue) needs search aliases")
+        }
+
+        // Every group carries rows, and every section lands in exactly one.
+        for group in SettingsSectionGroup.allCases {
+            XCTAssertFalse(
+                visible.filter { $0.group == group }.isEmpty,
+                "group \(group.rawValue) would render as an empty header"
+            )
+        }
         XCTAssertEqual(
-            settingsRailItemVisualState(isActive: true, isKeyboardFocused: false),
-            SettingsRailItemVisualState(showsActiveFill: true, showsHairline: true)
+            visible.map(\.group).count,
+            visible.count,
+            "group is total — no section can be absent from the rail"
         )
+    }
+
+    func testSettingsSearchMatchesTitlesAndWhatThePanelActuallyDoes() {
+        // Empty query keeps the whole rail.
         XCTAssertEqual(
-            settingsRailItemVisualState(isActive: true, isKeyboardFocused: true),
-            SettingsRailItemVisualState(showsActiveFill: true, showsHairline: true)
+            SettingsSection.matching(query: "   ").count,
+            SettingsSection.allCases.filter { $0.availability != .hidden }.count
         )
-        XCTAssertEqual(
-            settingsRailItemVisualState(isActive: false, isKeyboardFocused: true),
-            SettingsRailItemVisualState(showsActiveFill: false, showsHairline: true)
-        )
-        XCTAssertEqual(
-            settingsRailItemVisualState(isActive: false, isKeyboardFocused: false),
-            SettingsRailItemVisualState(showsActiveFill: false, showsHairline: false)
-        )
+
+        // Title match, case-insensitive.
+        XCTAssertEqual(SettingsSection.matching(query: "hotkeys"), [.shortcuts])
+        XCTAssertEqual(SettingsSection.matching(query: "LICENSE"), [.license])
+
+        // Keyword match: the user searches for the job, not the tab name.
+        XCTAssertTrue(SettingsSection.matching(query: "api key").contains(.keys))
+        XCTAssertTrue(SettingsSection.matching(query: "mikrofon").contains(.audio))
+        XCTAssertTrue(SettingsSection.matching(query: "whisper").contains(.engine))
+        XCTAssertTrue(SettingsSection.matching(query: "słownik").contains(.voiceLab))
+
+        // A miss returns nothing rather than the whole list.
+        XCTAssertTrue(SettingsSection.matching(query: "zzzz").isEmpty)
     }
 
     func testSectionAvailabilityKeepsPromisesHonest() {
