@@ -74,14 +74,19 @@ use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
 /// Env flag gating the layered transcription pipeline.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — defaults to OFF. Returns
-/// the active phase number when set, so callers can gate Layer 1..4 wiring.
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — **defaults to phase1**.
+/// The live tail patch is a core element of the triangulation, not an opt-in
+/// (operator directive 2026-08-09: "korekcje na żywo to live tail patch, który
+/// MUSI być podstawowym elementem"). Explicit `off`/`0`/`false` disables;
+/// explicit `phaseN` selects a phase.
 ///
-/// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Layered
-/// stays an explicit opt-in (Settings / env). Kept here (not in the config hub)
-/// so this cut stays isolated; the orchestrator can promote it to a typed
-/// config field when it lands.
+/// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Kept
+/// here (not in the config hub) so this cut stays isolated; the orchestrator
+/// can promote it to a typed config field when it lands.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
+
+/// Phase served when the flag is unset — Layer 1 live tail patch on.
+const LAYERED_DEFAULT_PHASE: u8 = 1;
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
 pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO";
@@ -102,12 +107,16 @@ pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
     }
 }
 
-/// Active layered-transcription phase, or `None` when the flag is unset/off.
+/// Active layered-transcription phase. Unset → the default phase (live tail
+/// patch on); an explicit `off`/`0`/`false` — or unparseable garbage — is the
+/// only way to `None`.
 ///
 /// Independent of `FINAL_PASS_MODE` / Smart completeness skip.
 pub fn layered_phase() -> Option<u8> {
-    let raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok()?;
-    parse_layered_phase_value(&raw)
+    match std::env::var(LAYERED_TRANSCRIPTION_ENV) {
+        Ok(raw) => parse_layered_phase_value(&raw),
+        Err(_) => Some(LAYERED_DEFAULT_PHASE),
+    }
 }
 
 /// Tuning for the tail-patch diff.
