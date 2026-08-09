@@ -2,29 +2,57 @@ import AppKit
 import Combine
 import SwiftUI
 
-// Settings window: NavigationSplitView with a truthful section rail. Available
-// sections navigate and hidden sections do not render.
-
+// Settings window: a NATIVE `NavigationSplitView` whose sidebar is a real
+// `List(selection:)` in `.sidebar` style — the same chrome the Agent window
+// already uses, and the reason that window survives an OS bump without visual
+// drift while this one used to.
+//
+// The previous shell was a plain `HStack` with a 212pt hand-drawn rail. It was
+// written that way to dodge one concrete problem: a NavigationSplitView reserves
+// a toolbar strip above the sidebar, which pushed the rail ~70px down. Dropping
+// the split view took the whole native surface with it — no collapse, no search,
+// no section headers, no system material, no keyboard navigation, and a rail
+// that had to re-implement selection state by hand.
+//
+// The strip is not dead space, it is the toolbar: the wordmark and version live
+// in it, and it hosts the system sidebar toggle. That turns the reason for the
+// fork into the feature the operator asked for.
 struct SettingsView: View {
     @StateObject private var model: SettingsViewModel
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var search: String = ""
 
     init(model: SettingsViewModel? = nil) {
         _model = StateObject(wrappedValue: model ?? SettingsViewModel())
     }
 
     var body: some View {
-        // Plain two-pane layout: NavigationSplitView reserved a toolbar strip above
-        // the sidebar content, pushing the rail ~70px down (dead vertical space).
-        // A fixed-width HStack keeps the rail flush with the titlebar.
-        HStack(spacing: 0) {
-            SettingsRail(model: model)
-                .frame(width: 212)
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 196, ideal: 216, max: 300)
+                .safeAreaInset(edge: .bottom, spacing: 0) { SettingsHealthFooter(model: model) }
+        } detail: {
             detail
+        }
+        .navigationTitle("")
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                HStack(spacing: 9) {
+                    Wordmark(size: 14)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Text("v\(model.appVersion)")
+                        .font(CSFont.mono(10, .medium))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                }
+            }
         }
         .csFocusPolicy()
         .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
-        .background(Self.windowGradient.ignoresSafeArea())
         .background(SettingsWindowCapabilities())
+        // The panels still paint hand-picked dark tokens, so the window stays
+        // pinned to dark until the palette itself is theme-aware. Removing this
+        // line before that work lands would render dark text on a light system
+        // background — the sidebar is native either way.
         .preferredColorScheme(.dark)
         .onAppear {
             model.refresh()
@@ -33,6 +61,40 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange)) { _ in
             consumePendingDeepLink()
         }
+    }
+
+    /// Native sidebar: grouped sections, SF Symbol rows, system selection, and a
+    /// search field that matches panel names AND what each panel does.
+    private var sidebar: some View {
+        List(selection: sectionSelection) {
+            ForEach(SettingsSectionGroup.allCases) { group in
+                let items = SettingsSection.matching(query: search).filter { $0.group == group }
+                if !items.isEmpty {
+                    Section(group.title) {
+                        ForEach(items) { item in
+                            Label(item.title, systemImage: item.symbol)
+                                .tag(item)
+                                .accessibilityIdentifier("settings-rail-\(item.rawValue)")
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .searchable(
+            text: $search,
+            placement: .sidebar,
+            prompt: "Search settings"
+        )
+    }
+
+    /// `List` selection is optional by contract; a nil write (⌘-click clearing a
+    /// row) must not blank the detail pane, so it is dropped instead of applied.
+    private var sectionSelection: Binding<SettingsSection?> {
+        Binding(
+            get: { model.section },
+            set: { if let value = $0 { model.select(value) } }
+        )
     }
 
     private func consumePendingDeepLink() {
@@ -124,163 +186,27 @@ private struct SettingsWindowCapabilities: NSViewRepresentable {
 
 // MARK: - Rail
 
-struct SettingsRailItemVisualState: Equatable {
-    let showsActiveFill: Bool
-    let showsHairline: Bool
-}
-
-func settingsRailItemVisualState(
-    isActive: Bool,
-    isKeyboardFocused: Bool
-) -> SettingsRailItemVisualState {
-    SettingsRailItemVisualState(
-        showsActiveFill: isActive,
-        showsHairline: isActive || isKeyboardFocused
-    )
-}
-
-private struct SettingsRail: View {
+/// Runtime-truth footer pinned under the sidebar. It is the one part of the old
+/// hand-drawn rail that carried information rather than chrome: a live health
+/// line that deep-links to the section owning the problem.
+private struct SettingsHealthFooter: View {
     @ObservedObject var model: SettingsViewModel
-    @FocusState private var focusedControl: FocusTarget?
-
-    private enum FocusTarget: Hashable {
-        case section(String)
-        case footer
-    }
-
-    // Inactive rail dot — muted gunmetal (#3a3d44, not a brand token).
-    private static let inactiveDot = Color(hex: 0x3A3D44)
 
     var body: some View {
-        VStack(spacing: 0) {
-            brand
-            nav
-            Spacer(minLength: 0)
-            footer
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background {
-            ZStack {
-                SettingsView.windowGradient
-                CSColor.surfaceRaised(0.015) // subtle warm lift, matches mock rail
-            }
-        }
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(CSColor.hairline(0.06)).frame(width: 1)
-        }
-    }
-
-    private var brand: some View {
-        HStack(spacing: 9) {
-            // Keep the wordmark on a single line regardless of column width.
-            Wordmark(size: 15)
-                .fixedSize(horizontal: true, vertical: false)
-                .layoutPriority(1)
-            Spacer(minLength: 0)
-            Text("v\(model.appVersion)")
-                .font(CSFont.mono(10, .medium))
-                .foregroundStyle(CSColor.textFaintAlt)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 14)
-    }
-
-    private var nav: some View {
-        VStack(spacing: 3) {
-            ForEach(SettingsSection.allCases.filter { $0.availability != .hidden }) { item in
-                railItem(item)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func railItem(_ item: SettingsSection) -> some View {
-        let isActive = model.section == item
-        let isKeyboardFocused = focusedControl == .section(item.rawValue)
-        switch item.availability {
-        case .available:
-            Button {
-                model.select(item)
-            } label: {
-                railItemContent(
-                    item,
-                    visualState: settingsRailItemVisualState(
-                        isActive: isActive,
-                        isKeyboardFocused: isKeyboardFocused
-                    )
-                )
-            }
-            .buttonStyle(.plain)
-            .focusable(true)
-            .focused($focusedControl, equals: .section(item.rawValue))
-            .focusEffectDisabled()
-            .accessibilityAddTraits(isActive ? .isSelected : [])
-        case .hidden:
-            EmptyView()
-        }
-    }
-
-    private func railItemContent(
-        _ item: SettingsSection,
-        visualState: SettingsRailItemVisualState
-    ) -> some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(visualState.showsActiveFill ? CSColor.chromeAccent : Self.inactiveDot)
-                .frame(width: 7, height: 7)
-            Text(item.title)
-                .font(CSFont.ui(13, visualState.showsActiveFill ? .semibold : .medium))
-                .foregroundStyle(labelColor(item, isActive: visualState.showsActiveFill))
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(visualState.showsActiveFill ? CSColor.chromeAccent.opacity(0.14) : .clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .strokeBorder(
-                    visualState.showsHairline ? CSColor.chromeAccent.opacity(0.28) : .clear,
-                    lineWidth: 1
-                )
-        )
-        .contentShape(Rectangle())
-    }
-
-    private func labelColor(_ item: SettingsSection, isActive: Bool) -> Color {
-        if isActive { return CSColor.chromeAccent }
-        // Interactive-but-not-selected = brighter body; inert = muted.
-        return item.isInteractive ? CSColor.textBody : CSColor.textMuted
-    }
-
-    @ViewBuilder
-    private var footer: some View {
         let health = model.settingsHealth
-        if let target = health.targetSection {
-            Button {
-                model.select(target)
-            } label: {
-                footerContent(health, isKeyboardFocused: focusedControl == .footer)
+        Group {
+            if let target = health.targetSection {
+                Button { model.select(target) } label: { content(health) }
+                    .buttonStyle(.plain)
+                    .help("Open \(target.title) settings")
+            } else {
+                content(health)
             }
-            .buttonStyle(.plain)
-            .focusable(true)
-            .focused($focusedControl, equals: .footer)
-            .focusEffectDisabled()
-            .help("Open \(target.title) settings")
-        } else {
-            footerContent(health, isKeyboardFocused: false)
         }
+        .accessibilityIdentifier("settings-health-footer")
     }
 
-    private func footerContent(
-        _ health: SettingsHealthState,
-        isKeyboardFocused: Bool
-    ) -> some View {
+    private func content(_ health: SettingsHealthState) -> some View {
         HStack(spacing: 8) {
             Circle().fill(health.level.color).frame(width: 6, height: 6)
             Text(health.message)
@@ -290,18 +216,10 @@ private struct SettingsRail: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
         .overlay(alignment: .top) {
             Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .strokeBorder(
-                    isKeyboardFocused ? CSColor.chromeAccent.opacity(0.28) : .clear,
-                    lineWidth: 1
-                )
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
         }
     }
 }
