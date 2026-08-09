@@ -43,6 +43,13 @@ pub(super) struct ActionQualityProbe {
     pub(crate) raw_final_diff_ratio: f32,
     pub(crate) correction_ratio: f32,
     pub(crate) drop_ratio: f32,
+    /// MiniLM cosine between the raw transcript and the AI-formatted output.
+    /// `None` = no verdict (guard fail-open, raw lane, or text too short) —
+    /// character ratios alone cannot see an LLM that changed the meaning while
+    /// keeping the length (`core::pipeline::semantic_guard`, calibrated
+    /// 2026-08-09). Filled after construction because embedding is model work,
+    /// not arithmetic.
+    pub(crate) semantic_cosine: Option<f32>,
 }
 
 /// Normalize a transcript before diffing so leading whitespace and a
@@ -101,6 +108,7 @@ impl ActionQualityProbe {
             raw_final_diff_ratio,
             correction_ratio,
             drop_ratio,
+            semantic_cosine: None,
         }
     }
 }
@@ -366,6 +374,15 @@ pub(super) fn evaluate_quality_commit_trigger(
         && !short_ai_formatted
     {
         return None;
+    }
+    // Meaning axis first — it is the sharpest betrayal the ratios cannot see.
+    // The floor is calibrated (core::pipeline::semantic_guard): formatting that
+    // keeps the meaning scores ≥0.950, catchable betrayals ≤0.776. Same-word
+    // inversions are a documented blindspot, not a promise.
+    if let Some(cosine) = quality_probe.semantic_cosine
+        && codescribe_core::pipeline::semantic_guard::formatting_meaning_diverged(cosine)
+    {
+        return Some("semantic_divergence");
     }
     if quality_probe.drop_ratio >= QUALITY_GATE_DROP_RATIO {
         return Some("high_drop_ratio");

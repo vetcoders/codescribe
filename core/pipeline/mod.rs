@@ -8,6 +8,8 @@ pub mod contracts;
 pub mod dedup;
 /// Light-plus post-pass for low-latency transcript cleanup.
 pub mod light_plus;
+/// MiniLM meaning check for AI-formatted deliveries (calibrated floor).
+pub mod semantic_guard;
 /// Event sink adapters: collector, delta, and fan-out to consumers.
 pub mod sinks;
 /// Streaming text post-process (punctuation, casing) before sinks.

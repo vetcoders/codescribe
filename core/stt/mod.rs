@@ -30,6 +30,8 @@ pub mod adapter;
 pub mod apple_stt;
 /// ONNX Whisper runtime adapter selected via `CODESCRIBE_STT_ENGINE=onnx`.
 pub mod onnx_adapter;
+/// Whisper sentence shape onto committed Apple words — punctuation only.
+pub mod punctuation_transplant;
 /// Serialized STT request scheduler: live, commit, and refine lanes with
 /// supersede semantics for stale requests and thermal-pressure backoff.
 pub mod scheduler;
