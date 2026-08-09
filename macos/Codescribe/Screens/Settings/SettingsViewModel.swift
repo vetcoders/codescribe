@@ -1956,6 +1956,7 @@ final class SettingsViewModel: ObservableObject {
         case "LLM_FORMATTING_API_KEY": return "Formatting API key"
         case "LLM_ASSISTIVE_API_KEY": return "Assistive API key (OpenAI)"
         case "LLM_ANTHROPIC_API_KEY": return "Anthropic API key"
+        case "LLM_XAI_API_KEY": return "xAI (Grok) API key"
         case "GITHUB_TOKEN": return "GitHub token"
         default: return account
         }
