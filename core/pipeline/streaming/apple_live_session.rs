@@ -598,6 +598,40 @@ fn apple_stream_worker(
     })
 }
 
+/// Whether an open partial must be frozen before accepting a collapsed next
+/// hypothesis from SFSpeech.
+///
+/// # Named drop mechanism: `shared_opener_restart_suppresses_freeze`
+///
+/// Measured 2026-08-10 three-way live (same mic/air): our committed raw lost
+/// s6/s8/s10 while native Apple dictation kept them. Loss always followed a
+/// stressor (fast speech / English terms / mumbling). Root cause at the
+/// commit/adjudication layer: SFSpeech rarely emits `isFinal` on long Polish
+/// dictation (13 restarts vs ONE isFinal on the 150 s fixture) and instead
+/// collapses the open hypothesis onto the next sentence. Consecutive Polish
+/// sentences share openers (`Zdanie` / `Zadanie`). The previous freeze rule
+/// treated `prev.hasPrefix(next)` / substring containment as "extends", so a
+/// collapse onto a short shared opener overwrote the prior utterance without
+/// sealing it.
+///
+/// Freeze on collapse unless `next` is a **true substantial prefix** of `prev`
+/// (`len > 15`) — a same-phrase rewind, not a 1–2 word opener every sentence
+/// shares. Kept in lockstep with `SfSpeechPhraseAccumulator` in
+/// `codescribe-stt-bridge.swift`.
+pub(crate) fn phrase_restart_should_freeze_prior(prev: &str, next: &str) -> bool {
+    let prev = prev.trim();
+    let next = next.trim();
+    if prev.is_empty() || next.is_empty() {
+        return false;
+    }
+    let restarted = (next.len() * 3 < prev.len()) || (next.len() <= 15 && prev.len() >= 25);
+    if !restarted {
+        return false;
+    }
+    let same_phrase_rewind = prev.starts_with(next) && next.len() > 15;
+    !same_phrase_rewind
+}
+
 /// Map one poll's worth of bridge events onto `EngineEvent`s, sealing where the
 /// stream says a phrase closed.
 ///
@@ -608,6 +642,10 @@ fn apple_stream_worker(
 /// segments. `Summary` is the partials-only engines' single seal — it commits
 /// only when no phrase final ever arrived, otherwise it would double-seal what
 /// the phrase path already committed.
+///
+/// On `Partial`, a collapsed post-stressor restart freezes the open hypothesis
+/// first ([`phrase_restart_should_freeze_prior`]) so a shared-opener rewrite
+/// cannot eat a whole utterance before the bridge emits a `final`.
 fn emit_stream_events(
     events: Vec<LiveStreamEvent>,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -616,8 +654,40 @@ fn emit_stream_events(
 ) {
     for event in events {
         match event {
-            LiveStreamEvent::Ready | LiveStreamEvent::End => {}
+            LiveStreamEvent::Ready => {
+                info!(
+                    audio_secs,
+                    sealed = state.sealed_count,
+                    "apple_lifecycle: recognizer ready / stream start"
+                );
+            }
+            LiveStreamEvent::End => {
+                info!(
+                    audio_secs,
+                    sealed = state.sealed_count,
+                    open_partial_chars = state.open_partial.len(),
+                    filtered_empty_drops = state.filtered_empty_drops,
+                    "apple_lifecycle: recognizer end"
+                );
+            }
             LiveStreamEvent::Partial { text } => {
+                // Safety net for the named drop mechanism: if the bridge
+                // missed a freeze (shared opener collapse), seal the open
+                // partial here before the rewrite lands.
+                if phrase_restart_should_freeze_prior(&state.open_partial, &text) {
+                    let frozen = state.open_partial.clone();
+                    info!(
+                        audio_secs,
+                        prev_chars = frozen.len(),
+                        next_chars = text.len(),
+                        prev_head = %frozen.chars().take(40).collect::<String>(),
+                        next_head = %text.chars().take(40).collect::<String>(),
+                        reason = "shared_opener_restart_suppresses_freeze",
+                        "apple_lifecycle: freeze open partial before restart partial"
+                    );
+                    seal_utterance_final(state, ev_tx, &frozen, 0.0, audio_secs, Vec::new());
+                    state.open_partial.clear();
+                }
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
@@ -630,10 +700,24 @@ fn emit_stream_events(
             }
             LiveStreamEvent::PhraseFinal { text, segments } => {
                 // The phrase is closed either way — the open partial is stale.
+                info!(
+                    audio_secs,
+                    sealed_before = state.sealed_count,
+                    text_chars = text.len(),
+                    text_head = %text.chars().take(40).collect::<String>(),
+                    "apple_lifecycle: phrase final received"
+                );
                 state.open_partial.clear();
                 let start_ts = segments.first().map(|s| s.start_ts).unwrap_or(0.0);
                 let end_ts = segments.last().map(|s| s.end_ts).unwrap_or(audio_secs);
-                seal_utterance_final(state, ev_tx, &text, start_ts, end_ts, segments);
+                let committed =
+                    seal_utterance_final(state, ev_tx, &text, start_ts, end_ts, segments);
+                info!(
+                    audio_secs,
+                    committed,
+                    sealed_after = state.sealed_count,
+                    "apple_lifecycle: phrase final adjudicated"
+                );
             }
             LiveStreamEvent::Error { message } => {
                 warn!("Apple live stream error event: {message}");
@@ -1280,6 +1364,123 @@ mod tests {
                 .filter(|e| matches!(e, LiveStreamEvent::PhraseFinal { .. }))
                 .count(),
             3
+        );
+    }
+
+    // ── w1-b utterance_drop: shared_opener_restart_suppresses_freeze ────────
+
+    /// Measured three-way pattern: after a long open partial, SFSpeech collapses
+    /// onto the next sentence's shared opener (`Zdanie`). That collapse MUST
+    /// freeze the prior utterance — the old rule did not, and s6/s8/s10 vanished.
+    #[test]
+    fn utterance_drop_shared_opener_restart_freezes_prior_sentence() {
+        let s6 = "Zdanie szóste spokojnie po stresie wracam do normalnego tempa i mówię wyraźnie.";
+        assert!(
+            phrase_restart_should_freeze_prior(s6, "Zdanie"),
+            "collapse onto the next sentence's shared opener must freeze s6"
+        );
+        assert!(
+            phrase_restart_should_freeze_prior(s6, "Zdanie siódme"),
+            "collapse onto a non-prefix next-sentence head must freeze s6"
+        );
+        assert!(
+            phrase_restart_should_freeze_prior(s6, "Zadanie"),
+            "Zadanie opener (spoken variant) must freeze too"
+        );
+    }
+
+    /// Mid-phrase revision keeps most of the text without being a prefix
+    /// collapse — must NOT freeze (would double-seal the same span).
+    #[test]
+    fn utterance_drop_revision_mid_reword_does_not_freeze() {
+        // 95 → 79 char mid-reword: not a restart collapse by the measured rule.
+        let prev = format!("{}MIDDLE{}", "x".repeat(50), "y".repeat(39));
+        let next = format!("{}REVISE{}", "x".repeat(50), "y".repeat(23));
+        assert_eq!(prev.len(), 95);
+        assert_eq!(next.len(), 79);
+        assert!(
+            !phrase_restart_should_freeze_prior(&prev, &next),
+            "revision must not freeze (residual duplication bar)"
+        );
+        // Growth is never a restart.
+        assert!(!phrase_restart_should_freeze_prior(
+            "Zdanie",
+            "Zdanie szóste spokojnie"
+        ));
+        // Same-phrase rewind to a substantial true prefix stays open.
+        let long = "Hello world this is a long phrase that continues for a while more text here";
+        let rewind: String = long.chars().take(40).collect();
+        assert!(
+            !phrase_restart_should_freeze_prior(long, &rewind),
+            "substantial true-prefix rewind is same-phrase, not a freeze"
+        );
+    }
+
+    /// End-to-end at the adjudication layer: a partial sequence that used to
+    /// drop the post-stressor sentence now seals it as UtteranceFinal before
+    /// the restart partial lands as Preview.
+    #[test]
+    fn utterance_drop_emit_seals_prior_on_shared_opener_partial_restart() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        let s5 = "Zdanie piąte, szybko bez pauz. Teraz mówię bardzo szybko, bez żadnej przerwy, \
+                  żeby sprawdzić czy silnik nadąża za tempem, którego normalnie unika w \
+                  codziennym dyktowaniu.";
+        let s6 = "Zdanie szóste spokojnie po stresie wracam do normalnego tempa i mówię wyraźnie.";
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: s5.to_string(),
+                },
+                // Stressor phrase seals cleanly (isFinal or prior freeze).
+                LiveStreamEvent::PhraseFinal {
+                    text: s5.to_string(),
+                    segments: vec![],
+                },
+                // Post-stressor sentence builds as open partial…
+                LiveStreamEvent::Partial {
+                    text: s6.to_string(),
+                },
+                // …then SFSpeech restarts onto the next opener without isFinal.
+                // Old rule overwrote s6; new rule freezes it first.
+                LiveStreamEvent::Partial {
+                    text: "Zdanie".to_string(),
+                },
+                LiveStreamEvent::Partial {
+                    text: "Zdanie siódme Overlap cztery angielskie terminy w polskim".to_string(),
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "Zdanie siódme Overlap cztery angielskie terminy w polskim".to_string(),
+                    segments: vec![],
+                },
+            ],
+            &tx,
+            &mut state,
+            30.0,
+        );
+        drop(tx);
+        let mut finals = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            if let EngineEvent::UtteranceFinal { text, .. } = e {
+                finals.push(text);
+            }
+        }
+        assert!(
+            finals
+                .iter()
+                .any(|t| t.contains("szóste") || t.contains("szost")),
+            "post-stressor s6 must be committed, got finals: {finals:?}"
+        );
+        assert!(
+            finals
+                .iter()
+                .any(|t| t.contains("siódme") || t.contains("siodm") || t.contains("Overlap")),
+            "s7 must still seal, got finals: {finals:?}"
+        );
+        assert!(
+            state.sealed_count >= 3,
+            "s5 + frozen s6 + s7 → at least 3 seals, got {}",
+            state.sealed_count
         );
     }
 }
