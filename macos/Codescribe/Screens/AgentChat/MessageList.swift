@@ -416,7 +416,7 @@ private struct ShowEarlierButton: View {
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: CSRadius.pill)
         .onHover { hovering = $0 }
         .accessibilityLabel("Show earlier messages")
         .help("Render the previous \(MessageList.turnWindow) turns")
@@ -448,7 +448,7 @@ private struct JumpToCurrentButton: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: CSRadius.pill)
         .onHover { hovering = $0 }
         .accessibilityLabel("Jump to current")
         .help("Jump to the current reply")
@@ -689,7 +689,7 @@ private struct ContextChip: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .help("Selection and app captured with this voice turn")
 
             if expanded {
@@ -777,7 +777,7 @@ private struct AttachmentChip: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: CSRadius.pill)
         .help(attachment.url == nil ? "Preview attachment (original file may be missing)" : "Preview attachment")
         .onAppear {
             if thumbnail == nil, let url = attachment.url {
@@ -1051,7 +1051,7 @@ private struct ToolLineRow: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .disabled(!canInspect)
 
             if canInspect, showInspect {
@@ -1213,7 +1213,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
             } label: {
                 configuration.label
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
 
             if configuration.isExpanded {
                 Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
@@ -1449,7 +1449,7 @@ private struct RenderModeButton: View {
             }
             .foregroundStyle(hovering ? CSColor.textMuted : CSColor.textFaintAlt)
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .onHover { hovering = $0 }
         .help(mode == .raw ? "Render as markdown" : "Show raw text")
     }
@@ -1492,7 +1492,7 @@ private struct CopyMessageButton: View {
             }
             .foregroundStyle(labelColor)
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .disabled(text.isEmpty)
         .onHover { hovering = $0 }
         .help("Copy message")
