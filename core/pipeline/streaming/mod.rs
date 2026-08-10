@@ -22,6 +22,8 @@ pub(crate) mod live_audio_buffer;
 pub(crate) mod offline;
 /// Per-session text postprocess: hallucination drops, overlap dedup, emitted-suffix tracking.
 pub(crate) mod pipeline;
+/// Progressive seal state machine: double-closed spans → lexicon → Light+ → committed.
+pub mod progressive_seal;
 /// Pre/post-inference gates: hallucination, silence, short-utterance, word-rate anomaly.
 pub(crate) mod quality_gate;
 /// Event-based transcription session: VAD ingestion, the Whisper inference loop, final emission.

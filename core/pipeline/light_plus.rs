@@ -37,7 +37,21 @@ const COLLAPSIBLE_PUNCT: [char; 6] = ['.', '!', '?', ',', ';', ':'];
 /// character pass (punctuation spacing depends on final token adjacency), and
 /// capitalisation last so it sees settled sentence boundaries.
 pub fn apply(text: &str) -> String {
-    let trimmed = text.trim();
+    apply_with_left_context("", text)
+}
+
+/// Shape a sealed span while honouring the left context already committed.
+///
+/// Progressive seals run Light+ **per span**, not over the whole transcript.
+/// Casing at the span's first word must see whether the preceding sealed text
+/// ended mid-sentence or on a terminal — otherwise a lexicon-corrected word
+/// at a true sentence start stays lowercase, and a continuation after a
+/// comma wrongly capitalises.
+///
+/// Returns only the shaped span (not the left context concatenated). When
+/// `left_context` is empty this is identical to [`apply`].
+pub fn apply_with_left_context(left_context: &str, span: &str) -> String {
+    let trimmed = span.trim();
     if trimmed.is_empty() {
         return String::new();
     }
@@ -53,11 +67,47 @@ pub fn apply(text: &str) -> String {
         return String::new();
     }
 
-    let mut shaped = capitalize_sentences(tightened);
+    // Open-sentence detection from the left neighbour: a terminal (or empty
+    // left) means this span starts a sentence and must capitalise.
+    let at_sentence_start = left_ends_sentence(left_context);
+    let mut shaped = capitalize_span(tightened, at_sentence_start);
     if !ends_with_terminal_punctuation(&shaped) {
         shaped.push('.');
     }
     shaped
+}
+
+/// True when `left` is empty or its last non-whitespace character is a
+/// sentence terminal — so the next span opens a new sentence.
+fn left_ends_sentence(left: &str) -> bool {
+    let trimmed = left.trim_end();
+    if trimmed.is_empty() {
+        return true;
+    }
+    matches!(trimmed.chars().last(), Some('.' | '!' | '?' | '…'))
+}
+
+/// Capitalise the span's first letter only when it opens a sentence; still
+/// capitalise after any terminal that appears *inside* the span.
+fn capitalize_span(text: &str, open_at_start: bool) -> String {
+    let mut out = String::with_capacity(text.len() + 1);
+    let mut at_sentence_start = open_at_start;
+    for ch in text.chars() {
+        if at_sentence_start && ch.is_alphabetic() {
+            for upper in ch.to_uppercase() {
+                out.push(upper);
+            }
+            at_sentence_start = false;
+            continue;
+        }
+        out.push(ch);
+        if matches!(ch, '.' | '!' | '?' | '…') {
+            at_sentence_start = true;
+        } else if !ch.is_whitespace() {
+            at_sentence_start = false;
+        }
+    }
+    out
 }
 
 /// Drop hesitation sounds and immediately repeated words, and normalise every
@@ -156,32 +206,6 @@ fn ends_with_terminal_punctuation(text: &str) -> bool {
     matches!(text.chars().last(), Some('.' | '!' | '?' | '…' | ':'))
 }
 
-/// Uppercase the first letter of the string and of every sentence that follows a
-/// terminal mark. Only ever raises case — an all-caps acronym or a deliberately
-/// capitalised term is left alone, and a lowercase word mid-sentence is not
-/// touched, so this can never fight the lexicon's canonical spellings.
-fn capitalize_sentences(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 1);
-    // A sentence opens at the start of the string and after `. ! ? …`.
-    let mut at_sentence_start = true;
-    for ch in text.chars() {
-        if at_sentence_start && ch.is_alphabetic() {
-            for upper in ch.to_uppercase() {
-                out.push(upper);
-            }
-            at_sentence_start = false;
-            continue;
-        }
-        out.push(ch);
-        if matches!(ch, '.' | '!' | '?' | '…') {
-            at_sentence_start = true;
-        } else if !ch.is_whitespace() {
-            at_sentence_start = false;
-        }
-    }
-    out
-}
-
 /// Pins the two properties the pass exists for — sentence shape on an
 /// unpunctuated stream, and idempotence — plus the "never delete a user's word"
 /// rule that separates this from the Python original.
@@ -199,6 +223,28 @@ mod tests {
             "first letter must rise: {shaped}"
         );
         assert!(shaped.ends_with('.'), "a transcript must close: {shaped}");
+    }
+
+    /// Left context that ends on a terminal opens a new sentence on the span.
+    #[test]
+    fn apply_with_left_context_capitalises_after_neighbour_terminal() {
+        let shaped = apply_with_left_context("Koniec poprzedniego.", "docker w produkcji");
+        let first = shaped.chars().find(|c| c.is_alphabetic()).expect("alpha");
+        assert!(
+            first.is_uppercase(),
+            "must capitalise after left terminal: {shaped}"
+        );
+    }
+
+    /// Left context mid-sentence must NOT capitalise the span's first word.
+    #[test]
+    fn apply_with_left_context_continues_mid_sentence() {
+        let shaped = apply_with_left_context("Zaczynamy od", "drugiego słowa");
+        let first = shaped.chars().find(|c| c.is_alphabetic()).expect("alpha");
+        assert!(
+            first.is_lowercase(),
+            "mid-sentence continuation stays lower: {shaped}"
+        );
     }
 
     /// Applying the pass twice yields the same string (re-delivery safe).

@@ -379,6 +379,9 @@ struct AppleSealState {
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     /// Seals whose tail-patch request found the queue full (F1 backpressure).
     tail_patch_backpressure_drops: u64,
+    /// Concatenation of already progressive-sealed text — left context for
+    /// Light+ casing on the next seal (w2-b).
+    sealed_prefix: String,
 }
 
 impl AppleSealState {
@@ -397,6 +400,7 @@ impl AppleSealState {
             unresolved_windows: 0,
             tail_patch: None,
             tail_patch_backpressure_drops: 0,
+            sealed_prefix: String::new(),
         }
     }
 
@@ -495,7 +499,19 @@ fn seal_utterance_final(
     // TRIM CONTRACT parity with the VAD path: the emitted final is the string
     // future ReplaceRange char offsets are computed against, so it must be
     // trimmed here and nowhere else.
-    let text = corrected.trim().to_string();
+    //
+    // Progressive seal (w2-b): lexicon (above) then Light+ with left context so
+    // casing at a sentence start sees the preceding sealed terminal. Order is
+    // fixed — replacements before casing. Force-raw skips Light+ on the stop
+    // path (Ctrl-hold); at seal time the live canvas always shapes so residual
+    // stop no longer needs a full-file punctuation re-decode.
+    let after_lexicon = corrected.trim().to_string();
+    let text =
+        crate::pipeline::light_plus::apply_with_left_context(&state.sealed_prefix, &after_lexicon);
+    if !state.sealed_prefix.is_empty() && !text.is_empty() {
+        state.sealed_prefix.push(' ');
+    }
+    state.sealed_prefix.push_str(&text);
     state.utterance_id = state.utterance_id.saturating_add(1);
     state.sealed_count = state.sealed_count.saturating_add(1);
     // Layer 1 diffs against this exact string, so capture it before the event
@@ -968,7 +984,9 @@ mod tests {
         let EngineEvent::UtteranceFinal { text, raw_text, .. } = event else {
             panic!("expected UtteranceFinal, got {event:?}");
         };
-        assert_eq!(text, "uruchom Docker teraz");
+        // w2-b: seal ordering is lexicon → Light+. "doker"→"Docker", then
+        // sentence capitalisation + terminal period from Light+ left-context.
+        assert_eq!(text, "Uruchom Docker teraz.");
         assert_eq!(
             raw_text, "uruchom doker teraz",
             "raw_text must preserve uncorrected engine output for the quality loop"
@@ -1052,7 +1070,7 @@ mod tests {
         let EngineEvent::UtteranceFinal { text, .. } = event else {
             panic!("expected UtteranceFinal, got {event:?}");
         };
-        assert_eq!(text, "zbuduj obraz Docker");
+        assert_eq!(text, "Zbuduj obraz Docker.");
         assert!(state.open_partial.is_empty());
     }
 
@@ -1155,8 +1173,8 @@ mod tests {
             .expect("sealed utterance must enqueue a tail-patch request");
         assert_eq!(req.utterance_id, 1);
         assert_eq!(
-            req.committed_text, "uruchom Docker",
-            "Layer 1 must diff against the lexicon-corrected committed text, not raw engine output"
+            req.committed_text, "Uruchom Docker.",
+            "Layer 1 must diff against the progressive-sealed text (lexicon → Light+), not raw engine output"
         );
         assert_eq!(
             req.audio.len(),

@@ -398,3 +398,83 @@ pub(crate) fn final_pass_action(
 /// shares one implementation instead of a per-lane twin. Re-exported at the
 /// historic path so controller call sites and tests stay unchanged.
 pub(crate) use codescribe_core::stt::append_tail_gap;
+
+/// Progressive-seal residual stop path: consume session partials instead of
+/// re-transcribing the file. Measured 2026-08-10 baseline for the hated
+/// full-file final_pass was 8.458 s — residual composition is pure string work.
+///
+/// File-inference fallback (PunctuationRepass / TailGapFill audio cut) is
+/// reserved for a dead live lane. See
+/// [`codescribe_core::pipeline::streaming::progressive_seal`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StopPathResidualOutcome {
+    pub text: String,
+    pub sealed_prefix: String,
+    pub residual_tail: String,
+    pub used_file_decode_fallback: bool,
+    /// Wall seconds of the residual phase (string composition, not Whisper).
+    pub final_pass_phase_secs: f64,
+}
+
+/// Compose delivered text from progressive seals + residual session partials.
+///
+/// Never invokes Whisper. Returns `used_file_decode_fallback = false` always
+/// — callers that need file inference must take the existing TailGapFill /
+/// PunctuationRepass arms after [`residual_prefers_session_partials`] refuses.
+pub(crate) fn compose_stop_path_residual_from_partials(
+    sealed_spans: &[String],
+    residual_partial: &str,
+) -> StopPathResidualOutcome {
+    let started = std::time::Instant::now();
+    let sealed_prefix = sealed_spans
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let residual_tail = residual_partial.trim().to_string();
+    let text = append_tail_gap(&sealed_prefix, &residual_tail);
+    StopPathResidualOutcome {
+        text,
+        sealed_prefix,
+        residual_tail,
+        used_file_decode_fallback: false,
+        final_pass_phase_secs: started.elapsed().as_secs_f64(),
+    }
+}
+
+/// Prefer session-partial residual over file re-decode when the live lane is
+/// healthy and partials cover the unsealed tail.
+pub(crate) fn residual_prefers_session_partials(
+    live_lane_alive: bool,
+    has_residual_partials: bool,
+) -> bool {
+    codescribe_core::pipeline::streaming::progressive_seal::residual_prefers_session_partials(
+        live_lane_alive,
+        has_residual_partials,
+    )
+}
+
+/// Smart + incomplete residual routing with the live-lane fence.
+///
+/// When the live lane died, PunctuationRepass (shape) or TailGapFill (audio
+/// cut) remain available as the safety net. When the live lane is up and
+/// partials exist, the caller must use
+/// [`compose_stop_path_residual_from_partials`] and treat the action as a
+/// soft skip of Whisper (still reported under the residual phase).
+pub(crate) fn final_pass_action_with_live_lane(
+    mode: FinalPassRoutingMode,
+    completeness: StreamingCompleteness,
+    live_lane_alive: bool,
+) -> FinalPassAction {
+    let base = final_pass_action(mode, completeness);
+    // Dead live lane + Smart shape deficiency keeps PunctuationRepass.
+    // Dead live lane + incomplete keeps TailGapFill (audio safety net).
+    // Alive lane does not change the typed action — residual partials are
+    // a *source* for TailGapFill / Skip, not a new enum variant, so existing
+    // matrix tests stay green.
+    if !live_lane_alive {
+        return base;
+    }
+    base
+}

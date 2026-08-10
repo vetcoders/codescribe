@@ -98,8 +98,9 @@ use assistive_delivery::{
 pub(crate) use final_pass::{
     FinalPassAction, FinalPassRoutingMode, FinalPassStages, StopPathBudget, StreamingCompleteness,
     StreamingCompletenessEvidence, append_tail_gap, assess_streaming_completeness,
-    final_pass_action, final_pass_routing_mode, format_assistive_delivery_budget_line,
-    format_final_pass_stages_line, format_stop_path_budget_line,
+    compose_stop_path_residual_from_partials, final_pass_action_with_live_lane,
+    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
+    format_stop_path_budget_line, residual_prefers_session_partials,
 };
 #[cfg(test)]
 pub(crate) use final_pass::{
@@ -2812,7 +2813,14 @@ impl RecordingController {
             let completeness = assess_streaming_completeness(&completeness_evidence);
             // Typed routing: Always → full file re-pass; Smart+Complete / Off →
             // skip; Smart+Incomplete → tail-gap append (committed text immutable).
-            let action = final_pass_action(effective_routing, completeness);
+            // Live-lane fence (w2-b): keeps the action matrix; residual partials
+            // are a *source* for TailGapFill, not a new variant. Dead lane keeps
+            // the audio / punctuation safety nets.
+            let live_lane_alive = session_snap.stats.is_some()
+                || completeness_evidence.committed_chars > 0
+                || !streaming_text.trim().is_empty();
+            let action =
+                final_pass_action_with_live_lane(effective_routing, completeness, live_lane_alive);
 
             if matches!(action, FinalPassAction::SkipStreamingFinal) {
                 local_final_pass_attempted = true;
@@ -2876,6 +2884,12 @@ impl RecordingController {
                 // it. Committed streaming text is immutable — a full-file
                 // re-pass here would violate the append-only overlay doctrine
                 // and is Always-mode territory alone.
+                //
+                // w2-b residual: when progressive seals + session partials are
+                // available on the machine (see
+                // `compose_stop_path_residual_from_partials`), callers compose
+                // without Whisper. This arm remains the audio safety net when
+                // the live lane died or residual partials are absent.
                 local_final_pass_attempted = true;
                 let wav_path = path.as_path().to_path_buf();
                 let lang = language_opt.map(str::to_string);
@@ -3030,6 +3044,57 @@ impl RecordingController {
                         }
                     }
                 }
+            } else if matches!(action, FinalPassAction::TailGapFill)
+                && residual_prefers_session_partials(live_lane_alive, true)
+                && audio_path.is_none()
+            {
+                // w2-b residual: live lane up, no WAV on disk — compose seals +
+                // residual from the streaming canvas without inventing a file
+                // re-decode. (Audio TailGapFill arm above remains the safety net
+                // when a path exists.)
+                local_final_pass_attempted = true;
+                let committed_text = streaming_text.trim().to_string();
+                let residual = compose_stop_path_residual_from_partials(
+                    std::slice::from_ref(&committed_text),
+                    "",
+                );
+                final_pass_secs = residual.final_pass_phase_secs;
+                final_pass_stages.final_pass_total_ms = (final_pass_secs * 1000.0).round() as u64;
+                info!(
+                    "final_pass_residual_from_partials mode=smart phase_secs={:.6} chars={} (no file re-decode)",
+                    residual.final_pass_phase_secs,
+                    residual.text.chars().count(),
+                );
+                let text = residual.text;
+                let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                    text: text.clone(),
+                    ..Default::default()
+                };
+                let skip_engine = if prefer_apple {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+                    )
+                } else {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                    )
+                };
+                local_final_pass_verdict = Some(
+                    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                        text,
+                        raw,
+                        None,
+                        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                        skip_engine,
+                        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                            disposition: FinalPassDisposition::Unchanged,
+                            reason: Some("residual_from_session_partials".to_string()),
+                            lexicon_rewrites: 0,
+                            repetition_cleanups: 0,
+                        }),
+                    ),
+                );
             } else if matches!(action, FinalPassAction::PunctuationRepass)
                 && let Some(path) = &audio_path
             {
@@ -3038,6 +3103,8 @@ impl RecordingController {
                 // punctuation and capitalization are adopted onto the committed
                 // words (word sequence invariant — the append-only doctrine
                 // holds). A weak alignment ships the committed text untouched.
+                // File inference remains the safety net when the live lane died
+                // mid-session without progressive Light+ seals.
                 local_final_pass_attempted = true;
                 let wav_path = path.as_path().to_path_buf();
                 let lang = language_opt.map(str::to_string);
