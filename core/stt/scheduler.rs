@@ -232,6 +232,7 @@ impl SttScheduler {
     /// Without an utterance id a live request cannot be coalesced against an
     /// earlier one, so prefer [`Self::submit_for_utterance`] on the live lane;
     /// this entry point suits one-off transcriptions.
+    #[cfg(test)]
     pub(crate) fn submit(
         &self,
         lane: SttLane,
@@ -275,6 +276,30 @@ impl SttScheduler {
         language: Option<String>,
         utterance_id: u64,
     ) -> Result<SttTaskHandle> {
+        self.submit_for_utterance_with_prompt(
+            lane,
+            samples,
+            sample_rate,
+            language,
+            utterance_id,
+            initial_prompt_for_lane(lane),
+        )
+    }
+
+    /// Queue an utterance-tagged request with caller-owned decode context.
+    ///
+    /// Rolling Refine windows use the prior window's transcript as Whisper's
+    /// previous-context prompt. The explicit seam keeps that context attached
+    /// to the same monotonic window id used for scheduler coalescing.
+    pub(crate) fn submit_for_utterance_with_prompt(
+        &self,
+        lane: SttLane,
+        samples: Vec<f32>,
+        sample_rate: u32,
+        language: Option<String>,
+        utterance_id: u64,
+        initial_prompt: Option<String>,
+    ) -> Result<SttTaskHandle> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (result_tx, result_rx) = oneshot::channel();
         let request = SttRequest {
@@ -283,7 +308,7 @@ impl SttScheduler {
             sample_rate,
             language,
             utterance_id: Some(utterance_id),
-            initial_prompt: initial_prompt_for_lane(lane),
+            initial_prompt,
             queued_at: Instant::now(),
             result_tx,
         };
