@@ -26,6 +26,7 @@
 //! (MutexGuard is `!Send`); the async session only shuttles PCM in and
 //! `EngineEvent`s out.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
@@ -44,9 +45,11 @@ use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{TailPatchConfig, TailPatchOutcome};
 
 use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer};
+use super::progressive_seal::{ProgressiveSealMachine, seal_span_text};
+#[cfg(test)]
+use super::session::emit_tail_patch_result;
 use super::session::{
-    SessionConfig, compute_tail_patch_job, emit_session_finalised, emit_tail_patch_result,
-    tail_patch_enabled,
+    SessionConfig, compute_tail_patch_job, emit_session_finalised, tail_patch_enabled,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -67,6 +70,14 @@ struct TailPatchRequest {
     committed_text: String,
     /// PCM behind exactly this utterance: `[previous seal end, end_ts)`.
     audio: Vec<f32>,
+    covered_through_secs: f32,
+}
+
+/// Whisper closure returned to the worker that owns Apple + seal state.
+struct TailPatchCompletion {
+    utterance_id: u64,
+    covered_through_secs: f32,
+    outcome: TailPatchOutcome,
 }
 
 /// Async Layer 1 lane for the Apple progressive path.
@@ -128,10 +139,46 @@ impl AppleTailPatchLane {
     /// Emit a finished job's patch and fold its replacement count into the
     /// session total. A skipped or failed patch contributes zero — only text
     /// that actually reached the canvas is counted.
+    #[cfg(test)]
     fn complete(&mut self, event_sink: &dyn EventSink, result: Result<(u64, TailPatchOutcome)>) {
         self.replacements = self
             .replacements
             .saturating_add(emit_tail_patch_result(event_sink, result));
+    }
+
+    /// Convert a finished job into the closure message consumed by the
+    /// progressive seal owner. Patch events are emitted by that owner only
+    /// after `UtteranceFinal`, preserving event order.
+    fn finish_for_worker(
+        &mut self,
+        request_id: u64,
+        req_end_secs: f32,
+        result: Result<(u64, TailPatchOutcome)>,
+    ) -> TailPatchCompletion {
+        match result {
+            Ok((utterance_id, outcome)) => {
+                if let TailPatchOutcome::Patches(events) = &outcome {
+                    self.replacements = self.replacements.saturating_add(
+                        events
+                            .iter()
+                            .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
+                            .count() as u64,
+                    );
+                }
+                TailPatchCompletion {
+                    utterance_id,
+                    covered_through_secs: req_end_secs,
+                    outcome,
+                }
+            }
+            Err(error) => TailPatchCompletion {
+                utterance_id: request_id,
+                covered_through_secs: req_end_secs,
+                outcome: TailPatchOutcome::Skipped {
+                    reason: format!("tail patch failed: {error}"),
+                },
+            },
+        }
     }
 
     /// How many bounded replacements Layer 1 landed this session — the number
@@ -208,8 +255,10 @@ pub(crate) async fn apple_stream_transcription_session(
     // At-most-one-in-flight gate (F1), tracked outside the lane so the admit
     // branch's guard does not borrow what the collect branch holds mutably.
     let mut tail_patch_in_flight = false;
+    let mut tail_patch_lane_in_flight: Option<(u64, f32)> = None;
     // Bounded: the worker `try_send`s from the PCM-forwarding thread.
     let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+    let (tp_done_tx, tp_done_rx) = std_mpsc::channel::<TailPatchCompletion>();
     // Layered off → the worker gets no sender at all, so the lane stays empty
     // and its branch never yields: zero jobs, zero behaviour change.
     let worker_tp_tx = tail_patch_on.then_some(tp_tx);
@@ -221,6 +270,7 @@ pub(crate) async fn apple_stream_transcription_session(
             sample_rate,
             language.as_deref(),
             worker_tp_tx,
+            tp_done_rx,
         )
     });
 
@@ -267,17 +317,19 @@ pub(crate) async fn apple_stream_transcription_session(
             // only ever schedules and collects — inference never sits on the
             // event-drain path (F1).
             Some(req) = tp_rx.recv(), if !tail_patch_in_flight => {
+                let utterance_id = req.utterance_id;
+                let covered_through_secs = req.covered_through_secs;
                 tail_patch_lane.push_request(req);
                 tail_patch_in_flight = true;
+                // One job is in flight, so one end boundary is enough.
+                // FuturesOrdered preserves the same request/result order.
+                tail_patch_lane_in_flight = Some((utterance_id, covered_through_secs));
             }
             Some(result) = tail_patch_lane.next() => {
                 tail_patch_in_flight = false;
-                // Flush everything the worker already queued first: a patch
-                // must never overtake the `UtteranceFinal` it patches.
-                while let Ok(event) = ev_rx.try_recv() {
-                    deliver_event(&event, event_sink.as_ref(), stream_log_path.as_deref());
-                }
-                tail_patch_lane.complete(event_sink.as_ref(), result);
+                let (id, end) = tail_patch_lane_in_flight.take().unwrap_or_default();
+                let completion = tail_patch_lane.finish_for_worker(id, end, result);
+                let _ = tp_done_tx.send(completion);
             }
         }
     }
@@ -307,10 +359,13 @@ pub(crate) async fn apple_stream_transcription_session(
     let mut settled_at_stop = 0u64;
     loop {
         while let Some(result) = tail_patch_lane.next().await {
-            tail_patch_lane.complete(event_sink.as_ref(), result);
+            let (id, end) = tail_patch_lane_in_flight.take().unwrap_or_default();
+            let completion = tail_patch_lane.finish_for_worker(id, end, result);
+            let _ = tp_done_tx.send(completion);
         }
         match tp_rx.try_recv() {
             Ok(req) => {
+                tail_patch_lane_in_flight = Some((req.utterance_id, req.covered_through_secs));
                 tail_patch_lane.push_request(req);
                 settled_at_stop = settled_at_stop.saturating_add(1);
             }
@@ -360,6 +415,13 @@ pub(crate) async fn apple_stream_transcription_session(
 /// Grouped into one struct so `emit_stream_events` keeps a readable signature
 /// while the worker and the event mapper stay on the same postprocessor
 /// instance (one lexicon reload cadence, one drop counter).
+struct PendingAppleSeal {
+    raw_text: String,
+    start_ts: f32,
+    end_ts: f32,
+    segments: Vec<TranscriptSegment>,
+}
+
 struct AppleSealState {
     postprocessor: StreamPostProcessor,
     preview_rev: u64,
@@ -382,6 +444,12 @@ struct AppleSealState {
     /// Concatenation of already progressive-sealed text — left context for
     /// Light+ casing on the next seal (w2-b).
     sealed_prefix: String,
+    /// Canonical double-close authority used by the production Apple lane.
+    progressive: ProgressiveSealMachine,
+    /// Event payload retained until the machine declares the span sealed.
+    pending_events: BTreeMap<u64, PendingAppleSeal>,
+    /// Whisper outcomes retained until their final has been emitted.
+    tail_patch_outcomes: BTreeMap<u64, TailPatchOutcome>,
 }
 
 impl AppleSealState {
@@ -401,6 +469,9 @@ impl AppleSealState {
             tail_patch: None,
             tail_patch_backpressure_drops: 0,
             sealed_prefix: String::new(),
+            progressive: ProgressiveSealMachine::new(),
+            pending_events: BTreeMap::new(),
+            tail_patch_outcomes: BTreeMap::new(),
         }
     }
 
@@ -411,6 +482,62 @@ impl AppleSealState {
         Self {
             tail_patch: Some(tail_patch),
             ..Self::new(sample_rate)
+        }
+    }
+
+    /// Apply one elapsed Whisper window, then emit every newly double-closed
+    /// span. Finals and their bounded patches share `ev_tx`, so ordering cannot
+    /// invert on the async side.
+    fn complete_whisper_window(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        completion: TailPatchCompletion,
+        now_secs: f32,
+    ) {
+        let utterance_id = completion.utterance_id;
+        self.tail_patch_outcomes
+            .insert(utterance_id, completion.outcome);
+        self.progressive
+            .note_whisper_window_elapsed(utterance_id, completion.covered_through_secs);
+        self.emit_ready_progressive_seals(ev_tx, now_secs);
+    }
+
+    fn emit_ready_progressive_seals(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        now_secs: f32,
+    ) {
+        let tick = self.progressive.try_seal(now_secs, false);
+        for sealed in tick.newly_sealed {
+            let Some(pending) = self.pending_events.remove(&sealed.id) else {
+                warn!(
+                    span_id = sealed.id,
+                    "progressive seal missing retained Apple payload"
+                );
+                continue;
+            };
+            self.sealed_count = self.sealed_count.saturating_add(1);
+            self.sealed_prefix = self.progressive.sealed_prefix();
+            let _ = ev_tx.send(EngineEvent::UtteranceFinal {
+                utterance_id: sealed.id,
+                text: sealed.text,
+                raw_text: pending.raw_text,
+                start_ts: pending.start_ts,
+                end_ts: pending.end_ts,
+                segments: pending.segments,
+                vad_speech_pct: None,
+                avg_logprob: None,
+                compression_ratio: None,
+                quality_gate_dropped: false,
+                confidence_flags: Vec::new(),
+            });
+            if let Some(TailPatchOutcome::Patches(events)) =
+                self.tail_patch_outcomes.remove(&sealed.id)
+            {
+                for event in events {
+                    let _ = ev_tx.send(event);
+                }
+            }
         }
     }
 }
@@ -496,61 +623,57 @@ fn seal_utterance_final(
         return false;
     };
 
-    // TRIM CONTRACT parity with the VAD path: the emitted final is the string
-    // future ReplaceRange char offsets are computed against, so it must be
-    // trimmed here and nowhere else.
-    //
-    // Progressive seal (w2-b): lexicon (above) then Light+ with left context so
-    // casing at a sentence start sees the preceding sealed terminal. Order is
-    // fixed — replacements before casing. Force-raw skips Light+ on the stop
-    // path (Ctrl-hold); at seal time the live canvas always shapes so residual
-    // stop no longer needs a full-file punctuation re-decode.
     let after_lexicon = corrected.trim().to_string();
-    let text =
-        crate::pipeline::light_plus::apply_with_left_context(&state.sealed_prefix, &after_lexicon);
-    if !state.sealed_prefix.is_empty() && !text.is_empty() {
-        state.sealed_prefix.push(' ');
-    }
-    state.sealed_prefix.push_str(&text);
     state.utterance_id = state.utterance_id.saturating_add(1);
-    state.sealed_count = state.sealed_count.saturating_add(1);
-    // Layer 1 diffs against this exact string, so capture it before the event
-    // takes ownership — and only when there is a lane to hand it to.
-    let committed_text = state.tail_patch.is_some().then(|| text.clone());
     let utterance_id = state.utterance_id;
-    let _ = ev_tx.send(EngineEvent::UtteranceFinal {
+    state
+        .progressive
+        .note_apple_commit(utterance_id, after_lexicon.clone(), end_ts, end_ts);
+    state.pending_events.insert(
         utterance_id,
-        text,
-        raw_text,
-        start_ts,
-        end_ts,
-        segments,
-        vad_speech_pct: None,
-        avg_logprob: None,
-        compression_ratio: None,
-        quality_gate_dropped: false,
-        confidence_flags: Vec::new(),
-    });
+        PendingAppleSeal {
+            raw_text,
+            start_ts,
+            end_ts,
+            segments,
+        },
+    );
 
     let window = resolve_sealed_audio_window(state, end_ts);
-    // The seal path runs on the PCM-forwarding thread: hand off without ever
-    // waiting. A full queue costs a patch, never a stalled capture (F1).
-    if let (Some(audio), Some(committed_text)) = (window, committed_text) {
-        let send = state.tail_patch.as_ref().map(|tx| {
-            tx.try_send(TailPatchRequest {
-                utterance_id,
-                committed_text,
-                audio,
-            })
-        });
-        if let Some(Err(e)) = send {
-            state.tail_patch_backpressure_drops =
-                state.tail_patch_backpressure_drops.saturating_add(1);
-            warn!(
-                utterance_id,
-                "Layer 1 tail-patch request dropped — queue full or lane gone: {e}"
-            );
+    let committed_text = seal_span_text(&after_lexicon, &state.sealed_prefix, false);
+    let queued = if let (Some(audio), Some(tx)) = (window, state.tail_patch.as_ref()) {
+        match tx.try_send(TailPatchRequest {
+            utterance_id,
+            committed_text,
+            audio,
+            covered_through_secs: end_ts,
+        }) {
+            Ok(()) => true,
+            Err(e) => {
+                state.tail_patch_backpressure_drops =
+                    state.tail_patch_backpressure_drops.saturating_add(1);
+                warn!(
+                    utterance_id,
+                    "Layer 1 tail-patch request dropped — queue full or lane gone: {e}"
+                );
+                false
+            }
         }
+    } else {
+        false
+    };
+
+    if !queued {
+        // Layer 0/off and degraded queue paths must still deliver Apple text.
+        // They are explicit fallbacks; the healthy layered path waits for the
+        // actual Whisper completion above.
+        state
+            .progressive
+            .note_whisper_window_elapsed(utterance_id, end_ts);
+        state.emit_ready_progressive_seals(
+            ev_tx,
+            end_ts + super::progressive_seal::APPLE_VOLATILE_WINDOW_SECS + 0.001,
+        );
     }
     true
 }
@@ -562,6 +685,7 @@ fn apple_stream_worker(
     sample_rate: u32,
     language: Option<&str>,
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
+    tail_patch_done: std_mpsc::Receiver<TailPatchCompletion>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let mut stream = LiveStreamSession::open(language, sample_rate)?;
     let mut state = match tail_patch {
@@ -571,6 +695,12 @@ fn apple_stream_worker(
     let mut samples_seen: u64 = 0;
 
     loop {
+        while let Ok(completion) = tail_patch_done.try_recv() {
+            let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
+            state.complete_whisper_window(&ev_tx, completion, audio_secs);
+        }
+        let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
+        state.emit_ready_progressive_seals(&ev_tx, audio_secs);
         // Interleave PCM wait with progressive event polling so partials land
         // mid-utterance without waiting for the next audio chunk.
         match pcm_rx.recv_timeout(Duration::from_millis(40)) {
@@ -605,6 +735,24 @@ fn apple_stream_worker(
     let open = state.open_partial.trim().to_string();
     if !open.is_empty() {
         seal_utterance_final(&mut state, &ev_tx, &open, 0.0, audio_secs, Vec::new());
+    }
+
+    // Every accepted Layer 1 request must close (success, no-change, or
+    // explicit skip) before the session task returns. This is bounded by the
+    // queue cap and happens while the async side is still draining jobs.
+    while !state.progressive.pending_spans().is_empty() {
+        match tail_patch_done.recv_timeout(Duration::from_secs(30)) {
+            Ok(completion) => state.complete_whisper_window(
+                &ev_tx,
+                completion,
+                audio_secs + super::progressive_seal::APPLE_VOLATILE_WINDOW_SECS + 0.001,
+            ),
+            Err(error) => {
+                warn!("progressive seal closure wait ended before all spans sealed: {error}");
+                state.progressive.mark_live_lane_dead();
+                break;
+            }
+        }
     }
 
     Ok(AppleStreamOutcome {
@@ -708,6 +856,7 @@ fn emit_stream_events(
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
                 state.open_partial = text.clone();
+                state.progressive.note_session_partial(&text, audio_secs);
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
                     rev: state.preview_rev,
@@ -756,7 +905,7 @@ fn emit_stream_events(
                     continue;
                 }
                 // No phrase finals → seal the full summary once (partials-only engine).
-                if state.sealed_count == 0 {
+                if state.utterance_id == 0 {
                     if seal_utterance_final(state, ev_tx, &text, 0.0, audio_secs, segments) {
                         state.open_partial.clear();
                     }
@@ -783,6 +932,66 @@ mod tests {
     /// Capture rate the Apple bridge is opened with; these tests exercise seal
     /// text, not audio retention, so any valid rate is representative.
     const TEST_SAMPLE_RATE: u32 = 16_000;
+
+    /// Integration boundary: the real Apple state owns the progressive
+    /// machine. Apple commit + live partial alone stay pending; an elapsed
+    /// Whisper window seals before session end.
+    #[test]
+    fn apple_session_progressive_machine_seals_after_whisper_before_session_end() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tp_tx, _tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 10.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "uruchom doker".into(),
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "uruchom doker".into(),
+                    segments: vec![segment("uruchom doker", 0.5, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            2.0,
+        );
+
+        assert_eq!(state.progressive.pending_spans().len(), 1);
+        let mut before = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            before.push(event);
+        }
+        assert!(
+            before
+                .iter()
+                .all(|event| !matches!(event, EngineEvent::UtteranceFinal { .. })),
+            "Apple commit alone must not bypass the double-seal condition"
+        );
+
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                utterance_id: 1,
+                covered_through_secs: 2.0,
+                outcome: TailPatchOutcome::NoChange,
+            },
+            5.0,
+        );
+
+        let mut after = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            after.push(event);
+        }
+        assert!(
+            after
+                .iter()
+                .any(|event| matches!(event, EngineEvent::UtteranceFinal { .. })),
+            "double-closed span must seal live"
+        );
+        assert_eq!(state.progressive.sealed_spans().len(), 1);
+    }
 
     /// Partial → Preview; each phrase final → UtteranceFinal with rising ids.
     #[test]

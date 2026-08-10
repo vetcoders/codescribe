@@ -2536,7 +2536,40 @@ const TARGET_WINDOW_SECS: f32 = 25.0;
 const VAD_WINDOW_OVERLAP_SECS: f32 = 5.0;
 const VAD_BOUNDARY_TOLERANCE_SECS: f32 = 5.0;
 
+/// Calibration for the shared VAD-aligned window planner.
+///
+/// File decode and the live rolling lane use the same boundary algorithm with
+/// different competence horizons. Keeping the policy explicit prevents the
+/// live bridge from forking a second silence picker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct VadWindowPlanConfig {
+    pub min_secs: f32,
+    pub target_secs: f32,
+    pub max_secs: f32,
+    pub overlap_secs: f32,
+    pub boundary_tolerance_secs: f32,
+}
+
+impl VadWindowPlanConfig {
+    const FILE: Self = Self {
+        min_secs: VAD_WINDOW_MIN_SECS,
+        target_secs: TARGET_WINDOW_SECS,
+        max_secs: VAD_WINDOW_MAX_SECS,
+        overlap_secs: VAD_WINDOW_OVERLAP_SECS,
+        boundary_tolerance_secs: VAD_BOUNDARY_TOLERANCE_SECS,
+    };
+}
+
 pub fn plan_vad_aligned_windows(silences: &[(f32, f32)], total_secs: f32) -> Vec<(f32, f32)> {
+    plan_vad_aligned_windows_with_config(silences, total_secs, VadWindowPlanConfig::FILE)
+}
+
+/// Shared planner with an explicit window calibration.
+pub(crate) fn plan_vad_aligned_windows_with_config(
+    silences: &[(f32, f32)],
+    total_secs: f32,
+    config: VadWindowPlanConfig,
+) -> Vec<(f32, f32)> {
     if !total_secs.is_finite() || total_secs <= 0.0 {
         return Vec::new();
     }
@@ -2556,15 +2589,15 @@ pub fn plan_vad_aligned_windows(silences: &[(f32, f32)], total_secs: f32) -> Vec
     let mut windows = Vec::new();
     let mut start = 0.0_f32;
     while start < total_secs {
-        if total_secs - start <= VAD_WINDOW_MAX_SECS {
+        if total_secs - start <= config.max_secs {
             windows.push((start, total_secs));
             break;
         }
 
-        let target = start + TARGET_WINDOW_SECS;
-        let candidate_min = (start + VAD_WINDOW_MIN_SECS).max(target - VAD_BOUNDARY_TOLERANCE_SECS);
-        let candidate_max = (start + VAD_WINDOW_MAX_SECS)
-            .min(target + VAD_BOUNDARY_TOLERANCE_SECS)
+        let target = start + config.target_secs;
+        let candidate_min = (start + config.min_secs).max(target - config.boundary_tolerance_secs);
+        let candidate_max = (start + config.max_secs)
+            .min(target + config.boundary_tolerance_secs)
             .min(total_secs);
 
         let boundary = usable_silences
@@ -2580,12 +2613,12 @@ pub fn plan_vad_aligned_windows(silences: &[(f32, f32)], total_secs: f32) -> Vec
             })
             .min_by(|(_, a_distance), (_, b_distance)| a_distance.total_cmp(b_distance))
             .map(|(point, _)| point)
-            .unwrap_or_else(|| (start + TARGET_WINDOW_SECS).min(total_secs));
+            .unwrap_or_else(|| (start + config.target_secs).min(total_secs));
 
-        let boundary = boundary.min(start + VAD_WINDOW_MAX_SECS).min(total_secs);
+        let boundary = boundary.min(start + config.max_secs).min(total_secs);
         windows.push((start, boundary));
 
-        let next_start = (boundary - VAD_WINDOW_OVERLAP_SECS).max(0.0);
+        let next_start = (boundary - config.overlap_secs).max(0.0);
         if next_start <= start {
             break;
         }
@@ -2596,7 +2629,7 @@ pub fn plan_vad_aligned_windows(silences: &[(f32, f32)], total_secs: f32) -> Vec
 
 /// Convert the existing 500 ms Silero probability stream into contiguous
 /// silence spans for the window planner.
-fn silence_spans_from_vad_probabilities(
+pub(crate) fn silence_spans_from_vad_probabilities(
     probabilities: &[f32],
     threshold: f32,
     total_secs: f32,

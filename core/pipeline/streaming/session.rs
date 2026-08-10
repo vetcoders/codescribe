@@ -25,9 +25,10 @@ use crate::vad;
 
 use super::correction::{
     PARTIAL_PASS_TRIGGER_TIMER_MS, PartialPassTelemetry, PartialPassTriggerState,
-    ROLLING_WINDOW_TARGET_SECS, RollingCorrectionWindow, apply_final_boundary_text,
-    classify_partial_trigger, correction_baseline_text, correction_is_stale,
-    merge_corrected_window, postprocess_correction_with_snapshot, schedule_partial_pass,
+    ROLLING_WINDOW_LOOKAHEAD_SECS, ROLLING_WINDOW_TARGET_SECS, RollingCorrectionWindow,
+    apply_final_boundary_text, classify_partial_trigger, correction_baseline_text,
+    correction_is_stale, merge_corrected_window, postprocess_correction_with_snapshot,
+    schedule_partial_pass,
 };
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
 use super::quality_gate::{
@@ -47,7 +48,7 @@ use super::tuning::{inference_max_concurrency, interim_vad_accumulate_samples};
 /// which is all `strip_overlap` needs — at constant cost. Sized to comfortably
 /// exceed the partial-pass cadence so no spoken tail is ever dropped before a
 /// Refine consumes it.
-const CORRECTION_WINDOW_SEC: f32 = ROLLING_WINDOW_TARGET_SECS;
+const CORRECTION_WINDOW_SEC: f32 = ROLLING_WINDOW_TARGET_SECS + ROLLING_WINDOW_LOOKAHEAD_SECS;
 /// Maximum text retained for Refine's window baseline.
 ///
 /// Text has no exact timestamps here, so keep a conservative character tail
@@ -949,8 +950,9 @@ pub(crate) async fn vad_transcription_session(
                                 "Suppressing stale correction (boundary advanced)"
                             );
                         } else {
-                            previous_window_prompt =
-                                (!raw.text.trim().is_empty()).then(|| raw.text.clone());
+                            previous_window_prompt = rolling_correction_window
+                                .merge_context(raw.clone())
+                                .or_else(|| (!raw.text.trim().is_empty()).then(|| raw.text.clone()));
                             match postprocess_correction_with_snapshot(
                                 &mut pipeline,
                                 &raw.text,

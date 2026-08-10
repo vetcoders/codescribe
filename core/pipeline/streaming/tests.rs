@@ -1083,7 +1083,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let mut correction_suffix_snapshot: Option<String> = None;
     let mut partial_telemetry = PartialPassTelemetry::default();
 
-    let mut first_audio = vec![21.0; 6];
+    let mut first_audio = vec![21.0; 10];
     rolling_window.observe_samples(first_audio.len());
     let first_window = String::from("draft-a");
     assert!(schedule_partial_pass(
@@ -1107,8 +1107,8 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         &event_sink,
     ));
     assert!(
-        first_audio.len() == 4,
-        "rolling correction should retain the four-second overlap"
+        first_audio.len() == 6,
+        "rolling correction should retain overlap plus boundary lookahead"
     );
     assert!(
         first_window == "draft-a",
@@ -1134,7 +1134,7 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         .expect("first correction handle should be tracked")
         .id();
 
-    let mut second_audio = vec![22.0; 8];
+    let mut second_audio = vec![22.0; 10];
     rolling_window.observe_samples(4);
     let second_window = String::from("draft-b");
     assert!(schedule_partial_pass(
@@ -1298,8 +1298,8 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
         let expected_rev = 21 + index as u64;
         let expected_text = format!("draft-{index}");
         let expected_suffix = format!("suffix-{index}");
-        let mut audio = vec![marker; if index == 0 { 6 } else { 8 }];
-        rolling_window.observe_samples(if index == 0 { 6 } else { 4 });
+        let mut audio = vec![marker; 10];
+        rolling_window.observe_samples(if index == 0 { 10 } else { 4 });
         let window = expected_text.clone();
 
         assert!(schedule_partial_pass(
@@ -1323,8 +1323,8 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
             &event_sink,
         ));
         assert!(
-            audio.len() == 4,
-            "schedule should retain only the rolling overlap"
+            audio.len() == 6,
+            "schedule should retain overlap plus boundary lookahead"
         );
         assert_eq!(correction_expected_boundary_rev, Some(expected_rev));
         assert_eq!(
