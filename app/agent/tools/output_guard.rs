@@ -41,6 +41,7 @@ pub(crate) fn truncate_with_source(text: &str, source: &Path) -> String {
     out
 }
 
+/// [`guard_chunk`] against an explicit spill directory — the testable seam.
 fn guard_chunk_into(text: &str, origin: &str, spill_dir: &Path) -> String {
     let total = text.chars().count();
     if total <= MAX_CHUNK_CHARS {
@@ -63,6 +64,10 @@ fn guard_chunk_into(text: &str, origin: &str, spill_dir: &Path) -> String {
     out
 }
 
+/// Write the full `text` to a new file in `dir` and return its path.
+///
+/// The name carries a millisecond timestamp, a sanitised `origin` slug, and a
+/// content hash, so concurrent spills from the same tool cannot collide.
 fn spill(text: &str, origin: &str, dir: &Path) -> std::io::Result<PathBuf> {
     fs::create_dir_all(dir)?;
     let millis = SystemTime::now()
@@ -84,15 +89,19 @@ fn spill(text: &str, origin: &str, dir: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Spill location: `<config_dir>/agent/spill`, inside an allowed `read_file` root
+/// so the agent can follow the pointer it was given.
 fn spill_dir() -> PathBuf {
     Config::config_dir().join("agent").join("spill")
 }
 
+/// Spill-and-point guard: cut context, never destroy knowledge.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Sub-threshold chunks return verbatim with no spill file written.
     #[test]
     fn small_chunk_passes_untouched() {
         let dir = TempDir::new().expect("tempdir");
@@ -106,6 +115,7 @@ mod tests {
         );
     }
 
+    /// Oversized generated output is cut in-context but fully spilled to disk.
     #[test]
     fn oversized_chunk_is_cut_but_knowledge_survives_via_spill_pointer() {
         let dir = TempDir::new().expect("tempdir");
@@ -136,6 +146,7 @@ mod tests {
         );
     }
 
+    /// On-disk sources get a path pointer; no second spill of the same bytes.
     #[test]
     fn on_disk_source_gets_a_path_pointer_not_a_spill() {
         let source = Path::new("/workspace/big.log");

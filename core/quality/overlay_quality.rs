@@ -20,6 +20,11 @@ use uuid::Uuid;
 
 use crate::config::{Config, FormattingPolicy};
 
+/// Serializes every custom-lexicon rewrite in this process.
+///
+/// The write is read-modify-write over one file, so two unsynchronized callers
+/// would each rewrite from their own snapshot and the loser's rule would vanish
+/// with no error. The lock covers the whole cycle, not just the final rename.
 static CUSTOM_LEXICON_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Quality record for one user correction on the overlay.
@@ -69,8 +74,12 @@ pub struct QualityRecord {
 /// Provenance of a custom-lexicon row. Correction upserts stamp `"correction"`.
 /// Legacy rows without a source deserialize as `"legacy"`.
 pub const LEXICON_SOURCE_CORRECTION: &str = "correction";
+/// Rule the operator typed by hand in Voice Lab.
 pub const LEXICON_SOURCE_MANUAL: &str = "manual";
+/// Rule brought in from an external dictionary file.
 pub const LEXICON_SOURCE_IMPORT: &str = "import";
+/// Fallback for rows written before provenance was stamped — unknown origin,
+/// not a claim that a human wrote them.
 pub const LEXICON_SOURCE_LEGACY: &str = "legacy";
 
 /// Read-only projection of one custom lexicon rule for product surfaces.
@@ -78,12 +87,20 @@ pub const LEXICON_SOURCE_LEGACY: &str = "legacy";
 /// Voice Lab renders the flattened `variant -> canonical` truth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomLexiconEntry {
+    /// The misheard form as it appears in STT output.
     pub variant: String,
+    /// The term the variant is rewritten to.
     pub canonical: String,
     /// `correction` | `manual` | `import` | `legacy` (default for old rows).
     pub source: String,
 }
 
+/// On-disk shape of one `lexicon.custom.jsonl` row.
+///
+/// Every field but `term` is `#[serde(default)]` because this file has been
+/// written by several generations of the loader: rows predating `extras` and
+/// `source` must still parse, or teaching would silently drop the operator's
+/// oldest rules.
 #[derive(Deserialize)]
 struct StoredCustomLexiconEntry {
     term: String,
@@ -95,6 +112,8 @@ struct StoredCustomLexiconEntry {
     source: Option<String>,
 }
 
+/// Legacy nested variant list. Older writers put mispronunciations under
+/// `extras`; both locations are merged on read.
 #[derive(Deserialize)]
 struct StoredLexiconExtras {
     #[serde(default)]
@@ -107,6 +126,8 @@ pub const MAX_PAIR_EDIT_DELTA_CHARS: usize = 20;
 
 /// Per-side phrase length window in Unicode chars (not bytes).
 pub const MIN_CANDIDATE_CHARS: usize = 2;
+/// Upper bound of that window: longer phrases are sentences, and a rule keyed
+/// on a whole sentence would never match a second time.
 pub const MAX_CANDIDATE_CHARS: usize = 80;
 
 /// Global rewrite guard: if more than this fraction of tokens changed, return
@@ -120,6 +141,9 @@ pub const MAX_TOKEN_CHANGE_RATIO: f64 = 0.40;
 pub const MIN_TOKENS_FOR_REWRITE_GUARD: usize = 6;
 
 impl QualityRecord {
+    /// New record for one overlay edit, stamped now with a fresh
+    /// `correction_id` at revision 1. Confidence fields are left empty; use
+    /// [`QualityRecord::new_with_confidence`] when STT reported them.
     pub fn new(
         raw_text: String,
         delivered_text: String,
@@ -143,6 +167,11 @@ impl QualityRecord {
         )
     }
 
+    /// Full constructor, including the STT confidence signals (W11-C).
+    ///
+    /// An unavailable clock yields `timestamp_ms == 0` rather than a panic: the
+    /// correction itself is the evidence, and refusing to record it because the
+    /// system clock misbehaved would lose the operator's actual work.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_confidence(
         raw_text: String,
@@ -182,6 +211,14 @@ impl QualityRecord {
         }
     }
 
+    /// Identity used to collapse a correction and its later revisions into one
+    /// row.
+    ///
+    /// Rows written before `correction_id` existed get a deterministic
+    /// `legacy-<sha256>` derived from their immutable fields (timestamp, mode,
+    /// model, raw and delivered text) — never from `edited_text`, which is
+    /// exactly what a revision changes. Fields are hashed with a `0` separator
+    /// so adjacent values cannot be shifted between them to collide.
     pub fn logical_id(&self) -> String {
         let stored = self.correction_id.trim();
         if !stored.is_empty() {
@@ -301,6 +338,11 @@ pub fn recent_quality_records(limit: usize) -> Result<Vec<QualityRecord>> {
         .collect())
 }
 
+/// Every correction record in file order, revisions included.
+///
+/// Unlike [`recent_quality_records`] this does not collapse to the newest
+/// revision per correction — finalization needs the whole chain to pick the
+/// current head and compute the next revision number.
 fn all_quality_records() -> Result<Vec<QualityRecord>> {
     let path = quality_dir().join("corrections.jsonl");
     let file = match File::open(&path) {
@@ -479,6 +521,8 @@ pub fn is_sensible_lexicon_candidate(variant: &str, canonical: &str) -> bool {
 fn is_function_word(variant: &str) -> bool {
     // One flat set — "a" and "to" are shared between Polish and English, so
     // splitting the list by language duplicates them (review P3-02).
+    /// High-frequency PL/EN function words rejected as bare lexicon variants.
+    /// Multi-word phrases that merely contain one of these stay eligible.
     const FUNCTION_WORDS: &[&str] = &[
         "a", "ale", "an", "and", "are", "być", "by", "co", "czy", "do", "go", "i", "in", "is",
         "it", "jak", "jest", "jestem", "jesteś", "już", "ma", "mam", "mi", "na", "nie", "no", "o",
@@ -514,6 +558,8 @@ fn tokenize_for_alignment(text: &str) -> Vec<String> {
     tokens
 }
 
+/// Comparison key for alignment: full Unicode lowercase, so `Żółw` and `żółw`
+/// align as the same token instead of registering as a substitution.
 fn token_key(token: &str) -> String {
     token
         .chars()
@@ -521,6 +567,9 @@ fn token_key(token: &str) -> String {
         .collect::<String>()
 }
 
+/// Length of the longest common token subsequence — the "how much survived the
+/// edit" number behind the global rewrite guard. Two rolling rows only; the
+/// alignment itself is reconstructed separately by [`aligned_replace_runs`].
 fn token_lcs_length(a: &[String], b: &[String]) -> usize {
     let n = a.len();
     let m = b.len();
@@ -559,6 +608,7 @@ fn aligned_replace_runs(a: &[String], b: &[String]) -> Vec<(String, String)> {
     }
 
     // Backtrack into reverse ops: Equal / Del / Ins
+    /// LCS backtrack step while rebuilding word-level replace runs.
     enum Op {
         Equal,
         Del,
@@ -617,6 +667,9 @@ fn aligned_replace_runs(a: &[String], b: &[String]) -> Vec<(String, String)> {
     pairs
 }
 
+/// Edit distance in Unicode chars. Chars, not bytes: a Polish diacritic costs
+/// two bytes, and byte distance would reject `łódź`-shaped fixes that are one
+/// character apart.
 fn levenshtein_chars(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -652,6 +705,7 @@ pub fn upsert_correction_in_custom_lexicon(variant: &str, canonical: &str) -> Re
     upsert_correction_in_custom_lexicon_unlocked(variant, canonical)
 }
 
+/// Single-pair upsert body. Caller must already hold [`CUSTOM_LEXICON_WRITE_LOCK`].
 fn upsert_correction_in_custom_lexicon_unlocked(variant: &str, canonical: &str) -> Result<()> {
     upsert_corrections_unlocked(std::slice::from_ref(&(variant, canonical)))
 }
@@ -676,6 +730,11 @@ pub fn upsert_corrections_in_custom_lexicon(pairs: &[(&str, &str)]) -> Result<()
     upsert_corrections_unlocked(pairs)
 }
 
+/// Shared upsert body: gate every pair, fold them into one in-memory rewrite,
+/// then perform a single atomic replace.
+///
+/// Caller must already hold [`CUSTOM_LEXICON_WRITE_LOCK`]. Returns `Ok(())`
+/// without touching the file when no pair survives the gate.
 fn upsert_corrections_unlocked(pairs: &[(&str, &str)]) -> Result<()> {
     assert_test_data_dir_isolated("upsert_correction_in_custom_lexicon");
     let accepted: Vec<(&str, &str)> = pairs
@@ -738,10 +797,18 @@ pub fn cleanup_orphaned_lexicon_temps(dir: &Path) {
     }
 }
 
+/// Matching key for "is this the same variant?" during a rewrite. Trim plus
+/// lowercase, so re-teaching `Junie` after `junie` supersedes the old row
+/// instead of stacking a second rule beside it.
 fn normalized_variant(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
+/// Strip `target` from a row's variant lists, both the top-level
+/// `mispronunciations` and the legacy `extras` nest.
+///
+/// Non-string array members are kept: this walks untyped JSON so an unfamiliar
+/// row shape is preserved rather than quietly pruned.
 fn remove_normalized_variant(value: &mut serde_json::Value, target: &str) {
     if let Some(entries) = value
         .get_mut("mispronunciations")
@@ -769,6 +836,14 @@ fn remove_normalized_variant(value: &mut serde_json::Value, target: &str) {
     }
 }
 
+/// Produce the new lexicon file contents with exactly one active mapping for
+/// `variant`.
+///
+/// Order of operations matters: every prior mapping of the variant is removed
+/// first, husk rows left with no variants are dropped, and only then is the new
+/// row appended — otherwise the loader could see two rules for one variant and
+/// the winner would depend on read order. Rows that fail to parse are passed
+/// through verbatim; a rewrite is not the place to discard data it cannot read.
 fn rewrite_custom_lexicon(existing: &str, variant: &str, canonical: &str) -> Result<String> {
     let target = normalized_variant(variant);
     let mut lines = Vec::new();
@@ -806,6 +881,8 @@ fn rewrite_custom_lexicon(existing: &str, variant: &str, canonical: &str) -> Res
     Ok(format!("{}\n", lines.join("\n")))
 }
 
+/// True when a row has no usable variant left in either location — a husk that
+/// would otherwise accumulate in the file forever (W11-B).
 fn lexicon_row_has_no_variants(value: &serde_json::Value) -> bool {
     let top_empty = value
         .get("mispronunciations")
@@ -829,6 +906,13 @@ fn lexicon_row_has_no_variants(value: &serde_json::Value) -> bool {
     top_empty && extras_empty
 }
 
+/// Replace a file's contents atomically: write a unique temp beside it, fsync,
+/// rename over the target, then fsync the directory so the rename itself is
+/// durable. A crash leaves either the old file or the new one, never a partial.
+///
+/// `rename` is injected so tests can fail that exact step and prove the
+/// previous bytes survive. The temp name carries pid and UUID, so concurrent
+/// processes cannot collide, and the error path removes it.
 fn atomic_write_with_rename<F>(path: &Path, content: &[u8], rename: F) -> Result<()>
 where
     F: FnOnce(&Path, &Path) -> std::io::Result<()>,
@@ -866,6 +950,7 @@ where
 /// Result of a successful overlay-quality commit (evidence always; learn when Correction).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayCorrectionCommit {
+    /// The `corrections.jsonl` the evidence line was appended to.
     pub quality_path: PathBuf,
     /// Lexicon pairs actually upserted from this commit (0 when evidence-only or filtered).
     pub pairs_learned: u32,
@@ -1100,10 +1185,15 @@ pub fn replay_corrections_through_extractor(
 /// One dry-run / apply row from [`replay_corrections_through_extractor`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReplayCandidate {
+    /// 1-based line in the replayed corrections file, for operator traceability.
     pub line: usize,
+    /// Logical id of the record this pair came from.
     pub correction_id: String,
+    /// Misheard form.
     pub variant: String,
+    /// Term it would be rewritten to.
     pub canonical: String,
+    /// False in a dry run; true once the batch upsert succeeded.
     pub applied: bool,
 }
 
@@ -1321,18 +1411,21 @@ pub fn derive_lexicon_pairs(delivered: &str, canonical: &str) -> Vec<(String, St
     extract_lexicon_candidates(delivered, canonical)
 }
 
+/// Hermetic quality-loop + lexicon-policy tests; isolate via CODESCRIBE_DATA_DIR.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::OsString;
 
+    /// Restores one process env var on drop so serial tests leave the host clean.
     struct EnvRestore {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvRestore {
+        /// Snapshot the current value (or absence) of `key` before a test mutates it.
         fn capture(key: &'static str) -> Self {
             Self {
                 key,
@@ -1342,6 +1435,7 @@ mod tests {
     }
 
     impl Drop for EnvRestore {
+        /// Put the captured env binding back; safe only under #[serial] exclusive access.
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -1350,6 +1444,7 @@ mod tests {
         }
     }
 
+    /// Short multi-word mishearing collapses to one variant→canonical pair.
     #[test]
     fn test_extract_candidates_basic() {
         let cands = extract_lexicon_candidates("uni agentka", "Junie");
@@ -1357,6 +1452,7 @@ mod tests {
         assert_eq!(cands[0], ("uni agentka".to_string(), "Junie".to_string()));
     }
 
+    /// Identical sides and empty inputs yield no teachable candidates.
     #[test]
     fn test_extract_ignores_identical_and_empty() {
         assert!(extract_lexicon_candidates("foo", "foo").is_empty());
@@ -1364,6 +1460,7 @@ mod tests {
         assert!(extract_lexicon_candidates("bar", "").is_empty());
     }
 
+    /// Case-only changes (incl. Polish diacritic casefold) are not lexicon pairs.
     #[test]
     fn test_candidate_policy_rejects_case_only_edits() {
         assert!(extract_lexicon_candidates("junie", "Junie").is_empty());
@@ -1373,12 +1470,14 @@ mod tests {
         assert!(!is_sensible_lexicon_candidate("żaba", "Żaba"));
     }
 
+    /// Punctuation-only edits share tokens after stripping, so no pair is emitted.
     #[test]
     fn test_candidate_policy_rejects_punctuation_only_edit_shape() {
         // Word-level alignment: same tokens after stripping punctuation → no pair.
         assert!(extract_lexicon_candidates("Hello Junie", "Hello, Junie").is_empty());
     }
 
+    /// Near-total rewrites trip the global token-change guard and stay evidence-only.
     #[test]
     fn test_candidate_policy_rejects_long_sentence_rewrites() {
         let delivered = "uni agentka ".repeat(12);
@@ -1388,6 +1487,7 @@ mod tests {
         assert!(!is_sensible_lexicon_candidate(&delivered, "Junie"));
     }
 
+    /// Multi-word phonetic-ish phrases remain legal when within length and delta caps.
     #[test]
     fn test_candidate_policy_accepts_multi_word_phrase_pairs() {
         let cands = extract_lexicon_candidates("luks tri mapa", "Loctree map");
@@ -1396,6 +1496,7 @@ mod tests {
         assert!(is_sensible_lexicon_candidate(&cands[0].0, &cands[0].1));
     }
 
+    /// Bare function words are poisoned as variants; multi-word phrases containing them pass.
     #[test]
     fn test_candidate_policy_rejects_bare_function_word_variants() {
         // The 2026-07-30 lexicon poisoning: a rule keyed on bare "jest" fired
@@ -1414,6 +1515,7 @@ mod tests {
         ));
     }
 
+    /// Non-phonetic substitutions stay legal — product feature, not a similarity filter.
     #[test]
     fn test_candidate_policy_keeps_arbitrary_substitutions_legal() {
         // Deliberate product behavior: non-phonetic substitutions are a
@@ -1424,12 +1526,14 @@ mod tests {
         assert!(is_sensible_lexicon_candidate("Bonarki", "binarki"));
     }
 
+    /// Per-side char window: below MIN or above MAX candidate length is rejected.
     #[test]
     fn test_sensible_rejects_too_short_or_long() {
         assert!(!is_sensible_lexicon_candidate("a", "b"));
         assert!(!is_sensible_lexicon_candidate(&"x".repeat(100), "y"));
     }
 
+    /// Long dictation with one local word fix still extracts that single pair.
     #[test]
     fn long_dictation_single_word_fix_teaches() {
         // 500-char-class Polish dictation with one local fix.
@@ -1447,6 +1551,7 @@ mod tests {
         assert_eq!(cands, vec![("zaznaczenie".into(), "selection".into())]);
     }
 
+    /// ~500-char body with a five-char local fix yields exactly one aligned pair.
     #[test]
     fn five_hundred_char_dictation_with_five_char_fix_yields_one_pair() {
         let filler = "słowo ";
@@ -1461,6 +1566,7 @@ mod tests {
         assert_eq!(cands, vec![("error".into(), "fix".into())]);
     }
 
+    /// Full token rewrite exceeds the change-ratio guard and returns no pairs.
     #[test]
     fn total_rewrite_yields_zero_pairs() {
         let delivered = "alpha beta gamma delta epsilon zeta eta theta";
@@ -1468,6 +1574,7 @@ mod tests {
         assert!(extract_lexicon_candidates(delivered, edited).is_empty());
     }
 
+    /// Levenshtein boundary: delta 20 is teachable; 21 is rejected by the pair gate.
     #[test]
     fn delta_twenty_accepted_twenty_one_rejected() {
         // Same length so Levenshtein equals substitution count.
@@ -1499,6 +1606,7 @@ mod tests {
         let _ = c20;
     }
 
+    /// Disjoint local substitutions emit one candidate pair per replaced run.
     #[test]
     fn multi_fix_edit_yields_multiple_pairs() {
         let delivered = "foo bar baz qux";
@@ -1511,6 +1619,7 @@ mod tests {
         );
     }
 
+    /// E2E: long-dictation commit learns one pair and stamps correction provenance.
     #[test]
     #[serial]
     fn long_dictation_e2e_pair_learned_and_applied_by_lexicon() {
@@ -1560,6 +1669,7 @@ mod tests {
         assert_eq!(next, "tu selection jest");
     }
 
+    /// Empty and emptied lexicon rows are dropped on the next rewrite (W11-B husks).
     #[test]
     #[serial]
     fn husk_rows_are_dropped_on_next_upsert() {
@@ -1599,6 +1709,7 @@ mod tests {
         assert!(content.contains(r#""source":"correction""#));
     }
 
+    /// Under cfg(test), quality writes panic if CODESCRIBE_DATA_DIR is unset.
     #[test]
     #[serial]
     fn quality_write_panics_without_data_dir_under_test() {
@@ -1620,6 +1731,7 @@ mod tests {
         assert!(result.is_err(), "must panic when CODESCRIBE_DATA_DIR unset");
     }
 
+    /// Legacy JSONL omits confidence fields; new records round-trip them intact.
     #[test]
     fn confidence_fields_roundtrip_old_and_new_records() {
         let legacy = r#"{"timestamp_ms":42,"mode":"overlay","raw_text":"r","delivered_text":"d","edited_text":"e","meta":null}"#;
@@ -1648,6 +1760,7 @@ mod tests {
         assert_eq!(decoded.confidence_flags, vec!["low_logprob".to_string()]);
     }
 
+    /// New upserts stamp source=correction; pre-provenance rows still deserialize.
     #[test]
     fn upsert_stamps_correction_provenance_and_legacy_rows_parse() {
         let existing = r#"{"term":"Old","mispronunciations":["old-var"]}
@@ -1660,6 +1773,7 @@ mod tests {
         assert!(stored.source.is_none());
     }
 
+    /// Replay dry-run keeps only local teachable pairs; apply writes the lexicon.
     #[test]
     #[serial]
     fn replay_dry_run_on_fixture_corpus_produces_expected_table() {
@@ -1730,6 +1844,7 @@ mod tests {
         assert!(entries.iter().any(|e| e.variant == "zaznaczenie"));
     }
 
+    /// Commit under DATA_DIR isolation writes quality + meta and may teach pairs.
     #[test]
     #[serial]
     fn test_commit_writes_record_and_does_not_panic_on_lexicon() {
@@ -1806,6 +1921,7 @@ mod tests {
 
     // Over-correct depth for D-02 / P1-02 / P2-03: explicit action variants + distinct raw_text
     // prove the quality heart (record + meta + raw for lexicon v2) under isolation.
+    /// Distinct raw_text and action variants land correctly in quality meta.
     #[test]
     #[serial]
     fn test_commit_records_distinct_raw_and_various_actions() {
@@ -1879,6 +1995,7 @@ mod tests {
         );
     }
 
+    /// Over-long edits still append quality evidence with zero lexicon growth.
     #[test]
     #[serial]
     fn test_commit_long_edit_records_quality_but_no_lexicon_candidate() {
@@ -1923,6 +2040,7 @@ mod tests {
         assert_eq!(before, after, "no lexicon growth for long edit");
     }
 
+    /// Voice Lab read surface projects newest records and flattened lexicon rows.
     #[test]
     #[serial]
     fn test_voice_lab_read_surface_returns_live_records_and_lexicon_entries() {
@@ -2012,6 +2130,7 @@ mod tests {
         );
     }
 
+    /// Pre-id rows share a stable legacy-<hash> logical_id across deserializations.
     #[test]
     fn legacy_records_receive_deterministic_logical_ids() {
         let legacy = r#"{"timestamp_ms":42,"mode":"overlay","raw_text":"uni agentka","delivered_text":"uni agentka","edited_text":"Junie","meta":{"action":"copy"}}"#;
@@ -2025,6 +2144,7 @@ mod tests {
         assert_eq!(first.logical_id(), second.logical_id());
     }
 
+    /// Known formatting levels serialize canonically; missing level stays None.
     #[test]
     fn formatting_level_roundtrips_canonically_and_old_rows_remain_compatible() {
         for (input, canonical) in [
@@ -2057,6 +2177,7 @@ mod tests {
         assert_eq!(decoded.formatting_level, None);
     }
 
+    /// All levels append evidence; only Correction upserts lexicon candidates.
     #[test]
     #[serial]
     fn level_aware_commit_records_every_level_but_only_correction_teaches_lexicon() {
@@ -2091,6 +2212,7 @@ mod tests {
         assert_eq!(candidates[0].canonical, "CorrCanonical");
     }
 
+    /// Learning keys on raw STT text, not the formatter's delivered surface.
     #[test]
     #[serial]
     fn correction_learning_uses_raw_stt_not_formatted_delivery() {
@@ -2124,6 +2246,7 @@ mod tests {
         );
     }
 
+    /// Voice Lab finalize still teaches from raw_text, not formatted delivery.
     #[test]
     #[serial]
     fn voice_lab_revision_keeps_raw_stt_as_dictionary_source() {
@@ -2158,6 +2281,7 @@ mod tests {
         );
     }
 
+    /// Finalize appends a revision and collapses duplicate variant mappings to one.
     #[test]
     #[serial]
     fn finalizing_correction_appends_revision_and_leaves_one_active_mapping() {
@@ -2229,6 +2353,7 @@ mod tests {
         recent_quality_records(1).expect("seed projection")[0].logical_id()
     }
 
+    /// Count lines in the isolated corrections.jsonl audit log.
     fn audit_line_count() -> usize {
         fs::read_to_string(quality_dir().join("corrections.jsonl"))
             .expect("read audit")
@@ -2236,6 +2361,7 @@ mod tests {
             .count()
     }
 
+    /// Paragraph-length human revision always persists; learning is separate.
     #[test]
     #[serial]
     fn paragraph_length_edit_always_saves_the_human_revision() {
@@ -2281,6 +2407,7 @@ mod tests {
         );
     }
 
+    /// Mixed edits teach only sensible pairs; long insane sides are filtered alone.
     #[test]
     #[serial]
     fn pairs_are_gated_individually_not_as_one_edit() {
@@ -2308,6 +2435,7 @@ mod tests {
         assert_eq!(entries[0].canonical, "Pensieve");
     }
 
+    /// Whitespace-only revision saves audit with zero pairs and no lexicon touch.
     #[test]
     #[serial]
     fn whitespace_only_edit_saves_with_zero_pairs_and_untouched_lexicon() {
@@ -2331,6 +2459,7 @@ mod tests {
         );
     }
 
+    /// Lexicon upsert failure reports lexicon_error but never blocks the human save.
     #[test]
     #[serial]
     fn lexicon_write_failure_never_vetoes_the_human_save() {
@@ -2357,6 +2486,7 @@ mod tests {
         assert_eq!(recent_quality_records(1).unwrap()[0].edited_text, "Junie");
     }
 
+    /// Injected rename failure leaves prior lexicon bytes and cleans the temp file.
     #[test]
     fn injected_atomic_replace_failure_keeps_previous_lexicon_bytes() {
         let temp_dir = tempfile::tempdir().expect("temp lexicon");
@@ -2391,6 +2521,7 @@ mod tests {
         temp_dir
     }
 
+    /// Batch multi-pair upsert equals sequential upserts, including supersession.
     #[test]
     #[serial]
     fn batch_upsert_matches_sequential_upserts_row_for_row() {
@@ -2441,6 +2572,7 @@ mod tests {
         );
     }
 
+    /// Teach promotes proposed rules and counts only rows that actually landed.
     #[test]
     #[serial]
     fn teach_promotes_proposed_rules_and_counts_only_what_landed() {
@@ -2495,6 +2627,7 @@ mod tests {
         );
     }
 
+    /// Empty store teach is a zero-count success, not an error path.
     #[test]
     #[serial]
     fn teach_on_empty_store_is_a_no_op_not_an_error() {

@@ -6,12 +6,15 @@ use codescribe_core::pipeline::contracts::EngineEvent;
 use serial_test::serial;
 use std::time::Duration;
 
+/// A fresh controller starts Idle — no session is implied by construction alone.
 #[tokio::test]
 async fn test_initial_state() {
     let controller = RecordingController::new();
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// The paste target reports the app latched before the overlay took focus, and
+/// `None` when nothing was latched — the delivery path must never guess a target.
 #[tokio::test]
 async fn test_paste_target_app_name_maps_latched_name_and_absence() {
     let controller = RecordingController::new();
@@ -24,6 +27,8 @@ async fn test_paste_target_app_name_maps_latched_name_and_absence() {
     );
 }
 
+/// The segment offset starts at zero, which is what makes the first
+/// `commit_segment` of a toggle session clip from the beginning of the buffer.
 #[tokio::test]
 async fn test_last_segment_audio_offset_initialized_to_zero() {
     // commit_segment relies on this starting at 0 — the first segment of a
@@ -40,6 +45,8 @@ async fn test_last_segment_audio_offset_initialized_to_zero() {
     );
 }
 
+/// Smoke test for the exact atomic ops the segment path uses: advance after a
+/// commit, reset to zero on a new session so no offset leaks between sessions.
 #[tokio::test]
 async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
     // Smoke for the atomic ops that commit_segment + start_toggle_recording use.
@@ -66,6 +73,8 @@ async fn test_last_segment_audio_offset_atomic_advance_and_reset() {
     );
 }
 
+/// The assistive floor raises a too-short hold delay but never lowers a longer
+/// configured one — it is a safety minimum, not an override.
 #[test]
 fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
     assert_eq!(effective_hold_start_delay_ms(200, false), 200);
@@ -73,6 +82,9 @@ fn test_assistive_hold_delay_floor_preserves_higher_configured_delay() {
     assert_eq!(effective_hold_start_delay_ms(800, true), 800);
 }
 
+/// Cross-module budget guard: the stop watchdog must outlast the default AI
+/// attempt budget, or it would abort a healthy formatting call mid-flight and
+/// report a stall that never happened.
 #[test]
 fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
     assert!(
@@ -81,6 +93,8 @@ fn test_toggle_stop_watchdog_allows_default_ai_attempt_budget() {
     );
 }
 
+/// A hold press does not start recording immediately — it schedules a start
+/// after the configured delay, so a stray tap never opens a session.
 #[tokio::test]
 #[serial]
 async fn test_hold_down_schedules_delayed_start() {
@@ -112,6 +126,8 @@ async fn test_hold_down_schedules_delayed_start() {
     assert_eq!(controller.current_state().await, State::RecHold);
 }
 
+/// The assistive lane waits out the raised floor, not the configured delay: at
+/// 250 ms the controller is still Idle, and only past the floor does it record.
 #[tokio::test]
 #[serial]
 async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
@@ -139,6 +155,8 @@ async fn test_assistive_hold_ctrl_uses_safe_delay_floor() {
     assert_eq!(controller.current_state().await, State::RecHold);
 }
 
+/// Releasing before the delay elapses cancels the pending start for good — the
+/// timer must not fire later and open a session the user already abandoned.
 #[tokio::test]
 #[serial]
 async fn test_hold_up_before_delay_cancels() {
@@ -182,6 +200,8 @@ async fn test_hold_up_before_delay_cancels() {
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// The same cancellation holds on the assistive lane: a tap shorter than the
+/// raised floor leaves no session behind, even after the floor would have passed.
 #[tokio::test]
 #[serial]
 async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
@@ -218,6 +238,8 @@ async fn test_fast_assistive_ctrl_tap_before_floor_is_noop() {
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// Toggle has no delay gate: the press transitions straight to recording. The
+/// hold delay exists to disambiguate hold-vs-tap, which toggle does not need.
 #[tokio::test]
 #[serial]
 async fn test_toggle_starts_immediately() {
@@ -241,6 +263,9 @@ async fn test_toggle_starts_immediately() {
     assert_eq!(controller.current_state().await, State::RecToggle);
 }
 
+/// Hotkeys pressed while Busy are dropped, not errors: the handler returns `Ok`
+/// and the state is unchanged, so an impatient user cannot corrupt a session in
+/// flight or surface a spurious failure.
 #[tokio::test]
 #[serial]
 async fn test_busy_state_ignores_hotkeys() {
@@ -267,6 +292,8 @@ async fn test_busy_state_ignores_hotkeys() {
     assert_eq!(controller.current_state().await, State::Busy);
 }
 
+/// The `Display` strings are a stable contract — they reach logs and receipts,
+/// so renaming a variant must not silently change what operators grep for.
 #[tokio::test]
 async fn test_state_display() {
     assert_eq!(State::Idle.to_string(), "IDLE");
@@ -275,6 +302,8 @@ async fn test_state_display() {
     assert_eq!(State::Busy.to_string(), "BUSY");
 }
 
+/// `reset` is the escape hatch from a stuck Busy state — it forces Idle
+/// unconditionally rather than waiting for whatever hung to finish.
 #[tokio::test]
 async fn test_reset_from_busy() {
     let controller = RecordingController::new();
@@ -289,6 +318,9 @@ async fn test_reset_from_busy() {
     assert!(!controller.is_busy().await);
 }
 
+/// "Recording" covers both capture states and excludes Busy. Busy means audio
+/// has stopped and processing is running — treating it as recording would keep
+/// the microphone indicator lit after the user finished speaking.
 #[tokio::test]
 async fn test_is_recording_states() {
     let controller = RecordingController::new();
@@ -319,6 +351,8 @@ async fn test_is_recording_states() {
 // - Left Double Option → force_ai=true, assistive=false → Formatting mode
 // - Toggle (no force_ai) → respects AI_FORMATTING_ENABLED setting
 
+/// Plain hold (no Shift) arms raw mode and leaves the assistive flag off — the
+/// two mode flags are set from one event and must not bleed into each other.
 #[tokio::test]
 #[serial]
 async fn test_hold_down_sets_force_raw_mode() {
@@ -350,6 +384,12 @@ async fn test_hold_down_sets_force_raw_mode() {
     );
 }
 
+/// The engine label reports what actually ran, never what was configured.
+///
+/// Three cases pin it: an Apple verdict labels Apple; a skipped final pass
+/// reports the live engine instead of a hardcoded Whisper; and an Apple
+/// preference that fell back to Whisper at runtime must say Whisper. Laundering
+/// preference into the label would make receipts lie about the engine used.
 #[test]
 fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
     // Preference-only path (no verdict) stays preference-neutral default.
@@ -397,6 +437,9 @@ fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
     );
 }
 
+/// The stop-path receipt names every phase and its remainder sums to the wall
+/// total. Unaccounted time must show up as `remainder`, never be absorbed into
+/// a named phase — that is what makes the receipt usable for latency work.
 #[test]
 fn test_stop_path_budget_line_format() {
     let budget = StopPathBudget {
@@ -427,9 +470,14 @@ fn test_stop_path_budget_line_format() {
     );
 }
 
+/// The final-pass breakdown accounts for its wall time exactly: queue plus
+/// model load plus inference plus engine overhead equals the total. The split
+/// may neither invent nor lose milliseconds, or cold-load analysis is worthless.
 #[test]
 fn test_final_pass_stages_line_format_and_coverage() {
     let stages = FinalPassStages {
+        seal_ms: 0,
+        residual_ms: 0,
         queue_ms: 12,
         model_load_ms: 21_000,
         cold_load: true,
@@ -459,11 +507,16 @@ fn test_final_pass_stages_line_format_and_coverage() {
     );
 }
 
+/// Rounding can make the sub-stages exceed the measured wall total. The derived
+/// overhead saturates at zero instead of underflowing — on unsigned arithmetic
+/// that underflow would print an absurd multi-million-ms overhead.
 #[test]
 fn test_final_pass_stages_overhead_saturates_never_negative() {
     // Rounding jitter can make sub-stage sums exceed the wall total by a few
     // ms; the remainder must clamp to 0 instead of underflowing.
     let stages = FinalPassStages {
+        seal_ms: 0,
+        residual_ms: 0,
         queue_ms: 10,
         model_load_ms: 0,
         cold_load: false,
@@ -476,6 +529,88 @@ fn test_final_pass_stages_overhead_saturates_never_negative() {
     let line = format_final_pass_stages_line(stages);
     assert!(line.contains("engine_overhead_ms=0"), "{line}");
     assert!(line.contains("cold_load=false"), "{line}");
+}
+
+/// w2-b residual stop path: delivered text is seals + residual partials, never
+/// a full-file re-decode, and the phase stays under the 1 s fence (baseline
+/// 8.458 s was fresh file inference whose output the guardrail discarded).
+#[test]
+fn stop_path_residual_compose_from_partials_under_one_second() {
+    use super::final_pass::{
+        compose_stop_path_residual_from_partials, residual_prefers_session_partials,
+    };
+
+    let seals = vec![
+        "Pierwsze zdanie o Codescribe.".to_string(),
+        "Drugie zdanie o Whisper.".to_string(),
+        "Trzecie o lexicon.".to_string(),
+    ];
+    let residual_partial = "ogon z live partiali bez re-decode pliku";
+
+    let started = std::time::Instant::now();
+    let outcome = compose_stop_path_residual_from_partials(&seals, residual_partial);
+    let phase = started.elapsed().as_secs_f64();
+
+    assert!(
+        phase < 1.0,
+        "residual final_pass phase must be < 1 s (measured {phase:.6}s; baseline 8.458s)"
+    );
+    assert!(
+        outcome.final_pass_phase_secs < 1.0,
+        "outcome reports phase < 1 s: {}",
+        outcome.final_pass_phase_secs
+    );
+    assert!(
+        !outcome.used_file_decode_fallback,
+        "healthy residual must not claim file-decode fallback"
+    );
+    assert!(
+        outcome.text.contains("Pierwsze zdanie"),
+        "sealed prefix must survive: {}",
+        outcome.text
+    );
+    assert!(
+        outcome.text.contains("ogon z live partiali"),
+        "residual partial must append: {}",
+        outcome.text
+    );
+    assert_eq!(
+        outcome.text,
+        append_tail_gap(&outcome.sealed_prefix, &outcome.residual_tail)
+    );
+    assert!(
+        residual_prefers_session_partials(true, true),
+        "alive live lane + partials → residual from partials"
+    );
+    assert!(
+        !residual_prefers_session_partials(false, true),
+        "dead live lane refuses partial residual (file safety net)"
+    );
+    eprintln!("stop_path_residual_controller_phase_secs={phase:.6} baseline=8.458");
+}
+
+/// Live-lane fence does not invent a new FinalPassAction variant — the matrix
+/// stays mode×completeness (lane state feeds `smart_tail_gap_source`, which
+/// picks the residual *source*, never the typed action).
+#[test]
+fn stop_path_residual_live_lane_fence_preserves_action_matrix() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
+    let incomplete = StreamingCompleteness::Incomplete {
+        reason: "pending_tail",
+    };
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, incomplete),
+        FinalPassAction::TailGapFill
+    );
+    assert_eq!(
+        final_pass_action(
+            FinalPassRoutingMode::Smart,
+            StreamingCompleteness::CompleteShapeDeficient
+        ),
+        FinalPassAction::PunctuationRepass,
+        "shape deficiency keeps PunctuationRepass as the file safety net"
+    );
 }
 
 /// Stop-path harness (automatic lane): execute the REAL production pipeline
@@ -679,8 +814,12 @@ async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
     assert!(!redelivered, "fallback context is one-shot too");
 }
 
+/// Routing over *real* completeness fixtures (adjudicator evidence, not synthetic
+/// enum values). Ported from the retired `should_skip_full_final_repass` bool.
 #[test]
-fn test_should_skip_full_final_repass_on_complete_streaming() {
+fn test_final_pass_action_on_complete_streaming_evidence() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
     // Completeness requires adjudicator commit source + coverage, not punctuation.
     let complete = assess_streaming_completeness_fields(
         "To jest kompletny streaming transcript.",
@@ -692,22 +831,103 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         1,
     );
     assert_eq!(complete, StreamingCompleteness::Complete);
-    assert!(should_skip_full_final_repass(
-        FinalPassRoutingMode::Smart,
-        complete,
-        false
-    ));
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Always, complete, false),
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Complete: streaming is final"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, complete),
+        FinalPassAction::FullFileRepass,
         "Always never skips"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
-        "Off is off even with Apple live — no silent Always rewrite"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off is off — no silent Always rewrite (live engine is not an input at all)"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
-        "Off+non-Apple skips"
+
+    // The 2026-08-09 wall: coverage-complete, 1052 chars, one period. Smart
+    // must route to the punctuation transplant instead of a silent skip.
+    let wall = format!(
+        "{} kropka",
+        "dobra zróbmy tak najpierw sprawdź ten plik potem zobacz testy ".repeat(18)
+    );
+    assert!(wall.chars().count() > 1000);
+    let shapeless = assess_streaming_completeness_fields(
+        &wall,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        wall.chars().count(),
+        4,
+    );
+    assert_eq!(shapeless, StreamingCompleteness::CompleteShapeDeficient);
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, shapeless),
+        FinalPassAction::PunctuationRepass,
+        "Smart+shape-deficient adopts Whisper's sentence shape, words stay committed"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, shapeless),
+        FinalPassAction::SkipStreamingFinal,
+        "Off stays off even for a wall of words"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, shapeless),
+        FinalPassAction::FullFileRepass,
+        "Always keeps its full re-pass regardless of shape"
+    );
+
+    // Short notes legitimately carry no terminal punctuation — never flagged.
+    let short_note = assess_streaming_completeness_fields(
+        "kup mleko i chleb po drodze",
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        27,
+        1,
+    );
+    assert_eq!(short_note, StreamingCompleteness::Complete);
+
+    // Naturally punctuated long prose stays Complete (human ≈175 chars/terminal).
+    let prose = "To jest zdanie pierwsze, całkiem naturalnej długości. A tutaj mamy zdanie drugie, też rozsądne. "
+        .repeat(6);
+    assert!(prose.chars().count() > 320);
+    let shaped = assess_streaming_completeness_fields(
+        &prose,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        prose.chars().count(),
+        3,
+    );
+    assert_eq!(shaped, StreamingCompleteness::Complete);
+
+    // The 2026-08-10 morning wall: live tail patches seeded the HEAD with
+    // sentences (healthy average), but the middle carried a ~450-char run-on.
+    // The local terminal-free-run check must flag it — averages hide walls.
+    let patched_head_runon_middle = format!(
+        "To jest zdanie pierwsze, całkiem zdrowe. Drugie też ma kropkę. {}",
+        "wersja poszła wczoraj na produkcję zrobiłem commit potem notaryzację ".repeat(7)
+    );
+    assert!(patched_head_runon_middle.chars().count() > 400);
+    let hidden_wall = assess_streaming_completeness_fields(
+        &patched_head_runon_middle,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        patched_head_runon_middle.chars().count(),
+        3,
+    );
+    assert_eq!(
+        hidden_wall,
+        StreamingCompleteness::CompleteShapeDeficient,
+        "a punctuated head must not mask a run-on middle"
     );
 
     let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
@@ -715,9 +935,10 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         empty,
         StreamingCompleteness::Incomplete { reason: "empty" }
     ));
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, empty, false),
-        "empty streaming must not skip under Smart"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, empty),
+        FinalPassAction::TailGapFill,
+        "empty streaming under Smart gap-fills the tail (never a full-file re-pass)"
     );
 
     let no_speech = assess_streaming_completeness_fields(
@@ -729,10 +950,20 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         5,
         1,
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, no_speech, false),
-        "no-speech sessions must not skip under Smart"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, no_speech),
+        FinalPassAction::TailGapFill,
+        "no-speech sessions under Smart must not skip — tail gap-fill runs"
     );
+}
+
+/// The live engine (Apple vs Whisper) is not an input to routing at all — the
+/// dishonest Apple→Always override (2026-07-25) is now structurally impossible,
+/// because `final_pass_action` takes only (mode, completeness). This test pins the
+/// behavioural half: identical routing for the fixtures an Apple session produces.
+#[test]
+fn test_final_pass_action_ignores_live_engine() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
 
     let apple_complete = assess_streaming_completeness_fields(
         "To jest kompletny streaming transcript.",
@@ -743,69 +974,30 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         40,
         1,
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
-        "Smart+Apple complete skips full re-pass — tail-patch/layered owns live gap-fill; live engine must not rewrite mode"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, apple_complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Apple complete skips — tail-patch/layered owns live gap-fill"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, apple_complete, true),
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, apple_complete),
+        FinalPassAction::SkipStreamingFinal,
         "Off+Apple complete still skips (Off means Off)"
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Always, apple_complete, true),
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, apple_complete),
+        FinalPassAction::FullFileRepass,
         "Always+Apple still runs full re-pass"
     );
-
-    // prefer_apple must not force a full re-pass when Smart completeness is Complete
-    // (layered/tail-patch owns live gap-fill — operator 2026-08-05).
-    assert_eq!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, true),
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, false),
-        "prefer_apple must not change Smart+Complete skip decision"
-    );
 }
 
-/// Off is Off — full file re-pass is always skipped, independent of completeness
-/// and of prefer_apple (no silent Always rewrite from the live engine).
+/// Smart + Incomplete gap-fills the tail — it must NEVER escalate to a full-file
+/// re-pass, on any incomplete evidence shape. Ported from the retired bool test,
+/// whose expectation ("must run full re-pass") was itself the doctrine violation.
 #[test]
-fn test_should_skip_full_final_repass_off_is_always_off() {
-    let complete = StreamingCompleteness::Complete;
-    let incomplete = StreamingCompleteness::Incomplete { reason: "empty" };
-    for prefer_apple in [false, true] {
-        assert!(
-            should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, prefer_apple),
-            "Off+Complete prefer_apple={prefer_apple} must skip"
-        );
-        assert!(
-            should_skip_full_final_repass(FinalPassRoutingMode::Off, incomplete, prefer_apple),
-            "Off+Incomplete prefer_apple={prefer_apple} must skip"
-        );
-    }
-}
+fn test_smart_incomplete_tail_gap_fills_never_full_repass() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
 
-/// Always is Always — full Whisper file re-pass never skips.
-#[test]
-fn test_should_skip_full_final_repass_always_never_skips() {
-    let complete = StreamingCompleteness::Complete;
-    let incomplete = StreamingCompleteness::Incomplete {
-        reason: "pending_tail",
-    };
-    for prefer_apple in [false, true] {
-        assert!(
-            !should_skip_full_final_repass(FinalPassRoutingMode::Always, complete, prefer_apple),
-            "Always+Complete prefer_apple={prefer_apple} must NOT skip"
-        );
-        assert!(
-            !should_skip_full_final_repass(FinalPassRoutingMode::Always, incomplete, prefer_apple),
-            "Always+Incomplete prefer_apple={prefer_apple} must NOT skip"
-        );
-    }
-}
-
-/// Smart skips only when streaming completeness is Complete; incomplete must re-pass.
-/// prefer_apple does not rewrite Smart into Always when Complete.
-#[test]
-fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
     let incomplete_cases = [
         assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0),
         assess_streaming_completeness_fields(
@@ -826,22 +1018,31 @@ fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
             0,
             0,
         ),
+        assess_streaming_completeness_fields(
+            "Czesciowy tekst",
+            None,
+            false,
+            true, // partial stale/dropped
+            Some(CompletenessCommitSource::UtteranceFinal),
+            15,
+            1,
+        ),
     ];
     for completeness in incomplete_cases {
         assert!(
             matches!(completeness, StreamingCompleteness::Incomplete { .. }),
             "fixture must be Incomplete, got {completeness:?}"
         );
-        for prefer_apple in [false, true] {
-            assert!(
-                !should_skip_full_final_repass(
-                    FinalPassRoutingMode::Smart,
-                    completeness,
-                    prefer_apple
-                ),
-                "Smart+Incomplete prefer_apple={prefer_apple} must run full re-pass, got skip for {completeness:?}"
-            );
-        }
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Smart, completeness),
+            FinalPassAction::TailGapFill,
+            "Smart+Incomplete must gap-fill the tail, not re-pass the file: {completeness:?}"
+        );
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Off, completeness),
+            FinalPassAction::SkipStreamingFinal,
+            "Off+Incomplete stays hard off: {completeness:?}"
+        );
     }
 
     let complete = assess_streaming_completeness_fields(
@@ -854,30 +1055,139 @@ fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
         1,
     );
     assert_eq!(complete, StreamingCompleteness::Complete);
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, true),
-        "Smart+Complete+prefer_apple still skips — live engine must not force re-pass"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Complete skips — live engine must not force re-pass"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, false),
-        "Smart+Complete+non-Apple skips"
+}
+
+/// Every (mode × completeness) cell of the typed routing action.
+///
+/// Operator law (2026-08-05): Always → FullFileRepass regardless of completeness;
+/// Smart+Complete → SkipStreamingFinal; Smart+Incomplete → TailGapFill (per-utterance
+/// gap-fill, never a full-file re-pass); Off → SkipStreamingFinal regardless.
+#[test]
+fn test_final_pass_action_matrix() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
+    let complete = StreamingCompleteness::Complete;
+    let incomplete = StreamingCompleteness::Incomplete {
+        reason: "pending_tail",
+    };
+
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, complete),
+        FinalPassAction::FullFileRepass,
+        "Always+Complete must still full-file re-pass"
     );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, incomplete),
+        FinalPassAction::FullFileRepass,
+        "Always+Incomplete must full-file re-pass"
+    );
+
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Smart+Complete: streaming already holds the adjudicated transcript"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, incomplete),
+        FinalPassAction::TailGapFill,
+        "Smart+Incomplete: transcribe only the uncommitted tail and APPEND it"
+    );
+
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, complete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off is off — zero Whisper invocation on the stop path"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, incomplete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off is off even when streaming is incomplete"
+    );
+}
+
+/// THE LAW: only FINAL_PASS_MODE=Always may produce a full-file Whisper re-pass.
+///
+/// Smart may final-pass individual utterances (TailGapFill) and Off may not invoke
+/// Whisper at all. A full-file re-pass rewrites committed text wholesale, which is a
+/// direct violation of the append-only overlay doctrine outside Always.
+#[test]
+fn test_only_always_mode_may_full_file_repass() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
+    let modes = [
+        FinalPassRoutingMode::Always,
+        FinalPassRoutingMode::Smart,
+        FinalPassRoutingMode::Off,
+    ];
+    let completenesses = [
+        StreamingCompleteness::Complete,
+        StreamingCompleteness::Incomplete { reason: "empty" },
+        StreamingCompleteness::Incomplete {
+            reason: "no_speech",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "partial_pending",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "no_commit_source",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: "no_coverage",
+        },
+    ];
+
+    for mode in modes {
+        for completeness in completenesses {
+            let action = final_pass_action(mode, completeness);
+            if action == FinalPassAction::FullFileRepass {
+                assert_eq!(
+                    mode,
+                    FinalPassRoutingMode::Always,
+                    "FullFileRepass produced by mode={} completeness={completeness:?} — \
+                     only Always may full-file re-pass (operator law 2026-08-05)",
+                    mode.as_str()
+                );
+            }
+            if mode == FinalPassRoutingMode::Always {
+                assert_eq!(
+                    action,
+                    FinalPassAction::FullFileRepass,
+                    "Always must always full-file re-pass, completeness={completeness:?}"
+                );
+            }
+        }
+    }
 }
 
 /// Dictionary / lexicon is independent of FINAL_PASS_MODE.
 /// Off skips Whisper full re-pass, but StreamPostProcessor / apply_lexicon still rewrite.
 #[test]
 fn test_dictionary_always_applies_when_final_pass_mode_off() {
+    use super::final_pass::{FinalPassAction, final_pass_action};
+
     // Simulate stop-path Off: skip full re-pass, keep streaming text as the transcript base.
     let streaming_with_typo = "Uzywam doker do kontenerow.";
     let complete = StreamingCompleteness::Complete;
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+    let incomplete = StreamingCompleteness::Incomplete {
+        reason: "pending_tail",
+    };
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, complete),
+        FinalPassAction::SkipStreamingFinal,
         "Off skip path: no Whisper final pass required for dictionary"
     );
-    assert!(
-        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
-        "Off skip path independent of prefer_apple"
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, incomplete),
+        FinalPassAction::SkipStreamingFinal,
+        "Off skip path holds for incomplete streaming too — dictionary still runs"
     );
 
     // Post-process always runs after the skip decision (controller stop path).
@@ -901,6 +1211,40 @@ fn test_dictionary_always_applies_when_final_pass_mode_off() {
     );
 }
 
+/// Lexicon is ungated by FINAL_PASS_MODE on the Smart tail-gap path too.
+///
+/// Structural evidence (single seam, no branch of its own): every action arm writes
+/// `local_final_pass_verdict`, which flows through `adjudicate_recording_truth` →
+/// `truth_verdict.raw_text` → the single unconditional
+/// `process_transcript_text_pipeline` call in `finalize_recording` (mod.rs, one
+/// call site — verify with `loct find --literal process_transcript_text_pipeline`
+/// rather than a line number, which rots). This test pins the text
+/// half: a transcript composed by `append_tail_gap` still gets dictionary rewrites
+/// applied — in both the committed prefix and the appended tail.
+#[test]
+fn test_dictionary_applies_to_tail_gap_composed_transcript() {
+    use super::final_pass::append_tail_gap;
+
+    let composed = append_tail_gap("Uzywam doker do kontenerow.", "kubernets tez uzywam");
+    assert!(
+        composed.starts_with("Uzywam doker do kontenerow."),
+        "committed prefix must survive composition: {composed}"
+    );
+
+    let corrected = crate::stream_postprocess::apply_lexicon(&composed);
+    assert!(
+        corrected.contains("Docker"),
+        "lexicon must rewrite the committed prefix on the tail-gap path: {corrected}"
+    );
+    assert!(
+        corrected.contains("Kubernetes"),
+        "lexicon must rewrite the appended tail on the tail-gap path: {corrected}"
+    );
+}
+
+/// Punctuation is not authority. A well-formed sentence with no adjudicator
+/// commit source is Incomplete, and Smart gap-fills its tail — a model that
+/// ends politely mid-thought must not be mistaken for a finished utterance.
 #[test]
 fn test_smart_skip_rejects_missing_commit_source_even_when_punctuated() {
     // Punctuation is not the authority: no adjudicator commit ⇒ Incomplete.
@@ -922,12 +1266,16 @@ fn test_smart_skip_rejects_missing_commit_source_even_when_punctuated() {
         ),
         "punctuated text without commit source must be Incomplete, got {punctuated_only:?}"
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, punctuated_only, false),
-        "punctuation alone must not skip full re-pass"
+    assert_eq!(
+        super::final_pass::final_pass_action(FinalPassRoutingMode::Smart, punctuated_only),
+        super::final_pass::FinalPassAction::TailGapFill,
+        "punctuation alone must not skip — Smart gap-fills the uncommitted tail"
     );
 }
 
+/// Falsifier for the same rule one level up: a committed, punctuated prefix
+/// plus a pending tail is still Incomplete. The prefix's completeness says
+/// nothing about the audio that has not been committed yet.
 #[test]
 fn test_punctuated_prefix_with_pending_tail_must_not_skip() {
     // Falsifier: earlier utterance ends in punctuation, but a pending tail remains.
@@ -950,12 +1298,16 @@ fn test_punctuated_prefix_with_pending_tail_must_not_skip() {
         ),
         "punctuated prefix + pending tail must be Incomplete, got {pending:?}"
     );
-    assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, pending, false),
-        "pending tail must force full re-pass under Smart"
+    assert_eq!(
+        super::final_pass::final_pass_action(FinalPassRoutingMode::Smart, pending),
+        super::final_pass::FinalPassAction::TailGapFill,
+        "pending tail under Smart transcribes only the tail and appends it"
     );
 }
 
+/// Wiring check for the evidence constructor: every field the session snapshot
+/// carries reaches the completeness verdict. A field dropped here would make
+/// routing silently blind to a signal the engine did report.
 #[test]
 fn test_completeness_evidence_from_session_wires_pending_tail() {
     let session = SessionTelemetrySnapshot {
@@ -967,6 +1319,7 @@ fn test_completeness_evidence_from_session_wires_pending_tail() {
         pending_tail: true,
         last_commit_source: Some(CompletenessCommitSource::UtteranceFinal),
         committed_chars: 12,
+        committed_through_secs: None,
     };
     let evidence =
         StreamingCompletenessEvidence::from_session("To jest kompletne zdanie.", &session);
@@ -986,86 +1339,147 @@ fn test_completeness_evidence_from_session_wires_pending_tail() {
     ));
 }
 
+/// THE DOCTRINE TEST: committed streaming text is immutable. Whatever the tail
+/// gap-fill returns, the trimmed streaming text stays an untouched **prefix** of
+/// the result — append only, never replacement.
 #[test]
-#[serial]
-fn test_final_pass_routing_mode_defaults_smart_and_honors_env() {
-    unsafe {
-        std::env::remove_var("FINAL_PASS_MODE");
-        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
-        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
-    }
-    assert_eq!(final_pass_routing_mode(), FinalPassRoutingMode::Smart);
+fn test_append_tail_gap_never_mutates_committed_prefix() {
+    use super::final_pass::append_tail_gap;
 
-    for (raw, expected) in [
-        ("always", FinalPassRoutingMode::Always),
-        ("SMART", FinalPassRoutingMode::Smart),
-        ("off", FinalPassRoutingMode::Off),
+    let cases = [
+        ("Pierwsze zdanie.", "I ogon."),
+        ("Pierwsze zdanie.", "  I ogon z bialymi znakami  "),
+        ("  Committed z paddingiem  ", "ogon"),
+        ("Zdanie bez kropki", "dalszy ciag"),
+        ("Ćma zażółć gęślą jaźń", "ćwierć"),
+        ("Pierwsze zdanie.", ""),
+        ("Pierwsze zdanie.", "   "),
+    ];
+    for (streaming, tail) in cases {
+        let out = append_tail_gap(streaming, tail);
+        let committed = streaming.trim();
+        assert!(
+            out.starts_with(committed),
+            "committed text mutated: streaming={streaming:?} tail={tail:?} out={out:?}"
+        );
+        assert!(
+            out.len() >= committed.len(),
+            "result shorter than committed prefix: out={out:?}"
+        );
+    }
+}
+
+/// Every empty/blank operand combination behaves sanely: no stray separator, no
+/// panic, and a blank side simply yields the other one trimmed.
+#[test]
+fn test_append_tail_gap_empty_operands() {
+    use super::final_pass::append_tail_gap;
+
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", ""),
+        "Pierwsze zdanie.",
+        "empty tail leaves streaming unchanged"
+    );
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", "   \n "),
+        "Pierwsze zdanie.",
+        "whitespace-only tail leaves streaming unchanged"
+    );
+    assert_eq!(
+        append_tail_gap("", "sam ogon"),
+        "sam ogon",
+        "empty streaming yields the tail alone"
+    );
+    assert_eq!(
+        append_tail_gap("   ", "  sam ogon  "),
+        "sam ogon",
+        "blank streaming yields the trimmed tail alone"
+    );
+    assert_eq!(append_tail_gap("", ""), "", "both empty yields empty");
+}
+
+#[test]
+fn test_append_tail_gap_joins_with_single_space() {
+    use super::final_pass::append_tail_gap;
+
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", "Drugie zdanie."),
+        "Pierwsze zdanie. Drugie zdanie."
+    );
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.   ", "   Drugie zdanie."),
+        "Pierwsze zdanie. Drugie zdanie.",
+        "exactly one space at the seam regardless of operand padding"
+    );
+    let out = append_tail_gap("A", "B");
+    assert_eq!(out, "A B");
+    assert_eq!(
+        out.matches("  ").count(),
+        0,
+        "no double space introduced at the seam"
+    );
+}
+
+/// Streaming text can already carry uncommitted preview words for the SAME audio
+/// the tail gap-fill re-transcribes (pending_tail). Appending blindly duplicates
+/// that overlap. The dedup drops the overlapping leading words from the TAIL —
+/// never a character of the streaming side.
+#[test]
+fn test_append_tail_gap_dedups_overlapping_preview_words() {
+    use super::final_pass::append_tail_gap;
+
+    // Partial overlap: the last two streaming words are the tail's first two.
+    assert_eq!(
+        append_tail_gap("Pacjent ma goraczke i", "goraczke i wymioty od rana"),
+        "Pacjent ma goraczke i wymioty od rana",
+        "overlapping preview words must not be duplicated"
+    );
+
+    // Case- and punctuation-insensitive word comparison, ORIGINAL tail words kept.
+    assert_eq!(
+        append_tail_gap("Badanie krwi wykazalo", "Wykazalo, podwyzszone leukocyty"),
+        "Badanie krwi wykazalo podwyzszone leukocyty",
+        "overlap compares words stripped of case and edge punctuation"
+    );
+
+    // Tail fully contained in the streaming suffix → nothing to append.
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie i drugie zdanie", "drugie zdanie"),
+        "Pierwsze zdanie i drugie zdanie",
+        "tail already present in the committed suffix appends nothing"
+    );
+
+    // Longest overlap wins over a shorter accidental one.
+    assert_eq!(
+        append_tail_gap("a b a b", "a b c"),
+        "a b a b c",
+        "longest suffix/prefix overlap is the one removed"
+    );
+
+    // Zero overlap: unchanged join.
+    assert_eq!(
+        append_tail_gap("Pierwsze zdanie.", "Drugie zdanie."),
+        "Pierwsze zdanie. Drugie zdanie.",
+        "no overlap leaves both operands intact"
+    );
+
+    // Doctrine invariant holds through dedup: streaming stays an exact prefix.
+    for (streaming, tail) in [
+        ("Pacjent ma goraczke i", "goraczke i wymioty"),
+        ("Pierwsze zdanie i drugie zdanie", "drugie zdanie"),
+        ("Ćma zażółć gęślą jaźń", "gęślą jaźń ćwierć"),
     ] {
-        unsafe {
-            std::env::set_var("FINAL_PASS_MODE", raw);
-        }
-        assert_eq!(final_pass_routing_mode(), expected, "FINAL_PASS_MODE={raw}");
-    }
-
-    unsafe {
-        std::env::remove_var("FINAL_PASS_MODE");
-        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "0");
-    }
-    assert_eq!(
-        final_pass_routing_mode(),
-        FinalPassRoutingMode::Off,
-        "legacy LOCAL_STT_FINAL_PASS=0 maps to Off"
-    );
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", "1");
-    }
-    assert_eq!(
-        final_pass_routing_mode(),
-        FinalPassRoutingMode::Always,
-        "legacy LOCAL_STT_FINAL_PASS=1 maps to Always"
-    );
-
-    unsafe {
-        std::env::remove_var("CODESCRIBE_LOCAL_STT_FINAL_PASS");
-        std::env::remove_var("FINAL_PASS_MODE");
-        std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
+        let out = append_tail_gap(streaming, tail);
+        assert!(
+            out.starts_with(streaming.trim()),
+            "committed text mutated by dedup: streaming={streaming:?} tail={tail:?} out={out:?}"
+        );
     }
 }
 
-/// Settings / env string parse: `on` (and aliases) map to Always; smart/auto; off aliases.
-#[test]
-fn test_final_pass_routing_mode_parse_on_maps_to_always() {
-    for raw in ["on", "ON", "1", "true", "yes", "always", " Always "] {
-        assert_eq!(
-            FinalPassRoutingMode::parse(raw),
-            Some(FinalPassRoutingMode::Always),
-            "parse({raw:?}) must be Always"
-        );
-    }
-    for raw in ["smart", "SMART", "auto", "Auto"] {
-        assert_eq!(
-            FinalPassRoutingMode::parse(raw),
-            Some(FinalPassRoutingMode::Smart),
-            "parse({raw:?}) must be Smart"
-        );
-    }
-    for raw in ["off", "OFF", "0", "false", "no"] {
-        assert_eq!(
-            FinalPassRoutingMode::parse(raw),
-            Some(FinalPassRoutingMode::Off),
-            "parse({raw:?}) must be Off"
-        );
-    }
-    assert_eq!(
-        FinalPassRoutingMode::parse("bogus"),
-        None,
-        "unknown tokens must not silently coerce"
-    );
-    assert_eq!(FinalPassRoutingMode::Always.as_str(), "always");
-    assert_eq!(FinalPassRoutingMode::Smart.as_str(), "smart");
-    assert_eq!(FinalPassRoutingMode::Off.as_str(), "off");
-}
+// Env resolution + string parsing of `FinalPassRoutingMode` moved with the type
+// into `codescribe_core::config::final_pass` (one parser for every stop lane);
+// their tests live there too.
 
 #[test]
 fn test_toggle_session_adjudicated_label_is_user_facing() {
@@ -1471,9 +1885,13 @@ async fn assistive_pipeline_emits_same_final_overlay_event_and_preserves_trigger
         .await
         .expect("assistive transcript pipeline");
 
+    // Assistive without a usable AI key rides the deterministic Light+ floor
+    // (capitalized, terminal period) — only Ctrl-hold force_raw is literal
+    // (operator contract update, 2026-08-09). The assertion under test here is
+    // the trigger-context retention below, not text literalness.
     assert_eq!(
         final_transcript_text(&mut events).await,
-        "unified final transcript"
+        "Unified final transcript."
     );
     *controller.assistive_context.write().await = Some(AssistiveContext {
         frontmost_app: Some("Changed".to_string()),
@@ -2052,7 +2470,11 @@ async fn test_toggle_adjudicated_respects_settings_default_without_hotkey_overri
         .expect("settings-default pipeline succeeds");
     let final_text = final_transcript_text(&mut events).await;
 
-    assert_eq!(final_text, "literal transcript");
+    // The toggle route without a usable AI key gets the deterministic Light+
+    // floor (capitalized, terminal period) — only Ctrl-hold force_raw promises
+    // literal words (operator, 2026-08-09: with AI formatting disabled every
+    // delivery was Raw and Light+ never ran at all).
+    assert_eq!(final_text, "Literal transcript.");
     let metadata = latest_truth_metadata(temp_dir.path());
     assert_eq!(
         metadata.mode.as_deref(),
@@ -3419,6 +3841,38 @@ fn test_action_quality_probe_is_independent_from_action_routing() {
     assert!((save_probe.drop_ratio - augment_probe.drop_ratio).abs() < 1e-6);
 }
 
+/// The 2026-08-10 morning failure: the transplant added 24 punctuation marks
+/// over an identical word sequence, the prefix/suffix delta read it as
+/// diff=1.000, and "high_rewrite_ratio" quarantined the shaped text. A
+/// shape-only delta must never trip the character-ratio triggers.
+#[test]
+fn test_quality_gate_exempts_shape_only_transplant_delta() {
+    let stats = crate::stream_postprocess::StreamPostProcessStats::default();
+    let raw = "dzień dobry mam na imię maciej mieszkam w kielcach a kibicuję chelsea \
+               dziś o osiemnastej mam spotkanie z moniką która przyjedzie z warszawy";
+    let shaped = "Dzień dobry, mam na imię Maciej, mieszkam w Kielcach, a kibicuję Chelsea. \
+                  Dziś o osiemnastej mam spotkanie z Moniką, która przyjedzie z Warszawy.";
+    let probe = ActionQualityProbe::from_transcripts(raw, shaped, &stats);
+    assert!(
+        probe.shape_only,
+        "identical word sequence must be shape_only"
+    );
+    assert!(
+        evaluate_quality_commit_trigger(false, &probe, crate::state::history::TranscriptKind::Raw)
+            .is_none(),
+        "punctuation/case-only delta must not be quarantined"
+    );
+
+    // A delta that changes even one word keeps the full gate.
+    let reworded = "Dzień dobry, mam na imię Maciej, mieszkam w Krakowie, a kibicuję Chelsea. \
+                    Dziś o osiemnastej mam spotkanie z Moniką, która przyjedzie z Warszawy.";
+    let reworded_probe = ActionQualityProbe::from_transcripts(raw, reworded, &stats);
+    assert!(
+        !reworded_probe.shape_only,
+        "word change is never shape_only"
+    );
+}
+
 #[test]
 fn test_quality_gate_triggers_commit_for_high_drop_ratio() {
     let stats = crate::stream_postprocess::StreamPostProcessStats {
@@ -3480,6 +3934,66 @@ fn test_quality_gate_catches_short_ai_rewrites_in_danger_zone() {
         crate::state::history::TranscriptKind::FormattedTranscript,
     );
     assert_eq!(trigger, Some("high_rewrite_ratio"));
+}
+
+#[test]
+fn test_quality_gate_triggers_commit_on_semantic_divergence() {
+    // A formatting pass that keeps length but changes meaning: character
+    // ratios stay quiet, only the semantic axis can see it. Cosines are the
+    // measured populations from core::pipeline::semantic_guard's calibration.
+    let stats = crate::stream_postprocess::StreamPostProcessStats {
+        input_chunks: 4,
+        dropped_chunks: 0,
+        ..Default::default()
+    };
+    // Append-only formatting (trailing period) keeps every character heuristic
+    // quiet: TranscriptDelta diffs by common prefix/suffix, so mid-string
+    // comma insertion would read as a ~0.9 correction ratio and fire the char
+    // gate before the semantic axis is ever consulted — this test isolates the
+    // semantic branch on purpose.
+    let raw = "zamów proszę odczynniki do laboratorium na przyszły tydzień";
+    let formatted = "zamów proszę odczynniki do laboratorium na przyszły tydzień.";
+    let mut probe = ActionQualityProbe::from_transcripts(raw, formatted, &stats);
+
+    probe.semantic_cosine = Some(0.253);
+    assert_eq!(
+        evaluate_quality_commit_trigger(
+            false,
+            &probe,
+            crate::state::history::TranscriptKind::FormattedTranscript,
+        ),
+        Some("semantic_divergence")
+    );
+
+    // Meaning kept → the semantic axis stays silent and nothing else fires.
+    probe.semantic_cosine = Some(0.95);
+    assert!(
+        evaluate_quality_commit_trigger(
+            false,
+            &probe,
+            crate::state::history::TranscriptKind::FormattedTranscript,
+        )
+        .is_none()
+    );
+
+    // No verdict (fail-open) must behave exactly like the pre-guard gate.
+    probe.semantic_cosine = None;
+    assert!(
+        evaluate_quality_commit_trigger(
+            false,
+            &probe,
+            crate::state::history::TranscriptKind::FormattedTranscript,
+        )
+        .is_none()
+    );
+
+    // Raw lane: even a catastrophic cosine must not fire — the user was
+    // promised their literal words, and the guard judges only AI formatting.
+    probe.semantic_cosine = Some(0.1);
+    assert!(
+        evaluate_quality_commit_trigger(true, &probe, crate::state::history::TranscriptKind::Raw)
+            .is_none()
+    );
 }
 
 #[test]
@@ -3918,5 +4432,229 @@ fn test_formatted_transcript_persists_before_paste() {
         save_idx < paste_idx,
         "formatted transcript save must precede the paste attempt so a failed paste \
          cannot drop the AI-formatted layer from history"
+    );
+}
+
+fn write_donor_test_wav(path: &std::path::Path, samples: &[i16]) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).expect("create wav");
+    for &s in samples {
+        writer.write_sample(s).expect("sample");
+    }
+    writer.finalize().expect("finalize");
+}
+
+fn qube_inbox_pairs(root: &std::path::Path) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    let inbox = root.join("qube_inbox");
+    let mut pairs = Vec::new();
+    let Ok(days) = std::fs::read_dir(&inbox) else {
+        return pairs;
+    };
+    for day in days.flatten() {
+        if !day.path().is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(day.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "wav") {
+                let txt = path.with_extension("txt");
+                if txt.exists() {
+                    pairs.push((path, txt));
+                }
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
+/// W3-A: donor ON writes date-subfolder WAV+TXT of the delivered transcript.
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_writes_layout_when_on() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::set_value("CODESCRIBE_QUBE_DONOR", "on");
+    let _final = EnvVarGuard::set_value("FINAL_PASS_MODE", "off");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[100, -100, 200, -200, 50, 60]);
+    let delivered = "Donor transcript for lexicon mining.";
+    let mut params = test_transcript_pipeline_params(
+        delivered,
+        config,
+        true, // force_raw — skip formatting side paths
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+    params.raw_save_enabled = false;
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline must succeed with donor on");
+
+    let pairs = qube_inbox_pairs(temp_dir.path());
+    assert_eq!(pairs.len(), 1, "donor ON must write exactly one pair");
+    let (wav, txt) = &pairs[0];
+    assert!(wav.metadata().expect("wav meta").len() > 0);
+    assert_eq!(std::fs::read_to_string(txt).expect("read txt"), delivered);
+    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+    assert!(
+        wav.to_string_lossy()
+            .contains(&format!("qube_inbox/{day}/")),
+        "layout must be qube_inbox/<YYYY-MM-DD>/: {}",
+        wav.display()
+    );
+}
+
+/// W3-A: default-off donor is bit-identical stop — no qube_inbox files.
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_off_by_default_no_files() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::unset("CODESCRIBE_QUBE_DONOR");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[1, 2, 3, 4]);
+    let mut params = test_transcript_pipeline_params(
+        "should not be donated",
+        config,
+        true,
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline ok");
+
+    assert!(
+        !temp_dir.path().join("qube_inbox").exists(),
+        "donor OFF must not create qube_inbox"
+    );
+    assert!(qube_inbox_pairs(temp_dir.path()).is_empty());
+}
+
+/// W3-A: Off + donor ON never invokes Whisper on the donor/stop surface.
+///
+/// process_transcript_text_pipeline is post-final-pass; donor only copies files.
+/// Final-pass Off is asserted via routing mode; whisper timing stays default.
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_zero_whisper_when_final_pass_off() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::set_value("CODESCRIBE_QUBE_DONOR", "on");
+    let _final = EnvVarGuard::set_value("FINAL_PASS_MODE", "off");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    // Drain any stale timing from prior tests under #[serial].
+    let _ = codescribe_core::stt::whisper::take_final_pass_timing();
+
+    assert_eq!(
+        final_pass_routing_mode(),
+        FinalPassRoutingMode::Off,
+        "FINAL_PASS_MODE=off must resolve to Off (no Whisper re-pass)"
+    );
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        use_local_stt: true,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[11, 22, 33, 44, 55]);
+    let mut params = test_transcript_pipeline_params(
+        "off mode donor",
+        config,
+        true,
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline ok");
+
+    assert_eq!(qube_inbox_pairs(temp_dir.path()).len(), 1);
+    let timing = codescribe_core::stt::whisper::take_final_pass_timing();
+    assert_eq!(
+        timing,
+        codescribe_core::stt::whisper::FinalPassTiming::default(),
+        "donor path under Off must not produce Whisper final-pass timing"
+    );
+}
+
+/// W3-A: donor works independent of FINAL_PASS_MODE (Smart path).
+#[tokio::test]
+#[serial]
+async fn test_donor_optin_works_under_smart_mode() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let _data = EnvVarGuard::set("CODESCRIBE_DATA_DIR", temp_dir.path());
+    let _donor = EnvVarGuard::set_value("CODESCRIBE_QUBE_DONOR", "on");
+    let _final = EnvVarGuard::set_value("FINAL_PASS_MODE", "smart");
+    let _agent = disable_assistive_agent_credentials_for_test();
+
+    let controller = RecordingController::new();
+    let config = Config {
+        dump_audio_logs: false,
+        history_enabled: false,
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+    let src = temp_dir.path().join("donor-source.wav");
+    write_donor_test_wav(&src, &[7, 8, 9, 10]);
+    let mut params = test_transcript_pipeline_params(
+        "smart mode donor text",
+        config,
+        true,
+        false,
+        Some(RecordingTranscriptSource::Streaming),
+    );
+    params.audio_path = Some(ValidatedAudioPath::new(&src).expect("valid audio"));
+
+    controller
+        .process_transcript_text_pipeline(params)
+        .await
+        .expect("pipeline ok");
+
+    assert_eq!(
+        qube_inbox_pairs(temp_dir.path()).len(),
+        1,
+        "donor must work under Smart as well as Off"
     );
 }

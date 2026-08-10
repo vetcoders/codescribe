@@ -74,7 +74,7 @@ struct Composer: View {
                         height: ComposerControlMetrics.hitTargetSize
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .help("Attach an image (PNG, JPEG, GIF, WebP)")
 
                 ComposerTextView(
@@ -110,7 +110,7 @@ struct Composer: View {
                         height: ComposerControlMetrics.hitTargetSize
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!primaryAction.isEnabled)
                 .opacity(primaryAction == .stopping ? 0.72 : 1)
                 .help(primaryAction.accessibilityLabel)
@@ -192,7 +192,7 @@ struct Composer: View {
                     SettingsDeepLink.pendingSection = .license
                     openSettings()
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .font(CSFont.mono(10.5, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
             }
@@ -297,7 +297,7 @@ struct Composer: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
     }
 
     private func performPrimaryAction() {
@@ -353,7 +353,7 @@ struct Composer: View {
                 .contentShape(Rectangle())
                 .opacity(micState == .blocked ? 0.35 : micState == .preparing ? 0.68 : 1)
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .disabled(!micState.isEnabled)
         .help(micState.accessibilityLabel)
         .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
@@ -424,7 +424,7 @@ struct Composer: View {
                     Button(dictationPreviewExpanded ? "Collapse" : "Expand") {
                         dictationPreviewExpanded.toggle()
                     }
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .accessibilityLabel(dictationPreviewExpanded ? "Collapse transcript preview" : "Expand transcript preview")
                 }
                 .font(CSFont.mono(10.5, .medium))
@@ -445,12 +445,20 @@ struct Composer: View {
                    let final = store.dictationFinalPreview,
                    final != store.dictationLivePreview {
                     DisclosureGroup(store.dictationDeliverySource == .final ? "Live capture" : "Final-pass alternative") {
-                        Text(store.dictationDeliverySource == .final ? store.dictationLivePreview : final)
-                            .font(CSFont.ui(11.5 * textScale))
-                            .foregroundStyle(CSColor.textFaint)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 4)
+                        // Bounded on purpose: an unbounded Text with a long
+                        // transcript grew the composer past the window and
+                        // wrecked the split-view layout on expand (operator
+                        // screenshot, 2026-08-09). The alternative scrolls
+                        // inside its own strip instead.
+                        ScrollView {
+                            Text(store.dictationDeliverySource == .final ? store.dictationLivePreview : final)
+                                .font(CSFont.ui(11.5 * textScale))
+                                .foregroundStyle(CSColor.textFaint)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 4)
+                        }
+                        .frame(maxHeight: 140)
                     }
                     .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(CSColor.textFaintAlt)
@@ -506,12 +514,12 @@ struct Composer: View {
                                     .frame(maxWidth: 160)
                             }
                         }
-                        .buttonStyle(.plain)
+                        .csFocusRing(cornerRadius: 8)
                         .help("Preview attachment")
                         Button(action: { store.removeAttachment(attachment.id) }) {
                             CSIconView(icon: .close, size: 9, weight: .bold, color: CSColor.textFaint)
                         }
-                        .buttonStyle(.plain)
+                        .csFocusRing(cornerRadius: 8)
                         .help("Remove attachment")
                     }
                     .padding(.horizontal, 9)

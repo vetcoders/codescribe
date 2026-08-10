@@ -65,6 +65,8 @@ struct WhisperSlot {
     last_used: Instant,
 }
 
+/// The one process-wide engine slot. Lazily created by [`slot`]; `OnceLock`
+/// guards creation of the `Mutex`, the `Mutex` guards the engine inside it.
 static SLOT: OnceLock<Mutex<WhisperSlot>> = OnceLock::new();
 
 /// Runtime model path used only when embedded provisioning is unavailable.
@@ -73,6 +75,7 @@ static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
 
+/// Access the engine slot, creating it (unloaded) on first use.
 fn slot() -> &'static Mutex<WhisperSlot> {
     SLOT.get_or_init(|| {
         Mutex::new(WhisperSlot {
@@ -102,6 +105,12 @@ fn resolve_model_path_fallback() -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Resolve which Whisper model the runtime fallback should look for.
+///
+/// Precedence, first non-empty wins: `LOCAL_MODEL` in the process environment,
+/// then the persisted [`UserSettings`] value, then `LOCAL_MODEL` in the on-disk
+/// env file, then [`DEFAULT_MODEL`]. Only consulted when embedded Whisper is
+/// unavailable.
 fn configured_local_model() -> String {
     std::env::var("LOCAL_MODEL")
         .ok()
@@ -116,6 +125,8 @@ fn configured_local_model() -> String {
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
 }
 
+/// Trim a configured value and treat blank as absent, so an empty `LOCAL_MODEL=`
+/// falls through to the next precedence tier instead of resolving to `""`.
 fn non_empty(value: String) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -226,6 +237,11 @@ fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Resul
     f(engine)
 }
 
+/// Run `f` with a per-call Whisper initial prompt installed on the engine.
+///
+/// The engine is shared, so the previous `initial_prompt` is captured and
+/// restored afterwards — including when `f` fails — leaving no prompt bleed into
+/// the next caller.
 fn with_engine_initial_prompt<R>(
     initial_prompt: Option<String>,
     f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>,
@@ -239,6 +255,10 @@ fn with_engine_initial_prompt<R>(
     })
 }
 
+/// Initial prompt used by file transcription, or `None` when the feature is off.
+///
+/// Opt-in: the underlying builder returns `None` unless the initial-prompt env
+/// flag is set, so file transcription stays prompt-free by default.
 fn file_transcription_initial_prompt() -> Option<String> {
     whisper_initial_prompt()
 }
@@ -364,18 +384,21 @@ pub fn transcribe_chunk(
     with_engine(|engine| engine.transcribe_with_language(samples, sample_rate, language))
 }
 
+/// Whisper singleton: prompt opt-in, idle unload, model path precedence, load.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::OsString;
 
+    /// RAII capture of one process env key for serial restoration on drop.
     struct EnvRestore {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvRestore {
+        /// Snapshot `key`'s current value (or absence) before a test mutates it.
         fn capture(key: &'static str) -> Self {
             Self {
                 key,
@@ -385,6 +408,7 @@ mod tests {
     }
 
     impl Drop for EnvRestore {
+        /// Restore the exact process env captured at `capture`.
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -393,6 +417,7 @@ mod tests {
         }
     }
 
+    /// Initial prompt for file transcription stays off unless explicitly opted in.
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_defaults_off() {
@@ -414,6 +439,7 @@ mod tests {
         assert_eq!(file_transcription_initial_prompt(), None);
     }
 
+    /// Opt-in env builds the file-transcription initial prompt (contains lexicon terms).
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_is_opt_in() {
@@ -437,6 +463,7 @@ mod tests {
         assert!(prompt.contains("Loctree"));
     }
 
+    /// `0` disables idle unload; explicit secs win; default is 2700s weight unload.
     #[test]
     fn idle_unload_disabled_when_zero() {
         // SAFETY: single-threaded test mutating a process env var it owns.
@@ -449,6 +476,7 @@ mod tests {
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(2700)));
     }
 
+    /// LOCAL_MODEL precedence: process env > UserSettings > env file on disk.
     #[test]
     #[serial]
     fn configured_local_model_prefers_env_then_settings_then_env_file() {
@@ -475,6 +503,7 @@ mod tests {
         assert_eq!(configured_local_model(), "runtime-model");
     }
 
+    /// Resolved model path must load; empty PCM no-op stays empty (soft-skip if no model).
     #[test]
     #[serial]
     fn test_model_path_resolution_and_real_whisper_noop_load() {

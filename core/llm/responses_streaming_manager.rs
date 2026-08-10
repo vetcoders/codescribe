@@ -1,3 +1,17 @@
+//! SSE streaming client for the OpenAI-compatible `/v1/responses` API.
+//!
+//! Two consumption shapes share one transport:
+//! - [`ResponsesStreamingManager::stream`] accumulates the whole turn and
+//!   returns it as a [`ResponsesStreamOutput`] (assistant text + reasoning
+//!   summary + response id), invoking the [`StreamCallbacks`] for live render.
+//! - [`ResponsesStreamingManager::stream_agent`] forwards the same wire events
+//!   as [`AgentEvent`]s over an mpsc channel, including tool-call lifecycle,
+//!   for the agent loop.
+//!
+//! Endpoints are validated before every request (see `validated_endpoint_url`):
+//! plain HTTP is loopback-only and private/internal hosts are refused, which is
+//! what the two `nosemgrep` SSRF waivers in this file rely on.
+
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -12,29 +26,54 @@ use crate::agent::event::AgentEvent;
 
 use super::ai_formatting::{AiReasoningCallback, AiStreamCallback};
 
+/// Whole-request ceiling handed to `reqwest`. Deliberately far longer than any
+/// realistic turn: the live guards are the initial-response and inter-chunk
+/// timeouts, not this.
 const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// Wall-clock budget for one SSE stream, checked on every loop pass. Bounds a
+/// provider that keeps the socket alive while making no progress.
 const STREAM_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
+/// Relaxed inter-chunk timeout used once reasoning content has been seen.
+/// Reasoning models can stay silent for minutes mid-thought, so the ordinary
+/// (much shorter) inter-chunk timeout would abort a healthy stream.
 const REASONING_INTER_CHUNK_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Accumulated result of one non-agent `/v1/responses` stream.
 #[derive(Debug, Clone)]
 pub struct ResponsesStreamOutput {
+    /// Concatenated assistant-visible text for the turn.
     pub assistant_text: String,
+    /// Reasoning summary, when the model emitted one.
     pub reasoning_text: Option<String>,
+    /// Provider response id, used to chain the next turn via
+    /// `previous_response_id`.
     pub response_id: Option<String>,
 }
 
+/// Live render hooks invoked per delta while a stream is being consumed.
 #[derive(Clone)]
 pub struct StreamCallbacks {
+    /// Called with each assistant text delta.
     pub assistant: Option<AiStreamCallback>,
+    /// Called with each reasoning summary delta.
     pub reasoning: Option<AiReasoningCallback>,
 }
 
+/// Which authentication headers to attach to outgoing requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthHeaderMode {
+    /// Send both `Authorization: Bearer` and `x-api-key` (default; satisfies
+    /// providers that accept either).
     BearerAndApiKey,
+    /// Send `Authorization: Bearer` only — required by OAuth lanes that reject
+    /// a stray `x-api-key`.
     BearerOnly,
 }
 
+/// Borrowed configuration for one endpoint + credential pair, reusable across
+/// several streams.
 pub struct ResponsesStreamingManager<'a> {
     client: &'a Client,
     endpoint: &'a str,
@@ -46,6 +85,11 @@ pub struct ResponsesStreamingManager<'a> {
 }
 
 impl<'a> ResponsesStreamingManager<'a> {
+    /// Build a manager for one endpoint/credential pair.
+    ///
+    /// `initial_response_timeout` bounds the wait for response headers;
+    /// `inter_chunk_timeout` bounds the gap between SSE chunks once streaming
+    /// has begun. Defaults to [`AuthHeaderMode::BearerAndApiKey`].
     pub fn new(
         client: &'a Client,
         endpoint: &'a str,
@@ -65,11 +109,22 @@ impl<'a> ResponsesStreamingManager<'a> {
         }
     }
 
+    /// Override the auth header shape (builder style).
     pub fn with_auth_header_mode(mut self, auth_header_mode: AuthHeaderMode) -> Self {
         self.auth_header_mode = auth_header_mode;
         self
     }
 
+    /// Run one streaming turn and return the fully accumulated output.
+    ///
+    /// Deltas are pushed to [`StreamCallbacks`] as they arrive. Once reasoning
+    /// content appears the inter-chunk guard widens to
+    /// [`REASONING_INTER_CHUNK_TIMEOUT`], so a long silent think is not
+    /// mistaken for a stalled stream.
+    ///
+    /// # Errors
+    /// Rejects an invalid or private endpoint URL, a non-success HTTP status,
+    /// an `error` SSE event, and a stream that exceeds [`STREAM_DEADLINE`].
     pub async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
         let endpoint_url =
             validated_endpoint_url(self.endpoint).context("Invalid Responses API endpoint URL")?;
@@ -382,6 +437,12 @@ impl<'a> ResponsesStreamingManager<'a> {
         })
     }
 
+    /// Start an agent-shaped stream and return the receiving end of its event
+    /// channel (capacity 256).
+    ///
+    /// The transport runs in a spawned task; any error it hits is delivered as
+    /// a final [`AgentEvent::Error`] on the channel rather than through the
+    /// returned `Result`, which only reports request-serialization failure.
     pub async fn stream_agent<T: Serialize>(
         &self,
         request: &T,
@@ -420,6 +481,14 @@ impl<'a> ResponsesStreamingManager<'a> {
         Ok(rx)
     }
 
+    /// Reconnect to an in-flight response and replay events after
+    /// `starting_after`.
+    ///
+    /// Called by [`Self::stream`] when an inter-chunk timeout hits a turn that
+    /// already produced partial content and carries both a response id and a
+    /// sequence number — recovering a dropped socket instead of discarding the
+    /// text already shown to the user. The returned output is appended to what
+    /// the interrupted stream had accumulated.
     async fn resume_stream(
         &self,
         response_id: &str,
@@ -571,6 +640,13 @@ impl<'a> ResponsesStreamingManager<'a> {
     }
 }
 
+/// Body of the task spawned by [`ResponsesStreamingManager::stream_agent`].
+///
+/// Owns the socket for one agent turn: parses each SSE chunk into an
+/// [`AgentEvent`] via `parse_agent_event` and forwards it on `tx`. Before a
+/// dirty terminal (failed / incomplete / cancelled) it emits
+/// `ResponseDone { clean: false }` so both chain-reset paths run — see
+/// `dirty_terminal_response_id`.
 // allow(too_many_arguments): task entry point for one agent SSE stream; all
 // eight values are owned moves into the spawned task.
 #[allow(clippy::too_many_arguments)]
@@ -781,6 +857,12 @@ async fn run_agent_stream(
     Ok(())
 }
 
+/// Attach credentials according to `auth_header_mode`.
+///
+/// An empty/whitespace key yields an untouched builder: key-optional lanes
+/// (self-hosted, LAN) get a clean unauthenticated request instead of a bogus
+/// `Bearer ` header, so a server that does require auth answers with a readable
+/// 401 rather than a confusing parse error.
 fn apply_auth_headers(
     builder: reqwest::RequestBuilder,
     api_key: &str,
@@ -799,6 +881,17 @@ fn apply_auth_headers(
     }
 }
 
+/// SSRF gate for every outgoing request in this module.
+///
+/// Accepts `https` anywhere, and `http` only for literal loopback hosts.
+/// Rejects private/internal hosts both literally (`is_private_host`) and after
+/// DNS resolution (`resolves_to_private_host`), which blocks a public name that
+/// points at an internal address. The `nosemgrep` waivers on the `reqwest`
+/// call sites in this file are justified by this function — keep them in sync.
+///
+/// # Errors
+/// Empty input, unparseable URL, missing host, non-`https`/`http` scheme,
+/// plain HTTP to a non-loopback host, or any private/internal target.
 fn validated_endpoint_url(endpoint: &str) -> Result<reqwest::Url> {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() {
@@ -830,6 +923,8 @@ fn validated_endpoint_url(endpoint: &str) -> Result<reqwest::Url> {
     Ok(url)
 }
 
+/// Whether the host is literally loopback (`localhost`, `127.0.0.1`, `::1`).
+/// This is the only case where plain HTTP is permitted.
 fn is_loopback_host(url: &reqwest::Url) -> bool {
     let Some(host_raw) = url.host_str() else {
         return false;
@@ -838,6 +933,9 @@ fn is_loopback_host(url: &reqwest::Url) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
+/// Whether the host is private/internal by literal inspection — loopback and
+/// wildcard names, `.local` / `.internal` suffixes, or a private IP written
+/// directly in the URL. Fails closed: a URL with no host counts as private.
 fn is_private_host(url: &reqwest::Url) -> bool {
     let Some(host_raw) = url.host_str() else {
         return true;
@@ -863,6 +961,12 @@ fn is_private_host(url: &reqwest::Url) -> bool {
     false
 }
 
+/// Whether a hostname resolves to a private/internal address.
+///
+/// Catches the rebinding shape a literal check misses: a public-looking name
+/// whose DNS answer points inside the network. Hosts already written as literal
+/// IPs return `false` here (`is_private_host` covers them). Fails closed —
+/// missing host, resolution failure, or an empty answer all count as private.
 fn resolves_to_private_host(url: &reqwest::Url) -> bool {
     let Some(host_raw) = url.host_str() else {
         return true;
@@ -893,6 +997,7 @@ fn resolves_to_private_host(url: &reqwest::Url) -> bool {
     !resolved_any
 }
 
+/// Version-dispatching private-address check.
 fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_private_ipv4(v4),
@@ -900,16 +1005,21 @@ fn is_private_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// `Some(is_private)` when `host` parses as an IPv4 literal, `None` when it is
+/// a name and the caller should keep probing.
 fn check_ipv4_private(host: &str) -> Option<bool> {
     let ip = host.parse::<Ipv4Addr>().ok()?;
     Some(is_private_ipv4(ip))
 }
 
+/// IPv6 counterpart of [`check_ipv4_private`].
 fn check_ipv6_private(host: &str) -> Option<bool> {
     let ip = host.parse::<Ipv6Addr>().ok()?;
     Some(is_private_ipv6(ip))
 }
 
+/// Private / non-routable IPv4: RFC1918 (`10/8`, `172.16/12`, `192.168/16`),
+/// link-local `169.254/16`, loopback `127/8`, and the `0/8` wildcard block.
 fn is_private_ipv4(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     match octets[0] {
@@ -923,23 +1033,43 @@ fn is_private_ipv4(ip: Ipv4Addr) -> bool {
     }
 }
 
+/// Private / non-routable IPv6: loopback, unspecified, link-local unicast
+/// (`fe80::/10`), and unique-local (`fc00::/7`).
 fn is_private_ipv6(ip: Ipv6Addr) -> bool {
     ip.is_loopback() || ip.is_unspecified() || ip.is_unicast_link_local() || ip.is_unique_local()
 }
 
+/// Per-stream correlation state for tool calls.
+///
+/// The wire spreads one call across several events that do not all carry the
+/// same identifiers: the opening `output_item.added` has the item id and name,
+/// while argument deltas may only carry `item_id` or only `call_id`. These maps
+/// let later events recover the identity established by the first one.
 #[derive(Debug, Clone, Default)]
 struct ToolCallTracker {
+    /// Item id → call identity, for events keyed by item rather than call.
     by_item_id: HashMap<String, ToolCallMeta>,
+    /// Call id → tool name, so a delta without a name can still be labelled.
     names_by_call_id: HashMap<String, String>,
+    /// Call id → argument JSON accumulated from deltas, used when the closing
+    /// event omits the full arguments.
     arguments_by_call_id: HashMap<String, String>,
 }
 
+/// Call identity recovered from the opening `function_call` item.
 #[derive(Debug, Clone)]
 struct ToolCallMeta {
     call_id: String,
     name: String,
 }
 
+/// Translate one SSE chunk into an [`AgentEvent`], or `None` for chunk types
+/// the agent loop ignores.
+///
+/// Terminal handling is the subtle part: `response.done` is emitted for every
+/// final state, so a non-`completed` status is a *dirty* terminal and becomes
+/// an `Error` instead of a clean `ResponseDone` — a dirty terminal must never
+/// advance the response chain.
 fn parse_agent_event(
     chunk: &StreamChunk,
     tracker: &mut ToolCallTracker,
@@ -1077,6 +1207,12 @@ fn response_incomplete_event(chunk: &StreamChunk) -> AgentEvent {
     AgentEvent::Error(format!("Agent response incomplete: {reason}"))
 }
 
+/// Open a tool call from `response.output_item.added` and register its identity
+/// in `tracker` so later argument events can be attributed to it.
+///
+/// Prefers `call_id`, falling back to the item `id`; a `function_call` item
+/// with neither yields an `Error` event. A missing name degrades to
+/// `"unknown_tool"` rather than dropping the call.
 fn parse_tool_call_start(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> Option<AgentEvent> {
     let item = chunk.item.as_ref()?;
     if item.item_type != "function_call" {
@@ -1136,6 +1272,9 @@ fn parse_tool_call_start(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> 
     Some(AgentEvent::ToolCallStart { id: call_id, name })
 }
 
+/// Append an argument fragment to the tracked buffer and surface it as a
+/// [`AgentEvent::ToolCallArgsDelta`]. Empty deltas and unattributable chunks
+/// are skipped.
 fn parse_tool_call_args_delta(
     chunk: &StreamChunk,
     tracker: &mut ToolCallTracker,
@@ -1160,6 +1299,12 @@ fn parse_tool_call_args_delta(
     Some(AgentEvent::ToolCallArgsDelta { id: call_id, delta })
 }
 
+/// Close a tool call and hand the agent loop its parsed arguments.
+///
+/// Uses the arguments carried by the closing chunk when present, else the
+/// buffer accumulated from deltas, else `{}`. Invalid JSON becomes an `Error`
+/// event naming the tool rather than a silent drop. The call's buffer is
+/// released either way.
 fn parse_tool_call_ready(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> Option<AgentEvent> {
     let (call_id, name) = resolve_call_id_and_name(chunk, tracker)?;
 
@@ -1190,6 +1335,12 @@ fn parse_tool_call_ready(chunk: &StreamChunk, tracker: &mut ToolCallTracker) -> 
     }
 }
 
+/// Recover `(call_id, tool_name)` for a chunk that may identify its call by
+/// `call_id`, by `item_id`, or not at all.
+///
+/// Direct `call_id` wins; otherwise the `item_id` is looked up in the tracker,
+/// and an unknown item id is used as its own call id so the call still reaches
+/// the agent loop instead of vanishing. `None` only when neither id is present.
 fn resolve_call_id_and_name(
     chunk: &StreamChunk,
     tracker: &ToolCallTracker,
@@ -1226,6 +1377,8 @@ fn resolve_call_id_and_name(
     None
 }
 
+/// Pick the reasoning summary to report: the explicit `done` payload when the
+/// provider sent one, else the accumulated deltas trimmed. Blank in, `None` out.
 fn fallback_reasoning(reasoning_done: Option<String>, reasoning_text: String) -> Option<String> {
     reasoning_done.or_else(|| {
         let trimmed = reasoning_text.trim().to_string();
@@ -1237,6 +1390,11 @@ fn fallback_reasoning(reasoning_done: Option<String>, reasoning_text: String) ->
     })
 }
 
+/// Whether any non-blank reasoning content has been seen on this stream.
+///
+/// Drives two decisions in [`ResponsesStreamingManager::stream`]: widening the
+/// inter-chunk guard to [`REASONING_INTER_CHUNK_TIMEOUT`], and returning a
+/// reasoning-only result when a stall produced thinking but no answer text.
 fn reasoning_content_available(reasoning_done: &Option<String>, reasoning_text: &str) -> bool {
     reasoning_done
         .as_deref()
@@ -1245,12 +1403,17 @@ fn reasoning_content_available(reasoning_done: &Option<String>, reasoning_text: 
         || !reasoning_text.trim().is_empty()
 }
 
+/// Normalized `error` SSE event: an optional provider code plus a message that
+/// is always populated.
 #[derive(Debug, Clone)]
 struct SseErrorEvent {
     code: Option<String>,
     message: String,
 }
 
+/// Wire shape of an `error` event. Providers disagree on nesting, so both the
+/// wrapped (`{"error": {...}}`) and flat (`{"code", "message"}`) forms are
+/// accepted.
 #[derive(Debug, Deserialize)]
 struct SseErrorEnvelope {
     #[serde(default)]
@@ -1261,6 +1424,8 @@ struct SseErrorEnvelope {
     message: Option<String>,
 }
 
+/// Nested error object. `type` is read as a code fallback for providers that
+/// report the class of failure but no explicit code.
 #[derive(Debug, Deserialize)]
 struct SseErrorDetail {
     #[serde(default)]
@@ -1271,6 +1436,11 @@ struct SseErrorDetail {
     message: Option<String>,
 }
 
+/// Parse an `error` event body, tolerating both envelope shapes.
+///
+/// Never fails: unparseable or empty payloads fall back to the raw trimmed
+/// data as the message, so a malformed error is still reported to the user
+/// instead of being swallowed.
 fn parse_sse_error_event(data: &str) -> SseErrorEvent {
     let parsed = serde_json::from_str::<SseErrorEnvelope>(data).ok();
     let code = parsed.as_ref().and_then(|envelope| {
@@ -1312,6 +1482,8 @@ fn parse_sse_error_event(data: &str) -> SseErrorEvent {
     SseErrorEvent { code, message }
 }
 
+/// Render an [`SseErrorEvent`] as one log/bail line, prefixed by the lane that
+/// produced it (e.g. `"SSE"` vs `"Resume SSE"`).
 fn format_sse_error(prefix: &str, error: &SseErrorEvent) -> String {
     if let Some(code) = error.code.as_deref() {
         format!("{prefix} error {code}: {}", error.message)
@@ -1320,6 +1492,10 @@ fn format_sse_error(prefix: &str, error: &SseErrorEvent) -> String {
     }
 }
 
+/// Debug-log an `output_item` / `content_part` lifecycle event.
+///
+/// These chunks carry no user-visible content; logging their inner type is how
+/// an unexpected item or part shape gets noticed without changing behaviour.
 fn log_sse_lifecycle_event(prefix: &str, chunk: &StreamChunk) {
     match chunk.chunk_type.as_str() {
         "response.output_item.added" | "response.output_item.done" => {
@@ -1348,6 +1524,11 @@ fn log_sse_lifecycle_event(prefix: &str, chunk: &StreamChunk) {
     }
 }
 
+/// One decoded SSE `data:` payload.
+///
+/// A union of every chunk shape the Responses API emits — which field is
+/// populated depends on `chunk_type`, so all of them are optional and the
+/// parsers above decide what a given type is allowed to carry.
 #[derive(Debug, Deserialize)]
 struct StreamChunk {
     #[serde(rename = "type")]
@@ -1374,6 +1555,8 @@ struct StreamChunk {
     sequence_number: Option<u64>,
 }
 
+/// Response envelope attached to terminal chunks, carrying the final state and
+/// the full output for clients that did not accumulate deltas.
 #[derive(Debug, Deserialize)]
 struct StreamResponse {
     #[serde(default)]
@@ -1394,6 +1577,7 @@ struct StreamResponse {
     incomplete_details: Option<StreamResponseIncompleteDetails>,
 }
 
+/// Provider error detail on a `failed` terminal.
 #[derive(Debug, Deserialize)]
 struct StreamResponseError {
     #[serde(default)]
@@ -1402,12 +1586,16 @@ struct StreamResponseError {
     message: Option<String>,
 }
 
+/// Why a turn ended `incomplete` (e.g. a token-limit cutoff), surfaced in the
+/// error message so a truncated answer is not mistaken for a finished one.
 #[derive(Debug, Deserialize)]
 struct StreamResponseIncompleteDetails {
     #[serde(default)]
     reason: Option<String>,
 }
 
+/// Output item announced by an `output_item.added` / `.done` lifecycle event.
+/// Only `function_call` items are acted on; the rest are logged.
 #[derive(Debug, Deserialize)]
 struct StreamItem {
     #[serde(rename = "type")]
@@ -1420,6 +1608,8 @@ struct StreamItem {
     name: Option<String>,
 }
 
+/// Item inside a terminal response's `output` array — `message` or `reasoning`,
+/// each holding content parts.
 #[derive(Debug, Deserialize)]
 struct StreamOutputItem {
     #[serde(rename = "type")]
@@ -1428,6 +1618,8 @@ struct StreamOutputItem {
     content: Option<Vec<StreamContentPart>>,
 }
 
+/// Leaf content part. Text lives in `text` or, for reasoning summaries, in
+/// `summary` — readers must accept either.
 #[derive(Debug, Deserialize)]
 struct StreamContentPart {
     #[serde(rename = "type")]
@@ -1438,6 +1630,13 @@ struct StreamContentPart {
     summary: Option<String>,
 }
 
+/// Split a terminal response's `output` array into
+/// `(assistant_text, reasoning_text)`.
+///
+/// Recovers the turn when deltas were missed or never sent: assistant text is
+/// taken only from `message` items, while reasoning summaries are accepted on
+/// either `message` or `reasoning` items. Blank and unrecognised parts are
+/// dropped; empty reasoning collapses to `None`.
 fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<String>) {
     let mut assistant_parts = Vec::new();
     let mut reasoning_parts = Vec::new();
@@ -1482,6 +1681,7 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
     (assistant_text, reasoning_text)
 }
 
+/// Unit and mockito SSE tests for auth, channel extraction, and agent events.
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1494,6 +1694,7 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    /// Done-text wins over the delta buffer in `fallback_reasoning`.
     #[test]
     fn fallback_reasoning_prefers_done_text() {
         let reasoning =
@@ -1501,18 +1702,21 @@ mod tests {
         assert_eq!(reasoning.as_deref(), Some("final reasoning"));
     }
 
+    /// Without done-text, a trimmed non-empty delta becomes the reasoning summary.
     #[test]
     fn fallback_reasoning_uses_trimmed_delta() {
         let reasoning = fallback_reasoning(None, "  partial reasoning  ".to_string());
         assert_eq!(reasoning.as_deref(), Some("partial reasoning"));
     }
 
+    /// Whitespace-only delta and missing done-text yield `None`.
     #[test]
     fn fallback_reasoning_returns_none_for_empty_values() {
         let reasoning = fallback_reasoning(None, "   ".to_string());
         assert_eq!(reasoning, None);
     }
 
+    /// Content is available when either delta or done-text has non-blank text.
     #[test]
     fn reasoning_content_available_tracks_delta_or_done_text() {
         assert!(reasoning_content_available(&None, "thinking"));
@@ -1523,6 +1727,7 @@ mod tests {
         assert!(!reasoning_content_available(&Some("   ".to_string()), ""));
     }
 
+    /// Reasoning-only SSE completion still yields summary text (and assistant mirror).
     #[tokio::test]
     async fn stream_returns_reasoning_summary_when_reasoning_only_stream_completes() {
         let mut server = mockito::Server::new_async().await;
@@ -1569,6 +1774,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Named SSE `error` events bail with the provider code/message, not empty-content.
     #[tokio::test]
     async fn stream_bails_with_specific_sse_error_event() {
         let mut server = mockito::Server::new_async().await;
@@ -1613,6 +1819,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Full output-item/content-part lifecycle maps to assistant + reasoning text.
     #[tokio::test]
     async fn stream_handles_output_item_and_content_part_lifecycle_events() {
         let mut server = mockito::Server::new_async().await;
@@ -1681,6 +1888,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Message and reasoning items concatenate into assistant and summary channels.
     #[test]
     fn extract_output_channels_collects_assistant_and_reasoning() {
         let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
@@ -1708,6 +1916,7 @@ mod tests {
         assert_eq!(reasoning.as_deref(), Some("r1r2r3"));
     }
 
+    /// Blank or unknown content parts do not invent assistant or reasoning text.
     #[test]
     fn extract_output_channels_ignores_blank_and_unknown_parts() {
         let output: Vec<StreamOutputItem> = serde_json::from_value(json!([
@@ -1728,6 +1937,7 @@ mod tests {
         assert_eq!(reasoning, None);
     }
 
+    /// Function-call start → args delta → done becomes the tool-call agent events.
     #[test]
     fn parse_agent_event_handles_function_call_lifecycle() {
         let mut tracker = ToolCallTracker::default();
@@ -1789,6 +1999,7 @@ mod tests {
         );
     }
 
+    /// When done omits `arguments`, buffered deltas are parsed as the call args.
     #[test]
     fn parse_agent_event_uses_delta_buffer_when_done_has_no_arguments() {
         let mut tracker = ToolCallTracker::default();
@@ -2078,6 +2289,7 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Default auth mode attaches both Bearer and `x-api-key` with the same secret.
     #[test]
     fn apply_auth_headers_sets_both_bearer_and_x_api_key() {
         let client = Client::new();
@@ -2105,6 +2317,7 @@ mod tests {
         );
     }
 
+    /// OAuth lanes use Bearer-only so a stray `x-api-key` is never sent.
     #[test]
     fn apply_auth_headers_keeps_oauth_tokens_bearer_only() {
         let client = Client::new();
@@ -2126,6 +2339,7 @@ mod tests {
         assert!(request.headers().get("x-api-key").is_none());
     }
 
+    /// Empty/whitespace API keys attach no auth headers (key-optional endpoints).
     #[test]
     fn apply_auth_headers_skips_auth_entirely_for_an_empty_key() {
         let client = Client::new();
@@ -2144,6 +2358,7 @@ mod tests {
         assert!(request.headers().get("x-api-key").is_none());
     }
 
+    /// Public HTTPS and loopback HTTP pass the SSRF gate; others are not tested here.
     #[test]
     fn validated_endpoint_url_allows_https_public_and_loopback_http() {
         let public = validated_endpoint_url("https://1.1.1.1/v1/responses")
@@ -2155,6 +2370,7 @@ mod tests {
         assert_eq!(localhost.as_str(), "http://127.0.0.1:11434/v1/responses");
     }
 
+    /// Plain public HTTP and private-network hosts are rejected by URL validation.
     #[test]
     fn validated_endpoint_url_rejects_plain_http_and_private_remote_hosts() {
         let public_http = validated_endpoint_url("http://1.1.1.1/v1/responses")

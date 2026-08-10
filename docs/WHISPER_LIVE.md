@@ -15,6 +15,13 @@ events that visibly patch tokens Apple missed — mixed-language inserts, rare t
 nouns. The legacy "Whisper-as-primary" path stays as automatic fallback when Apple Speech
 is unavailable (no permission, no macOS Speech framework).
 
+> **Delivery status (2026-08-08).** Layer 1 is wired on **both** live paths — VAD/scheduler and
+> the default Apple progressive live (`a6b1233d`) — but it is **opt-in and off by default**:
+> `CODESCRIBE_LAYERED_TRANSCRIPTION` ships as `off`. On a stock install Whisper still earns its
+> keep at **stop time** (`FINAL_PASS_MODE`, Smart by default), not as a live tail-patcher.
+> Layer 2's inline LLM, Layer 3 and Layer 4 have no producer at all — see the ADR's
+> [Phase delivery status](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md#phase-delivery-status-2026-08-08).
+
 **Hard invariant that gates every Whisper write:** _NEVER REWRITE FROM ZERO._ Tail Patch may
 only `ReplaceRange` inside the utterance window Layer 0 already committed. If the diff distance
 exceeds the safety threshold, the patch is dropped (annotation emitted) and Layer 0 output stands.
@@ -89,13 +96,14 @@ Practical win:
 
 ## Layer mapping for this file
 
-| Section below                                   | Layer it lights up                                         |
-| ----------------------------------------------- | ---------------------------------------------------------- |
-| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                    |
-| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                  |
-| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision |
-| Cloud STT alternatives                          | Pluggable Layer 1 backend                                  |
-| (NEW, Phase 2) Lexicon + small LLM passes       | Layer 2 (Polish) — see ADR §Layer specifications           |
+| Section below                                   | Layer it lights up                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------- |
+| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                             |
+| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                           |
+| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision          |
+| Cloud STT alternatives                          | Pluggable Layer 1 backend                                           |
+| Lexicon substitution (`apply_lexicon`)          | Layer 2 — delivered at seal time, not as the ADR's debounced module |
+| Small inline LLM pass (Phase 2, proposed)       | ❌ not built — no `core/llm/inline_polish.rs`                       |
 
 Everything below this point is the same Whisper-Live tech that existed before the ADR — it is
 **not removed**, just relocated in the architecture: Whisper became the silent partner that makes

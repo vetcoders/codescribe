@@ -24,6 +24,7 @@ pub struct GitHubRef {
 }
 
 impl std::fmt::Display for GitHubRef {
+    /// Render as `owner/repo@ref:path` (the compact spec form).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -56,6 +57,11 @@ pub fn parse_github_ref(input: &str) -> Option<GitHubRef> {
     parse_github_spec(input)
 }
 
+/// Parse the browser URL form. Accepts `blob`, `raw`, and `tree` links over
+/// http(s); anything else (other hosts, short repo URLs) yields `None` so the
+/// spec parser gets its turn.
+///
+/// Case is preserved throughout — GitHub content paths are case-sensitive.
 fn parse_github_url(url: &str) -> Option<GitHubRef> {
     // Match: https://github.com/owner/repo/blob/ref/path...
     // or:    https://github.com/owner/repo/raw/ref/path...
@@ -85,6 +91,11 @@ fn parse_github_url(url: &str) -> Option<GitHubRef> {
     })
 }
 
+/// Parse the compact spec form: `owner/repo@ref:path`, or `owner/repo:path` with
+/// `main` as the implied ref.
+///
+/// The ref is taken between `@` and the **first** `:`, so refs containing slashes
+/// (`fix/some-branch`) survive intact. Missing owner, repo, or path is `None`.
 fn parse_github_spec(spec: &str) -> Option<GitHubRef> {
     // Format: owner/repo@ref:path or owner/repo:path
     let slash_pos = spec.find('/')?;
@@ -126,6 +137,9 @@ fn parse_github_spec(spec: &str) -> Option<GitHubRef> {
 // Fetch
 // ═══════════════════════════════════════════════════════════
 
+/// Hard ceiling on a fetched blob. Enforced twice — once against the advertised
+/// `Content-Length` and again as a running total while streaming — so a lying or
+/// absent header cannot turn a compressed response into an unbounded allocation.
 const MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10MB
 
 /// Percent-encode a path segment for use in GitHub API URLs.
@@ -244,10 +258,12 @@ pub fn load_github_token() -> Option<String> {
 // Tests
 // ═══════════════════════════════════════════════════════════
 
+/// Parser, Display, and percent-encoding unit tests (no network).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `blob` URLs parse into owner/repo/ref/path with case preserved.
     #[test]
     fn test_parse_github_url_blob() {
         let gh = parse_github_ref("https://github.com/vetcoders/codescribe/blob/main/src/lib.rs");
@@ -265,6 +281,7 @@ mod tests {
         );
     }
 
+    /// `raw` URLs parse the same shape as `blob` links.
     #[test]
     fn test_parse_github_url_raw() {
         let gh = parse_github_ref(
@@ -281,13 +298,14 @@ mod tests {
         );
     }
 
+    /// Full spec form keeps branch names that contain slashes.
     #[test]
     fn test_parse_github_spec_full() {
-        let gh = parse_github_ref("Vetcoders/Codescribe@fix/multiple-fixes:core/lib.rs");
+        let gh = parse_github_ref("vetcoders/Codescribe@fix/multiple-fixes:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "Vetcoders".into(),
+                owner: "vetcoders".into(),
                 repo: "Codescribe".into(),
                 git_ref: "fix/multiple-fixes".into(),
                 path: "core/lib.rs".into(),
@@ -295,13 +313,14 @@ mod tests {
         );
     }
 
+    /// Spec without `@ref` defaults the git ref to `main`.
     #[test]
     fn test_parse_github_spec_default_ref() {
-        let gh = parse_github_ref("Vetcoders/Codescribe:core/lib.rs");
+        let gh = parse_github_ref("vetcoders/Codescribe:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "Vetcoders".into(),
+                owner: "vetcoders".into(),
                 repo: "Codescribe".into(),
                 git_ref: "main".into(),
                 path: "core/lib.rs".into(),
@@ -309,6 +328,7 @@ mod tests {
         );
     }
 
+    /// Empty, incomplete, and non-GitHub hosts yield `None`.
     #[test]
     fn test_parse_github_invalid() {
         assert_eq!(parse_github_ref("not a github ref"), None);
@@ -317,6 +337,7 @@ mod tests {
         assert_eq!(parse_github_ref("https://gitlab.com/a/b/blob/main/x"), None);
     }
 
+    /// Deep nested paths after the ref survive URL splitting.
     #[test]
     fn test_parse_github_url_deep_path() {
         let gh = parse_github_ref("https://github.com/org/repo/blob/v2.0/src/deep/nested/file.rs");
@@ -327,6 +348,7 @@ mod tests {
         assert_eq!(gh.path, "src/deep/nested/file.rs");
     }
 
+    /// Display matches the compact `owner/repo@ref:path` form.
     #[test]
     fn test_github_ref_display() {
         let gh = GitHubRef {
@@ -338,12 +360,14 @@ mod tests {
         assert_eq!(gh.to_string(), "owner/repo@main:src/lib.rs");
     }
 
+    /// Alphanumeric, hyphen, underscore, and dot stay unencoded in params.
     #[test]
     fn test_percent_encode_param_safe() {
         assert_eq!(percent_encode_param("Vetcoders"), "Vetcoders");
         assert_eq!(percent_encode_param("my-repo_v2"), "my-repo_v2");
     }
 
+    /// Slash, space, and brace characters are percent-encoded in params.
     #[test]
     fn test_percent_encode_param_special() {
         assert_eq!(percent_encode_param("a/b"), "a%2Fb");
@@ -351,6 +375,7 @@ mod tests {
         assert_eq!(percent_encode_param("ref@{0}"), "ref%40%7B0%7D");
     }
 
+    /// Path encoding keeps `/` separators while encoding spaces.
     #[test]
     fn test_percent_encode_path_preserves_slashes() {
         assert_eq!(percent_encode_path("src/lib.rs"), "src/lib.rs");
@@ -360,6 +385,7 @@ mod tests {
         );
     }
 
+    /// Path traversal and query-injection characters are fully encoded away.
     #[test]
     fn test_injection_attempt_encoded() {
         // Path traversal attempt

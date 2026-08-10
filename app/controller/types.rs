@@ -96,6 +96,7 @@ pub enum State {
 }
 
 impl std::fmt::Display for State {
+    /// Uppercase log token (`IDLE`, `REC_HOLD`, …); not the IPC lowercase form.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             State::Idle => write!(f, "IDLE"),
@@ -108,6 +109,8 @@ impl std::fmt::Display for State {
 }
 
 impl State {
+    /// Lowercase state token used on the IPC surface, distinct from the
+    /// uppercase `Display` form used in logs.
     pub fn to_ipc_str(self) -> &'static str {
         match self {
             State::Idle => "idle",
@@ -122,7 +125,9 @@ impl State {
 /// Hotkey event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyType {
+    /// Hold-to-talk recording gesture.
     Hold,
+    /// Toggle start/stop recording gesture.
     Toggle,
     /// Full-duplex conversation mode (Ctrl+Option)
     Conversation,
@@ -131,8 +136,11 @@ pub enum HotkeyType {
 /// Hotkey action types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyAction {
+    /// Physical key-down edge.
     Down,
+    /// Physical key-up edge.
     Up,
+    /// Discrete press (down+up treated as one).
     Press,
 }
 
@@ -150,23 +158,41 @@ pub struct HotkeyInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether a transcription action delivers raw text or AI-formatted text.
+///
+/// Defined and re-exported from `controller`, but currently read nowhere in
+/// the tree: the live raw-versus-format decision travels as the `force_raw` /
+/// `force_ai` pair on [`HotkeyInput`] and [`TranscriptPipelineParams`].
 pub enum TranscriptionActionContractMode {
+    /// Deliver the raw engine transcript without AI formatting.
     Raw,
+    /// Deliver AI-formatted transcript when the formatter path runs.
     AiFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Which engine and path produced the transcript that was actually delivered.
+///
+/// Persisted into `truth.json`, so the serialized variant names are part of
+/// the on-disk sidecar format.
 pub enum RecordingTranscriptSource {
+    /// Local Whisper final-pass on the saved audio.
     LocalFinalPass,
+    /// Toggle session chose among live layers at stop (adjudicated).
     ToggleSessionAdjudicated,
+    /// Cloud primary STT was the delivered source.
     CloudPrimary,
+    /// Cloud ran as fallback after a primary path failed.
     CloudFallback,
+    /// Live streaming preview was committed as the verdict.
     Streaming,
+    /// Streaming path used after a preferred path degraded.
     StreamingFallback,
 }
 
 impl RecordingTranscriptSource {
+    /// Human-readable source label for status surfaces.
     pub fn label(self) -> &'static str {
         match self {
             Self::LocalFinalPass => "Final-pass local",
@@ -181,13 +207,18 @@ impl RecordingTranscriptSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// How bad a fallback was, when one was taken. Persisted into `truth.json`.
 pub enum RecordingFallbackClass {
+    /// Fallback quality still acceptable for delivery.
     Acceptable,
+    /// Fallback is noticeably worse; surface a caution.
     Degraded,
+    /// Fallback is unsafe to trust as the delivered truth.
     Unsafe,
 }
 
 impl RecordingFallbackClass {
+    /// Human-readable fallback description for status surfaces.
     pub fn label(self) -> &'static str {
         match self {
             Self::Acceptable => "acceptable fallback",
@@ -198,6 +229,13 @@ impl RecordingFallbackClass {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// The `truth.json` sidecar: what really produced a recording's transcript.
+///
+/// Written next to every saved transcript so a delivered result stays
+/// auditable after the fact — which engine served it, whether a fallback was
+/// taken, and how confident the adjudicator was. Fields accrue over releases,
+/// so the deserializer is deliberately tolerant of sidecars written by older
+/// builds.
 pub struct RecordingTruthMetadata {
     pub source: Option<RecordingTranscriptSource>,
     pub engine: Option<String>,
@@ -262,6 +300,7 @@ where
     Ok(out)
 }
 
+/// Sidecar path for a transcript: `<file name>.truth.json` beside it.
 pub fn truth_sidecar_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -271,6 +310,7 @@ pub fn truth_sidecar_path(path: &Path) -> PathBuf {
     path.with_file_name(file_name)
 }
 
+/// Serialize the truth metadata beside `path` and return the sidecar path.
 pub fn write_truth_sidecar(path: &Path, metadata: &RecordingTruthMetadata) -> Result<PathBuf> {
     let sidecar_path = truth_sidecar_path(path);
     let payload =
@@ -280,6 +320,8 @@ pub fn write_truth_sidecar(path: &Path, metadata: &RecordingTruthMetadata) -> Re
     Ok(sidecar_path)
 }
 
+/// Read a truth sidecar back. Test-only counterpart to
+/// [`write_truth_sidecar`], used to prove roundtrip fidelity.
 #[cfg(test)]
 pub fn read_truth_sidecar(path: &Path) -> Result<RecordingTruthMetadata> {
     let sidecar_path = truth_sidecar_path(path);
@@ -348,10 +390,12 @@ pub struct TranscriptProcessOutcome {
     pub delivery_secs: f64,
 }
 
+/// Truth-sidecar disk roundtrip and legacy-flag deserialization tests.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Core metadata fields survive write → read through the sidecar path.
     #[test]
     fn truth_sidecar_roundtrip_preserves_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -381,6 +425,7 @@ mod tests {
         assert_eq!(restored, metadata);
     }
 
+    /// Typed disposition, confidence flags, and sparkline survive disk.
     #[test]
     fn truth_sidecar_roundtrip_preserves_final_pass_disposition_and_flags() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -419,6 +464,7 @@ mod tests {
         );
     }
 
+    /// `ToggleSessionAdjudicated` source and its flags round-trip intact.
     #[test]
     fn truth_sidecar_roundtrip_preserves_toggle_session_adjudicated_source() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -454,6 +500,7 @@ mod tests {
         );
     }
 
+    /// Pre-0.9.3 string confidence flags map to typed variants; unknowns drop.
     #[test]
     fn truth_sidecar_legacy_string_flags_still_deserialize() {
         // Sidecars written before 0.9.3 encoded `confidence_flags` as bare
@@ -501,6 +548,7 @@ mod tests {
         );
     }
 
+    /// `SileroDroppedTailHallucinations { count }` payload survives roundtrip.
     #[test]
     fn truth_sidecar_preserves_silero_drop_count() {
         let temp_dir = tempfile::tempdir().expect("temp dir");

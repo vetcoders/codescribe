@@ -1,3 +1,17 @@
+//! Responses-API agent provider (`POST /v1/responses`, streaming SSE).
+//!
+//! Serves every Responses-family vendor, not just OpenAI — the target is
+//! whatever the assistive lane resolved, and [`ProviderKind`] is carried so the
+//! account-auth path asks that vendor for tokens instead of reaching for
+//! OpenAI's Keychain slot by reflex.
+//!
+//! Unlike [`super::AnthropicProvider`], which replays full history every turn,
+//! this API can chain turns server-side via `previous_response_id`. That chain
+//! is the delicate part of the file: it may only advance on a clean terminal the
+//! consumer actually received, so [`forward_events_and_track_chain`] delivers
+//! the event first and mutates the chain second, and a dirty terminal resets it
+//! rather than resuming from a poisoned response.
+
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,15 +36,25 @@ use codescribe_core::llm::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
 
+/// How long to wait for the first byte of the response before giving up.
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
+/// How long a started stream may stall between chunks before giving up.
 const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 
+/// Agent provider speaking the Responses API over SSE.
 #[derive(Clone)]
 pub struct OpenAiProvider {
+    /// Shared HTTP client; its own timeout is the outer streaming ceiling.
     client: Client,
+    /// Full Responses endpoint URL for the resolved lane.
     endpoint: String,
+    /// Bearer/API key; empty means an intentionally unauthenticated endpoint.
     api_key: String,
+    /// Model used when the caller leaves `StreamOptions::model` blank.
     default_model: String,
+    /// Whether server-side chaining is enabled at all
+    /// (`CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID`). When off, every turn
+    /// replays the full message list.
     use_previous_response_id: bool,
     /// Single source of truth for the AGENT path's response chain
     /// (`previous_response_id`).
@@ -53,12 +77,19 @@ pub struct OpenAiProvider {
     /// `AiMode::Assistive` branch in `core::state::conversation` becomes dead and
     /// should be removed (owner: GROUP state).
     previous_response_id: Arc<Mutex<Option<String>>>,
+    /// Deadline for the first byte of a response.
     initial_response_timeout: Duration,
+    /// Deadline between chunks of an already-started stream.
     inter_chunk_timeout: Duration,
-    /// Lane resolved to "Sign in with ChatGPT" account auth (no API key, official
-    /// endpoint, stored tokens). Each request fetches a FRESH access token via
+    /// Lane resolved to provider-account auth (no API key, official endpoint,
+    /// stored tokens). Each request fetches a FRESH access token via
     /// `account_auth` so the auto-refresh path keeps long sessions alive.
     use_account_auth: bool,
+    /// Which Responses vendor this lane targets. Carried so the account-auth
+    /// path asks for THAT provider's tokens: this provider serves every
+    /// Responses-family vendor, and reaching for OpenAI's Keychain slot by
+    /// reflex would send an OpenAI token to `api.x.ai`.
+    provider: ProviderKind,
 }
 
 impl OpenAiProvider {
@@ -73,7 +104,7 @@ impl OpenAiProvider {
             model: default_model,
             api_key,
             account_auth: use_account_auth,
-            provider: _,
+            provider,
         } = lane;
         let api_key = api_key.unwrap_or_default();
 
@@ -113,12 +144,14 @@ impl OpenAiProvider {
             initial_response_timeout,
             inter_chunk_timeout,
             use_account_auth,
+            provider,
         })
     }
 }
 
 #[async_trait]
 impl AgentProvider for OpenAiProvider {
+    /// Open a Responses API SSE stream, tracking `previous_response_id` when enabled.
     async fn stream(
         &self,
         messages: &[Message],
@@ -165,8 +198,11 @@ impl AgentProvider for OpenAiProvider {
             reasoning: reasoning_summary_request(&model),
             model,
             input: build_request_input_items(messages, previous_response_id.as_deref())?,
+            instructions: chained_instructions(
+                &options.system_prompt,
+                previous_response_id.as_deref(),
+            ),
             previous_response_id,
-            instructions: options.system_prompt.clone(),
             max_output_tokens: options.max_tokens,
             temperature: options.temperature,
             tools: build_tool_payload(tools),
@@ -178,10 +214,13 @@ impl AgentProvider for OpenAiProvider {
         // manager formats the `Bearer` header itself, so this is the raw token.
         let account_token = if self.use_account_auth {
             Some(
-                account_auth::access_token(ProviderKind::OpenAiResponses)
+                account_auth::access_token(self.provider)
                     .await
                     .map_err(|error| {
-                        anyhow::anyhow!("ChatGPT account authentication failed: {error}")
+                        anyhow::anyhow!(
+                            "{} account authentication failed: {error}",
+                            self.provider.display_name()
+                        )
                     })?,
             )
         } else {
@@ -225,6 +264,7 @@ impl AgentProvider for OpenAiProvider {
         Ok(rx)
     }
 
+    /// Wrap tool output as a user `ToolResult` message for the next model turn.
     fn build_tool_result(
         &self,
         call_id: &str,
@@ -241,6 +281,7 @@ impl AgentProvider for OpenAiProvider {
         )
     }
 
+    /// Build an inline image content block from raw bytes and media type.
     fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
         ContentBlock::Image {
             data: data.to_vec(),
@@ -248,18 +289,22 @@ impl AgentProvider for OpenAiProvider {
         }
     }
 
+    /// Initial-response and inter-chunk timeouts for the streaming manager.
     fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
         Some((self.initial_response_timeout, self.inter_chunk_timeout))
     }
 
+    /// Stable provider id used in logs and session diagnostics.
     fn name(&self) -> &str {
         "openai-responses"
     }
 
+    /// Current stored Responses chain id, if chain tracking is active.
     async fn response_chain_id(&self) -> Option<String> {
         self.previous_response_id.lock().await.clone()
     }
 
+    /// Reinstate a pre-turn chain id after user Stop so follow-ups keep continuity.
     async fn restore_response_chain(&self, id: Option<String>) {
         let mut lock = self.previous_response_id.lock().await;
         if *lock != id {
@@ -366,8 +411,13 @@ async fn forward_events_and_track_chain(
     }
 }
 
+/// Wire body for `POST /v1/responses`.
+///
+/// Optional fields are skipped when unset rather than sent as null: omitting a
+/// parameter is always accepted, while sending one a model rejects is a 400.
 #[derive(Debug, Serialize)]
 struct OpenAiResponsesRequest {
+    /// Target model id.
     model: String,
     /// Ask reasoning-capable Responses models for the safe public summary
     /// stream. Without this field the API may reason internally but emits no
@@ -375,25 +425,39 @@ struct OpenAiResponsesRequest {
     /// an opaque "thinking…" placeholder for the whole tool turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<OpenAiReasoningRequest>,
+    /// Conversation items for this turn — the tail only when chaining.
     input: Vec<Value>,
+    /// Server-side chain anchor, absent on a fresh or reset chain.
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
+    /// System prompt; top-level here, not a message role.
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
+    /// Output ceiling when the caller sets one.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
+    /// Sampling temperature when the caller sets one.
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// Callable tool definitions; omitted entirely when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefinition>,
+    /// Always `true` — this provider only ever streams.
     stream: bool,
 }
 
+/// Opt-in request for the public reasoning-summary stream.
 #[derive(Debug, Serialize)]
 struct OpenAiReasoningRequest {
+    /// Summary mode; `"auto"` is the only value sent.
     summary: &'static str,
 }
 
+/// Ask for reasoning summaries, but only from models that emit them.
+///
+/// Without this the API may reason internally while emitting no
+/// `response.reasoning_summary_text.*` events, leaving the UI stuck on an
+/// opaque "thinking…" placeholder for the whole turn.
 fn reasoning_summary_request(model: &str) -> Option<OpenAiReasoningRequest> {
     let model = model.trim().to_ascii_lowercase();
     let supports_reasoning = model.starts_with("gpt-5")
@@ -403,15 +467,21 @@ fn reasoning_summary_request(model: &str) -> Option<OpenAiReasoningRequest> {
     supports_reasoning.then_some(OpenAiReasoningRequest { summary: "auto" })
 }
 
+/// Wire form of one callable tool.
 #[derive(Debug, Serialize)]
 struct OpenAiToolDefinition {
+    /// Always `"function"`.
     #[serde(rename = "type")]
     tool_type: &'static str,
+    /// Tool name the model calls.
     name: String,
+    /// Natural-language description shown to the model.
     description: String,
+    /// JSON Schema for the tool's arguments.
     parameters: Value,
 }
 
+/// Project the registry's tool definitions onto the Responses wire shape.
 fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<OpenAiToolDefinition> {
     tools
         .iter()
@@ -424,6 +494,22 @@ fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<OpenAiToolDefinition> {
         .collect()
 }
 
+/// Instructions for a Responses request: sent on the FIRST turn of a chain
+/// only. `previous_response_id` preserves them server-side, and endpoints
+/// reject the pair with HTTP 400 ("instructions and previous_response_id
+/// together") — same contract the formatting lane already follows.
+fn chained_instructions(
+    system_prompt: &Option<String>,
+    previous_response_id: Option<&str>,
+) -> Option<String> {
+    if previous_response_id.is_some() {
+        None
+    } else {
+        system_prompt.clone()
+    }
+}
+
+/// Build the `input` array: select the messages to send, then encode them.
 fn build_request_input_items(
     messages: &[Message],
     previous_response_id: Option<&str>,
@@ -431,6 +517,11 @@ fn build_request_input_items(
     build_input_items(request_messages(messages, previous_response_id))
 }
 
+/// Choose which messages a request carries.
+///
+/// Without a chain, everything. With one, only the trailing run of user
+/// messages — the server already holds the rest, so resending it would both
+/// duplicate context and inflate the bill.
 fn request_messages<'a>(
     messages: &'a [Message],
     previous_response_id: Option<&str>,
@@ -447,6 +538,15 @@ fn request_messages<'a>(
     &messages[start..]
 }
 
+/// Encode messages into Responses input items.
+///
+/// Tool calls and tool results become their own top-level items rather than
+/// message content, which is what the API expects. Empty content produces no
+/// item at all, since a message with nothing in it is rejected.
+///
+/// # Errors
+/// Returns an error if tool arguments fail to serialize or an image asset
+/// cannot be read.
 fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
     let mut items = Vec::new();
 
@@ -526,6 +626,7 @@ fn build_input_items(messages: &[Message]) -> Result<Vec<Value>> {
     Ok(items)
 }
 
+/// Text block type for a role: the API distinguishes model output from input.
 fn text_content_type(role: Role) -> &'static str {
     match role {
         Role::Assistant => "output_text",
@@ -533,6 +634,15 @@ fn text_content_type(role: Role) -> &'static str {
     }
 }
 
+/// Render tool result blocks into the string `function_call_output` expects.
+///
+/// A lone text block is returned bare (prefixed `ERROR: ` on failure) so the
+/// common case stays readable to the model; anything richer is serialized as
+/// JSON. Empty results still produce a sentence, because a silent tool result
+/// reads to the model as the tool having done nothing.
+///
+/// Image bytes are described here, not embedded — they ride as separate input
+/// items so the model can actually see them.
 fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String> {
     let mut parts = Vec::new();
     for block in content {
@@ -598,6 +708,11 @@ fn format_tool_output(content: &[ContentBlock], is_error: bool) -> Result<String
     serde_json::to_string(&payload).context("Failed to serialize tool output payload")
 }
 
+/// Collect viewable images from a tool result as `input_image` content.
+///
+/// Emitted as a follow-up user message, since `function_call_output` carries
+/// only text. Byte-less images restored from history are skipped loudly — an
+/// empty data URL makes the provider reject the entire request.
 fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
     let mut image_content = Vec::new();
     for block in content {
@@ -625,6 +740,10 @@ fn tool_result_image_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
     Ok(image_content)
 }
 
+/// Load a stored image asset and inline it as an `input_image` data URI.
+///
+/// # Errors
+/// Returns an error if the asset cannot be read from the store.
 fn image_asset_input_content(asset: &ImageAsset) -> Result<Value> {
     // Tainted-path guard: asset paths ride through conversation state, so the
     // read goes through the store, which honors only the file name re-rooted
@@ -636,6 +755,7 @@ fn image_asset_input_content(asset: &ImageAsset) -> Result<Value> {
     }))
 }
 
+/// Wire spelling of a message role.
 fn role_to_str(role: Role) -> &'static str {
     match role {
         Role::User => "user",
@@ -644,6 +764,7 @@ fn role_to_str(role: Role) -> &'static str {
     }
 }
 
+/// Base64 `data:` URI for image bytes, defaulting a blank media type to PNG.
 fn to_data_uri(data: &[u8], media_type: &str) -> String {
     let media_type = {
         let normalized = media_type.trim();
@@ -656,6 +777,7 @@ fn to_data_uri(data: &[u8], media_type: &str) -> String {
     format!("data:{media_type};base64,{}", BASE64.encode(data))
 }
 
+/// Read a `u64` env override, falling back on absent or unparseable values.
 fn parse_env_u64(key: &str, default: u64) -> u64 {
     env::var(key)
         .ok()
@@ -663,6 +785,10 @@ fn parse_env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Read a boolean env override, accepting `1/true/yes/on` and their negatives.
+///
+/// An unrecognized value keeps the default rather than reading as `false`, so a
+/// typo cannot silently disable a feature.
 fn parse_env_bool(key: &str, default: bool) -> bool {
     match env::var(key) {
         Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
@@ -674,11 +800,13 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
     }
 }
 
+/// Responses request shape, image payload, and chain-reset unit tests.
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAiProvider, build_request_input_items, format_tool_output,
-        forward_events_and_track_chain, reasoning_summary_request, request_messages, to_data_uri,
+        OpenAiProvider, ProviderKind, build_request_input_items, chained_instructions,
+        format_tool_output, forward_events_and_track_chain, reasoning_summary_request,
+        request_messages, to_data_uri,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -690,6 +818,7 @@ mod tests {
     use serde_json::json;
     use tokio::sync::{Mutex, mpsc};
 
+    /// Reasoning summary requests apply only to reasoning-capable model families.
     #[test]
     fn requests_public_reasoning_summaries_only_for_reasoning_models() {
         let gpt5 = serde_json::to_value(reasoning_summary_request("gpt-5.6").unwrap())
@@ -700,6 +829,7 @@ mod tests {
         assert!(reasoning_summary_request("llama3.3").is_none());
     }
 
+    /// Without a chain id the request replays the full conversation history.
     #[test]
     fn request_messages_replays_full_history_without_previous_response_id() {
         let messages = vec![
@@ -714,6 +844,7 @@ mod tests {
         assert_eq!(selected, messages.as_slice());
     }
 
+    /// With a chain id only trailing user messages are re-sent as input.
     #[test]
     fn request_messages_uses_only_trailing_user_messages_with_previous_response_id() {
         let messages = vec![
@@ -748,6 +879,27 @@ mod tests {
         assert!(selected.iter().all(|message| message.role == Role::User));
     }
 
+    /// Chained turns must NOT resend `instructions`: the Responses API keeps
+    /// them via `previous_response_id`, and endpoints reject the combination
+    /// with HTTP 400 "instructions and previous_response_id together" — which
+    /// froze the Agent UI in thinking… on every second turn (repro 2026-08-10).
+    #[test]
+    fn chained_turn_omits_instructions() {
+        let system = Some("system prompt".to_string());
+        assert_eq!(
+            chained_instructions(&system, None),
+            Some("system prompt".to_string()),
+            "first turn of a chain must carry instructions"
+        );
+        assert_eq!(
+            chained_instructions(&system, Some("resp_prev")),
+            None,
+            "chained turn must not resend instructions"
+        );
+        assert_eq!(chained_instructions(&None, None), None);
+    }
+
+    /// Resuming a chain omits prior turns already stored server-side.
     #[test]
     fn build_request_input_items_skips_prior_history_when_resuming_chain() {
         let messages = vec![
@@ -781,6 +933,7 @@ mod tests {
         assert_eq!(items[0]["call_id"], "call_1");
     }
 
+    /// Large tool output is sent as a stored-path reference, not inline bytes.
     #[test]
     fn stored_tool_output_reference_is_the_only_body_sent_to_openai() {
         let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
@@ -801,6 +954,7 @@ mod tests {
         assert!(!payload.contains("monster inline body"));
     }
 
+    /// Assistant history serializes as `output_text`, user as `input_text`.
     #[test]
     fn build_request_input_items_uses_output_text_for_assistant_history() {
         let messages = vec![
@@ -824,6 +978,7 @@ mod tests {
         assert_eq!(items[2]["content"][0]["type"], "input_text");
     }
 
+    /// Tool-result images become references; raw base64 must not hit the wire.
     #[test]
     fn format_tool_output_omits_raw_image_base64() {
         let output = format_tool_output(
@@ -840,6 +995,7 @@ mod tests {
         assert!(!output.contains("bm90IHJlYWxseSBhIHBuZw"));
     }
 
+    /// Restored thread images still serialize as native input_image data URIs.
     #[test]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
         let _env_serial = crate::test_env::data_dir_env_serial();
@@ -871,6 +1027,7 @@ mod tests {
         }
     }
 
+    /// Disk-backed tool image assets add a native input_image item beside output.
     #[test]
     fn tool_result_image_asset_adds_native_input_image_item() {
         let _env_serial = crate::test_env::data_dir_env_serial();
@@ -909,6 +1066,7 @@ mod tests {
         std::fs::remove_file(asset_path).ok();
     }
 
+    /// Empty restored tool images are dropped, never empty data URIs.
     #[test]
     fn tool_result_data_omitted_image_is_skipped_not_sent_as_empty_data_uri() {
         // D8 parity: a tool-result image restored from history (`data_omitted`)
@@ -936,6 +1094,7 @@ mod tests {
         assert_eq!(items[0]["output"], "Tool executed successfully");
     }
 
+    /// Composer inline images serialize as input_image next to caption text.
     #[test]
     fn user_message_inline_image_serializes_as_input_image() {
         // Composer 📎 path parity with Anthropic: `AgentSession::send` builds a
@@ -970,6 +1129,7 @@ mod tests {
         );
     }
 
+    /// SSE `error` events surface as specific AgentEvent::Error, not session noise.
     #[tokio::test]
     async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
         let mut server = mockito::Server::new_async().await;
@@ -998,6 +1158,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
         let messages = vec![Message::new(
             Role::User,
@@ -1041,6 +1202,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
 
         // Pre-condition: stored chain holds prior failed attempt's response id.
@@ -1077,6 +1239,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
 
         // Mid-turn advance (tool round) or dirty cancel would move the live id.
@@ -1097,6 +1260,7 @@ mod tests {
         );
     }
 
+    /// Default stream options must keep the stored previous_response_id chain.
     #[tokio::test]
     async fn apply_chain_reset_preserves_stored_chain_when_not_requested() {
         let stored_chain = Arc::new(Mutex::new(Some("resp_keep_me".to_string())));
@@ -1110,6 +1274,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
 
         let options = StreamOptions::default();
@@ -1189,6 +1354,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(1),
             inter_chunk_timeout: Duration::from_secs(1),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
         let reset_options = StreamOptions {
             reset_chain: true,
@@ -1366,6 +1532,7 @@ mod tests {
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
             use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
         };
         let messages = vec![Message::new(
             Role::User,

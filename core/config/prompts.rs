@@ -1,3 +1,16 @@
+//! User-owned system prompts: resolution, atomic persistence, and audit.
+//!
+//! Every prompt has two truths — a built-in default compiled in via
+//! `include_str!`, and an optional operator override under
+//! `~/.codescribe/prompts/`. Reads resolve override-then-default and never
+//! materialize a file, so an untouched install keeps following the built-in
+//! as it evolves.
+//!
+//! Writes are the sharp edge: these are files the operator may have authored by
+//! hand, so [`write_prompt_bytes`] runs backup → temp → rename → fsync and
+//! appends a digest receipt to `prompt-audit.jsonl`. A failed write leaves the
+//! previous bytes exactly as they were.
+
 use chrono::{SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -8,15 +21,28 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 // Default prompts (fallback if file missing/empty)
+/// Built-in prompt for [`FormattingPolicy::Correction`] — the conservative rung.
+///
+/// [`FormattingPolicy::Correction`]: crate::config::settings::FormattingPolicy::Correction
 pub const DEFAULT_FORMATTING_PROMPT: &str = include_str!("../prompts/formatting.txt");
 
+/// Built-in prompt for [`FormattingPolicy::Smart`] — the middle rung.
+///
+/// [`FormattingPolicy::Smart`]: crate::config::settings::FormattingPolicy::Smart
 pub const DEFAULT_SMART_FORMATTING_PROMPT: &str = include_str!("../prompts/formatting-smart.txt");
 
 // Formatting-ladder prompts live as real files in `core/prompts/` — the same
 // content operators receive in `~/.codescribe/prompts/` and may override there.
 // `include_str!` keeps the compiled default and the repo file mechanically identical.
+/// Built-in prompt for [`FormattingPolicy::Max`] — the most permissive rung.
+///
+/// [`FormattingPolicy::Max`]: crate::config::settings::FormattingPolicy::Max
 pub const DEFAULT_MAX_FORMATTING_PROMPT: &str = include_str!("../prompts/formatting-max.txt");
 
+/// Built-in prompt for the assistive lane (voice-native intent editing).
+///
+/// Unlike the formatting ladder this one is inline rather than `include_str!`:
+/// it is not part of the operator-facing `core/prompts/` set.
 pub const DEFAULT_ASSISTIVE_PROMPT: &str = r#"You are a text assistant running inside Codescribe.
 
 ASSISTIVE TEXT EDITING BEHAVIOR
@@ -78,18 +104,29 @@ SELECTED_TEXT:
 >>>
 "#;
 
+/// Which user-owned prompt file a read or write refers to.
+///
+/// A closed set: the variants are the only filenames the write path will ever
+/// join onto the prompts directory, which is what keeps that join free of
+/// caller-supplied path components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
+    /// Conservative formatting rung (`formatting.txt`).
     Formatting,
+    /// Middle formatting rung (`formatting-smart.txt`).
     FormattingSmart,
+    /// Most permissive formatting rung (`formatting-max.txt`).
     FormattingMax,
+    /// Assistive lane prompt (`assistive.txt`).
     Assistive,
 }
 
 impl PromptKind {
+    /// The formatting ladder, ordered from most to least conservative.
     pub const FORMATTING: [Self; 3] =
         [Self::Formatting, Self::FormattingSmart, Self::FormattingMax];
 
+    /// Every prompt the operator may override on disk.
     pub const USER_OWNED: [Self; 4] = [
         Self::Formatting,
         Self::FormattingSmart,
@@ -97,6 +134,10 @@ impl PromptKind {
         Self::Assistive,
     ];
 
+    /// Map a normalized formatting policy onto its prompt.
+    ///
+    /// `Off` has no prompt and returns `None` — bypass stays observable in the
+    /// type rather than being smuggled in as an empty string.
     pub const fn for_formatting_policy(
         policy: crate::config::settings::FormattingPolicy,
     ) -> Option<Self> {
@@ -108,6 +149,7 @@ impl PromptKind {
         }
     }
 
+    /// File name this prompt occupies inside the prompts directory.
     pub const fn filename(self) -> &'static str {
         match self {
             Self::Formatting => "formatting.txt",
@@ -117,6 +159,7 @@ impl PromptKind {
         }
     }
 
+    /// The compiled-in default used when no override file is readable.
     pub const fn default_content(self) -> &'static str {
         match self {
             Self::Formatting => DEFAULT_FORMATTING_PROMPT,
@@ -127,14 +170,22 @@ impl PromptKind {
     }
 }
 
+/// Where the content of a resolved prompt actually came from.
+///
+/// Recorded so a surprising prompt can be traced to an override, a fallback, or
+/// a silently unreadable file — the three cases look identical downstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptSource {
+    /// A non-empty operator override on disk.
     CustomFile,
+    /// The compiled-in default: no file, or a file that was empty.
     BuiltInFallback,
+    /// The file exists but could not be read; the default was used instead.
     ReadError,
 }
 
 impl PromptSource {
+    /// Stable identifier for logs and telemetry.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CustomFile => "custom_file",
@@ -144,23 +195,34 @@ impl PromptSource {
     }
 }
 
+/// A resolved prompt plus the provenance of its content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptSnapshot {
+    /// The prompt text to send to the provider.
     pub content: String,
+    /// Where the override would live — set even when the file is absent.
     pub path: PathBuf,
+    /// Which of the resolution paths produced [`Self::content`].
     pub source: PromptSource,
+    /// The I/O error text when [`PromptSource::ReadError`] applies.
     pub read_error: Option<String>,
 }
 
+/// Why a prompt file is being rewritten, carried into the audit receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptWriteReason {
+    /// The operator saved edited prompt text from Settings.
     SettingsSave,
+    /// The operator asked to restore the compiled-in default.
     RestoreDefault,
+    /// App reset is putting user-owned bytes back after clearing app data.
     AppResetPreservation,
+    /// Bulk reset of every user-owned prompt (legacy two-prompt path).
     LegacyReset,
 }
 
 impl PromptWriteReason {
+    /// Stable identifier written into the audit log.
     const fn as_str(self) -> &'static str {
         match self {
             Self::SettingsSave => "settings_save",
@@ -171,10 +233,12 @@ impl PromptWriteReason {
     }
 }
 
+/// Directory holding operator-owned prompt overrides, backups, and the audit log.
 pub fn prompts_dir() -> PathBuf {
     crate::config::Config::config_dir().join("prompts")
 }
 
+/// Create the prompts directory if it does not exist yet.
 fn ensure_prompts_dir() -> std::io::Result<()> {
     let dir = prompts_dir();
     if !dir.exists() {
@@ -183,6 +247,12 @@ fn ensure_prompts_dir() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Resolve one prompt to its content plus provenance.
+///
+/// An empty override counts as absent: a file the operator blanked falls back
+/// to the default rather than sending the provider an empty system prompt.
+/// Reads never create the file, so an untouched install keeps tracking the
+/// built-in default as it changes.
 pub fn prompt_snapshot(kind: PromptKind) -> PromptSnapshot {
     let path = prompts_dir().join(kind.filename());
     match fs::read_to_string(&path) {
@@ -226,6 +296,10 @@ pub fn prompt_snapshot(kind: PromptKind) -> PromptSnapshot {
     }
 }
 
+/// Read a trimmed side-car file from the prompts directory, if it has content.
+///
+/// Used for the `*_tuning.txt` appendices, which are additive and therefore
+/// have no built-in default to fall back to.
 fn load_optional(filename: &str) -> Option<String> {
     let path = prompts_dir().join(filename);
     match fs::read_to_string(&path) {
@@ -241,6 +315,10 @@ fn load_optional(filename: &str) -> Option<String> {
     }
 }
 
+/// The Correction-rung formatting prompt, tuning appended.
+///
+/// # Panics
+/// Never in practice: `Correction` always maps to a prompt, unlike `Off`.
 pub fn get_formatting_prompt() -> String {
     get_formatting_prompt_for_policy(crate::config::settings::FormattingPolicy::Correction)
         .expect("Correction always owns a formatting prompt")
@@ -260,6 +338,7 @@ pub fn get_formatting_prompt_for_policy(
     Some(base)
 }
 
+/// The assistive-lane system prompt, with `assistive_tuning.txt` appended.
 pub fn get_assistive_prompt() -> String {
     let mut base = prompt_snapshot(PromptKind::Assistive).content;
     if let Some(tuning) = load_optional("assistive_tuning.txt") {
@@ -269,26 +348,33 @@ pub fn get_assistive_prompt() -> String {
     base
 }
 
+/// Where the Correction-rung override lives, whether or not it exists.
 pub fn get_formatting_prompt_path() -> PathBuf {
     prompts_dir().join("formatting.txt")
 }
 
+/// Where a policy's override lives; `None` for `Off`, which owns no file.
 pub fn get_formatting_prompt_path_for_policy(
     policy: crate::config::settings::FormattingPolicy,
 ) -> Option<PathBuf> {
     PromptKind::for_formatting_policy(policy).map(|kind| prompts_dir().join(kind.filename()))
 }
 
+/// Where the assistive override lives, whether or not it exists.
 pub fn get_assistive_prompt_path() -> PathBuf {
     prompts_dir().join("assistive.txt")
 }
 
+/// Open one prompt file in the operator's default editor (best effort).
 pub fn open_prompt_file(filename: &str) {
     let path = prompts_dir().join(filename);
     // Use macOS 'open' command
     let _ = std::process::Command::new("open").arg(&path).spawn();
 }
 
+/// Persist prompt text through the atomic/backup/audit contract.
+///
+/// UTF-8 convenience wrapper over [`write_prompt_bytes`].
 pub fn write_prompt(
     kind: PromptKind,
     content: &str,
@@ -314,6 +400,10 @@ pub fn write_prompt_bytes(
     )
 }
 
+/// Overwrite one override with its compiled-in default.
+///
+/// This is a normal audited write, so the operator's previous text survives in
+/// `prompts/backups/` and stays recoverable.
 pub fn restore_prompt_to_default(kind: PromptKind) -> std::io::Result<()> {
     write_prompt(
         kind,
@@ -322,6 +412,7 @@ pub fn restore_prompt_to_default(kind: PromptKind) -> std::io::Result<()> {
     )
 }
 
+/// Restore every user-owned prompt to its default, stopping at the first error.
 pub fn reset_to_defaults() -> std::io::Result<()> {
     for kind in PromptKind::USER_OWNED {
         write_prompt(kind, kind.default_content(), PromptWriteReason::LegacyReset)?;
@@ -329,6 +420,13 @@ pub fn reset_to_defaults() -> std::io::Result<()> {
     Ok(())
 }
 
+/// The whole write contract, with the rename injected so tests can fail it.
+///
+/// Order matters and is the point of this function: back up the old bytes,
+/// record a `started` receipt, write a uniquely named temp file, rename it over
+/// the target, then fsync the *directory* so the rename itself is durable. A
+/// failure anywhere removes the temp file, records a `failed` receipt, and
+/// returns — the original bytes are never truncated, only ever replaced whole.
 fn write_prompt_at_with_rename<F>(
     path: &Path,
     kind: PromptKind,
@@ -426,6 +524,10 @@ where
     Ok(())
 }
 
+/// Copy the current bytes into `prompts/backups/` under a collision-proof name.
+///
+/// Timestamp plus UUID, created with `create_new`, so two saves in the same
+/// millisecond cannot overwrite each other's backup.
 fn write_prompt_backup(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     let parent = path.parent().expect("validated prompt parent");
     let backup_dir = parent.join("backups");
@@ -449,18 +551,32 @@ fn write_prompt_backup(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     Ok(backup_path)
 }
 
+/// One line of the prompt audit trail, borrowed for the duration of a write.
 struct PromptAuditEvent<'a> {
+    /// Prompt file the receipt is about.
     path: &'a Path,
+    /// Shared across the `started` and terminal receipts of a single write.
     timestamp: &'a chrono::DateTime<Utc>,
+    /// Which prompt was written.
     kind: PromptKind,
+    /// What triggered the write.
     reason: PromptWriteReason,
+    /// `started`, `completed`, or `failed`.
     status: &'a str,
+    /// Digest of the replaced bytes; `None` when the file did not exist.
     old_digest: Option<&'a str>,
+    /// Digest of the bytes being written.
     new_digest: &'a str,
+    /// Backup holding the replaced bytes, when one was made.
     backup_path: Option<&'a Path>,
+    /// Failure detail on a `failed` receipt.
     error: Option<&'a str>,
 }
 
+/// Append one JSONL receipt next to the prompt and fsync it.
+///
+/// Digests only — prompt content never enters the audit log, so the trail stays
+/// safe to read and share while still proving what changed.
 fn append_prompt_audit(event: PromptAuditEvent<'_>) -> std::io::Result<()> {
     let parent = event.path.parent().expect("validated prompt parent");
     let audit_path = parent.join("prompt-audit.jsonl");
@@ -484,10 +600,12 @@ fn append_prompt_audit(event: PromptAuditEvent<'_>) -> std::io::Result<()> {
     audit.sync_data()
 }
 
+/// Lowercase hex SHA-256, the digest form used throughout the audit trail.
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// Reveal the prompts directory in Finder, creating it first if needed.
 pub fn open_prompts_folder() {
     if let Err(e) = ensure_prompts_dir() {
         warn!("Failed to create prompts dir: {}", e);
@@ -500,17 +618,20 @@ pub fn open_prompts_folder() {
 }
 
 #[cfg(test)]
+/// Prompt path/read/write/reset contracts against a sandboxed data directory.
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
+    /// RAII override of `CODESCRIBE_DATA_DIR` for serialised prompt tests.
     struct EnvGuard {
         previous: Option<OsString>,
     }
 
     impl EnvGuard {
+        /// Install `value` as `CODESCRIBE_DATA_DIR`, restoring the prior env on drop.
         fn set(value: impl AsRef<OsStr>) -> Self {
             let previous = std::env::var_os("CODESCRIBE_DATA_DIR");
             // SAFETY: every prompt test that mutates process env is serialized.
@@ -520,6 +641,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the previous `CODESCRIBE_DATA_DIR` (or remove it if it was unset).
         fn drop(&mut self) {
             // SAFETY: restores the serialized test's prior process environment.
             unsafe {
@@ -533,6 +655,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Formatting/assistive path helpers resolve under the sandbox with policy suffixes.
     fn test_prompt_paths_api() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -560,6 +683,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Every formatting kind: exact-byte IO, rename-failure safety, backup, reset, audit.
     fn all_formatting_prompts_share_exact_byte_read_write_failure_and_reset_contract() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -646,6 +770,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Missing assistive prompt falls back in-memory and never creates a file on read.
     fn missing_prompt_uses_memory_fallback_without_creating_a_file() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -663,6 +788,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Custom on-disk bytes survive every read probe without rewrite or re-encode.
     fn custom_prompt_bytes_survive_every_read_probe() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -693,6 +819,7 @@ mod tests {
 
     #[test]
     #[serial]
+    /// Atomic save keeps a backup and writes a reason-tagged digest audit receipt.
     fn atomic_save_keeps_backup_and_reason_tagged_digest_receipt() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let _env = EnvGuard::set(sandbox.path());
@@ -733,6 +860,7 @@ mod tests {
     }
 
     #[test]
+    /// Injected rename failure leaves the original prompt intact and cleans temp files.
     fn injected_rename_failure_never_replaces_or_truncates_the_prompt() {
         let sandbox = TempDir::new().expect("prompt sandbox");
         let path = sandbox.path().join("prompts/assistive.txt");

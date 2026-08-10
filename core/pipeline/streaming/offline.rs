@@ -11,7 +11,9 @@ use crate::stt::whisper::singleton::transcribe_chunk;
 
 use super::tuning::{env_bool_default, env_f32};
 
+/// Default offline streaming chunk length in seconds when env knobs are absent.
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 4.0;
+/// Default chunk overlap ratio (0.25) so offline replay keeps cross-boundary context.
 const DEFAULT_OVERLAP_RATIO: f32 = 0.25; // 25% overlap for stronger context continuity
 
 // ── Offline/test: batch streaming transcription ──────────────────────────────
@@ -113,10 +115,15 @@ pub fn transcribe_streaming_samples(
     Ok(out)
 }
 
+/// Chunk length in seconds (`CODESCRIBE_STREAM_CHUNK_SEC`), clamped to a sane
+/// 0.5–30 s so a stray value cannot starve or stall the decoder.
 pub(crate) fn stream_chunk_duration_sec() -> f32 {
     env_f32("CODESCRIBE_STREAM_CHUNK_SEC", DEFAULT_CHUNK_DURATION_SEC).clamp(0.5, 30.0)
 }
 
+/// Overlap in seconds, expressed as a ratio of the chunk
+/// (`CODESCRIBE_STREAM_OVERLAP_RATIO`) and capped at 80% of it — full overlap
+/// would mean zero forward progress.
 pub(crate) fn stream_overlap_sec(chunk_duration_sec: f32) -> f32 {
     let ratio = env_f32("CODESCRIBE_STREAM_OVERLAP_RATIO", DEFAULT_OVERLAP_RATIO).clamp(0.05, 0.8);
     (chunk_duration_sec * ratio).min(chunk_duration_sec * 0.8)

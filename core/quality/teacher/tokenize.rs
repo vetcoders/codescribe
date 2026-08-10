@@ -3,7 +3,11 @@
 /// A display token with original surface form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
+    /// The word exactly as it appeared, punctuation and casing intact — what
+    /// a diff shows the reader.
     pub surface: String,
+    /// The matching key: lowercased and stripped of edge punctuation, so
+    /// "Codescribe." and "codescribe" align.
     pub norm: String,
 }
 
@@ -43,10 +47,12 @@ pub fn normalize_token(token: &str) -> String {
     trimmed.to_lowercase()
 }
 
+/// Token-normalization helpers used by teacher polygon matching.
 #[cfg(test)]
 mod tok_tests {
     use super::*;
 
+    /// normalize lowers case and strips punctuation so polygon tokens compare stably.
     #[test]
     fn normalize_strips_punct_and_case() {
         assert_eq!(normalize_token("Codescribe."), "codescribe");

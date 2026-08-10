@@ -23,14 +23,23 @@
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
 mod assistive_delivery;
+/// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
+/// Stop-path final-pass routing, completeness, and budget reporting.
 mod final_pass;
+/// Session telemetry, image attach helpers, assistive send wiring.
 mod helpers;
+/// Hold/toggle timing, agent-send vetoes, stop adjudication policy.
 mod hotkey_policy;
+/// Overlay paste dispositions and deferred-insert registration.
 mod overlay_paste;
+/// Quality-gated auto-paste / clipboard delivery decisions.
 mod quality_delivery;
+/// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
+/// Recording-truth adjudication: which engine/text is authoritative.
 mod truth;
+/// Controller state, hotkey types, and recording truth metadata.
 mod types;
 
 pub use helpers::{
@@ -87,10 +96,11 @@ use assistive_delivery::{
     assemble_assistive_delivery_lane, assemble_raw_paste_wire, capture_combo_context_with_image,
 };
 pub(crate) use final_pass::{
-    FinalPassRoutingMode, FinalPassStages, StopPathBudget, StreamingCompleteness,
-    StreamingCompletenessEvidence, assess_streaming_completeness, final_pass_routing_mode,
-    format_assistive_delivery_budget_line, format_final_pass_stages_line,
-    format_stop_path_budget_line, should_skip_full_final_repass,
+    FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
+    StreamingCompleteness, StreamingCompletenessEvidence, append_tail_gap,
+    assess_streaming_completeness, compose_stop_path_residual_from_partials, final_pass_action,
+    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
+    format_stop_path_budget_line, smart_tail_gap_source,
 };
 #[cfg(test)]
 pub(crate) use final_pass::{
@@ -135,22 +145,33 @@ use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
 };
 
+/// Live overlay: ms of audio held before the first interim emit.
 const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
+/// Live overlay typing animation speed in characters per second.
 const LIVE_PROFILE_TYPING_CPS: f32 = 90.0;
+/// Cap words emitted per live interim chunk (smooth typing feel).
 const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
+/// Seconds between interim emissions when the overlay is visible.
 const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
+/// Longer interim interval when no overlay is watching partials.
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 /// At most one level sample may wait behind the controller worker. The capture
 /// thread never constructs IPC events or timestamps and never accumulates a
 /// backlog when the bridge/UI is slower than CoreAudio.
 const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
 
+/// Test-only latch: when true, process_recording blocks forever.
+/// Armed by hang_process_recording_for_test; cleared by its Drop guard.
 #[cfg(test)]
 static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
 
+/// Clears [`PROCESS_RECORDING_TEST_HANG`] on drop, so a test that arms the hang
+/// cannot leak it into the next test in the same process.
 #[cfg(test)]
 struct ProcessRecordingHangGuard;
 
+/// Make `process_recording` block forever, so the stuck-stop watchdog can be
+/// exercised without a real recorder or a real stall.
 #[cfg(test)]
 fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
     PROCESS_RECORDING_TEST_HANG.store(true, Ordering::SeqCst);
@@ -159,11 +180,20 @@ fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
 
 #[cfg(test)]
 impl Drop for ProcessRecordingHangGuard {
+    /// Clear PROCESS_RECORDING_TEST_HANG so the hang cannot leak across tests.
     fn drop(&mut self) {
         PROCESS_RECORDING_TEST_HANG.store(false, Ordering::SeqCst);
     }
 }
 
+/// Publish the live-transcription tuning for the session that is about to start
+/// and report whether the overlay is enabled.
+///
+/// The knobs cross into the core pipeline as process env vars, which is why
+/// this runs at every session start rather than once at boot: user settings can
+/// change between recordings. A session with no overlay to feed uses a much
+/// longer interim window — nobody is watching the partials, so paying for
+/// frequent interim emissions would be waste.
 fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool {
     let overlay_enabled = config.transcription_overlay_enabled;
     let settings = UserSettings::load();
@@ -200,6 +230,10 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
     overlay_enabled
 }
 
+/// Write the provenance sidecar next to a saved artifact, logging either way.
+///
+/// Sidecar loss must never fail a delivery that already succeeded, so the error
+/// is warned and swallowed rather than propagated.
 fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
     match types::write_truth_sidecar(path, metadata) {
         Ok(sidecar_path) => debug!("Truth sidecar saved: {}", sidecar_path.display()),
@@ -211,11 +245,15 @@ fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthM
     }
 }
 
+/// Holds a shared flag `true` for a scope and clears it on drop — including on
+/// an early `return` out of a start path, which is exactly where a hand-written
+/// reset gets forgotten.
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
 }
 
 impl AtomicFlagGuard {
+    /// Raise the flag; it falls when the returned guard is dropped.
     fn new(flag: Arc<AtomicBool>) -> Self {
         flag.store(true, Ordering::SeqCst);
         Self { flag }
@@ -223,11 +261,14 @@ impl AtomicFlagGuard {
 }
 
 impl Drop for AtomicFlagGuard {
+    /// Lower the shared AtomicFlagGuard flag when the scope ends.
     fn drop(&mut self) {
         self.flag.store(false, Ordering::SeqCst);
     }
 }
 
+/// What one stop-and-process pass produced: the delivery decision plus the
+/// per-phase wall clock that the stop-path budget line reports.
 #[derive(Debug, Clone, Default)]
 struct ProcessRecordingOutcome {
     no_speech_reason: Option<String>,
@@ -241,6 +282,8 @@ struct ProcessRecordingOutcome {
 }
 
 impl ProcessRecordingOutcome {
+    /// Outcome for a stop that produced no usable transcript. Timings are zero
+    /// because this path exits before the delivery cone.
     fn no_speech(reason: impl Into<String>) -> Self {
         Self {
             no_speech_reason: Some(reason.into()),
@@ -254,6 +297,9 @@ impl ProcessRecordingOutcome {
     }
 }
 
+/// Whether a finalized transcript may replace the whole user bubble rather than
+/// append to it. Append-mode and live-stream sessions own their canvas
+/// incrementally, so a full rewrite there would erase committed text.
 #[cfg(test)]
 fn should_allow_full_user_bubble_rewrite(
     skip_user_bubble: bool,
@@ -263,6 +309,8 @@ fn should_allow_full_user_bubble_rewrite(
     !skip_user_bubble && !append_mode && !live_stream_session
 }
 
+/// The action contract applies only to plain dictation: assistive sessions
+/// deliver through the agent lane, and live-stream sessions bypass formatting.
 fn should_apply_transcription_action_contract(assistive: bool, live_stream_session: bool) -> bool {
     !assistive && !live_stream_session
 }
@@ -373,11 +421,16 @@ pub struct RecordingController {
 }
 
 impl RecordingController {
+    /// One phrasing for "there is no recorder", logged and returned together so
+    /// a caller cannot report the failure in a way the log does not corroborate.
     fn recorder_unavailable_error(context: &str) -> anyhow::Error {
         warn!("{context}: streaming recorder unavailable; voice capture is disabled");
         anyhow::anyhow!("{context}: streaming recorder unavailable")
     }
 
+    /// Best-effort recorder construction at controller init. A missing audio
+    /// device disables voice capture but must not prevent the app from starting,
+    /// so the failure degrades to `None` plus a warning.
     fn init_streaming_recorder(context: &str) -> Option<StreamingRecorder> {
         match StreamingRecorder::new() {
             Ok(recorder) => Some(recorder),
@@ -388,6 +441,7 @@ impl RecordingController {
         }
     }
 
+    /// Mutable recorder out of a held lock guard, or the unavailable error.
     fn recorder_from_guard_mut<'a>(
         recorder_guard: &'a mut Option<StreamingRecorder>,
         context: &str,
@@ -397,6 +451,7 @@ impl RecordingController {
             .ok_or_else(|| Self::recorder_unavailable_error(context))
     }
 
+    /// Shared recorder out of a held lock guard, or the unavailable error.
     fn recorder_from_guard<'a>(
         recorder_guard: &'a Option<StreamingRecorder>,
         context: &str,
@@ -422,6 +477,13 @@ impl RecordingController {
         )
     }
 
+    /// Shared constructor behind both public entry points.
+    ///
+    /// Outside tests this also kicks off a background STT prewarm. The product
+    /// invariant it protects is that **recording readiness is not engine
+    /// readiness**: capture must start the instant the user presses record, so
+    /// the prewarm runs on its own thread and a failure is a warning, never a
+    /// blocked recording.
     fn with_config(config: Config, recorder_context: &str) -> Self {
         info!(
             "Initializing RecordingController (hold_delay={}ms, beep={}, language={:?})",
@@ -520,24 +582,34 @@ impl RecordingController {
         *self.state.read().await
     }
 
+    /// Subscribe to the controller's IPC event stream. Each subscriber gets its
+    /// own receiver; a slow consumer lags rather than stalling the producer.
     pub fn subscribe_events(&self) -> broadcast::Receiver<IpcEvent> {
         self.event_broadcast.subscribe()
     }
 
+    /// Transition state and broadcast the change (see
+    /// [`Self::set_state_with_broadcast`] for the invariants).
     async fn set_state(&self, new_state: State) {
         Self::set_state_with_broadcast(&self.state, &self.event_broadcast, new_state).await;
     }
 
+    /// Flip the cursor badge to "processing" while a stop pipeline runs.
     async fn show_processing_badge_if_enabled(&self) {
         let hold_indicator = self.config.read().await.hold_indicator;
         publish_recording_indicator(BadgeMode::Processing, hold_indicator);
     }
 
+    /// Publish a cursor-badge mode, honoring the user's badge setting.
     async fn publish_indicator(&self, mode: BadgeMode) {
         let hold_indicator = self.config.read().await.hold_indicator;
         publish_recording_indicator(mode, hold_indicator);
     }
 
+    /// Character offset the live transcript has reached, used to anchor a
+    /// context marker at the point in the dictation where the user pressed the
+    /// combo. Zero outside an active recording, and zero when no recorder or
+    /// buffer exists — an unanchored marker is better than a wrong anchor.
     async fn current_live_transcript_position(&self, state: State) -> usize {
         if !matches!(state, State::RecHold | State::RecToggle) {
             return 0;
@@ -554,6 +626,14 @@ impl RecordingController {
         transcript_buffer.lock().await.chars().count()
     }
 
+    /// Capture selection + frontmost app for an assistive combo pressed mid
+    /// session, and drop it into the context bucket as a marked item.
+    ///
+    /// Ordering is deliberate: the OS capture is launched first and the
+    /// transcript position is read while it is already in flight, because
+    /// focus and caret state can vanish the moment the combo changes the UI.
+    /// A bucket failure degrades to the plain selection context rather than
+    /// losing the capture entirely.
     async fn capture_assistive_combo_context(
         &self,
         state: State,
@@ -715,6 +795,13 @@ impl RecordingController {
         Ok(true)
     }
 
+    /// Swap the state and broadcast the transition, on `Arc` handles so spawned
+    /// tasks can drive it without borrowing the controller.
+    ///
+    /// The write guard is released before the broadcast, and the event fires
+    /// only on a real change. Any arrival at `Idle` tears down the cursor badge,
+    /// which is what makes finalize, cancel, error and no-speech all end with a
+    /// clean cursor instead of each path remembering to hide it.
     async fn set_state_with_broadcast(
         state: &Arc<RwLock<State>>,
         event_broadcast: &broadcast::Sender<IpcEvent>,
@@ -849,6 +936,12 @@ impl RecordingController {
         })
     }
 
+    /// Degrade path when a synthetic paste is not safe to post: arm the payload
+    /// behind the "Paste Here" shortcut, or fall back to a plain clipboard copy
+    /// when that shortcut cannot be registered.
+    ///
+    /// The out-params carry back what the UI must tell the user — which
+    /// shortcut is now armed, or why arming failed.
     fn arm_or_copy_deferred_payload(
         &self,
         payload: String,
@@ -943,6 +1036,11 @@ impl RecordingController {
         *self.pre_overlay_frontmost_app.write().await = None;
     }
 
+    /// Detach every sink and callback from the recorder.
+    ///
+    /// Run on each stop and before each start: a callback left over from a
+    /// finished session would route the next session's audio and deltas into
+    /// the previous session's overlay.
     fn clear_recorder_callbacks(recorder: &mut StreamingRecorder) {
         recorder.set_utterance_callback(None);
         recorder.set_utterance_silence_sec(None);
@@ -950,6 +1048,9 @@ impl RecordingController {
         recorder.set_level_callback(None);
     }
 
+    /// Bring the recorder to a clean pre-start state: force-stop a stream left
+    /// active by a previous session, then clear its callbacks. Refusing to
+    /// start here would strand the user behind a session they cannot see.
     async fn ensure_recorder_ready_for_start(
         recorder: &mut StreamingRecorder,
         context: &str,
@@ -997,6 +1098,8 @@ impl RecordingController {
         self.set_state(State::Idle).await;
     }
 
+    /// Unwind session state after a start that never produced a recording, so a
+    /// failed start leaves nothing behind for the next hotkey press.
     async fn reset_session_after_start_failure(&self, context: &str) {
         warn!("{context}: resetting controller flags after failed start");
         self.reset_session_fields().await;
@@ -1004,11 +1107,22 @@ impl RecordingController {
         reset_session_telemetry(&self.session_telemetry);
     }
 
+    /// Unwind session state after a recording that completed. Telemetry is kept
+    /// (unlike the start-failure path) — the finished session's stats are still
+    /// being read by the result handler.
     async fn reset_finished_recording_state(&self) {
         self.reset_session_fields().await;
         set_assistive_session(false);
     }
 
+    /// Post-pipeline epilogue: log the commit decision on success, and surface a
+    /// failure to the user instead of leaving it in the log.
+    ///
+    /// On success it also hands freed pages back to the OS while the app is
+    /// idle, so a long session does not accumulate footprint across recordings.
+    /// A failure is routed through the engine `Warning` channel, which the
+    /// bridge turns into a visible error and a tray state — a silently failed
+    /// transcription reads to the user as a lost recording.
     async fn handle_processed_recording_result(
         &self,
         assistive: bool,
@@ -1064,12 +1178,21 @@ impl RecordingController {
         }
     }
 
+    /// Recognize the recorder's "already in progress" refusal, which is the one
+    /// start failure worth a single force-stop-and-retry rather than an abort.
     fn is_already_in_progress_error(error: &anyhow::Error) -> bool {
         error
             .to_string()
             .contains("Recording is already in progress")
     }
 
+    /// Reconcile a controller that believes it is `Idle` with a recorder that is
+    /// still streaming, by force-stopping the orphaned stream.
+    ///
+    /// The in-flight start flag is checked twice — before and after taking the
+    /// serial lock — because a session that is mid-start legitimately looks like
+    /// "Idle plus an active recorder", and killing it there would turn recovery
+    /// into the very bug it exists to fix.
     async fn recover_stale_recorder_if_idle(&self) {
         if self.start_transition_in_flight.load(Ordering::SeqCst) {
             debug!("RECOVERY decision: skip idle-recovery while start transition is in-flight");
@@ -1119,6 +1242,12 @@ impl RecordingController {
         info!("RECOVERY decision: stale active stream cleared, controller remains IDLE");
     }
 
+    /// Fan one pipeline event stream out to the three consumers a session needs:
+    /// the presentation emitter (transcript assembly, optional preview deltas),
+    /// the IPC broadcast, and session telemetry.
+    ///
+    /// Preview deltas are wired only when something is actually watching them;
+    /// otherwise the delta sink is absent rather than emitting into the void.
     fn build_recording_event_sink(
         transcript_buffer: Arc<tokio::sync::Mutex<String>>,
         preview_deltas_enabled: bool,
@@ -1172,6 +1301,8 @@ impl RecordingController {
         });
     }
 
+    /// Wire level metering and the event sink for a hold session. Hold has no
+    /// utterance callback: text is finalized on key-up in `finish_recording`.
     fn configure_hold_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
@@ -1187,6 +1318,8 @@ impl RecordingController {
         )));
     }
 
+    /// Wire level metering and the event sink for a toggle / hands-off session,
+    /// which is ONE continuous recorder session (ADR 2026-05-28 Faza 1).
     fn configure_toggle_event_sink(
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
@@ -1734,8 +1867,10 @@ impl RecordingController {
                     tokio::task::spawn_blocking(move || {
                         // Resets playback_active when this scope exits (also on an
                         // unwinding panic; NOT under panic="abort", see above).
+                        /// Clears `playback_active` on exit (unwind path; not panic=abort).
                         struct PlaybackGuard(Arc<AtomicBool>);
                         impl Drop for PlaybackGuard {
+                            /// Clear the playback-active flag when play scope ends.
                             fn drop(&mut self) {
                                 self.0.store(false, Ordering::SeqCst);
                             }
@@ -2289,6 +2424,13 @@ impl RecordingController {
         Ok(())
     }
 
+    /// Stop a toggle session under a watchdog.
+    ///
+    /// The full stop — recorder drain, final-pass STT, post-process, delivery —
+    /// must finish within `STOP_TIMEOUT`. When it does not (final-pass deadlock
+    /// on the Metal device, lock contention, a `stop` blocked in a CoreAudio
+    /// callback), recovery forces `Idle` so the next toggle press registers, the
+    /// badge clears, and the tray stops claiming idle over a hung recording.
     async fn stop_toggle_and_adjudicate(&self) -> Result<()> {
         if *self.state.read().await != State::RecToggle {
             return Ok(());
@@ -2316,6 +2458,16 @@ impl RecordingController {
         }
     }
 
+    /// The stop body the watchdog above wraps.
+    ///
+    /// Phases are timed and logged at `info!` on purpose: the watchdog could say
+    /// *that* a stop hung but never *where*, and `debug!` is filtered out in
+    /// release, exactly where the hang was reported. The phase numbers in the
+    /// log lines are the diagnostic contract.
+    ///
+    /// The session-id snapshot before the rename is a self-deadlock guard: under
+    /// Rust 2024 a read guard held as an if-let scrutinee outlives the body and
+    /// would block this same task's write.
     async fn stop_toggle_and_adjudicate_inner(&self) -> Result<()> {
         // Phase-timed instrumentation: the watchdog above wraps this entire fn
         // in STOP_TIMEOUT, but until now we couldn't tell WHICH await hung.
@@ -2465,6 +2617,9 @@ impl RecordingController {
         self.reset_finished_recording_state().await;
     }
 
+    /// Stop the current recording on behalf of a non-hotkey surface (tray, the
+    /// SwiftUI overlay), routing to the same stop path the hotkey would have
+    /// taken for this session shape.
     pub async fn stop_recording_from_external_surface(&self) -> Result<()> {
         let current_state = self.current_state().await;
         let assistive = *self.assistive_mode.read().await;
@@ -2548,6 +2703,22 @@ impl RecordingController {
         result.map(|_| ())
     }
 
+    /// Turn a stopped recording into a delivered transcript: decide the final
+    /// pass, adjudicate which transcript is the truth, then run the text
+    /// pipeline.
+    ///
+    /// Final-pass routing is typed rather than heuristic. `Always` re-passes the
+    /// whole file; `Smart` on a complete streaming transcript skips; `Smart` on
+    /// an incomplete one transcribes only the uncommitted audio tail and appends
+    /// it, because committed streaming text is immutable under the append-only
+    /// overlay doctrine and a full re-pass there would rewrite what the user
+    /// already watched being typed. `Off` still emits a skipped LocalFinalPass
+    /// so provenance stays honest — it gates the WAV re-pass, never the lexicon.
+    ///
+    /// A missing tail boundary is carried by the type, not by a sentinel: the
+    /// `Skip` variant produces no `from_secs` at all, so handing `0.0` to the
+    /// tail primitive — which would transcribe the whole file and append it onto
+    /// committed text — is structurally impossible rather than merely avoided.
     // allow(too_many_arguments): single-call-site pipeline seam carrying the
     // stop-recording context; grouping into a struct is planned with the
     // controller decomposition cut (see prune report follow-ups).
@@ -2626,7 +2797,7 @@ impl RecordingController {
         let routing_mode = final_pass_routing_mode();
         let prefer_apple = codescribe_core::stt::active_engine_is_apple();
         // Honest mode: Off never runs a full file re-pass (Apple or not).
-        // Smart/Always decide via should_skip_full_final_repass — no silent rewrite.
+        // Smart/Always decide via final_pass_action — no silent rewrite.
         let run_local_final_pass =
             use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off);
         let effective_routing = routing_mode;
@@ -2640,13 +2811,27 @@ impl RecordingController {
             let completeness_evidence =
                 StreamingCompletenessEvidence::from_session(&streaming_text, &session_snap);
             let completeness = assess_streaming_completeness(&completeness_evidence);
-            let skip_full_repass =
-                should_skip_full_final_repass(effective_routing, completeness, prefer_apple);
+            // Typed routing: Always → full file re-pass; Smart+Complete / Off →
+            // skip; Smart+Incomplete → tail-gap append (committed text immutable).
+            // Live-lane fence (w2-b): keeps the action matrix; residual partials
+            // are a *source* for TailGapFill, not a new variant. Dead lane keeps
+            // the audio / punctuation safety nets.
+            let live_lane_alive = session_snap.stats.is_some()
+                || completeness_evidence.committed_chars > 0
+                || !streaming_text.trim().is_empty();
+            // `live_lane_alive` never alters the typed action — the fence
+            // lives in `smart_tail_gap_source` (residual vs file decode).
+            let action = final_pass_action(effective_routing, completeness);
+            let smart_tail_source =
+                smart_tail_gap_source(live_lane_alive, &streaming_text, audio_path.is_some());
 
-            if skip_full_repass {
+            if matches!(action, FinalPassAction::SkipStreamingFinal) {
                 local_final_pass_attempted = true;
                 let reason = match completeness {
                     StreamingCompleteness::Complete => "complete_streaming_transcript",
+                    // Unreachable through the Smart mapping (shape routes to
+                    // PunctuationRepass), reachable if a future mode skips on it.
+                    StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
                     StreamingCompleteness::Incomplete { reason } => reason,
                 };
                 let commit_src = completeness_evidence
@@ -2694,6 +2879,353 @@ impl RecordingController {
                         }),
                     ),
                 );
+            } else if matches!(action, FinalPassAction::TailGapFill)
+                && matches!(smart_tail_source, SmartTailGapSource::SessionResidual)
+            {
+                // The streaming task has already waited for progressive seals
+                // and its residual tail. A normal recording also has a WAV;
+                // source selection must therefore happen before path matching.
+                local_final_pass_attempted = true;
+                let committed_text = streaming_text.trim().to_string();
+                let residual = compose_stop_path_residual_from_partials(
+                    std::slice::from_ref(&committed_text),
+                    "",
+                );
+                final_pass_secs = residual.final_pass_phase_secs;
+                final_pass_stages.final_pass_total_ms = (final_pass_secs * 1000.0).round() as u64;
+                final_pass_stages.residual_ms = final_pass_stages.final_pass_total_ms;
+                info!(
+                    "final_pass_residual_from_partials mode=smart phase_secs={:.6} chars={} seal_source=live_session (no file re-decode)",
+                    residual.final_pass_phase_secs,
+                    residual.text.chars().count(),
+                );
+                let text = residual.text;
+                let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                    text: text.clone(),
+                    ..Default::default()
+                };
+                let skip_engine = if prefer_apple {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+                    )
+                } else {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                    )
+                };
+                local_final_pass_verdict = Some(
+                    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                        text,
+                        raw,
+                        None,
+                        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                        skip_engine,
+                        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                            disposition: FinalPassDisposition::Unchanged,
+                            reason: Some("residual_from_session_partials".to_string()),
+                            lexicon_rewrites: 0,
+                            repetition_cleanups: 0,
+                        }),
+                    ),
+                );
+            } else if matches!(action, FinalPassAction::TailGapFill)
+                && matches!(smart_tail_source, SmartTailGapSource::FileDecodeFallback)
+                && let Some(path) = &audio_path
+            {
+                // Smart + incomplete streaming: transcribe ONLY the uncommitted
+                // audio tail (from the last committed utterance end) and APPEND
+                // it. Committed streaming text is immutable — a full-file
+                // re-pass here would violate the append-only overlay doctrine
+                // and is Always-mode territory alone.
+                //
+                // w2-b residual: when progressive seals + session partials are
+                // available on the machine (see
+                // `compose_stop_path_residual_from_partials`), callers compose
+                // without Whisper. This arm remains the audio safety net when
+                // the live lane died or residual partials are absent.
+                local_final_pass_attempted = true;
+                let wav_path = path.as_path().to_path_buf();
+                let lang = language_opt.map(str::to_string);
+                let committed_text = streaming_text.trim().to_string();
+                // A missing / non-positive commit boundary must NOT silently
+                // become `0.0` — that transcribes the whole file and appends it
+                // onto committed text (full-file re-pass in Smart, forbidden).
+                let boundary = codescribe_core::stt::resolve_tail_gap_boundary(
+                    session_snap.committed_through_secs,
+                    committed_text.is_empty(),
+                );
+                // The decision is carried by the TYPE, not by a sentinel value:
+                // `Skip` produces NO `from_secs` at all, so it is structurally
+                // impossible to hand a bogus boundary to the tail primitive —
+                // correctness no longer depends on branch ordering.
+                let gap_fill = match boundary {
+                    codescribe_core::stt::TailGapBoundary::From(secs) => {
+                        Some((secs, "smart_tail_gap"))
+                    }
+                    codescribe_core::stt::TailGapBoundary::WholeSessionBootstrap => {
+                        Some((0.0_f32, "smart_bootstrap_gap_fill"))
+                    }
+                    codescribe_core::stt::TailGapBoundary::Skip => None,
+                };
+
+                match gap_fill {
+                    None => {
+                        // Honest skip: no boundary and a non-empty canvas. Streaming
+                        // (+ post-process) is final; Whisper is never invoked.
+                        info!(
+                            "final_pass_skipped mode={} reason=tail_gap_no_boundary chars={} committed_through=none live_engine={}",
+                            effective_routing.as_str(),
+                            committed_text.len(),
+                            if prefer_apple { "apple" } else { "whisper" },
+                        );
+                        let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                            text: committed_text.clone(),
+                            ..Default::default()
+                        };
+                        let skip_engine = if prefer_apple {
+                            codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+                            codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+                        )
+                        } else {
+                            codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                            codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                        )
+                        };
+                        local_final_pass_verdict = Some(
+                        codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                            committed_text.clone(),
+                            raw,
+                            None,
+                            codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                            skip_engine,
+                            Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                                mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                                disposition: FinalPassDisposition::Skipped,
+                                reason: Some("tail_gap_no_boundary".to_string()),
+                                lexicon_rewrites: 0,
+                                repetition_cleanups: 0,
+                            }),
+                        ),
+                    );
+                    }
+                    Some((from_secs, gap_reason)) => {
+                        info!(
+                            "Running final-pass tail gap-fill (mode=smart live_engine={} from_secs={:.3}): {}",
+                            if prefer_apple { "apple" } else { "whisper" },
+                            from_secs,
+                            wav_path.display()
+                        );
+
+                        let final_pass_started = std::time::Instant::now();
+                        match tokio::task::spawn_blocking(move || {
+                            let queue_wait_ms = final_pass_started.elapsed().as_millis() as u64;
+                            let tail = codescribe_core::stt::whisper_tail_gap_transcribe_file(
+                                &wav_path,
+                                from_secs,
+                                lang.as_deref(),
+                            );
+                            let timing = codescribe_core::stt::whisper::take_final_pass_timing();
+                            (tail, queue_wait_ms, timing)
+                        })
+                        .await
+                        {
+                            Ok((Ok(tail), queue_wait_ms, timing)) => {
+                                final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                                final_pass_stages = FinalPassStages {
+                                    queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                                    model_load_ms: timing.model_load_ms,
+                                    cold_load: timing.cold_load,
+                                    inference_ms: timing.inference_ms,
+                                    postprocess_ms: 0,
+                                    delivery_ms: 0,
+                                    final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                                    ..Default::default()
+                                };
+                                let appended = tail.text.trim().to_string();
+                                let text = append_tail_gap(&committed_text, &appended);
+                                info!(
+                                    "final_pass_tail_gap mode=smart from_secs={:.3} appended_chars={}",
+                                    from_secs,
+                                    appended.chars().count(),
+                                );
+                                let disposition = if appended.is_empty() {
+                                    FinalPassDisposition::Unchanged
+                                } else {
+                                    FinalPassDisposition::Changed
+                                };
+                                let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                                    text: text.clone(),
+                                    ..Default::default()
+                                };
+                                local_final_pass_verdict = Some(
+                            codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                                text,
+                                raw,
+                                None,
+                                codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                                codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                                    codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                                ),
+                                Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                                    mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                                    disposition,
+                                    reason: Some(gap_reason.to_string()),
+                                    lexicon_rewrites: 0,
+                                    repetition_cleanups: 0,
+                                }),
+                            ),
+                        );
+                            }
+                            Ok((Err(e), queue_wait_ms, timing)) => {
+                                final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                                final_pass_stages = FinalPassStages {
+                                    queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                                    model_load_ms: timing.model_load_ms,
+                                    cold_load: timing.cold_load,
+                                    inference_ms: timing.inference_ms,
+                                    postprocess_ms: 0,
+                                    delivery_ms: 0,
+                                    final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                                    ..Default::default()
+                                };
+                                warn!("Final-pass tail gap-fill failed: {}", e);
+                            }
+                            Err(e) => {
+                                final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                                final_pass_stages.final_pass_total_ms =
+                                    (final_pass_secs * 1000.0).round() as u64;
+                                warn!("Final-pass tail gap-fill task failed: {}", e);
+                            }
+                        }
+                    }
+                }
+            } else if matches!(action, FinalPassAction::PunctuationRepass)
+                && let Some(path) = &audio_path
+            {
+                // Smart + shape-deficient: everything was heard, nothing was
+                // shaped. Whisper transcribes the whole file, but ONLY its
+                // punctuation and capitalization are adopted onto the committed
+                // words (word sequence invariant — the append-only doctrine
+                // holds). A weak alignment ships the committed text untouched.
+                // File inference remains the safety net when the live lane died
+                // mid-session without progressive Light+ seals.
+                local_final_pass_attempted = true;
+                let wav_path = path.as_path().to_path_buf();
+                let lang = language_opt.map(str::to_string);
+                let committed_text = streaming_text.trim().to_string();
+
+                info!(
+                    "Running final-pass punctuation transplant (mode=smart live_engine={} committed_chars={}): {}",
+                    if prefer_apple { "apple" } else { "whisper" },
+                    committed_text.chars().count(),
+                    wav_path.display()
+                );
+
+                let final_pass_started = std::time::Instant::now();
+                match tokio::task::spawn_blocking(move || {
+                    let queue_wait_ms = final_pass_started.elapsed().as_millis() as u64;
+                    let verdict =
+                        codescribe_core::stt::transcribe_file_verdict(&wav_path, lang.as_deref());
+                    let timing = codescribe_core::stt::whisper::take_final_pass_timing();
+                    (verdict, queue_wait_ms, timing)
+                })
+                .await
+                {
+                    Ok((Ok(shape_verdict), queue_wait_ms, timing)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages = FinalPassStages {
+                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                            model_load_ms: timing.model_load_ms,
+                            cold_load: timing.cold_load,
+                            inference_ms: timing.inference_ms,
+                            postprocess_ms: 0,
+                            delivery_ms: 0,
+                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
+                        };
+                        let transplant =
+                            codescribe_core::stt::punctuation_transplant::transplant_punctuation(
+                                &committed_text,
+                                &shape_verdict.text,
+                            );
+                        let (text, disposition, reason) = match transplant {
+                            Some(outcome) => {
+                                info!(
+                                    "final_pass_punctuation_transplant aligned_ratio={:.3} punctuation_added={} capitalization_changes={}",
+                                    outcome.aligned_ratio,
+                                    outcome.punctuation_added,
+                                    outcome.capitalization_changes,
+                                );
+                                let changed = outcome.text != committed_text;
+                                (
+                                    outcome.text,
+                                    if changed {
+                                        FinalPassDisposition::Changed
+                                    } else {
+                                        FinalPassDisposition::Unchanged
+                                    },
+                                    "shape_punctuation_transplant",
+                                )
+                            }
+                            None => {
+                                info!(
+                                    "final_pass_punctuation_transplant declined — transcripts disagree; committed text ships untouched",
+                                );
+                                (
+                                    committed_text.clone(),
+                                    FinalPassDisposition::Unchanged,
+                                    "shape_transplant_low_alignment",
+                                )
+                            }
+                        };
+                        let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                            text: text.clone(),
+                            ..Default::default()
+                        };
+                        local_final_pass_verdict = Some(
+                            codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                                text,
+                                raw,
+                                None,
+                                codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                                codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                                    codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                                ),
+                                Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                                    mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                                    disposition,
+                                    reason: Some(reason.to_string()),
+                                    lexicon_rewrites: 0,
+                                    repetition_cleanups: 0,
+                                }),
+                            ),
+                        );
+                    }
+                    Ok((Err(e), queue_wait_ms, timing)) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages = FinalPassStages {
+                            queue_ms: queue_wait_ms + timing.lock_wait_ms,
+                            model_load_ms: timing.model_load_ms,
+                            cold_load: timing.cold_load,
+                            inference_ms: timing.inference_ms,
+                            postprocess_ms: 0,
+                            delivery_ms: 0,
+                            final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
+                        };
+                        warn!(
+                            "Final-pass punctuation transplant failed (committed text ships untouched): {}",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        final_pass_secs = final_pass_started.elapsed().as_secs_f64();
+                        final_pass_stages.final_pass_total_ms =
+                            (final_pass_secs * 1000.0).round() as u64;
+                        warn!("Final-pass punctuation transplant task failed: {}", e);
+                    }
+                }
             } else if let Some(path) = &audio_path {
                 local_final_pass_attempted = true;
                 let wav_path = path.as_path().to_path_buf();
@@ -2737,6 +3269,7 @@ impl RecordingController {
                             postprocess_ms: 0,
                             delivery_ms: 0,
                             final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
                         };
                         info!(
                             "Final-pass verdict captured ({} chars, engine={} mode={} speech_pct={:?}, avg_logprob={:?}, elapsed={:?})",
@@ -2759,6 +3292,7 @@ impl RecordingController {
                             postprocess_ms: 0,
                             delivery_ms: 0,
                             final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
                         };
                         warn!("Final-pass transcription failed: {}", e);
                     }
@@ -3084,6 +3618,20 @@ impl RecordingController {
         .await
     }
 
+    /// Shared text pipeline from adjudicated transcript to delivered text:
+    /// post-process, format per mode, persist, then paste or hand off.
+    ///
+    /// The dictionary step (lexicon, cleanup, semantic gate) always runs — it is
+    /// independent of the final-pass mode, which routes only the optional WAV
+    /// re-pass. Formatting then follows the mode the hotkey chose, and the
+    /// Light+ sentence-shape floor is applied to every lane that *promised*
+    /// formatting. RAW lanes are excluded on purpose: `force_raw` and Toggle-OFF
+    /// promise the user their literal words.
+    ///
+    /// History is written before the paste attempt. Delivery can fail
+    /// transiently and early-return, so persisting first keeps the formatted
+    /// layer recoverable; the write is disk-only, leaving the user-visible order
+    /// of effects unchanged.
     async fn process_transcript_text_pipeline(
         &self,
         p: types::TranscriptPipelineParams,
@@ -3352,6 +3900,29 @@ impl RecordingController {
             }
         };
 
+        // Light+ floor — deterministic sentence shape for every lane that PROMISED
+        // formatting, and for none that promised literalness.
+        //
+        // No Apple on-device path emits Polish punctuation: measured 2026-08-09 on
+        // the frozen parity fixture, `DictationTranscriber` and the SYSTEM dictation
+        // reference both produce 1 period and 0 commas per ~1050 characters, against
+        // a human transcript of the same audio carrying 6 and 32. That made the LLM
+        // the product's only producer of sentences, so a dead key or an offline
+        // provider silently downgraded a formatted delivery to a word stream.
+        //
+        // Only `force_raw` (Ctrl hold) promises literal words — that is the one
+        // lane a controller test pins. The first wiring also exempted every
+        // `TranscriptKind::Raw`, which silently included Toggle-OFF and the
+        // no-key fallbacks — i.e. the entire no-LLM mode, the very place the
+        // deterministic floor exists for. Operator, 2026-08-09: "co z tym
+        // Light+ co przywróciłeś a go w ogóle nie ma?!" — with AI formatting
+        // disabled every delivery was Raw, so Light+ never ran at all.
+        let formatted_text = if force_raw {
+            formatted_text
+        } else {
+            codescribe_core::pipeline::light_plus::apply(&formatted_text)
+        };
+
         let format_secs = format_started.elapsed().as_secs_f64();
         let mode_label =
             recording_mode_label(assistive, effective_hold_mode, force_raw, force_ai).to_string();
@@ -3363,17 +3934,63 @@ impl RecordingController {
             formatted_text.len(),
             mode_label
         );
-        let quality_probe =
+        let mut quality_probe =
             ActionQualityProbe::from_transcripts(&raw_text, &formatted_text, &postprocess_stats);
+        // Meaning axis for LLM-formatted deliveries only. Character ratios
+        // cannot see a model that changed the sense while keeping the length;
+        // MiniLM can (floor calibrated in core::pipeline::semantic_guard, with
+        // its same-word-inversion blindspot documented there). Scoped to the
+        // LLM lane on purpose: Light+-only and raw deliveries never pay the
+        // embedder (stop-path latency is a first-class budget), and the guard
+        // is fail-open — no embedder means no verdict, never a block.
+        if !force_raw
+            && !is_ai_noop
+            && matches!(
+                output_kind,
+                crate::state::history::TranscriptKind::FormattedTranscript
+            )
+        {
+            let guard_started = std::time::Instant::now();
+            let raw_for_guard = raw_text.clone();
+            let formatted_for_guard = formatted_text.clone();
+            quality_probe.semantic_cosine = tokio::task::spawn_blocking(move || {
+                codescribe_core::pipeline::semantic_guard::formatting_semantic_cosine(
+                    &raw_for_guard,
+                    &formatted_for_guard,
+                )
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(cosine) = quality_probe.semantic_cosine {
+                info!(
+                    "semantic_guard cosine={:.3} floor={:.2} verdict={} took_ms={}",
+                    cosine,
+                    codescribe_core::pipeline::semantic_guard::FORMATTING_SEMANTIC_FLOOR,
+                    if codescribe_core::pipeline::semantic_guard::formatting_meaning_diverged(
+                        cosine
+                    ) {
+                        "diverged"
+                    } else {
+                        "kept"
+                    },
+                    guard_started.elapsed().as_millis()
+                );
+            }
+        }
         info!(
-            "Action quality guardrail: mode={} assistive={} raw_chars={} final_chars={} diff_raw_final={:.3} correction_ratio={:.3} drop_ratio={:.3} route_independent=true",
+            "Action quality guardrail: mode={} assistive={} raw_chars={} final_chars={} diff_raw_final={:.3} correction_ratio={:.3} drop_ratio={:.3} semantic_cosine={} route_independent=true",
             mode_label,
             assistive,
             quality_probe.raw_chars,
             quality_probe.final_chars,
             quality_probe.raw_final_diff_ratio,
             quality_probe.correction_ratio,
-            quality_probe.drop_ratio
+            quality_probe.drop_ratio,
+            quality_probe
+                .semantic_cosine
+                .map(|c| format!("{c:.3}"))
+                .unwrap_or_else(|| "none".to_string())
         );
         let quality_commit_trigger = if !assistive {
             evaluate_quality_commit_trigger(force_raw, &quality_probe, output_kind)
@@ -3598,6 +4215,15 @@ impl RecordingController {
         }
         let delivery_secs = delivery_started.elapsed().as_secs_f64();
 
+        // Opt-in qube donor (CODESCRIBE_QUBE_DONOR=on): write WAV + delivered TXT
+        // for lexicon mining even when FINAL_PASS_MODE=off. Files only — never
+        // Whisper. Failures warn; delivery pipeline is unaffected.
+        crate::state::qube_donor::try_persist_qube_donor_at_stop(
+            audio_path.as_ref().map(|p| p.as_path()),
+            final_formatted_text.as_str(),
+            recording_timestamp,
+        );
+
         if let Some(cloud_verdict) = cloud_verdict_opt {
             let entry = crate::state::history::save_entry_with_timestamp_and_slug(
                 &cloud_verdict.text,
@@ -3712,10 +4338,12 @@ impl RecordingController {
 }
 
 impl Default for RecordingController {
+    /// Build a controller with production defaults (`RecordingController::new`).
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Controller unit/integration tests live in the sibling `tests` submodule.
 #[cfg(test)]
 mod tests;

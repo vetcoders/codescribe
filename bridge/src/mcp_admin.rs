@@ -42,6 +42,7 @@ pub struct CsMcpServer {
 }
 
 impl From<McpServerSummary> for CsMcpServer {
+    /// Map core McpServerSummary into the UniFFI bridge DTO for Swift admin UI.
     fn from(summary: McpServerSummary) -> Self {
         Self {
             name: summary.name,
@@ -78,6 +79,7 @@ pub struct CsMcpServerInput {
 }
 
 impl From<&CsMcpServerInput> for McpServerSpec {
+    /// Map UniFFI CsMcpServerInput into the core MCP config write shape.
     fn from(input: &CsMcpServerInput) -> Self {
         Self {
             name: input.name.clone(),
@@ -141,11 +143,15 @@ pub struct CsPermissionPolicy {
     pub servers: Vec<String>,
 }
 
+/// UniFFI handle exposing MCP server CRUD plus the B2 permission surface.
+/// Stateless: every call re-reads on-disk truth, so Swift never caches a
+/// snapshot that a hand edit or another process could have invalidated.
 #[derive(uniffi::Object, Default)]
 pub struct CodescribeMcpAdmin {}
 
 #[uniffi::export]
 impl CodescribeMcpAdmin {
+    /// Construct the handle, initializing logging on first use.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -323,6 +329,7 @@ impl CodescribeMcpAdmin {
 }
 
 impl CsMcpTestResult {
+    /// A failed handshake as a displayable result rather than a thrown error.
     fn failure(error: String) -> Self {
         Self {
             ok: false,
@@ -335,12 +342,17 @@ impl CsMcpTestResult {
     }
 }
 
+/// Flatten a core store error into the FFI `CsError::Config` variant.
 fn config_err(error: anyhow::Error) -> CsError {
     CsError::Config {
         msg: error.to_string(),
     }
 }
 
+/// Persist a bearer token to the Keychain under a name derived from the server
+/// (non-alphanumerics folded to `_`), returning the account to store as
+/// `auth_ref`. An empty token is `Ok(None)` — nothing written, nothing to
+/// reference. The secret itself never reaches `mcp.json`.
 fn store_connector_token(name: &str, token: &str) -> Result<Option<String>, CsError> {
     let token = token.trim();
     if token.is_empty() {

@@ -55,6 +55,11 @@ pub type ChunkCallback<'a> = &'a dyn Fn(&str);
 /// cached value keeps the underlying MTL device alive for the process life.
 static PROCESS_DEVICE: OnceLock<Device> = OnceLock::new();
 
+/// The process-lifetime device, created on first use.
+///
+/// Falls back to CPU when Metal is unavailable. Never call `Device::new_metal`
+/// outside this initializer — see [`PROCESS_DEVICE`] for why re-creating the
+/// device is expensive and leaky.
 fn process_device() -> Device {
     PROCESS_DEVICE
         .get_or_init(|| {
@@ -85,6 +90,9 @@ const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
 /// Minimum token budget for the runaway watchdog regardless of audio length, so
 /// very short chunks still get enough headroom to emit normal short utterances.
 const RUNAWAY_MIN_BUDGET: usize = 64;
+/// Whisper's marker introducing previous-context tokens. Everything between it
+/// and the decode prefix is treated by the model as prior context, not as text
+/// to transcribe.
 const WHISPER_START_OF_PREVIOUS_TOKEN: &str = "<|startofprev|>";
 
 /// Token budget for the in-loop runaway watchdog given the chunk audio length.
@@ -102,6 +110,13 @@ fn runaway_token_budget(audio_sec: f32) -> usize {
     (raw as usize).max(RUNAWAY_MIN_BUDGET)
 }
 
+/// Splice an initial prompt in front of the decode prefix and report how many
+/// prompt tokens were kept.
+///
+/// Order matters: `<|startofprev|>`, then the prompt, then the existing prefix
+/// (`<|startoftranscript|>` and friends) — the prompt is *previous context*, so
+/// putting it after the prefix would make the model transcribe it. Capped at
+/// [`WHISPER_INITIAL_PROMPT_TOKEN_BUDGET`]; an empty prompt is a no-op.
 fn prepend_initial_prompt_tokens(
     tokens: &mut Vec<u32>,
     start_of_previous_token: u32,
@@ -120,6 +135,10 @@ fn prepend_initial_prompt_tokens(
     keep
 }
 
+/// Record that a requested final pass was skipped, with the reason.
+///
+/// `None` when no final pass was requested — the caller must not fabricate a
+/// verdict for work nobody asked for.
 fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option<FinalPassVerdict> {
     match options.final_pass {
         FinalPassMode::None => None,
@@ -133,6 +152,12 @@ fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option
     }
 }
 
+/// Adjudicate a final-pass candidate against the raw transcript.
+///
+/// Three outcomes: identical text is `Unchanged`; a candidate that trips
+/// `final_pass_guardrail_reason` is `Rejected` and the **raw text is kept**;
+/// otherwise the candidate wins as `Changed`. The guardrail is what stops
+/// cleanup from silently rewriting words the model actually heard.
 fn finalize_requested_final_pass(
     raw_text: &str,
     candidate_text: String,
@@ -180,6 +205,12 @@ fn finalize_requested_final_pass(
     )
 }
 
+/// Run the requested final pass over a raw transcript.
+///
+/// [`FinalPassMode::None`] returns the raw text untouched.
+/// `EmbeddedLexiconCleanup` runs the stream post-processor; if cleanup empties
+/// the text the result is a `Dropped` verdict with empty output, which the
+/// caller must treat as "no speech" rather than as a transcript.
 fn apply_requested_final_pass(
     raw: &RawTranscript,
     options: FileTranscriptionOptions,
@@ -217,6 +248,12 @@ fn apply_requested_final_pass(
     }
 }
 
+/// Fold a Silero VAD filtering result back into the transcript.
+///
+/// Segments are always replaced, but the **text** is preserved from `raw` when
+/// nothing was actually dropped and the filtered text is merely an equivalent
+/// or a strict subset. Rebuilding text from segments loses punctuation and
+/// casing, so it is only accepted when a real drop justifies it.
 fn apply_silero_filter_outcome(
     raw: &RawTranscript,
     filtered_text: String,
@@ -236,18 +273,28 @@ fn apply_silero_filter_outcome(
     filtered
 }
 
+/// Whether `candidate` is a non-empty, strictly smaller fragment of
+/// `full_text` once both are normalized. Equality is deliberately excluded —
+/// that case is [`is_text_equivalent`].
 fn is_strict_text_subset(candidate: &str, full_text: &str) -> bool {
     let candidate = normalize_transcript_text(candidate);
     let full_text = normalize_transcript_text(full_text);
     !candidate.is_empty() && candidate != full_text && full_text.contains(&candidate)
 }
 
+/// Whether two non-empty texts are the same modulo casing, punctuation and
+/// whitespace.
 fn is_text_equivalent(candidate: &str, full_text: &str) -> bool {
     let candidate = normalize_transcript_text(candidate);
     let full_text = normalize_transcript_text(full_text);
     !candidate.is_empty() && candidate == full_text
 }
 
+/// Reduce a transcript to lowercase alphanumeric words joined by single spaces.
+///
+/// Comparison-only helper: it deliberately destroys punctuation and casing so
+/// that two renderings of the same speech compare equal. Never store its output
+/// as a transcript.
 fn normalize_transcript_text(text: &str) -> String {
     text.split_whitespace()
         .filter_map(|token| {
@@ -267,10 +314,106 @@ fn normalize_transcript_text(text: &str) -> String {
         .join(" ")
 }
 
+/// Whether decoder control tokens should be suppressed at this decode step.
+///
+/// Only before the first generated token: suppressing them later would stop the
+/// model from ever emitting `<|endoftext|>` and turn a normal utterance into a
+/// runaway decode.
 fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
     generated_tokens == 0
 }
 
+/// Apply Whisper's timestamp-token constraints to one decoder step.
+///
+/// This mirrors OpenAI Whisper's `ApplyTimestampRules`: the first generated
+/// token is a timestamp, timestamps are monotonic and paired around text, and
+/// aggregate timestamp probability can outrank the best text token. Merely
+/// omitting `<|notimestamps|>` from the prompt is insufficient — without these
+/// masks the model can emit text-only output and the seam judge has no clock.
+fn apply_timestamp_rules(
+    logits: &mut [f32],
+    sampled_tokens: &[u32],
+    eot_token: u32,
+    no_timestamps_token: Option<u32>,
+    range: &timestamps::TimestampRange,
+) {
+    let timestamp_begin = range.begin as usize;
+    let timestamp_end = (range.end_inclusive as usize).min(logits.len().saturating_sub(1));
+    if timestamp_begin >= logits.len() || timestamp_begin > timestamp_end {
+        return;
+    }
+
+    if let Some(token) = no_timestamps_token
+        && let Some(logit) = logits.get_mut(token as usize)
+    {
+        *logit = f32::NEG_INFINITY;
+    }
+
+    let last_was_timestamp = sampled_tokens
+        .last()
+        .is_some_and(|token| range.is_timestamp(*token));
+    let penultimate_was_timestamp =
+        sampled_tokens.len() < 2 || range.is_timestamp(sampled_tokens[sampled_tokens.len() - 2]);
+
+    if last_was_timestamp {
+        if penultimate_was_timestamp {
+            logits[timestamp_begin..=timestamp_end].fill(f32::NEG_INFINITY);
+        } else {
+            let eot_index = (eot_token as usize).min(logits.len());
+            logits[..eot_index].fill(f32::NEG_INFINITY);
+        }
+    }
+
+    if let Some(last_timestamp) = sampled_tokens
+        .iter()
+        .rev()
+        .find(|token| range.is_timestamp(**token))
+    {
+        let first_allowed = if last_was_timestamp && !penultimate_was_timestamp {
+            *last_timestamp
+        } else {
+            last_timestamp.saturating_add(1)
+        } as usize;
+        let forbid_end = first_allowed.min(timestamp_end.saturating_add(1));
+        if timestamp_begin < forbid_end {
+            logits[timestamp_begin..forbid_end].fill(f32::NEG_INFINITY);
+        }
+    }
+
+    if sampled_tokens.is_empty() {
+        logits[..timestamp_begin].fill(f32::NEG_INFINITY);
+    }
+
+    let timestamp_max = logits[timestamp_begin..=timestamp_end]
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let timestamp_logsumexp = if timestamp_max.is_finite() {
+        timestamp_max
+            + logits[timestamp_begin..=timestamp_end]
+                .iter()
+                .map(|logit| (*logit - timestamp_max).exp())
+                .sum::<f32>()
+                .ln()
+    } else {
+        f32::NEG_INFINITY
+    };
+    let max_text_logit = logits[..timestamp_begin]
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    if timestamp_logsumexp > max_text_logit {
+        logits[..timestamp_begin].fill(f32::NEG_INFINITY);
+    }
+}
+
+/// A loaded Whisper model plus everything one transcription needs: tokenizer,
+/// device, mel filters, timestamp range and decoding parameters.
+///
+/// Construct with [`LocalWhisperEngine::new`] (filesystem) or
+/// [`LocalWhisperEngine::from_embedded`] (binary-embedded weights). Methods take
+/// `&mut self` because decoding mutates model KV-cache state — an engine is not
+/// safe to share across concurrent transcriptions.
 pub struct LocalWhisperEngine {
     model: Model,
     tokenizer: Tokenizer,
@@ -283,6 +426,15 @@ pub struct LocalWhisperEngine {
 }
 
 impl LocalWhisperEngine {
+    /// Load a model from a directory (development / external models).
+    ///
+    /// Expects `config.json` plus `weights.safetensors` or `model.safetensors`.
+    /// MLX-style quantized weights are dequantized during load — see
+    /// [`dequantize_q8`] for the cost this implies.
+    ///
+    /// # Errors
+    /// Missing config or weights, an unreadable tokenizer, or tensor shapes the
+    /// dequantizer cannot reconcile.
     pub fn new(model_path: &Path) -> Result<Self> {
         let device = process_device();
         tracing::debug!("LocalWhisperEngine using device: {:?}", device);
@@ -334,16 +486,31 @@ impl LocalWhisperEngine {
         let config: Config = serde_json::from_value(new_config_json)
             .context("Failed to build Config from MLX values")?;
 
+        // Phase timings for the cold load. "Preloaded, zero latency" is the
+        // product's claim, and the operator's logs show 56 cold loads costing a
+        // median of 9.2 s (p90 21.9 s, worst 34.9 s, 805 s in total) because the
+        // idle reaper drops the weights every 45 minutes and this function then
+        // rebuilds them from scratch. A single aggregate number cannot say
+        // whether to attack the read, the dequantisation, or the GPU upload, so
+        // each phase reports its own cost.
+        let load_started = std::time::Instant::now();
+        let read_secs;
+        let plain_secs;
+        let dequant_secs;
+
         let vb = unsafe {
             let tensors = candle_core::safetensors::MmapedSafetensors::new(&weights_path)?;
             let mut raw_tensors: HashMap<String, Tensor> = HashMap::new();
 
             // Load everything on CPU first so we can dequantize packed weights.
+            let read_started = std::time::Instant::now();
             for (name, view) in tensors.tensors() {
                 let loaded = view.load(&Device::Cpu)?;
                 raw_tensors.insert(name.to_string(), loaded);
             }
+            read_secs = read_started.elapsed().as_secs_f64();
 
+            let plain_started = std::time::Instant::now();
             let mut tensor_map = HashMap::new();
             let mut quantized_weights: Vec<String> = Vec::new();
 
@@ -376,7 +543,10 @@ impl LocalWhisperEngine {
                 tensor_map.insert(mapped_name, t);
             }
 
+            plain_secs = plain_started.elapsed().as_secs_f64();
+
             // Second pass: dequantize packed q8 weights.
+            let dequant_started = std::time::Instant::now();
             for weight_name in quantized_weights {
                 let base = weight_name.trim_end_matches(".weight");
                 let packed = raw_tensors
@@ -403,11 +573,21 @@ impl LocalWhisperEngine {
 
                 tensor_map.insert(mapped_name, dequant);
             }
+            dequant_secs = dequant_started.elapsed().as_secs_f64();
 
             candle_nn::VarBuilder::from_tensors(tensor_map, DType::F32, &device)
         };
 
+        let build_started = std::time::Instant::now();
         let model = Model::load(&vb, config.clone()).context("Failed to create Whisper Model")?;
+        tracing::info!(
+            "whisper_cold_load_phases total={:.2}s read={:.2}s plain_tensors={:.2}s dequantize_q8={:.2}s build_model={:.2}s",
+            load_started.elapsed().as_secs_f64(),
+            read_secs,
+            plain_secs,
+            dequant_secs,
+            build_started.elapsed().as_secs_f64()
+        );
 
         let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             anyhow!(
@@ -533,6 +713,14 @@ impl LocalWhisperEngine {
         &self.decoding_params
     }
 
+    /// Transcribe a file end to end and return the full verdict.
+    ///
+    /// The complete path: load and resample the audio, transcribe (chunked for
+    /// long input), apply the Silero VAD filter, then run the requested final
+    /// pass. The returned [`TranscriptionVerdict`] carries both the delivered
+    /// text and the raw text, so a rejected final pass stays auditable.
+    ///
+    /// `language` of `None` triggers detection from the audio itself.
     pub fn transcribe_file_with_language(
         &mut self,
         path: &Path,
@@ -599,10 +787,20 @@ impl LocalWhisperEngine {
         // result still comes from the full recording. Trimming down to
         // `speech_samples` changed the behavior of the historical "raw file
         // transcription" path and regressed canonical transcripts.
-        let inference_started = std::time::Instant::now();
-        let raw = self.transcribe_long_with_language_segments(&samples, sample_rate, language)?;
-        super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
         let vad_config = crate::vad::VadConfig::default();
+        let silence_spans = silence_spans_from_vad_probabilities(
+            &stats.probabilities,
+            vad_config.threshold,
+            duration_secs,
+        );
+        let inference_started = std::time::Instant::now();
+        let raw = self.transcribe_long_with_language_segments_using_silences(
+            &samples,
+            sample_rate,
+            language,
+            &silence_spans,
+        )?;
+        super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
         let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
 
         let (raw_for_final_pass, tail_drop_count) = if raw.segments.is_empty() {
@@ -641,12 +839,16 @@ impl LocalWhisperEngine {
         ))
     }
 
+    /// Detect the spoken language of an audio file, returning its Whisper
+    /// language code (e.g. `"pl"`).
     pub fn detect_language_file(&mut self, path: &Path) -> Result<String> {
         let (samples, sample_rate) =
             audio_loader::load_audio_file(path).context("Failed to load audio file")?;
         self.detect_language(&samples, sample_rate)
     }
 
+    /// [`Self::transcribe_file_with_language`] with automatic language
+    /// detection.
     pub fn transcribe_file(
         &mut self,
         path: &Path,
@@ -655,6 +857,10 @@ impl LocalWhisperEngine {
         self.transcribe_file_with_language(path, None, options)
     }
 
+    /// Transcribe in-memory audio, returning text only.
+    ///
+    /// Single-window path: audio longer than one Whisper window should go
+    /// through [`Self::transcribe_long_with_language`] instead.
     pub fn transcribe_with_language(
         &mut self,
         audio: &[f32],
@@ -666,6 +872,11 @@ impl LocalWhisperEngine {
             .text)
     }
 
+    /// Transcribe in-memory audio, keeping segments and quality signals.
+    ///
+    /// Resamples to 16 kHz first; audio that resamples to nothing yields an
+    /// empty [`RawTranscript`] rather than an error. Set `CODESCRIBE_DEBUG_TOKENS`
+    /// to log the raw token stream.
     pub fn transcribe_with_language_segments(
         &mut self,
         audio: &[f32],
@@ -700,11 +911,49 @@ impl LocalWhisperEngine {
         self.transcribe_samples_16k_raw(&samples, language, debug_tokens)
     }
 
+    /// Transcribe arbitrarily long audio in VAD-aligned, overlapping windows.
+    ///
+    /// The overlap exists so a word split across a boundary is still heard
+    /// whole; [`merge_chunk_transcripts`] then removes the duplicated region by
+    /// segment time, falling back to [`append_with_overlap_dedup`] only when a
+    /// decoder does not provide segments.
+    /// Segment timestamps are rebased onto the full recording, `avg_logprob` is
+    /// averaged across chunks, and `compression_ratio` reports the **worst**
+    /// chunk — one hallucinating window must not be hidden by good neighbours.
     pub fn transcribe_long_with_language_segments(
         &mut self,
         audio: &[f32],
         sample_rate: u32,
         language: Option<&str>,
+    ) -> Result<RawTranscript> {
+        let (_, stats) = crate::vad::extract_speech(audio, sample_rate);
+        let silence_spans = silence_spans_from_vad_probabilities(
+            &stats.probabilities,
+            crate::vad::VadConfig::default().threshold,
+            if sample_rate == 0 {
+                0.0
+            } else {
+                audio.len() as f32 / sample_rate as f32
+            },
+        );
+        self.transcribe_long_with_language_segments_using_silences(
+            audio,
+            sample_rate,
+            language,
+            &silence_spans,
+        )
+    }
+
+    /// Decode long audio using silence spans already measured by the caller.
+    ///
+    /// File transcription passes its existing Silero result here so window
+    /// planning does not add a second VAD run to the stop-path budget.
+    fn transcribe_long_with_language_segments_using_silences(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        silence_spans: &[(f32, f32)],
     ) -> Result<RawTranscript> {
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         if samples.is_empty() {
@@ -725,24 +974,29 @@ impl LocalWhisperEngine {
             }
         };
 
-        let chunk_samples = 16_000usize * 25; // 25 seconds
-        let overlap = 16_000usize * 5; // 5 seconds overlap
-        ensure!(chunk_samples > overlap, "chunk_samples must be > overlap");
-        let step = chunk_samples - overlap;
+        let total_secs = samples.len() as f32 / 16_000.0;
+        let windows = plan_vad_aligned_windows(silence_spans, total_secs);
+        tracing::debug!(
+            window_count = windows.len(),
+            silence_span_count = silence_spans.len(),
+            "planned VAD-aligned long-file decode windows"
+        );
 
-        let mut out = String::new();
-        let mut all_segments = Vec::new();
-        let mut offset = 0usize;
+        let mut merged = RawTranscript::default();
+        let mut covered_until_secs = 0.0_f32;
         let mut logprob_sum = 0.0_f32;
         let mut logprob_count = 0_u32;
         let mut worst_compression = 0.0_f32;
         let mut any_quality_gate_dropped = false;
 
-        while offset < samples.len() {
-            let end = (offset + chunk_samples).min(samples.len());
-            let chunk = &samples[offset..end];
-            let transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
-            append_with_overlap_dedup(&mut out, &transcript.text);
+        for (start_sec, end_sec) in windows {
+            let start = ((start_sec * 16_000.0).round() as usize).min(samples.len());
+            let end = ((end_sec * 16_000.0).round() as usize).min(samples.len());
+            if end <= start {
+                continue;
+            }
+            let chunk = &samples[start..end];
+            let mut transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
 
             if let Some(lp) = transcript.avg_logprob {
                 logprob_sum += lp;
@@ -758,20 +1012,21 @@ impl LocalWhisperEngine {
             }
 
             if !transcript.segments.is_empty() {
-                let offset_sec = offset as f32 / 16_000.0;
-                all_segments.extend(transcript.segments.into_iter().map(|mut s| {
-                    s.start_ts += offset_sec;
-                    s.end_ts += offset_sec;
-                    s
-                }));
+                let offset_sec = start as f32 / 16_000.0;
+                transcript.segments.iter_mut().for_each(|segment| {
+                    segment.start_ts += offset_sec;
+                    segment.end_ts += offset_sec;
+                });
             }
 
-            offset = offset.saturating_add(step);
+            let overlap_end_secs = covered_until_secs.max(start_sec);
+            merge_chunk_transcripts(&mut merged, transcript, overlap_end_secs);
+            covered_until_secs = covered_until_secs.max(end_sec);
         }
 
         Ok(RawTranscript {
-            text: dedup_repetitions(out.trim()),
-            segments: all_segments,
+            text: dedup_repetitions(merged.text.trim()),
+            segments: merged.segments,
             avg_logprob: if logprob_count > 0 {
                 Some(logprob_sum / logprob_count as f32)
             } else {
@@ -859,11 +1114,18 @@ impl LocalWhisperEngine {
         Ok(dedup_repetitions(out.trim()))
     }
 
+    /// Detect the spoken language of in-memory audio, resampling to 16 kHz
+    /// first.
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         self.detect_language_16k(&samples)
     }
 
+    /// Language detection on already-16 kHz samples.
+    ///
+    /// Runs a single decoder step over the mel window and picks the highest
+    /// scoring language token, so detection costs one step rather than a full
+    /// decode.
     fn detect_language_16k(&mut self, samples_16k: &[f32]) -> Result<String> {
         let max_samples = 16_000usize * 30;
         let samples = &samples_16k[..samples_16k.len().min(max_samples)];
@@ -923,9 +1185,17 @@ impl LocalWhisperEngine {
         Ok(best_lang)
     }
 
+    /// Enumerate `(token_id, language_code)` pairs to score during detection.
+    ///
+    /// Sweeps the conventional language-token range and keeps the ids this
+    /// tokenizer actually defines, bounded by `vocab_size`. Falls back to a
+    /// small common-language set when the sweep finds nothing, so detection
+    /// still works on a tokenizer that numbers its tokens differently.
     fn language_token_candidates(&self, vocab_size: usize) -> Vec<(u32, String)> {
         // Whisper language tokens are typically in this range.
+        /// First id of the conventional Whisper language-token block.
         const LANG_TOKEN_START: u32 = 50_259;
+        /// Last id of that block (inclusive).
         const LANG_TOKEN_END: u32 = 50_358;
 
         let mut out = Vec::new();
@@ -959,6 +1229,7 @@ impl LocalWhisperEngine {
         out
     }
 
+    /// Text-only wrapper over [`Self::transcribe_samples_16k_raw`].
     fn transcribe_samples_16k(
         &mut self,
         samples_16k: &[f32],
@@ -970,6 +1241,18 @@ impl LocalWhisperEngine {
             .text)
     }
 
+    /// The decode loop: mel spectrogram, encoder pass, then greedy decoding of
+    /// one audio window into text, segments and quality signals.
+    ///
+    /// Three guards run inside the loop and are the reason this function is not
+    /// a thin wrapper over the model:
+    /// - a runaway watchdog ([`runaway_token_budget`]) bails before a
+    ///   hallucination costs the full quadratic decode,
+    /// - [`NgramBlocker`] suppresses repeated n-grams incrementally,
+    /// - the quality gate ([`should_drop_for_quality_gate`]) can discard a
+    ///   window whose logprob and compression ratio both look pathological.
+    ///
+    /// `debug_tokens` logs the raw token stream for diagnosis.
     fn transcribe_samples_16k_raw(
         &mut self,
         samples_16k: &[f32],
@@ -1003,6 +1286,7 @@ impl LocalWhisperEngine {
             .token_to_id("<|endoftext|>")
             .ok_or_else(|| anyhow!("Tokenizer missing <|endoftext|>"))?;
         let nospeech_token = self.tokenizer.token_to_id("<|nospeech|>");
+        let no_timestamps_token = self.tokenizer.token_to_id("<|notimestamps|>");
         let start_of_previous_token = self.tokenizer.token_to_id(WHISPER_START_OF_PREVIOUS_TOKEN);
 
         // Initial tokens: <|startoftranscript|> <|lang|>? <|transcribe|> <|notimestamps|>
@@ -1129,6 +1413,16 @@ impl LocalWhisperEngine {
                 if idx < logits_vec.len() {
                     logits_vec[idx] = f32::NEG_INFINITY;
                 }
+            }
+
+            if timestamps_enabled && let Some(range) = self.ts_range.as_ref() {
+                apply_timestamp_rules(
+                    &mut logits_vec,
+                    &all_tokens,
+                    eot_token,
+                    no_timestamps_token,
+                    range,
+                );
             }
 
             // Avoid terminating immediately when nothing has been emitted yet
@@ -1314,6 +1608,11 @@ impl LocalWhisperEngine {
     }
 }
 
+/// Extract the language code from a `<|xx|>` token, or `None` when the token is
+/// not a language marker.
+///
+/// Accepts only 2–3 ASCII letters between the delimiters, which is what
+/// separates `<|pl|>` from control tokens like `<|notimestamps|>`.
 fn parse_language_token(token: &str) -> Option<&str> {
     if !token.starts_with("<|") || !token.ends_with("|>") {
         return None;
@@ -1329,6 +1628,11 @@ fn parse_language_token(token: &str) -> Option<&str> {
     }
 }
 
+/// Normalize a word for overlap comparison: lowercase, alphanumerics only.
+///
+/// Falls back to the lowercased original when stripping would leave nothing, so
+/// a purely punctuation token still compares as itself instead of matching
+/// every other punctuation token.
 fn normalize_token_for_overlap(token: &str) -> String {
     let mut out = String::new();
     for ch in token.chars() {
@@ -1445,6 +1749,7 @@ pub fn append_with_overlap_dedup(out: &mut String, segment: &str) {
     }
 }
 
+/// Load mel filters from an `.npz` on disk, opened through `safe_path`.
 fn load_mel_filters(path: &Path, n_mels: usize) -> Result<Vec<f32>> {
     let file = safe_path::safe_open(path)?;
     load_mel_filters_from_reader(file, n_mels)
@@ -1487,6 +1792,12 @@ fn load_mel_filters_from_reader<R: Read + std::io::Seek>(
     Ok(data)
 }
 
+/// Rewrite an MLX/OpenAI Whisper tensor name into the Candle naming scheme.
+///
+/// Order is load-bearing and must not be "simplified": cross-attention names
+/// are rewritten before the generic attention rules, otherwise `cross_attn`
+/// would be mangled by the `attn` replacements and the weight would silently
+/// land under the wrong module.
 fn map_tensor_name(name: &str) -> String {
     let mut new_name = name.to_string();
 
@@ -1548,6 +1859,7 @@ struct NgramBlocker {
 }
 
 impl NgramBlocker {
+    /// Create a blocker for `ngram_size`; `0` disables blocking entirely.
     fn new(ngram_size: usize) -> Self {
         Self {
             ngram_size,
@@ -1592,6 +1904,11 @@ impl NgramBlocker {
     }
 }
 
+/// Ratio of raw length to gzip-compressed length.
+///
+/// A hallucinated loop compresses far better than natural speech, so a high
+/// ratio is the repetition signal half of the quality gate. Empty text yields
+/// `0.0`.
 fn compression_ratio(text: &str) -> f32 {
     let original_len = text.len();
     if original_len == 0 {
@@ -1605,6 +1922,12 @@ fn compression_ratio(text: &str) -> f32 {
     original_len as f32 / compressed.len() as f32
 }
 
+/// Whether a decoded window should be discarded as hallucinated.
+///
+/// Requires **both** signals: low confidence (`avg_logprob` under threshold)
+/// and high repetition (`compression_ratio` over threshold). Either alone is
+/// common in legitimate speech — quiet audio scores low, a chant compresses
+/// well — so demanding both is what keeps the gate from eating real words.
 fn should_drop_for_quality_gate(
     avg_logprob: Option<f32>,
     compression_ratio: f32,
@@ -1615,6 +1938,19 @@ fn should_drop_for_quality_gate(
     low_logprob && high_compression
 }
 
+/// Expand MLX-style q8 weights into `F32`.
+///
+/// `packed` holds four uint8 weights per `u32`; each is scaled and offset by
+/// the `scales` / `biases` entry for its 32-element group, producing an
+/// `out_dim × in_dim` tensor.
+///
+/// Cost note: this runs on every cold load and dominates it — measured at
+/// roughly three quarters of Whisper cold-start time (commit `e9d8e5d9`).
+/// Keeping weights resident is what avoids paying it again.
+///
+/// # Errors
+/// Non-`u32` packed input, non-2D tensors, or scale/bias dimensions that do not
+/// match the packed shape.
 fn dequantize_q8(
     packed: &Tensor,
     scales: &Tensor,
@@ -1846,10 +2182,12 @@ pub fn dedup_repetitions(text: &str) -> String {
     dedup_repeated_words(&pass1)
 }
 
+/// Dedup helpers, n-gram parity, quality gate, Silero filter, and final-pass tests.
 #[cfg(test)]
 mod dedup_tests {
     use super::*;
 
+    /// Adjacent identical words collapse to a single occurrence.
     #[test]
     fn test_dedup_repeated_words() {
         assert_eq!(
@@ -1863,6 +2201,7 @@ mod dedup_tests {
         );
     }
 
+    /// Adjacent repeated multi-word phrases collapse once, punctuation-tolerant.
     #[test]
     fn test_dedup_repeated_phrases() {
         assert_eq!(
@@ -1875,6 +2214,7 @@ mod dedup_tests {
         );
     }
 
+    /// Phrase pass then word pass removes both kinds of Whisper stutter.
     #[test]
     fn test_dedup_repetitions_combined() {
         let input = "który zajmuje który zajmuje 56 GB. 56 GB. test test";
@@ -1899,6 +2239,7 @@ mod dedup_tests {
         blocked
     }
 
+    /// Step through `seq` and assert incremental blocker matches full-scan blocks.
     fn assert_ngram_parity(ngram_size: usize, seq: &[u32]) {
         let mut blocker = NgramBlocker::new(ngram_size);
         let mut all: Vec<u32> = Vec::new();
@@ -1924,6 +2265,7 @@ mod dedup_tests {
         }
     }
 
+    /// Token budget floors short audio and stops a runaway before max_new_tokens.
     #[test]
     fn runaway_watchdog_bails() {
         // 1s of audio with 5 words/s cap, 2 tokens/word, 2x margin => 20 tokens,
@@ -1964,6 +2306,7 @@ mod dedup_tests {
         assert_eq!(runaway_token_budget(-5.0), RUNAWAY_MIN_BUDGET);
     }
 
+    /// Initial prompt tokens sit after start-of-prev and before the decode prefix.
     #[test]
     fn initial_prompt_tokens_are_previous_context_before_current_decode_prefix() {
         let without_prompt = vec![1_u32, 2, 3];
@@ -1977,6 +2320,7 @@ mod dedup_tests {
         assert_eq!(&with_prompt[4..], without_prompt.as_slice());
     }
 
+    /// Oversized prompts are truncated to `WHISPER_INITIAL_PROMPT_TOKEN_BUDGET`.
     #[test]
     fn initial_prompt_tokens_are_capped_before_decode() {
         let mut tokens = vec![1_u32, 2, 3];
@@ -1998,6 +2342,7 @@ mod dedup_tests {
         );
     }
 
+    /// Incremental n-gram blocker matches full-scan blocks across sizes and edges.
     #[test]
     fn ngram_block_parity() {
         // Repetition-heavy synthetic sequence exercises the block path.
@@ -2013,6 +2358,7 @@ mod dedup_tests {
         assert_ngram_parity(1, &[42, 42, 42, 42]);
     }
 
+    /// Drop requires both low avg logprob and high compression ratio together.
     #[test]
     fn quality_gate_requires_both_logprob_and_compression_signals() {
         let params = DecodingParams::default();
@@ -2021,6 +2367,7 @@ mod dedup_tests {
         assert!(should_drop_for_quality_gate(Some(-3.0), 3.0, &params));
     }
 
+    /// Zero dropped segments keeps the original raw text (not the re-joined filter).
     #[test]
     fn silero_filter_preserves_raw_text_when_no_segments_were_dropped() {
         let segments = vec![crate::pipeline::contracts::TranscriptSegment {
@@ -2040,6 +2387,7 @@ mod dedup_tests {
         assert_eq!(filtered.segments, raw.segments);
     }
 
+    /// Case/punctuation-only filter text still preserves raw when nothing was dropped.
     #[test]
     fn silero_filter_preserves_raw_text_when_no_drop_only_case_or_punctuation_differs() {
         let segments = vec![crate::pipeline::contracts::TranscriptSegment {
@@ -2064,6 +2412,7 @@ mod dedup_tests {
         ));
     }
 
+    /// When segments are dropped, filtered text and segment list replace raw.
     #[test]
     fn silero_filter_uses_filtered_text_when_segments_were_dropped() {
         let raw_segments = vec![
@@ -2096,6 +2445,7 @@ mod dedup_tests {
         assert_eq!(filtered.segments, filtered_segments);
     }
 
+    /// Control-token suppression applies only at decode step zero.
     #[test]
     fn decoder_control_tokens_are_only_suppressed_before_first_token() {
         assert!(should_suppress_decoder_control_tokens(0));
@@ -2103,6 +2453,7 @@ mod dedup_tests {
         assert!(!should_suppress_decoder_control_tokens(15));
     }
 
+    /// Embedded lexicon cleanup reports Changed with rewrite counts.
     #[test]
     fn requested_final_pass_reports_embedded_lexicon_changes() {
         let raw = RawTranscript {
@@ -2124,6 +2475,7 @@ mod dedup_tests {
         assert_eq!(final_pass.lexicon_rewrites, 1);
     }
 
+    /// Known no-speech skip path records Skipped with the VAD reason.
     #[test]
     fn requested_final_pass_skips_when_no_speech_already_known() {
         let final_pass = skipped_final_pass(
@@ -2138,6 +2490,7 @@ mod dedup_tests {
         assert_eq!(final_pass.reason.as_deref(), Some("vad_no_speech_detected"));
     }
 
+    /// Artifact-token drift rejects the candidate and keeps the raw transcript.
     #[test]
     fn requested_final_pass_rejects_artifact_token_drift_and_keeps_raw() {
         let raw = "zastanawiam się co ośreda, że ta funkcja już teoretycznie obsolesi legacy";
@@ -2159,5 +2512,453 @@ mod dedup_tests {
             final_pass.reason.as_deref(),
             Some("artifact_token_drift:going,use")
         );
+    }
+}
+
+// ─── stt-live-first-v2 TDD stubs (dispatch 2026-08-10) ──────────────────────
+//
+// The seam function below remains a contract stub for cut w1-c. Ground truth
+// for both cuts is the operator's three-way recording
+// (tests/e2e_long_window_truth.rs).
+
+/// Plan long-file decode windows aligned to VAD silence spans.
+///
+/// Contract (w1-a): boundaries between consecutive windows land INSIDE a
+/// silence span whenever one exists near the target step; windows stay within
+/// [`VAD_WINDOW_MIN_SECS`, `VAD_WINDOW_MAX_SECS`]; consecutive windows overlap
+/// so no audio is skipped. A fixed-step grid is only the fallback for audio
+/// with no usable silences (constant speech).
+///
+pub const VAD_WINDOW_MIN_SECS: f32 = 6.0;
+pub const VAD_WINDOW_MAX_SECS: f32 = 28.0;
+
+const TARGET_WINDOW_SECS: f32 = 25.0;
+const VAD_WINDOW_OVERLAP_SECS: f32 = 5.0;
+const VAD_BOUNDARY_TOLERANCE_SECS: f32 = 5.0;
+
+/// Calibration for the shared VAD-aligned window planner.
+///
+/// File decode and the live rolling lane use the same boundary algorithm with
+/// different competence horizons. Keeping the policy explicit prevents the
+/// live bridge from forking a second silence picker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct VadWindowPlanConfig {
+    pub min_secs: f32,
+    pub target_secs: f32,
+    pub max_secs: f32,
+    pub overlap_secs: f32,
+    pub boundary_tolerance_secs: f32,
+}
+
+impl VadWindowPlanConfig {
+    const FILE: Self = Self {
+        min_secs: VAD_WINDOW_MIN_SECS,
+        target_secs: TARGET_WINDOW_SECS,
+        max_secs: VAD_WINDOW_MAX_SECS,
+        overlap_secs: VAD_WINDOW_OVERLAP_SECS,
+        boundary_tolerance_secs: VAD_BOUNDARY_TOLERANCE_SECS,
+    };
+}
+
+pub fn plan_vad_aligned_windows(silences: &[(f32, f32)], total_secs: f32) -> Vec<(f32, f32)> {
+    plan_vad_aligned_windows_with_config(silences, total_secs, VadWindowPlanConfig::FILE)
+}
+
+/// Shared planner with an explicit window calibration.
+pub(crate) fn plan_vad_aligned_windows_with_config(
+    silences: &[(f32, f32)],
+    total_secs: f32,
+    config: VadWindowPlanConfig,
+) -> Vec<(f32, f32)> {
+    if !total_secs.is_finite() || total_secs <= 0.0 {
+        return Vec::new();
+    }
+
+    let usable_silences: Vec<(f32, f32)> = silences
+        .iter()
+        .filter_map(|&(start, end)| {
+            if !start.is_finite() || !end.is_finite() {
+                return None;
+            }
+            let start = start.clamp(0.0, total_secs);
+            let end = end.clamp(0.0, total_secs);
+            (end > start).then_some((start, end))
+        })
+        .collect();
+
+    let mut windows = Vec::new();
+    let mut start = 0.0_f32;
+    while start < total_secs {
+        if total_secs - start <= config.max_secs {
+            windows.push((start, total_secs));
+            break;
+        }
+
+        let target = start + config.target_secs;
+        let candidate_min = (start + config.min_secs).max(target - config.boundary_tolerance_secs);
+        let candidate_max = (start + config.max_secs)
+            .min(target + config.boundary_tolerance_secs)
+            .min(total_secs);
+
+        let boundary = usable_silences
+            .iter()
+            .filter_map(|&(silence_start, silence_end)| {
+                let lo = silence_start.max(candidate_min);
+                let hi = silence_end.min(candidate_max);
+                if hi < lo {
+                    return None;
+                }
+                let point = target.clamp(lo, hi);
+                Some((point, (point - target).abs()))
+            })
+            .min_by(|(_, a_distance), (_, b_distance)| a_distance.total_cmp(b_distance))
+            .map(|(point, _)| point)
+            .unwrap_or_else(|| (start + config.target_secs).min(total_secs));
+
+        let boundary = boundary.min(start + config.max_secs).min(total_secs);
+        windows.push((start, boundary));
+
+        let next_start = (boundary - config.overlap_secs).max(0.0);
+        if next_start <= start {
+            break;
+        }
+        start = next_start;
+    }
+    windows
+}
+
+/// Convert the existing 500 ms Silero probability stream into contiguous
+/// silence spans for the window planner.
+pub(crate) fn silence_spans_from_vad_probabilities(
+    probabilities: &[f32],
+    threshold: f32,
+    total_secs: f32,
+) -> Vec<(f32, f32)> {
+    if probabilities.is_empty() || !threshold.is_finite() || total_secs <= 0.0 {
+        return Vec::new();
+    }
+
+    let window_sec = crate::vad::DISCRIMINATOR_WINDOW_MS as f32 / 1000.0;
+    let mut spans = Vec::new();
+    let mut index = 0usize;
+    while index < probabilities.len() {
+        if probabilities[index] >= threshold {
+            index += 1;
+            continue;
+        }
+        let run_start = index;
+        while index < probabilities.len() && probabilities[index] < threshold {
+            index += 1;
+        }
+        let start = run_start as f32 * window_sec;
+        let end = (index as f32 * window_sec).min(total_secs);
+        if end > start {
+            spans.push((start, end));
+        }
+    }
+    spans
+}
+
+/// Merge the next window's transcript onto the accumulated one, deduplicating
+/// the overlap REGION by segment time instead of by text.
+///
+/// Contract (w1-c): segments of `next` that end before `overlap_end_secs`
+/// re-describe audio the previous window already decoded (usually with
+/// divergent text — that is WHY text-based dedup misses them) and must be
+/// dropped; segments past the overlap are appended verbatim.
+///
+pub fn merge_chunk_transcripts(
+    out: &mut crate::pipeline::contracts::RawTranscript,
+    next: crate::pipeline::contracts::RawTranscript,
+    overlap_end_secs: f32,
+) {
+    if next.segments.is_empty() {
+        append_with_overlap_dedup(&mut out.text, &next.text);
+        // Segment truth is no longer complete. Clear it so every later chunk
+        // remains on the text fallback instead of rebuilding the transcript
+        // from a partial segment set and dropping this chunk.
+        out.segments.clear();
+        return;
+    }
+
+    if !out.text.trim().is_empty() && out.segments.is_empty() {
+        append_with_overlap_dedup(&mut out.text, &next.text);
+        return;
+    }
+
+    out.segments.extend(
+        next.segments
+            .into_iter()
+            .filter(|segment| segment.end_ts > overlap_end_secs),
+    );
+    out.text = out
+        .segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+}
+
+#[cfg(test)]
+mod stt_live_first_v2_red {
+    use super::*;
+    use crate::pipeline::contracts::{RawTranscript, TranscriptSegment};
+
+    /// Timestamp mode must actively force a clock token; omitting the
+    /// `<|notimestamps|>` prompt token alone produced `segments=0` in the real
+    /// file route.
+    #[test]
+    fn timestamp_rules_force_an_initial_timestamp_then_text() {
+        let range = timestamps::TimestampRange {
+            begin: 5,
+            end_inclusive: 7,
+        };
+        let mut initial_logits = vec![1.0; 8];
+        apply_timestamp_rules(&mut initial_logits, &[], 3, Some(4), &range);
+        assert!(initial_logits[..5].iter().all(|value| value.is_infinite()));
+        assert!(initial_logits[5..].iter().all(|value| value.is_finite()));
+
+        let mut after_timestamp = vec![1.0; 8];
+        apply_timestamp_rules(&mut after_timestamp, &[5], 3, Some(4), &range);
+        assert!(after_timestamp[..3].iter().all(|value| value.is_finite()));
+        assert!(
+            after_timestamp[5..].iter().all(|value| value.is_infinite()),
+            "a single opening timestamp must be followed by text"
+        );
+    }
+
+    /// Silences at 22–23 s and 41–42.5 s: every internal boundary must land in
+    /// one of them, not on the bare 20 s/40 s grid. RED until w1-a.
+    #[test]
+    fn window_boundaries_land_inside_silence_spans() {
+        let silences = [(22.0_f32, 23.0_f32), (41.0, 42.5)];
+        let windows = plan_vad_aligned_windows(&silences, 60.0);
+        assert!(windows.len() >= 2, "60 s must yield multiple windows");
+        for pair in windows.windows(2) {
+            let boundary = pair[0].1; // end of the earlier window
+            if boundary >= 60.0 {
+                continue;
+            }
+            assert!(
+                silences
+                    .iter()
+                    .any(|(s, e)| boundary >= *s && boundary <= *e),
+                "boundary {boundary}s falls outside every silence span — mid-speech window \
+                 starts derail the decoder (measured: window c6 @120s, 2026-08-10)"
+            );
+        }
+    }
+
+    /// Windows must respect the decode-competence floor and ceiling.
+    #[test]
+    fn windows_stay_within_competence_bounds() {
+        let silences = [(7.0_f32, 7.4), (14.0, 14.5), (21.0, 21.5), (28.0, 28.5)];
+        let windows = plan_vad_aligned_windows(&silences, 30.0);
+        for (start, end) in &windows {
+            let len = end - start;
+            let is_tail = (*end - 30.0).abs() < f32::EPSILON;
+            assert!(
+                len <= VAD_WINDOW_MAX_SECS,
+                "window {start}-{end} exceeds {VAD_WINDOW_MAX_SECS}s"
+            );
+            assert!(
+                is_tail || len >= VAD_WINDOW_MIN_SECS,
+                "non-tail window {start}-{end} under {VAD_WINDOW_MIN_SECS}s (clips <6s decode as \
+                 No speech — measured on operator fixtures)"
+            );
+        }
+    }
+
+    /// Constant speech keeps the historical 25 s window / 20 s step exactly.
+    #[test]
+    fn constant_speech_falls_back_to_legacy_grid() {
+        let windows = plan_vad_aligned_windows(&[], 60.0);
+        assert_eq!(windows, vec![(0.0, 25.0), (20.0, 45.0), (40.0, 60.0)]);
+        assert!(
+            windows
+                .windows(2)
+                .all(|pair| pair[1].0 < pair[0].1 && pair[1].0 > pair[0].0),
+            "fallback windows must overlap while continuing to advance"
+        );
+    }
+
+    /// The planner consumes the existing Silero 500 ms probability timeline.
+    #[test]
+    fn vad_probabilities_coalesce_into_silence_spans() {
+        let spans = silence_spans_from_vad_probabilities(&[0.9, 0.2, 0.1, 0.8, 0.3, 0.7], 0.5, 3.0);
+        assert_eq!(spans, vec![(0.5, 1.5), (2.0, 2.5)]);
+    }
+
+    /// The seam judge drops next-window segments that re-describe the overlap
+    /// with divergent text. RED until w1-c.
+    #[test]
+    fn seam_merge_drops_overlap_redecode_by_time() {
+        let mut out = RawTranscript {
+            text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
+            segments: vec![TranscriptSegment {
+                text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
+                start_ts: 15.0,
+                end_ts: 24.0,
+            }],
+            ..Default::default()
+        };
+        // Next window starts at 20 s; its decode of the 20–25 s overlap came out
+        // DIFFERENT ("Zdanie pierwsze.") — text dedup can never match it.
+        let next = RawTranscript {
+            text: "Zdanie pierwsze. Zdanie drugie. Whisper, Codescribe i Loctree".into(),
+            segments: vec![
+                TranscriptSegment {
+                    text: "Zdanie pierwsze.".into(),
+                    start_ts: 20.5,
+                    end_ts: 24.0,
+                },
+                TranscriptSegment {
+                    text: "Zdanie drugie. Whisper, Codescribe i Loctree".into(),
+                    start_ts: 25.5,
+                    end_ts: 33.0,
+                },
+            ],
+            ..Default::default()
+        };
+        merge_chunk_transcripts(&mut out, next, 25.0);
+        assert!(
+            !out.text.contains("Zdanie pierwsze"),
+            "overlap re-decode leaked into the merged text: {}",
+            out.text
+        );
+        assert!(
+            out.text.contains("Zdanie drugie"),
+            "post-overlap content must be appended: {}",
+            out.text
+        );
+        assert_eq!(
+            out.segments.len(),
+            2,
+            "one segment per real utterance — overlap segment dropped"
+        );
+    }
+
+    /// A segment crossing the time seam contains new audio and must survive as
+    /// one whole segment; only spans ending inside the overlap are discarded.
+    #[test]
+    fn seam_merge_keeps_a_boundary_straddler_once() {
+        let mut out = RawTranscript {
+            text: "trusted earlier middle".into(),
+            segments: vec![TranscriptSegment {
+                text: "trusted earlier middle".into(),
+                start_ts: 2.0,
+                end_ts: 10.0,
+            }],
+            ..Default::default()
+        };
+        let next = RawTranscript {
+            text: "divergent head boundary bridge clean tail".into(),
+            segments: vec![
+                TranscriptSegment {
+                    text: "divergent head".into(),
+                    start_ts: 8.0,
+                    end_ts: 9.8,
+                },
+                TranscriptSegment {
+                    text: "boundary bridge".into(),
+                    start_ts: 9.8,
+                    end_ts: 11.0,
+                },
+                TranscriptSegment {
+                    text: "clean tail".into(),
+                    start_ts: 11.0,
+                    end_ts: 13.0,
+                },
+            ],
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, next, 10.0);
+
+        assert_eq!(out.segments.len(), 3);
+        assert_eq!(
+            out.text,
+            "trusted earlier middle boundary bridge clean tail"
+        );
+        assert_eq!(out.text.matches("boundary bridge").count(), 1);
+        assert!(!out.text.contains("  "));
+    }
+
+    /// Timestamp-less decoders retain the established text overlap fallback.
+    #[test]
+    fn seam_merge_uses_text_fallback_without_segments() {
+        let mut out = RawTranscript {
+            text: "one two three".into(),
+            ..Default::default()
+        };
+        let next = RawTranscript {
+            text: "two three four".into(),
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, next, 3.0);
+
+        assert_eq!(out.text, "one two three four");
+        assert!(out.segments.is_empty());
+    }
+
+    /// Once an earlier chunk lacked timestamps, keep one text-only source of
+    /// truth instead of entering a mixed state that can drop the old prefix on
+    /// a later segment-aware merge.
+    #[test]
+    fn seam_merge_keeps_mixed_sequences_on_the_text_fallback() {
+        let mut out = RawTranscript {
+            text: "one two three".into(),
+            ..Default::default()
+        };
+        let next = RawTranscript {
+            text: "two three four".into(),
+            segments: vec![TranscriptSegment {
+                text: "four".into(),
+                start_ts: 3.0,
+                end_ts: 4.0,
+            }],
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, next, 3.0);
+
+        assert_eq!(out.text, "one two three four");
+        assert!(out.segments.is_empty());
+    }
+
+    /// A timestamp-less middle chunk invalidates the accumulated segment map;
+    /// a later timestamped chunk must not rebuild text without that middle.
+    #[test]
+    fn seam_merge_stays_text_only_after_a_middle_chunk_loses_segments() {
+        let mut out = RawTranscript {
+            text: "one two".into(),
+            segments: vec![TranscriptSegment {
+                text: "one two".into(),
+                start_ts: 0.0,
+                end_ts: 2.0,
+            }],
+            ..Default::default()
+        };
+        let middle = RawTranscript {
+            text: "two three".into(),
+            ..Default::default()
+        };
+        let tail = RawTranscript {
+            text: "three four".into(),
+            segments: vec![TranscriptSegment {
+                text: "four".into(),
+                start_ts: 3.0,
+                end_ts: 4.0,
+            }],
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, middle, 2.0);
+        merge_chunk_transcripts(&mut out, tail, 3.0);
+
+        assert_eq!(out.text, "one two three four");
+        assert!(out.segments.is_empty());
     }
 }

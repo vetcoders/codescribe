@@ -21,6 +21,7 @@ pub struct CodescribeNotes {}
 
 #[uniffi::export]
 impl CodescribeNotes {
+    /// Construct the handle from Swift, initialising logging on first use.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -67,6 +68,7 @@ impl CodescribeNotes {
     /// guaranteed live selection. Returns the saved text, or `None` when there
     /// was nothing to capture.
     pub fn save_selection(&self) -> Result<Option<String>, CsError> {
+        /// Hard cap on selection text accepted across the notes bridge (memory/UI bound).
         const MAX_SELECTION_CHARS: usize = 500_000;
         let text = codescribe::os::selection::get_selected_text(MAX_SELECTION_CHARS)
             .filter(|selection| !selection.trim().is_empty())
@@ -103,6 +105,7 @@ fn notify_saved(path: &std::path::Path) {
     notify_toast(&format!("Saved note: {name}"));
 }
 
+/// No-op off macOS.
 #[cfg(not(target_os = "macos"))]
 fn notify_saved(_path: &std::path::Path) {}
 
@@ -112,5 +115,6 @@ fn notify_toast(message: &str) {
     codescribe::os::notifications::notify("Codescribe", message);
 }
 
+/// No-op off macOS.
 #[cfg(not(target_os = "macos"))]
 fn notify_toast(_message: &str) {}

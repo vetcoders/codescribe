@@ -11,7 +11,7 @@
 
 ```bash
 # Clone
-git clone git@github.com:Vetcoders/Codescribe.git
+git clone git@github.com:vetcoders/Codescribe.git
 cd codescribe
 
 # Build and install the SwiftUI app over the Rust UniFFI core
@@ -176,4 +176,4 @@ For full CI, configure a self-hosted macOS runner (a high-RAM Apple Silicon work
 
 ---
 
-_Created by vetcoders (c)2026_
+_Created by Vetcoders (c)2026_

@@ -87,16 +87,34 @@ pub fn route_transcription_delta(_delta: &str) {
 pub struct RoutingDeltaSink;
 
 impl codescribe_core::pipeline::contracts::DeltaSink for RoutingDeltaSink {
+    /// Forward only the incremental `delta` payload — the sink deliberately
+    /// discards the rest of the envelope so no caller can smuggle a full preview
+    /// snapshot through a channel that promises backspace semantics.
     fn apply(&self, delta: &codescribe_core::pipeline::contracts::TranscriptDelta) {
         route_transcription_delta(&delta.delta);
     }
 }
 
+/// Bound on the agent UI event channel. The bound is load-bearing, not just a
+/// memory guard: because the channel can fill, draining `ui_rx` is what drives
+/// `AgentSession::send` forward (see `run_agent_send_path_with_persist`).
 const AGENT_UI_CHANNEL_CAPACITY: usize = 256;
+
+/// Number of agent sends currently in flight, process-wide. A counter rather
+/// than a flag so nested/overlapping sends do not clear the state on the first
+/// one to finish.
 static AGENT_SEND_IN_FLIGHT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Process-global agent runtime, shared by every voice-assistive turn so a
+/// conversation keeps one identity and one history across calls. Two layers:
+/// the `OnceLock<StdMutex<..>>` is the lazily-built slot, the inner
+/// `TokioMutex` serializes the async turns themselves.
 static SHARED_AGENT_RUNTIME_STATE: OnceLock<StdMutex<Option<Arc<TokioMutex<AgentRuntimeState>>>>> =
     OnceLock::new();
 
+/// A live agent conversation: the provider session, the UI event channel that
+/// must be drained to advance it, and the durable backend thread this runtime is
+/// currently bound to.
 struct AgentRuntime {
     session: AgentSession,
     ui_rx: mpsc::Receiver<AgentUiEvent>,
@@ -107,12 +125,20 @@ struct AgentRuntime {
     reset_chain_on_next_send: bool,
 }
 
+/// How a send path ended when it did not fail. Cancellation is an `Ok` outcome,
+/// not an error: user Stop is a normal exit that must skip persistence and the
+/// legacy fallback, which an `Err` would have triggered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentSendOutcome {
+    /// The turn ran to completion; its thread is eligible for persistence.
     Completed,
+    /// The user stopped the turn. Nothing is persisted and no fallback runs.
     Cancelled,
 }
 
+/// Everything the controller keeps about the agent conversation between turns.
+/// The runtime itself is disposable; `thread_store_id` and the degraded flag are
+/// what let a dropped runtime be rebuilt onto the same conversation.
 #[derive(Default)]
 struct AgentRuntimeState {
     runtime: Option<AgentRuntime>,
@@ -123,9 +149,13 @@ struct AgentRuntimeState {
     runtime_degraded: bool,
 }
 
+/// RAII marker for "an agent send is running". Tied to a guard rather than
+/// hand-written increment/decrement pairs so an early return or a panic on the
+/// send path cannot strand the counter above zero.
 struct AgentSendInFlightGuard;
 
 impl AgentSendInFlightGuard {
+    /// Register one in-flight send for as long as the guard is held.
     fn new() -> Self {
         AGENT_SEND_IN_FLIGHT_COUNT.fetch_add(1, Ordering::SeqCst);
         Self
@@ -133,21 +163,30 @@ impl AgentSendInFlightGuard {
 }
 
 impl Drop for AgentSendInFlightGuard {
+    /// Release this send's claim. Nested guards each own exactly one count, so
+    /// the flag only clears once the outermost send is done.
     fn drop(&mut self) {
         AGENT_SEND_IN_FLIGHT_COUNT.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
+/// Whether any agent send is currently running. Read by controller paths that
+/// must not interleave with an in-flight turn.
 pub(crate) fn is_agent_send_in_flight() -> bool {
     AGENT_SEND_IN_FLIGHT_COUNT.load(Ordering::SeqCst) > 0
 }
 
+/// Force the in-flight counter for tests that need a known starting point on a
+/// process-global that other tests may have touched.
 #[cfg(test)]
 pub(super) fn set_agent_send_in_flight_for_test(active: bool) {
     AGENT_SEND_IN_FLIGHT_COUNT.store(if active { 1 } else { 0 }, Ordering::SeqCst);
 }
 
 impl AgentRuntimeState {
+    /// Production entry point to `ensure_runtime_with`, wired to the real
+    /// provider construction and the real ThreadStore. Returns the live runtime
+    /// plus whether this call recovered it from a degraded state.
     fn ensure_runtime(&mut self) -> Result<(&mut AgentRuntime, bool)> {
         self.ensure_runtime_with(initialize_agent_runtime, rehydrate_thread_messages)
     }
@@ -297,11 +336,15 @@ impl AgentRuntimeState {
     }
 }
 
+/// The lazily-initialized slot holding the process-global runtime state.
 fn shared_agent_runtime_state_slot() -> &'static StdMutex<Option<Arc<TokioMutex<AgentRuntimeState>>>>
 {
     SHARED_AGENT_RUNTIME_STATE.get_or_init(|| StdMutex::new(None))
 }
 
+/// Hand out the one shared runtime state, creating it on first use. Every voice
+/// turn goes through this, which is what makes consecutive utterances one
+/// conversation instead of a series of independent sessions.
 fn shared_agent_runtime_state() -> Arc<TokioMutex<AgentRuntimeState>> {
     let mut guard = shared_agent_runtime_state_slot()
         .lock()
@@ -323,6 +366,11 @@ fn rehydrate_thread_messages(thread_store_id: &str) -> Result<Option<Vec<Message
     load_thread_messages_from(&store, thread_store_id)
 }
 
+/// Store-injectable half of `rehydrate_thread_messages`, so recovery tests can
+/// drive a temp ThreadStore. Distinguishes "no artifact yet" (`Ok(None)`, a
+/// normal first-turn state) from a real load failure, which must stay an `Err`
+/// so the caller can log it as recovery evidence instead of treating a corrupt
+/// thread as an empty one.
 fn load_thread_messages_from(
     store: &ThreadStore,
     thread_store_id: &str,
@@ -340,6 +388,10 @@ fn load_thread_messages_from(
     ))
 }
 
+/// Build a fresh agent runtime: full tool registry under the live permission
+/// policy (with hot reload), the configured default provider, and a bounded UI
+/// channel. The thread id minted here is provisional — `ensure_runtime_with`
+/// overwrites it with the durable identity whenever one already exists.
 fn initialize_agent_runtime() -> Result<AgentRuntime> {
     let mut registry = ToolRegistry::new();
     crate::agent::tools::register_all_tools(&mut registry);
@@ -364,6 +416,10 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
     })
 }
 
+/// Per-turn provider options. The model comes from live assistive lane truth
+/// rather than a cached value, and a non-positive `ai_assistive_max_tokens`
+/// resolves to `None` (provider default) instead of a zero-token request.
+/// `reset_chain` stays false here: only the retry path overrides it.
 fn build_agent_stream_options(
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
@@ -571,6 +627,9 @@ async fn apply_agent_ui_event(event: AgentUiEvent) {
     }
 }
 
+/// Collapse whitespace for a persisted thread message, returning `None` when
+/// nothing is left. Callers use that `None` to skip persistence entirely — a
+/// whitespace-only turn is not a conversation worth writing to disk.
 fn normalize_assistive_thread_text(text: &str) -> Option<String> {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
@@ -580,6 +639,9 @@ fn normalize_assistive_thread_text(text: &str) -> Option<String> {
     }
 }
 
+/// Production persist hook: stamp the runtime's history with live assistive
+/// provider/model identity and upsert it through the delivery gateway. Called
+/// after a completed turn only — cancelled turns never reach here.
 fn deliver_runtime_thread(runtime: &AgentRuntime) -> Result<ThreadDeliveryReceipt> {
     let (provider, model) = lane_truth::assistive_identity(&Config::load());
     ThreadDeliveryGateway::new()?.deliver(runtime_delivery_input(
@@ -624,6 +686,10 @@ fn runtime_delivery_input(
     }
 }
 
+/// Build the two-message thread a legacy-formatter fallback persists. Returns
+/// `None` when either side normalizes to empty, so a half-turn is never written.
+/// The `legacy-fallback` metadata and `fallback` tag are deliberate: these
+/// threads did not come from the agent runtime and must stay distinguishable.
 fn legacy_assistive_delivery_input(
     user_text: &str,
     assistant_text: &str,
@@ -664,6 +730,9 @@ fn legacy_assistive_delivery_input(
     })
 }
 
+/// Gateway-injectable legacy fallback delivery, so tests can persist into a temp
+/// threads directory. `Ok(None)` means there was nothing worth persisting, which
+/// is a success — not a delivery failure.
 fn deliver_legacy_assistive_thread_with_gateway(
     gateway: &ThreadDeliveryGateway,
     user_text: &str,
@@ -681,6 +750,9 @@ fn deliver_legacy_assistive_thread_with_gateway(
     gateway.deliver(input).map(Some)
 }
 
+/// Production legacy fallback delivery against the real ThreadStore. Mints a new
+/// thread id per fallback: the fallback has no agent runtime, so there is no
+/// durable conversation identity to rejoin.
 fn deliver_legacy_assistive_thread(
     user_text: &str,
     assistant_text: &str,
@@ -699,6 +771,11 @@ fn deliver_legacy_assistive_thread(
     )
 }
 
+/// Whether a failed agent send should be retried through the legacy formatter.
+/// A `Provider stream error:` means the provider already accepted the turn and
+/// failed mid-stream — replaying it through the formatter would answer the user
+/// twice. Everything else (runtime unavailable, init failure) never reached the
+/// provider, so the fallback is the only way to answer at all.
 fn agent_send_error_allows_legacy_fallback(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     !message.starts_with("Provider stream error:")
@@ -801,6 +878,8 @@ fn file_label(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().to_string())
 }
 
+/// Production send path: `run_agent_send_path_with_persist` wired to the real
+/// ThreadStore delivery.
 async fn run_agent_send_path(
     runtime_state: &mut AgentRuntimeState,
     text: String,
@@ -810,6 +889,22 @@ async fn run_agent_send_path(
         .await
 }
 
+/// Drive one agent turn end to end, with an injectable persist hook so tests can
+/// observe delivery without a real ThreadStore.
+///
+/// The loop is a three-way race between the send future, the UI event stream,
+/// and user Stop. Draining `ui_rx` is not optional bookkeeping — the channel is
+/// bounded, so consuming events is what lets `AgentSession::send` make progress.
+///
+/// Cancellation has two windows, and both are handled: Stop arriving mid-stream,
+/// and Stop landing after `send()` became ready but before this function
+/// observed it. Either way the pre-turn history and provider chain are restored
+/// (Stop cancels a turn, it does not reset the conversation), queued events are
+/// drained so no terminal leaks out after the `Cancelled` one, and persistence is
+/// skipped entirely.
+///
+/// On failure the error is classified before degrading: transient blips keep the
+/// runtime and only reset the chain, hard failures drop it.
 async fn run_agent_send_path_with_persist<P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     text: String,
@@ -876,8 +971,14 @@ where
                 dropped_images.join(", ")
             );
         }
+        /// How the select loop below broke. Function-local because it exists
+        /// only to carry the loop's verdict past the borrow scope of the pinned
+        /// send future — the future must be dropped before the pre-turn
+        /// snapshot can be restored.
         enum SendCompletion {
+            /// The send future resolved; carries its own success or failure.
             Finished(Result<()>),
+            /// User Stop won the race.
             Cancelled,
         }
 
@@ -1006,6 +1107,9 @@ fn legacy_fallback_assistant_text(
     }
 }
 
+/// Answer one turn through the legacy formatter instead of the agent runtime.
+/// Returns the assistant text only when there is genuine output to persist; a
+/// formatter failure logs and yields `None` rather than writing a junk thread.
 async fn run_legacy_send_path(
     text: &str,
     whisper_language: crate::config::Language,
@@ -1029,6 +1133,11 @@ async fn run_legacy_send_path(
     assistant_text
 }
 
+/// One complete voice-assistive turn including recovery policy: try the agent
+/// runtime, and on failure fall back to the legacy formatter. The runtime lock
+/// is held only for the agent attempt — the fallback runs outside it so a
+/// degraded provider cannot block the next turn from acquiring state. A
+/// cancelled turn short-circuits: no fallback, no persistence.
 async fn run_agent_send_with_fallback(
     runtime_state: &Arc<TokioMutex<AgentRuntimeState>>,
     text: String,
@@ -1073,6 +1182,9 @@ async fn run_agent_send_with_fallback(
     }
 }
 
+/// Controller entry point for the assistive lane: bind the turn to the shared
+/// process-global runtime so consecutive utterances continue one conversation,
+/// then run it with the fallback policy.
 pub(crate) async fn send_assistive_with_agent_runtime_lane(
     text: String,
     whisper_language: crate::config::Language,
@@ -1132,6 +1244,7 @@ pub(crate) enum CompletenessCommitSource {
 }
 
 impl CompletenessCommitSource {
+    /// Stable wire/log tag for this commit source.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::UtteranceFinal => "utterance_final",
@@ -1151,19 +1264,32 @@ pub(crate) struct SessionTelemetrySnapshot {
     pub last_commit_source: Option<CompletenessCommitSource>,
     /// Characters accumulated from UtteranceFinal commits (coverage signal).
     pub committed_chars: usize,
+    /// Audio boundary of committed streaming text: the monotonic max `end_ts`
+    /// across UtteranceFinal events. Smart-mode stop transcribes only the tail
+    /// after this point (append-only doctrine — committed text is immutable).
+    pub committed_through_secs: Option<f32>,
 }
 
+/// Telemetry handle shared between the engine's event sink and the controller
+/// that reads it. A blocking `StdMutex` on purpose: `EventSink::on_event` is
+/// sync, and every critical section here is a few field writes.
 pub(crate) type SharedSessionTelemetry = Arc<StdMutex<SessionTelemetrySnapshot>>;
 
+/// Empty telemetry for a new session.
 pub(crate) fn new_session_telemetry() -> SharedSessionTelemetry {
     Arc::new(StdMutex::new(SessionTelemetrySnapshot::default()))
 }
 
+/// Clear telemetry between sessions. Resets the whole snapshot — including the
+/// committed audio boundary — so a new recording never inherits the previous
+/// session's tail position.
 pub(crate) fn reset_session_telemetry(shared: &SharedSessionTelemetry) {
     let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
     *guard = SessionTelemetrySnapshot::default();
 }
 
+/// Copy the current telemetry out. Cloned rather than borrowed so controller
+/// decisions never read fields while the engine is still writing them.
 pub(crate) fn snapshot_session_telemetry(
     shared: &SharedSessionTelemetry,
 ) -> SessionTelemetrySnapshot {
@@ -1176,6 +1302,7 @@ pub(crate) struct SessionTelemetrySink {
 }
 
 impl SessionTelemetrySink {
+    /// Wrap a shared telemetry handle as an engine event sink.
     pub(crate) fn new(shared: SharedSessionTelemetry) -> Self {
         Self { shared }
     }
@@ -1187,12 +1314,16 @@ pub(crate) struct IpcBroadcastSink {
 }
 
 impl IpcBroadcastSink {
+    /// Wrap a broadcast sender as an engine event sink.
     pub(crate) fn new(tx: broadcast::Sender<IpcEvent>) -> Self {
         Self { tx }
     }
 }
 
 impl EventSink for IpcBroadcastSink {
+    /// Stamp the event and publish it. A send failure is ignored on purpose:
+    /// "no IPC subscribers right now" is the normal state, not an engine error,
+    /// and telemetry must never be able to stall the pipeline.
     fn on_event(&self, event: &EngineEvent) {
         let ipc_event = IpcEvent {
             timestamp: chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -1203,6 +1334,15 @@ impl EventSink for IpcBroadcastSink {
 }
 
 impl EventSink for SessionTelemetrySink {
+    /// Fold one engine event into the session snapshot.
+    ///
+    /// Preview and Correction open a pending tail; only a commit closes it.
+    /// `committed_through_secs` advances as a monotonic max so an out-of-order
+    /// final cannot rewind the boundary, and non-finite `end_ts` values are
+    /// rejected outright — NaN would slip past the `current >= end_ts` guard and
+    /// overwrite a valid maximum, silently disabling Smart tail gap-fill for the
+    /// rest of the session. Unmatched events are ignored rather than
+    /// exhaustively listed, so new engine events cannot break the build here.
     fn on_event(&self, event: &EngineEvent) {
         let mut guard = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         match event {
@@ -1213,12 +1353,22 @@ impl EventSink for SessionTelemetrySink {
             EngineEvent::Preview { .. } | EngineEvent::Correction { .. } => {
                 guard.pending_tail = true;
             }
-            EngineEvent::UtteranceFinal { text, .. } => {
+            EngineEvent::UtteranceFinal { text, end_ts, .. } => {
                 guard.pending_tail = false;
                 guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
                 guard.committed_chars = guard
                     .committed_chars
                     .saturating_add(text.trim().chars().count());
+                // Monotonic max: an out-of-order final never rewinds the boundary.
+                // Non-finite end_ts must never poison it (parity with
+                // ComposerTranscript::note_committed_through): NaN falls through
+                // the `current >= end_ts` arm and would overwrite a valid max.
+                if end_ts.is_finite() {
+                    guard.committed_through_secs = Some(match guard.committed_through_secs {
+                        Some(current) if current >= *end_ts => current,
+                        _ => *end_ts,
+                    });
+                }
             }
             EngineEvent::SessionFinalised { .. } => {
                 guard.pending_tail = false;
@@ -1260,6 +1410,13 @@ impl EventSink for SessionTelemetrySink {
     }
 }
 
+/// Controller-helper coverage, in four groups: tool-label mapping for the
+/// conversation timeline, session telemetry folding, agent runtime lifecycle
+/// (degrade, rehydrate, identity continuity), and the send path itself
+/// (cancellation, persistence, legacy fallback).
+///
+/// Tests that drive the send path publish to a process-global delivery
+/// broadcast, so they serialize on `SEND_PATH_BROADCAST_LOCK`.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,6 +1429,8 @@ mod tests {
 
     // ── Collapsible Tool Evidence: friendly tool-name mapping ───────────────
 
+    /// Both the MCP wire form and the bare tool id must resolve to the same
+    /// human label, so a server rename cannot change what the user reads.
     #[test]
     fn friendly_tool_name_maps_known_brave_tools() {
         assert_eq!(
@@ -1285,6 +1444,9 @@ mod tests {
         );
     }
 
+    /// The generic fallback must stay presentable for names nobody mapped:
+    /// never leak the raw `mcp__` wire form, never emit a dangling separator for
+    /// a trailing `__`, and never return an empty label for a degenerate id.
     #[test]
     fn friendly_tool_name_prettifies_unknown_mcp_tools() {
         // Unknown mcp__server__tool falls back to "<Tool> · <Server>" — never the
@@ -1308,6 +1470,9 @@ mod tests {
         assert!(!friendly_tool_name("mcp__").is_empty());
     }
 
+    /// The explicit operator label table wins over the generic fallback. These
+    /// ids all prettified into reversed or noisy copy before the table existed
+    /// (e.g. "Context · Loctree mcp", "Read Clipboard").
     #[test]
     fn friendly_tool_name_honors_operator_label_table() {
         // The operator's explicit raw→label table. Before this mapping these all
@@ -1338,6 +1503,9 @@ mod tests {
         );
     }
 
+    /// Runtime-side counterpart to the pure display test: proves the controller
+    /// maps a real observed tool sequence to the labels the timeline expects,
+    /// rather than the timeline test hardcoding the display names it wants.
     #[test]
     fn regression_sequence_raw_names_produce_expected_runtime_labels() {
         // Operator regression scenario: the grouped block must show exactly these
@@ -1358,6 +1526,10 @@ mod tests {
         );
     }
 
+    /// A fallback thread must be persisted AND self-identifying: the receipt
+    /// reports a real two-message first exchange, and the stored thread carries
+    /// the `legacy-formatter` provider, the `fallback` tag, and per-message
+    /// `legacy-fallback` metadata that distinguish it from an agent turn.
     #[test]
     fn successful_legacy_fallback_delivers_explicit_metadata_and_receipt() {
         let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
@@ -1402,6 +1574,9 @@ mod tests {
         assert_eq!(thread.messages[1].content[0]["text"], "assistant reply");
     }
 
+    /// Only genuine formatter output becomes a thread. `Failed` and `Skipped`
+    /// carry no conversation, and persisting them produced the junk "AI Failed"
+    /// threads (3-4 duplicates per utterance) a dead key used to generate.
     #[test]
     fn legacy_fallback_skips_persist_on_failed_status() {
         use crate::ai_formatting::AiFormatStatus;
@@ -1434,10 +1609,14 @@ mod tests {
         );
     }
 
+    /// Provider that never emits anything: its event channel is closed
+    /// immediately. Used where a session must exist but must not produce
+    /// conversation history of its own.
     struct NoopTestProvider;
 
     #[async_trait]
     impl AgentProvider for NoopTestProvider {
+        /// Return an already-closed receiver — the sender is dropped on return.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -1448,6 +1627,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user `ToolResult` message for the no-op test provider.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -1464,6 +1644,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -1471,11 +1652,14 @@ mod tests {
             }
         }
 
+        /// Stable provider name shown in tests and diagnostics.
         fn name(&self) -> &str {
             "noop-test-provider"
         }
     }
 
+    /// A runtime bound to an explicit thread id and backed by the no-op
+    /// provider, for lifecycle tests that only care about identity handling.
     fn runtime_with_thread_id(thread_store_id: &str) -> AgentRuntime {
         let (ui_tx, ui_rx) = mpsc::channel(8);
         let session = AgentSession::new(
@@ -1491,6 +1675,9 @@ mod tests {
         }
     }
 
+    /// Every `Stats` counter must survive the fold field-for-field — the
+    /// controller routes on these numbers, so a dropped or transposed field is
+    /// a silent behaviour change. `NoSpeech` is captured alongside them.
     #[test]
     fn test_session_telemetry_sink_tracks_no_speech_and_stats() {
         let shared = new_session_telemetry();
@@ -1538,6 +1725,9 @@ mod tests {
         assert_eq!(stats.partial_dropped_count, 9);
     }
 
+    /// The open-tail state machine: Preview and Correction open a tail, and only
+    /// a commit closes it — recording which commit did so. A Correction arriving
+    /// after a final re-opens the tail, because there is again uncommitted text.
     #[test]
     fn test_session_telemetry_tracks_pending_tail_and_commit_source() {
         let shared = new_session_telemetry();
@@ -1594,6 +1784,123 @@ mod tests {
         );
     }
 
+    /// Smart-mode tail transcription needs the audio boundary of committed
+    /// streaming text: the monotonic max `end_ts` across UtteranceFinal events.
+    /// Out-of-order finals must never pull the boundary backwards.
+    #[test]
+    fn test_session_telemetry_tracks_committed_through_secs_monotonic_max() {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+
+        assert!(
+            snapshot_session_telemetry(&shared)
+                .committed_through_secs
+                .is_none(),
+            "default snapshot has no committed audio boundary"
+        );
+
+        let utterance_final =
+            |utterance_id: u64, start_ts: f32, end_ts: f32| EngineEvent::UtteranceFinal {
+                utterance_id,
+                text: "zdanie".to_string(),
+                raw_text: "zdanie".to_string(),
+                start_ts,
+                end_ts,
+                segments: vec![],
+                vad_speech_pct: Some(80.0),
+                avg_logprob: None,
+                compression_ratio: None,
+                quality_gate_dropped: false,
+                confidence_flags: vec![],
+            };
+
+        sink.on_event(&utterance_final(1, 0.0, 3.2));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2)
+        );
+
+        sink.on_event(&utterance_final(2, 3.2, 7.9));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(7.9)
+        );
+
+        // Out-of-order final: boundary stays at the max already committed.
+        sink.on_event(&utterance_final(3, 4.0, 5.0));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(7.9),
+            "committed boundary is a monotonic max, not the last value"
+        );
+
+        reset_session_telemetry(&shared);
+        assert!(
+            snapshot_session_telemetry(&shared)
+                .committed_through_secs
+                .is_none(),
+            "reset clears the committed audio boundary"
+        );
+    }
+
+    /// Parity with `ComposerTranscript::note_committed_through` (PR #69
+    /// review): a non-finite `end_ts` (NaN/±inf) must never poison or advance
+    /// the boundary. NaN falls through the `current >= end_ts` guard and would
+    /// otherwise OVERWRITE a valid max — silently degrading Smart tail
+    /// gap-fill to Skip for the rest of the session.
+    #[test]
+    fn test_session_telemetry_ignores_non_finite_end_ts() {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+
+        let utterance_final =
+            |utterance_id: u64, start_ts: f32, end_ts: f32| EngineEvent::UtteranceFinal {
+                utterance_id,
+                text: "zdanie".to_string(),
+                raw_text: "zdanie".to_string(),
+                start_ts,
+                end_ts,
+                segments: vec![],
+                vad_speech_pct: Some(80.0),
+                avg_logprob: None,
+                compression_ratio: None,
+                quality_gate_dropped: false,
+                confidence_flags: vec![],
+            };
+
+        sink.on_event(&utterance_final(1, 0.0, 3.2));
+        sink.on_event(&utterance_final(2, 3.2, f32::NAN));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2),
+            "NaN end_ts must not overwrite the committed boundary"
+        );
+
+        sink.on_event(&utterance_final(3, 3.2, f32::INFINITY));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2),
+            "+inf end_ts must not advance the boundary"
+        );
+
+        sink.on_event(&utterance_final(4, 3.2, f32::NEG_INFINITY));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(3.2),
+            "-inf end_ts must not disturb the boundary"
+        );
+
+        sink.on_event(&utterance_final(5, 3.2, 4.5));
+        assert_eq!(
+            snapshot_session_telemetry(&shared).committed_through_secs,
+            Some(4.5),
+            "finite finals keep advancing after non-finite noise"
+        );
+    }
+
+    /// Reset must clear every field, not just the obvious ones: leftover
+    /// `pending_tail` or `committed_chars` would make the next session's first
+    /// routing decision read the previous session's state.
     #[test]
     fn test_reset_session_telemetry_clears_snapshot() {
         let shared = new_session_telemetry();
@@ -1653,6 +1960,9 @@ mod tests {
         );
     }
 
+    /// Rebuilding after a degrade must rejoin the durable thread id and discard
+    /// the id the fresh runtime minted — and it must clear the degraded flag,
+    /// reporting `recovered = true` so the UI can retire the banner.
     #[test]
     fn test_runtime_recovery_clears_degraded_flag_on_reinit() {
         let mut runtime_state = AgentRuntimeState {
@@ -1681,6 +1991,9 @@ mod tests {
         assert!(!runtime_state.runtime_degraded);
     }
 
+    /// A mid-stream provider failure must NOT fall back: the provider already
+    /// took the turn, so re-running it through the legacy formatter would answer
+    /// the same utterance twice.
     #[test]
     fn test_provider_stream_errors_skip_legacy_fallback() {
         let error = anyhow::anyhow!(
@@ -1696,6 +2009,9 @@ mod tests {
 
     #[async_trait]
     impl AgentProvider for CompletingTestProvider {
+        /// Emit a finished turn: one assistant message plus a clean
+        /// `ResponseDone` carrying a response id, so the session ends with both
+        /// history and a provider chain to later assert against.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -1715,6 +2031,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user `ToolResult` message for the completing test provider.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -1731,6 +2048,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -1738,11 +2056,16 @@ mod tests {
             }
         }
 
+        /// Stable provider name shown in tests and diagnostics.
         fn name(&self) -> &str {
             "completing-test-provider"
         }
     }
 
+    /// A runtime that has already completed one turn, so degrade tests start
+    /// from real state: non-empty history AND a set provider chain. Drives the
+    /// seed turn on its own current-thread runtime so the helper stays callable
+    /// from sync `#[test]` fns.
     fn seed_completed_runtime(thread_store_id: &str) -> AgentRuntime {
         let (ui_tx, ui_rx) = mpsc::channel(8);
         let mut session = AgentSession::new(
@@ -1850,6 +2173,8 @@ mod tests {
         );
     }
 
+    /// The in-flight marker is a count, not a flag: an inner guard dropping
+    /// must not clear the state while the outer send is still running.
     #[test]
     fn test_agent_send_in_flight_guard_tracks_nested_sends() {
         set_agent_send_in_flight_for_test(false);
@@ -1869,6 +2194,8 @@ mod tests {
         assert!(!is_agent_send_in_flight());
     }
 
+    /// Counterpart to the stream-error case: a runtime that never reached the
+    /// provider must fall back, otherwise the user gets no answer at all.
     #[test]
     fn test_runtime_unavailable_errors_allow_legacy_fallback() {
         let error = anyhow::anyhow!("Agent runtime unavailable");
@@ -1876,6 +2203,8 @@ mod tests {
         assert!(agent_send_error_allows_legacy_fallback(&error));
     }
 
+    /// Text with no attachment marker must come through byte-identical — the
+    /// splitter must not rewrite ordinary messages on its way past them.
     #[test]
     fn test_build_image_attachments_passthrough_without_marker() {
         let text = "plain message, no attachments";
@@ -1885,6 +2214,10 @@ mod tests {
         assert!(dropped.is_empty());
     }
 
+    /// The marker block and its raw paths must disappear from model-visible
+    /// text while the readable image becomes real vision input. An unreadable
+    /// path is reported as dropped, never silently forwarded as text — that
+    /// silent passthrough was the original attachment bug.
     #[test]
     fn test_build_image_attachments_loads_real_image_and_reports_dropped() {
         let dir = std::env::temp_dir().join(format!("cs_helpers_vision_{}", std::process::id()));
@@ -1915,6 +2248,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Past the cap, the overflow is surfaced rather than quietly discarded:
+    /// exactly `MAX_AGENT_VISION_IMAGES` are forwarded and the remainder come
+    /// back as dropped names the caller can show.
     #[test]
     fn test_build_image_attachments_caps_and_reports_overflow() {
         let dir = std::env::temp_dir().join(format!("cs_helpers_cap_{}", std::process::id()));
@@ -1937,6 +2273,9 @@ mod tests {
 
     // ── Voice-assistive delivery: UI-event → delivery-event mapping + publish ──
 
+    /// Every UI event variant must cross to its delivery twin unchanged. The two
+    /// enums are kept the same shape on purpose, so the Swift listener stays
+    /// symmetric with the composer's — a mismapped arm would desync them.
     #[test]
     fn agent_ui_event_maps_to_delivery_event_one_to_one() {
         assert_eq!(
@@ -1985,6 +2324,9 @@ mod tests {
         );
     }
 
+    /// Draining an event must also publish it: this is the only path by which
+    /// the SwiftUI chat learns anything. Matched on a unique payload because the
+    /// broadcast is process-global and other tests publish to it concurrently.
     #[tokio::test]
     async fn apply_agent_ui_event_publishes_to_delivery_broadcast() {
         use crate::agent_delivery::{AgentDeliveryEvent, subscribe_agent_delivery};
@@ -2010,6 +2352,10 @@ mod tests {
         assert_eq!(found.as_deref(), Some(marker));
     }
 
+    /// Provider driven by a queue of pre-written turns, one script popped per
+    /// call. Records what it was asked to do as well as what it answered, so
+    /// continuity tests can assert on the inputs the runtime actually replayed
+    /// and on the `reset_chain` flag each turn carried.
     struct ScriptedControllerProvider {
         scripts: Arc<StdMutex<VecDeque<Vec<AgentEvent>>>>,
         reset_chain_flags: Arc<StdMutex<Vec<bool>>>,
@@ -2020,6 +2366,10 @@ mod tests {
 
     #[async_trait]
     impl AgentProvider for ScriptedControllerProvider {
+        /// Record this call's inputs and `reset_chain` flag, then replay the
+        /// next queued script from a spawned task so the receiver is returned
+        /// before the events land — mirroring a real streaming provider rather
+        /// than handing back an already-full channel.
         async fn stream(
             &self,
             messages: &[Message],
@@ -2051,6 +2401,7 @@ mod tests {
             Ok(rx)
         }
 
+        /// Wrap tool output as a user `ToolResult` message for the scripted test provider.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -2067,6 +2418,7 @@ mod tests {
             )
         }
 
+        /// Build an image content block from raw bytes and media type.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -2074,11 +2426,14 @@ mod tests {
             }
         }
 
+        /// Stable provider name shown in tests and diagnostics.
         fn name(&self) -> &str {
             "scripted-controller-provider"
         }
     }
 
+    /// Yield until a flag is set, with a hard timeout so a wedged test fails
+    /// loudly instead of hanging the suite.
     async fn wait_for_flag(flag: &AtomicBool) {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !flag.load(Ordering::SeqCst) {
@@ -2095,6 +2450,12 @@ mod tests {
     /// into each other's subscriptions.
     static SEND_PATH_BROADCAST_LOCK: TokioMutex<()> = TokioMutex::const_new(());
 
+    /// The full user-Stop contract in one turn. Cancelling mid-tool must: drop
+    /// the in-flight tool future so its side effect never fires, restore the
+    /// pre-turn history, skip persistence, emit exactly one keyed `Cancelled`
+    /// terminal and no `Done`/`Error`, and clean its registry token. Then the
+    /// next turn must succeed on the same runtime while keeping the pre-turn
+    /// chain — Stop cancels a turn, it does not reset the conversation.
     #[tokio::test]
     async fn voice_cancel_drops_slow_tool_restores_history_skips_persist_and_recovers() {
         use crate::agent_delivery::{
@@ -2286,6 +2647,8 @@ mod tests {
         );
     }
 
+    /// Neutral stream options: no model, no prompt, chain preserved — so send
+    /// path tests observe the path's own behaviour, not an option's.
     fn test_stream_options() -> StreamOptions {
         StreamOptions {
             model: String::new(),
@@ -2298,6 +2661,9 @@ mod tests {
 
     // ── Voice runtime identity and history continuity (W1-A) ────────────────
 
+    /// A runtime on the scripted provider, bound to an explicit thread id and
+    /// sharing the caller's `seen_inputs` recorder so continuity assertions can
+    /// inspect what the provider was replayed.
     fn scripted_runtime(
         thread_store_id: &str,
         scripts: Arc<StdMutex<VecDeque<Vec<AgentEvent>>>>,
@@ -2321,6 +2687,8 @@ mod tests {
         }
     }
 
+    /// One clean finished turn for the script queue: an assistant answer plus a
+    /// `ResponseDone` that advances the chain to `response_id`.
     fn completed_turn_script(assistant_text: &str, response_id: &str) -> Vec<AgentEvent> {
         vec![
             AgentEvent::TextDone(assistant_text.to_string()),
@@ -2331,6 +2699,10 @@ mod tests {
         ]
     }
 
+    /// Assert one voice conversation left exactly one thread file and one index
+    /// row. This is the on-disk proof of identity continuity: a runtime that
+    /// rotated its thread id would pass in-memory checks but leave two
+    /// artifacts here.
     fn assert_single_controller_thread_artifact(threads_dir: &std::path::Path) {
         let thread_files = std::fs::read_dir(threads_dir)
             .expect("threads dir should list")
@@ -2695,8 +3067,12 @@ mod tests {
     /// never prompt/transcript content.
     #[test]
     fn rehydrate_failure_keeps_identity_and_logs_privacy_safe_recovery() {
+        /// Tracing writer that appends into a shared buffer, so the test can
+        /// read back what the lifecycle actually logged.
         struct SharedWriter(Arc<StdMutex<Vec<u8>>>);
         impl std::io::Write for SharedWriter {
+            /// Append to the shared buffer, recovering from a poisoned lock —
+            /// a panicking test must not also lose its captured evidence.
             fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
                 self.0
                     .lock()
@@ -2704,6 +3080,7 @@ mod tests {
                     .extend_from_slice(data);
                 Ok(data.len())
             }
+            /// No-op: the buffer is in memory, so there is nothing to flush.
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }

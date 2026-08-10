@@ -7,6 +7,9 @@ use std::str::FromStr;
 
 use super::defaults::*;
 
+/// Serde default for [`Config::auto_paste_enabled`]: pasting is on unless the
+/// user turns it off, so configs written before the field existed keep the
+/// historical behaviour.
 const fn default_auto_paste_enabled() -> bool {
     true
 }
@@ -21,6 +24,8 @@ pub enum WorkMode {
 }
 
 impl WorkMode {
+    /// Stable wire/serde identifier for this mode. Round-trips through
+    /// [`FromStr`], so it is safe to persist.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Dictation => "dictation",
@@ -29,6 +34,8 @@ impl WorkMode {
         }
     }
 
+    /// Human-readable name for menus and the settings UI. Presentation only —
+    /// never persist this; persist [`WorkMode::as_str`].
     pub fn label(&self) -> &'static str {
         match self {
             Self::Dictation => "Dictation",
@@ -37,6 +44,8 @@ impl WorkMode {
         }
     }
 
+    /// One-sentence explanation of what the mode does with the user's voice,
+    /// shown next to the mode picker.
     pub fn description(&self) -> &'static str {
         match self {
             Self::Dictation => "Transcribes your voice and pastes the text.",
@@ -45,22 +54,31 @@ impl WorkMode {
         }
     }
 
+    /// Whether the mode routes the transcript to the agent instead of the
+    /// caret.
     pub fn is_assistive(&self) -> bool {
         matches!(self, Self::Assistive)
     }
 
+    /// Whether the mode pastes by default. Assistive sends to the agent, so it
+    /// never auto-pastes; the user preference and controller-owned vetoes still
+    /// apply on top of this (see [`Config::auto_paste_enabled`]).
     pub fn defaults_to_auto_paste(&self) -> bool {
         !self.is_assistive()
     }
 
+    /// Whether the mode requires an LLM round-trip regardless of the global AI
+    /// formatting switch: formatting rewrites the text, assistive answers it.
     pub fn forces_ai(&self) -> bool {
         matches!(self, Self::Formatting | Self::Assistive)
     }
 }
 
 impl FromStr for WorkMode {
+    /// Parse error payload for WorkMode wire identifiers.
     type Err = String;
 
+    /// Parse a WorkMode from config/UI text (accepts a few historical aliases).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "dictation" | "raw" => Ok(Self::Dictation),
@@ -87,6 +105,8 @@ pub enum ShortcutBinding {
 }
 
 impl ShortcutBinding {
+    /// Human-readable gesture description for the settings UI ("Hold Ctrl",
+    /// "Double-tap Left Option"). Presentation only.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Disabled => "Disabled",
@@ -101,6 +121,9 @@ impl ShortcutBinding {
         }
     }
 
+    /// Stable persisted identifier for this gesture. [`FromStr`] accepts
+    /// exactly these strings — legacy aliases are deliberately rejected so a
+    /// stale config fails loudly instead of silently rebinding a hotkey.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
@@ -117,8 +140,10 @@ impl ShortcutBinding {
 }
 
 impl FromStr for ShortcutBinding {
+    /// Parse error payload for ShortcutBinding wire identifiers.
     type Err = String;
 
+    /// Parse a ShortcutBinding from snake_case; rejects legacy aliases intentionally.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "disabled" => Ok(Self::Disabled),
@@ -154,6 +179,7 @@ pub enum DeferredInsertShortcut {
 }
 
 impl DeferredInsertShortcut {
+    /// Chord rendered with macOS modifier glyphs for the settings UI.
     pub fn label(self) -> &'static str {
         match self {
             Self::Disabled => "Disabled",
@@ -163,14 +189,18 @@ impl DeferredInsertShortcut {
         }
     }
 
+    /// Whether a chord is bound at all. `Disabled` is the default, so callers
+    /// must check this before installing the event tap.
     pub fn is_enabled(self) -> bool {
         !matches!(self, Self::Disabled)
     }
 }
 
 impl FromStr for DeferredInsertShortcut {
+    /// Parse error payload for DeferredInsertShortcut wire identifiers.
     type Err = String;
 
+    /// Parse a deferred-insert chord id; several cmd_* aliases map to the same chord.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "disabled" => Ok(Self::Disabled),
@@ -182,12 +212,16 @@ impl FromStr for DeferredInsertShortcut {
     }
 }
 
+/// One persisted work-mode-to-gesture pair. The binding list is stored as a
+/// sequence rather than a map so the settings UI can keep a stable row order.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModeBinding {
     pub mode: WorkMode,
     pub binding: ShortcutBinding,
 }
 
+/// Factory-default gesture for each work mode: Fn-hold dictates, double-tap
+/// left Option formats, double-tap right Option talks to the agent.
 pub fn default_mode_bindings() -> Vec<ModeBinding> {
     vec![
         ModeBinding {
@@ -220,6 +254,8 @@ pub enum Language {
 }
 
 impl Language {
+    /// Stable persisted identifier — the ISO code for concrete languages,
+    /// `"auto"` for detection.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -228,6 +264,7 @@ impl Language {
         }
     }
 
+    /// Human-readable name for the language picker. Presentation only.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Auto => "Auto-detect / multilingual",
@@ -236,6 +273,9 @@ impl Language {
         }
     }
 
+    /// Language hint to hand to Whisper, or `None` to let it detect. This is
+    /// the accessor STT and formatting paths should use: forcing a concrete
+    /// code is only correct for explicit single-language sessions.
     pub fn whisper_hint(&self) -> Option<&'static str> {
         match self {
             Self::Auto => None,
@@ -246,8 +286,10 @@ impl Language {
 }
 
 impl FromStr for Language {
+    /// Parse error payload for Language wire identifiers.
     type Err = String;
 
+    /// Parse Language from codes or names; empty/auto synonyms map to Auto detect.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "auto" | "" | "detect" | "multilingual" | "any" => Ok(Self::Auto),
@@ -268,6 +310,7 @@ pub enum TranscriptSendMode {
 }
 
 impl TranscriptSendMode {
+    /// Stable persisted identifier for this send strategy.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::EndOfUtterance => "end_of_utterance",
@@ -277,8 +320,10 @@ impl TranscriptSendMode {
 }
 
 impl FromStr for TranscriptSendMode {
+    /// Parse error payload for TranscriptSendMode wire identifiers.
     type Err = String;
 
+    /// Parse transcript send strategy; accepts short aliases (end/stream).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "end_of_utterance" | "end" | "delayed" => Ok(Self::EndOfUtterance),
@@ -298,6 +343,7 @@ pub enum OverlayPositionMode {
 }
 
 impl OverlayPositionMode {
+    /// Stable persisted identifier for this overlay placement strategy.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SnappedTopRight => "snapped_top_right",
@@ -307,8 +353,10 @@ impl OverlayPositionMode {
 }
 
 impl FromStr for OverlayPositionMode {
+    /// Parse error payload for OverlayPositionMode wire identifiers.
     type Err = String;
 
+    /// Parse overlay placement mode from config text (snap/custom aliases).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "snapped_top_right" | "snap" | "top_right" => Ok(Self::SnappedTopRight),
@@ -331,6 +379,7 @@ pub enum HoldArmModifier {
 }
 
 impl HoldArmModifier {
+    /// Stable persisted identifier for this arming modifier.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Shift => "shift",
@@ -338,6 +387,7 @@ impl HoldArmModifier {
         }
     }
 
+    /// Human-readable modifier name for the settings UI. Presentation only.
     pub fn label(self) -> &'static str {
         match self {
             Self::Shift => "Shift",
@@ -347,8 +397,10 @@ impl HoldArmModifier {
 }
 
 impl FromStr for HoldArmModifier {
+    /// Parse error payload for HoldArmModifier wire identifiers.
     type Err = String;
 
+    /// Parse the assistive arm modifier; cmd/command/meta are equivalent.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "shift" | "hold_shift" | "fn_shift" => Ok(Self::Shift),
@@ -568,6 +620,7 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// Ship-safe defaults: hold modifiers on, STT prompt off, Responses LLM endpoint.
     fn default() -> Self {
         Self {
             hold_exclusive: false, // Allow Shift/Cmd mode modifiers by default
@@ -640,11 +693,13 @@ impl Config {
     }
 }
 
+/// Config type parser/default regression tests (bindings, prompt, badge scale).
 #[cfg(test)]
 mod tests {
     use super::{Config, DeferredInsertShortcut, ShortcutBinding};
     use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
+    /// Legacy shortcut aliases must fail parse so old broken names do not resurrect.
     #[test]
     fn shortcut_binding_parser_rejects_legacy_aliases() {
         assert!("none".parse::<ShortcutBinding>().is_err());
@@ -653,6 +708,7 @@ mod tests {
         assert!("double_ralt".parse::<ShortcutBinding>().is_err());
     }
 
+    /// Deferred insert defaults Disabled and round-trips its opt-in chord variants.
     #[test]
     fn deferred_insert_shortcut_round_trips_and_defaults_to_disabled() {
         // Opt-in by design: listen-only tap cannot swallow the chord, so a
@@ -678,6 +734,7 @@ mod tests {
         );
     }
 
+    /// Default keep hold_exclusive=false so Shift/Cmd arm modifiers stay live.
     #[test]
     fn default_config_keeps_hold_modifiers_enabled() {
         // hold_exclusive=true makes Fn-hold RAW-only and disables the configured
@@ -696,6 +753,7 @@ mod tests {
         );
     }
 
+    /// HoldArmModifier accepts shift/cmd/command and rejects unknown tokens.
     #[test]
     fn hold_arm_modifier_parses_shift_and_cmd() {
         use super::HoldArmModifier;
@@ -705,6 +763,7 @@ mod tests {
         assert!("nope".parse::<HoldArmModifier>().is_err());
     }
 
+    /// Default LLM endpoint is the OpenAI Responses URL, not chat/completions.
     #[test]
     fn default_config_uses_openai_responses_endpoint() {
         assert_eq!(
@@ -713,6 +772,7 @@ mod tests {
         );
     }
 
+    /// Default disables Whisper initial_prompt (WER collapse guard, W2-F).
     #[test]
     fn default_config_disables_stt_initial_prompt() {
         assert!(
@@ -721,6 +781,7 @@ mod tests {
         );
     }
 
+    /// sanitize keeps only the exposed badge scales 4/8/12; others fall back to 12.
     #[test]
     fn hold_badge_sanitize_accepts_only_exposed_scale() {
         for size in [4, 8, 12] {

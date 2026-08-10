@@ -15,6 +15,11 @@ use tracing::{debug, info, trace};
 use super::config::VadConfig;
 use crate::hf_cache;
 
+/// The Silero ONNX graph baked into the binary at build time.
+///
+/// `build.rs` emits `embedded_vad_data.rs` into `OUT_DIR` exposing the model as
+/// a `MODEL` byte slice, which is why VAD needs no disk file and no download on
+/// the production path.
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/embedded_vad_data.rs"));
 }
@@ -78,6 +83,10 @@ pub struct Resampler {
 }
 
 impl Resampler {
+    /// Build a resampler from `input_rate` to the fixed 16 kHz Silero expects.
+    ///
+    /// The scratch buffer is pre-sized so steady-state resampling does not
+    /// allocate on the audio path.
     pub fn new(input_rate: u32) -> Self {
         let ratio = VAD_SAMPLE_RATE as f32 / input_rate as f32;
         Self {
@@ -179,6 +188,10 @@ impl SileroVad {
         })
     }
 
+    /// Declare the sample rate of audio handed to [`Self::predict`].
+    ///
+    /// Installs a resampler only when the rate differs from 16 kHz; passing
+    /// [`VAD_SAMPLE_RATE`] clears it, keeping the native-rate path allocation-free.
     pub fn set_input_sample_rate(&mut self, rate: u32) {
         if rate != VAD_SAMPLE_RATE {
             self.resampler = Some(Resampler::new(rate));
@@ -289,6 +302,7 @@ impl SileroVad {
         self.context.fill(0.0);
     }
 
+    /// Configured probability above which a chunk counts as speech.
     pub fn threshold(&self) -> f32 {
         self.config.threshold
     }
@@ -436,6 +450,7 @@ impl AccumulatingVad {
 
 /// HuggingFace repo for Silero VAD model
 const SILERO_VAD_REPO: &str = "snakers4/silero-vad";
+/// ONNX file name inside that repo, and the name used in the models directory.
 const SILERO_VAD_FILE: &str = "silero_vad.onnx";
 
 /// Get default model path (bundled/models dir -> HF cache -> ~/.codescribe/models/)
@@ -467,10 +482,12 @@ pub fn default_model_path() -> PathBuf {
         .join(SILERO_VAD_FILE)
 }
 
+/// Resampler parity and embedded Silero session sharing regression tests.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 48 kHz frames downsample to ~16 kHz length for Silero VAD input.
     #[test]
     fn test_resampler_48k_to_16k() {
         let mut resampler = Resampler::new(48000);
@@ -483,9 +500,11 @@ mod tests {
         assert!((output.len() as i32 - 160).abs() <= 1);
     }
 
+    /// Resampler matches linear-interpolation reference across repeated calls.
     #[test]
     fn resample_value_parity_and_repeatable() {
         // Reference linear interpolation (matches the pre-optimization math).
+        /// Reference linear resampler used only to assert production parity.
         fn reference(samples: &[f32], ratio: f32) -> Vec<f32> {
             if (ratio - 1.0).abs() < 0.001 {
                 return samples.to_vec();
@@ -518,6 +537,7 @@ mod tests {
         }
     }
 
+    /// Native 16 kHz input passes through without length change.
     #[test]
     fn test_resampler_16k_passthrough() {
         let mut resampler = Resampler::new(16000);
@@ -547,6 +567,7 @@ mod tests {
         assert!(vad.is_ok(), "embedded VAD must load: {:?}", vad.err());
     }
 
+    /// Two embedded VAD instances share one ONNX session Arc (memory fix).
     #[test]
     fn embedded_session_is_shared_across_instances() {
         // The core of the memory fix: two embedded VAD instances must point at
@@ -560,6 +581,7 @@ mod tests {
         );
     }
 
+    /// Shared session still isolates recurrent state and reset per instance.
     #[test]
     fn shared_session_keeps_per_instance_state() {
         // Sharing the session must not couple per-stream recurrent state: each

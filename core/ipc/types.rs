@@ -1,3 +1,13 @@
+//! Wire representation of engine events for the IPC boundary.
+//!
+//! The in-process [`EngineEvent`] is the engine's own type; the types here are
+//! its serialized mirror, and the difference between them is deliberate. The
+//! wire form is externally-tagged JSON (`type` / `event` discriminators) and
+//! deliberately narrower — `UtteranceFinal::raw_text` never crosses the
+//! boundary, and legacy variants that were removed from the engine must fail to
+//! deserialize rather than silently reappear. Both properties are pinned by the
+//! tests in this module.
+
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::contracts::{
@@ -5,6 +15,9 @@ use crate::pipeline::contracts::{
     TranscriptionConfidenceFlag,
 };
 
+/// One timestamped envelope on the IPC stream. The payload is flattened, so a
+/// serialized event carries its discriminator and fields at the top level
+/// alongside `timestamp`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcEvent {
     pub timestamp: String, // RFC3339 UTC
@@ -12,6 +25,14 @@ pub struct IpcEvent {
     pub payload: IpcEventPayload,
 }
 
+/// What an [`IpcEvent`] carries, tagged by the `event` field.
+///
+/// [`Engine`] is the transcription pipeline's own event stream; the remaining
+/// variants are surfaces that exist only across this boundary (authoritative
+/// post-stop transcript, context markers, capture-level metering) and have no
+/// [`EngineEvent`] counterpart.
+///
+/// [`Engine`]: IpcEventPayload::Engine
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event")]
 pub enum IpcEventPayload {
@@ -38,6 +59,14 @@ pub enum IpcEventPayload {
     AudioLevel { rms: f32 },
 }
 
+/// Serializable mirror of [`EngineEvent`], tagged by `type` in snake_case.
+///
+/// Built exclusively through the [`From`] impl below, which is where the
+/// engine→wire narrowing happens: `UtteranceFinal` drops `raw_text` so the
+/// unfiltered transcript never leaves the process. Variants retired from the
+/// engine are also retired here — the deserialize path must reject them
+/// (`vad_fallback`, `delta`, `worker_status`) instead of accepting stale
+/// clients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEventWire {
@@ -117,6 +146,7 @@ pub enum EngineEventWire {
 }
 
 impl From<&EngineEvent> for EngineEventWire {
+    /// Narrow `EngineEvent` to wire form; drops `UtteranceFinal::raw_text` at the boundary.
     fn from(value: &EngineEvent) -> Self {
         match value {
             EngineEvent::VadStart { speech_prob, ts_ms } => Self::VadStart {
@@ -240,6 +270,10 @@ impl From<&EngineEvent> for EngineEventWire {
     }
 }
 
+/// Stable wire spelling for a [`DropKind`].
+///
+/// Written out by hand rather than derived: these strings are consumed by the
+/// Swift side, so they are a contract that must not follow a Rust rename.
 fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
     match kind {
         DropKind::Hallucination => "hallucination",
@@ -249,15 +283,18 @@ fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
     }
 }
 
+/// Wire serialization contracts and rejection of retired engine event variants.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
 
+    /// Test helper: force a JSON value into an object map or panic with context.
     fn must_object(value: Value) -> serde_json::Map<String, Value> {
         value.as_object().cloned().expect("json object")
     }
 
+    /// Pins that unfiltered `raw_text` never serializes on the IPC utterance_final wire.
     #[test]
     fn utterance_final_wire_omits_raw_text() {
         let event = EngineEvent::UtteranceFinal {
@@ -316,6 +353,7 @@ mod tests {
         );
     }
 
+    /// Engine payloads carry the outer `event: "engine"` tag on the wire.
     #[test]
     fn ipc_event_payload_serialization_is_engine_tagged() {
         let payload = IpcEventPayload::Engine(EngineEventWire::Preview {
@@ -328,6 +366,7 @@ mod tests {
         assert_eq!(obj.get("event").and_then(Value::as_str), Some("engine"));
     }
 
+    /// Audio-level IPC payload keeps the capture RMS field for overlay meters.
     #[test]
     fn audio_level_payload_serializes_rms() {
         let payload = IpcEventPayload::AudioLevel { rms: 0.25 };
@@ -343,6 +382,7 @@ mod tests {
         );
     }
 
+    /// Context-marker wire carries character offset plus the marker token string.
     #[test]
     fn context_marker_payload_serializes_position_and_marker() {
         let payload = IpcEventPayload::ContextMarker {
@@ -356,6 +396,7 @@ mod tests {
         assert_eq!(value["marker"], "{selection_2}");
     }
 
+    /// NoSpeech reason string survives engine→wire conversion for UI diagnostics.
     #[test]
     fn no_speech_event_serializes_reason() {
         let event = EngineEvent::NoSpeech {
@@ -371,6 +412,7 @@ mod tests {
         );
     }
 
+    /// Stats wire preserves partial-pass counters used by layered transcription telemetry.
     #[test]
     fn stats_event_serializes_partial_pass_fields() {
         let event = EngineEvent::Stats {
@@ -406,6 +448,7 @@ mod tests {
         );
     }
 
+    /// ReplaceRange keeps utterance span, text, and LayerSource spelling on the wire.
     #[test]
     fn replace_range_event_serializes_typed_wire_payload() {
         let event = EngineEvent::ReplaceRange {
@@ -434,6 +477,7 @@ mod tests {
         );
     }
 
+    /// InsertAnnotation serializes position, text, and AnnotationKind discriminators.
     #[test]
     fn insert_annotation_event_serializes_typed_wire_payload() {
         let event = EngineEvent::InsertAnnotation {
@@ -460,6 +504,7 @@ mod tests {
         );
     }
 
+    /// SessionFinalised carries session_id plus nested layer_summary counters.
     #[test]
     fn session_finalised_event_serializes_typed_wire_payload() {
         let event = EngineEvent::SessionFinalised {
@@ -501,6 +546,7 @@ mod tests {
         );
     }
 
+    /// Retired `vad_fallback` wire must fail deserialize rather than revive.
     #[test]
     fn legacy_vad_fallback_wire_is_rejected() {
         let legacy_json = serde_json::json!({
@@ -516,6 +562,7 @@ mod tests {
         );
     }
 
+    /// Removed variants (`vad_fallback`, `delta`, `worker_status`) are hard-rejected on parse.
     #[test]
     fn removed_legacy_wire_variants_are_rejected() {
         let legacy_payloads = [

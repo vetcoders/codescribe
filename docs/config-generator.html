@@ -18,9 +18,11 @@
         --chip: #1a2532;
         --success: #4ade80;
       }
+
       * {
         box-sizing: border-box;
       }
+
       body {
         margin: 0;
         background: radial-gradient(
@@ -35,15 +37,18 @@
         padding: 32px;
         min-height: 100vh;
       }
+
       .wrap {
         max-width: 1100px;
         margin: 0 auto;
       }
+
       header {
         display: grid;
         gap: 12px;
         margin-bottom: 28px;
       }
+
       h1 {
         font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
         font-size: 28px;
@@ -53,16 +58,20 @@
         align-items: center;
         gap: 12px;
       }
+
       h1::before {
         content: "🎙️";
       }
+
       .subtitle {
         color: var(--muted);
       }
+
       .grid {
         display: grid;
         gap: 18px;
       }
+
       .card {
         background: linear-gradient(180deg, var(--panel), var(--panel-2));
         border: 1px solid var(--border);
@@ -70,6 +79,7 @@
         padding: 18px;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
       }
+
       .card h2 {
         margin: 0 0 12px;
         font-size: 16px;
@@ -79,9 +89,11 @@
         align-items: center;
         gap: 8px;
       }
+
       .card.optional h2 {
         color: var(--muted);
       }
+
       .card.required h2::after {
         content: "REQUIRED";
         font-size: 10px;
@@ -91,11 +103,13 @@
         border-radius: 4px;
         margin-left: auto;
       }
+
       .field {
         display: grid;
         gap: 6px;
         margin-bottom: 12px;
       }
+
       label {
         font-size: 12px;
         text-transform: uppercase;
@@ -105,12 +119,14 @@
         align-items: center;
         gap: 6px;
       }
+
       label .default {
         font-size: 10px;
         color: var(--accent-2);
         text-transform: none;
         letter-spacing: 0;
       }
+
       input,
       select,
       textarea {
@@ -124,23 +140,28 @@
           monospace;
         font-size: 13px;
       }
+
       select {
         cursor: pointer;
       }
+
       textarea {
         min-height: 80px;
         resize: vertical;
       }
+
       .hint {
         font-size: 12px;
         color: var(--muted);
       }
+
       .chips {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
         margin-top: 6px;
       }
+
       .chip {
         background: var(--chip);
         border: 1px solid #1e2a38;
@@ -151,34 +172,42 @@
         cursor: pointer;
         transition: all 0.15s;
       }
+
       .chip:hover {
         border-color: var(--accent);
         color: var(--accent);
       }
+
       .chip.active {
         background: var(--accent);
         color: var(--bg);
         border-color: var(--accent);
       }
+
       .split {
         display: grid;
         gap: 14px;
       }
+
       @media (min-width: 860px) {
         .split {
           grid-template-columns: 1fr 1fr;
         }
+
         .split-3 {
           grid-template-columns: 1fr 1fr 1fr;
         }
       }
+
       .output-card {
         background: #0a0f14;
         border: 2px solid var(--accent);
       }
+
       .output-card h2 {
         color: var(--success);
       }
+
       #output {
         background: #050810;
         border-radius: 8px;
@@ -192,12 +221,14 @@
         overflow-y: auto;
         color: var(--text);
       }
+
       .actions {
         display: flex;
         gap: 12px;
         margin-top: 14px;
         flex-wrap: wrap;
       }
+
       button {
         background: linear-gradient(135deg, var(--accent), var(--accent-2));
         color: var(--bg);
@@ -209,18 +240,22 @@
         cursor: pointer;
         transition: transform 0.1s, box-shadow 0.1s;
       }
+
       button:hover {
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(111, 211, 199, 0.3);
       }
+
       button:active {
         transform: translateY(0);
       }
+
       button.secondary {
         background: var(--chip);
         color: var(--text);
         border: 1px solid var(--border);
       }
+
       .toast {
         position: fixed;
         bottom: 24px;
@@ -235,22 +270,26 @@
         transition: all 0.3s;
         z-index: 1000;
       }
+
       .toast.show {
         opacity: 1;
         transform: translateY(0);
       }
+
       footer {
         color: var(--muted);
         font-size: 12px;
         margin-top: 24px;
         text-align: center;
       }
+
       .toggle-row {
         display: flex;
         align-items: center;
         gap: 12px;
         margin-bottom: 12px;
       }
+
       .toggle {
         position: relative;
         width: 44px;
@@ -260,9 +299,11 @@
         cursor: pointer;
         transition: background 0.2s;
       }
+
       .toggle.on {
         background: var(--accent);
       }
+
       .toggle::after {
         content: "";
         position: absolute;
@@ -274,12 +315,15 @@
         border-radius: 50%;
         transition: transform 0.2s;
       }
+
       .toggle.on::after {
         transform: translateX(20px);
       }
+
       .toggle-label {
         font-size: 13px;
       }
+
       .section-divider {
         border: none;
         border-top: 1px solid var(--border);
@@ -287,6 +331,7 @@
       }
     </style>
   </head>
+
   <body>
     <div class="wrap">
       <header>
@@ -537,7 +582,7 @@
       </div>
 
       <footer>
-        Codescribe Config Generator v1.0 • Created by vetcoders (c)2026<br />
+        Codescribe Config Generator v1.0 • Created by Vetcoders (c)2026<br />
         <a href="env.md" style="color: var(--accent-2)"
           >📖 Full documentation</a
         >

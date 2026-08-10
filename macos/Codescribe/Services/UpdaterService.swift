@@ -11,7 +11,7 @@ import Sparkle
 // row routes through `checkForUpdates()`.
 //
 // Feed + key contract (see macos/project.yml):
-//   SUFeedURL      → https://vetcoders.github.io/codescribe/appcast.xml
+//   SUFeedURL      → https://codescribe.vetcoders.io/appcast.xml
 //   SUPublicEDKey  → injected at build time via SPARKLE_ED_PUBLIC_KEY; an empty
 //                    key makes Sparkle reject every update (fail-closed), never
 //                    accept an unsigned one.

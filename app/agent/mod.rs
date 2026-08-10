@@ -1,12 +1,22 @@
+//! Application-side agent wiring: the concrete provider clients, the resident
+//! run monitor, and the macOS-only native tool surface.
+//!
+//! Provider choice is made by protocol (wire family), not by vendor name, so a
+//! new vendor speaking an existing protocol needs no new client here.
+
 use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
 use codescribe_core::config::Config;
 use codescribe_core::llm::lane_truth;
-use codescribe_core::llm::provider::ProviderKind;
+use codescribe_core::llm::provider::WireFamily;
 
+/// Anthropic Messages-family assistive provider client.
 pub mod anthropic_provider;
+/// Resident agent-run monitor (progress, cancel, status surfaces).
 pub mod monitor;
+/// OpenAI Responses-family client (also carries xAI and other Responses vendors).
 pub mod openai_provider;
+/// macOS-only native tool surface (filesystem, process, MCP, guards).
 #[cfg(target_os = "macos")]
 pub mod tools;
 
@@ -22,9 +32,12 @@ pub use openai_provider::OpenAiProvider;
 pub fn create_default_provider() -> Result<Box<dyn AgentProvider>> {
     let config = Config::load();
     let lane = lane_truth::assistive_availability(&config).map_err(anyhow::Error::msg)?;
-    match lane.provider {
-        ProviderKind::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_lane(lane)?)),
-        ProviderKind::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(lane)?)),
+    // Selected by protocol, not vendor: `OpenAiProvider` is the Responses-family
+    // client and carries the lane's provider identity, so xAI rides it without a
+    // second implementation.
+    match lane.provider.wire_family() {
+        WireFamily::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_lane(lane)?)),
+        WireFamily::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(lane)?)),
     }
 }
 

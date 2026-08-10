@@ -18,17 +18,29 @@
 
 uniffi::setup_scaffolding!();
 
+/// Streaming agent chat surface (`CodescribeAgent` + listener).
 mod agent;
+/// Agent delivery callbacks into Swift UI.
 mod agent_delivery;
+/// Read-only agent readiness and MCP status.
 mod agent_status;
+/// Settings, prompts, keychain, and onboarding config.
 mod config;
+/// Global hotkey registration and app-action callbacks.
 mod hotkeys;
+/// CSK1 license state exposed to the Swift shell.
 mod licensing;
+/// MCP server admin: add/update/remove/test.
 mod mcp_admin;
+/// Notes surface bridged for agent tools / UI.
 mod notes;
+/// Overlay quality records and lexicon commit helpers.
 mod quality;
+/// Dictation / STT streaming into the Swift app.
 mod recording;
+/// Thread persistence and history for agent chats.
 mod threads;
+/// Menu-bar tray status payloads and listener.
 mod tray_status;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
@@ -59,6 +71,7 @@ pub enum CsError {
 }
 
 impl std::fmt::Display for CsError {
+    /// Display the variant message only (no enum tag prefix).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CsError::Agent { msg }
@@ -75,6 +88,7 @@ impl std::fmt::Display for CsError {
 impl std::error::Error for CsError {}
 
 impl From<anyhow::Error> for CsError {
+    /// Map `anyhow` failures onto the Agent error variant by default.
     fn from(error: anyhow::Error) -> Self {
         CsError::Agent {
             msg: error.to_string(),
@@ -83,6 +97,7 @@ impl From<anyhow::Error> for CsError {
 }
 
 impl From<std::io::Error> for CsError {
+    /// Map I/O failures onto the Config error variant.
     fn from(error: std::io::Error) -> Self {
         CsError::Config {
             msg: error.to_string(),
@@ -94,12 +109,16 @@ impl From<std::io::Error> for CsError {
 /// (dictation language) surfaces. Maps 1:1 to `codescribe_core::config::Language`.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsLanguage {
+    /// Let Whisper detect the spoken language per recording.
     Auto,
+    /// Force Polish decoding (`"pl"`).
     Polish,
+    /// Force English decoding (`"en"`).
     English,
 }
 
 impl From<codescribe_core::config::Language> for CsLanguage {
+    /// Core config language → UniFFI `CsLanguage`.
     fn from(language: codescribe_core::config::Language) -> Self {
         match language {
             codescribe_core::config::Language::Auto => CsLanguage::Auto,
@@ -110,6 +129,7 @@ impl From<codescribe_core::config::Language> for CsLanguage {
 }
 
 impl From<CsLanguage> for codescribe_core::config::Language {
+    /// UniFFI `CsLanguage` → core config language.
     fn from(language: CsLanguage) -> Self {
         match language {
             CsLanguage::Auto => codescribe_core::config::Language::Auto,

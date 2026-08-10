@@ -25,6 +25,7 @@ use crate::vad;
 
 use super::correction::{
     PARTIAL_PASS_TRIGGER_TIMER_MS, PartialPassTelemetry, PartialPassTriggerState,
+    ROLLING_WINDOW_LOOKAHEAD_SECS, ROLLING_WINDOW_TARGET_SECS, RollingCorrectionWindow,
     apply_final_boundary_text, classify_partial_trigger, correction_baseline_text,
     correction_is_stale, merge_corrected_window, postprocess_correction_with_snapshot,
     schedule_partial_pass,
@@ -47,7 +48,7 @@ use super::tuning::{inference_max_concurrency, interim_vad_accumulate_samples};
 /// which is all `strip_overlap` needs — at constant cost. Sized to comfortably
 /// exceed the partial-pass cadence so no spoken tail is ever dropped before a
 /// Refine consumes it.
-const CORRECTION_WINDOW_SEC: f32 = 18.0;
+const CORRECTION_WINDOW_SEC: f32 = ROLLING_WINDOW_TARGET_SECS + ROLLING_WINDOW_LOOKAHEAD_SECS;
 /// Maximum text retained for Refine's window baseline.
 ///
 /// Text has no exact timestamps here, so keep a conservative character tail
@@ -67,6 +68,12 @@ fn cap_correction_buffer(buf: &mut Vec<f32>, sample_rate: u32, window_sec: f32) 
     drain_n
 }
 
+/// Trim `text` in place to at most `max_chars` **characters**, dropping from
+/// the front. Returns how many characters were dropped.
+///
+/// Counts characters, not bytes: this text is Polish and a byte cut would
+/// split a diacritic. Any word fragment left dangling at the new start is
+/// trimmed away.
 fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
     let char_count = text.chars().count();
     if max_chars == 0 || char_count <= max_chars {
@@ -87,6 +94,11 @@ fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
     drain_chars
 }
 
+/// Append one piece of transcript to the Refine window's text mirror, keeping
+/// it capped.
+///
+/// The mirror tracks `correction_audio_buf`: previews and finals append here as
+/// they append there, so the two stay describable as one slice.
 fn append_to_correction_window_text(window_text: &mut String, text: &str, max_chars: usize) {
     let text = text.trim();
     if text.is_empty() {
@@ -112,6 +124,12 @@ pub struct SessionConfig {
     pub utterance_silence_sec: Option<f32>,
 }
 
+/// What happened to one enqueue attempt.
+///
+/// `enqueued` and `dropped` are independent: making room for a final by
+/// evicting something reports both, and `evicted_final` distinguishes the worst
+/// case — a committed boundary was sacrificed — from evicting a replaceable
+/// interim.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct EnqueueOutcome {
     pub(crate) enqueued: bool,
@@ -119,6 +137,16 @@ pub(crate) struct EnqueueOutcome {
     pub(crate) evicted_final: bool,
 }
 
+/// Queue one work item for inference, applying the backpressure policy when the
+/// queue is full.
+///
+/// Finals and interims are not equal under pressure. An interim is a draft that
+/// a later pass will supersede, so a full queue simply drops an incoming one. A
+/// final is a committed utterance boundary, so it always gets in: first by
+/// evicting the oldest interim, and only if the queue is all finals by evicting
+/// the oldest of those. The invariant is that the *newest* boundary survives —
+/// losing it would truncate the transcript at the end, where the user is
+/// looking.
 pub(crate) fn enqueue_pending_utterance(
     pending: &mut VecDeque<PendingUtteranceWorkItem>,
     item: PendingUtteranceWorkItem,
@@ -173,17 +201,32 @@ pub(crate) fn enqueue_pending_utterance(
 /// Driven solely by `CODESCRIBE_LAYERED_TRANSCRIPTION` ([`layered_phase`]).
 /// **Orthogonal to** `FINAL_PASS_MODE` / Smart: Smart never enables this, and
 /// enabling layered never changes stop-path full re-pass routing.
-fn tail_patch_enabled() -> bool {
+///
+/// Shared with the Apple progressive path (`super::apple_live_session`) so both
+/// live sessions read one gate — a second copy would be a second truth.
+pub(super) fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
 }
 
+/// Count a semantic-gate drop, but only for finals.
+///
+/// Interim previews are drafts that get re-decoded; counting their drops would
+/// inflate the session stats with rejections that never cost the user any text.
 fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_final: bool) {
     if is_final && quality_gate_dropped {
         *counter = counter.saturating_add(1);
     }
 }
 
-async fn compute_tail_patch_job(
+/// Re-transcribe a sealed utterance's audio and diff it against the text
+/// already committed, producing Layer 1 patch events.
+///
+/// Runs the Whisper pass on a blocking worker so the session loop keeps
+/// draining. `committed_text` must be the exact string that was emitted as
+/// `UtteranceFinal.text`: the resulting `ReplaceRange` offsets are computed
+/// against it, so a differently-trimmed copy would produce patches that land at
+/// the wrong characters. The debug assertion pins that contract in test builds.
+pub(super) async fn compute_tail_patch_job(
     utterance_id: u64,
     committed_text: String,
     audio: Vec<f32>,
@@ -209,7 +252,14 @@ async fn compute_tail_patch_job(
     .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
 }
 
-fn emit_tail_patch_result(
+/// Forward a tail-patch job's outcome to the sink and report how many
+/// replacements were emitted.
+///
+/// Only `ReplaceRange` events from the tail-patch layer are counted, so the
+/// session's layer summary stays attributable. A failed job is not fatal: the
+/// Layer 0 committed text is already correct enough to keep, so the error
+/// becomes a warning event and the count stays zero.
+pub(super) fn emit_tail_patch_result(
     event_sink: &dyn EventSink,
     result: Result<(u64, TailPatchOutcome)>,
 ) -> u64 {
@@ -250,7 +300,12 @@ fn emit_tail_patch_result(
     }
 }
 
-fn emit_session_finalised(
+/// Emit the session's closing event with its layer accounting.
+///
+/// Only the tail-patch count is populated here — the other layers are applied
+/// outside this session path, so reporting zeros for them is honest rather
+/// than incomplete.
+pub(super) fn emit_session_finalised(
     event_sink: &dyn EventSink,
     session_id: String,
     tail_patch_replacements: u64,
@@ -278,10 +333,11 @@ fn emit_session_finalised(
 /// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
 /// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
 ///
-/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired only
-/// on the VAD/scheduler path below. Apple progressive live does not yet run
-/// Whisper gap-fill mid-hold; Smart final-pass still only skips/allows the
-/// stop-path full re-pass (orthogonal toggle).
+/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired on
+/// **both** live paths: the VAD/scheduler path below, and the Apple progressive
+/// path (W2-A), which gap-fills sealed utterances mid-hold from retained PCM.
+/// Smart final-pass stays orthogonal — it only skips/allows the stop-path full
+/// re-pass.
 pub(crate) async fn transcription_session(
     chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
@@ -290,17 +346,6 @@ pub(crate) async fn transcription_session(
     // Apple progressive stream branch — must run before the VAD/scheduler path
     // consumes the receiver.
     if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
-        if let Some(phase) = layered_phase() {
-            // Honesty: Settings may flip layered ON while Apple progressive is
-            // the daily driver — Layer 1 is not attached on this branch yet.
-            warn!(
-                phase,
-                "CODESCRIBE_LAYERED_TRANSCRIPTION=phase{phase} is set, but Apple progressive \
-                 live does not run Layer 1 tail-patch yet; gap-fill requires the VAD path \
-                 (CODESCRIBE_APPLE_STT_LIVE_MODE=wav or non-Apple engine). \
-                 FINAL_PASS_MODE/Smart is independent and still routes stop re-pass only."
-            );
-        }
         super::apple_live_session::apple_stream_transcription_session(
             chunk_receiver,
             event_sink,
@@ -382,6 +427,7 @@ pub(crate) async fn vad_transcription_session(
 
     // Phase 2 correction state
     let mut correction_audio_buf: Vec<f32> = Vec::new();
+    let mut rolling_correction_window = RollingCorrectionWindow::default();
     let mut partial_trigger_state = PartialPassTriggerState::new(Instant::now());
     let mut suffix_snapshot = String::new();
 
@@ -400,6 +446,7 @@ pub(crate) async fn vad_transcription_session(
     let mut boundary_rev: u64 = 0;
 
     // Decouple audio ingestion from Whisper inference.
+    /// Cap on queued utterance work items between audio ingest and Whisper inference.
     const MAX_PENDING_UTTERANCES: usize = 64;
     let mut pending_utterances: VecDeque<PendingUtteranceWorkItem> = VecDeque::new();
     let mut dropped_utterances: u64 = 0;
@@ -434,9 +481,11 @@ pub(crate) async fn vad_transcription_session(
 
     // Phase 2 (buffered correction) — request tracked for stale guards.
     let mut correction_in_flight: Option<SttTaskHandle> = None;
+    let mut correction_expected_window_id: Option<u64> = None;
     let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
+    let mut previous_window_prompt: Option<String> = None;
 
     loop {
         // ── Fill the Pipe ────────────────────────────────────────────────────
@@ -563,13 +612,16 @@ pub(crate) async fn vad_transcription_session(
                     output_sample_rate,
                     pipeline.language.clone(),
                     &mut correction_audio_buf,
+                    &mut rolling_correction_window,
                     &mut correction_in_flight,
+                    &mut correction_expected_window_id,
                     &mut correction_expected_boundary_rev,
                     &mut correction_expected_text,
                     &mut correction_suffix_snapshot,
                     &suffix_snapshot,
                     boundary_rev,
-                    &mut window_text,
+                    &window_text,
+                    previous_window_prompt.clone(),
                     partial_trigger_state.silero_speech_ms_since_partial,
                     trigger,
                     &mut partial_telemetry,
@@ -852,13 +904,16 @@ pub(crate) async fn vad_transcription_session(
                         output_sample_rate,
                         pipeline.language.clone(),
                         &mut correction_audio_buf,
+                        &mut rolling_correction_window,
                         &mut correction_in_flight,
+                        &mut correction_expected_window_id,
                         &mut correction_expected_boundary_rev,
                         &mut correction_expected_text,
                         &mut correction_suffix_snapshot,
                         &suffix_snapshot,
                         boundary_rev,
-                        &mut window_text,
+                        &window_text,
+                        previous_window_prompt.clone(),
                         partial_trigger_state.silero_speech_ms_since_partial,
                         trigger,
                         &mut partial_telemetry,
@@ -873,6 +928,7 @@ pub(crate) async fn vad_transcription_session(
             }, if correction_in_flight.is_some() => {
                 let expected_boundary_rev =
                     correction_expected_boundary_rev.take().unwrap_or(boundary_rev);
+                let expected_window_id = correction_expected_window_id.take().unwrap_or_default();
                 let expected_text = correction_expected_text.take().unwrap_or_default();
                 let suffix_snapshot = correction_suffix_snapshot.take().unwrap_or_default();
                 match result {
@@ -888,11 +944,15 @@ pub(crate) async fn vad_transcription_session(
                             debug!(
                                 expected_boundary_rev,
                                 boundary_rev,
+                                expected_window_id,
                                 expected_len = expected_text.chars().count(),
                                 current_len = window_text.chars().count(),
                                 "Suppressing stale correction (boundary advanced)"
                             );
                         } else {
+                            previous_window_prompt = rolling_correction_window
+                                .merge_context(raw.clone())
+                                .or_else(|| (!raw.text.trim().is_empty()).then(|| raw.text.clone()));
                             match postprocess_correction_with_snapshot(
                                 &mut pipeline,
                                 &raw.text,
@@ -1001,6 +1061,7 @@ pub(crate) async fn vad_transcription_session(
                 if correction_audio_buf.is_empty() {
                     suffix_snapshot = pipeline.last_suffix.clone();
                 }
+                rolling_correction_window.observe_samples(item.audio.len());
                 correction_audio_buf.extend_from_slice(&item.audio);
                 // Bound the Refine buffer to a trailing window so corrections
                 // re-decode the fresh suffix, not the whole utterance (P2.17).
@@ -1230,6 +1291,13 @@ pub(crate) async fn vad_transcription_session(
                                 utterance_segments.clear();
                             }
                             accumulated_text.clear();
+                            // A committed utterance is immutable to the rolling
+                            // Refine lane. Exact-ID tail patches above own any
+                            // later fill/replacement for this span.
+                            correction_audio_buf.clear();
+                            window_text.clear();
+                            previous_window_prompt = None;
+                            rolling_correction_window.seal_utterance();
                             utterance_vad_speech_samples = 0;
                             utterance_avg_logprob = None;
                             utterance_compression_ratio = None;
@@ -1260,13 +1328,16 @@ pub(crate) async fn vad_transcription_session(
                                 output_sample_rate,
                                 pipeline.language.clone(),
                                 &mut correction_audio_buf,
+                                &mut rolling_correction_window,
                                 &mut correction_in_flight,
+                                &mut correction_expected_window_id,
                                 &mut correction_expected_boundary_rev,
                                 &mut correction_expected_text,
                                 &mut correction_suffix_snapshot,
                                 &suffix_snapshot,
                                 boundary_rev,
-                                &mut window_text,
+                                &window_text,
+                                previous_window_prompt.clone(),
                                 partial_trigger_state.silero_speech_ms_since_partial,
                                 trigger,
                                 &mut partial_telemetry,
@@ -1419,6 +1490,12 @@ pub(crate) async fn vad_transcription_session(
     );
 }
 
+/// One unit of work waiting to enter the inference pipeline.
+///
+/// Carries three different views of the same speech on purpose — `audio` for
+/// accounting, `gate_audio_samples` for the drop gates, `inference_audio` for
+/// Whisper — because a final boundary must be measured on the whole sealed
+/// segment while only its unaccounted tail may be added to running totals.
 #[derive(Debug)]
 pub(crate) struct PendingUtteranceWorkItem {
     /// Accounting/correction audio: ONLY samples the consumer has not yet seen
@@ -1437,6 +1514,14 @@ pub(crate) struct PendingUtteranceWorkItem {
     pub(crate) speech_vad_samples: u64,
 }
 
+/// Context carried alongside an in-flight inference so the result can be
+/// interpreted when it lands.
+///
+/// The pending item is consumed at submit time, but its outcome is handled
+/// later and out of that scope; this is what survives the crossing. Only the
+/// *length* of the inference audio is kept — the samples themselves are gone —
+/// except for `tail_patch_audio`, retained solely when Layer 1 will need to
+/// re-transcribe.
 #[derive(Debug)]
 struct UtteranceWorkItem {
     audio: Vec<f32>,
@@ -1446,17 +1531,22 @@ struct UtteranceWorkItem {
     speech_vad_samples: u64,
 }
 
+/// [`EventSink`] that keeps only the finalized transcript, joining every
+/// `UtteranceFinal` into one string. Backs [`transcribe_buffered_samples`].
 struct SessionTranscriptCollector {
     transcript: std::sync::Mutex<String>,
 }
 
 impl SessionTranscriptCollector {
+    /// Collector holding an empty transcript.
     fn new() -> Self {
         Self {
             transcript: std::sync::Mutex::new(String::new()),
         }
     }
 
+    /// Append one finalized utterance, space-separated. Empty text is ignored
+    /// so a dropped utterance leaves no gap.
     fn append_utterance(&self, text: &str) {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -1469,6 +1559,7 @@ impl SessionTranscriptCollector {
         transcript.push_str(trimmed);
     }
 
+    /// Snapshot of everything collected so far.
     fn transcript(&self) -> String {
         self.transcript
             .lock()
@@ -1478,6 +1569,7 @@ impl SessionTranscriptCollector {
 }
 
 impl EventSink for SessionTranscriptCollector {
+    /// Append only `UtteranceFinal` text into the session transcript buffer.
     fn on_event(&self, event: &EngineEvent) {
         if let EngineEvent::UtteranceFinal { text, .. } = event {
             self.append_utterance(text);
@@ -1485,17 +1577,21 @@ impl EventSink for SessionTranscriptCollector {
     }
 }
 
+/// [`EventSink`] that records the raw event stream in order, drops included.
+/// Backs [`collect_buffered_engine_events`] and this module's own tests.
 struct SessionEventCollector {
     events: std::sync::Mutex<Vec<EngineEvent>>,
 }
 
 impl SessionEventCollector {
+    /// Collector with no events recorded.
     fn new() -> Self {
         Self {
             events: std::sync::Mutex::new(Vec::new()),
         }
     }
 
+    /// Snapshot of the events recorded so far, in emission order.
     fn events(&self) -> Vec<EngineEvent> {
         self.events
             .lock()
@@ -1505,6 +1601,7 @@ impl SessionEventCollector {
 }
 
 impl EventSink for SessionEventCollector {
+    /// Clone every engine event (including drops) into the ordered collector buffer.
     fn on_event(&self, event: &EngineEvent) {
         self.events
             .lock()
@@ -1603,10 +1700,12 @@ pub async fn collect_buffered_engine_events(
 }
 
 #[cfg(test)]
+/// Unit tests for semantic-gate counters, tail-patch emit, and correction windows.
 mod session_tests {
     use super::*;
 
     #[test]
+    /// Quality-gate drops increment only for final utterances, never interim previews.
     fn semantic_gate_drop_counter_tracks_quality_gate_flag() {
         let mut drops = 0;
         record_semantic_gate_drop(&mut drops, false, true);
@@ -1623,6 +1722,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Successful tail-patch outcomes surface as `ReplaceRange` engine events.
     fn tail_patch_result_emits_replace_range_events() {
         let collector = SessionEventCollector::new();
         let emitted = emit_tail_patch_result(
@@ -1653,6 +1753,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Trimmed final_text is the sole offset baseline for tail-patch apply.
     fn final_text_trim_contract_keeps_tail_patch_offsets_aligned() {
         // Simulate the emit site: accumulated_text carries whitespace, the single
         // trim owner produces final_text, and that SAME string is both
@@ -1684,6 +1785,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Session end emits `SessionFinalised` carrying the layer replacement summary.
     fn session_finalised_emits_layer_summary() {
         let collector = SessionEventCollector::new();
         emit_session_finalised(&collector, "session-test".to_string(), 3);
@@ -1703,6 +1805,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Correction audio buffer drains oldest samples so length never exceeds the window.
     fn correction_buffer_window_cap() {
         let sr = 16_000u32;
         let window = CORRECTION_WINDOW_SEC;
@@ -1737,6 +1840,7 @@ mod session_tests {
     }
 
     #[test]
+    /// Correction text window evicts the oldest head and keeps the freshest tail.
     fn correction_window_text_cap_keeps_recent_tail() {
         let max_chars = 64usize;
         let mut window_text = String::new();

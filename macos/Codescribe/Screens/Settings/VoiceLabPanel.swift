@@ -151,6 +151,17 @@ func dictionarySubtitle(
 }
 
 
+/// NSSound plays independently of the view that started it — playback used to
+/// survive Previous/Next and even closing the Settings window, with no way to
+/// stop it (operator, 2026-08-09). The delegate flips the button back to Play
+/// when the file ends on its own.
+private final class VoiceLabPlaybackDelegate: NSObject, NSSoundDelegate {
+    var onFinish: (() -> Void)?
+    func sound(_ sound: NSSound, didFinishPlaying flag: Bool) {
+        DispatchQueue.main.async { self.onFinish?() }
+    }
+}
+
 struct VoiceLabPanel: View {
     @ObservedObject var model: SettingsViewModel
     @State private var editor = VoiceLabEditorState()
@@ -158,6 +169,8 @@ struct VoiceLabPanel: View {
     @State private var lexiconIndex = 0
     @State private var playbackSound: NSSound?
     @State private var playbackMessage: String?
+    @State private var playingRowID: String?
+    @State private var playbackDelegate = VoiceLabPlaybackDelegate()
 
     private var corrections: [VoiceLabCorrectionRow] {
         qualityCorrectionRows(model.qualityRecords)
@@ -213,7 +226,7 @@ struct VoiceLabPanel: View {
                     }
                     .font(CSFont.mono(11, .semibold))
                     .foregroundStyle(CSColor.chromeAccent)
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .disabled(model.voiceLabTeachPending)
                     .accessibilityLabel("Teach dictionary from corrections and proposed rules")
                     Button("Refresh") {
@@ -221,7 +234,7 @@ struct VoiceLabPanel: View {
                     }
                     .font(CSFont.mono(11, .semibold))
                     .foregroundStyle(CSColor.chromeAccent)
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
                 }
             }
@@ -238,6 +251,11 @@ struct VoiceLabPanel: View {
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
+        // The sound belongs to the visible row: navigating away from the row
+        // or from the panel ends it. Without these, NSSound kept playing after
+        // the Settings window was closed.
+        .onChange(of: correctionIndex) { stopPlayback() }
+        .onDisappear { stopPlayback() }
     }
 
     @ViewBuilder
@@ -266,15 +284,32 @@ struct VoiceLabPanel: View {
                                             .opacity(0.12)
                                     )
                                 )
+                            // Deferred-correction desk: sessions closed without an
+                            // overlay edit land here as UNREVIEWED, awaiting Edit.
+                            if row.action == "close-unreviewed" {
+                                Text("UNREVIEWED")
+                                    .font(CSFont.mono(9.5, .semibold))
+                                    .foregroundStyle(CSColor.chromeAccent)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Capsule().fill(CSColor.chromeAccent.opacity(0.12)))
+                            }
                             Spacer(minLength: 0)
                             Button {
-                                playOriginal(row)
+                                togglePlayback(row)
                             } label: {
-                                Label("Play original", systemImage: "play.fill")
+                                Label(
+                                    playingRowID == row.id ? "Stop" : "Play original",
+                                    systemImage: playingRowID == row.id ? "stop.fill" : "play.fill"
+                                )
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                            .accessibilityLabel("Play the original recording for this correction")
+                            .accessibilityLabel(
+                                playingRowID == row.id
+                                    ? "Stop playing the original recording"
+                                    : "Play the original recording for this correction"
+                            )
                         }
                         Text(row.rawText)
                             .font(CSFont.ui(13, .medium))
@@ -408,17 +443,34 @@ struct VoiceLabPanel: View {
         }
     }
 
-    private func playOriginal(_ row: VoiceLabCorrectionRow) {
+    /// Play/stop toggle for one row. Playback stops on navigation and when the
+    /// panel disappears — the sound must never outlive the row it belongs to.
+    private func togglePlayback(_ row: VoiceLabCorrectionRow) {
+        if playingRowID == row.id {
+            stopPlayback()
+            return
+        }
         playbackSound?.stop()
         guard let url = archivedAudioURL(configDir: model.configDir, rawText: row.rawText),
               let sound = NSSound(contentsOf: url, byReference: true)
         else {
+            playingRowID = nil
             playbackMessage = "Original audio is unavailable for this legacy correction."
             return
         }
+        playbackDelegate.onFinish = { stopPlayback() }
+        sound.delegate = playbackDelegate
         playbackSound = sound
+        playingRowID = row.id
         playbackMessage = "Playing \(url.lastPathComponent)"
         sound.play()
+    }
+
+    private func stopPlayback() {
+        playbackSound?.stop()
+        playbackSound = nil
+        playingRowID = nil
+        playbackMessage = nil
     }
 
     @ViewBuilder

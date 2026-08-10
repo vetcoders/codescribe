@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use candle_core::{DType, Device, Tensor};
@@ -16,20 +17,68 @@ use tracing::{debug, info};
 use super::embedded;
 use crate::{hf_cache, safe_path};
 
+/// Default tokenizer max sequence length when config omits an override.
 const DEFAULT_MAX_LENGTH: usize = 512;
+/// Hugging Face repo id used when no explicit model path is set.
 const DEFAULT_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
+/// Env override for the embedder HF repo (debug / alternate weights).
 const ENV_EMBEDDER_REPO: &str = "CODESCRIBE_EMBEDDER_REPO";
 
 /// Process-lifetime Candle device for the embedder (same Metal-leak rationale as
 /// Whisper: idle-unload must not call `Device::new_metal` again).
 static PROCESS_DEVICE: OnceLock<Device> = OnceLock::new();
 
+/// Set once the accelerated backend has been caught returning non-finite output.
+/// Checked ahead of `PROCESS_DEVICE` so the demotion survives idle-unload without
+/// having to re-derive the (already-created) Metal device.
+static FORCE_CPU: AtomicBool = AtomicBool::new(false);
+
+/// Permanently demote this process's embedder to the CPU. Called by the loader's
+/// self-test; there is no way back, because a backend that produced NaN once has
+/// no claim on the next inference.
+pub(super) fn demote_to_cpu() {
+    FORCE_CPU.store(true, Ordering::Relaxed);
+}
+
+/// Whether [`demote_to_cpu`] has fired in this process.
+pub(super) fn is_demoted_to_cpu() -> bool {
+    FORCE_CPU.load(Ordering::Relaxed)
+}
+
+/// Force the embedder onto a specific Candle device. Exists because a silent
+/// backend fault is otherwise indistinguishable from bad weights: the embedder
+/// was found returning 384 dimensions of NaN for every input, and the only way
+/// to separate "Metal produced NaN" from "the model loads wrong" is to run the
+/// same weights on the CPU. `cpu` forces CPU; anything else keeps the default
+/// Metal-with-CPU-fallback.
+const ENV_EMBEDDER_DEVICE: &str = "CODESCRIBE_EMBEDDER_DEVICE";
+
+/// The Candle device for this process, created at most once.
+///
+/// The demotion flag is checked *before* `PROCESS_DEVICE` so a CPU fallback
+/// survives idle-unload without re-deriving the Metal device. Metal acquisition
+/// falls back to CPU on failure, and `CODESCRIBE_EMBEDDER_DEVICE=cpu` forces CPU
+/// outright. Availability is not correctness: the loader still runs a
+/// finite-output self-test on top of whatever this returns.
 fn process_device() -> Device {
+    if is_demoted_to_cpu() {
+        return Device::Cpu;
+    }
     PROCESS_DEVICE
         .get_or_init(|| {
-            let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+            let forced_cpu = std::env::var(ENV_EMBEDDER_DEVICE)
+                .map(|value| value.trim().eq_ignore_ascii_case("cpu"))
+                .unwrap_or(false);
+            let device = if forced_cpu {
+                Device::Cpu
+            } else {
+                Device::new_metal(0).unwrap_or(Device::Cpu)
+            };
             info!("Embedder process device acquired once: {device:?}");
             device
+            // NOTE: correctness of this device is not assumed — `init` runs a
+            // finite-output self-test and falls back to CPU when the backend
+            // returns NaN. See `assert_backend_produces_finite_vectors`.
         })
         .clone()
 }
@@ -38,6 +87,25 @@ fn process_device() -> Device {
 /// Used by the idle reaper to prune the Metal free-buffer pool after unload.
 pub(super) fn cached_process_device() -> Option<Device> {
     PROCESS_DEVICE.get().cloned()
+}
+
+/// Weight dtype for the embedder. **Always f32** — this is a correctness fix,
+/// not a preference.
+///
+/// `Device::bf16_default_to_f32()` reports bf16 as available on Metal, and
+/// candle's bf16 BERT path on this stack returns NaN for every dimension of
+/// every input (measured 2026-08-09, macOS 27.0: 384/384 NaN in bf16, unit-norm
+/// vectors and sensible similarities in f32 on the same weights and the same
+/// Metal device). Nothing ever surfaced because the only consumer compares the
+/// result against a threshold, and every comparison with NaN is false — the
+/// semantic gate read as "nothing to drop" while it was in fact blind, across
+/// 378 real deliveries.
+///
+/// MiniLM is 384-dimensional and already small; f32 costs little and is the
+/// only dtype proven to produce numbers here. Do not "optimise" this back to
+/// bf16 without re-running the finite-output check on the target OS.
+fn embedder_dtype(_device: &Device) -> DType {
+    DType::F32
 }
 
 /// Configuration for the embedder
@@ -52,6 +120,7 @@ pub struct EmbedderConfig {
 }
 
 impl Default for EmbedderConfig {
+    /// Prefer embedded weights; path and max_length left for runtime resolution.
     fn default() -> Self {
         Self {
             model_path: None,
@@ -125,6 +194,10 @@ impl EmbedderEngine {
         Self::from_path(&model_path, device, config.max_length)
     }
 
+    /// Build the engine from weights compiled into the binary.
+    ///
+    /// Tensors are deserialized on the CPU and then moved, because the embedded
+    /// weights are a plain byte slice with no device affinity.
     fn from_embedded(
         embedded: &embedded::EmbeddedModel,
         device: Device,
@@ -137,7 +210,7 @@ impl EmbedderEngine {
 
         let tokenizer = prepare_tokenizer(tokenizer, &config, max_length)?;
 
-        let dtype = device.bf16_default_to_f32();
+        let dtype = embedder_dtype(&device);
         let tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
             .context("Failed to deserialize embedded model weights")?;
         let tensors = move_tensors_to_device(tensors, &device, dtype)?;
@@ -157,6 +230,11 @@ impl EmbedderEngine {
         })
     }
 
+    /// Build the engine from a model directory on disk.
+    ///
+    /// Expects `config.json`, `tokenizer.json` and `model.safetensors`. A
+    /// directory holding only the ONNX export is refused with a message naming
+    /// both paths, since this loader is safetensors-only.
     fn from_path(model_path: &Path, device: Device, max_length: Option<usize>) -> Result<Self> {
         let config_path = model_path.join("config.json");
         let tokenizer_path = model_path.join("tokenizer.json");
@@ -182,7 +260,7 @@ impl EmbedderEngine {
             .map_err(|e| anyhow!("Failed to load tokenizer: {}", e))?;
         let tokenizer = prepare_tokenizer(tokenizer, &config, max_length)?;
 
-        let dtype = device.bf16_default_to_f32();
+        let dtype = embedder_dtype(&device);
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&weights_path], dtype, &device)
                 .context("Failed to load embedder weights")?
@@ -232,6 +310,11 @@ impl EmbedderEngine {
         self.embed_internal(&inputs)
     }
 
+    /// The single inference path behind every `embed*` entry point.
+    ///
+    /// Runs BERT, mean-pools over the attention mask, L2-normalizes, then forces
+    /// f32 on the CPU before extraction — an accelerated backend may hold the
+    /// result in a narrower dtype, and `to_vec2::<f32>()` would fail on it.
     fn embed_internal(&mut self, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
         let (input_ids, token_type_ids, attention_mask) = encode_batch(
             &self.tokenizer,
@@ -282,6 +365,11 @@ impl EmbedderEngine {
     }
 }
 
+/// Locate a model directory: explicit path, then `CODESCRIBE_EMBEDDER_PATH`,
+/// then an HF cache snapshot for the configured or default repo.
+///
+/// Never downloads. Failure returns an error naming the exact commands and env
+/// vars that would fix it.
 fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path.clone());
@@ -317,6 +405,11 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
     ))
 }
 
+/// Whether `path` holds a usable model: both config files plus safetensors or
+/// ONNX weights.
+///
+/// Broader than what [`EmbedderEngine::from_path`] accepts — this only gates
+/// *candidate* directories during resolution.
 fn model_files_present(path: &Path) -> bool {
     let has_config = path.join("config.json").exists() && path.join("tokenizer.json").exists();
     let has_weights = path.join("model.safetensors").exists();
@@ -324,6 +417,11 @@ fn model_files_present(path: &Path) -> bool {
     has_config && (has_weights || has_onnx)
 }
 
+/// Pin padding and truncation on a freshly loaded tokenizer.
+///
+/// Effective length is `min(override_or_model_max, DEFAULT_MAX_LENGTH)`, so a
+/// caller cannot request a window wider than the model or than the 512-token
+/// ceiling. Padding is batch-longest, which keeps single-text calls cheap.
 fn prepare_tokenizer(
     tokenizer: Tokenizer,
     config: &BertConfig,
@@ -355,6 +453,13 @@ fn prepare_tokenizer(
     Ok(tokenizer)
 }
 
+/// Tokenize a batch into the `(input_ids, token_type_ids, attention_mask)`
+/// triple BERT expects, each shaped `[batch, max_len]`.
+///
+/// Rows are re-padded here even though the tokenizer pads: the widths are
+/// re-derived from the actual encodings so a tokenizer configured differently
+/// cannot produce a ragged tensor. Missing type ids default to zeros
+/// (single-segment input); the mask is f32 so it can be broadcast during pooling.
 fn encode_batch(
     tokenizer: &Tokenizer,
     inputs: &[String],
@@ -403,12 +508,19 @@ fn encode_batch(
     Ok((input_ids, token_type_ids, attention_mask))
 }
 
+/// Right-pad `vec` to `target_len` with `pad`. Longer input is left untouched.
 fn pad_to(vec: &mut Vec<u32>, target_len: usize, pad: u32) {
     if vec.len() < target_len {
         vec.extend(std::iter::repeat_n(pad, target_len - vec.len()));
     }
 }
 
+/// Mask-aware mean pooling: `[batch, seq, hidden]` → `[batch, hidden]`.
+///
+/// This is the pooling sentence-transformers trained the MiniLM checkpoint with,
+/// so it is a correctness requirement, not a choice. Padding positions are
+/// zeroed before summing and excluded from the divisor; an epsilon guards the
+/// all-padding row against division by zero.
 fn mean_pool(hidden: &Tensor, mask: &Tensor) -> Result<Tensor> {
     // hidden: [batch, seq, hidden], mask: [batch, seq]
     let dtype = hidden.dtype();
@@ -422,6 +534,10 @@ fn mean_pool(hidden: &Tensor, mask: &Tensor) -> Result<Tensor> {
     Ok(sum.broadcast_div(&counts)?)
 }
 
+/// Scale each row to unit length, with an epsilon so a zero row stays finite.
+///
+/// Unit-norm output is what lets [`EmbedderEngine::similarity`] read as cosine
+/// similarity.
 fn l2_normalize(t: &Tensor) -> Result<Tensor> {
     let dtype = t.dtype();
     let squared = t.sqr()?;
@@ -432,6 +548,10 @@ fn l2_normalize(t: &Tensor) -> Result<Tensor> {
     Ok(t.broadcast_div(&norm)?)
 }
 
+/// Cast every tensor to `dtype` and move it onto `device`, preserving names.
+///
+/// The cast runs before the move so the conversion happens on the CPU rather
+/// than on the accelerator.
 fn move_tensors_to_device(
     tensors: std::collections::HashMap<String, Tensor>,
     device: &Device,
@@ -451,10 +571,12 @@ fn move_tensors_to_device(
     Ok(result)
 }
 
+/// Cosine-similarity helpers used by semantic gates (no model load).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Identical unit vectors score ~1.0.
     #[test]
     fn test_similarity_identical() {
         let a = vec![1.0, 0.0, 0.0];
@@ -463,6 +585,7 @@ mod tests {
         assert!((sim - 1.0).abs() < 0.001);
     }
 
+    /// Orthogonal unit vectors score ~0.0.
     #[test]
     fn test_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];

@@ -35,10 +35,16 @@ const {
 } = Astro.props;
 
 // Absolute URLs for canonical / social cards. SITE = https://vetcoders.github.io,
-// BASE_URL = /codescribe/ → canonical https://vetcoders.github.io/codescribe/
+// base → canonical https://vetcoders.github.io/codescribe/
 const site = import.meta.env.SITE ?? 'https://vetcoders.github.io';
-const base = import.meta.env.BASE_URL; // "/codescribe/"
-const baseUrl = new URL(base, site);
+// astro.config sets `base: "/codescribe"` with NO trailing slash, so BASE_URL is
+// "/codescribe" — not "/codescribe/". The slash is load-bearing here: `new URL`
+// treats a slashless base as a FILE and replaces it, so resolving "privacy/"
+// against it yields https://vetcoders.github.io/privacy/ — a 404 advertised as
+// this page's canonical. Normalise to a directory before resolving anything.
+const base = import.meta.env.BASE_URL;
+const baseDir = base.endsWith('/') ? base : `${base}/`;
+const baseUrl = new URL(baseDir, site);
 const pathClean = path ? path.replace(/^\//, '').replace(/\/$/, '') + '/' : '';
 const canonical = pathClean ? new URL(pathClean, baseUrl).href : baseUrl.href;
 const ogImage = new URL(base.replace(/\/$/, '') + '/og.png', site).href;

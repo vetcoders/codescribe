@@ -53,7 +53,7 @@ struct MCPServersSection: View {
                     .font(CSFont.mono(10.5, .semibold))
                     .foregroundStyle(CSColor.dangerLight)
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .padding(.top, 13)
             .accessibilityHint("Moves only mcp.json to Trash after confirmation.")
         }
@@ -238,7 +238,7 @@ private struct MCPServerRow: View {
                         .strokeBorder(accent.opacity(0.22), lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .help(server.enabled ? "Disable this server" : "Enable this server")
     }
 
@@ -258,7 +258,7 @@ private struct MCPServerRow: View {
                         .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .disabled(pending)
         .help("Spawn the server and list its tools")
     }
@@ -276,7 +276,7 @@ private struct MCPServerRow: View {
                         .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .help("Remove this server from mcp.json")
     }
 }
@@ -351,7 +351,7 @@ private struct MCPAddServerForm: View {
                                 .strokeBorder(CSColor.olive.opacity(canAdd ? 0.28 : 0.10), lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!canAdd)
             }
         }

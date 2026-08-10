@@ -219,10 +219,20 @@ pub fn migrate_agent_workspace_roots_if_needed(file_env: Option<&HashMap<String,
     }
 }
 
+/// Read a key from the `.env` **snapshot only**.
+///
+/// Deliberately never falls back to `std::env`: the process environment holds
+/// runtime values from many sources, and persisting those would turn a one-time
+/// import of the user's file into an accidental capture of ambient state.
 fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Option<String> {
     file_env.and_then(|vars| vars.get(key).cloned())
 }
 
+/// Write one secret to the Keychain, with a test-only failure injection point.
+///
+/// The seam exists because the retry contract — a failed secret write must leave
+/// `settings.json` unwritten so the next launch tries again — cannot be exercised
+/// against a real Keychain.
 fn save_migrated_key(account: &str, secret: &str) -> anyhow::Result<()> {
     #[cfg(test)]
     if test_save_key_failure_account(account) {
@@ -232,10 +242,12 @@ fn save_migrated_key(account: &str, secret: &str) -> anyhow::Result<()> {
     keychain::save_key(account, secret)
 }
 
+/// Test-only account name that forces `save_migrated_key` to fail.
 #[cfg(test)]
 static TEST_SAVE_KEY_FAILURE: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
     std::sync::OnceLock::new();
 
+/// Whether `account` is the injected Keychain-save failure target.
 #[cfg(test)]
 fn test_save_key_failure_account(account: &str) -> bool {
     TEST_SAVE_KEY_FAILURE
@@ -245,6 +257,7 @@ fn test_save_key_failure_account(account: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Arm or clear the Keychain-save failure injection for migration retry tests.
 #[cfg(test)]
 fn set_test_save_key_failure(account: Option<&str>) {
     if let Ok(mut guard) = TEST_SAVE_KEY_FAILURE
@@ -255,29 +268,34 @@ fn set_test_save_key_failure(account: Option<&str>) {
     }
 }
 
+/// Migration path tests: snapshot-only import, retry, and completion sentinel.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
 
+    /// Set a process env var under the serial-test isolation contract.
     fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
         // SAFETY: these tests are marked `serial` and intentionally isolate the
         // process env so `UserSettings::settings_path()` resolves inside the temp dir.
         unsafe { std::env::set_var(key, value) };
     }
 
+    /// Clear a process env var under the serial-test isolation contract.
     fn remove_env_for_test(key: &str) {
         // SAFETY: same invariant as `set_env_for_test` above.
         unsafe { std::env::remove_var(key) };
     }
 
+    /// Point `CODESCRIBE_DATA_DIR` at a temp tree so settings paths never touch home.
     fn setup_isolated_data_dir() -> TempDir {
         let tmp = TempDir::new().expect("tempdir");
         set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
         tmp
     }
 
+    /// Absent `.env` snapshot must not synthesize `settings.json`.
     #[test]
     #[serial]
     fn migrate_skips_when_env_snapshot_is_absent() {
@@ -293,6 +311,7 @@ mod tests {
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 
+    /// Empty `.env` snapshot is a no-op; completion sentinel stays absent.
     #[test]
     #[serial]
     fn migrate_skips_when_env_snapshot_is_empty() {
@@ -309,6 +328,7 @@ mod tests {
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 
+    /// Ambient process env must not leak into migrated settings when absent from `.env`.
     #[test]
     #[serial]
     fn migrate_does_not_persist_runtime_env_when_env_file_lacks_key() {
@@ -337,6 +357,7 @@ mod tests {
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 
+    /// Targeted workspace-roots backfill still runs when settings.json already exists.
     #[test]
     #[serial]
     fn existing_settings_backfills_legacy_workspace_roots_once() {
@@ -362,6 +383,7 @@ mod tests {
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 
+    /// Non-empty settings roots win over a stale `AGENT_WORKSPACE_ROOTS` env value.
     #[test]
     #[serial]
     fn existing_workspace_roots_outrank_legacy_env() {
@@ -385,6 +407,7 @@ mod tests {
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 
+    /// FORMATTING_LEVEL aliases normalize; correction prompt bytes must stay untouched.
     #[test]
     #[serial]
     fn formatting_policy_env_migration_normalizes_aliases_and_preserves_correction_digest() {
@@ -432,6 +455,7 @@ mod tests {
         }
     }
 
+    /// AUTO_PASTE_ENABLED truthy/falsey strings map into an explicit bool setting.
     #[test]
     #[serial]
     fn auto_paste_env_migration_preserves_explicit_policy() {
@@ -450,6 +474,7 @@ mod tests {
         }
     }
 
+    /// Failed Keychain write leaves migration incomplete so the next launch retries.
     #[test]
     #[serial]
     fn migrate_retries_when_keychain_save_fails() {
@@ -489,6 +514,7 @@ mod tests {
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 
+    /// `settings.json` presence is the once-only completion sentinel.
     #[test]
     #[serial]
     fn successful_migration_marks_complete_once() {

@@ -1,3 +1,20 @@
+//! Deterministic post-processing for streamed and finalized STT text.
+//!
+//! Three concerns live here, in the order a transcript meets them:
+//! 1. **Lexicon** — a hot-reloadable rewrite table (builtin + seed + operator
+//!    vocabulary + curated protected terms + the user's custom file) that maps
+//!    Whisper mis-hears onto canonical spellings. [`apply_lexicon`] is the single
+//!    deterministic pass and is safe to re-run after any non-deterministic stage.
+//! 2. **Cleanup + semantic gate** — [`StreamPostProcessor`] strips ASR artifacts
+//!    and, for interim chunks only, drops near-duplicate repeats that the decoder
+//!    emits while a phrase is still settling.
+//! 3. **Guardrails** — [`protected_terms_lost`] and [`final_pass_guardrail_reason`]
+//!    detect when a downstream LLM pass silently corrupted operator vocabulary or
+//!    drifted into hallucinated filler.
+//!
+//! The lexicon lives in one process-global singleton so every lane (streaming,
+//! final pass, quality report) rewrites text identically.
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -11,10 +28,14 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 
+/// Embedded legacy-format lexicon sources shipped with the binary (programming domain).
+/// Each `(label, jsonl)` pair is compiled at startup into the global rewrite table.
 const BUILTIN_LEXICONS: &[(&str, &str)] = &[(
     "programming",
     include_str!("../../assets/programming.jsonl"),
 )];
+/// Seed-format domain vocabulary baked into the binary and loaded before operator vocab.
+/// Seed rows carry whole-word / case policy so rewrites cannot hit substrings.
 const SEED_JSONL: &str = include_str!("../../assets/seed.jsonl");
 /// Curated operator/command vocabulary. Spoken Polish UI-command phrases and
 /// their Whisper mis-hears normalize to the canonical *code token* the codebase
@@ -32,28 +53,42 @@ const OPERATOR_VOCAB_JSONL: &str = include_str!("../../assets/operator_vocabular
 /// in this file, so they never get capitalized.
 const PROTECTED_TERMS_JSONL: &str = include_str!("../../assets/protected_terms.jsonl");
 
+/// Default cosine similarity above which an interim chunk is a near-duplicate of the last.
+/// Overridable via `CODESCRIBE_STREAM_SIMILARITY`.
 const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.93;
+/// Default Jaccard novelty floor: chunks at or below this and high similarity may drop.
+/// Overridable via `CODESCRIBE_STREAM_NOVELTY`.
 const DEFAULT_NOVELTY_THRESHOLD: f32 = 0.12;
+/// Max characters the semantic gate will embed; longer text skips embedding (fail-open).
 const MAX_EMBED_CHARS: usize = 512;
+/// Cap on consecutive gate drops so a genuinely repetitive speaker is never silenced.
 const MAX_DROPS_IN_ROW: u8 = 2;
+/// Filler tokens that fingerprint final-pass drift when newly introduced into a candidate.
 const FINAL_PASS_ARTIFACT_TOKENS: &[&str] = &["going", "use"];
+/// Whisper `initial_prompt` token budget; over-approximated so the decoder never truncates.
 pub const WHISPER_INITIAL_PROMPT_TOKEN_BUDGET: usize = 224;
+/// Fixed prefix for the Whisper vocabulary hint string built by `build_whisper_initial_prompt`.
 const WHISPER_INITIAL_PROMPT_PREFIX: &str = "Vocabulary:";
+/// Env override for Whisper initial-prompt opt-in; wins over persisted config when set.
 pub const STT_INITIAL_PROMPT_ENABLED_ENV: &str = "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED";
 
 lazy_static! {
-    // Whisper sometimes emits trailing emoticon artifacts like ":D", ":-D", "::D", often repeated.
-    // We strip them only at the end of the utterance.
+    /// Matches trailing Whisper `:D` / `:-D` emoticon bursts stripped by `cleanup_artifacts`.
+    /// Applied only at utterance end so mid-text punctuation is never removed.
     static ref TRAILING_SMILEY_D_RE: Regex =
         Regex::new(r"(?i)(?:\s*:+-?d)+(?:\s*:+\s*)*$").expect("trailing :D regex");
 }
 
+/// Nested `extras` block of a legacy lexicon row. Older seed files stored the
+/// mis-hear list here instead of at the top level; both shapes are merged on load.
 #[derive(Debug, Deserialize)]
 struct LexiconExtras {
     #[serde(default)]
     mispronunciations: Vec<String>,
 }
 
+/// One row of a legacy-format lexicon file: a canonical `term` plus the spoken
+/// variants that should rewrite to it.
 #[derive(Debug, Deserialize)]
 struct LegacyEntry {
     term: String,
@@ -63,6 +98,9 @@ struct LegacyEntry {
     extras: Option<LexiconExtras>,
 }
 
+/// Per-entry matching policy of a seed-format row. Defaults are deliberately
+/// conservative: enabled, case-insensitive, and whole-word only, so a seed entry
+/// cannot rewrite text inside a longer word.
 #[derive(Debug, Deserialize)]
 struct SeedNormalization {
     #[serde(default)]
@@ -76,6 +114,7 @@ struct SeedNormalization {
 }
 
 impl Default for SeedNormalization {
+    /// Conservative defaults: enabled, case-insensitive, whole-word only.
     fn default() -> Self {
         Self {
             input_variants: Vec::new(),
@@ -86,6 +125,8 @@ impl Default for SeedNormalization {
     }
 }
 
+/// One row of a seed-format lexicon file: the canonical spelling plus the
+/// matching policy that governs its input variants.
 #[derive(Debug, Deserialize)]
 struct SeedEntry {
     canonical: String,
@@ -93,12 +134,16 @@ struct SeedEntry {
     normalization: SeedNormalization,
 }
 
+/// A compiled rewrite: every match of `pattern` becomes `replacement`.
 #[derive(Debug)]
 struct LexiconRule {
     pattern: Regex,
     replacement: String,
 }
 
+/// The loaded rewrite table. Builtin rules are compiled once at startup; custom
+/// rules come from the operator's file and are hot-reloaded on mtime change.
+/// Builtin rules always apply before custom ones.
 #[derive(Debug)]
 struct Lexicon {
     builtin_rules: Vec<LexiconRule>,
@@ -115,6 +160,8 @@ struct Lexicon {
     custom_canonicals: Vec<String>,
 }
 
+/// Process-global lexicon singleton shared by streaming, final pass, and quality lanes.
+/// One rewrite table so every path normalizes operator vocabulary identically.
 static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
     let lex = Lexicon::from_builtin();
     info!(
@@ -125,6 +172,13 @@ static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
 });
 
 impl Lexicon {
+    /// Compile the full rule set from every source, in load order.
+    ///
+    /// Order is load-bearing: generic programming/seed rules first, operator
+    /// vocabulary next, and curated protected terms LAST among builtin sources so
+    /// their brand casing wins over any lower-cased form an earlier rule produced.
+    /// The operator's custom file is kept in a separate list so it can be
+    /// hot-reloaded without recompiling the builtins.
     fn from_builtin() -> Self {
         let t0 = Instant::now();
         let mut builtin_rules = Vec::new();
@@ -211,6 +265,9 @@ impl Lexicon {
         }
     }
 
+    /// Re-read the custom lexicon file when its mtime changed; a no-op otherwise.
+    /// Lets the operator teach a correction and have the next utterance honour it
+    /// without restarting the app.
     fn maybe_reload(&mut self) {
         let current_mtime = fs::metadata(&self.custom_path)
             .ok()
@@ -241,6 +298,8 @@ impl Lexicon {
         );
     }
 
+    /// Run every rule over `text`, builtins before custom rules. Rules are applied
+    /// in sequence, so a later rule sees the output of an earlier one.
     fn apply(&self, text: &str) -> String {
         let t0 = Instant::now();
         let mut out = text.to_string();
@@ -267,10 +326,13 @@ impl Lexicon {
         out
     }
 
+    /// Total number of active rules (builtin + custom), for logging.
     fn rule_count(&self) -> usize {
         self.builtin_rules.len() + self.custom_rules.len()
     }
 
+    /// Domain-vocabulary hint for this rule set: protected terms first, then the
+    /// operator's custom canonicals, trimmed to the Whisper prompt budget.
     fn whisper_initial_prompt(&self) -> Option<String> {
         build_whisper_initial_prompt(
             &self.protected_canonicals,
@@ -280,6 +342,9 @@ impl Lexicon {
     }
 }
 
+/// Take the write lock and hot-reload the singleton's custom rules if the file
+/// changed. Panics on a poisoned lock: a half-written lexicon would silently
+/// corrupt every later transcript, so failing loudly is the honest outcome.
 fn maybe_reload_global_lexicon() {
     let mut lexicon = GLOBAL_LEXICON
         .write()
@@ -287,6 +352,7 @@ fn maybe_reload_global_lexicon() {
     lexicon.maybe_reload();
 }
 
+/// Apply the singleton's rules under a read lock, without reloading first.
 fn apply_global_lexicon(text: &str) -> String {
     let lexicon = GLOBAL_LEXICON
         .read()
@@ -348,6 +414,11 @@ pub fn build_whisper_initial_prompt(
         .then(|| format!("{WHISPER_INITIAL_PROMPT_PREFIX} {}.", selected.join("; ")))
 }
 
+/// Whether the vocabulary hint may be fed to the decoder.
+///
+/// The env override wins so a test or a debugging session can flip the feature
+/// without touching persisted settings; otherwise the user's setting decides.
+/// Off by default — an initial prompt biases decoding and must be opt-in.
 pub fn stt_initial_prompt_enabled() -> bool {
     match std::env::var(STT_INITIAL_PROMPT_ENABLED_ENV) {
         Ok(value) => matches!(
@@ -358,6 +429,9 @@ pub fn stt_initial_prompt_enabled() -> bool {
     }
 }
 
+/// The vocabulary hint for the current lexicon, or `None` when the feature is
+/// disabled or no terms are registered. Hot-reloads the custom file first so a
+/// freshly taught term can reach the very next decode.
 pub fn whisper_initial_prompt() -> Option<String> {
     if !stt_initial_prompt_enabled() {
         return None;
@@ -369,6 +443,9 @@ pub fn whisper_initial_prompt() -> Option<String> {
     lexicon.whisper_initial_prompt()
 }
 
+/// Coarse token estimate for prompt budgeting: one token per whitespace-separated
+/// word, never zero. Deliberately an over-approximation — overshooting the budget
+/// would silently truncate the prompt inside the decoder.
 fn estimated_prompt_tokens(term: &str) -> usize {
     term.split_whitespace().count().max(1)
 }
@@ -404,10 +481,20 @@ pub fn protected_terms_lost(before: &str, after: &str) -> Vec<String> {
     lost
 }
 
+/// Load legacy-format rows without recording their canonicals — the source is a
+/// generic vocabulary, not a protected-term sentinel list.
 fn load_legacy_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> usize {
     load_legacy_jsonl_with_terms(source, label, rules, None)
 }
 
+/// Parse legacy-format rows into rewrite rules, returning how many were added.
+///
+/// A malformed line is warned about and skipped rather than failing the load: one
+/// bad row must never cost the user the whole lexicon. Variants equal to the
+/// canonical (ignoring ASCII case) are dropped as no-ops, and rows from the
+/// `custom` source additionally pass the [`is_unsafe_plain_custom_rule`] filter.
+/// When `canonicals` is provided, each term is recorded there for downstream
+/// loss detection and prompt building.
 fn load_legacy_jsonl_with_terms(
     source: &str,
     label: &str,
@@ -473,6 +560,14 @@ fn load_legacy_jsonl_with_terms(
     added
 }
 
+/// Reject custom rules that rewrite one ordinary lowercase word into a different
+/// ordinary word.
+///
+/// Such entries usually arrive from reference diffs or inflections rather than
+/// real acoustic mis-hears, and as a global STT rewrite they poison unrelated
+/// speech. Diacritic-only differences ("gorączka" vs "goraczka") ARE genuine
+/// mis-hears and stay allowed, as does anything containing uppercase, digits, or
+/// punctuation — that shape indicates a proper noun or code token.
 fn is_unsafe_plain_custom_rule(term: &str, variant: &str) -> bool {
     let term = term.trim();
     let variant = variant.trim();
@@ -491,6 +586,9 @@ fn is_unsafe_plain_custom_rule(term: &str, variant: &str) -> bool {
     term.split_whitespace().count() == 1 && variant.split_whitespace().count() <= 2
 }
 
+/// True when `input` is ordinary lowercase prose: letters and spaces only, at
+/// least one letter, and no uppercase. Digits, punctuation, or any capital mark
+/// the string as a code token or proper noun instead.
 fn is_plain_lowercase_language_phrase(input: &str) -> bool {
     let mut saw_letter = false;
     let mut saw_space = false;
@@ -509,6 +607,8 @@ fn is_plain_lowercase_language_phrase(input: &str) -> bool {
     saw_letter && (saw_space || input.split_whitespace().count() == 1)
 }
 
+/// Fold Polish diacritics onto their ASCII base letters and lowercase the rest,
+/// so two spellings that differ only by accents compare equal.
 fn normalized_without_polish_diacritics(input: &str) -> String {
     input
         .to_lowercase()
@@ -590,6 +690,13 @@ fn load_protected_jsonl(
     added
 }
 
+/// Parse seed-format rows into rewrite rules, returning how many were added.
+///
+/// Unlike the legacy loader this records no canonicals, which is exactly why the
+/// operator/command vocabulary uses it: those are common words, and promoting
+/// them to protected terms would trip the downstream loss gate on ordinary
+/// speech. Each entry carries its own matching policy (whole-word vs plain,
+/// case sensitivity), and disabled entries are skipped.
 fn load_seed_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> usize {
     let mut added = 0usize;
     for (idx, line) in source.lines().enumerate() {
@@ -631,6 +738,12 @@ fn load_seed_jsonl(source: &str, label: &str, rules: &mut Vec<LexiconRule>) -> u
     added
 }
 
+/// Compile a case-insensitive whole-word matcher for `input`.
+///
+/// The term is regex-escaped, then internal spaces become `\s+` so a multi-word
+/// phrase matches across variable spacing. `\b` anchors on both ends are what
+/// keep "python" from corrupting "wordpython". Returns `None` for a blank input
+/// or an uncompilable pattern — a bad row is skipped, never fatal.
 fn build_word_regex(input: &str) -> Option<Regex> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -642,6 +755,10 @@ fn build_word_regex(input: &str) -> Option<Regex> {
     Regex::new(&pattern).ok()
 }
 
+/// Compile an unanchored matcher for `input` — same escaping and flexible
+/// whitespace as [`build_word_regex`], but without word boundaries, so it can
+/// rewrite inside a longer token. Only seed entries that explicitly opt out of
+/// `whole_word_only` get this.
 fn build_plain_regex(input: &str, case_sensitive: bool) -> Option<Regex> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -657,6 +774,9 @@ fn build_plain_regex(input: &str, case_sensitive: bool) -> Option<Regex> {
     Regex::new(&pattern).ok()
 }
 
+/// Read the operator's `lexicon.custom.jsonl`, or `None` when it is absent or
+/// blank. A read error is only warned about when the file actually exists —
+/// "no custom lexicon yet" is the normal state, not a fault.
 fn load_custom_lexicon() -> Option<String> {
     let path = Config::config_dir().join("lexicon.custom.jsonl");
     match fs::read_to_string(&path) {
@@ -676,6 +796,12 @@ fn load_custom_lexicon() -> Option<String> {
     }
 }
 
+/// Duplicate-suppression state for interim streaming chunks.
+///
+/// While a phrase is still settling the decoder re-emits near-identical text. The
+/// gate drops a chunk only when it is BOTH semantically near-identical to the last
+/// one and lexically un-novel, and even then only for a bounded run
+/// (`MAX_DROPS_IN_ROW`) so a genuinely repetitive speaker is never silenced.
 #[derive(Debug)]
 struct SemanticGate {
     last_embedding: Option<Vec<f32>>,
@@ -686,6 +812,8 @@ struct SemanticGate {
 }
 
 impl SemanticGate {
+    /// Build a gate with thresholds read from the environment, falling back to
+    /// the tuned defaults.
     fn new() -> Self {
         let similarity_threshold =
             env_f32("CODESCRIBE_STREAM_SIMILARITY", DEFAULT_SIMILARITY_THRESHOLD);
@@ -700,6 +828,11 @@ impl SemanticGate {
         }
     }
 
+    /// Whether this chunk is a redundant repeat of the previous one.
+    ///
+    /// Fails **open**: when no embedding is available (feature disabled, text too
+    /// long, or the embedder erred) the chunk is kept. Losing real speech is the
+    /// worse failure, so a blind gate must never drop.
     fn should_drop(&mut self, text: &str) -> bool {
         let tokens = tokenize(text);
         if tokens.is_empty() {
@@ -726,6 +859,8 @@ impl SemanticGate {
         false
     }
 
+    /// Record an emitted chunk as the new comparison baseline and clear the
+    /// consecutive-drop counter.
     fn observe(&mut self, text: &str) {
         let tokens = tokenize(text);
         self.last_tokens = tokens.into_iter().collect();
@@ -733,12 +868,19 @@ impl SemanticGate {
         self.drops_in_row = 0;
     }
 
+    /// Cosine similarity between this text and the last observed chunk, or `None`
+    /// when either embedding is unavailable.
     fn semantic_similarity(&mut self, text: &str) -> Option<f32> {
         let new_emb = self.semantic_embedding(text)?;
         let last_emb = self.last_embedding.as_ref()?;
         Some(cosine_similarity(&new_emb, last_emb))
     }
 
+    /// Embed `text` for the gate, or `None` when embeddings are disabled, the
+    /// text exceeds `MAX_EMBED_CHARS`, or the embedder failed.
+    ///
+    /// Over-long text is skipped rather than truncated: comparing a truncated
+    /// prefix would make the gate decide on evidence it does not actually have.
     fn semantic_embedding(&mut self, text: &str) -> Option<Vec<f32>> {
         if !embeddings_enabled() {
             return None;
@@ -759,12 +901,16 @@ impl SemanticGate {
     }
 }
 
+/// Per-session post-processing pipeline: lexicon, artifact cleanup, and (for
+/// interim chunks only) the duplicate gate, with counters for the quality loop.
 #[derive(Debug)]
 pub struct StreamPostProcessor {
     gate: SemanticGate,
     stats: StreamPostProcessStats,
 }
 
+/// Counters describing what one session's post-processing actually did. Serialized
+/// into quality-report entries so transcript loss is attributable to a stage.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StreamPostProcessStats {
     pub input_chunks: u64,
@@ -778,6 +924,8 @@ pub struct StreamPostProcessStats {
 }
 
 impl StreamPostProcessor {
+    /// Build a processor and force the global lexicon to initialize now, so the
+    /// first utterance never pays the compile cost mid-speech.
     pub fn new() -> Self {
         // Touch the global singleton to trigger lazy init (if not yet initialized)
         drop(GLOBAL_LEXICON.read());
@@ -801,6 +949,14 @@ impl StreamPostProcessor {
         self.process_internal(text, false)
     }
 
+    /// Shared body of [`Self::process`] and [`Self::process_utterance`].
+    ///
+    /// Stages run in a fixed order — lexicon, artifact cleanup, whitespace
+    /// normalization — and `None` means the chunk was dropped (empty input, empty
+    /// result, or gated). The duplicate gate only engages when `apply_gate` is set
+    /// AND the text already looks suspicious, so ordinary speech never reaches the
+    /// embedder. Every branch that returns `None` also increments a counter, so a
+    /// vanished transcript is always attributable.
     fn process_internal(&mut self, text: &str, apply_gate: bool) -> Option<String> {
         self.stats.input_chunks += 1;
         maybe_reload_global_lexicon();
@@ -843,17 +999,21 @@ impl StreamPostProcessor {
         Some(cleaned)
     }
 
+    /// Snapshot of this session's counters.
     pub fn stats(&self) -> StreamPostProcessStats {
         self.stats.clone()
     }
 }
 
 impl Default for StreamPostProcessor {
+    /// Same as [`StreamPostProcessor::new`]: touches the global lexicon on construction.
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Read an `f32` tuning knob from the environment, falling back to `default` when
+/// unset or unparseable.
 fn env_f32(key: &str, default: f32) -> f32 {
     std::env::var(key)
         .ok()
@@ -861,6 +1021,8 @@ fn env_f32(key: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
+/// Strict opt-in env flag: only `1` or `true` enable it; anything else, including
+/// an unset variable, is `false`. Use [`env_flag`] where the default is on.
 fn env_bool(key: &str) -> bool {
     std::env::var(key)
         .ok()
@@ -871,6 +1033,8 @@ fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the gate may embed text. Off under `cfg(test)` unless explicitly
+/// forced, so the suite never depends on model weights or GPU availability.
 fn embeddings_enabled() -> bool {
     if env_bool("CODESCRIBE_STREAM_DISABLE_EMBEDDINGS") {
         return false;
@@ -883,6 +1047,8 @@ fn embeddings_enabled() -> bool {
     true
 }
 
+/// Split into lowercase word tokens, stripping leading/trailing non-alphanumerics
+/// so punctuation differences do not register as novelty.
 fn tokenize(text: &str) -> Vec<String> {
     text.split_whitespace()
         .map(|token| {
@@ -894,6 +1060,9 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Lexical novelty as one minus Jaccard overlap: `0.0` means identical token
+/// sets, `1.0` completely new. An empty side counts as fully novel, so a missing
+/// baseline can never justify a drop.
 fn jaccard_novelty(left: &HashSet<String>, right: &[String]) -> f32 {
     if left.is_empty() || right.is_empty() {
         return 1.0;
@@ -910,6 +1079,8 @@ fn jaccard_novelty(left: &HashSet<String>, right: &[String]) -> f32 {
     }
 }
 
+/// Cosine similarity of two embeddings, or `0.0` (treated as "not similar") when
+/// either vector is empty, mismatched in length, or has zero norm.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.is_empty() || b.is_empty() || a.len() != b.len() {
         return 0.0;
@@ -932,6 +1103,9 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Env flag with a caller-supplied default: an unset or blank variable keeps
+/// `default`, and only the explicit off-words (`0`, `false`, `off`, `no`) disable
+/// it. Counterpart to [`env_bool`] for features that ship on.
 fn env_flag(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(value) => {
@@ -946,6 +1120,8 @@ fn env_flag(name: &str, default: bool) -> bool {
     }
 }
 
+/// Strip known ASR artifacts: trailing `:D` emoticon bursts (on by default, and
+/// only at the end of an utterance) and decoder repetition loops.
 fn cleanup_artifacts(text: &str) -> String {
     // Default ON: treat trailing ":D" bursts as ASR artifacts.
     let mut out = if env_flag("CODESCRIBE_STRIP_TRAILING_SMILEY_D", true) {
@@ -960,10 +1136,17 @@ fn cleanup_artifacts(text: &str) -> String {
     out
 }
 
+/// Collapse every whitespace run to a single space and trim the ends.
 fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Cheap heuristic for "this chunk might be decoder noise": very short, very few
+/// tokens, heavily repeated tokens, or a detected repetition loop.
+///
+/// Only a screen, never a verdict — it decides whether the expensive duplicate
+/// gate is worth running, and it also guards the final pass against a rewrite
+/// that turned clean text into noise.
 fn is_suspicious(text: &str) -> bool {
     if text.len() < 12 {
         return true;
@@ -979,6 +1162,9 @@ fn is_suspicious(text: &str) -> bool {
     ratio < 0.5 || crate::ai_formatting::has_repetition_loop(text)
 }
 
+/// Known filler tokens that `candidate` added and `raw` never contained, sorted
+/// and deduplicated. These words are the fingerprint of a final pass drifting
+/// into invented English filler over Polish speech.
 fn introduced_artifact_tokens(raw: &str, candidate: &str) -> Vec<String> {
     let raw_tokens: HashSet<String> = tokenize(raw).into_iter().collect();
     let mut introduced = HashSet::new();
@@ -994,6 +1180,12 @@ fn introduced_artifact_tokens(raw: &str, candidate: &str) -> Vec<String> {
     introduced
 }
 
+/// Why a final-pass candidate must be rejected, or `None` when it is safe to ship.
+///
+/// Two refusals: the rewrite made previously-clean text suspicious, or it
+/// introduced two or more known artifact tokens. One stray token is tolerated —
+/// it can be a legitimate correction — so the threshold requires a pattern, not a
+/// single coincidence. An unchanged candidate is trivially safe.
 pub(crate) fn final_pass_guardrail_reason(raw: &str, candidate: &str) -> Option<String> {
     if candidate == raw {
         return None;
@@ -1011,6 +1203,8 @@ pub(crate) fn final_pass_guardrail_reason(raw: &str, candidate: &str) -> Option<
     None
 }
 
+/// Clamp `text` to `MAX_EMBED_CHARS` characters (not bytes, so multi-byte Polish
+/// letters are never split mid-character).
 fn truncate_for_embedding(text: &str) -> String {
     if text.len() <= MAX_EMBED_CHARS {
         return text.to_string();
@@ -1019,18 +1213,21 @@ fn truncate_for_embedding(text: &str) -> String {
     text.chars().take(MAX_EMBED_CHARS).collect()
 }
 
+/// Hermetic unit coverage for lexicon load/reload, prompt opt-in, and final-pass guardrails.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::OsString;
 
+    /// RAII guard that restores a process env var on drop so serial tests cannot leak state.
     struct EnvRestore {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvRestore {
+        /// Snapshot `key`'s current value (or absence) before a test mutates the environment.
         fn capture(key: &'static str) -> Self {
             Self {
                 key,
@@ -1040,6 +1237,7 @@ mod tests {
     }
 
     impl Drop for EnvRestore {
+        /// Restore the captured env value, or remove the key if it was previously unset.
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -1048,6 +1246,7 @@ mod tests {
         }
     }
 
+    /// Builtin programming lexicon rewrites Whisper mis-hears (e.g. `doker` → `Docker`).
     #[test]
     fn test_lexicon_rewrite() {
         let mut processor = StreamPostProcessor::new();
@@ -1059,6 +1258,7 @@ mod tests {
         );
     }
 
+    /// Protected-term family collapses acoustic Loctree variants to brand casing.
     #[test]
     fn test_lexicon_rewrites_loctree_compound_variants() {
         let mut processor = StreamPostProcessor::new();
@@ -1072,6 +1272,7 @@ mod tests {
         );
     }
 
+    /// Empty term lists or a zero token budget produce no Whisper initial prompt.
     #[test]
     fn whisper_initial_prompt_empty_terms_returns_none() {
         assert_eq!(build_whisper_initial_prompt(&[], &[], 224), None);
@@ -1081,6 +1282,7 @@ mod tests {
         );
     }
 
+    /// Protected terms win order; case-insensitive duplicates are dropped once.
     #[test]
     fn whisper_initial_prompt_dedupes_case_and_prioritizes_protected_terms() {
         let protected = vec![
@@ -1103,6 +1305,7 @@ mod tests {
         );
     }
 
+    /// Prompt assembly stops before exceeding the coarse token budget estimate.
     #[test]
     fn whisper_initial_prompt_truncates_to_token_budget() {
         let protected = vec![
@@ -1117,6 +1320,7 @@ mod tests {
         assert_eq!(prompt, "Vocabulary: Loctree.");
     }
 
+    /// Fresh/default config must not inject an initial prompt even when terms exist.
     #[test]
     #[serial]
     fn whisper_initial_prompt_defaults_off_even_with_builtin_terms() {
@@ -1139,6 +1343,7 @@ mod tests {
         );
     }
 
+    /// Setting `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` builds a prompt with protected terms.
     #[test]
     #[serial]
     fn whisper_initial_prompt_is_opt_in() {
@@ -1160,6 +1365,7 @@ mod tests {
         );
     }
 
+    /// Repetition-loop cleanup and whitespace collapse run on every processed chunk.
     #[test]
     fn test_cleanup_and_whitespace() {
         let mut processor = StreamPostProcessor::new();
@@ -1168,6 +1374,7 @@ mod tests {
         assert_eq!(output, "To jest bardzo wazny test systemu.");
     }
 
+    /// Trailing `:D` ASR artifacts are stripped from complete utterances.
     #[test]
     fn test_strip_trailing_smiley_d() {
         let mut processor = StreamPostProcessor::new();
@@ -1176,6 +1383,7 @@ mod tests {
         assert_eq!(output, "Siema, czy jestes tam?");
     }
 
+    /// Short, repetitive, or loop-like text is flagged; ordinary prose is not.
     #[test]
     fn test_is_suspicious_heuristics() {
         assert!(is_suspicious("ok"));
@@ -1185,6 +1393,7 @@ mod tests {
         ));
     }
 
+    /// Final-pass candidates that introduce ≥2 artifact tokens are rejected with a reason.
     #[test]
     fn test_final_pass_guardrail_rejects_artifact_token_drift() {
         let raw = "Co będę robił? Ja chyba coś nagrywam? Ja coś się... Może zhulać, ale w tym momencie myślę, że kwestia";
@@ -1194,6 +1403,7 @@ mod tests {
         assert_eq!(reason, "artifact_token_drift:going,use");
     }
 
+    /// Lexicon-only rewrites (no filler drift) pass the final-pass guardrail.
     #[test]
     fn test_final_pass_guardrail_allows_expected_lexicon_cleanup() {
         let raw = "Uzywam doker do github";
@@ -1202,6 +1412,7 @@ mod tests {
         assert_eq!(final_pass_guardrail_reason(raw, candidate), None);
     }
 
+    /// Custom lexicon mtime change reloads rules without recompiling builtins.
     #[test]
     fn test_hot_reload_picks_up_new_rules() {
         use std::io::Write;
@@ -1249,6 +1460,7 @@ mod tests {
         assert_eq!(lexicon.custom_canonicals, vec!["FooBar".to_string()]);
     }
 
+    /// Overlay correction → custom lexicon → hot-reload teaches the next transcript.
     #[test]
     #[serial]
     fn overlay_correction_chain_teaches_custom_lexicon_for_next_transcript() {
@@ -1343,6 +1555,7 @@ mod tests {
         );
     }
 
+    /// Plain word→word custom rules are rejected as unsafe language-level rewrites.
     #[test]
     fn test_custom_lexicon_skips_plain_word_regression_rules() {
         let json = r#"
@@ -1368,6 +1581,7 @@ mod tests {
         assert_eq!(lexicon.apply(input), input);
     }
 
+    /// Diacritic-only custom rules (e.g. `zazolc` → `zażółć`) remain loadable.
     #[test]
     fn test_custom_lexicon_allows_diacritic_only_rules() {
         let json = r#"{"term":"zażółć","mispronunciations":["zazolc"]}"#;
@@ -1388,6 +1602,7 @@ mod tests {
         assert_eq!(lexicon.apply("zazolc gesla jazn"), "zażółć gesla jazn");
     }
 
+    /// Unchanged custom-file mtime makes `maybe_reload` a no-op.
     #[test]
     fn test_hot_reload_no_change_skips_reload() {
         let dir = tempfile::tempdir().unwrap();
@@ -1418,6 +1633,7 @@ mod tests {
         assert_eq!(lexicon.custom_mtime, mtime_after);
     }
 
+    /// Reloading custom rules must never drop previously compiled builtin rules.
     #[test]
     fn test_hot_reload_preserves_builtin_rules() {
         let dir = tempfile::tempdir().unwrap();
@@ -1463,6 +1679,7 @@ mod tests {
         assert_eq!(lexicon.apply("moj kastom kod"), "moj Custom kod");
     }
 
+    /// Every `process` call applies lexicon rewrites regardless of gate history.
     #[test]
     fn test_postprocessor_always_applies_lexicon_contract() {
         // Contract: every call to process() applies lexicon rewrites
@@ -1488,6 +1705,7 @@ mod tests {
         );
     }
 
+    /// `process` advances session stats (and thus exercised the reload hook path).
     #[test]
     fn test_process_calls_maybe_reload() {
         // Verify that process() calls maybe_reload() by checking stats progression
@@ -1498,6 +1716,7 @@ mod tests {
         assert_eq!(stats.input_chunks, 2, "Both chunks should be counted");
     }
 
+    /// Legacy rows may store mis-hears under `extras.mispronunciations`.
     #[test]
     fn test_extras_mispronunciations_format() {
         // Veterinary entries store mispronunciations in extras.mispronunciations
@@ -1513,6 +1732,7 @@ mod tests {
         assert_eq!(rules[1].replacement, "Acepromazyna");
     }
 
+    /// Top-level and extras mispronunciations merge; case-equal variants are skipped.
     #[test]
     fn test_merged_mispronunciations() {
         // Entry with mispronunciations in both top-level and extras
@@ -1524,6 +1744,7 @@ mod tests {
         assert_eq!(count, 2, "Should skip case-equal + extract 2 from extras");
     }
 
+    /// Full builtin load (incl. vet extras) yields a large compiled rule set.
     #[test]
     fn test_builtin_lexicon_loads_vet_extras() {
         // Integration test: the real builtin lexicon must produce > 798 rules now
@@ -1562,6 +1783,7 @@ mod tests {
         }
     }
 
+    /// Acoustic homophone `Luxury` and locktree variants rewrite to `Loctree`.
     #[test]
     fn test_protected_terms_loctree_not_luxury() {
         let lex = builtin_only_lexicon();
@@ -1576,6 +1798,7 @@ mod tests {
         assert_eq!(lex.apply("Loctree daje sight"), "Loctree daje sight");
     }
 
+    /// Protected source normalizes brand casing (AICX, MCP, GitHub, product names).
     #[test]
     fn test_protected_terms_preserve_brand_casing() {
         let lex = builtin_only_lexicon();
@@ -1591,6 +1814,7 @@ mod tests {
         assert_eq!(lex.apply("git hub"), "GitHub");
     }
 
+    /// Multi-word protected phrases rewrite as whole phrases, not partial tokens.
     #[test]
     fn test_protected_terms_multiword_phrases() {
         let lex = builtin_only_lexicon();
@@ -1608,6 +1832,7 @@ mod tests {
         );
     }
 
+    /// Ordinary English/Polish without protected terms must pass through unchanged.
     #[test]
     fn test_protected_terms_do_not_overcorrect_ordinary_language() {
         let lex = builtin_only_lexicon();
@@ -1620,6 +1845,7 @@ mod tests {
         assert_eq!(lex.apply(pl), pl);
     }
 
+    /// Polish UI command mis-hears normalize to code tokens (clipboard, screenshot, …).
     #[test]
     fn test_polish_ui_command_phrase_preservation() {
         // Regression class: Polish UI command phrases (and their Whisper
@@ -1643,6 +1869,7 @@ mod tests {
         assert_eq!(lex.apply(plain), plain);
     }
 
+    /// `protected_terms_lost` reports canonicals present in raw but missing after a pass.
     #[test]
     fn test_protected_terms_lost_detects_corruption() {
         // Uses the GLOBAL lexicon; builtin protected canonicals (Loctree,
@@ -1655,6 +1882,7 @@ mod tests {
         assert!(none.is_empty());
     }
 
+    /// Whole-word `\b` boundaries must not rewrite substrings inside longer tokens.
     #[test]
     fn python_whole_word_boundary_does_not_corrupt_wordpython() {
         // Regression: build_word_regex uses \b so "Python" must not rewrite
@@ -1679,6 +1907,7 @@ mod tests {
         );
     }
 
+    /// Re-applying the lexicon on canonical text reaches a fixed point without drift.
     #[test]
     fn test_apply_lexicon_is_idempotent_on_canonical() {
         // Re-applying after an LLM pass must reach a fixed point (no oscillation /

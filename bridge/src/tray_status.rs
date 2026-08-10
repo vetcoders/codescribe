@@ -45,6 +45,7 @@ pub enum CsIndicatorMode {
 }
 
 impl From<BadgeMode> for CsIndicatorMode {
+    /// Map core badge mode into the UniFFI indicator enum for tray payloads.
     fn from(value: BadgeMode) -> Self {
         match value {
             BadgeMode::Hold => Self::Hold,
@@ -67,16 +68,25 @@ pub struct CsTrayStatusPayload {
     pub generation: u64,
 }
 
+/// Swift-side sink for menu-bar status updates.
 #[uniffi::export(with_foreign)]
 pub trait CsTrayStatusListener: Send + Sync {
+    /// Called once per distinct status change; duplicate snapshots are
+    /// coalesced before they reach here.
     fn on_tray_status(&self, status: CsTrayStatusPayload);
 }
 
+/// UniFFI handle Swift holds to observe tray status.
+///
+/// Deliberately stateless: the listener, the last-forwarded snapshot, and the
+/// generation counter are all process-global, so constructing more than one
+/// handle does not fork the status stream.
 #[derive(uniffi::Object, Default)]
 pub struct CodescribeTrayStatus {}
 
 #[uniffi::export]
 impl CodescribeTrayStatus {
+    /// Initialize logging and install the core-side sink.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -105,27 +115,41 @@ impl CodescribeTrayStatus {
     }
 }
 
+/// Process-global optional Swift tray listener behind a reader-writer lock.
 type SharedListener = RwLock<Option<Arc<dyn CsTrayStatusListener>>>;
 
+/// Process-global slot holding the current Swift listener, if one attached.
 fn shared_listener() -> &'static SharedListener {
+    /// OnceLock holder for the shared Swift tray listener slot.
     static LISTENER: OnceLock<SharedListener> = OnceLock::new();
     LISTENER.get_or_init(|| RwLock::new(None))
 }
 
+/// Last snapshot handed to Swift, kept so duplicate updates can be coalesced.
 fn last_forwarded_status() -> &'static Mutex<Option<TrayStatusSnapshot>> {
+    /// Last snapshot pushed to Swift; used to coalesce identical updates.
     static LAST_FORWARDED: OnceLock<Mutex<Option<TrayStatusSnapshot>>> = OnceLock::new();
     LAST_FORWARDED.get_or_init(|| Mutex::new(None))
 }
 
+/// Counter stamped onto each forwarded payload; strictly increases with every
+/// distinct status so Swift can order deliveries.
 fn generation_counter() -> &'static AtomicU64 {
+    /// Monotonic generation stamped on every distinct forwarded payload.
     static GENERATION: AtomicU64 = AtomicU64::new(0);
     &GENERATION
 }
 
+/// Point the core tray-status API at this bridge.
+///
+/// Re-installing is harmless — the sink is replaced with an identical one —
+/// which is why every entry point can call it unconditionally.
 fn install_sink() {
     tray_status::set_tray_status_sink(Some(Arc::new(publish_tray_status)));
 }
 
+/// Current core status as a bridge payload, stamped with the generation
+/// already in effect rather than a fresh one.
 fn current_payload() -> CsTrayStatusPayload {
     payload_from_status(
         tray_status::current_tray_status_snapshot(),
@@ -133,6 +157,8 @@ fn current_payload() -> CsTrayStatusPayload {
     )
 }
 
+/// Map a core [`TrayStatusSnapshot`] onto the bridge payload, collapsing the
+/// core status into a `(kind, tone)` pair for the Swift menu row.
 fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayStatusPayload {
     let status = snapshot.status;
     let (kind, tone) = match status {
@@ -156,6 +182,12 @@ fn payload_from_status(snapshot: TrayStatusSnapshot, generation: u64) -> CsTrayS
     }
 }
 
+/// The sink installed into the core API: coalesce duplicates, stamp a fresh
+/// generation, hand the payload to Swift.
+///
+/// A change arriving with no listener attached is dropped rather than queued —
+/// Swift re-seeds from [`CodescribeTrayStatus::current_status`] when it
+/// registers, so the menu still opens with the live value.
 fn publish_tray_status(snapshot: TrayStatusSnapshot) {
     let changed = {
         let mut last = last_forwarded_status()
@@ -197,18 +229,22 @@ fn publish_tray_status(snapshot: TrayStatusSnapshot) {
     }
 }
 
+/// Tray bridge mapping, coalescing, and assistive-lane refire tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    /// Serializes tests that mutate process-global tray sink/listener state.
     static TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
+    /// Test listener that records every on_tray_status payload in order.
     struct CapturingTrayStatusListener {
         calls: Arc<StdMutex<Vec<CsTrayStatusPayload>>>,
     }
 
     impl CsTrayStatusListener for CapturingTrayStatusListener {
+        /// Append one forwarded tray payload into the capture list.
         fn on_tray_status(&self, status: CsTrayStatusPayload) {
             self.calls
                 .lock()
@@ -217,6 +253,7 @@ mod tests {
         }
     }
 
+    /// Clear sink, listener, last-forwarded, and generation for isolation.
     fn reset_for_test() {
         tray_status::set_tray_status_sink(None);
         tray_status::set_tray_assistive_session(false);
@@ -231,6 +268,7 @@ mod tests {
         generation_counter().store(0, Ordering::SeqCst);
     }
 
+    /// Thinking maps to Processing with non-assistive copy and fixed generation.
     #[test]
     fn maps_core_status_to_bridge_payload() {
         let payload = payload_from_status(TrayStatusSnapshot::new(TrayStatus::Thinking, false), 42);
@@ -244,6 +282,7 @@ mod tests {
         assert_eq!(payload.generation, 42);
     }
 
+    /// Assistive Listening uses Agent-listening tooltip/label and Assistive mode.
     #[test]
     fn maps_assistive_status_to_agent_payload_copy() {
         let payload = payload_from_status(TrayStatusSnapshot::new(TrayStatus::Listening, true), 43);
@@ -257,6 +296,7 @@ mod tests {
         assert_eq!(payload.generation, 43);
     }
 
+    /// Distinct statuses fire; identical consecutive Thermal is coalesced away.
     #[test]
     #[serial_test::serial]
     fn listener_receives_changes_and_coalesces_duplicates() {
@@ -286,6 +326,7 @@ mod tests {
         assert!(calls[1].generation > calls[0].generation);
     }
 
+    /// Assistive flag flip alone advances generation without status-kind change.
     #[test]
     #[serial_test::serial]
     fn listener_refires_when_only_assistive_lane_changes() {

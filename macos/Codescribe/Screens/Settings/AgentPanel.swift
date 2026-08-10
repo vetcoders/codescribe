@@ -14,43 +14,97 @@ struct AgentPanel: View {
 
     @ObservedObject var model: SettingsViewModel
 
+    /// One page at a time, and the page IS the content. Five independent
+    /// subsystems (lanes, roots, capabilities, tool permissions, MCP servers —
+    /// the last two alone are ~800 lines) used to stack into a single scroll.
+    /// The first paginated cut kept the monolith's headline and the 7-row
+    /// resolved-LLM table as a preamble on EVERY page, so each page rendered
+    /// below a screenful of old world — pagination in the rail, monolith in
+    /// the pane. Now each page owns its headline and body; the resolved-truth
+    /// table lives only where it is the subject (LLM lanes), below the editors.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            EyebrowLabel(text: "Settings · \(SettingsSection.agent.title)")
-            Text("How your agent works.")
+            EyebrowLabel(text: "Settings · \(SettingsSection.agent.title) · \(current.title)")
+            Text(headline)
                 .font(CSFont.ui(26, .bold))
                 .tracking(-0.5)
                 .foregroundStyle(CSColor.textHigh)
                 .padding(.top, 6)
 
-            Text("Request lanes, workspace roots, tool permissions, and MCP servers — the runtime configuration behind agent work.")
+            Text(blurb)
                 .font(CSFont.ui(12.5))
                 .lineSpacing(2)
                 .foregroundStyle(CSColor.textMutedAlt)
                 .padding(.top, 8)
 
-            runtimeRows
+            page
                 .padding(.top, 20)
-
-            SettingsSectionLabel("LLM lanes")
-                .padding(.top, 22)
-            LLMLanesSection(model: model)
-                .padding(.top, 11)
-
-            WorkspaceRootsSection(model: model)
-                .padding(.top, 30)
-
-            AgentStatusSection(model: model)
-                .padding(.top, 30)
-
-            ToolPermissionsSection(model: model)
-                .padding(.top, 30)
-
-            MCPServersSection(model: model)
-                .padding(.top, 26)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
+    }
+
+    /// The nil route (a deep link that named no page) lands on lanes,
+    /// mirroring the `page` switch below. Pages of other sections cannot
+    /// reach this panel, so they clamp to lanes too.
+    private var current: SettingsPage {
+        switch model.page {
+        case .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
+            return model.page ?? .agentLanes
+        default:
+            return .agentLanes
+        }
+    }
+
+    private var headline: String {
+        switch current {
+        case .agentWorkspace: return "Workspace roots."
+        case .agentStatus: return "Capabilities."
+        case .agentTools: return "Tool permissions."
+        case .agentMcp: return "MCP servers."
+        default: return "Request lanes."
+        }
+    }
+
+    private var blurb: String {
+        switch current {
+        case .agentWorkspace:
+            return "Directories the agent may read and write. Everything outside them is out of reach."
+        case .agentStatus:
+            return "What the local agent substrate can currently do, and why."
+        case .agentTools:
+            return "Allow, ask, or deny — per tool. Deny wins over everything."
+        case .agentMcp:
+            return "External MCP servers the agent can call, and their transports."
+        default:
+            return "Provider, endpoint, and model per request path. The resolved runtime truth is below the editors."
+        }
+    }
+
+    @ViewBuilder
+    private var page: some View {
+        switch model.page {
+        case .agentWorkspace:
+            WorkspaceRootsSection(model: model)
+        case .agentStatus:
+            AgentStatusSection(model: model)
+        case .agentTools:
+            ToolPermissionsSection(model: model)
+        case .agentMcp:
+            MCPServersSection(model: model)
+        default:
+            // `.agentLanes` and the nil route (deep link that named no page).
+            VStack(alignment: .leading, spacing: 0) {
+                LLMLanesSection(model: model)
+
+                // The answer to "which provider am I actually talking to",
+                // placed after the editors as read-only proof of what resolved.
+                SettingsSectionLabel("Resolved runtime truth")
+                    .padding(.top, 24)
+                runtimeRows
+                    .padding(.top, 11)
+            }
+        }
     }
 
     // MARK: - Resolved LLM truth (read-only)

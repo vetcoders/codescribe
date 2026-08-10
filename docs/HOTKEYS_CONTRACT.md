@@ -2,7 +2,7 @@
 
 > Technical specification for codescribe hotkey system.
 >
-> Created by vetcoders (c)2026
+> Created by Vetcoders (c)2026
 
 ---
 

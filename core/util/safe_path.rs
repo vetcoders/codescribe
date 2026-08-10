@@ -236,6 +236,13 @@ pub fn safe_symlink_or_copy_bounded(
     Ok(())
 }
 
+/// Resolve a possibly-nonexistent path against an already-canonical root.
+///
+/// The target may not exist yet, so `..` and `.` are folded lexically by
+/// [`normalize_path`] instead of by the filesystem. Two checks follow: the
+/// normalized path must sit under the root, and — when the parent directory does
+/// exist — its *canonical* form must too. That second pass is what catches a
+/// symlinked parent whose lexical path looks contained.
 fn safe_prepare_path_with_root(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     let candidate = if path.is_absolute() {
         path.to_path_buf()
@@ -267,6 +274,11 @@ fn safe_prepare_path_with_root(path: &Path, root_canon: &Path) -> Result<PathBuf
     Ok(normalized)
 }
 
+/// Canonicalize an existing path and express it relative to `root_canon`, ready
+/// to hand to a `cap_std` [`Dir`].
+///
+/// Refuses the root itself: an empty relative path would target the capability
+/// directory rather than a file inside it.
 fn relative_existing_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     let canonical = path
         .canonicalize()
@@ -285,6 +297,8 @@ fn relative_existing_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     Ok(relative.to_path_buf())
 }
 
+/// [`relative_existing_path`] for write targets — the path need not exist yet, so
+/// containment is proven by [`safe_prepare_path_with_root`] first.
 fn relative_prepared_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     let prepared = safe_prepare_path_with_root(path, root_canon)?;
     let relative = prepared.strip_prefix(root_canon).unwrap_or(Path::new(""));
@@ -294,11 +308,21 @@ fn relative_prepared_path(path: &Path, root_canon: &Path) -> Result<PathBuf> {
     Ok(relative.to_path_buf())
 }
 
+/// Open the capability handle every bounded operation goes through.
+///
+/// Once a [`Dir`] is open, `cap_std` refuses to traverse outside it — the root
+/// boundary stops being a check we remember to run and becomes one the OS-level
+/// handle enforces.
 fn open_root_dir(root_canon: &Path) -> Result<Dir> {
     Dir::open_ambient_dir(root_canon, ambient_authority())
         .with_context(|| format!("Failed to open root dir: {}", root_canon.display()))
 }
 
+/// Fold `.` and `..` purely lexically, without touching the filesystem.
+///
+/// Needed because [`Path::canonicalize`] requires the path to exist. A `..` at
+/// the root is dropped rather than escaping. Being lexical, this does **not**
+/// resolve symlinks — callers must still canonicalize whatever part does exist.
 fn normalize_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -318,12 +342,14 @@ fn normalize_path(path: &Path) -> PathBuf {
     out
 }
 
+/// Unit tests for safe canonicalize, bounded roots, open, and read helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
 
+    /// Existing file path resolves via safe_canonicalize without error.
     #[test]
     fn test_canonicalize_existing_path() {
         let dir = tempdir().unwrap();
@@ -334,12 +360,14 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Missing path fails closed rather than inventing a canonical location.
     #[test]
     fn test_canonicalize_nonexistent_path() {
         let result = safe_canonicalize(Path::new("/nonexistent/path/file.txt"));
         assert!(result.is_err());
     }
 
+    /// Path under the allowed root stays accepted by bounded canonicalize.
     #[test]
     fn test_bounded_canonicalize_within_root() {
         let dir = tempdir().unwrap();
@@ -352,6 +380,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Path outside the root is rejected with an outside-allowed-root error.
     #[test]
     fn test_bounded_canonicalize_outside_root() {
         let dir = tempdir().unwrap();
@@ -369,6 +398,7 @@ mod tests {
         );
     }
 
+    /// safe_open returns a readable handle for a file that exists on disk.
     #[test]
     fn test_safe_open() {
         let dir = tempdir().unwrap();
@@ -379,6 +409,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// safe_read_to_string returns full file contents for a small fixture.
     #[test]
     fn test_safe_read_to_string() {
         let dir = tempdir().unwrap();

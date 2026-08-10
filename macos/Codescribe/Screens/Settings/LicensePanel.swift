@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct LicensePanel: View {
@@ -57,11 +58,24 @@ struct LicensePanel: View {
                 .tint(CSColor.chromeAccent)
                 .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
+                // Self-service issuance: codescribe.vetcoders.io/license/ mints a
+                // signed key for an email on the spot (open beta). Without this
+                // button the panel demanded a key and never said where one comes
+                // from (operator, 2026-08-09).
+                Button("Get license") {
+                    if let url = URL(string: "https://codescribe.vetcoders.io/license/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .help("Open codescribe.vetcoders.io/license — enter your email, paste the key back here")
+                .accessibilityIdentifier("settings-license-get")
+
                 if model.licenseStatus.state != .unlicensed {
                     Button("Remove license", role: .destructive) {
                         model.removeLicense()
                     }
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .foregroundStyle(CSColor.dangerLight)
                 }
             }

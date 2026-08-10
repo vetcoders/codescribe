@@ -32,7 +32,7 @@ use crate::config::{Config, FormattingPolicy};
 use super::account_auth;
 use super::lane_truth;
 use super::lane_truth::AssistiveLaneSnapshot;
-use super::provider::{LlmMode, ProviderKind, capability_policy};
+use super::provider::{LlmMode, ProviderKind, WireFamily, capability_policy};
 use super::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
@@ -45,10 +45,21 @@ static AI_CLIENT: OnceLock<Client> = OnceLock::new();
 /// owns the separate quality-gate logic for that 10-23 char window.
 const NON_ASSISTIVE_AI_SKIP_CHARS: usize = 10;
 
+/// Whether a transcript is too short to be worth an LLM round-trip.
+///
+/// Assistive requests are never skipped — a two-word command is still a real
+/// instruction. Non-assistive formatting is skipped below the char floor.
 fn should_skip_ai_formatting(text: &str, assistive: bool) -> bool {
     !assistive && text.chars().count() < NON_ASSISTIVE_AI_SKIP_CHARS
 }
 
+/// How one formatting request ended, from the caller's point of view.
+///
+/// The three non-success arms are deliberately distinct: `Skipped` means the
+/// request was never sent (policy off, or text below the floor), `Failed` means
+/// every provider attempt was exhausted, and `AiNoop` means the provider
+/// answered but echoed the input back unchanged. Callers downstream treat these
+/// differently — only `AiNoop` implies a healthy provider that had nothing to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiFormatStatus {
     Applied,
@@ -57,9 +68,15 @@ pub enum AiFormatStatus {
     AiNoop,
 }
 
+/// Streaming assistant-token callback delivered as each chunk arrives.
 pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
+/// Streaming reasoning-token callback, kept separate from assistant text.
 pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Result of a formatting request: the text to use plus how it was obtained.
+///
+/// `text` is always safe to deliver — on failure it carries the cleaned input
+/// rather than an error, so the caller never has to invent a fallback.
 #[derive(Debug, Clone)]
 pub struct AiFormatResult {
     pub text: String,
@@ -67,12 +84,20 @@ pub struct AiFormatResult {
     pub status: AiFormatStatus,
 }
 
+/// One provider reply split into its two channels.
+///
+/// Reasoning text is kept separate from assistant text so a reasoning model's
+/// visible scratchpad never leaks into the delivered transcript.
 #[derive(Debug, Clone)]
 struct ProviderOutput {
     assistant_text: String,
     reasoning_text: Option<String>,
 }
 
+/// Per-attempt streaming state that is not part of the wire request.
+///
+/// The two timeouts guard different failure shapes: one bounds how long the
+/// provider may take to start answering, the other bounds silence mid-stream.
 #[derive(Clone)]
 struct StreamRequestContext {
     callbacks: StreamCallbacks,
@@ -80,19 +105,27 @@ struct StreamRequestContext {
     inter_chunk_timeout: Duration,
 }
 
+/// One retained turn of the Ollama-only conversation memory.
+///
+/// Hosted providers chain context server-side via `previous_response_id`; Ollama
+/// has no such handle, so assistive turns are replayed from this local buffer.
 #[derive(Clone)]
 struct MemoryMessage {
     role: String,
     content: String,
 }
 
+/// Process-global Ollama turn buffer; hosted providers use `previous_response_id`.
 static OLLAMA_MEMORY: OnceLock<RwLock<Vec<MemoryMessage>>> = OnceLock::new();
+/// Soft cap on retained Ollama memory text; older turns are pruned FIFO.
 const MAX_OLLAMA_MEMORY_CHARS: usize = 4000;
 
 // Retry count is "extra attempts after the first request". Default 0 keeps
 // daily-driver formatting fail-fast instead of multiplying deterministic
 // provider/parser failures into long cascades.
+/// Extra attempts after the first request; 0 = fail-fast for daily formatting.
 const DEFAULT_AI_MAX_RETRIES: u32 = 0;
+/// Sleep between retries when [`DEFAULT_AI_MAX_RETRIES`] is raised via env.
 const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
 // Bumped from 30s → 90s (2026-05-13). Operator observed
 // "Agent SSE inter-chunk timeout after 30s" mid-stream from chat overlay
@@ -104,22 +137,39 @@ const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
 // keeps streams alive across realistic backend hiccups without making
 // stalled requests linger forever. Env override `CODESCRIBE_AI_*_MS`
 // still wins for power users (operator can lower for fast models).
+/// Per-attempt wall budget for hosted providers before the attempt is abandoned.
 const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 90_000;
+/// Tighter per-attempt budget for local Ollama so a dead daemon fails fast.
 const DEFAULT_AI_OLLAMA_ATTEMPT_TIMEOUT_MS: u64 = 5_000;
+/// Max silence between SSE chunks mid-stream before the attempt is abandoned.
 const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
+/// reqwest overall request timeout for the shared AI HTTP client.
 const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
+/// TCP connect deadline for the shared AI HTTP client.
 const DEFAULT_AI_CONNECT_TIMEOUT_MS: u64 = 5_000;
+/// Idle keep-alive for pooled connections on the shared AI HTTP client.
 const DEFAULT_AI_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
+/// TCP keepalive probe interval for the shared AI HTTP client.
 const DEFAULT_AI_TCP_KEEPALIVE_MS: u64 = 30_000;
+/// Anthropic Messages API version header value.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Default `max_tokens` for Anthropic formatting/chat when env is unset.
 const DEFAULT_ANTHROPIC_MAX_TOKENS: u32 = 8192;
+/// Wall budget for auto-generating a thread title after the first turn.
 const THREAD_TITLE_TIMEOUT: Duration = Duration::from_secs(8);
+/// Completion token budget for the thread-title request.
 const THREAD_TITLE_MAX_TOKENS: u32 = 24;
+/// Hard clip length for a generated title before it is stored on the thread.
 const THREAD_TITLE_MAX_CHARS: usize = 72;
+/// System prompt for the thread-title generator; asks for a short noun phrase.
 const THREAD_TITLE_PROMPT: &str = "Create a concise 3-6 word title for this conversation. \
 Use the user's language and a descriptive noun phrase. Return only the title on one line, \
 with no quotes, bullet, label, or decorative punctuation.";
 
+/// The full retry/timeout budget for one formatting call, resolved once per call.
+///
+/// Snapshotting the whole policy up front means a mid-flight env change cannot
+/// make attempt 2 of the same request behave differently from attempt 1.
 #[derive(Debug, Clone, Copy)]
 struct RetryPolicy {
     max_retries: u32,
@@ -130,6 +180,8 @@ struct RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// Read the policy from `CODESCRIBE_AI_*` overrides, falling back to the
+    /// module defaults for anything unset or unparseable.
     fn from_env() -> Self {
         Self {
             max_retries: env_u32("CODESCRIBE_AI_MAX_RETRIES", DEFAULT_AI_MAX_RETRIES),
@@ -153,6 +205,10 @@ impl RetryPolicy {
     }
 }
 
+/// Read a `u32` env override, falling back to `default` on unset or garbage.
+///
+/// A malformed value is treated as absent rather than fatal: a typo in a power
+/// user's dotenv must not take the formatting lane down.
 fn env_u32(key: &str, default: u32) -> u32 {
     env::var(key)
         .ok()
@@ -160,6 +216,7 @@ fn env_u32(key: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+/// Read a `u64` env override, falling back to `default` on unset or garbage.
 fn env_u64(key: &str, default: u64) -> u64 {
     env::var(key)
         .ok()
@@ -167,10 +224,17 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Read a millisecond env override as a [`Duration`].
 fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
     Duration::from_millis(env_u64(key, default_ms))
 }
 
+/// Whether a provider error is worth another attempt.
+///
+/// Errors are matched by message because they arrive as opaque `anyhow` chains
+/// from several transports. The listed shapes are deterministic — an empty
+/// completion, a refusal, or a rejected request will reproduce identically on
+/// retry, so retrying only multiplies latency.
 fn should_retry_provider_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     !(message.contains("No text content in SSE stream")
@@ -182,10 +246,15 @@ fn should_retry_provider_error(error: &anyhow::Error) -> bool {
         || message.contains("SSE error bad_request"))
 }
 
+/// Lazily initialised handle to the process-wide Ollama conversation memory.
 fn ollama_memory() -> &'static RwLock<Vec<MemoryMessage>> {
     OLLAMA_MEMORY.get_or_init(|| RwLock::new(Vec::new()))
 }
 
+/// The shared HTTP client, built once on first use.
+///
+/// One pooled client for every provider: rebuilding per request would discard
+/// warm TCP/TLS connections and add a handshake to every formatting round-trip.
 fn get_client() -> &'static Client {
     AI_CLIENT.get_or_init(|| {
         let timeout = duration_from_env_ms(
@@ -228,14 +297,23 @@ fn get_client() -> &'static Client {
 
 // ---- FORMATTING mode config ----
 
+/// The formatting lane's endpoint, resolved from freshly loaded config.
+///
+/// Config is re-read on every call rather than cached, so a settings save takes
+/// effect on the next request instead of at the next app restart.
 fn get_formatting_endpoint() -> Result<String> {
     Ok(lane_truth::endpoint(LlmMode::Formatting, &Config::load()))
 }
 
+/// The formatting lane's model id, resolved from freshly loaded config.
 fn get_formatting_model() -> Result<String> {
     Ok(lane_truth::formatting_identity(&Config::load()).1)
 }
 
+/// The formatting lane's dedicated credential.
+///
+/// The error names the exact variable to set, because this is the failure a
+/// first-run operator hits most often.
 fn get_formatting_api_key() -> Result<String> {
     lane_truth::secret("LLM_FORMATTING_API_KEY")
         .context("LLM API key (formatting) is required. Set LLM_FORMATTING_API_KEY.")
@@ -243,18 +321,26 @@ fn get_formatting_api_key() -> Result<String> {
 
 // ---- ASSISTIVE mode config ----
 
+/// The assistive lane's endpoint, taken from a fresh lane snapshot.
 fn get_assistive_endpoint() -> Result<String> {
     Ok(lane_truth::assistive_snapshot(&Config::load()).endpoint)
 }
 
+/// The assistive lane's model id, taken from a fresh lane snapshot.
 fn get_assistive_model() -> Result<String> {
     Ok(lane_truth::assistive_snapshot(&Config::load()).model)
 }
 
-fn get_anthropic_api_key() -> Result<String> {
-    let account = ProviderKind::AnthropicMessages.api_key_env_key();
-    lane_truth::secret(account)
-        .with_context(|| format!("Anthropic API key is required. Set {account}."))
+/// The API key for an explicit provider, read from its own registry key account
+/// so the error names the field the operator has to fill for *that* vendor.
+fn get_provider_api_key(provider: ProviderKind) -> Result<String> {
+    let account = provider.api_key_env_key();
+    lane_truth::secret(account).with_context(|| {
+        format!(
+            "{} API key is required. Set {account}.",
+            provider.display_name()
+        )
+    })
 }
 
 /// Get temperature from env var. Returns None if empty/unset (skip parameter).
@@ -300,6 +386,10 @@ enum EndpointFormat {
     AnthropicMessages,
 }
 
+/// A fully resolved target for one thread-title request.
+///
+/// Resolution is deliberately separated from sending so tests can drive every
+/// wire format against a mock server without touching real config or secrets.
 #[derive(Debug, Clone)]
 struct ThreadTitleProvider {
     format: EndpointFormat,
@@ -311,12 +401,18 @@ struct ThreadTitleProvider {
 /// Resolve request format from explicit provider, preserving path-based Ollama
 /// compatibility only for the protected OpenAI/default lane.
 fn detect_format(endpoint: &str, provider: ProviderKind) -> EndpointFormat {
-    match provider {
-        ProviderKind::AnthropicMessages => EndpointFormat::AnthropicMessages,
-        ProviderKind::OpenAiResponses if endpoint.contains("/api/chat") => {
+    match provider.wire_family() {
+        WireFamily::AnthropicMessages => EndpointFormat::AnthropicMessages,
+        // Ollama's native chat path is a compatibility shim on the protected
+        // default lane only. A hosted Responses vendor (xAI) never serves
+        // `/api/chat`, and honouring the shim for it would let a stray endpoint
+        // string silently downgrade the request shape.
+        WireFamily::OpenAiResponses
+            if provider.owns_generic_lane_config() && endpoint.contains("/api/chat") =>
+        {
             EndpointFormat::OllamaChat
         }
-        ProviderKind::OpenAiResponses => EndpointFormat::ResponsesApi,
+        WireFamily::OpenAiResponses => EndpointFormat::ResponsesApi,
     }
 }
 
@@ -333,18 +429,28 @@ pub async fn generate_thread_title(text: &str) -> Result<Option<String>> {
     generate_thread_title_with_provider(text, &provider, THREAD_TITLE_TIMEOUT).await
 }
 
+/// Resolve the formatting lane into a concrete title target, including which
+/// credential applies.
+///
+/// Key selection follows the lane rules rather than one global secret: the
+/// protected default lane keeps its own formatting credential, any other vendor
+/// authenticates from its own registry account, and Ollama needs none at all.
 fn resolve_thread_title_provider() -> Result<ThreadTitleProvider> {
     let config = Config::load();
     let provider = lane_truth::provider(LlmMode::Formatting);
     let model = lane_truth::model_for_provider(LlmMode::Formatting, provider, &config);
-    let endpoint = match provider {
-        ProviderKind::OpenAiResponses => lane_truth::endpoint(LlmMode::Formatting, &config),
-        ProviderKind::AnthropicMessages => lane_truth::anthropic_messages_endpoint(),
-    };
+    let endpoint = lane_truth::provider_endpoint(LlmMode::Formatting, provider, &config);
     let format = detect_format(&endpoint, provider);
     let api_key = match format {
-        EndpointFormat::ResponsesApi => Some(get_formatting_api_key()?),
-        EndpointFormat::AnthropicMessages => Some(get_anthropic_api_key()?),
+        // The formatting runtime owns a separate credential on the protected
+        // default lane; any other vendor authenticates with its own registry
+        // key account rather than borrowing that one.
+        EndpointFormat::ResponsesApi if provider.owns_generic_lane_config() => {
+            Some(get_formatting_api_key()?)
+        }
+        EndpointFormat::ResponsesApi | EndpointFormat::AnthropicMessages => {
+            Some(get_provider_api_key(provider)?)
+        }
         EndpointFormat::OllamaChat => None,
     };
 
@@ -356,6 +462,10 @@ fn resolve_thread_title_provider() -> Result<ThreadTitleProvider> {
     })
 }
 
+/// Send one title request against an already-resolved provider and sanitize it.
+///
+/// The timeout wraps the whole call including body download, so a provider that
+/// answers headers fast and then trickles the body cannot outlive the budget.
 async fn generate_thread_title_with_provider(
     text: &str,
     provider: &ThreadTitleProvider,
@@ -367,6 +477,7 @@ async fn generate_thread_title_with_provider(
     Ok(sanitize_thread_title(&raw))
 }
 
+/// Dispatch the title request to the wire format the provider speaks.
 async fn request_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
     match provider.format {
         EndpointFormat::ResponsesApi => request_responses_thread_title(text, provider).await,
@@ -375,6 +486,10 @@ async fn request_thread_title(text: &str, provider: &ThreadTitleProvider) -> Res
     }
 }
 
+/// One-shot title request over the Responses API.
+///
+/// `previous_response_id` is deliberately `None`: titling must not join the
+/// user's conversation chain, or the title prompt would pollute later turns.
 async fn request_responses_thread_title(
     text: &str,
     provider: &ThreadTitleProvider,
@@ -420,6 +535,10 @@ async fn request_responses_thread_title(
     Ok(extract_output_channels(&response.output).assistant_text)
 }
 
+/// One-shot title request over the Anthropic Messages API.
+///
+/// A `refusal` stop reason is raised as an error rather than returned as an
+/// empty title, so the caller can tell "model declined" from "model had nothing".
 async fn request_anthropic_thread_title(
     text: &str,
     provider: &ThreadTitleProvider,
@@ -471,6 +590,11 @@ async fn request_anthropic_thread_title(
     Ok(extract_anthropic_text(&response))
 }
 
+/// One-shot title request over Ollama's native chat API.
+///
+/// The system/user pair is built inline instead of through
+/// [`build_ollama_messages`], because titling must not read or append to the
+/// shared conversation memory.
 async fn request_ollama_thread_title(text: &str, provider: &ThreadTitleProvider) -> Result<String> {
     let request = OllamaRequest {
         model: provider.model.clone(),
@@ -516,6 +640,10 @@ async fn request_ollama_thread_title(text: &str, provider: &ThreadTitleProvider)
         .unwrap_or_default())
 }
 
+/// Reduce any configured endpoint spelling to Ollama's `/api/chat` path.
+///
+/// Suffixes are stripped in a loop because operators paste stacked forms such as
+/// `.../api/chat/v1/responses`; one pass would leave a mangled base URL.
 fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
     let mut base = endpoint.trim().trim_end_matches('/').to_string();
     loop {
@@ -533,6 +661,12 @@ fn normalize_ollama_chat_endpoint(endpoint: &str) -> String {
     format!("{base}/api/chat")
 }
 
+/// Turn a raw model reply into a usable one-line title, or `None` if nothing
+/// survives.
+///
+/// Models decorate titles despite instructions — bullets, numbering, bold, and
+/// quotes all get stripped. The length cap counts characters, not bytes, so a
+/// Polish or CJK title is clipped where a reader would expect.
 fn sanitize_thread_title(raw: &str) -> Option<String> {
     let mut title = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
@@ -553,6 +687,7 @@ fn sanitize_thread_title(raw: &str) -> Option<String> {
     (!clipped.trim().is_empty()).then_some(clipped)
 }
 
+/// Drop a leading list marker — `-`, `*`, a bullet glyph, or `1.` / `1)`.
 fn strip_title_bullet(title: &str) -> &str {
     let trimmed = title.trim();
     for prefix in ["- ", "* ", "• ", "– ", "— "] {
@@ -571,6 +706,10 @@ fn strip_title_bullet(title: &str) -> &str {
     trimmed
 }
 
+/// Unwrap one layer of matched emphasis or quoting around a title.
+///
+/// Covers typographic and Polish-style quote pairs too, since the title is
+/// generated in the user's own language.
 fn strip_title_wrapping(title: &str) -> &str {
     let trimmed = title.trim();
     for (open, close) in [
@@ -598,6 +737,10 @@ fn use_streaming() -> bool {
     true
 }
 
+/// Drop the oldest turns until the buffer fits the character budget.
+///
+/// Bounded by characters rather than turn count: one long dictation can outweigh
+/// a dozen short exchanges, and it is the prompt size that actually costs.
 fn prune_memory(memory: &mut Vec<MemoryMessage>) {
     while memory.iter().map(|m| m.content.len()).sum::<usize>() > MAX_OLLAMA_MEMORY_CHARS {
         if memory.is_empty() {
@@ -607,6 +750,10 @@ fn prune_memory(memory: &mut Vec<MemoryMessage>) {
     }
 }
 
+/// Append one turn to the Ollama memory and re-apply the size budget.
+///
+/// A poisoned lock is swallowed: losing conversational context is preferable to
+/// failing a transcript the user is waiting on.
 fn push_memory(role: &str, content: &str) {
     if let Ok(mut guard) = ollama_memory().write() {
         guard.push(MemoryMessage {
@@ -617,6 +764,7 @@ fn push_memory(role: &str, content: &str) {
     }
 }
 
+/// Clone the current memory so the request can be built without holding the lock.
 fn snapshot_memory() -> Vec<MemoryMessage> {
     ollama_memory()
         .read()
@@ -624,12 +772,21 @@ fn snapshot_memory() -> Vec<MemoryMessage> {
         .unwrap_or_default()
 }
 
+/// Forget the Ollama conversation history.
+///
+/// The local counterpart to resetting a hosted response chain — call it when
+/// starting a new thread so the previous conversation cannot bleed through.
 pub fn reset_ollama_memory() {
     if let Ok(mut guard) = ollama_memory().write() {
         guard.clear();
     }
 }
 
+/// Assemble the Ollama message list: system prompt, optional history, user turn.
+///
+/// History is replayed only in assistive mode. Formatting is a pure
+/// text-in/text-out transform, and prior turns would only invite the model to
+/// carry context across unrelated dictations.
 fn build_ollama_messages(
     system_prompt: &str,
     user_message: &str,
@@ -667,6 +824,7 @@ struct OllamaRequest {
     options: OllamaOptions,
 }
 
+/// Ollama sampling options. `num_predict: 0` means "no cap" in Ollama's dialect.
 #[derive(Debug, Serialize)]
 struct OllamaOptions {
     temperature: f32,
@@ -680,6 +838,7 @@ struct OllamaResponse {
     response: Option<String>,
 }
 
+/// The assistant turn inside an Ollama chat response.
 #[derive(Debug, Deserialize)]
 struct OllamaMessage {
     content: String,
@@ -731,12 +890,20 @@ struct AnthropicMessagesRequest {
     temperature: Option<f32>,
 }
 
+/// One turn in an Anthropic Messages request.
+///
+/// The system prompt is a top-level field in this API, not a message, so `role`
+/// is always `"user"` on the outbound path.
 #[derive(Debug, Serialize)]
 struct AnthropicMessage {
     role: &'static str,
     content: Vec<AnthropicContentBlock>,
 }
 
+/// A single content block of an Anthropic turn — text or an inline image.
+///
+/// Anthropic takes base64 images as a structured `source` object rather than the
+/// data URL the Responses API accepts, which is why the two paths diverge here.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
@@ -746,6 +913,7 @@ enum AnthropicContentBlock {
     Image { source: AnthropicImageSource },
 }
 
+/// Base64 image payload in the shape Anthropic expects.
 #[derive(Debug, Serialize)]
 struct AnthropicImageSource {
     #[serde(rename = "type")]
@@ -754,6 +922,10 @@ struct AnthropicImageSource {
     data: String,
 }
 
+/// Load an image from disk as a `data:` URL, or `None` if it cannot be used.
+///
+/// Returns `None` on anything unreadable, unsupported, or over the size cap —
+/// an attachment problem degrades the request instead of failing it.
 fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
@@ -765,8 +937,14 @@ fn encode_image_as_data_url(path: &std::path::Path) -> Option<String> {
     Some(format!("data:{mime};base64,{b64}"))
 }
 
+/// Split a user message into Responses API content parts, lifting any attached
+/// images out of the marker block.
+///
+/// The image filenames are appended to the text as well, so a model that drops
+/// or cannot see an attachment still knows something was sent.
 fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
     // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    /// Cap on image parts per Responses request; surplus paths are dropped.
     const MAX_IMAGES: usize = 16;
 
     let (mut cleaned, mut image_paths) =
@@ -802,8 +980,13 @@ fn build_responses_user_content(user_message: &str) -> Vec<InputContent> {
     content
 }
 
+/// The Anthropic counterpart of [`build_responses_user_content`].
+///
+/// Differs in one respect: an empty text block is omitted when images are
+/// present, because Anthropic rejects a blank text block alongside content.
 fn build_anthropic_user_content(user_message: &str) -> Vec<AnthropicContentBlock> {
     // Kept in sync with `MAX_AGENT_VISION_IMAGES` in the agent send path.
+    /// Cap on image parts per Anthropic request; surplus paths are dropped.
     const MAX_IMAGES: usize = 16;
 
     let (mut cleaned, mut image_paths) =
@@ -850,6 +1033,7 @@ fn build_anthropic_user_content(user_message: &str) -> Vec<AnthropicContentBlock
     content
 }
 
+/// Re-shape a `data:<mime>;base64,<payload>` URL into Anthropic's source object.
 fn anthropic_image_source_from_data_url(url: &str) -> Option<AnthropicImageSource> {
     let payload = url.strip_prefix("data:")?;
     let (media_type, data) = payload.split_once(";base64,")?;
@@ -867,6 +1051,10 @@ struct ResponsesResponse {
     output: Vec<OutputItem>,
 }
 
+/// One item of a Responses API output array.
+///
+/// `item_type` distinguishes a `message` from a `reasoning` item; the split
+/// matters because only the former may reach the user's transcript.
 #[derive(Debug, Deserialize)]
 struct OutputItem {
     #[serde(rename = "type")]
@@ -875,6 +1063,10 @@ struct OutputItem {
     content: Option<Vec<ContentPart>>,
 }
 
+/// A content part inside an output item.
+///
+/// Text arrives under `text` for output parts and under `summary` for reasoning
+/// summaries, so both are accepted and normalised downstream.
 #[derive(Debug, Deserialize)]
 struct ContentPart {
     #[serde(rename = "type")]
@@ -898,6 +1090,7 @@ struct AnthropicMessagesResponse {
     stop_details: Option<Value>,
 }
 
+/// One content block of an Anthropic response; only `"text"` blocks are read.
 #[derive(Debug, Deserialize)]
 struct AnthropicResponseContent {
     #[serde(rename = "type")]
@@ -913,6 +1106,9 @@ struct ChatMessage {
     content: String,
 }
 
+/// The meaningful text of a content part, preferring `text` over `summary`.
+///
+/// Whitespace-only parts collapse to `None` so they cannot pad the joined output.
 fn part_text(part: &ContentPart) -> Option<&str> {
     part.text
         .as_deref()
@@ -921,6 +1117,11 @@ fn part_text(part: &ContentPart) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// Fold a Responses output array into the assistant and reasoning channels.
+///
+/// The item type gates the part type: `output_text` counts only inside a
+/// `message`. That guard is what keeps a reasoning model's internal narration
+/// out of the text that gets pasted into the user's document.
 fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
     let mut assistant_parts = Vec::new();
     let mut reasoning_parts = Vec::new();
@@ -962,6 +1163,10 @@ fn extract_output_channels(output: &[OutputItem]) -> ProviderOutput {
     }
 }
 
+/// Concatenate the text blocks of an Anthropic response.
+///
+/// Joined without a separator: the API splits one continuous answer across
+/// blocks, so any inserted glue would corrupt the text.
 fn extract_anthropic_text(response: &AnthropicMessagesResponse) -> String {
     response
         .content
@@ -975,10 +1180,15 @@ fn extract_anthropic_text(response: &AnthropicMessagesResponse) -> String {
         .to_string()
 }
 
+/// The response id for log and error correlation, or `"unknown"` if absent.
 fn anthropic_response_id(response: &AnthropicMessagesResponse) -> &str {
     response.id.as_deref().unwrap_or("unknown")
 }
 
+/// The most specific available explanation of why generation stopped.
+///
+/// Prefers the structured `stop_details` over the bare `stop_reason`, so a
+/// refusal error carries the actual cause instead of just the word "refusal".
 fn anthropic_stop_detail(response: &AnthropicMessagesResponse) -> String {
     response
         .stop_details
@@ -1227,6 +1437,19 @@ pub async fn format_text_with_status_for_policy(
     format_text_with_status_channels_for_policy(text, language, false, policy, None, None).await
 }
 
+/// The single implementation every public formatting entry point funnels into.
+///
+/// Order of the pipeline matters and is load-bearing:
+/// 1. bail out for `Off` policy and sub-floor text (never reaches a provider);
+/// 2. strip Whisper repetition loops locally, before spending a request;
+/// 3. attempt the provider up to the retry budget, giving up early on errors
+///    that are deterministic;
+/// 4. re-apply the protected lexicon to the reply, since a model can silently
+///    corrupt proper nouns while rewriting prose;
+/// 5. reject refusal text and classify an unchanged echo as `AiNoop`.
+///
+/// Never returns an error: an exhausted budget yields the cleaned input with a
+/// `Failed` status, so the caller always has text to deliver.
 async fn format_text_with_status_channels_for_policy(
     text: &str,
     language: Option<&str>,
@@ -1540,6 +1763,10 @@ pub fn formatting_provider_system_prompt(
     }
 }
 
+/// Perform exactly one provider attempt over the selected wire format.
+///
+/// Carries no retry logic of its own — the caller owns the budget, so this stays
+/// the single place where "one attempt" is defined.
 async fn call_provider_once(
     endpoint_format: EndpointFormat,
     user_message: &str,
@@ -1564,6 +1791,11 @@ async fn call_provider_once(
     }
 }
 
+/// Resolve endpoint, model and credential for the active lane, then send an
+/// Anthropic Messages request.
+///
+/// Resolution is split from [`call_anthropic_messages_resolved`] so tests can
+/// exercise the wire contract against a mock without any config in play.
 async fn call_anthropic_messages(
     user_message: &str,
     system_prompt: &str,
@@ -1581,7 +1813,7 @@ async fn call_anthropic_messages(
     };
     let model =
         lane_truth::model_for_provider(mode, ProviderKind::AnthropicMessages, &Config::load());
-    let api_key = get_anthropic_api_key()?;
+    let api_key = get_provider_api_key(ProviderKind::AnthropicMessages)?;
 
     call_anthropic_messages_resolved(
         user_message,
@@ -1594,6 +1826,14 @@ async fn call_anthropic_messages(
     .await
 }
 
+/// Send an Anthropic Messages request against explicitly supplied wire values.
+///
+/// Three response shapes are rejected rather than passed on as success: a
+/// `refusal` stop (when the model's capability policy reports one), an empty
+/// text body, and a `max_tokens` truncation. Each would otherwise surface as a
+/// silently short or blank transcript. Temperature is filtered through the
+/// model's capability policy, because some Anthropic models reject the field
+/// outright rather than ignoring it.
 async fn call_anthropic_messages_resolved(
     user_message: &str,
     system_prompt: &str,
@@ -2029,8 +2269,10 @@ pub fn has_api_key() -> bool {
         return true;
     }
 
-    if matches!(endpoint_format, EndpointFormat::AnthropicMessages) {
-        return get_anthropic_api_key().is_ok();
+    // A non-default vendor authenticates with its own registry key account; the
+    // protected default lane keeps its dedicated formatting credential.
+    if !provider.owns_generic_lane_config() {
+        return get_provider_api_key(provider).is_ok();
     }
 
     // Responses API requires API key
@@ -2042,6 +2284,12 @@ pub fn is_formatting_available() -> bool {
     has_api_key()
 }
 
+/// Wire-contract and text-hygiene tests for the formatting module.
+///
+/// Provider tests run against `mockito` and assert the exact JSON body, so a
+/// drifted request shape fails here rather than at a live endpoint. Anything
+/// touching process env is `#[serial]` — env is global, and parallel tests
+/// would otherwise read each other's overrides.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2049,25 +2297,33 @@ mod tests {
     use serde_json::json;
     use serial_test::serial;
 
+    /// Env keys cleared/pinned around Anthropic formatting unit tests.
     const ANTHROPIC_TEST_ENV_KEYS: &[&str] = &[
         "LLM_FORMATTING_TEMPERATURE",
         "LLM_TEMPERATURE",
         "CODESCRIBE_ANTHROPIC_MAX_TOKENS",
     ];
+    /// Env flag set in the lane-truth child process so nested tests skip re-spawn.
     const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
 
+    /// RAII holder that restores one env var to its prior value on drop.
+    ///
+    /// Captures the previous value rather than assuming the variable was unset,
+    /// so a test run under an operator dotenv leaves the environment as it found it.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set the variable, remembering what was there before.
         fn set(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
             unsafe { std::env::set_var(key, value) };
             Self { key, prev }
         }
 
+        /// Unset the variable, remembering what was there before.
         fn remove(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             unsafe { std::env::remove_var(key) };
@@ -2076,6 +2332,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the captured value, or unset again if there was none.
         fn drop(&mut self) {
             match self.prev.as_deref() {
                 Some(value) => unsafe { std::env::set_var(self.key, value) },
@@ -2084,11 +2341,14 @@ mod tests {
         }
     }
 
+    /// A bundle of [`EnvGuard`]s that unwinds in one go at end of scope.
     struct TestEnv {
         guards: Vec<EnvGuard>,
     }
 
     impl TestEnv {
+        /// Clear every temperature and token-cap override so the test starts
+        /// from provider defaults rather than the operator's dotenv.
         fn clean() -> Self {
             Self {
                 guards: ANTHROPIC_TEST_ENV_KEYS
@@ -2098,11 +2358,13 @@ mod tests {
             }
         }
 
+        /// Add one more override under the same unwind.
         fn set(&mut self, key: &'static str, value: &str) {
             self.guards.push(EnvGuard::set(key, value));
         }
     }
 
+    /// Build a title target directly, bypassing config resolution entirely.
     fn title_provider(
         format: EndpointFormat,
         endpoint: String,
@@ -2117,6 +2379,8 @@ mod tests {
         }
     }
 
+    /// Titles survive the decorations models add despite instructions, and the
+    /// length cap clips by character so Polish diacritics are not cut mid-glyph.
     #[test]
     fn thread_title_sanitizer_normalizes_noise_and_unicode_length() {
         let cases = [
@@ -2136,6 +2400,8 @@ mod tests {
         assert_eq!(clipped, "ą".repeat(THREAD_TITLE_MAX_CHARS));
     }
 
+    /// The title budget is pinned, not env-tunable: titling is a background
+    /// nicety and must never be able to stall a session the user is waiting on.
     #[test]
     fn thread_title_contract_has_fixed_timeout_and_token_cap() {
         assert_eq!(THREAD_TITLE_TIMEOUT, Duration::from_secs(8));
@@ -2144,6 +2410,10 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// Titling must not join the user's response chain. Asserts the request
+    /// carries no `previous_response_id` and that the stored chain id is
+    /// byte-identical before and after — a stored title id would leak the title
+    /// prompt into every later turn of the real conversation.
     async fn responses_thread_title_is_one_shot_and_chain_stateless() {
         use crate::state::conversation::{
             AiMode, get_previous_response_id_for_mode, set_response_id_for_mode,
@@ -2206,6 +2476,9 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// The Anthropic title path keeps the same prompt and token cap as the
+    /// Responses path, and forwards the user's text unmodified — the two wire
+    /// formats must not drift into producing different titles for one input.
     async fn anthropic_thread_title_uses_same_prompt_cap_and_raw_text() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -2254,6 +2527,9 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// Ollama's title path is the local analogue of chain-statelessness: memory
+    /// is pre-seeded with two turns and must still hold exactly two afterwards,
+    /// proving the title neither read from nor appended to the conversation.
     async fn ollama_thread_title_uses_same_prompt_cap_without_memory() {
         reset_ollama_memory();
         push_memory("user", "stale conversation memory");
@@ -2306,6 +2582,9 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// The timeout wraps body download, not just the response headers. The mock
+    /// answers `200` immediately and then trickles the body; a timeout applied
+    /// only to the header phase would let this call run past its budget.
     async fn thread_title_timeout_covers_response_body() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -2335,6 +2614,9 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Detection fires on genuine Whisper loops — both single words and
+    /// multi-word phrases — while ordinary Polish prose that merely reuses a
+    /// word stays untouched. Over-eager detection would delete real speech.
     #[test]
     fn test_has_repetition_loop() {
         // Should detect repetitions
@@ -2348,6 +2630,9 @@ mod tests {
         assert!(!has_repetition_loop("Kali to bogini"));
     }
 
+    /// Collapsing a loop keeps the punctuation a reader expects: a comma that
+    /// only separated repeats is dropped, a sentence-ending period is kept.
+    /// Covers the real-world comma-chained Polish case, not just word doubling.
     #[test]
     fn test_remove_simple_repetitions() {
         // Basic word repetitions
@@ -2388,17 +2673,23 @@ mod tests {
         );
     }
 
+    /// Sub-floor dictations never reach a provider — below the floor there is
+    /// no structure to add, and a rewrite would be pure risk.
     #[test]
     fn test_short_non_assistive_text_is_skipped() {
         assert!(should_skip_ai_formatting("krótki", false));
         assert!(should_skip_ai_formatting("123456789", false));
     }
 
+    /// The floor is formatting-only: a two-word assistive request is a real
+    /// instruction and must always be sent.
     #[test]
     fn test_assistive_short_text_is_not_skipped() {
         assert!(!should_skip_ai_formatting("Pomóż mi", true));
     }
 
+    /// Pins the boundary as exclusive: text of exactly the floor length is
+    /// formatted. Guards the off-by-one that would silently widen the skip zone.
     #[test]
     fn test_non_assistive_text_at_threshold_is_not_skipped() {
         let text = "1234567890";
@@ -2406,24 +2697,37 @@ mod tests {
         assert!(!should_skip_ai_formatting(text, false));
     }
 
+    /// Whitespace-only differences count as an echo — re-spacing is not work.
     #[test]
     fn test_effectively_same_ignores_whitespace_only() {
         assert!(is_effectively_same("raw   one two", "raw one two"));
         assert!(is_effectively_same("raw one two\n", "raw one two"));
     }
 
+    /// The other half of the echo contract: punctuation and capitalization
+    /// changes are real formatting work and must not collapse into `AiNoop` —
+    /// for dictation they are usually the *only* thing the pass was asked to do.
     #[test]
     fn test_effectively_same_preserves_formatting_changes() {
         assert!(!is_effectively_same("raw one two", "RAW ONE TWO."));
         assert!(!is_effectively_same("to jest test", "To jest test"));
     }
 
+    /// The shipped default is fail-fast — one attempt, no retry. Pinned because
+    /// raising it silently multiplies latency on every deterministic failure.
     #[test]
     fn default_retry_policy_is_single_attempt() {
         assert_eq!(DEFAULT_AI_MAX_RETRIES, 0);
         assert_eq!(DEFAULT_AI_RETRY_DELAY_MS, 500);
     }
 
+    /// Saved settings win over stale env — a settings change takes effect on the
+    /// next request, not the next restart.
+    ///
+    /// Re-executes itself as a child process with an isolated data dir and
+    /// deliberately stale `LLM_*` env. That indirection is required: the lane
+    /// resolvers read process-global state, so the contract cannot be observed
+    /// honestly from inside a shared test process.
     #[test]
     fn lane_configs_read_fresh_truth_after_settings_save() {
         if std::env::var_os(LANE_TRUTH_TEST_CHILD).is_none() {
@@ -2490,6 +2794,8 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// A model that accepts `temperature` gets it: the configured value appears
+    /// verbatim in the request body.
     async fn anthropic_sonnet_request_keeps_temperature() {
         let mut env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
@@ -2541,6 +2847,9 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// The mirror case: with the same env override set, a model whose
+    /// capability policy rejects `temperature` must have the field omitted
+    /// entirely. Sending it anyway is a hard API error, not a soft ignore.
     async fn anthropic_opus_request_strips_temperature() {
         let mut env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
@@ -2589,6 +2898,9 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// A refusal arrives as HTTP 200 with empty content. It must surface as an
+    /// error naming the cause, not as a successful empty transcript — otherwise
+    /// the user silently loses their dictation with no explanation.
     async fn anthropic_refusal_stop_reason_is_readable_error() {
         let _env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
@@ -2631,6 +2943,8 @@ mod tests {
 
     #[tokio::test]
     #[serial]
+    /// Multiple text blocks join with no separator: Anthropic splits one
+    /// continuous answer across blocks, so any inserted glue would corrupt it.
     async fn anthropic_happy_path_joins_text_content_blocks() {
         let _env = TestEnv::clean();
         let mut server = mockito::Server::new_async().await;
@@ -2671,6 +2985,10 @@ mod tests {
         mock.assert_async().await;
     }
 
+    /// Pins the retry classifier against the exact error strings it matches on.
+    /// Deterministic failures (empty completion, refusal, rejected request) are
+    /// not retried; a transport stall is. Since the classifier reads opaque
+    /// messages, this test is the only thing anchoring those strings.
     #[test]
     fn empty_content_provider_errors_are_not_retryable() {
         assert!(!should_retry_provider_error(&anyhow::anyhow!(

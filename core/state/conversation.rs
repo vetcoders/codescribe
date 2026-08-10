@@ -22,7 +22,9 @@ pub enum AiMode {
 /// Conversation sessions - separate stream per mode
 #[derive(Default)]
 struct ConversationState {
+    /// Chain id for the formatting stream, or `None` before its first response.
     formatting_response_id: Option<String>,
+    /// Chain id for the assistive stream, or `None` before its first response.
     assistive_response_id: Option<String>,
 }
 
@@ -89,10 +91,12 @@ pub fn has_active_conversation() -> bool {
         .unwrap_or(false)
 }
 
+/// Conversation mode isolation: separate mode keys must not share history.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Agent vs dictation (or other) modes keep independent conversation buckets.
     #[test]
     fn test_separate_mode_conversations() {
         // Reset first to ensure clean state

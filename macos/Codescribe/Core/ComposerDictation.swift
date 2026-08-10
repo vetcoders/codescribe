@@ -261,8 +261,46 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
             }
         }
     }
-    func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {}
+    /// Layered bounded patch (Layer 1 tail-patch, Layer 2 lexicon/LLM). The
+    /// composer assembles its own live preview from `onFinal`, so a listener
+    /// that ignored these would keep showing text the engine has already
+    /// retracted — split-brain against the overlay, which does apply them.
+    /// `start`/`end` are Rust-canonical char offsets inside `utteranceId`;
+    /// unbound or overrunning windows are dropped whole rather than
+    /// half-applied, matching the overlay and the Rust committed buffer.
+    ///
+    /// `lastIndex` is not a style choice — it is the third copy of one algebra.
+    /// The same patch is resolved by `live_assembly.rs` (`rposition`) and by
+    /// `OverlayState.onReplaceRange` (`lastIndex`); this used to say
+    /// `firstIndex`, which picks the opposite slot the moment an utterance id is
+    /// ever sealed twice. Today it cannot be (`EngineEvent::UtteranceFinal` is
+    /// contracted "once per VAD-bounded segment"), so the divergence was latent
+    /// and invisible — see
+    /// `re_sealed_utterance_id_duplicates_here_but_not_in_the_swift_surfaces`,
+    /// which pins how the three surfaces disagree. Changing this one word costs
+    /// nothing today and removes one of the three ways they can drift apart.
+    func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {
+        publishPreview {
+            guard let index = committedSegments.lastIndex(where: { $0.utteranceId == utteranceId }),
+                  let startOffset = Int(exactly: start),
+                  let endOffset = Int(exactly: end),
+                  startOffset <= endOffset
+            else { return }
+            var patched = committedSegments[index].text
+            guard endOffset <= patched.count else { return }
+            let lower = patched.index(patched.startIndex, offsetBy: startOffset)
+            let upper = patched.index(patched.startIndex, offsetBy: endOffset)
+            patched.replaceSubrange(lower..<upper, with: text)
+            committedSegments[index].text = patched
+        }
+    }
+    /// Annotations are visible decoration on the overlay canvas; the composer
+    /// preview feeds a chat draft, which has no place to render them.
     func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind) {}
+    /// `{selection_N}` fences belong to the assistive/overlay lane — they mark
+    /// where a user's SELECTION goes in an agent prompt. The composer draft is
+    /// authored in the chat window, where the selection surface does not exist,
+    /// so there is nothing here to anchor them to. Deliberately inert.
     func onContextMarker(position: UInt64, marker: String) {}
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {}
     func onFinalTranscriptReady(text: String) {

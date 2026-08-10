@@ -1,81 +1,102 @@
 //! Stop-path final-pass routing, streaming completeness, and latency receipts.
 //!
 //! Settings / `FINAL_PASS_MODE` is law (operator 2026-08-05):
-//! - **Always** (`on`): full Whisper file re-pass after release.
-//! - **Smart**: skip full re-pass when streaming completeness is adjudicated.
+//! - **Always** (`on`): full Whisper file re-pass after release. The **only**
+//!   mode in which a full-file re-pass is permitted.
+//! - **Smart**: Whisper may final-pass **individual utterances only** — never the
+//!   whole file. When streaming completeness is adjudicated Complete, nothing runs
+//!   at stop. When complete-but-shapeless (long wall of words, no sentence
+//!   terminals — the shape row, operator 2026-08-09), Whisper transcribes the
+//!   file but only its punctuation/capitalization is adopted onto the committed
+//!   words (`punctuation_transplant`; word sequence invariant at THIS stage
+//!   because shape is the deficit here — live word corrections belong to the
+//!   Layer 1 tail patch, which is a core element, on by default). When
+//!   incomplete, only the uncommitted audio tail (from the last committed
+//!   utterance end) is transcribed and **appended** to the committed streaming
+//!   text. The doctrine behind all of this forbids TRUNCATING overlay text and
+//!   DROPPING transcripts the user already saw (the pre-0.8.0 full-replace
+//!   failure) — it does not forbid live correction of committed words.
 //!   Pair with `CODESCRIBE_LAYERED_TRANSCRIPTION` (orthogonal toggle) for live
 //!   Whisper tail-patches during hold — Smart does not force layered on.
-//! - **Off**: never run full file re-pass; streaming (+ post-process) is final.
+//! - **Off**: hard off at stop — zero Whisper invocation on the stop path;
+//!   streaming (+ post-process) is final.
 //!
 //! Dictionary / lexicon cleanup is **not** gated by this mode — it always runs
-//! in the transcript post-process pipeline (`StreamPostProcessor`).
+//! in the transcript post-process pipeline (`StreamPostProcessor`), in all modes.
 
 use codescribe_core::pipeline::contracts::FinalPassDisposition;
 
 use super::helpers::{CompletenessCommitSource, SessionTelemetrySnapshot};
 
-/// Canonical stop-path final-pass routing (Settings → Final pass / `FINAL_PASS_MODE`).
-/// Distinct from `pipeline::contracts::FinalPassMode` (lexicon cleanup request).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FinalPassRoutingMode {
-    /// Always: full Whisper file re-pass after release (on).
-    Always,
-    /// Smart: tail-patch / layered live path; full re-pass only when incomplete.
-    Smart,
-    /// Off: no full file re-pass; streaming is final (dictionary still applies later).
-    Off,
-}
-
-impl FinalPassRoutingMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Always => "always",
-            Self::Smart => "smart",
-            Self::Off => "off",
-        }
-    }
-
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "always" | "on" | "1" | "true" | "yes" => Some(Self::Always),
-            "smart" | "auto" => Some(Self::Smart),
-            "off" | "0" | "false" | "no" => Some(Self::Off),
-            _ => None,
-        }
-    }
-}
-
-/// Resolve final-pass routing from env/settings. Default: Smart.
-///
-/// Precedence:
-/// 1. `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` (`always|smart|off`)
-/// 2. Legacy `CODESCRIBE_LOCAL_STT_FINAL_PASS` falsey → Off, truthy → Always
-/// 3. Smart
-pub(crate) fn final_pass_routing_mode() -> FinalPassRoutingMode {
-    for key in ["FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
-        if let Ok(raw) = std::env::var(key)
-            && let Some(mode) = FinalPassRoutingMode::parse(&raw)
-        {
-            return mode;
-        }
-    }
-    if let Ok(raw) = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS") {
-        let v = raw.trim().to_ascii_lowercase();
-        if matches!(v.as_str(), "" | "0" | "false" | "no" | "off") {
-            return FinalPassRoutingMode::Off;
-        }
-        if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
-            return FinalPassRoutingMode::Always;
-        }
-    }
-    FinalPassRoutingMode::Smart
-}
+/// Canonical stop-path routing mode + its env resolution now live in core
+/// (`codescribe_core::config::final_pass`) so **every** stop lane — this
+/// controller and the composer voice-note lane in the UniFFI bridge — consults
+/// one parser instead of a per-lane twin. Re-exported at the historic path so
+/// controller call sites and tests stay unchanged.
+pub(crate) use codescribe_core::config::{FinalPassRoutingMode, final_pass_routing_mode};
 
 /// Typed streaming-completeness decision for Smart skip (never "non-empty ⇒ complete").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamingCompleteness {
+    /// The adjudicator sealed the transcript: committed, covered, no pending tail.
     Complete,
+    /// Coverage is complete but the transcript is a wall of words: long text
+    /// with (almost) no sentence-terminal punctuation. Everything was heard —
+    /// nothing was shaped. Measured root cause of "final pass tak wkurwiał"
+    /// (2026-08-09): Apple live commits ~1 period per ~1050 chars of Polish
+    /// while Whisper over the same audio produces 9, and Smart's
+    /// coverage-only Complete skipped the only pass that carries sentences.
+    CompleteShapeDeficient,
+    /// Something is missing; `reason` is the stable telemetry label for which
+    /// check failed (`no_speech`, `empty`, `pending_tail`, `partial_pending`,
+    /// `no_commit_source`, `no_coverage`).
     Incomplete { reason: &'static str },
+}
+
+/// Below this length shape is not judged: a short note legitimately has no
+/// terminal punctuation and must keep skipping the final pass.
+const SHAPE_MIN_CHARS: usize = 320;
+/// A transcript with more characters per sentence terminal than this reads as
+/// unshaped. Grounded in the 2026-08-09 measurement: human reference ≈ 175
+/// chars/terminal, Whisper ≈ 141, Apple's wall ≈ 1052 — the floor sits far
+/// from natural prose so lists and long clauses do not trip it.
+const SHAPE_MAX_CHARS_PER_TERMINAL: usize = 400;
+/// A single terminal-free stretch longer than this marks the transcript
+/// deficient even when the average looks healthy. Measured 2026-08-10: the
+/// morning dictation averaged ~140 chars/terminal (live tail patches had
+/// seeded the head with sentences) yet carried a ~450-char run-on wall in the
+/// middle — averages hide local walls, and the skip decision quoted the
+/// average. Same magnitude as SHAPE_MIN_CHARS: a stretch long enough to be
+/// judged at all must contain at least one sentence end.
+const SHAPE_MAX_TERMINAL_FREE_RUN: usize = 320;
+
+/// True when a coverage-complete transcript is long enough to need sentences
+/// and carries (almost) none — globally (chars per terminal) or locally (one
+/// run-on stretch with no terminal at all).
+pub(crate) fn transcript_shape_deficient(text: &str) -> bool {
+    let text = text.trim();
+    let chars = text.chars().count();
+    if chars < SHAPE_MIN_CHARS {
+        return false;
+    }
+    let terminals = text
+        .chars()
+        .filter(|c| matches!(c, '.' | '!' | '?' | '…'))
+        .count();
+    if terminals == 0 || chars / terminals > SHAPE_MAX_CHARS_PER_TERMINAL {
+        return true;
+    }
+    let mut run = 0usize;
+    let mut longest_run = 0usize;
+    for c in text.chars() {
+        if matches!(c, '.' | '!' | '?' | '…') {
+            run = 0;
+        } else {
+            run += 1;
+            longest_run = longest_run.max(run);
+        }
+    }
+    longest_run > SHAPE_MAX_TERMINAL_FREE_RUN
 }
 
 /// Recorder/adjudicator evidence for Smart final-pass skip.
@@ -160,6 +181,13 @@ pub(crate) fn assess_streaming_completeness(
             reason: "no_coverage",
         };
     }
+    // Coverage says everything was heard; shape asks whether anything was
+    // shaped. A long wall of words routes to the punctuation transplant
+    // instead of a silent skip (operator decision 2026-08-09, superseding the
+    // 2026-08-05 coverage-only mapping).
+    if transcript_shape_deficient(text) {
+        return StreamingCompleteness::CompleteShapeDeficient;
+    }
     StreamingCompleteness::Complete
 }
 
@@ -211,16 +239,22 @@ pub(crate) fn engine_label_from_verdict(
 /// Named stop-path phase timings (rec_stop → final_pass → postproc → format → delivery).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct StopPathBudget {
+    /// Wall time of the whole stop path; the named phases must fit inside it.
     pub total_secs: f64,
+    /// Recorder teardown: stopping capture and sealing the audio file.
     pub rec_stop_secs: f64,
+    /// Whisper final pass, whatever `FinalPassAction` selected (0 when skipped).
     pub final_pass_secs: f64,
+    /// Transcript post-processing (dictionary / lexicon cleanup).
     pub postproc_secs: f64,
+    /// AI formatting pass, when enabled.
     pub format_secs: f64,
     /// Actual deliver_once / history+paste handoff span (not phase-4 cleanup).
     pub delivery_secs: f64,
 }
 
 impl StopPathBudget {
+    /// Total of the five named phases, excluding unattributed wall time.
     pub(crate) fn named_sum_secs(self) -> f64 {
         self.rec_stop_secs
             + self.final_pass_secs
@@ -272,6 +306,11 @@ pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &s
 /// delivery are the downstream pipeline stages of the same stop.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct FinalPassStages {
+    /// Stop-time progressive seal work. Healthy live sessions do this before
+    /// controller stop, so the expected value here is zero.
+    pub seal_ms: u64,
+    /// Pure seals + session-partial residual composition at stop.
+    pub residual_ms: u64,
     pub queue_ms: u64,
     pub model_load_ms: u64,
     pub cold_load: bool,
@@ -285,15 +324,22 @@ impl FinalPassStages {
     /// Final-pass wall time not attributed to queue/load/inference: audio file
     /// load, VAD, silero tail filter, lexicon final pass.
     pub(crate) fn engine_overhead_ms(self) -> u64 {
-        self.final_pass_total_ms
-            .saturating_sub(self.queue_ms + self.model_load_ms + self.inference_ms)
+        self.final_pass_total_ms.saturating_sub(
+            self.seal_ms
+                + self.residual_ms
+                + self.queue_ms
+                + self.model_load_ms
+                + self.inference_ms,
+        )
     }
 }
 
 /// Single INFO line carrying the final-pass stage split for one stop.
 pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
     format!(
-        "final_pass_stages queue_ms={queue} model_load_ms={load} cold_load={cold} inference_ms={inf} engine_overhead_ms={overhead} postprocess_ms={pp} delivery_ms={del} final_pass_total_ms={total}",
+        "final_pass_stages seal_ms={seal} residual_ms={residual} queue_ms={queue} model_load_ms={load} cold_load={cold} inference_ms={inf} engine_overhead_ms={overhead} postprocess_ms={pp} delivery_ms={del} final_pass_total_ms={total}",
+        seal = stages.seal_ms,
+        residual = stages.residual_ms,
         queue = stages.queue_ms,
         load = stages.model_load_ms,
         cold = stages.cold_load,
@@ -305,29 +351,162 @@ pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
     )
 }
 
-/// Skip full local STT re-pass according to routing mode + completeness.
+/// What the stop path must actually do with Whisper — typed, not a lossy bool.
 ///
-/// **Honest routing** (operator 2026-08-05): Settings / `FINAL_PASS_MODE` is law.
-/// Live engine (Apple vs Whisper) does **not** rewrite the mode:
-/// - **Always** (`on`): never skip — full Whisper file re-pass after release.
-/// - **Smart**: skip when streaming completeness is Complete; live gap-fill is
-///   layered transcription / tail-patch during hold, not a stop-path Always force.
-/// - **Off**: always skip — optional final pass is off; streaming is final.
+/// The bool `should_skip_full_final_repass` could not distinguish "run Whisper over
+/// the whole file" from "transcribe only the uncommitted tail and append it"; both
+/// collapsed to `false`. That collapse is what let Smart drift into full-file
+/// re-passes, replacing committed text. This enum makes the two paths distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalPassAction {
+    /// Do not invoke Whisper at stop. Streaming (+ post-process) is final.
+    SkipStreamingFinal,
+    /// Re-transcribe the entire recorded file. **Always mode only.**
+    FullFileRepass,
+    /// Transcribe only the uncommitted audio tail (from the last committed
+    /// utterance end) and APPEND it to the committed streaming text. Committed
+    /// text is immutable.
+    TailGapFill,
+    /// Run Whisper over the whole file, but adopt ONLY punctuation and
+    /// capitalization onto the committed words via word alignment
+    /// (`codescribe_core::stt::punctuation_transplant`). The committed word
+    /// sequence is invariant — this is shape transfer, not a re-pass; a weak
+    /// alignment delivers the committed text untouched.
+    PunctuationRepass,
+}
+
+/// Canonical stop-path routing decision. Settings / `FINAL_PASS_MODE` is law.
 ///
-/// Dictionary/lexicon is applied always in post-process, independent of this mode.
+/// Hard mapping (operator 2026-08-05, shape row added 2026-08-09):
+/// - `Always` → `FullFileRepass`, regardless of completeness.
+/// - `Smart` + `Complete` → `SkipStreamingFinal`.
+/// - `Smart` + `CompleteShapeDeficient` → `PunctuationRepass` (words stay
+///   committed; only sentence shape is adopted — the operator's answer to a
+///   1052-char delivery carrying one period while Whisper heard nine).
+/// - `Smart` + `Incomplete{..}` → `TailGapFill` (per-utterance / tail only,
+///   **never** a full-file re-pass).
+/// - `Off` → `SkipStreamingFinal`, regardless of completeness.
 ///
-/// `prefer_apple` is retained for call-site clarity/logging only — it must not
-/// change skip decisions (dishonest Apple→Always was the 2026-07-25 override).
-pub(crate) fn should_skip_full_final_repass(
+/// `FullFileRepass` is reachable from `Always` and from nowhere else — the live
+/// engine (Apple vs Whisper) must never rewrite the mode.
+pub(crate) fn final_pass_action(
     mode: FinalPassRoutingMode,
     completeness: StreamingCompleteness,
-    _prefer_apple: bool,
-) -> bool {
+) -> FinalPassAction {
     match mode {
-        FinalPassRoutingMode::Always => false,
-        FinalPassRoutingMode::Off => true,
-        FinalPassRoutingMode::Smart => {
-            matches!(completeness, StreamingCompleteness::Complete)
-        }
+        FinalPassRoutingMode::Always => FinalPassAction::FullFileRepass,
+        FinalPassRoutingMode::Off => FinalPassAction::SkipStreamingFinal,
+        FinalPassRoutingMode::Smart => match completeness {
+            StreamingCompleteness::Complete => FinalPassAction::SkipStreamingFinal,
+            StreamingCompleteness::CompleteShapeDeficient => FinalPassAction::PunctuationRepass,
+            StreamingCompleteness::Incomplete { .. } => FinalPassAction::TailGapFill,
+        },
+    }
+}
+
+/// The append-only tail gap-fill composer now lives in core
+/// (`codescribe_core::stt::append_tail_gap`) so **every** Smart-mode stop lane —
+/// this controller and the composer voice-note lane in the UniFFI bridge —
+/// shares one implementation instead of a per-lane twin. Re-exported at the
+/// historic path so controller call sites and tests stay unchanged.
+pub(crate) use codescribe_core::stt::append_tail_gap;
+
+/// Progressive-seal residual stop path: consume session partials instead of
+/// re-transcribing the file. Measured 2026-08-10 baseline for the hated
+/// full-file final_pass was 8.458 s — residual composition is pure string work.
+///
+/// File-inference fallback (PunctuationRepass / TailGapFill audio cut) is
+/// reserved for a dead live lane. See
+/// [`codescribe_core::pipeline::streaming::progressive_seal`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StopPathResidualOutcome {
+    pub text: String,
+    pub sealed_prefix: String,
+    pub residual_tail: String,
+    pub used_file_decode_fallback: bool,
+    /// Wall seconds of the residual phase (string composition, not Whisper).
+    pub final_pass_phase_secs: f64,
+}
+
+/// Compose delivered text from progressive seals + residual session partials.
+///
+/// Never invokes Whisper. Returns `used_file_decode_fallback = false` always
+/// — callers that need file inference must take the existing TailGapFill /
+/// PunctuationRepass arms after [`residual_prefers_session_partials`] refuses.
+pub(crate) fn compose_stop_path_residual_from_partials(
+    sealed_spans: &[String],
+    residual_partial: &str,
+) -> StopPathResidualOutcome {
+    let started = std::time::Instant::now();
+    let sealed_prefix = sealed_spans
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let residual_tail = residual_partial.trim().to_string();
+    let text = append_tail_gap(&sealed_prefix, &residual_tail);
+    StopPathResidualOutcome {
+        text,
+        sealed_prefix,
+        residual_tail,
+        used_file_decode_fallback: false,
+        final_pass_phase_secs: started.elapsed().as_secs_f64(),
+    }
+}
+
+/// Prefer session-partial residual over file re-decode when the live lane is
+/// healthy and partials cover the unsealed tail.
+pub(crate) fn residual_prefers_session_partials(
+    live_lane_alive: bool,
+    has_residual_partials: bool,
+) -> bool {
+    codescribe_core::pipeline::streaming::progressive_seal::residual_prefers_session_partials(
+        live_lane_alive,
+        has_residual_partials,
+    )
+}
+
+/// Concrete source selected for Smart-mode incomplete-tail completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SmartTailGapSource {
+    /// The live session already produced progressive seals/residual text.
+    SessionResidual,
+    /// Bootstrap or dead-lane recovery may decode the retained WAV.
+    FileDecodeFallback,
+    /// No usable live text and no file safety net.
+    Unavailable,
+}
+
+/// Select the Smart tail source before branching on the existence of a WAV.
+/// This ordering is the contract: a normal recorder always has a WAV, so
+/// checking the path first would make the live residual permanently dead.
+pub(crate) fn smart_tail_gap_source(
+    live_lane_alive: bool,
+    live_session_text: &str,
+    has_audio_path: bool,
+) -> SmartTailGapSource {
+    if residual_prefers_session_partials(live_lane_alive, !live_session_text.trim().is_empty()) {
+        SmartTailGapSource::SessionResidual
+    } else if has_audio_path {
+        SmartTailGapSource::FileDecodeFallback
+    } else {
+        SmartTailGapSource::Unavailable
+    }
+}
+
+#[cfg(test)]
+mod stop_path_integration_tests {
+    use super::*;
+
+    /// Smart stop must consume the live session residual even when a WAV path
+    /// exists. File decode is reserved for bootstrap/dead-lane recovery.
+    #[test]
+    fn smart_live_session_residual_preempts_wav_decode() {
+        let source = smart_tail_gap_source(true, "Pierwsze. Otwarty ogon", true);
+        assert_eq!(source, SmartTailGapSource::SessionResidual);
+
+        let bootstrap = smart_tail_gap_source(false, "", true);
+        assert_eq!(bootstrap, SmartTailGapSource::FileDecodeFallback);
     }
 }

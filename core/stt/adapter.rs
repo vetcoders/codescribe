@@ -14,18 +14,21 @@ use crate::pipeline::contracts::{RawTranscript, SpeechUtterance, TranscriptionAd
 pub struct WhisperSingletonAdapter;
 
 impl Default for WhisperSingletonAdapter {
+    /// Default adapter is the zero-sized WhisperSingletonAdapter.
     fn default() -> Self {
         Self
     }
 }
 
 impl WhisperSingletonAdapter {
+    /// Construct the adapter; the engine itself is the process-wide singleton.
     pub fn new() -> Self {
         Self
     }
 }
 
 impl TranscriptionAdapter for WhisperSingletonAdapter {
+    /// Map SpeechUtterance samples into RawTranscript via Whisper singleton.
     fn transcribe(
         &self,
         utterance: &SpeechUtterance,
@@ -39,6 +42,7 @@ impl TranscriptionAdapter for WhisperSingletonAdapter {
     }
 }
 
+/// Send/Sync bounds, construction, and mock TranscriptionAdapter parity.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +50,7 @@ mod tests {
     /// Verify the adapter satisfies Send + Sync (required by trait bound).
     #[test]
     fn adapter_is_send_sync() {
+        /// Compile-time helper: require T: Send + Sync for the adapter type.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<WhisperSingletonAdapter>();
     }
@@ -62,6 +67,7 @@ mod tests {
     }
 
     impl TranscriptionAdapter for MockAdapter {
+        /// Test double: returns fixed text; ignores samples and language.
         fn transcribe(
             &self,
             _utterance: &SpeechUtterance,
@@ -75,6 +81,7 @@ mod tests {
         }
     }
 
+    /// Mock TranscriptionAdapter returns fixed text without invoking Whisper.
     #[test]
     fn mock_adapter_returns_text() {
         let adapter = MockAdapter {

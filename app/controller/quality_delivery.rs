@@ -14,14 +14,27 @@ use crate::os::hotkeys::HoldMode;
 
 use super::types::RecordingTruthMetadata;
 
+/// Ring size of the exactly-once delivery fence — bounds memory while still
+/// covering late duplicate callbacks for recent recordings.
 const AUTOMATIC_DELIVERY_HISTORY_CAPACITY: usize = 32;
 
+/// Below this transcript length the quality gate stays silent: short utterances
+/// produce noisy ratios that would fire the commit prompt on nothing.
 const QUALITY_GATE_MIN_CHARS: usize = 24;
+/// Relaxed floor for AI-formatted output, where even short text is worth
+/// gating because formatting can rewrite it wholesale.
 const SHORT_AI_QUALITY_GATE_MIN_CHARS: usize = 10;
+/// Fraction of dropped stream chunks that marks the transcript as lossy.
 const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
+/// Fraction of the transcript rewritten between raw and final that reads as a
+/// rewrite rather than a correction.
 const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
+/// Fraction of raw characters removed by backspaces that reads as heavy
+/// correction pressure.
 const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
 
+/// Measured distance between the raw transcript and what is about to be
+/// delivered. Feeds [`evaluate_quality_commit_trigger`].
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ActionQualityProbe {
     // pub(crate): controller impl + controller::tests (child) both read these.
@@ -30,8 +43,25 @@ pub(super) struct ActionQualityProbe {
     pub(crate) raw_final_diff_ratio: f32,
     pub(crate) correction_ratio: f32,
     pub(crate) drop_ratio: f32,
+    /// MiniLM cosine between the raw transcript and the AI-formatted output.
+    /// `None` = no verdict (guard fail-open, raw lane, or text too short) —
+    /// character ratios alone cannot see an LLM that changed the meaning while
+    /// keeping the length (`core::pipeline::semantic_guard`, calibrated
+    /// 2026-08-09). Filled after construction because embedding is model work,
+    /// not arithmetic.
+    pub(crate) semantic_cosine: Option<f32>,
+    /// True when raw and final are the SAME word sequence and differ only in
+    /// punctuation, case, or whitespace — the punctuation transplant's output
+    /// by construction. The prefix/suffix delta reads a mid-text punctuation
+    /// insertion as a rewrite of everything after it (measured 2026-08-10:
+    /// diff_raw_final=1.000 on a 24-mark transplant, which quarantined the
+    /// shaped text and shipped the raw wall the operator had just waited
+    /// 8.5s for), so the character-ratio triggers must not judge these.
+    pub(crate) shape_only: bool,
 }
 
+/// Normalize a transcript before diffing so leading whitespace and a
+/// capitalized opening letter do not register as real edits.
 fn normalize_for_diff(s: &str) -> String {
     let trimmed = s.trim_start();
     // Lowercase first char only (preserving rest of original case)
@@ -43,6 +73,10 @@ fn normalize_for_diff(s: &str) -> String {
 }
 
 impl ActionQualityProbe {
+    /// Measure raw-vs-final distance plus stream drop rate into a single probe.
+    ///
+    /// The diff runs over normalized text and is split into backspaces versus
+    /// inserted characters so a rewrite and a correction can be told apart.
     pub(super) fn from_transcripts(
         raw_text: &str,
         final_text: &str,
@@ -82,16 +116,38 @@ impl ActionQualityProbe {
             raw_final_diff_ratio,
             correction_ratio,
             drop_ratio,
+            semantic_cosine: None,
+            shape_only: word_sequence(raw_text) == word_sequence(final_text),
         }
     }
 }
 
+/// Case-folded alphanumeric word sequence — the invariant the punctuation
+/// transplant pins with its own tests. Two texts with equal sequences differ
+/// only in shape (punctuation/case/whitespace), never in words.
+fn word_sequence(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// Which gesture ended the recording that is now up for auto-paste.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AutoPasteTrigger {
+    /// Push-to-talk hold released.
     Hold,
+    /// Double-tap of the left Option key.
     DoubleLeftOption,
 }
 
+/// Everything the auto-paste decision is allowed to depend on, gathered in one
+/// place so the policy stays a pure function of explicit state.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AutoPastePolicyContext {
     pub trigger: AutoPasteTrigger,
@@ -105,6 +161,11 @@ pub(super) struct AutoPastePolicyContext {
     pub commit_required: bool,
 }
 
+/// Decide whether the delivered transcript may be pasted automatically.
+///
+/// Every veto is independent and fail-closed: assistive sessions, no-speech and
+/// empty results, notes-only saves, live streaming sessions, and pending quality
+/// commits each suppress the paste on their own.
 pub(super) fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
     // Trigger and presentation state deliberately do not fork policy. Keeping
     // the explicit matrix here makes that parity reviewable and testable.
@@ -122,13 +183,18 @@ pub(super) fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool
         && !context.commit_required
 }
 
+/// Delivery target for automatic paste, injected so the fence can be tested
+/// without touching the real pasteboard.
 pub(super) trait AutomaticDeliverySink: Send + Sync {
+    /// Deliver `text` to the active application. Errors stay retryable.
     fn paste(&self, text: &str) -> Result<()>;
 }
 
+/// Production sink: pastes through the system clipboard.
 pub(super) struct ClipboardDeliverySink;
 
 impl AutomaticDeliverySink for ClipboardDeliverySink {
+    /// Paste delivery path: type/paste corrected text into the frontmost app.
     fn paste(&self, text: &str) -> Result<()> {
         clipboard::paste_text(text).context("Failed to paste text")
     }
@@ -143,6 +209,7 @@ pub(super) struct AutomaticDeliveryOwner {
 }
 
 impl AutomaticDeliveryOwner {
+    /// Build an owner delivering through `sink`, with an empty fence history.
     pub(super) fn new(sink: Arc<dyn AutomaticDeliverySink>) -> Self {
         Self {
             delivered_timestamps: Mutex::new(VecDeque::with_capacity(
@@ -152,6 +219,11 @@ impl AutomaticDeliveryOwner {
         }
     }
 
+    /// Deliver `text` at most once per recording `timestamp`.
+    ///
+    /// Returns `Ok(false)` when the timestamp was already delivered. A sink
+    /// failure propagates and leaves the timestamp unfenced, so the caller may
+    /// retry the same recording.
     pub(super) async fn deliver_once(
         &self,
         timestamp: DateTime<Local>,
@@ -171,6 +243,7 @@ impl AutomaticDeliveryOwner {
     }
 }
 
+/// Short label describing how a recording was made, for history and UI.
 pub(super) fn recording_mode_label(
     assistive: bool,
     hold_mode: HoldMode,
@@ -192,6 +265,8 @@ pub(super) fn recording_mode_label(
     }
 }
 
+/// Mode label for the recording-truth record, where every assistive lane
+/// collapses to `assistive` regardless of the hold gesture beneath it.
 pub(super) fn truth_recording_mode_label(
     assistive: bool,
     hold_mode: HoldMode,
@@ -205,6 +280,8 @@ pub(super) fn truth_recording_mode_label(
     }
 }
 
+/// Whether AI formatting runs for this session: an explicit force wins, then
+/// the persisted config default.
 pub(super) fn session_auto_format_enabled(
     config: &Config,
     _assistive: bool,
@@ -214,6 +291,7 @@ pub(super) fn session_auto_format_enabled(
     force_ai || (!force_raw && config.ai_formatting_enabled)
 }
 
+/// Wrap a transcript in the configured tag template, without quality metadata.
 pub(super) fn maybe_wrap_transcript_for_delivery(
     text: &str,
     config: &Config,
@@ -222,6 +300,10 @@ pub(super) fn maybe_wrap_transcript_for_delivery(
     maybe_wrap_transcript_for_delivery_with_quality(text, config, mode, None)
 }
 
+/// Wrap a transcript in the configured tag template, folding in confidence
+/// flags and `avg_logprob` when recording-truth metadata is available.
+///
+/// Returns the text untouched when tagging is disabled.
 pub(super) fn maybe_wrap_transcript_for_delivery_with_quality(
     text: &str,
     config: &Config,
@@ -252,6 +334,7 @@ pub(super) fn maybe_wrap_transcript_for_delivery_with_quality(
     )
 }
 
+/// Human-readable category for a transcript kind, shown in delivery status.
 pub(super) fn transcript_output_category(
     output_kind: crate::state::history::TranscriptKind,
 ) -> &'static str {
@@ -269,6 +352,10 @@ pub(super) fn transcript_output_category(
     }
 }
 
+/// Join the display status with the output category for the final status line.
+///
+/// Failed transcripts keep the bare display status — appending "Failed
+/// transcript" to an already-explicit error reads as a double report.
 pub(super) fn compose_final_status(
     display_status: &str,
     output_kind: crate::state::history::TranscriptKind,
@@ -287,6 +374,10 @@ pub(super) fn compose_final_status(
     }
 }
 
+/// Decide whether this delivery should ask the user to commit a correction.
+///
+/// Returns the trigger reason, or `None` when the transcript is too short to
+/// judge, raw output was forced, or every ratio stayed under its threshold.
 pub(super) fn evaluate_quality_commit_trigger(
     force_raw: bool,
     quality_probe: &ActionQualityProbe,
@@ -308,8 +399,24 @@ pub(super) fn evaluate_quality_commit_trigger(
     {
         return None;
     }
+    // Meaning axis first — it is the sharpest betrayal the ratios cannot see.
+    // The floor is calibrated (core::pipeline::semantic_guard): formatting that
+    // keeps the meaning scores ≥0.950, catchable betrayals ≤0.776. Same-word
+    // inversions are a documented blindspot, not a promise.
+    if let Some(cosine) = quality_probe.semantic_cosine
+        && codescribe_core::pipeline::semantic_guard::formatting_meaning_diverged(cosine)
+    {
+        return Some("semantic_divergence");
+    }
     if quality_probe.drop_ratio >= QUALITY_GATE_DROP_RATIO {
         return Some("high_drop_ratio");
+    }
+    // Shape-only deltas (identical word sequence, only punctuation/case moved)
+    // are exempt from the character-ratio triggers: the prefix/suffix delta
+    // model reads them as full rewrites, but no word changed and the semantic
+    // and drop axes above have already had their say.
+    if quality_probe.shape_only {
+        return None;
     }
     if quality_probe.raw_final_diff_ratio >= QUALITY_GATE_DIFF_RATIO {
         return Some("high_rewrite_ratio");

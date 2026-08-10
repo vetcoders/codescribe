@@ -27,7 +27,9 @@ pub enum MergeMode {
 /// Result of merging live assembly with Whisper final-pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedDelivery {
+    /// The delivered text: live floor with Whisper spliced into the gaps.
     pub text: String,
+    /// Which of the merge shapes produced [`Self::text`].
     pub mode: MergeMode,
     /// Tokens taken from Whisper InsertB (gap fill count).
     pub whisper_fill_tokens: usize,
@@ -35,12 +37,49 @@ pub struct MergedDelivery {
     pub live_kept_substitutes: usize,
     /// Equal tokens kept from live.
     pub equal_tokens: usize,
+    /// Substitutions where Whisper won on known-term evidence (code-switch).
+    pub whisper_won_substitutes: usize,
 }
 
 /// Merge live (Apple/stream floor) with Whisper final into one delivery string.
 ///
 /// Pure function — unit tests and controller adjudication both call this.
+/// Legacy shape: no known-terms catalog, so substitutes always keep live.
 pub fn merge_live_whisper(live: &str, whisper: &str) -> MergedDelivery {
+    merge_live_whisper_with_terms(live, whisper, &[])
+}
+
+/// Normalized word sequence of one side of a disagreement region.
+fn region_norms(tokens: &[super::tokenize::Token], idx: &[usize]) -> String {
+    idx.iter()
+        .map(|&i| tokens[i].norm.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// True when any known term appears as a word-boundary phrase in `haystack`
+/// (both already normalized to lowercase space-joined words).
+fn contains_known_term(haystack: &str, term_norms: &[String]) -> bool {
+    if haystack.is_empty() {
+        return false;
+    }
+    let padded = format!(" {haystack} ");
+    term_norms
+        .iter()
+        .any(|t| !t.is_empty() && padded.contains(&format!(" {t} ")))
+}
+
+/// Merge with a known-terms catalog (Voice Lab / custom lexicon canonical
+/// terms). Doctrine extension (operator 2026-08-10, "delivered ≠ what I
+/// spoke"): inside a disagreement region, Whisper wins ONLY when its side
+/// carries a known term and the live side carries none — deterministic,
+/// fail-closed evidence that the code-switched entity was heard by Whisper
+/// and garbled by Apple. Everything else keeps the live floor unchanged.
+pub fn merge_live_whisper_with_terms(
+    live: &str,
+    whisper: &str,
+    known_terms: &[String],
+) -> MergedDelivery {
     let live = live.trim();
     let whisper = whisper.trim();
     if live.is_empty() && whisper.is_empty() {
@@ -50,6 +89,7 @@ pub fn merge_live_whisper(live: &str, whisper: &str) -> MergedDelivery {
             whisper_fill_tokens: 0,
             live_kept_substitutes: 0,
             equal_tokens: 0,
+            whisper_won_substitutes: 0,
         };
     }
     if live.is_empty() {
@@ -59,6 +99,7 @@ pub fn merge_live_whisper(live: &str, whisper: &str) -> MergedDelivery {
             whisper_fill_tokens: tokenize(whisper).len(),
             live_kept_substitutes: 0,
             equal_tokens: 0,
+            whisper_won_substitutes: 0,
         };
     }
     if whisper.is_empty() {
@@ -68,40 +109,115 @@ pub fn merge_live_whisper(live: &str, whisper: &str) -> MergedDelivery {
             whisper_fill_tokens: 0,
             live_kept_substitutes: 0,
             equal_tokens: tokenize(live).len(),
+            whisper_won_substitutes: 0,
         };
     }
 
     let live_toks = tokenize(live);
     let whisper_toks = tokenize(whisper);
     let ops = align_words(&live_toks, &whisper_toks);
+    let term_norms: Vec<String> = known_terms
+        .iter()
+        .map(|t| {
+            tokenize(t)
+                .iter()
+                .map(|tok| tok.norm.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
 
     let mut out: Vec<String> = Vec::new();
     let mut whisper_fill_tokens = 0usize;
     let mut live_kept_substitutes = 0usize;
     let mut equal_tokens = 0usize;
+    let mut whisper_won_substitutes = 0usize;
+
+    // Buffered disagreement region: contiguous non-Equal ops, resolved as one
+    // unit so multi-word terms can match across Substitute+InsertB boundaries.
+    let mut region: Vec<AlignOp> = Vec::new();
+
+    let flush_region = |region: &mut Vec<AlignOp>,
+                        out: &mut Vec<String>,
+                        whisper_fill_tokens: &mut usize,
+                        live_kept_substitutes: &mut usize,
+                        whisper_won_substitutes: &mut usize| {
+        if region.is_empty() {
+            return;
+        }
+        let live_idx: Vec<usize> = region
+            .iter()
+            .filter_map(|op| match op {
+                AlignOp::DeleteA { a } | AlignOp::Substitute { a, .. } => Some(*a),
+                _ => None,
+            })
+            .collect();
+        let whisper_idx: Vec<usize> = region
+            .iter()
+            .filter_map(|op| match op {
+                AlignOp::InsertB { b } | AlignOp::Substitute { b, .. } => Some(*b),
+                _ => None,
+            })
+            .collect();
+        let live_norm = region_norms(&live_toks, &live_idx);
+        let whisper_norm = region_norms(&whisper_toks, &whisper_idx);
+        let whisper_evidence = contains_known_term(&whisper_norm, &term_norms);
+        let live_evidence = contains_known_term(&live_norm, &term_norms);
+
+        if whisper_evidence && !live_evidence {
+            // Term-backed Whisper region: take the whisper side wholesale.
+            for &b in &whisper_idx {
+                out.push(whisper_toks[b].surface.clone());
+            }
+            let subs = region
+                .iter()
+                .filter(|op| matches!(op, AlignOp::Substitute { .. }))
+                .count();
+            *whisper_won_substitutes += subs;
+            *whisper_fill_tokens += whisper_idx.len() - subs;
+        } else {
+            // Status quo: live floor + whisper gap-fill, per op.
+            for op in region.iter() {
+                match op {
+                    AlignOp::DeleteA { a } => out.push(live_toks[*a].surface.clone()),
+                    AlignOp::InsertB { b } => {
+                        out.push(whisper_toks[*b].surface.clone());
+                        *whisper_fill_tokens += 1;
+                    }
+                    AlignOp::Substitute { a, .. } => {
+                        out.push(live_toks[*a].surface.clone());
+                        *live_kept_substitutes += 1;
+                    }
+                    AlignOp::Equal { .. } => unreachable!("regions hold non-Equal ops only"),
+                }
+            }
+        }
+        region.clear();
+    };
 
     for op in ops {
         match op {
             AlignOp::Equal { a, .. } => {
+                flush_region(
+                    &mut region,
+                    &mut out,
+                    &mut whisper_fill_tokens,
+                    &mut live_kept_substitutes,
+                    &mut whisper_won_substitutes,
+                );
                 out.push(live_toks[a].surface.clone());
                 equal_tokens += 1;
             }
-            AlignOp::DeleteA { a } => {
-                // Live-only: keep Apple residue (product: live floor).
-                out.push(live_toks[a].surface.clone());
-            }
-            AlignOp::InsertB { b } => {
-                // Whisper excess into live gap — the fill canvas.
-                out.push(whisper_toks[b].surface.clone());
-                whisper_fill_tokens += 1;
-            }
-            AlignOp::Substitute { a, .. } => {
-                // Keep live; disagreement is Needs attention, not silent overwrite.
-                out.push(live_toks[a].surface.clone());
-                live_kept_substitutes += 1;
-            }
+            other => region.push(other),
         }
     }
+    flush_region(
+        &mut region,
+        &mut out,
+        &mut whisper_fill_tokens,
+        &mut live_kept_substitutes,
+        &mut whisper_won_substitutes,
+    );
 
     MergedDelivery {
         text: out.join(" "),
@@ -109,13 +225,16 @@ pub fn merge_live_whisper(live: &str, whisper: &str) -> MergedDelivery {
         whisper_fill_tokens,
         live_kept_substitutes,
         equal_tokens,
+        whisper_won_substitutes,
     }
 }
 
+/// Doctrine guards: gap-fill, live floor, and empty-side modes.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Whisper InsertB fills Apple under-gen gaps; substitutes keep live floor.
     #[test]
     fn merge_fills_whisper_excess_into_live_gaps() {
         // Apple under-gen (missing openers) + Whisper fill — 85% thesis shape.
@@ -140,6 +259,7 @@ mod tests {
         );
     }
 
+    /// Live tokens (plik/WAV) must survive; full Whisper replace is forbidden.
     #[test]
     fn merge_does_not_full_replace_live_with_whisper() {
         let live = "plik WAV na endpoint leksykon działa Toolchain";
@@ -153,10 +273,93 @@ mod tests {
         );
     }
 
+    /// Empty live/whisper combinations select Empty / LiveOnly / WhisperOnly.
     #[test]
     fn empty_sides() {
         assert_eq!(merge_live_whisper("", "").mode, MergeMode::Empty);
         assert_eq!(merge_live_whisper("hello", "").mode, MergeMode::LiveOnly);
         assert_eq!(merge_live_whisper("", "hello").mode, MergeMode::WhisperOnly);
+    }
+
+    /// Code-switch loss (operator 2026-08-10, "delivered ≠ what I spoke"):
+    /// Apple garbled the English term, Whisper heard it. With the term in the
+    /// known-terms catalog, the disagreement region flips to Whisper.
+    #[test]
+    fn known_whisper_term_wins_substitute_region() {
+        let live = "ten pas są dla mnie wystarczająco dobre";
+        let whisper = "ten partial passes są dla mnie wystarczająco dobre";
+        let terms = vec!["partial passes".to_string()];
+        let m = merge_live_whisper_with_terms(live, whisper, &terms);
+        assert!(
+            m.text.to_lowercase().contains("partial passes"),
+            "whisper term should win the region: {}",
+            m.text
+        );
+        assert!(
+            !m.text.to_lowercase().split_whitespace().any(|w| w == "pas"),
+            "garbled live token should be replaced, not kept alongside: {}",
+            m.text
+        );
+        assert!(
+            m.whisper_won_substitutes >= 1,
+            "expected whisper win: {m:?}"
+        );
+    }
+
+    /// No term evidence → status quo: live floor keeps the substitute.
+    #[test]
+    fn no_term_evidence_keeps_live_floor() {
+        let live = "ten pas są dla mnie wystarczająco dobre";
+        let whisper = "ten partial passes są dla mnie wystarczająco dobre";
+        let m = merge_live_whisper_with_terms(live, whisper, &[]);
+        assert!(
+            m.text.contains("pas"),
+            "live floor lost without terms: {}",
+            m.text
+        );
+        assert_eq!(m.whisper_won_substitutes, 0);
+    }
+
+    /// A known term on the LIVE side blocks the whisper override (Apple heard
+    /// the entity correctly — Whisper's variant is the phonetic drift).
+    #[test]
+    fn live_term_blocks_whisper_override() {
+        let live = "plik WAV na endpoint działa";
+        let whisper = "blik Wave na endpoint działa";
+        let terms = vec!["WAV".to_string(), "Wave".to_string()];
+        let m = merge_live_whisper_with_terms(live, whisper, &terms);
+        assert!(m.text.contains("WAV"), "live entity lost: {}", m.text);
+        assert_eq!(m.whisper_won_substitutes, 0);
+    }
+
+    /// Today's real sample: the English tail garbled by Apple flips to Whisper
+    /// only where term evidence exists; regions without evidence keep live.
+    #[test]
+    fn real_sample_code_switch_tail() {
+        let live = "delivered nie równa się Power in site D";
+        let whisper = "delivered nie równa się what I spoke";
+        let terms = vec!["what I spoke".to_string()];
+        let m = merge_live_whisper_with_terms(live, whisper, &terms);
+        assert!(
+            m.text.to_lowercase().contains("what i spoke"),
+            "term-backed whisper region should win: {}",
+            m.text
+        );
+        assert!(
+            !m.text.to_lowercase().contains("power in site"),
+            "apple garble should be replaced in the won region: {}",
+            m.text
+        );
+    }
+
+    /// The zero-terms delegate is byte-for-byte the legacy behavior.
+    #[test]
+    fn legacy_wrapper_delegates_with_no_terms() {
+        let live = "korzystając z surowej transkrypcji Toolchain 2024";
+        let whisper = "No to dobra korzystając z surowej transkrypcji Tooltrain 2024";
+        assert_eq!(
+            merge_live_whisper(live, whisper),
+            merge_live_whisper_with_terms(live, whisper, &[])
+        );
     }
 }

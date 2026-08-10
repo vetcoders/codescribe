@@ -193,6 +193,37 @@ final class ThreadRailSectionTests: XCTestCase {
         XCTAssertNil(ThreadTitlePolicy.normalized("<<<"))
         XCTAssertNil(ThreadTitlePolicy.normalized("<<< 2026-07-20"))
     }
+
+    /// The collapsed rail must stay identifiable without hovering: every tile
+    /// carries initials derived from the same title the expanded rail shows.
+    func testCompactMonogramCarriesThreadIdentityForEveryTitleShape() {
+        func monogram(_ title: String, messages: [ChatMessage] = []) -> String {
+            ThreadRowTitle.compactMonogram(
+                for: ChatThread(
+                    title: title,
+                    meta: "today 11:45",
+                    messages: messages,
+                    updatedAt: date(2026, 7, 16, 11, 45)
+                ),
+                now: now,
+                calendar: calendar
+            )
+        }
+
+        XCTAssertEqual(monogram("Ze względu na fakt"), "ZW")
+        XCTAssertEqual(monogram("halo!"), "H")
+        XCTAssertEqual(monogram("  spaced   out  "), "SO")
+        XCTAssertEqual(monogram("3 rzeczy"), "3R")
+        // Punctuation-led titles must not yield a blank tile.
+        XCTAssertEqual(monogram("...cicho"), "C")
+        XCTAssertEqual(monogram("🐈 kot biegnie"), "KB")
+        // Titles carrying no letter or digit are not titles at all: ThreadTitlePolicy
+        // rejects them and displayTitle falls back to the relative date label, so the
+        // tile shows that label's initials rather than an emoji.
+        XCTAssertEqual(monogram("🐈"), "T1")
+        // Transport placeholder falls back through displayTitle, never raw.
+        XCTAssertEqual(monogram("<<<"), "T1")
+    }
 }
 
 @MainActor

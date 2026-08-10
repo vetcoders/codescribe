@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Sparkle 2 appcast for Codescribe — https://vetcoders.github.io/codescribe/appcast.xml
+  Sparkle 2 appcast for Codescribe — https://codescribe.vetcoders.io/appcast.xml
 
   PLACEHOLDER: no published release carries a Sparkle EdDSA signature yet.
   An empty channel is a valid feed — Sparkle reports "no updates available"
@@ -10,12 +10,12 @@
     1. release.yml generates a signed appcast for the tagged DMGs
        (scripts/generate-appcast.sh, enclosures pointing at GitHub Releases).
     2. The generated <item> entries replace the empty channel below via a PR
-       to site/public/appcast.xml; the Pages deploy publishes the feed.
+       to site/public/appcast.xml; the site deploy to codescribe.vetcoders.io publishes the feed.
 -->
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Codescribe</title>
-    <link>https://vetcoders.github.io/codescribe/appcast.xml</link>
+    <link>https://codescribe.vetcoders.io/appcast.xml</link>
     <description>Signed update feed for Codescribe.</description>
     <language>en</language>
   </channel>

@@ -28,7 +28,9 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to resolve path: {}", path.display()))
 }
 
+/// Unencrypted WebSocket scheme prefix; built via concat so the literal never appears.
 const WS_SCHEME_PREFIX: &str = concat!("ws", "://");
+/// Encrypted WebSocket scheme prefix; always allowed for non-loopback hosts.
 const WSS_SCHEME_PREFIX: &str = "wss://";
 
 /// Reject plain WebSocket endpoints whose host is not a loopback address.
@@ -84,6 +86,11 @@ pub struct CloudTranscriptionVerdict {
 }
 
 impl CloudTranscriptionVerdict {
+    /// Build a verdict for text that came off the cloud path. `source` is fixed
+    /// to `Cloud` here — the constructor is the single place that stamps
+    /// provenance, so a cloud result can never be mislabelled downstream.
+    /// Confidence flags start empty; the cloud protocols carry no per-token
+    /// scores today.
     fn new(text: String, latency_ms: Option<u64>, model_name: Option<String>) -> Self {
         Self {
             text,
@@ -144,6 +151,7 @@ pub enum AudioValidationError {
 }
 
 impl std::fmt::Display for AudioValidationError {
+    /// Human-readable validation failure for logs and user-facing bail messages.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AudioValidationError::TooShort {
@@ -191,6 +199,7 @@ pub fn validate_audio(audio_data: &[u8]) -> std::result::Result<(), AudioValidat
 
     // Minimum size check - very short audio causes Whisper hallucinations
     // 1KB is roughly 0.06 seconds of WAV audio at 16kHz mono
+    /// Floor size below which Whisper often hallucinates (~0.06s at 16 kHz mono).
     const MIN_AUDIO_BYTES: usize = 1024;
     if audio_data.len() < MIN_AUDIO_BYTES {
         return Err(AudioValidationError::TooShort {
@@ -217,6 +226,7 @@ pub fn validate_audio(audio_data: &[u8]) -> std::result::Result<(), AudioValidat
 
 /// Get or create HTTP client with sensible defaults
 fn get_client() -> &'static Client {
+    /// Process-wide reqwest client: 120s request, 5s connect, 90s pool idle.
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         Client::builder()
@@ -833,14 +843,17 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
     Ok(transcribe_response.text)
 }
 
+/// Unit tests for WS loopback policy, audio preflight, retry classification, serde.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Build a plain-WebSocket URL for loopback-policy tests without hardcoding the scheme.
     fn plain_ws_url(authority: &str) -> String {
         format!("{}{}", WS_SCHEME_PREFIX, authority)
     }
 
+    /// Plain WebSocket only on loopback; non-loopback rejected; the secure scheme always ok.
     #[test]
     fn ws_plain_rejected_for_non_loopback() {
         // Plain WebSocket to a non-loopback host must be rejected.
@@ -856,12 +869,14 @@ mod tests {
         assert!(enforce_ws_scheme_loopback("wss://example.com:1234").is_ok());
     }
 
+    /// Empty buffer is rejected before any network call.
     #[test]
     fn test_validate_audio_empty() {
         let result = validate_audio(&[]);
         assert!(matches!(result, Err(AudioValidationError::Empty)));
     }
 
+    /// Sub-minimum payloads map to `TooShort` with the pinned min_bytes.
     #[test]
     fn test_validate_audio_too_short() {
         let result = validate_audio(&[0u8; 500]); // 500 bytes < 1024 minimum
@@ -874,12 +889,14 @@ mod tests {
         ));
     }
 
+    /// Buffer above the floor and under the default max is accepted.
     #[test]
     fn test_validate_audio_valid() {
         let result = validate_audio(&[0u8; 2048]); // 2KB > 1KB minimum
         assert!(result.is_ok());
     }
 
+    /// `BACKEND_MAX_UPLOAD_MB` drives the too-large path (not retried later).
     #[test]
     fn test_validate_audio_too_large() {
         // Set a low limit for testing (1MB)
@@ -892,30 +909,35 @@ mod tests {
         assert!(matches!(result, Err(AudioValidationError::TooLarge { .. })));
     }
 
+    /// Connection-class errors are retryable for cloud STT.
     #[test]
     fn test_is_retryable_error_network() {
         let error = anyhow::anyhow!("connection refused");
         assert!(is_retryable_error(&error));
     }
 
+    /// Timeout-class errors are retryable for cloud STT.
     #[test]
     fn test_is_retryable_error_timeout() {
         let error = anyhow::anyhow!("request timeout");
         assert!(is_retryable_error(&error));
     }
 
+    /// 5xx-style errors are retryable for cloud STT.
     #[test]
     fn test_is_retryable_error_server() {
         let error = anyhow::anyhow!("status 503: Service Unavailable");
         assert!(is_retryable_error(&error));
     }
 
+    /// 4xx client errors must not burn retry budget.
     #[test]
     fn test_is_not_retryable_client_error() {
         let error = anyhow::anyhow!("status 400: Bad Request");
         assert!(!is_retryable_error(&error));
     }
 
+    /// 413 is a validation/size issue — never retried.
     #[test]
     fn test_is_not_retryable_413() {
         // 413 should not be retried - file too large is a client issue
@@ -923,6 +945,7 @@ mod tests {
         assert!(!is_retryable_error(&error));
     }
 
+    /// Cloud verdict JSON round-trips with source and optional metadata intact.
     #[test]
     fn cloud_transcription_verdict_serde_roundtrip() {
         let verdict = CloudTranscriptionVerdict::new(
@@ -941,6 +964,7 @@ mod tests {
         assert!(restored.confidence_flags.is_empty());
     }
 
+    /// Empty optionals and empty flags are omitted via `skip_serializing_if`.
     #[test]
     fn cloud_transcription_verdict_omits_empty_optional_fields_in_json() {
         let verdict = CloudTranscriptionVerdict::new("Just text".to_string(), None, None);

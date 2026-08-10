@@ -6,8 +6,12 @@
 //! - `history` - Transcript history management (~/.codescribe/transcriptions/)
 
 pub mod conversation;
+/// Persisted transcription/session history store and query helpers.
 pub mod history;
+/// User notes and selection-linked note persistence.
 pub mod notes;
+/// Qube donor state: opt-in recording of WAV + transcript pairs for training.
+pub mod qube_donor;
 
 // Re-export main types (public API for GUI apps)
 pub use conversation::{
@@ -34,4 +38,8 @@ pub use history::{
 
 pub use notes::{
     append_quick_note, notes_dir, open_notes_folder, open_today_note, today_note_path,
+};
+pub use qube_donor::{
+    QubeDonorPaths, persist_qube_donor_pair, qube_donor_enabled, qube_inbox_base_dir,
+    try_persist_qube_donor_at_stop,
 };

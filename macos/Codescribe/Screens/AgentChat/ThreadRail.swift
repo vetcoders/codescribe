@@ -60,30 +60,42 @@ struct ThreadRail: View {
             ScrollView {
                 LazyVStack(spacing: 6) {
                     ForEach(filteredThreads) { thread in
+                        let title = ThreadRowTitle.displayTitle(for: thread)
+                        let isActive = thread.id == store.selectedThreadID
                         Button {
                             store.select(thread.id)
                         } label: {
-                            Circle()
-                                .fill(
-                                    thread.id == store.selectedThreadID
-                                        ? CSColor.chromeAccent
-                                        : CSColor.textFaintAlt.opacity(0.5)
+                            Text(ThreadRowTitle.compactMonogram(for: thread))
+                                .font(CSFont.ui(11, .semibold))
+                                .foregroundStyle(
+                                    isActive ? CSColor.chromeAccent : CSColor.textMuted
                                 )
-                                .frame(width: 7, height: 7)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
                                 .frame(width: 28, height: 28)
                                 .background(
-                                    thread.id == store.selectedThreadID
+                                    isActive
                                         ? CSColor.chromeAccent.opacity(0.12)
-                                        : .clear
+                                        : CSColor.surfaceRaised(0.03)
                                 )
                                 .clipShape(
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(
+                                            isActive
+                                                ? CSColor.chromeAccent.opacity(0.45)
+                                                : CSColor.hairline(0.08),
+                                            lineWidth: 1
+                                        )
+                                )
                                 .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .help(ThreadRowTitle.displayTitle(for: thread))
-                        .accessibilityLabel(ThreadRowTitle.displayTitle(for: thread))
+                        .csFocusRing(cornerRadius: 8)
+                        .help(title)
+                        .accessibilityLabel(title)
+                        .accessibilityAddTraits(isActive ? [.isSelected] : [])
                     }
                 }
                 .padding(.vertical, 4)
@@ -104,7 +116,7 @@ struct ThreadRail: View {
                     )
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .help("New thread")
             .accessibilityLabel("New thread")
             .padding(.vertical, 12)
@@ -216,7 +228,7 @@ struct ThreadRail: View {
                             )
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
             }
             .padding(12)
             .overlay(alignment: .top) {
@@ -294,6 +306,28 @@ enum ThreadRowTitle {
             calendar: calendar
         )
     }
+
+    /// Identity for the collapsed rail. The strip used to draw one anonymous
+    /// 7pt dot per thread — a vertical row of identical dots that told the user
+    /// nothing and forced a hover-and-wait tooltip to pick a conversation
+    /// (UI_DIVERGENCE_AUDIT pkt 2). Two initials from the display title carry
+    /// enough identity at 28pt; the digit/letter scan keeps titles that open
+    /// with punctuation or an emoji from yielding a blank tile.
+    static func compactMonogram(
+        for thread: ChatThread,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        let title = displayTitle(for: thread, now: now, calendar: calendar)
+        let words = title
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .prefix(2)
+        let initials = words.compactMap { $0.first }.map(String.init).joined()
+        // `displayTitle` always resolves to a string carrying a letter or digit
+        // (ThreadTitlePolicy rejects the rest and the date fallback never is),
+        // so the dot is a guard against a future title source, not a live case.
+        return initials.isEmpty ? "•" : initials.uppercased()
+    }
 }
 
 private struct ThreadRow: View {
@@ -347,7 +381,7 @@ private struct ThreadRow: View {
                     .frame(width: 18, height: 18)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .opacity(thread.isFavorite || isActive ? 1 : 0.38)
                 .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
             }
@@ -451,18 +485,39 @@ enum ThreadRailMeta {
     }
 
     /// "today HH:mm" / "yesterday" / "MMM d" — same shape the rail always used.
-    private static func relativeTime(_ date: Date, now: Date, calendar: Calendar) -> String {
+    ///
+    /// Formatters are cached: `DateFormatter()` construction is a full ICU
+    /// engine init, and this runs once per rail row per refresh — a fresh
+    /// instance here pinned the main thread for whole refresh storms (sample
+    /// 2026-08-07 10:43, 42/93 samples under NSDateFormatter init). Main
+    /// thread only, like every rail meta path.
+    private static let todayFormatter = makeFormatter("'today' HH:mm")
+    private static let monthDayFormatter = makeFormatter("MMM d")
+
+    private static func makeFormatter(_ format: String) -> DateFormatter {
         let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    private static func relativeTime(_ date: Date, now: Date, calendar: Calendar) -> String {
         switch ThreadSection.section(for: date, now: now, calendar: calendar) {
-        case .today:
-            formatter.dateFormat = "'today' HH:mm"
         case .yesterday:
             return "yesterday"
+        case .today:
+            return string(from: date, via: todayFormatter, calendar: calendar)
         case .thisWeek, .older:
-            formatter.dateFormat = "MMM d"
+            return string(from: date, via: monthDayFormatter, calendar: calendar)
+        }
+    }
+
+    private static func string(from date: Date, via formatter: DateFormatter, calendar: Calendar) -> String {
+        // Reassigning calendar forces an ICU regenerate on next use — only
+        // touch it when a caller (tests inject fixed calendars) differs.
+        if formatter.calendar != calendar {
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
         }
         return formatter.string(from: date)
     }

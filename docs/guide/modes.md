@@ -103,4 +103,4 @@ Use the built‑in conflict detector if macOS already uses the same shortcut.
 
 ---
 
-_Created by vetcoders (c)2026_
+_Created by Vetcoders (c)2026_

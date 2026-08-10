@@ -316,10 +316,13 @@ fn move_tensors_to_device(
     Ok(result)
 }
 
+/// Constant-only coverage: instantiating the engine needs model weights and a
+/// device, so it is exercised through the singleton and the round-trip example.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Pins CSM default output sample rate at 24 kHz for audio path contracts.
     #[test]
     fn test_sample_rate() {
         assert_eq!(SAMPLE_RATE, 24000);

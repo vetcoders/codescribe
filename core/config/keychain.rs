@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use std::sync::{Once, OnceLock, RwLock};
 use tracing::{debug, info};
 
+/// Keychain service identity for every Codescribe generic-password item.
 const SERVICE: &str = "com.vetcoders.codescribe";
+/// Account name of the single bundled secret item (all API keys together).
 const BUNDLE_ACCOUNT: &str = "codescribe_keychain_bundle_v1";
 
 /// Known API key accounts stored in Keychain.
@@ -22,9 +24,15 @@ pub const KEYCHAIN_ACCOUNTS: &[&str] = &[
     "LLM_FORMATTING_API_KEY",
     "LLM_ASSISTIVE_API_KEY",
     "LLM_ANTHROPIC_API_KEY",
+    "LLM_XAI_API_KEY",
     "GITHUB_TOKEN",
 ];
 
+/// All Codescribe secrets in a single Keychain item.
+///
+/// One bundled item rather than one item per account: macOS evaluates the item
+/// ACL per access, so N accounts meant N separate authorization decisions on
+/// every launch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct KeychainBundle {
     version: u8,
@@ -32,6 +40,7 @@ struct KeychainBundle {
 }
 
 impl Default for KeychainBundle {
+    /// Empty bundle at schema version 1 — used before first Keychain load or write.
     fn default() -> Self {
         Self {
             version: 1,
@@ -40,14 +49,25 @@ impl Default for KeychainBundle {
     }
 }
 
+/// Process-wide decoded Keychain bundle cache; `None` means unloaded or deleted.
 static BUNDLE_CACHE: OnceLock<RwLock<Option<KeychainBundle>>> = OnceLock::new();
+/// Ledger of env values this process seeded from Keychain (not user-exported).
 static PROCESS_ENV_SEEDS: OnceLock<RwLock<BTreeMap<String, String>>> = OnceLock::new();
+/// Ensures `populate_env_from_keychain` mutates process env at most once.
 static POPULATE_ONCE: Once = Once::new();
 
+/// Process-wide cache of the decoded bundle, created on first use.
+///
+/// `None` inside the lock means "not loaded or deleted", which is distinct from
+/// the lock not existing yet.
 fn bundle_cache() -> &'static RwLock<Option<KeychainBundle>> {
     BUNDLE_CACHE.get_or_init(|| RwLock::new(None))
 }
 
+/// Read the cached bundle, recovering from a poisoned lock.
+///
+/// A panic elsewhere must not turn every later secret lookup into a panic; the
+/// cached bytes are still valid, so the guard is taken via `into_inner()`.
 fn read_bundle_cache() -> Option<KeychainBundle> {
     match bundle_cache().read() {
         Ok(guard) => guard.clone(),
@@ -55,6 +75,7 @@ fn read_bundle_cache() -> Option<KeychainBundle> {
     }
 }
 
+/// Replace the cached bundle, recovering from a poisoned lock. `None` clears it.
 fn write_bundle_cache(bundle: Option<KeychainBundle>) {
     match bundle_cache().write() {
         Ok(mut guard) => {
@@ -66,10 +87,17 @@ fn write_bundle_cache(bundle: Option<KeychainBundle>) {
     }
 }
 
+/// Origin ledger for env vars this process set from Keychain during bootstrap.
+///
+/// Without it, a value copied into the environment is indistinguishable from one
+/// the user exported, and a later Settings save or delete would be shadowed by
+/// the stale process snapshot forever.
 fn process_env_seeds() -> &'static RwLock<BTreeMap<String, String>> {
     PROCESS_ENV_SEEDS.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
 
+/// Record that `account`'s current env value originated from Keychain, not from
+/// the user's environment.
 fn remember_process_env_seed(account: &str, secret: &str) {
     match process_env_seeds().write() {
         Ok(mut guard) => {
@@ -83,6 +111,7 @@ fn remember_process_env_seed(account: &str, secret: &str) {
     }
 }
 
+/// The value this process seeded into `account`, if it seeded one.
 fn process_env_seed(account: &str) -> Option<String> {
     match process_env_seeds().read() {
         Ok(guard) => guard.get(account).cloned(),
@@ -90,12 +119,21 @@ fn process_env_seed(account: &str) -> Option<String> {
     }
 }
 
+/// Serialize the bundle to the on-disk form: JSON, base64, `b64:` prefixed.
+///
+/// The prefix is a format marker, not obfuscation — it lets [`decode_bundle`]
+/// distinguish this encoding from the legacy bare-JSON items.
 fn encode_bundle(bundle: &KeychainBundle) -> Result<Vec<u8>> {
     let json = serde_json::to_string(bundle).context("Failed to serialize bundle")?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
     Ok(format!("b64:{b64}").into_bytes())
 }
 
+/// Parse a stored bundle, accepting both the `b64:` form and legacy bare JSON.
+///
+/// Every failure collapses to `None`: an unreadable item is treated as "no
+/// secrets stored" so a corrupt entry degrades to re-entry rather than an error
+/// on every launch.
 fn decode_bundle(bytes: &[u8]) -> Option<KeychainBundle> {
     let raw = String::from_utf8(bytes.to_vec()).ok()?;
     let json = if let Some(b64) = raw.strip_prefix("b64:") {
@@ -110,6 +148,11 @@ fn decode_bundle(bytes: &[u8]) -> Option<KeychainBundle> {
     serde_json::from_str(&json).ok()
 }
 
+/// Return the bundle from cache, otherwise read it from the Keychain.
+///
+/// A miss can raise a macOS authorization prompt, so this belongs only on paths
+/// where a prompt is acceptable — see [`cached_runtime_key`] for the silent one.
+/// A successful read populates the cache; a decode failure does not.
 fn load_bundle() -> Option<KeychainBundle> {
     if let Some(bundle) = read_bundle_cache() {
         return Some(bundle);
@@ -129,6 +172,7 @@ fn load_bundle() -> Option<KeychainBundle> {
     }
 }
 
+/// Write the bundle to the Keychain and refresh the cache on success.
 fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
     let payload = encode_bundle(bundle)?;
     set_generic_password(SERVICE, BUNDLE_ACCOUNT, &payload)
@@ -145,6 +189,9 @@ fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
 /// the harness signals below (the `target/**/deps/` exe path and `RUST_TEST_THREADS`), and
 /// may additionally set `CODESCRIBE_DISABLE_KEYCHAIN=1` — which the Makefile `TEST_SETUP` does.
 /// `CODESCRIBE_DATA_DIR` does NOT skip Keychain: it is a production-valid data-dir override.
+///
+/// The Swift front-end suite is a THIRD harness shape and none of the Rust signals see it —
+/// see `in_xctest_host` below.
 fn is_test_env() -> bool {
     if cfg!(test) {
         return true;
@@ -165,6 +212,9 @@ fn is_test_env() -> bool {
     if std::env::var_os("RUST_TEST_THREADS").is_some() {
         return true;
     }
+    if in_xctest_host() {
+        return true;
+    }
     keychain_disabled_by_signals(
         std::env::var_os("CODESCRIBE_DISABLE_KEYCHAIN").is_some(),
         std::env::var_os("CODESCRIBE_DATA_DIR").is_some(),
@@ -183,6 +233,43 @@ fn is_test_env() -> bool {
 fn keychain_disabled_by_signals(disable_keychain: bool, data_dir_set: bool, ci_set: bool) -> bool {
     let _ = (data_dir_set, ci_set);
     disable_keychain
+}
+
+/// True when this process is an XCTest host — the Swift front-end suite.
+///
+/// This is the harness shape every other signal in `is_test_env` misses, and missing it is
+/// not free. `make test-swift` hosts the tests inside the app itself, so the executable is
+/// `Codescribe.app/Contents/MacOS/Codescribe` (not `target/**/deps/*`) and libtest never
+/// runs, so `RUST_TEST_THREADS` is unset. The core therefore classified a test run as
+/// production and issued real Keychain calls from a binary whose ad-hoc signature changes on
+/// every rebuild, so macOS re-evaluated the item ACL instead of reusing a cached decision.
+///
+/// Measured 2026-08-08 on this host, identical tree and identical 317 tests, six runs:
+/// without the bypass 47.5 / 28.2 / 4.5 s, with it 4.19 / 4.69 / 4.22 s — ~3 s of CPU in
+/// every case, so the spread was blocking, not work. See `macos/CodescribeTests/README.md`.
+///
+/// Every other test lane in this repo already bypasses Keychain (`TEST_SETUP` in the
+/// Makefile, `CODESCRIBE_DISABLE_KEYCHAIN` in `.github/workflows/rust.yml`, the harness
+/// signals above). Detecting the host here rather than exporting the kill switch from the
+/// Makefile keeps that guarantee attached to the RUN, not to the invocation: an XCTest host
+/// launched from Xcode, from a script, or by a future CI job inherits it too.
+fn in_xctest_host() -> bool {
+    is_xctest_host_by_signals(
+        std::env::var_os("XCTestConfigurationFilePath").is_some(),
+        std::env::var_os("XCTestSessionIdentifier").is_some(),
+        std::env::var_os("XCTestBundlePath").is_some(),
+    )
+}
+
+/// Pure XCTest-host policy over environment signals — any one of them is proof.
+///
+/// Three markers rather than one because Xcode has moved which it exports across versions;
+/// `swift_suite_env_markers_pin_the_signal_the_core_keys_on` (CodescribeTests) asserts from
+/// inside a live host that at least one is still present, so this cannot rot silently into a
+/// function that always returns false. Kept side-effect-free so the policy is unit-testable
+/// without mutating process-global env vars (which race across the suite).
+fn is_xctest_host_by_signals(config_file: bool, session_id: bool, bundle_path: bool) -> bool {
+    config_file || session_id || bundle_path
 }
 
 /// Saves a secret to the macOS Keychain under the Codescribe service.
@@ -240,6 +327,7 @@ pub fn runtime_key(account: &str) -> Option<String> {
     non_empty_secret(load_key(account))
 }
 
+/// Read `account` from the process environment, trimmed, treating blank as unset.
 fn non_empty_env(account: &str) -> Option<String> {
     std::env::var(account)
         .ok()
@@ -247,6 +335,11 @@ fn non_empty_env(account: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// The secret-precedence policy, lifted out of the env for testing.
+///
+/// Mirrors [`cached_runtime_key`] / [`runtime_key`] exactly: an explicit env
+/// value wins, a value this process seeded from Keychain does not, and the
+/// stored value is the fallback.
 #[cfg(test)]
 fn resolve_runtime_key(
     env_value: Option<String>,
@@ -257,10 +350,16 @@ fn resolve_runtime_key(
         .or_else(|| non_empty_secret(stored_value))
 }
 
+/// Keep an env value only when it did *not* come from this process's own
+/// Keychain bootstrap.
+///
+/// Equality against the seed is the discriminator: if they match, the env still
+/// holds our stale copy and the current Keychain value must win instead.
 fn explicit_env_value(env_value: Option<String>, seeded_env_value: Option<&str>) -> Option<String> {
     env_value.filter(|value| seeded_env_value != Some(value))
 }
 
+/// Trim a stored secret and treat a whitespace-only value as absent.
 fn non_empty_secret(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
@@ -334,10 +433,33 @@ pub fn populate_env_from_keychain() {
     });
 }
 
+/// Keychain bypass and runtime-key priority regressions (no live Keychain I/O).
 #[cfg(test)]
 mod tests {
-    use super::{keychain_disabled_by_signals, resolve_runtime_key};
+    use super::{is_xctest_host_by_signals, keychain_disabled_by_signals, resolve_runtime_key};
 
+    /// Any single XCTest host marker is enough — Xcode has rotated which env it sets.
+    #[test]
+    fn any_xctest_marker_identifies_the_swift_test_host() {
+        // The Swift suite is a test run that looks like production to every other signal in
+        // `is_test_env`: an app binary, no libtest, no `target/**/deps/` path. Any one marker
+        // is enough — Xcode has moved which of the three it exports between versions, and a
+        // policy that required all three would go quietly false on the next Xcode bump.
+        assert!(is_xctest_host_by_signals(true, false, false));
+        assert!(is_xctest_host_by_signals(false, true, false));
+        assert!(is_xctest_host_by_signals(false, false, true));
+        assert!(is_xctest_host_by_signals(true, true, true));
+    }
+
+    /// Zero markers must never trip the XCTest host detector (would drop persisted keys).
+    #[test]
+    fn a_production_launch_is_never_mistaken_for_an_xctest_host() {
+        // The whole value of this detector is that it cannot fire for a user launch: it would
+        // drop persisted API keys / OAuth tokens on the floor. No markers, no bypass.
+        assert!(!is_xctest_host_by_signals(false, false, false));
+    }
+
+    /// Explicit disable flag turns Keychain off regardless of data-dir or CI signals.
     #[test]
     fn disable_keychain_flag_is_honored() {
         // Explicit user opt-out disables Keychain regardless of other signals.
@@ -345,6 +467,7 @@ mod tests {
         assert!(keychain_disabled_by_signals(true, true, true));
     }
 
+    /// `CODESCRIBE_DATA_DIR` and CI alone must not silently disable Keychain persistence.
     #[test]
     fn data_dir_and_ci_do_not_disable_keychain() {
         // Regression: setting CODESCRIBE_DATA_DIR (a documented data-dir override) or CI
@@ -355,6 +478,7 @@ mod tests {
         assert!(!keychain_disabled_by_signals(false, false, false));
     }
 
+    /// User-exported env wins over a Keychain-stored secret for the same account.
     #[test]
     fn explicit_process_env_keeps_priority_over_keychain() {
         assert_eq!(
@@ -368,6 +492,7 @@ mod tests {
         );
     }
 
+    /// A later Keychain write must replace the bootstrap seed left in process env.
     #[test]
     fn updated_keychain_replaces_bootstrap_seed() {
         assert_eq!(
@@ -381,6 +506,7 @@ mod tests {
         );
     }
 
+    /// Deleting the Keychain entry invalidates a matching bootstrap seed in process env.
     #[test]
     fn deleted_keychain_entry_invalidates_bootstrap_seed() {
         assert_eq!(

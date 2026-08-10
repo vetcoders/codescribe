@@ -6,11 +6,15 @@
 //
 // Backend selection (per locale):
 //   1. SpeechTranscriber (SpeechAnalyzer) when the locale is supported+installed
-//   2. SFSpeechRecognizer on-device when ST lacks the locale but SF supports it
-//   3. Honest error when neither can serve the locale
+//   2. DictationTranscriber (SpeechAnalyzer, system-dictation model family) —
+//      OPT-IN measurement lane, armed only by
+//      CODESCRIBE_APPLE_DICTATION_TRANSCRIBER=1. Unlike ST it serves pl-PL.
+//   3. SFSpeechRecognizer on-device when neither analyzer lane is armed/ready
+//   4. Honest error when nothing can serve the locale
 //
-// Build example:
-//   swiftc -O -o codescribe-stt-bridge core/stt/apple_stt/codescribe-stt-bridge.swift
+// Build example (pin target — do not inherit host triple):
+//   swiftc -O -target arm64-apple-macos26.0 -o codescribe-stt-bridge \
+//     core/stt/apple_stt/codescribe-stt-bridge.swift
 //
 // 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
@@ -79,7 +83,25 @@ enum BridgeError: Error, CustomStringConvertible {
 
 enum AppleSttBackend: String {
     case speechTranscriber = "speech_transcriber"
+    case dictationTranscriber = "dictation_transcriber"
     case sfSpeechRecognizer = "sf_speech_recognizer"
+}
+
+/// Opt-in gate for the `DictationTranscriber` lane (W4-A PoC).
+///
+/// DT is the model family the SYSTEM dictation uses and — unlike
+/// `SpeechTranscriber` — its catalog includes `pl-PL` (measured on macOS 27.0,
+/// SDK 26.5: ST supported-pl = [], DT supported-pl = ["pl-PL"]). That makes it
+/// the first credible non-Whisper Polish upgrade, and exactly why it must not
+/// arm itself: flipping pl-PL off SFSpeech is an operator decision backed by
+/// measured bars, not a side effect of landing the code.
+private func dictationTranscriberEnabled() -> Bool {
+    switch ProcessInfo.processInfo.environment["CODESCRIBE_APPLE_DICTATION_TRANSCRIBER"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    {
+    case "1", "true", "yes", "on": return true
+    default: return false
+    }
 }
 
 respawnSelfResponsibleIfRequested()
@@ -239,13 +261,12 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         // Operator/CLI: force the system Speech Recognition dialog (if notDetermined).
         return try await requestSpeechAuthorizationResponse()
     case "transcribe":
-        // Offline / final-pass: SFSpeechURLRecognitionRequest (file engine).
-        // Known to under-generate / collapse on long Polish dictation — product
-        // floor-guards against this path winning over live assembly.
+        // Offline / final-pass: may select SpeechTranscriber OR SFSpeech.
+        // Speech Recognition TCC is enforced only inside SFSpeech entry points
+        // (W4-B) — ST must not force ensureSpeechAuthorizedForSfSpeech.
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
-        try await ensureSpeechAuthorizedForSfSpeech()
         let transcription = try await transcribe(audioPath: audioPath, locale: locale)
         return BridgeResponse(
             ok: true,
@@ -268,7 +289,7 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         // BridgeResponse. Protocol: first stdin line = JSON header
         // {"rate":48000,"channels":1}, then raw interleaved f32le frames, EOF
         // ends the stream.
-        try await ensureSpeechAuthorizedForSfSpeech()
+        // Speech TCC: requested inside transcribeStreaming (SF-only path).
         let payload = try await transcribeStreaming(locale: locale)
         return BridgeResponse(
             ok: true,
@@ -282,14 +303,11 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
             speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
         )
     case "transcribe_live":
-        // Live / virtual-mic: SFSpeechAudioBufferRecognitionRequest.
-        // Feed PCM buffers as if from a microphone (fixture WAV or hardware
-        // mic path both land here). This is the Apple engine that product
-        // live dictation must use — NOT the file URL path.
+        // Live / virtual-mic: may select SpeechTranscriber (buffer/file) or
+        // SFSpeechAudioBufferRecognitionRequest. Speech TCC only on SF entry.
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
-        try await ensureSpeechAuthorizedForSfSpeech()
         let transcription = try await transcribeLiveBuffered(audioPath: audioPath, locale: locale)
         return BridgeResponse(
             ok: true,
@@ -307,7 +325,7 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
     }
 }
 
-// MARK: - Probe (ST → SFSpeech on-device)
+// MARK: - Probe (ST → DT (opt-in) → SFSpeech on-device)
 
 private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeResponse {
     // Prefer SpeechTranscriber only when the locale is supported AND installed.
@@ -322,7 +340,14 @@ private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeRe
         if st.localeInstalled == true {
             return st
         }
-        // ST supported but not installed (or install failed): fall through to SF.
+        // ST supported but not installed (or install failed): try the armed DT
+        // lane, then SF.
+        if let dt = try await probeDictationTranscriberIfArmed(
+            locale: locale,
+            allowDownload: allowDownload
+        ), dt.localeInstalled == true {
+            return dt
+        }
         let sf = probeSfSpeech(locale: locale)
         if sf.localeSupported == true {
             return sf
@@ -331,8 +356,103 @@ private func probe(locale: Locale, allowDownload: Bool) async throws -> BridgeRe
         return st
     }
 
-    // Fallback: SFSpeechRecognizer on-device for locales ST does not serve (e.g. pl-PL).
-    return probeSfSpeech(locale: locale)
+    // ST does not serve this locale (pl-PL today). The armed DT lane gets the
+    // next look; unarmed, this whole branch is a no-op and the shipped SFSpeech
+    // default is byte-for-byte unchanged.
+    let dt = try await probeDictationTranscriberIfArmed(
+        locale: locale,
+        allowDownload: allowDownload
+    )
+    if let dt, dt.localeInstalled == true {
+        return dt
+    }
+
+    // Fallback: SFSpeechRecognizer on-device for locales the analyzer lanes
+    // cannot serve.
+    let sf = probeSfSpeech(locale: locale)
+    if sf.localeSupported == true {
+        return sf
+    }
+    // Nothing ready: prefer the honest DT not-installed report over SF's
+    // "unsupported" when DT at least listed the locale.
+    return dt ?? sf
+}
+
+/// `probeSpeechTranscriber`'s sibling for the DT lane. Returns `nil` when the
+/// operator has not armed the lane — the caller then behaves exactly as before.
+private func probeDictationTranscriberIfArmed(
+    locale: Locale,
+    allowDownload: Bool
+) async throws -> BridgeResponse? {
+    guard dictationTranscriberEnabled() else { return nil }
+    let supported = await DictationTranscriber.supportedLocales
+    guard let effectiveLocale = bestAvailableLocale(requested: locale, available: supported) else {
+        return nil
+    }
+    return try await probeDictationTranscriber(
+        effectiveLocale: effectiveLocale,
+        allowDownload: allowDownload
+    )
+}
+
+private func probeDictationTranscriber(
+    effectiveLocale: Locale,
+    allowDownload: Bool
+) async throws -> BridgeResponse {
+    // Reserving is not bookkeeping: measured 2026-08-08, an unreserved locale
+    // reports AssetInventory.status == .supported and the analyzer yields ZERO
+    // results with no error. After `reserve` the same locale reports .installed
+    // and transcribes. Reservation persists across processes.
+    let reserved = (try? await AssetInventory.reserve(locale: effectiveLocale)) ?? false
+    var installed = await DictationTranscriber.installedLocales
+    var isInstalled = containsLocale(installed, locale: effectiveLocale)
+    let transcriber = makeDictationTranscriber(locale: effectiveLocale)
+    var status = await AssetInventory.status(forModules: [transcriber])
+
+    if status != .installed, allowDownload {
+        do {
+            guard let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) else {
+                throw BridgeError.runtime("asset installation request unavailable")
+            }
+            try await downloader.downloadAndInstall()
+            installed = await DictationTranscriber.installedLocales
+            isInstalled = containsLocale(installed, locale: effectiveLocale)
+            status = await AssetInventory.status(forModules: [transcriber])
+        } catch {
+            return BridgeResponse(
+                ok: false,
+                status: "error",
+                text: "",
+                segments: [],
+                localeSupported: true,
+                localeInstalled: false,
+                backend: AppleSttBackend.dictationTranscriber.rawValue,
+                error: "asset_install_failed: \(error)",
+                speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+            )
+        }
+    }
+
+    // Both signals must agree. `installedLocales` alone listed pl-PL on a host
+    // where the analyzer produced nothing — the asset status is what predicts
+    // whether recognition actually runs.
+    let ready = isInstalled && status == .installed
+    fputs(
+        "bridge_dt_probe locale=\(effectiveLocale.identifier) reserved=\(reserved) "
+            + "listed=\(isInstalled) asset_status=\(status) ready=\(ready)\n",
+        stderr
+    )
+    return BridgeResponse(
+        ok: ready,
+        status: ready ? "ok" : "error",
+        text: "",
+        segments: [],
+        localeSupported: true,
+        localeInstalled: ready,
+        backend: AppleSttBackend.dictationTranscriber.rawValue,
+        error: ready ? nil : "dictation_assets_\(status)",
+        speechAuth: speechAuthLabel(SFSpeechRecognizer.authorizationStatus())
+    )
 }
 
 private func probeSpeechTranscriber(
@@ -432,6 +552,11 @@ private func speechAuthLabel(_ status: SFSpeechRecognizerAuthorizationStatus) ->
 }
 
 /// Prompt system dialog when status is notDetermined; fail loudly if denied.
+///
+/// Call **only** from SFSpeechRecognizer entry points. SpeechTranscriber /
+/// DictationTranscriber (SpeechAnalyzer family) must not invoke this — Apple
+/// docs do not require Speech Recognition TCC for those APIs. Mic grant for
+/// live capture is independent (`AVCaptureDevice` / app permissions).
 private func ensureSpeechAuthorizedForSfSpeech() async throws {
     let status = SFSpeechRecognizer.authorizationStatus()
     switch status {
@@ -496,6 +621,23 @@ private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
     SpeechTranscriber(locale: locale, preset: .timeIndexedTranscriptionWithAlternatives)
 }
 
+/// `.progressiveLongDictation` plus the time index.
+///
+/// The stock preset carries punctuation + volatile results but NO
+/// `audioTimeRange`, and `BridgeSegment.startTs/endTs` is a hard bridge
+/// contract (Silero tail-drop and the overlay both read it). Composing the
+/// preset by hand is the DT analogue of ST's
+/// `.timeIndexedTranscriptionWithAlternatives`, not a deviation for its own sake.
+private func makeDictationTranscriber(locale: Locale) -> DictationTranscriber {
+    DictationTranscriber(
+        locale: locale,
+        contentHints: [],
+        transcriptionOptions: [.punctuation],
+        reportingOptions: [.volatileResults],
+        attributeOptions: [.audioTimeRange]
+    )
+}
+
 private func transcribe(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
     // Same ready-backend decision as probe: ST only when supported+installed.
     let supportedLocales = await SpeechTranscriber.supportedLocales
@@ -512,7 +654,13 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
                 backend: .speechTranscriber
             )
         }
-        // ST in catalog but assets missing → SFSpeech on-device when available.
+        // ST in catalog but assets missing → armed DT lane, then SFSpeech.
+        if let dt = try await transcribeWithDictationTranscriberIfArmed(
+            audioPath: audioPath,
+            locale: locale
+        ) {
+            return dt
+        }
         if sfSpeechOnDeviceReady(locale: locale) {
             return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale)
         }
@@ -528,7 +676,78 @@ private func transcribe(audioPath: String, locale: Locale) async throws -> Trans
         )
     }
 
+    if let dt = try await transcribeWithDictationTranscriberIfArmed(
+        audioPath: audioPath,
+        locale: locale
+    ) {
+        return dt
+    }
     return try await transcribeWithSfSpeech(audioPath: audioPath, locale: locale)
+}
+
+/// Returns `nil` when the DT lane is unarmed or cannot serve the locale, so the
+/// caller falls through to the shipped default untouched.
+private func transcribeWithDictationTranscriberIfArmed(
+    audioPath: String,
+    locale: Locale
+) async throws -> TranscriptionPayload? {
+    guard dictationTranscriberEnabled() else { return nil }
+    let supported = await DictationTranscriber.supportedLocales
+    guard let effectiveLocale = bestAvailableLocale(requested: locale, available: supported) else {
+        return nil
+    }
+    _ = try? await AssetInventory.reserve(locale: effectiveLocale)
+    let transcriber = makeDictationTranscriber(locale: effectiveLocale)
+    guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
+        return nil
+    }
+    let (text, segments) = try await transcribeWithDictationTranscriber(
+        audioPath: audioPath,
+        transcriber: transcriber
+    )
+    return TranscriptionPayload(text: text, segments: segments, backend: .dictationTranscriber)
+}
+
+/// File path drives the analyzer with `start(inputAudioFile:finishAfterFile:)`
+/// rather than the shared `streamAudio` feeder: Apple owns the read/convert
+/// loop, so there is no second place for a format-conversion bug to truncate
+/// the corpus.
+private func transcribeWithDictationTranscriber(
+    audioPath: String,
+    transcriber: DictationTranscriber
+) async throws -> (text: String, segments: [BridgeSegment]) {
+    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
+
+    let collector = Task { () -> (String, [BridgeSegment]) in
+        var finalTextParts: [String] = []
+        var finalSegments: [BridgeSegment] = []
+        var volatileText = ""
+        var volatileSegments: [BridgeSegment] = []
+        for try await result in transcriber.results {
+            let text = String(result.text.characters)
+            let segments = segmentsFromAttributedText(result.text)
+            if result.isFinal {
+                finalTextParts.append(text)
+                finalSegments.append(contentsOf: segments)
+                volatileText = ""
+                volatileSegments = []
+            } else {
+                volatileText = text
+                volatileSegments = segments
+            }
+        }
+        let combined = finalTextParts.joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = volatileText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (
+            combined.isEmpty ? fallback : combined,
+            normalizeSegments(finalSegments.isEmpty ? volatileSegments : finalSegments)
+        )
+    }
+
+    try await analyzer.start(inputAudioFile: file, finishAfterFile: true)
+    return try await collector.value
 }
 
 private func sfSpeechOnDeviceReady(locale: Locale) -> Bool {
@@ -616,6 +835,8 @@ private func transcribeWithSfSpeechAudioBuffer(
     audioPath: String,
     locale: Locale
 ) async throws -> TranscriptionPayload {
+    // SFSpeech path only — Speech Recognition TCC required here (not on ST).
+    try await ensureSpeechAuthorizedForSfSpeech()
     guard let recognizer = SFSpeechRecognizer(locale: locale) else {
         throw BridgeError.runtime(
             "neither SpeechTranscriber nor SFSpeechRecognizer supports locale \(locale.identifier)"
@@ -727,6 +948,9 @@ private func recognizeSfSpeechBufferWindow(
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    // Isolate non-Sendable Speech request behind a serial-queue handle so
+    // Dispatch/AVAudio @Sendable completions never capture it bare (S-4).
+    let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-buffer")
 
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
@@ -739,18 +963,19 @@ private func recognizeSfSpeechBufferWindow(
     // Tap the player (proven path for short Polish fixtures). Mixer-bus tap
     // returned silent buffers on this machine.
     player.installTap(onBus: bus, bufferSize: bufferSize, format: fileFormat) { buffer, _ in
-        request.append(buffer)
+        requestHandle.append(buffer)
     }
+
+    let session = SfSpeechBufferSession(
+        player: player, engine: engine, bus: bus, request: requestHandle)
 
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
         let gate = SfSpeechSettleGate()
         let acc = SfSpeechPhraseAccumulator(timeOffset: timeOffset)
-        let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
+        let timeout = SfSpeechTimeoutCancel()
+        let settle: @Sendable (Result<TranscriptionPayload, Error>) -> Void = { outcome in
             guard gate.trySettle() else { return }
-            player.removeTap(onBus: bus)
-            player.stop()
-            engine.stop()
-            request.endAudio()
+            session.tearDown()
             switch outcome {
             case .success(let payload):
                 continuation.resume(returning: payload)
@@ -758,39 +983,36 @@ private func recognizeSfSpeechBufferWindow(
                 continuation.resume(throwing: error)
             }
         }
-        let timeoutWork = DispatchWorkItem {
+        let localeId = locale.identifier
+        timeout.schedule(after: deadlineSeconds) {
             gate.cancelTask()
             if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
                 settle(.success(payload))
             } else {
                 settle(.failure(BridgeError.runtime(
-                    "sf_speech_buffer: recognition_timeout after \(String(format: "%.1f", deadlineSeconds))s (locale=\(locale.identifier))"
+                    "sf_speech_buffer: recognition_timeout after \(String(format: "%.1f", deadlineSeconds))s (locale=\(localeId))"
                 )))
             }
         }
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(
-            deadline: .now() + deadlineSeconds,
-            execute: timeoutWork
-        )
 
-        let task = retained.recognitionTask(with: request) { result, error in
+        let task = retained.recognitionTask(with: requestHandle.bareRequest) { result, error in
             if gate.isSettled() { return }
             if let error {
                 if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
-                    timeoutWork.cancel()
+                    timeout.cancel()
                     settle(.success(payload))
                     return
                 }
                 let ns = error as NSError
                 // Cancel / no-speech after endAudio — treat as empty success when no text.
                 if ns.domain == "kAFAssistantErrorDomain" || ns.code == 216 || ns.code == 1 {
-                    timeoutWork.cancel()
+                    timeout.cancel()
                     settle(.success(
                         TranscriptionPayload(text: "", segments: [], backend: .sfSpeechRecognizer)
                     ))
                     return
                 }
-                timeoutWork.cancel()
+                timeout.cancel()
                 settle(.failure(BridgeError.runtime(
                     "sf_speech_buffer: \(error.localizedDescription) (domain=\(ns.domain) code=\(ns.code))"
                 )))
@@ -818,15 +1040,15 @@ private func recognizeSfSpeechBufferWindow(
 
         do {
             try engine.start()
-            let onPlaybackDone: () -> Void = {
+            let onPlaybackDone: @Sendable () -> Void = {
                 // File finished through the engine — end recognition input.
                 DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.35) {
                     if gate.isSettled() { return }
-                    request.endAudio()
+                    requestHandle.endAudio()
                     let settleGrace = max(1.5, min(4.0, audioSeconds * 0.05 + 1.2))
                     DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settleGrace) {
                         if gate.isSettled() { return }
-                        timeoutWork.cancel()
+                        timeout.cancel()
                         if let payload = acc.snapshotPayload() {
                             settle(.success(payload))
                         } else {
@@ -854,7 +1076,7 @@ private func recognizeSfSpeechBufferWindow(
             }
             player.play()
         } catch {
-            timeoutWork.cancel()
+            timeout.cancel()
             settle(.failure(BridgeError.runtime(
                 "sf_speech_buffer: engine start failed: \(error.localizedDescription)"
             )))
@@ -923,6 +1145,8 @@ private struct StreamHeader: Codable {
 /// events (with `SFTranscriptionSegment.confidence`), EOF ends audio and the
 /// accumulated text is returned as the summary payload.
 private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPayload {
+    // Stream command is SFSpeechAudioBuffer only today — gate Speech TCC here.
+    try await ensureSpeechAuthorizedForSfSpeech()
     guard let headerData = readRawStdinLine(),
         let header = try? {
             let decoder = JSONDecoder()
@@ -955,15 +1179,18 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    // Stream PCM pump runs on a Dispatch queue (@Sendable); isolate the bare
+    // request so append/endAudio never cross the Sendable boundary (L1068).
+    let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-stream")
 
     emitStreamEvent(StreamEventOut(event: "ready"))
 
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<TranscriptionPayload, Error>) in
         let gate = SfSpeechSettleGate()
         let acc = SfSpeechPhraseAccumulator(timeOffset: 0)
-        let settle: (Result<TranscriptionPayload, Error>) -> Void = { outcome in
+        let settle: @Sendable (Result<TranscriptionPayload, Error>) -> Void = { outcome in
             guard gate.trySettle() else { return }
-            request.endAudio()
+            requestHandle.endAudio()
             switch outcome {
             case .success(let payload):
                 emitStreamEvent(StreamEventOut(event: "end"))
@@ -975,7 +1202,7 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
             }
         }
 
-        let task = recognizer.recognitionTask(with: request) { result, error in
+        let task = recognizer.recognitionTask(with: requestHandle.bareRequest) { result, error in
             if gate.isSettled() { return }
             if let error {
                 if let payload = acc.snapshotPayload(), !payload.text.isEmpty {
@@ -1036,8 +1263,10 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
         // Blocking PCM pump on a background queue: read stdin → append buffers.
         // The recognizer's callbacks land on its own queue; nothing here blocks
         // them. EOF → endAudio → settle grace → snapshot.
+        let streamRate = header.rate
+        let streamChannels = header.channels
         DispatchQueue.global(qos: .userInitiated).async {
-            let bytesPerFrame = 4 * header.channels
+            let bytesPerFrame = 4 * streamChannels
             let chunkBytes = 32768
             var carry = Data()
             var raw = [UInt8](repeating: 0, count: chunkBytes)
@@ -1065,14 +1294,14 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
                 }
                 carry.removeSubrange(0..<usable)
                 fedFrames += Int64(frames)
-                request.append(buffer)
+                requestHandle.append(buffer)
             }
 
             if gate.isSettled() { return }
-            request.endAudio()
+            requestHandle.endAudio()
             // Settle grace scaled to how much audio flowed (same shape as the
             // window path) — SFSpeech needs a beat to flush its last final.
-            let fedSeconds = Double(fedFrames) / header.rate
+            let fedSeconds = Double(fedFrames) / streamRate
             let settleGrace = max(1.5, min(6.0, fedSeconds * 0.05 + 1.5))
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + settleGrace) {
                 if gate.isSettled() { return }
@@ -1143,8 +1372,7 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         defer { lock.unlock() }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var frozen: FrozenPhrase? = nil
-        // Detect SFSpeech phrase restart without isFinal: new partial neither
-        // extends nor is a prefix of the previous hypothesis → freeze prior.
+        // Detect SFSpeech phrase restart without isFinal → freeze prior.
         //
         // A RESTART collapses the hypothesis to a few words; a REVISION keeps
         // most of it and only rewords the middle. Measured on the parity
@@ -1152,19 +1380,48 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         // revision shrank 95 → 79 — and the old "shorter by 12+" rule froze
         // that revision as a phrase, sealing the same span twice (the residual
         // duplication at similarity 0.872).
+        //
+        // NAMED DROP MECHANISM (w1-b, 2026-08-10 three-way live):
+        // `shared_opener_restart_suppresses_freeze`. Consecutive Polish
+        // sentences share openers ("Zdanie" / "Zadanie"). The previous rule
+        // treated `prev.hasPrefix(t)` / substring containment as "extends",
+        // so a post-stressor collapse to the next sentence's short opener
+        // OVERWROTE the open hypothesis without freezing it — s6/s8/s10
+        // vanished from committed raw while native dictation kept them.
+        // Same-phrase rewind only suppresses freeze when the short text is a
+        // TRUE substantial prefix (>15 chars) of the prior hypothesis.
         if !partialText.isEmpty && !t.isEmpty {
             let prev = partialText
-            let extends = t.hasPrefix(prev) || prev.hasPrefix(t) || t.contains(prev) || prev.contains(t)
-            let restarted = (t.count * 3 < prev.count) || (t.count <= 15 && prev.count >= 25)
-            if restarted && !extends {
+            if Self.phraseRestartShouldFreezePrior(prev: prev, next: t) {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
                 frozen = FrozenPhrase(text: prev, segments: partialSegments)
+                let ts = ISO8601DateFormatter().string(from: Date())
+                fputs(
+                    "apple_lifecycle: freeze reason=shared_opener_restart_suppresses_freeze "
+                        + "ts=\(ts) prev_chars=\(prev.count) next_chars=\(t.count) "
+                        + "prev_head=\(String(prev.prefix(40))) next_head=\(String(t.prefix(40)))\n",
+                    stderr
+                )
             }
         }
         partialText = t
         partialSegments = segments
         return frozen
+    }
+
+    /// Pure freeze decision — kept in lockstep with
+    /// `phrase_restart_should_freeze_prior` in `apple_live_session.rs`.
+    fileprivate static func phraseRestartShouldFreezePrior(prev: String, next: String) -> Bool {
+        let prev = prev.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = next.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prev.isEmpty, !next.isEmpty else { return false }
+        let restarted = (next.count * 3 < prev.count) || (next.count <= 15 && prev.count >= 25)
+        guard restarted else { return false }
+        // Substantial true-prefix rewind of the SAME phrase — not a 1–2 word
+        // opener every "Zdanie N" sentence shares.
+        let samePhraseRewind = prev.hasPrefix(next) && next.count > 15
+        return !samePhraseRewind
     }
 
     /// Freeze whatever hypothesis is still open (stream ended mid-phrase).
@@ -1204,6 +1461,8 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
 }
 
 private func transcribeWithSfSpeech(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+    // SFSpeech URL path — Speech Recognition TCC required here (not on ST).
+    try await ensureSpeechAuthorizedForSfSpeech()
     guard let recognizer = SFSpeechRecognizer(locale: locale) else {
         throw BridgeError.runtime(
             "neither SpeechTranscriber nor SFSpeechRecognizer supports locale \(locale.identifier)"
@@ -1323,6 +1582,112 @@ final class SfSpeechSettleGate: @unchecked Sendable {
     }
 }
 
+// MARK: - Sendable isolation (actor/serial-queue; never suppress-attribute)
+
+/// Serial-queue isolation for non-Sendable `SFSpeechAudioBufferRecognitionRequest`.
+///
+/// Dispatch / AVAudio completion handlers are `@Sendable`; capturing the bare
+/// request crosses that boundary and surfaces Sendable warnings (and hard
+/// failures under `-warnings-as-errors`). Callers capture this handle instead
+/// and hop through the serial queue for append/endAudio.
+final class SfSpeechRequestHandle: @unchecked Sendable {
+    private let queue: DispatchQueue
+    private let request: SFSpeechAudioBufferRecognitionRequest
+
+    init(
+        _ request: SFSpeechAudioBufferRecognitionRequest,
+        label: String = "com.vetcoders.codescribe.stt.sf-request"
+    ) {
+        self.request = request
+        self.queue = DispatchQueue(label: label)
+    }
+
+    /// Bare request for APIs that require it on the creating thread
+    /// (`recognitionTask(with:)`, installTap setup before concurrent access).
+    var bareRequest: SFSpeechAudioBufferRecognitionRequest { request }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        queue.sync { request.append(buffer) }
+    }
+
+    func endAudio() {
+        queue.sync { request.endAudio() }
+    }
+}
+
+/// Cancelable timeout without capturing non-Sendable `DispatchWorkItem` in
+/// nested `@Sendable` closures (the L829 warning surface).
+final class SfSpeechTimeoutCancel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var workItem: DispatchWorkItem?
+
+    func schedule(
+        after seconds: TimeInterval,
+        qos: DispatchQoS.QoSClass = .userInitiated,
+        _ body: @escaping @Sendable () -> Void
+    ) {
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, !self.isCancelled else { return }
+            body()
+        }
+        lock.lock()
+        workItem = item
+        lock.unlock()
+        DispatchQueue.global(qos: qos).asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        workItem?.cancel()
+        workItem = nil
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+/// Holds non-Sendable AVAudioEngine / player for buffer-path teardown so
+/// `@Sendable` completion handlers never capture them directly.
+final class SfSpeechBufferSession: @unchecked Sendable {
+    private let lock = NSLock()
+    private var player: AVAudioPlayerNode?
+    private var engine: AVAudioEngine?
+    private let bus: AVAudioNodeBus
+    private let request: SfSpeechRequestHandle
+    private var tornDown = false
+
+    init(
+        player: AVAudioPlayerNode,
+        engine: AVAudioEngine,
+        bus: AVAudioNodeBus,
+        request: SfSpeechRequestHandle
+    ) {
+        self.player = player
+        self.engine = engine
+        self.bus = bus
+        self.request = request
+    }
+
+    func tearDown() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !tornDown else { return }
+        tornDown = true
+        player?.removeTap(onBus: bus)
+        player?.stop()
+        engine?.stop()
+        request.endAudio()
+        player = nil
+        engine = nil
+    }
+}
+
 /// Seconds before a stalled SFSpeech callback is cancelled. Overridable for tests.
 func sfSpeechRecognitionDeadlineSeconds() -> TimeInterval {
     if let raw = ProcessInfo.processInfo.environment["CODESCRIBE_SFSPEECH_DEADLINE_SECS"],
@@ -1386,6 +1751,18 @@ private func normalizeSegments(_ segments: [BridgeSegment]) -> [BridgeSegment] {
     return normalized
 }
 
+/// Feed a file into the analyzer, resampling to the analyzer's format.
+///
+/// The input block is a PULL callback: `AVAudioConverter` calls it as often as
+/// it needs while filling one destination buffer, and a sample-rate converter
+/// needs it more than once. The previous shape handed the converter a single
+/// source buffer per `convert` call and answered `.endOfStream` for every
+/// further request — so the converter reported `.endOfStream` on the second
+/// outer iteration and the loop returned. Measured 2026-08-08 on the 140.85 s
+/// pl-PL parity fixture (44.1 kHz → 16 kHz): **1 buffer / 1486 frames** reached
+/// the analyzer instead of ~2.25 M, i.e. the file path was truncated to ~0.09 s
+/// of audio. Only the ST lane consumes this feeder, and ST serves no Polish
+/// locale, which is why the truncation never showed up in the pl-PL bars.
 private func streamAudio(
     fromPath path: String,
     destinationFormat: AVAudioFormat,
@@ -1394,51 +1771,88 @@ private func streamAudio(
     let url = URL(fileURLWithPath: path)
     let inputFile = try AVAudioFile(forReading: url)
     let sourceFormat = inputFile.processingFormat
-    let bufferFrameCapacity: AVAudioFrameCount = 4096
+    let sourceFrameCapacity: AVAudioFrameCount = 4096
 
     guard let converter = AVAudioConverter(from: sourceFormat, to: destinationFormat) else {
         throw BridgeError.runtime("unable to create AVAudioConverter")
     }
 
-    while true {
-        guard let sourceBuffer = AVAudioPCMBuffer(
-            pcmFormat: sourceFormat,
-            frameCapacity: bufferFrameCapacity
-        ) else {
-            throw BridgeError.runtime("unable to allocate source buffer")
-        }
-        try inputFile.read(into: sourceBuffer)
-        if sourceBuffer.frameLength == 0 {
-            break
-        }
+    // Destination capacity must cover the resampled span of one source read
+    // plus converter slack; upsampling makes the ratio > 1.
+    let rateRatio = destinationFormat.sampleRate / sourceFormat.sampleRate
+    let destFrameCapacity = AVAudioFrameCount(
+        (Double(sourceFrameCapacity) * max(rateRatio, 1.0)).rounded(.up) + 1024.0
+    )
 
+    var readError: Error?
+    var reachedEndOfFile = false
+
+    while true {
         guard let destBuffer = AVAudioPCMBuffer(
             pcmFormat: destinationFormat,
-            frameCapacity: AVAudioFrameCount(Double(sourceBuffer.frameLength) * 2.0 + 64.0)
+            frameCapacity: destFrameCapacity
         ) else {
             throw BridgeError.runtime("unable to allocate destination buffer")
         }
 
         var convertError: NSError?
-        var sourceConsumed = false
         let status = converter.convert(to: destBuffer, error: &convertError) { _, outStatus in
-            if sourceConsumed {
+            // `framePosition >= length` is the reliable end-of-file signal.
+            // Reading past it does not return an empty buffer — it throws a bare
+            // ObjC failure with no NSError attached
+            // (`Foundation._GenericObjCError.nilError`, measured 2026-08-08), so
+            // a feeder that only checks `frameLength == 0` reports EOF as a hard
+            // transcription error.
+            if reachedEndOfFile || inputFile.framePosition >= inputFile.length {
+                reachedEndOfFile = true
                 outStatus.pointee = .endOfStream
                 return nil
             }
-            sourceConsumed = true
+            guard let sourceBuffer = AVAudioPCMBuffer(
+                pcmFormat: sourceFormat,
+                frameCapacity: sourceFrameCapacity
+            ) else {
+                readError = BridgeError.runtime("unable to allocate source buffer")
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            do {
+                try inputFile.read(into: sourceBuffer)
+            } catch {
+                // Only fatal while frames remain; at the boundary it is EOF.
+                if inputFile.framePosition < inputFile.length {
+                    readError = error
+                }
+                reachedEndOfFile = true
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            if sourceBuffer.frameLength == 0 {
+                reachedEndOfFile = true
+                outStatus.pointee = .endOfStream
+                return nil
+            }
             outStatus.pointee = .haveData
             return sourceBuffer
         }
 
+        if let readError {
+            throw readError
+        }
         if let convertError {
             throw BridgeError.runtime("audio conversion failed: \(convertError)")
         }
 
+        if destBuffer.frameLength > 0 {
+            builder.yield(AnalyzerInput(buffer: destBuffer))
+        }
+
         switch status {
         case .haveData, .inputRanDry:
-            if destBuffer.frameLength > 0 {
-                builder.yield(AnalyzerInput(buffer: destBuffer))
+            // `.inputRanDry` with the file exhausted means the converter has
+            // nothing left to pull — keep going only while audio remains.
+            if reachedEndOfFile, destBuffer.frameLength == 0 {
+                return
             }
         case .endOfStream:
             return

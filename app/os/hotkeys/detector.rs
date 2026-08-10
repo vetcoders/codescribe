@@ -1,3 +1,19 @@
+//! Pure gesture recognition for Codescribe hotkeys — the state machine behind
+//! every trigger, with no platform API in sight.
+//!
+//! This module consumes already-decoded [`HotkeyDetectorInput`] values (key
+//! down/up plus a modifier snapshot) and emits [`HotkeyEvent`]s. The
+//! CoreGraphics event tap that produces those inputs lives in
+//! [`super::platform`]. Keeping the two apart is what makes the gesture rules —
+//! hold combos, double taps, arm modifiers, block diagnostics — unit-testable
+//! without Accessibility permission or a live event tap; the tests at the
+//! bottom of this file drive [`HotkeyDetector::feed`] with synthetic
+//! `Instant`s and never touch macOS.
+//!
+//! The canonical routing contract for the emitted events is
+//! `docs/HOTKEYS_CONTRACT.md`; this module implements the *detection* half of
+//! it, while the destination of each event is decided by the controller.
+
 use super::config::HotkeyRuntimeConfig;
 use crate::config::{DeferredInsertShortcut, ShortcutBinding};
 use std::time::{Duration, Instant};
@@ -12,16 +28,31 @@ const TAP_MAX_MS: u64 = 220;
 /// Represents the action of a hold gesture
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldAction {
+    /// The hold combo just became active — start capturing.
     Down,
+    /// The hold combo was released — stop capturing and deliver.
     Up,
 }
 
 /// High-level hold intent derived from modifier state.
 ///
-/// UX split:
+/// UX split — the destination is chosen by the MODE, and only `Raw` reaches the
+/// frontmost app:
 /// - `Raw`: dictation → auto-paste (fast)
-/// - `Chat`: voice chat to AI → response in overlay (no auto-paste)
-/// - `Selection`: apply instruction to selected text → response in overlay (no auto-paste)
+/// - `Chat`: voice chat to AI → reply in the **agent chat window** (no auto-paste)
+/// - `Selection`: instruction applied to the selected text → reply in the
+///   **agent chat window** (no auto-paste)
+///
+/// Both agent modes previously documented "response in overlay". That has been
+/// false since the legacy AppKit overlay sink was removed: replies are
+/// broadcast to Swift over `CsAgentDeliveryListener`
+/// (`bridge/src/agent_delivery.rs`), deliberately kept off the
+/// overlay/dictation stream, and `testAgentModesNeverConstructOrOrderOverlayFront`
+/// asserts the overlay is never even constructed for them. The comment is
+/// corrected rather than deleted because the reconstruction of this contract
+/// (`reports/trigger-routing-contract-reconstruction.md`, gap G2) exists
+/// precisely to stop the routing rule being re-invented by the next reader who
+/// trusts the code's own doc over the doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HoldMode {
     #[default]
@@ -54,6 +85,11 @@ pub enum HotkeyEvent {
     },
 }
 
+/// Which physical double-tap the user performed.
+///
+/// Carried by [`HotkeyEvent::DoubleTapBlocked`] so the UI and the log line can
+/// name the gesture the user actually made, independently of whichever mode it
+/// failed to reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoubleTapGesture {
     LeftOption,
@@ -61,6 +97,7 @@ pub enum DoubleTapGesture {
 }
 
 impl DoubleTapGesture {
+    /// Human-facing gesture name, as shown to the user in Diagnostics.
     pub fn label(self) -> &'static str {
         match self {
             Self::LeftOption => "Double-tap Left Option",
@@ -68,6 +105,11 @@ impl DoubleTapGesture {
         }
     }
 
+    /// Stable token for log/Diagnostics lines (`blocked_double_tap gesture=…`).
+    ///
+    /// Kept separate from [`Self::label`] on purpose: the label is prose that
+    /// may be reworded, the token is a grep-stable contract asserted by
+    /// `blocked_double_tap_diagnostic_line_uses_stable_reason_tokens`.
     pub fn reason_token(self) -> &'static str {
         match self {
             Self::LeftOption => "left_option",
@@ -76,13 +118,21 @@ impl DoubleTapGesture {
     }
 }
 
+/// Why a recognised double-tap could not be routed to a mode.
+///
+/// The detector still *sees* the gesture; it just has nowhere to send it. Both
+/// variants are surfaced to the user rather than swallowed, so a mis-bound
+/// shortcut looks like a refusal with a reason instead of a dead key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoubleTapBlockReason {
+    /// No Codescribe mode is bound to this gesture in the current config.
     BindingDisabled,
+    /// A hold combo or another modifier was active, so the tap was ambiguous.
     ModifierComboActive,
 }
 
 impl DoubleTapBlockReason {
+    /// User-facing explanation, phrased to complete "…because …".
     pub fn message(self) -> &'static str {
         match self {
             Self::BindingDisabled => "that gesture is not assigned to a Codescribe mode",
@@ -126,6 +176,7 @@ pub struct ModifierFlags {
 }
 
 impl ModifierFlags {
+    /// All modifiers released.
     pub fn new() -> Self {
         Self {
             ctrl: false,
@@ -135,6 +186,8 @@ impl ModifierFlags {
         }
     }
 
+    /// Control held, everything else released — the shape of the default
+    /// dictation hold.
     pub fn ctrl_only() -> Self {
         Self {
             ctrl: true,
@@ -145,6 +198,11 @@ impl ModifierFlags {
     }
 
     /// Check if the current flags match the required flags
+    ///
+    /// `exclusive` decides the comparison: exact equality (extra modifiers
+    /// break the match) versus containment (every required modifier is held,
+    /// extras tolerated). Exclusive matching is what stops `Ctrl+Shift` from
+    /// silently satisfying a plain `Ctrl` binding.
     pub fn matches(&self, required: &ModifierFlags, exclusive: bool) -> bool {
         if exclusive {
             self.ctrl == required.ctrl
@@ -159,17 +217,24 @@ impl ModifierFlags {
         }
     }
 
+    /// Whether these flags carry the assistive marker (Shift).
     pub fn is_assistive(&self) -> bool {
         self.shift
     }
 }
 
 impl Default for ModifierFlags {
+    /// Empty modifier requirement: no ctrl/alt/shift/cmd demanded.
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Modifier state as observed at one event, straight from the platform layer.
+///
+/// Distinct from [`ModifierFlags`] on purpose: this is the *raw observation*
+/// (including `fn_key`, which macOS reports as a secondary-Fn flag), whereas
+/// `ModifierFlags` is the *requirement* a binding compares against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HotkeyModifierSnapshot {
     pub ctrl: bool,
@@ -179,6 +244,12 @@ pub struct HotkeyModifierSnapshot {
     pub fn_key: bool,
 }
 
+/// The physical key an event came from, already mapped off macOS keycodes.
+///
+/// Left/right variants are kept apart because the whole double-tap routing
+/// depends on the side: left Option and right Option drive different modes,
+/// and a tap that starts on one side and ends on the other is discarded.
+/// Everything the detector does not care about collapses into `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyPhysicalKey {
     LeftOption,
@@ -192,30 +263,42 @@ pub enum HotkeyPhysicalKey {
 }
 
 impl HotkeyPhysicalKey {
+    /// Either Option key, regardless of side.
     fn is_option(self) -> bool {
         matches!(self, Self::LeftOption | Self::RightOption)
     }
 
+    /// Right Option specifically — the side that routes to assistive mode.
     fn is_right_option(self) -> bool {
         matches!(self, Self::RightOption)
     }
 
+    /// Either Control key, regardless of side.
     fn is_ctrl(self) -> bool {
         matches!(self, Self::LeftControl | Self::RightControl)
     }
 }
 
+/// One decoded keyboard event fed into [`HotkeyDetector::feed`].
+///
+/// `now` is passed in rather than read from the clock inside the detector —
+/// that is what lets the tests drive double-tap windows and hold delays with
+/// synthetic `Instant`s instead of sleeping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyDetectorInput {
+    /// A non-modifier key went down (Space, V, or anything else).
     KeyDown {
         now: Instant,
         key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
     },
+    /// A non-modifier key was released; clears the one-shot chord latches.
     KeyUp {
         key: HotkeyPhysicalKey,
         modifiers: HotkeyModifierSnapshot,
     },
+    /// A modifier changed state — the event that carries every hold and
+    /// double-tap gesture, since modifiers never produce key down/up.
     FlagsChanged {
         now: Instant,
         key: HotkeyPhysicalKey,
@@ -223,6 +306,15 @@ pub enum HotkeyDetectorInput {
     },
 }
 
+/// The gesture state machine: fed one event at a time, emits at most one
+/// [`HotkeyEvent`] per input.
+///
+/// All state is per-instance and time is supplied by the caller, so a detector
+/// is cheap to construct in tests and carries no global or platform coupling.
+/// The fields track what a single event cannot tell you: whether a hold is
+/// already running, which Option side was pressed, when the last tap landed,
+/// and whether a real key was struck during a modifier (which disqualifies the
+/// modifier release from counting as a tap).
 #[derive(Debug, Clone)]
 pub struct HotkeyDetector {
     hold_active: bool,
@@ -244,6 +336,7 @@ pub struct HotkeyDetector {
 }
 
 impl Default for HotkeyDetector {
+    /// Fresh detector with all hold, tap, and one-shot chord latches cleared.
     fn default() -> Self {
         Self {
             hold_active: false,
@@ -266,6 +359,12 @@ impl Default for HotkeyDetector {
 }
 
 impl HotkeyDetector {
+    /// Advance the state machine by one input and return the gesture it
+    /// completes, if any.
+    ///
+    /// `config` is passed per call rather than stored so a settings change
+    /// takes effect on the very next event, without rebuilding the detector or
+    /// losing an in-flight hold.
     pub fn feed(
         &mut self,
         input: HotkeyDetectorInput,
@@ -297,10 +396,18 @@ impl HotkeyDetector {
         }
     }
 
+    /// Whether a hold gesture is currently running.
     pub fn is_combo_active(&self) -> bool {
         self.hold_active
     }
 
+    /// Handle a non-modifier key press.
+    ///
+    /// Two things happen here beyond the one-shot chords (Insert-Here and
+    /// Show-Agent): a key struck inside the hold start-delay window *cancels*
+    /// the pending hold (the user meant to type, not to dictate), and any key
+    /// struck while a modifier is down marks that modifier as "used", which
+    /// disqualifies its later release from registering as a tap.
     fn handle_key_down(
         &mut self,
         now: Instant,
@@ -373,6 +480,14 @@ impl HotkeyDetector {
         emitted
     }
 
+    /// Handle a modifier state change — where every hold and double-tap is
+    /// actually decided.
+    ///
+    /// Order matters and is deliberate: hold transitions are resolved first
+    /// (so a hold always wins over a tap interpretation), then the double-tap
+    /// paths run per binding. A gesture that is recognised but unroutable
+    /// leaves through [`HotkeyEvent::DoubleTapBlocked`] rather than being
+    /// dropped, so the user sees a reason instead of a dead key.
     fn handle_flags_changed(
         &mut self,
         now: Instant,
@@ -585,6 +700,11 @@ impl HotkeyDetector {
     }
 }
 
+/// Whether the held modifiers exactly match the configured Insert-Here chord.
+///
+/// Matching is exclusive in both directions — every modifier the chord needs
+/// must be down and every one it does not must be up — so `Cmd+Opt+V` cannot
+/// be satisfied by `Cmd+Opt+Shift+V`, which belongs to the app underneath.
 fn deferred_insert_modifiers_match(
     shortcut: DeferredInsertShortcut,
     modifiers: HotkeyModifierSnapshot,
@@ -615,10 +735,16 @@ fn deferred_insert_modifiers_match(
     }
 }
 
+/// Saturating `now - previous`.
+///
+/// Returns zero instead of panicking when the two `Instant`s arrive out of
+/// order, which the tests do routinely and a monotonic-clock hiccup can do in
+/// production.
 fn elapsed_between(now: Instant, previous: Instant) -> Duration {
     now.checked_duration_since(previous).unwrap_or_default()
 }
 
+/// Record a tap and return `event` if it completed a double-tap.
 fn register_double_tap(
     last_tap: &mut Option<Instant>,
     now: Instant,
@@ -632,6 +758,10 @@ fn register_double_tap(
     }
 }
 
+/// The double-tap window itself: `true` when this tap closes a pair.
+///
+/// On success `last_tap` is cleared rather than replaced, so three taps read as
+/// one double-tap plus a fresh first tap — never as two overlapping pairs.
 fn consume_double_tap(last_tap: &mut Option<Instant>, now: Instant, interval_ms: u64) -> bool {
     if let Some(previous) = *last_tap
         && elapsed_between(now, previous) <= Duration::from_millis(interval_ms)
@@ -644,6 +774,13 @@ fn consume_double_tap(last_tap: &mut Option<Instant>, now: Instant, interval_ms:
     false
 }
 
+/// Run an Option double-tap through the same window as a routable one, but emit
+/// [`HotkeyEvent::DoubleTapBlocked`] instead of a mode switch.
+///
+/// The block still consumes the tap pair and clears the opposite side's
+/// timestamp, so a blocked gesture cannot leave half-state that makes the next
+/// single tap look like a double. An INFO line is logged on the same edge, once
+/// per completed pair.
 fn register_blocked_option_double_tap(
     detector: &mut HotkeyDetector,
     released_right: bool,
@@ -671,6 +808,13 @@ fn register_blocked_option_double_tap(
     }
 }
 
+/// Whether the *base* modifiers of a hold binding are down, ignoring any arm
+/// modifier layered on top.
+///
+/// Deliberately looser than [`check_hold_combo`]: this answers "is the user in
+/// the neighbourhood of a hold", which is what the start-delay cancel and the
+/// wrong-arm diagnostic need. Double-tap bindings have no base and return
+/// `false`.
 fn hold_base_pressed(
     modifiers: HotkeyModifierSnapshot,
     dictation_binding: ShortcutBinding,
@@ -688,6 +832,13 @@ fn hold_base_pressed(
     }
 }
 
+/// Whether the hold combo is genuinely active — the strict test that actually
+/// starts and stops a hold.
+///
+/// The Option guard up front is the difference from [`hold_base_pressed`]: for
+/// every binding that does not itself involve Option, a held Option vetoes the
+/// hold, so `Ctrl+Opt` cannot be mistaken for a plain `Ctrl` hold while the
+/// user is reaching for an Option gesture.
 fn check_hold_combo(modifiers: HotkeyModifierSnapshot, dictation_binding: ShortcutBinding) -> bool {
     if modifiers.option
         && !matches!(
@@ -711,6 +862,15 @@ fn check_hold_combo(modifiers: HotkeyModifierSnapshot, dictation_binding: Shortc
     }
 }
 
+/// The hold binding that arms Selection mode for a given assistive binding.
+///
+/// Currently returns `None` for every [`ShortcutBinding`] variant: assistive is
+/// reached by double-tapping right Option, not by holding, so no binding maps
+/// to an assistive *hold*. The function is kept as the single seam where a hold
+/// route would be reintroduced — its two call sites in
+/// [`HotkeyDetector::handle_flags_changed`] and
+/// [`HotkeyDetector::handle_key_down`] already fold the `Some` case in, so the
+/// wiring stays honest instead of being rediscovered later.
 fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
     match binding {
         ShortcutBinding::Disabled
@@ -725,6 +885,13 @@ fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
     }
 }
 
+/// Decide which [`HoldMode`] a live hold is in, from the arm modifiers.
+///
+/// `hold_exclusive` short-circuits to `Raw` — when the user has asked for
+/// exclusive holds, no modifier may promote dictation into an agent mode. Only
+/// the bindings that leave a modifier free (`HoldCtrlAlt`, `HoldFn`) can reach
+/// `Chat`; the rest already spend Shift or Cmd on the combo itself and stay
+/// `Raw`.
 fn compute_hold_mode(
     shift: bool,
     cmd: bool,
@@ -762,10 +929,12 @@ fn compute_hold_mode(
 }
 
 #[cfg(test)]
+/// Table-driven and synthetic-time tests for hold, double-tap, and command chords.
 mod tests {
     use super::super::config::ModeHotkeyBindings;
     use super::*;
 
+    /// Build a HotkeyRuntimeConfig with fixed hold delay and double-tap window for tests.
     fn test_config(
         dictation: ShortcutBinding,
         formatting: ShortcutBinding,
@@ -785,6 +954,7 @@ mod tests {
         }
     }
 
+    /// Shorthand HotkeyModifierSnapshot constructor for compact test tables.
     fn mods(
         ctrl: bool,
         option: bool,
@@ -802,6 +972,7 @@ mod tests {
     }
 
     #[test]
+    /// ⌘⇧Space emits ShowAgent once per physical press; repeats and wrong mods are silent.
     fn detector_show_agent_command_table_emits_once_per_space_press() {
         let config = test_config(
             ShortcutBinding::HoldFn,
@@ -861,6 +1032,7 @@ mod tests {
     }
 
     #[test]
+    /// Configured deferred-insert chord fires InsertHere once; key-repeat is suppressed.
     fn detector_deferred_insert_command_uses_configured_chord_once_per_press() {
         let mut config = test_config(
             ShortcutBinding::HoldFn,
@@ -936,6 +1108,7 @@ mod tests {
     }
 
     #[test]
+    /// Hold mode follows arm modifier and optional assistive Shift without exclusive force.
     fn compute_hold_mode_respects_modifiers() {
         use crate::config::HoldArmModifier;
         // Fn base + default Shift arm: Shift arms, Cmd does not.
@@ -1070,6 +1243,7 @@ mod tests {
     }
 
     #[test]
+    /// When hold_exclusive is set, non-raw modes collapse to Raw regardless of arm.
     fn compute_hold_mode_exclusive_forces_raw() {
         use crate::config::HoldArmModifier;
         assert_eq!(
@@ -1095,6 +1269,7 @@ mod tests {
     }
 
     #[test]
+    /// Fn hold produces one Hold(Down) after delay and matching Hold(Up) on release.
     fn detector_fn_hold_emits_down_and_up_for_one_physical_hold() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1136,6 +1311,7 @@ mod tests {
     }
 
     #[test]
+    /// ModifierFlags::ctrl_only marks only the Control bit.
     fn test_modifier_flags_ctrl_only() {
         let flags = ModifierFlags::ctrl_only();
         assert!(flags.ctrl);
@@ -1145,6 +1321,7 @@ mod tests {
     }
 
     #[test]
+    /// Exclusive match requires exact flag equality with the binding requirement.
     fn test_matches_exclusive_mode() {
         let required = ModifierFlags::ctrl_only();
         let current = ModifierFlags {
@@ -1173,6 +1350,7 @@ mod tests {
     }
 
     #[test]
+    /// Non-exclusive match allows extra modifiers beyond the required set.
     fn test_matches_non_exclusive_mode() {
         let required = ModifierFlags::ctrl_only();
         let current = ModifierFlags {
@@ -1185,6 +1363,7 @@ mod tests {
     }
 
     #[test]
+    /// Assistive marker is the Shift bit on ModifierFlags.
     fn test_is_assistive() {
         let flags = ModifierFlags {
             ctrl: true,
@@ -1204,6 +1383,7 @@ mod tests {
     }
 
     #[test]
+    /// Left Option double-tap fires only inside the configured interval window.
     fn detector_option_double_tap_window_table() {
         let table = [(200_u64, true), (201_u64, false)];
 
@@ -1270,6 +1450,7 @@ mod tests {
     }
 
     #[test]
+    /// Right Option double-tap routes to ToggleAssistive, not formatting toggle.
     fn detector_right_option_double_tap_emits_toggle_assistive() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1329,6 +1510,7 @@ mod tests {
     }
 
     #[test]
+    /// Disabled binding still surfaces DoubleTapBlocked with BindingDisabled reason.
     fn detector_reports_disabled_option_double_tap() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1388,6 +1570,7 @@ mod tests {
     }
 
     #[test]
+    /// Diagnostic lines use stable gesture= and reason= tokens for log scraping.
     fn blocked_double_tap_diagnostic_line_uses_stable_reason_tokens() {
         assert_eq!(
             blocked_double_tap_diagnostic_line(
@@ -1425,12 +1608,15 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         #[derive(Clone, Default)]
+        /// Thread-safe in-memory writer that captures tracing_subscriber output in tests.
         struct Buf(Arc<Mutex<Vec<u8>>>);
         impl Write for Buf {
+            /// Append bytes into the shared buffer; always reports full write length.
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
                 self.0.lock().unwrap().extend_from_slice(buf);
                 Ok(buf.len())
             }
+            /// No-op flush — buffer is already durable in memory for the assertion.
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }
@@ -1540,6 +1726,7 @@ mod tests {
     }
 
     #[test]
+    /// Active modifier combo blocks Option double-tap with ModifierComboActive.
     fn detector_reports_modifier_blocked_option_double_tap() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1599,6 +1786,7 @@ mod tests {
     }
 
     #[test]
+    /// A real key during hold delay cancels the pending hold before Down is emitted.
     fn detector_cancels_hold_on_keydown_during_delay() {
         let mut detector = HotkeyDetector::default();
         let mut config = test_config(
@@ -1654,6 +1842,7 @@ mod tests {
     }
 
     #[test]
+    /// Ctrl+Alt hold binding requires Option present before hold tracking starts.
     fn detector_hold_ctrl_alt_requires_option_before_starting_hold() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1697,6 +1886,7 @@ mod tests {
     }
 
     #[test]
+    /// Legacy assistive hold path still emits Down/Up for the configured binding.
     fn detector_releases_legacy_assistive_hold_binding() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1744,6 +1934,7 @@ mod tests {
     }
 
     #[test]
+    /// After an Option combo with another key, double-tap state resets cleanly.
     fn detector_resets_combo_flags_after_option_combo() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(
@@ -1857,6 +2048,7 @@ mod tests {
     }
 
     #[test]
+    /// Double Control toggles raw mode; combo activity prevents a false double-tap.
     fn detector_raw_toggle_double_ctrl_and_combo_reset() {
         let mut detector = HotkeyDetector::default();
         let config = test_config(

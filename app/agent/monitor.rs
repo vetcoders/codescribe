@@ -37,8 +37,11 @@ const SERVICE_TICK: Duration = Duration::from_secs(2);
 /// Outcome counters for one pass over the active monitors (test surface).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TickSummary {
+    /// Monitors that were due and actually observed this pass.
     pub polled: usize,
+    /// Heartbeats delivered into their registering threads.
     pub heartbeats: usize,
+    /// Monitors that reached a terminal state and were marked done.
     pub finished: usize,
 }
 
@@ -232,6 +235,13 @@ fn validate_registration(run_id: &str, thread_store_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Register a monitor for `run_id` heartbeating into `thread_store_id`, using
+/// an explicit store + control-plane root (test-injectable core of
+/// [`register_run_monitor`]).
+///
+/// Fails when the run has no control-plane `meta.json` — there is nothing to
+/// observe. Artifact paths are seeded from that snapshot; the observer re-reads
+/// them on every poll regardless.
 pub fn register_run_monitor_in(
     store: &RunMonitorStore,
     control_plane_root: &std::path::Path,
@@ -310,12 +320,17 @@ pub fn resume_monitors_on_startup() {
     }
 }
 
+/// Ownership record for the single resident service thread.
 struct MonitorServiceHandle {
+    /// Shutdown flag the loop checks each tick.
     stop: &'static AtomicBool,
+    /// Join handle, taken on shutdown. `None` when the spawn failed.
     thread: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
+/// Set to stop the resident loop at its next tick.
 static MONITOR_STOP: AtomicBool = AtomicBool::new(false);
+/// The one service handle per process; its presence means the loop was started.
 static MONITOR_SERVICE: OnceLock<MonitorServiceHandle> = OnceLock::new();
 
 /// Start the resident polling loop once per process. Called on registration
@@ -350,6 +365,8 @@ pub fn shutdown_monitor_service() {
     }
 }
 
+/// The resident thread body: tick, log any failure, sleep, repeat until stopped.
+/// A failing tick is never fatal — the next one re-reads the store.
 fn monitor_loop() {
     info!("Run-monitor service started");
     loop {
@@ -364,6 +381,9 @@ fn monitor_loop() {
     info!("Run-monitor service stopped");
 }
 
+/// One [`tick_all`] pass against the default stores. Returns early without
+/// opening the thread store when nothing is active, so an idle process pays
+/// only a store read per tick.
 fn tick_default() -> Result<()> {
     let store = RunMonitorStore::new()?;
     if store.active()?.is_empty() {
@@ -376,6 +396,7 @@ fn tick_default() -> Result<()> {
 }
 
 #[cfg(test)]
+/// Run-monitor registration, tick progression, stall/recovery, and failure heartbeats.
 mod tests {
     use std::fs;
 
@@ -384,6 +405,7 @@ mod tests {
     use super::*;
     use codescribe_core::agent::run_monitor::RunMonitorState;
 
+    /// Isolated temp stores + control-plane run dir for one monitor test case.
     struct Harness {
         _tmp: TempDir,
         store: RunMonitorStore,
@@ -393,6 +415,7 @@ mod tests {
         run_dir: PathBuf,
     }
 
+    /// Spin up temp monitor/thread stores and a control-plane run directory for `run_id`.
     fn harness(run_id: &str) -> Harness {
         let tmp = TempDir::new().unwrap();
         let store = RunMonitorStore::new_in(tmp.path().join("monitors")).unwrap();
@@ -412,10 +435,12 @@ mod tests {
         }
     }
 
+    /// Overwrite the run's `meta.json` with the given body (test control-plane fixture).
     fn write_meta(harness: &Harness, body: &str) {
         fs::write(harness.run_dir.join("meta.json"), body).unwrap();
     }
 
+    /// Seed a composer-sourced agent thread so heartbeat delivery has a target.
     fn seed_thread(harness: &Harness, thread_id: &str) {
         let at = Utc::now();
         harness
@@ -447,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    /// Active→completed path: silent progress, one final heartbeat, no duplicates after done.
     fn launched_run_progresses_and_final_state_surfaces_without_prompting() {
         let run_id = "work-260801-000000-1";
         let thread_id = "t_2026-08-01_monitor";
@@ -552,6 +578,7 @@ mod tests {
     }
 
     #[test]
+    /// Failed runs post one heartbeat with a length-bounded transcript excerpt.
     fn failed_run_surfaces_failure_with_bounded_excerpt() {
         let run_id = "work-260801-000000-2";
         let thread_id = "t_2026-08-01_fail";
@@ -595,6 +622,7 @@ mod tests {
     }
 
     #[test]
+    /// Stall and recovery each notify once; repeated ticks in the same state stay silent.
     fn stall_then_recovery_notifies_each_transition_once() {
         let run_id = "work-260801-000000-3";
         let thread_id = "t_2026-08-01_stall";
@@ -665,6 +693,7 @@ mod tests {
     }
 
     #[test]
+    /// Registration requires an existing run dir and a bound thread; escapes are rejected.
     fn registration_rejects_unknown_runs_and_unbound_threads() {
         let harness = harness("work-known");
         write_meta(&harness, r#"{"status":"active"}"#);

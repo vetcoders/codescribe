@@ -165,9 +165,11 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `FINAL_PASS_MODE` (HOT RELOADED; `always|smart|off`; default `smart`; alias `CODESCRIBE_FINAL_PASS_MODE`) — **tylko** routing pełnego re-passu na stopie: `always`/`on` = zawsze pełny Whisper re-pass WAV, `smart` = pomija pełny re-pass gdy streaming completeness jest Complete (incomplete może jeszcze odpalić re-pass), `off` = nigdy pełnego re-passu (nie wymusza Whisper na stopie). **Nie włącza** layered/tail-patch. Live gap-fill = osobny opt-in `CODESCRIBE_LAYERED_TRANSCRIPTION`. Słownik/lexicon **zawsze** w postprocess. Settings → Dictation → "Final pass". Legacy `CODESCRIBE_TOGGLE_FINAL_PASS`: falsey→`off`, truthy→`always`.
-- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; default `off`; `phase1`..`phase4` lub bare `1`..`4`) — ortogonalny gate warstwowej transkrypcji. `phase1+` = Layer 1 Whisper tail-patch (`ReplaceRange`) na ścieżce VAD/scheduler; **nie** na domyślnym Apple progressive live (jeszcze). Smart final-pass **nie** ustawia tej flagi.
+- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; default `off`; `phase1`..`phase4` lub bare `1`..`4`) — ortogonalny gate warstwowej transkrypcji. `phase1+` = Layer 1 Whisper tail-patch (`ReplaceRange`) na **obu** ścieżkach live: VAD/scheduler oraz domyślnym Apple progressive live (W2-A — gap-fill z zatrzymanego PCM, max jeden job w locie, nierozwiązane okno nigdy nie trafia do Whispera). Smart final-pass **nie** ustawia tej flagi.
+- `CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO` (HOT RELOADED; default `0.5`) — próg bezpieczeństwa Layer 1: jeśli udział zmienionych znaków wobec zatwierdzonej wypowiedzi przekracza tę wartość, cała łatka jest **odrzucana** zamiast nałożona. Dzięki temu rozbieżna re-transkrypcja nigdy nie nadpisze żywego płótna.
+- `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` (RESTART NEEDED; default `0`) — uzbraja ścieżkę PoC `DictationTranscriber` (W4-A): moduł SpeechAnalyzer stojący za SYSTEMOWYM dyktowaniem, jedyny analizator Apple, którego katalog zawiera pl-PL. Domyślnie **wyłączone** — nieuzbrojony rung nie istnieje, a kolejność backendów jest bajt w bajt taka jak w wersji wydanej. Klucz czytają obie strony (proces Rust i dziedziczący go bridge), więc jeden wpis uzbraja całą ścieżkę. **To nie jest domyślna ścieżka produktu** — przełączenie jest decyzją operatora.
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
-- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
+- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `2700` = 45 min; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu. **Cena przeładowania jest realna:** zmierzone `total 6.79 s`, z czego `5.19 s` to sama dekwantyzacja q8→F32 liczona od nowa (`cargo run --release --example whisper_load_probe`). `0` kupuje zerową latencję kosztem trzymanego RSS
 
 ### Streaming / VAD / buffer
 
@@ -183,7 +185,8 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_STREAM_SIMILARITY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_NOVELTY` (HOT RELOADED)
 - `CODESCRIBE_STREAM_DISABLE_EMBEDDINGS` (HOT RELOADED)
-- `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300`; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności embedder MiniLM jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu
+- `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `2700` = 45 min; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności embedder MiniLM jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu (zmierzony zimny start: ~0,9 s)
+- `CODESCRIBE_EMBEDDER_DEVICE` (RESTART NEEDED; `cpu` wymusza CPU, inaczej Metal z fallbackiem) — przełącznik diagnostyczny. Powstał, bo backend potrafi zwracać wartości nie-liczbowe po cichu: na macOS 27 / Metal ten model dawał 384 wymiary NaN dla każdego wejścia w bf16, a te same wagi w f32 liczyły poprawnie. Ładowanie ma teraz samotest skończoności i samo degraduje proces do CPU, gdy backend zwróci NaN
 
 ### LLM (formatting/assistive)
 

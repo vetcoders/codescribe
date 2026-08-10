@@ -47,38 +47,50 @@ pub enum AgentDeliveryEvent {
         thread_id: String,
         user_text: String,
     },
+    /// Streaming assistant text token(s) for the live chat bubble.
     TextDelta(String),
+    /// Final assembled assistant text for this turn.
     TextDone(String),
+    /// Streaming reasoning/thinking token(s) when the provider emits them.
     ReasoningDelta(String),
-    ToolExecuting {
-        name: String,
-        id: String,
-    },
+    /// A tool call began; `id` correlates with the later [`ToolResult`].
+    ToolExecuting { name: String, id: String },
+    /// Tool call finished; `is_error` marks a failed tool without ending the turn.
     ToolResult {
         name: String,
         id: String,
         summary: String,
         is_error: bool,
     },
+    /// Successful terminal: the turn is complete and the UI may settle.
     Done,
+    /// Provider or runtime failure; distinct from user-initiated [`Cancelled`].
     Error(String),
     /// The keyed voice turn was explicitly stopped. This is a terminal event,
     /// distinct from provider failure: Swift preserves partial text and settles
     /// pending tools without rendering an error or refreshing persisted history.
-    Cancelled {
-        thread_id: String,
-    },
+    Cancelled { thread_id: String },
 }
 
+/// Process-global broadcast sender for agent delivery events (lazy init).
 static AGENT_DELIVERY_TX: OnceLock<broadcast::Sender<AgentDeliveryEvent>> = OnceLock::new();
+/// Process-global registry of cancellable voice turns (lazy init).
 static AGENT_DELIVERY_TURNS: OnceLock<AgentDeliveryTurnRegistry> = OnceLock::new();
 
+/// Process-global map of cancellable voice turns, keyed by delivery thread id.
+///
+/// A thread can hold more than one entry: Swift may key a second turn onto the
+/// same thread before the first has settled, and Stop is expected to cancel all
+/// of them. Entries are identified by `token`, not by position, so a completing
+/// turn removes exactly its own row.
 #[derive(Default)]
 struct AgentDeliveryTurnRegistry {
     turns: Mutex<HashMap<String, Vec<AgentDeliveryTurnEntry>>>,
     next_token: AtomicU64,
 }
 
+/// One cancellable turn: a process-unique `token` and the sender half of its
+/// cancellation flag.
 struct AgentDeliveryTurnEntry {
     token: u64,
     cancel: watch::Sender<bool>,
@@ -95,6 +107,8 @@ pub(crate) struct AgentDeliveryTurnCancellation {
 }
 
 impl AgentDeliveryTurnRegistry {
+    /// Open a cancellation window for a new turn on `thread_id` and hand the
+    /// caller its receiver half.
     fn register(&self, thread_id: &str) -> AgentDeliveryTurnCancellation {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let (cancel, cancelled) = watch::channel(false);
@@ -112,6 +126,8 @@ impl AgentDeliveryTurnRegistry {
         }
     }
 
+    /// Flag every turn registered for `thread_id`. Returns whether anything was
+    /// still cancellable.
     fn cancel(&self, thread_id: &str) -> bool {
         let turns = self.turns.lock().unwrap_or_else(|error| error.into_inner());
         let Some(entries) = turns.get(thread_id) else {
@@ -145,6 +161,15 @@ impl AgentDeliveryTurnRegistry {
 }
 
 impl AgentDeliveryTurnCancellation {
+    /// Resolve once this turn is cancelled; otherwise stay pending forever.
+    ///
+    /// Written for use as one arm of a `select!` against the provider send. A
+    /// closed channel means [`finish`] disarmed the window, which is *not*
+    /// cancellation — resolving there would race a successful terminal into
+    /// looking cancelled, so the future parks instead and lets the sibling arm
+    /// complete the select.
+    ///
+    /// [`finish`]: Self::finish
     pub(crate) async fn cancelled(&mut self) {
         if *self.cancelled.borrow() {
             return;
@@ -176,15 +201,21 @@ impl AgentDeliveryTurnCancellation {
 }
 
 impl Drop for AgentDeliveryTurnCancellation {
+    /// Disarm the cancellation window so early returns leave no phantom entry.
     fn drop(&mut self) {
         let _ = self.finish();
     }
 }
 
+/// The process-global turn registry, created on first use.
 fn delivery_turn_registry() -> &'static AgentDeliveryTurnRegistry {
     AGENT_DELIVERY_TURNS.get_or_init(AgentDeliveryTurnRegistry::default)
 }
 
+/// Register a controller-owned voice turn so Swift's Stop can reach it.
+///
+/// The returned guard disarms itself on drop, so an early return from the send
+/// path cannot leave a phantom cancellable entry behind.
 pub(crate) fn register_agent_delivery_turn(thread_id: &str) -> AgentDeliveryTurnCancellation {
     delivery_turn_registry().register(thread_id)
 }
@@ -196,6 +227,7 @@ pub fn cancel_agent_delivery_turn(thread_id: &str) -> bool {
     delivery_turn_registry().cancel(thread_id)
 }
 
+/// The process-global delivery channel's sender, created on first use.
 fn sender() -> &'static broadcast::Sender<AgentDeliveryEvent> {
     AGENT_DELIVERY_TX.get_or_init(|| broadcast::channel(AGENT_DELIVERY_CHANNEL_CAPACITY).0)
 }
@@ -216,6 +248,7 @@ pub fn subscribe_agent_delivery() -> broadcast::Receiver<AgentDeliveryEvent> {
     sender().subscribe()
 }
 
+/// Delivery channel, turn registry, and publish ordering tests.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +272,7 @@ mod tests {
         panic!("expected event never arrived on the delivery channel");
     }
 
+    /// A published `TurnStarted` is visible to a live subscriber.
     #[tokio::test]
     async fn published_turn_started_reaches_a_subscriber() {
         // Unique thread id so a concurrent test on the shared global channel can
@@ -262,6 +296,7 @@ mod tests {
         );
     }
 
+    /// Same-sender events keep FIFO order under interleaved global traffic.
     #[tokio::test]
     async fn delta_then_done_preserve_sender_order() {
         // A single sender guarantees per-channel FIFO for its own events even
@@ -287,6 +322,7 @@ mod tests {
         assert_eq!(second, AgentDeliveryEvent::Error(tag.to_string()));
     }
 
+    /// Stop cancels via the short registry mutex and `finish` removes the row.
     #[tokio::test]
     async fn keyed_turn_registry_cancels_without_runtime_mutex_and_cleans_up() {
         let thread_id = "registry_cancel_without_runtime_mutex";
@@ -304,6 +340,7 @@ mod tests {
         );
     }
 
+    /// Publish with no subscriber must not panic or block (disk owns durability).
     #[test]
     fn publish_without_subscriber_is_silent() {
         // No subscriber attached: the send returns Err internally but the public

@@ -17,7 +17,7 @@ use crate::audio::load_audio_file;
 use crate::client;
 use crate::config::Config;
 use crate::llm::lane_truth;
-use crate::llm::provider::{LlmMode, ProviderKind};
+use crate::llm::provider::LlmMode;
 use crate::pipeline::contracts::RawTranscript;
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
@@ -28,8 +28,11 @@ use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
+/// Max chars of AI-formatted text echoed into log previews (truncates longer).
 const AI_LOG_PREVIEW_CHARS: usize = 80;
 
+/// Everything one report run needs: where the corpus lives, where artifacts go,
+/// which stages to skip, and what the metrics are measured against.
 #[derive(Debug, Clone)]
 pub struct QualityReportConfig {
     pub input_dir: PathBuf,
@@ -46,15 +49,23 @@ pub struct QualityReportConfig {
     pub local_transcription: LocalTranscriptionMode,
 }
 
+/// Which transcript counts as ground truth when computing WER/CER.
+///
+/// Choosing anything other than `Corpus` measures agreement with another machine,
+/// not accuracy against what was actually said — useful for drift checks, but not
+/// a quality score.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetricsReference {
+    /// Human-written `.txt` next to the WAV — the only true reference.
     Corpus,
+    /// Cloud STT output.
     Cloud,
     /// AI-formatted transcript (Whisper + LLM correction)
     AiFormatted,
 }
 
 impl MetricsReference {
+    /// Stable identifier recorded in the report environment block.
     fn as_str(self) -> &'static str {
         match self {
             MetricsReference::Corpus => "corpus",
@@ -64,13 +75,17 @@ impl MetricsReference {
     }
 }
 
+/// Which local engine produces the raw transcript. Single-variant today; kept as
+/// an enum so adding an engine stays a compile-time exhaustiveness question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalTranscriptionMode {
+    /// In-process Whisper via `core::stt`.
     LocalWhisper,
 }
 
 impl LocalTranscriptionMode {
+    /// Stable identifier recorded in the report environment block.
     fn as_str(self) -> &'static str {
         match self {
             Self::LocalWhisper => "local_whisper",
@@ -78,6 +93,7 @@ impl LocalTranscriptionMode {
     }
 }
 
+/// The whole run, serialized to `report.json` and rendered to Markdown/HTML.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct QualityReport {
     pub generated_at: String,
@@ -86,6 +102,8 @@ pub struct QualityReport {
     pub entries: Vec<ReportEntry>,
 }
 
+/// Which endpoints, models, and settings produced this run — enough to tell two
+/// reports apart later. Only key *presence* is recorded, never key material.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReportEnvironment {
     pub stt_endpoint: Option<String>,
@@ -99,6 +117,8 @@ pub struct ReportEnvironment {
     pub local_transcription: String,
 }
 
+/// Run-level aggregates: mean WER/CER per stage plus the raw-transcript state
+/// census. Averages are `None` when no entry produced that metric.
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct ReportSummary {
     pub total_files: usize,
@@ -116,16 +136,26 @@ pub struct ReportSummary {
     pub raw_text_committed: usize,
 }
 
+/// Why a raw transcript looks the way it does — the difference between "the
+/// engine heard nothing", "a gate rejected it", and "it broke".
+///
+/// Without this distinction an empty transcript is indistinguishable from a
+/// silent failure, and the whole point of the report is attribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportTranscriptState {
+    /// Real text came out.
     TextCommitted,
+    /// Text existed but a quality gate rejected it.
     QualityGateDropped,
+    /// VAD found no speech in the audio at all.
     NoSpeechDetected,
+    /// Empty with no reason on record — the state that warrants investigation.
     EmptyTranscript,
 }
 
 impl std::fmt::Display for ReportTranscriptState {
+    /// Formats the state as a stable snake_case token for JSON/HTML surfaces.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TextCommitted => write!(f, "text_committed"),
@@ -136,6 +166,7 @@ impl std::fmt::Display for ReportTranscriptState {
     }
 }
 
+/// A raw-transcript state plus the free-form reason behind it, when one exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportTranscriptSemantics {
     pub state: ReportTranscriptState,
@@ -143,6 +174,9 @@ pub struct ReportTranscriptSemantics {
     pub reason: Option<String>,
 }
 
+/// One corpus pair (WAV + reference) carried through every stage: the transcripts
+/// each stage produced, their metrics, post-processing counters, and any
+/// non-fatal errors collected along the way.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReportEntry {
     pub id: String,
@@ -158,6 +192,8 @@ pub struct ReportEntry {
     pub errors: Vec<String>,
 }
 
+/// The same utterance as seen by each stage. Every field is optional: a stage may
+/// be skipped by config or may have failed, and the report says which.
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ReportTranscripts {
     pub raw: Option<String>,
@@ -167,6 +203,8 @@ pub struct ReportTranscripts {
     pub reference: Option<String>,
 }
 
+/// Word- and character-error rates per stage, all measured against the one
+/// configured reference. `None` where the stage produced no transcript.
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ReportMetrics {
     pub raw_wer: Option<f32>,
@@ -179,13 +217,25 @@ pub struct ReportMetrics {
     pub cloud_cer: Option<f32>,
 }
 
+/// State of the cloud reference lane for this run.
+///
+/// Modelled as three cases rather than an empty map so the report can tell
+/// "cloud was switched off" from "cloud was wanted but unusable" — the latter
+/// must surface as a per-entry error, the former must stay silent.
 enum CloudJobSet {
+    /// `skip_cloud` was set; no cloud transcription is expected.
     Disabled,
+    /// Cloud was requested but cannot run (missing endpoint/key); the reason is
+    /// attached to every entry.
     Skipped(String),
+    /// One spawned transcription task per entry id, bounded by a semaphore.
     Running(HashMap<String, JoinHandle<Result<crate::client::CloudTranscriptionVerdict>>>),
 }
 
 impl CloudJobSet {
+    /// Await and consume this entry's cloud transcript, or record why there is
+    /// none. Every failure path pushes an error and yields `None`, so a broken
+    /// cloud lane degrades the report instead of aborting the run.
     async fn take_for(&mut self, id: &str, errors: &mut Vec<String>) -> Option<String> {
         match self {
             CloudJobSet::Disabled => None,
@@ -214,6 +264,13 @@ impl CloudJobSet {
     }
 }
 
+/// Explain an empty (or non-empty) raw transcript.
+///
+/// Precedence is deliberate: non-empty text wins outright, then a VAD no-speech
+/// reason, then a quality-gate drop, and only an otherwise unexplained blank
+/// falls through to `EmptyTranscript`. Checking the gate first would mislabel
+/// genuine silence as a rejection. `None` means there was no transcript object at
+/// all — transcription itself failed, which is a different error.
 fn classify_raw_semantics(
     transcript: Option<&RawTranscript>,
     no_speech_reason: Option<&str>,
@@ -248,6 +305,15 @@ fn classify_raw_semantics(
     })
 }
 
+/// Run the whole report and return the output directory.
+///
+/// Collects WAV+TXT pairs, resumes past anything already carrying a `.done`
+/// marker, spawns the cloud lane up front so network latency overlaps local work,
+/// then processes pairs sequentially (local STT is the bottleneck and must not
+/// contend with itself) before writing JSON, Markdown, HTML, and JSONL.
+///
+/// Fails only when the corpus is empty or the paths escape the config root;
+/// per-entry problems are recorded as errors inside the report instead.
 pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
@@ -342,6 +408,9 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     Ok(output_root)
 }
 
+/// Spawn one cloud transcription task per pair, bounded by `cloud_concurrency`
+/// (`0` meaning unbounded), so the network lane runs while local STT grinds.
+/// Missing credentials produce `Skipped` with the reason rather than an error.
 fn prepare_cloud_jobs(
     pairs: &[CorpusPair],
     config: &QualityReportConfig,
@@ -397,6 +466,9 @@ fn prepare_cloud_jobs(
     CloudJobSet::Running(jobs)
 }
 
+/// The cloud STT endpoint and key, or `None` when either is absent or blank.
+/// Whitespace-only values count as absent — a half-filled setting is not
+/// credentials, and treating it as such would fail later with a worse message.
 fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> {
     let endpoint = app_config.stt_endpoint.as_deref()?.trim();
     let api_key = app_config.stt_api_key.as_deref()?.trim();
@@ -408,6 +480,17 @@ fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> 
     Some((endpoint.to_string(), api_key.to_string()))
 }
 
+/// Carry one corpus pair through every stage and build its report entry.
+///
+/// Order: canonicalize both paths inside the input root, publish the audio asset,
+/// read the reference, transcribe raw, post-process, optionally AI-format, then
+/// collect the cloud result and compute metrics. Two audits run alongside — the
+/// raw-semantics classification and a protected-term check across the AI pass, so
+/// vocabulary the LLM silently dropped becomes a visible error.
+///
+/// Only genuinely fatal problems (path escape, unreadable audio) return `Err`;
+/// everything else accumulates in the entry's `errors` so one bad file cannot
+/// abort a long run.
 async fn process_pair(
     pair: &CorpusPair,
     config: &QualityReportConfig,
@@ -586,6 +669,8 @@ async fn process_pair(
     })
 }
 
+/// Score every available stage against `reference`. With no reference all metrics
+/// are empty — the run still produces transcripts, it just cannot grade them.
 fn compute_metrics(
     reference: Option<&str>,
     raw: Option<&str>,
@@ -655,6 +740,10 @@ fn compute_metrics(
     }
 }
 
+/// Write each present transcript as its own `.txt` under the artifacts directory,
+/// then the `.done` resume marker. The marker is written even when optional
+/// artifacts are missing — daemon mode skips AI formatting entirely, and resume
+/// must not re-run those pairs forever.
 fn write_artifacts(
     id: &str,
     artifacts_dir: &Path,
@@ -705,6 +794,9 @@ fn write_artifacts(
     Ok(())
 }
 
+/// Emit the four report surfaces into the output root: `report.json` (machine
+/// truth), `report.md` (diffable summary), `index.html` (the operator's review
+/// UI), and `ingest.jsonl` (one row per transcript for downstream tooling).
 fn write_report_files(
     report: &QualityReport,
     config: &QualityReportConfig,
@@ -731,6 +823,8 @@ fn write_report_files(
     Ok(())
 }
 
+/// Render the per-file metrics table and summary as Markdown — the surface meant
+/// to be diffed between runs.
 fn render_markdown(report: &QualityReport) -> String {
     let mut out = String::new();
     out.push_str("# Codescribe Quality Report\n\n");
@@ -787,6 +881,13 @@ fn render_markdown(report: &QualityReport) -> String {
     out
 }
 
+/// Render the self-contained review page: per-entry audio, transcripts, and the
+/// inline listen/tag/export tooling.
+///
+/// Everything ships in one file with no external assets, so a report directory
+/// stays portable. Reference transcripts are emitted but hidden unless
+/// `debug_mode` is set — the operator is meant to judge the audio first, not read
+/// the answer. Every interpolated value goes through [`html_escape`].
 fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
     let debug = config.debug_mode;
     let mut body = String::new();
@@ -1339,6 +1440,8 @@ document.addEventListener('keydown', handleHotkeys);
     )
 }
 
+/// Append one collapsible reference block, hidden unless `debug` is set. Absent
+/// text emits nothing at all.
 fn render_ref_section(body: &mut String, label: &str, text: Option<&str>, debug: bool) {
     if let Some(text) = text {
         let hidden_class = if debug { "" } else { " hidden" };
@@ -1350,6 +1453,8 @@ fn render_ref_section(body: &mut String, label: &str, text: Option<&str>, debug:
     }
 }
 
+/// One-line post-processing counter digest for the HTML entry, or `"n/a"` when
+/// the stage never ran.
 fn stats_summary(stats: Option<&StreamPostProcessStats>) -> String {
     let Some(stats) = stats else {
         return "n/a".to_string();
@@ -1367,6 +1472,9 @@ fn stats_summary(stats: Option<&StreamPostProcessStats>) -> String {
     )
 }
 
+/// Flatten the report into one JSONL row per (entry, stage) transcript, each
+/// tagged with its `source` and artifact path. Absent stages are skipped, so the
+/// stream carries only transcripts that actually exist.
 fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<String> {
     let mut out = String::new();
     for entry in &report.entries {
@@ -1403,6 +1511,9 @@ fn render_ingest_jsonl(report: &QualityReport, artifacts_dir: &Path) -> Result<S
     Ok(out)
 }
 
+/// Produce the raw transcript for one file, or `None` with the failure recorded
+/// in `errors`. A single pass — the engine does its own 25s/5s chunking, so
+/// slicing here would double-chunk the audio.
 async fn transcribe_raw_for_report(
     samples: &[f32],
     sample_rate: u32,
@@ -1427,19 +1538,23 @@ async fn transcribe_raw_for_report(
     }
 }
 
+/// Capture the effective endpoints, models, and settings for this run.
+///
+/// The formatting endpoint is asked of the provider registry directly: an earlier
+/// shape re-pathed the OpenAI lane endpoint and thus reported an OpenAI host
+/// carrying an Anthropic path whenever formatting was not OpenAI. Keys are
+/// recorded as presence booleans only.
 fn snapshot_environment(
     metrics_reference: MetricsReference,
     local_transcription: LocalTranscriptionMode,
 ) -> ReportEnvironment {
     let config = Config::load();
     let (formatting_provider, formatting_model) = lane_truth::formatting_identity(&config);
-    let formatting_endpoint = lane_truth::endpoint(LlmMode::Formatting, &config);
-    let formatting_endpoint = match formatting_provider {
-        ProviderKind::OpenAiResponses => formatting_endpoint,
-        ProviderKind::AnthropicMessages => {
-            lane_truth::normalize_anthropic_messages_endpoint(&formatting_endpoint)
-        }
-    };
+    // Ask the registry for the provider's own endpoint. The previous shape took
+    // the OpenAI lane endpoint and re-pathed it, which reported an OpenAI host
+    // carrying an Anthropic path whenever the formatting lane was not OpenAI.
+    let formatting_endpoint =
+        lane_truth::provider_endpoint(LlmMode::Formatting, formatting_provider, &config);
     ReportEnvironment {
         stt_endpoint: config.stt_endpoint.clone(),
         stt_api_key_present: config
@@ -1457,6 +1572,12 @@ fn snapshot_environment(
     }
 }
 
+/// Publish the entry's audio under the report's `audio/` directory and return the
+/// relative path the HTML player uses.
+///
+/// Symlinks by default so a large corpus is not duplicated on disk; `copy_audio`
+/// forces a real copy for a self-contained, shippable report directory. Non-unix
+/// targets always copy. An already-published asset is left alone.
 fn ensure_audio_asset(
     audio_path: &Path,
     audio_dir: &Path,
@@ -1491,6 +1612,7 @@ fn ensure_audio_asset(
     Ok(format!("audio/{}", filename))
 }
 
+/// A WAV and its human reference `.txt`, plus the stable id derived from both.
 #[derive(Debug, Clone)]
 struct CorpusPair {
     id: String,
@@ -1498,6 +1620,13 @@ struct CorpusPair {
     reference_path: PathBuf,
 }
 
+/// Gather every WAV that has a sibling `.txt`, walking one level of date
+/// subdirectories under `root`.
+///
+/// Directories and files are sorted so a run is reproducible, and `limit` keeps
+/// the **newest** pairs (it trims from the front) — a capped run should sample
+/// recent recordings, not replay the oldest ones forever. A missing root yields
+/// an empty list rather than an error; the caller reports the empty corpus.
 fn collect_pairs(root: &Path, date_filter: Option<&str>, limit: usize) -> Vec<CorpusPair> {
     let mut pairs = Vec::new();
     if !root.exists() {
@@ -1559,6 +1688,8 @@ fn collect_pairs(root: &Path, date_filter: Option<&str>, limit: usize) -> Vec<Co
     pairs
 }
 
+/// Build the entry id as `<date-dir>__<stem>`, with path separators replaced so
+/// the id is safe to use directly as an artifact filename.
 fn make_entry_id(audio_path: &Path) -> String {
     let stem = audio_path
         .file_stem()
@@ -1575,6 +1706,8 @@ fn make_entry_id(audio_path: &Path) -> String {
     raw_id.replace(['/', '\\'], "_")
 }
 
+/// Resolve the corpus directory, treating a relative path as relative to the
+/// config root and refusing anything that canonicalizes outside it.
 fn resolve_input_root(path: &Path, root: &Path) -> Result<PathBuf> {
     let candidate = if path.is_absolute() {
         path.to_path_buf()
@@ -1585,6 +1718,8 @@ fn resolve_input_root(path: &Path, root: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Input dir must stay within {}", root.display()))
 }
 
+/// Same containment rule as [`resolve_input_root`], but the directory is created
+/// first — an output root need not exist yet, and canonicalization requires it to.
 fn resolve_output_root(path: &Path, root: &Path) -> Result<PathBuf> {
     let candidate = if path.is_absolute() {
         path.to_path_buf()
@@ -1598,10 +1733,17 @@ fn resolve_output_root(path: &Path, root: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Output dir must stay within {}", root.display()))
 }
 
+/// First `max_chars` characters (not bytes — Polish diacritics must not be split)
+/// for log previews.
 fn preview_for_log(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// Normalize text for scoring, returning `(word tokens, normalized string)`.
+///
+/// Lowercases and turns every non-alphanumeric character into a separator, so
+/// punctuation and casing differences never count as errors. That is the whole
+/// reason WER here measures words heard rather than formatting choices.
 fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
     let mut normalized = String::with_capacity(text.len());
     for ch in text.to_lowercase().chars() {
@@ -1619,12 +1761,17 @@ fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
     (tokens, normalized)
 }
 
+/// Word error rate: token-level edit distance over reference length. The divisor
+/// is floored at 1, so an empty reference yields the raw distance instead of a
+/// division by zero. Can exceed `1.0` when the hypothesis invents words.
 fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
     let dist = levenshtein(reference, hypothesis);
     let denom = reference.len().max(1) as f32;
     dist as f32 / denom
 }
 
+/// Character error rate — same shape as [`word_error_rate`] but over `char`s, so
+/// it still reports partial credit when a word is only slightly misheard.
 fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
     let ref_chars: Vec<char> = reference.chars().collect();
     let hyp_chars: Vec<char> = hypothesis.chars().collect();
@@ -1633,6 +1780,9 @@ fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
     dist as f32 / denom
 }
 
+/// Levenshtein distance over any comparable sequence, used for both the word and
+/// character metrics. Two rolling rows keep memory at `O(b.len())` rather than
+/// the full matrix — corpus transcripts get long.
 fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     let mut cur = vec![0usize; b.len() + 1];
@@ -1649,6 +1799,9 @@ fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
     prev[b.len()]
 }
 
+/// Escape the five HTML-significant characters. Every transcript, label, and path
+/// interpolated into the report page passes through here — the corpus is
+/// untrusted text and the report is a file the operator opens in a browser.
 fn html_escape(input: &str) -> String {
     let mut escaped = String::with_capacity(input.len());
     for ch in input.chars() {
@@ -1664,12 +1817,16 @@ fn html_escape(input: &str) -> String {
     escaped
 }
 
+/// Format a metric to three decimals, or `"-"` when it was never computed.
 fn fmt_opt(value: Option<f32>) -> String {
     value
         .map(|v| format!("{:.3}", v))
         .unwrap_or_else(|| "-".to_string())
 }
 
+/// Running accumulator folded over every entry to build [`ReportSummary`].
+/// Metrics are collected as vectors rather than running sums so an absent metric
+/// simply does not participate in its average.
 #[derive(Default)]
 struct Totals {
     raw_wer: Vec<f32>,
@@ -1687,6 +1844,9 @@ struct Totals {
 }
 
 impl Totals {
+    /// Fold one entry in: every present metric joins its bucket and the raw
+    /// semantics state bumps its counter. `EmptyTranscript` is counted nowhere on
+    /// purpose — it is the residual state, not a census category.
     fn accumulate(&mut self, entry: &ReportEntry) {
         self.processed += 1;
         let metrics = &entry.metrics;
@@ -1725,6 +1885,9 @@ impl Totals {
         }
     }
 
+    /// Collapse the accumulator into the summary. `total_files` is passed in
+    /// because it counts the pairs found, which resume-skipping makes larger than
+    /// the number actually processed.
     fn finish(self, total_files: usize) -> ReportSummary {
         ReportSummary {
             total_files,
@@ -1744,6 +1907,8 @@ impl Totals {
     }
 }
 
+/// Arithmetic mean, or `None` for an empty slice — an absent average is honest,
+/// a zero would read as a perfect score.
 fn avg(values: &[f32]) -> Option<f32> {
     if values.is_empty() {
         None
@@ -1752,10 +1917,12 @@ fn avg(values: &[f32]) -> Option<f32> {
     }
 }
 
+/// Unit tests for raw-semantics classification, summary tallies, and helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Pins VAD-empty vs quality-gate-drop vs committed-text as distinct states.
     #[test]
     fn classify_raw_semantics_distinguishes_no_speech_and_gate_drop() {
         let no_speech = classify_raw_semantics(
@@ -1791,6 +1958,7 @@ mod tests {
         assert_eq!(committed.state, ReportTranscriptState::TextCommitted);
     }
 
+    /// Ensures finish() tallies each raw-semantics bucket independently.
     #[test]
     fn totals_finish_counts_raw_semantics_separately() {
         let mut totals = Totals::default();
@@ -1823,6 +1991,7 @@ mod tests {
         assert_eq!(summary.raw_no_speech_detected, 1);
     }
 
+    /// Cloud ref still reads endpoint/key even when local STT mode is on.
     #[test]
     fn cloud_reference_credentials_ignore_local_committed_transcript_mode() {
         let mut config = Config {
@@ -1844,6 +2013,7 @@ mod tests {
         assert_eq!(cloud_reference_credentials(&config), None);
     }
 
+    /// Spot-checks WER on a one-token substitution (ala ma kota → ala ma psa).
     #[test]
     fn test_word_error_rate() {
         let (ref_tokens, _) = normalize_for_eval("ala ma kota");
@@ -1852,6 +2022,7 @@ mod tests {
         assert!((wer - 0.333).abs() < 0.01);
     }
 
+    /// Escapes <>&"' so report HTML cannot inject markup from transcripts.
     #[test]
     fn test_html_escape() {
         let input = "<tag>&\"'";

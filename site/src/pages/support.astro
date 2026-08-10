@@ -1,7 +1,7 @@
 ---
-import Layout from '../layouts/Layout.astro';
-import LegalPage from '../components/LegalPage.astro';
-import { page } from '../lib/asset';
+import Layout from "../layouts/Layout.astro";
+import LegalPage from "../components/LegalPage.astro";
+import { page } from "../lib/asset";
 ---
 
 <Layout
@@ -11,8 +11,8 @@ import { page } from '../lib/asset';
 >
   <LegalPage title="Support" eyebrow="Trust · Support">
     <p>
-      Codescribe is a local-first macOS app from VetCoders / LibraxisAI.
-      We keep support human and small-team honest.
+      Codescribe is a local-first macOS app from Vetcoders / LibraxisAI. We keep
+      support human and small-team honest.
     </p>
 
     <h2>Contact</h2>
@@ -31,12 +31,19 @@ import { page } from '../lib/asset';
             <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
           </td>
           <td>Purchase, refunds, license, private bugs, accessibility</td>
-          <td><strong>Within 2 business days</strong> (Mon–Fri, Europe/Warsaw)</td>
+          <td
+            ><strong>Within 2 business days</strong> (Mon–Fri, Europe/Warsaw)</td
+          >
         </tr>
         <tr>
           <td>
             <strong>GitHub Issues</strong><br />
-            <a href="https://github.com/vetcoders/codescribe/issues" target="_blank" rel="noopener noreferrer">github.com/vetcoders/codescribe/issues</a>
+            <a
+              href="https://github.com/vetcoders/codescribe/issues"
+              target="_blank"
+              rel="noopener noreferrer"
+              >github.com/vetcoders/codescribe/issues</a
+            >
           </td>
           <td>Public bugs, feature requests, reproducible crashes</td>
           <td>Best-effort triage; often same 2 business days when active</td>
@@ -44,7 +51,11 @@ import { page } from '../lib/asset';
         <tr>
           <td>
             <strong>Docs</strong><br />
-            <a href="https://github.com/vetcoders/codescribe#readme" target="_blank" rel="noopener noreferrer">README &amp; guide</a>
+            <a
+              href="https://github.com/vetcoders/codescribe#readme"
+              target="_blank"
+              rel="noopener noreferrer">README &amp; guide</a
+            >
           </td>
           <td>Install, hotkeys, privacy posture, troubleshooting</td>
           <td>Self-serve, always available</td>
@@ -65,15 +76,15 @@ import { page } from '../lib/asset';
     <h2>Security reports</h2>
     <p>
       Please email <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
-      with subject “security” rather than opening a public issue for
-      vulnerabilities that could put users at risk.
+      with subject “security” rather than opening a public issue for vulnerabilities
+      that could put users at risk.
     </p>
 
     <h2>Policies</h2>
     <p>
-      <a href={page('privacy')}>Privacy Policy</a>
-      · <a href={page('terms')}>Terms of Use &amp; EULA</a>
-      · <a href={page('refunds')}>Refund Policy</a>
+      <a href={page("privacy")}>Privacy Policy</a>
+      · <a href={page("terms")}>Terms of Use &amp; EULA</a>
+      · <a href={page("refunds")}>Refund Policy</a>
     </p>
   </LegalPage>
 </Layout>

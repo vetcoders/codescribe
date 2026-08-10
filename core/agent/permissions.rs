@@ -28,13 +28,17 @@ use super::tool_grants;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionLevel {
+    /// Run without prompting.
     Allow,
+    /// Prompt the operator for approval on every call.
     #[default]
     Ask,
+    /// Refuse the call outright.
     Deny,
 }
 
 impl PermissionLevel {
+    /// Wire/JSON spelling of this level (`allow` | `ask` | `deny`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Allow => "allow",
@@ -43,6 +47,9 @@ impl PermissionLevel {
         }
     }
 
+    /// Parse a level from its wire spelling (case- and whitespace-insensitive).
+    /// Errors rather than defaulting — an unrecognized level must not silently
+    /// become `Ask`.
     pub fn parse(raw: &str) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "allow" => Ok(Self::Allow),
@@ -77,6 +84,7 @@ pub struct AgentPermissions {
 }
 
 impl Default for AgentPermissions {
+    /// Migration defaults: read-only allow, side-effects ask, global ask.
     fn default() -> Self {
         Self {
             default: PermissionLevel::Ask,
@@ -261,20 +269,29 @@ pub fn tool_identity(origin: &ToolOrigin, tool_name: &str) -> String {
 /// registry the dispatcher uses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCapability {
+    /// Registered tool name as the dispatcher exposes it to the model.
     pub name: String,
+    /// Canonical policy key — see [`tool_identity`].
     pub identity: String,
+    /// `mcp` or `native`.
     pub origin: String,
+    /// Owning MCP server, `None` for native tools.
     pub server: Option<String>,
+    /// Risk class label used by the risk-default rules.
     pub risk: String,
+    /// Level [`AgentPermissions::resolve`] currently returns for this tool.
     pub effective: PermissionLevel,
+    /// Whether the tool declares approval-required independently of policy.
     pub requires_approval_flag: bool,
 }
 
+/// Permission resolution precedence and identity key tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::registry::ToolOrigin;
 
+    /// Build an MCP origin for identity/resolution fixtures.
     fn mcp(server: &str, tool: &str) -> ToolOrigin {
         ToolOrigin::Mcp {
             server: server.to_string(),
@@ -282,6 +299,7 @@ mod tests {
         }
     }
 
+    /// Thread > tool > server > risk defaults, in that order.
     #[test]
     fn precedence_thread_over_tool_over_server_over_risk() {
         let mut policy = AgentPermissions {
@@ -343,6 +361,7 @@ mod tests {
         );
     }
 
+    /// Missing maps fall through Unknown→ask, ReadOnly→allow, Destructive→deny.
     #[test]
     fn absent_levels_fall_through_deterministically() {
         let policy = AgentPermissions::default();
@@ -360,6 +379,7 @@ mod tests {
         );
     }
 
+    /// Server name is lowercased; upstream tool case and native prefix matter.
     #[test]
     fn identity_is_single_key_server_case_insensitive() {
         let a = tool_identity(
@@ -386,6 +406,7 @@ mod tests {
         );
     }
 
+    /// `resolve_for_origin` applies the thread override map by identity key.
     #[test]
     fn resolve_for_origin_honours_thread_map() {
         let policy = AgentPermissions::default();
@@ -399,6 +420,7 @@ mod tests {
         );
     }
 
+    /// Legacy always-allow keys fill gaps only — existing Deny stays.
     #[test]
     fn legacy_grants_merge_as_allow_without_clobbering_deny() {
         let mut policy = AgentPermissions::default();

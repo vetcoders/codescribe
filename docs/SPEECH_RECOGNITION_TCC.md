@@ -17,6 +17,31 @@ CLI can probe `speech_auth: authorized` while the installed app fails live
 with `speech_auth_not_determined` / hard fail when Candle fallback is disabled
 for live.
 
+## Backend scope (W4-B)
+
+Speech Recognition TCC is required **only for the SFSpeechRecognizer path**.
+
+| Backend                                   | Speech Recognition TCC            | Mic (live capture) |
+| ----------------------------------------- | --------------------------------- | ------------------ |
+| `sf_speech_recognizer`                    | Required                          | Independent        |
+| `speech_transcriber` (ST)                 | **Not** a prerequisite            | Independent        |
+| `dictation_transcriber` (DT, opt-in W4-A) | **Not** a prerequisite — measured | Independent        |
+
+The DT row stopped being an inference on 2026-08-08: the lane transcribed the
+full 140.85 s pl-PL parity fixture (1072 chars) from a terminal-responsible
+process whose `SFSpeechRecognizer.authorizationStatus()` read `notDetermined`.
+An engine that ran to completion under a _withheld_ Speech grant cannot be
+gated on it.
+
+Bridge entry points (`transcribe` / `stream` / `transcribe_live`) no longer call
+`ensureSpeechAuthorizedForSfSpeech` before backend selection. Auth is enforced
+inside SF-only helpers. Rust `init` hard-fails on non-authorized speech **only**
+when the selected probe backend needs SFSpeech.
+
+**Responsible process (D1):** headless bridge under Terminal uses the terminal's
+TCC slot unless respawned with `CODESCRIBE_BRIDGE_DISCLAIM` / app identity.
+Product onboarding must grant Speech for **Codescribe.app**, not the shell.
+
 ## Product surfaces (grant path)
 
 1. **First-run wizard** — dedicated **Speech Recognition Access** step

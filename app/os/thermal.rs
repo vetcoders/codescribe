@@ -1,3 +1,16 @@
+//! Thermal pressure probe — feeds the STT scheduler's back-off decisions.
+//!
+//! macOS reports thermal pressure through `NSProcessInfo.thermalState` and a
+//! change notification. This module observes both and publishes the level into
+//! the process-wide atomic that `core/stt/scheduler.rs` reads, so the refine and
+//! commit lanes can stand down before the machine throttles under them.
+//!
+//! Escalation is staged: `Serious` pauses the refine lane, `Critical` pauses
+//! commit as well and raises the thermal tray badge. Recovery clears that badge
+//! only if it is still the one showing.
+//!
+//! Off macOS the probe publishes `Nominal` once and does nothing further.
+
 use codescribe_core::stt::scheduler::{
     ThermalLevel, current_process_thermal_level, set_process_thermal_level,
 };
@@ -13,9 +26,15 @@ use std::ptr;
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
+/// The registered observer instance, as a pointer-sized value; also the
+/// install-once guard.
 #[cfg(target_os = "macos")]
 static THERMAL_OBSERVER: OnceLock<usize> = OnceLock::new();
 
+/// Publish the current thermal level and register the change observer.
+///
+/// Idempotent: the level is re-read on every call, but the observer is only
+/// registered once. Called at runtime bootstrap from `CodescribeHotkeys::start`.
 pub fn install_thermal_probe() {
     #[cfg(target_os = "macos")]
     unsafe {
@@ -47,10 +66,12 @@ pub fn install_thermal_probe() {
     }
 }
 
+/// Last published thermal level, as the STT scheduler sees it.
 pub fn current_thermal_level() -> ThermalLevel {
     current_process_thermal_level()
 }
 
+/// Objective-C selector target for `NSProcessInfoThermalStateDidChangeNotification`.
 #[cfg(target_os = "macos")]
 extern "C" fn thermal_state_did_change(_this: &Object, _sel: Sel, _notification: *mut Object) {
     unsafe {
@@ -58,6 +79,16 @@ extern "C" fn thermal_state_did_change(_this: &Object, _sel: Sel, _notification:
     }
 }
 
+/// Read `NSProcessInfo.thermalState`, publish it, and react to a level change.
+///
+/// Logging and tray effects fire only on an actual transition, so a repeated
+/// notification at the same level stays silent. `source` tags the caller
+/// (`initial` / `notification`) in the log line.
+///
+/// # Safety
+///
+/// Sends Objective-C messages to `NSProcessInfo`; must run with a valid
+/// Objective-C runtime (i.e. inside the app process).
 #[cfg(target_os = "macos")]
 unsafe fn apply_current_state(source: &str) {
     let process_info_class = Class::get("NSProcessInfo").expect("NSProcessInfo class missing");
@@ -100,6 +131,10 @@ unsafe fn apply_current_state(source: &str) {
     }
 }
 
+/// Drop the tray back to Idle, but only if the thermal badge is the one showing.
+///
+/// Guarded so thermal recovery never clobbers an unrelated status the user is
+/// currently looking at (Listening, for instance).
 #[cfg(any(target_os = "macos", test))]
 fn clear_thermal_tray_status_if_current() {
     use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
@@ -109,8 +144,14 @@ fn clear_thermal_tray_status_if_current() {
     }
 }
 
+/// Lazily register the `CodescribeThermalObserver` Objective-C class.
+///
+/// The class exists only to carry the `thermalStateDidChange:` selector; it is
+/// declared once per process because the runtime rejects a duplicate name.
 #[cfg(target_os = "macos")]
 fn thermal_observer_class() -> *const Class {
+    /// Pointer-sized cache for the registered ObjC class; `OnceLock` makes init
+    /// process-wide and race-free.
     static CLASS: OnceLock<usize> = OnceLock::new();
     *CLASS.get_or_init(|| {
         let superclass = Class::get("NSObject").expect("NSObject class missing");
@@ -125,6 +166,12 @@ fn thermal_observer_class() -> *const Class {
     }) as *const Class
 }
 
+/// Bridge a Rust `&str` into an autoreleased `NSString`.
+///
+/// # Safety
+///
+/// Requires a live Objective-C runtime. Panics rather than truncating if
+/// `value` contains an interior null byte.
 #[cfg(target_os = "macos")]
 unsafe fn ns_string(value: &str) -> *mut Object {
     let c_str = CString::new(value).expect("NSString input cannot contain null byte");
@@ -132,11 +179,13 @@ unsafe fn ns_string(value: &str) -> *mut Object {
     msg_send![cls, stringWithUTF8String: c_str.as_ptr()]
 }
 
+/// Probe install idempotency and thermal-only tray recovery.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::os::tray_status::{TrayStatus, current_tray_status, update_tray_status};
 
+    /// Install publishes a level; a second call must not panic or drift.
     #[test]
     fn install_thermal_probe_publishes_a_level_and_is_idempotent() {
         // On macOS this genuinely registers the NSProcessInfo thermal observer
@@ -155,6 +204,7 @@ mod tests {
         );
     }
 
+    /// Recovery clears Thermal→Idle but leaves Listening (and peers) alone.
     #[test]
     #[serial_test::serial]
     fn thermal_recovery_clears_only_thermal_tray_status() {

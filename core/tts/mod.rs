@@ -26,8 +26,11 @@
 //! - `embedded` - Compile-time model embedding (release builds)
 
 pub mod audio_output;
+/// Binary-embedded CSM/Mimi model bytes for zero-I/O production TTS load.
 pub mod embedded;
+/// CSM-1B + Mimi TTS engine: synthesis, sample rate, frame generation bounds.
 mod engine;
+/// Process-wide TTS engine/player singleton and model-path fallback resolution.
 pub mod singleton;
 
 // Public API exports

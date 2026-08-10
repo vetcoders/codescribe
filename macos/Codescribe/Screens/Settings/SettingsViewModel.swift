@@ -229,6 +229,200 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     }
 
     var isInteractive: Bool { availability == .available }
+
+    /// Sidebar grouping. A flat ten-item list forces the user to read every row;
+    /// native sidebars carry `Section` headers for free, so the rail states what
+    /// each area is FOR instead of relying on the reader's memory.
+    var group: SettingsSectionGroup {
+        switch self {
+        case .creator, .shortcuts, .audio: return .setup
+        case .keys, .agent, .prompts, .engine, .voiceLab: return .intelligence
+        case .license, .user: return .account
+        }
+    }
+
+    /// SF Symbol for the sidebar row. System symbols follow the user's theme,
+    /// accent and accessibility sizes; the previous hand-drawn 7pt dots did not.
+    var symbol: String {
+        switch self {
+        case .creator: return "wand.and.stars"
+        case .shortcuts: return "keyboard"
+        case .keys: return "key.horizontal"
+        case .agent: return "cpu"
+        case .prompts: return "text.bubble"
+        case .engine: return "waveform"
+        case .audio: return "mic"
+        case .voiceLab: return "character.book.closed"
+        case .license: return "checkmark.seal"
+        case .user: return "person.crop.circle"
+        }
+    }
+
+    /// Extra terms the settings search matches beyond the visible title, so the
+    /// user can look for what a panel DOES ("api key", "mikrofon") instead of
+    /// having to guess the tab name.
+    var searchKeywords: [String] {
+        switch self {
+        case .creator: return ["setup", "onboarding", "permissions", "quick start", "language"]
+        case .shortcuts: return ["hotkey", "keyboard", "shortcut", "trigger", "hold", "toggle"]
+        case .keys: return ["api key", "provider", "openai", "anthropic", "endpoint", "model", "token"]
+        case .agent: return ["mcp", "tools", "workspace", "permissions", "server"]
+        case .prompts: return ["system prompt", "persona", "assistive", "instructions"]
+        case .engine: return ["stt", "whisper", "apple", "speech", "transcription", "final pass"]
+        case .audio: return ["microphone", "mikrofon", "input", "device", "levels"]
+        case .voiceLab: return ["lexicon", "dictionary", "vocabulary", "corrections", "słownik"]
+        case .license: return ["subscription", "activation", "trial", "billing"]
+        case .user: return ["account", "profile", "sign in", "identity"]
+        }
+    }
+
+    /// Sections a query should reveal. An empty query keeps the full rail; a
+    /// query matches the visible title first, then the keyword aliases. Pure so
+    /// the search contract is testable without rendering the window.
+    static func matching(query: String) -> [SettingsSection] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let visible = allCases.filter { $0.availability != .hidden }
+        guard !needle.isEmpty else { return visible }
+        return visible.filter { section in
+            section.title.lowercased().contains(needle)
+                || section.searchKeywords.contains { $0.contains(needle) }
+        }
+    }
+}
+
+/// A page inside a section. Long panels (Agent stacks five independent
+/// subsystems; Dictation grew four hand-rolled collapsibles) become one page per
+/// subsystem instead of one endless scroll.
+///
+/// Pages live in the SIDEBAR TREE rather than in tabs on purpose: a tab is
+/// invisible to the settings search and to deep links, so "mcp" or a health
+/// footer pointing at a broken lane could never land on it. As tree children
+/// they are addressable by exactly the same mechanisms as a top-level section.
+enum SettingsPage: String, CaseIterable, Identifiable {
+    // Agent
+    case agentLanes
+    case agentWorkspace
+    case agentStatus
+    case agentTools
+    case agentMcp
+    // Prompts — one page per prompt file; the stacked editor was four
+    // TextEditors in one scroll ("scrollowany potworek", operator 2026-08-09).
+    case promptCorrection
+    case promptSmart
+    case promptMax
+    case promptAssistive
+
+    var id: String { rawValue }
+
+    var section: SettingsSection {
+        switch self {
+        case .agentLanes, .agentWorkspace, .agentStatus, .agentTools, .agentMcp:
+            return .agent
+        case .promptCorrection, .promptSmart, .promptMax, .promptAssistive:
+            return .prompts
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .agentLanes: return "LLM lanes"
+        case .agentWorkspace: return "Workspace roots"
+        case .agentStatus: return "Capabilities"
+        case .agentTools: return "Tool permissions"
+        case .agentMcp: return "MCP servers"
+        case .promptCorrection: return "Correction"
+        case .promptSmart: return "Smart"
+        case .promptMax: return "Max"
+        case .promptAssistive: return "Assistive"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .agentLanes: return "arrow.triangle.branch"
+        case .agentWorkspace: return "folder"
+        case .agentStatus: return "checklist"
+        case .agentTools: return "lock.shield"
+        case .agentMcp: return "server.rack"
+        case .promptCorrection: return "text.badge.checkmark"
+        case .promptSmart: return "wand.and.stars"
+        case .promptMax: return "text.alignleft"
+        case .promptAssistive: return "person.wave.2"
+        }
+    }
+
+    var searchKeywords: [String] {
+        switch self {
+        case .agentLanes: return ["provider", "model", "endpoint", "assistive", "formatting"]
+        case .agentWorkspace: return ["roots", "directory", "repo", "path"]
+        case .agentStatus: return ["capability", "native", "enhanced", "readiness"]
+        case .agentTools: return ["permission", "allow", "ask", "deny", "tool"]
+        case .agentMcp: return ["mcp", "server", "stdio", "transport"]
+        case .promptCorrection: return ["prompt", "formatting", "correction", "formatting.txt"]
+        case .promptSmart: return ["prompt", "smart", "formatting-smart"]
+        case .promptMax: return ["prompt", "max", "prose", "formatting-max"]
+        case .promptAssistive: return ["prompt", "assistive", "assistant", "system"]
+        }
+    }
+
+    static func pages(in section: SettingsSection) -> [SettingsPage] {
+        allCases.filter { $0.section == section }
+    }
+
+    /// Pages a query should surface, so search reaches inside a long section
+    /// instead of stopping at its title.
+    static func matching(query: String) -> [SettingsPage] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return allCases }
+        return allCases.filter { page in
+            page.title.lowercased().contains(needle)
+                || page.searchKeywords.contains { $0.contains(needle) }
+        }
+    }
+}
+
+/// One selectable row in the rail: a section, or a page inside it.
+enum SettingsRoute: Hashable, Identifiable {
+    case section(SettingsSection)
+    case page(SettingsPage)
+
+    var id: String {
+        switch self {
+        case .section(let section): return "section:\(section.rawValue)"
+        case .page(let page): return "page:\(page.rawValue)"
+        }
+    }
+
+    var section: SettingsSection {
+        switch self {
+        case .section(let section): return section
+        case .page(let page): return page.section
+        }
+    }
+
+    var page: SettingsPage? {
+        switch self {
+        case .section: return nil
+        case .page(let page): return page
+        }
+    }
+}
+
+/// Sidebar sections. Order is the rail's top-to-bottom order.
+enum SettingsSectionGroup: String, CaseIterable, Identifiable {
+    case setup
+    case intelligence
+    case account
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .setup: return "Setup"
+        case .intelligence: return "Intelligence"
+        case .account: return "Account"
+        }
+    }
 }
 
 enum SettingsKeyState: Equatable {
@@ -619,9 +813,35 @@ final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked S
     }
 }
 
+/// Quick-start actions from the Creator panel's cards. Navigation cases route
+/// the settings rail; `openOverlay` starts a real dictation session through an
+/// injectable seam so the cards are never inert decorations again
+/// (UI_DIVERGENCE_AUDIT pkt 4 — fake UX).
+enum SettingsQuickStartAction: String, CaseIterable {
+    case testMic
+    case openOverlay
+    case tuneShortcuts
+}
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var section: SettingsSection = .creator
+    /// Page within `section`, when that section is paginated. Always kept
+    /// consistent with `section` by the `select` overloads — never written raw.
+    @Published private(set) var page: SettingsPage?
+
+    /// Dictation seam for the "Open overlay" quick-start card. Defaulted to the
+    /// live tray toggle but only dereferenced on click, so unit tests can inject
+    /// a spy without ever waking `AppModel.shared`.
+    var onQuickStartDictation: () -> Void = { AppModel.shared.tray.toggleDictation() }
+
+    func performQuickStart(_ action: SettingsQuickStartAction) {
+        switch action {
+        case .testMic: section = .audio
+        case .tuneShortcuts: section = .shortcuts
+        case .openOverlay: onQuickStartDictation()
+        }
+    }
 
     @Published private(set) var permissions: PermissionSnapshot
     @Published private(set) var settings: CsSettings
@@ -1082,12 +1302,35 @@ final class SettingsViewModel: ObservableObject {
     func select(_ target: SettingsSection) {
         guard target.availability == .available else { return }
         section = target
+        // Landing on a section shows its first page; sections without pages keep
+        // page == nil and render whole.
+        page = SettingsPage.pages(in: target).first
         if target == .agent {
             refreshAssistiveModelDiscovery()
         }
         if target == .engine {
             refreshServingStatus()
         }
+    }
+
+    /// Select a specific page. Routes through `select` so the section's refresh
+    /// side effects fire exactly once regardless of which row the user clicked.
+    func select(_ target: SettingsPage) {
+        select(target.section)
+        page = target
+    }
+
+    func select(_ route: SettingsRoute) {
+        switch route {
+        case .section(let section): select(section)
+        case .page(let page): select(page)
+        }
+    }
+
+    /// The rail row that should read as selected for the current state.
+    var route: SettingsRoute {
+        if let page { return .page(page) }
+        return .section(section)
     }
 
     // MARK: - Reset app data (recoverable destructive action)
@@ -1689,17 +1932,17 @@ final class SettingsViewModel: ObservableObject {
     // MARK: - Agent workspace roots (list_projects tool)
 
     /// Effective workspace roots the `list_projects` tool scans. Never empty —
-    /// the bridge fills the built-in default (`~/Git`) when unset.
+    /// the bridge fills the built-in default (`~/.codescribe`) when unset.
     var agentWorkspaceRoots: [String] { settings.agentWorkspaceRoots }
 
     /// Persist the workspace roots as the colon-joined `AGENT_WORKSPACE_ROOTS`
     /// value. Blank/whitespace rows are dropped; an all-empty list clears the
-    /// override so the core falls back to `~/Git`.
+    /// override so the core falls back to `~/.codescribe`.
     func setAgentWorkspaceRoots(_ roots: [String]) {
         let cleaned = roots
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        settings.agentWorkspaceRoots = cleaned.isEmpty ? ["~/Git"] : cleaned
+        settings.agentWorkspaceRoots = cleaned.isEmpty ? ["~/.codescribe"] : cleaned
         persist("AGENT_WORKSPACE_ROOTS", cleaned.joined(separator: ":"))
     }
 
@@ -1733,6 +1976,7 @@ final class SettingsViewModel: ObservableObject {
         case "LLM_FORMATTING_API_KEY": return "Formatting API key"
         case "LLM_ASSISTIVE_API_KEY": return "Assistive API key (OpenAI)"
         case "LLM_ANTHROPIC_API_KEY": return "Anthropic API key"
+        case "LLM_XAI_API_KEY": return "xAI (Grok) API key"
         case "GITHUB_TOKEN": return "GitHub token"
         default: return account
         }
@@ -1825,8 +2069,11 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Match any assistive provider row whose Keychain API-key account equals
+    /// `account`. Used so OpenAI, Anthropic, and xAI each render their own
+    /// account-login row under their key card (not OpenAI-only).
     func providerForKeyAccount(_ account: String) -> CsProviderOption? {
-        providers.first { $0.apiKeyAccount == account && $0.id == "openai-responses" }
+        providers.first { $0.apiKeyAccount == account }
     }
 
     /// Full "Sign in with ChatGPT" click-through: start the local callback
@@ -1907,10 +2154,23 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    /// Persist the OAuth client id (non-secret; settings.json). Takes effect on
-    /// the next click — the core re-reads settings per resolution.
+    /// Persist the OAuth client id (non-secret; settings.json) for the provider
+    /// that owns it. Takes effect on the next click — the core re-reads settings
+    /// per resolution. Advanced override only; shipped defaults cover OpenAI + xAI.
     func saveOauthClientId(providerId: String, value: String) {
-        persist("LLM_OPENAI_OAUTH_CLIENT_ID", value.trimmingCharacters(in: .whitespacesAndNewlines))
+        let settingKey: String
+        switch providerId {
+        case "openai-responses":
+            settingKey = "LLM_OPENAI_OAUTH_CLIENT_ID"
+        case "anthropic-messages":
+            settingKey = "LLM_ANTHROPIC_OAUTH_CLIENT_ID"
+        case "xai-responses":
+            settingKey = "LLM_XAI_OAUTH_CLIENT_ID"
+        default:
+            lastError = "No OAuth client-id setting for provider \(providerId)"
+            return
+        }
+        persist(settingKey, value.trimmingCharacters(in: .whitespacesAndNewlines))
         accountLoginNotices[providerId] = nil
         if let engine {
             providers = engine.availableProviders()

@@ -1,3 +1,10 @@
+//! Process-global ownership of the hotkey runtime.
+//!
+//! One [`HotkeyManager`] lives behind a global mutex and owns the platform event
+//! tap. The sender handed to [`install_global_hotkey_manager`] is retained even
+//! when startup fails, so [`refresh_global_hotkey_manager`] can re-arm the tap
+//! once a TCC grant lands without an app restart.
+
 use super::detector::HotkeyEvent;
 use super::platform;
 use crossbeam_channel::Sender;
@@ -25,17 +32,26 @@ pub fn are_hotkeys_enabled() -> bool {
     platform::is_enabled()
 }
 
+/// Process-global hotkey state: the retained sender plus the live manager.
 #[derive(Default)]
 struct GlobalHotkeyService {
+    /// Retained across failed starts so a later re-arm can reuse it.
     tx: Option<Sender<HotkeyEvent>>,
+    /// `None` until a tap is successfully created (or after shutdown).
     manager: Option<HotkeyManager>,
 }
 
+/// Lazily initialize and borrow the process-global hotkey service.
 fn global_hotkey_service() -> &'static Mutex<GlobalHotkeyService> {
+    /// Process-wide global-hotkey service slot; first installer wins via OnceLock.
     static GLOBAL_HOTKEY_SERVICE: OnceLock<Mutex<GlobalHotkeyService>> = OnceLock::new();
     GLOBAL_HOTKEY_SERVICE.get_or_init(|| Mutex::new(GlobalHotkeyService::default()))
 }
 
+/// Tear down any live manager and build a fresh one from the retained sender.
+///
+/// Errors when no sender has been installed yet, or when the platform tap still
+/// cannot be created (permission absent).
 fn replace_global_hotkey_manager(guard: &mut GlobalHotkeyService) -> Result<(), String> {
     let Some(tx) = guard.tx.clone() else {
         return Err("Hotkey runtime not initialized".to_string());
@@ -76,6 +92,7 @@ pub fn refresh_global_hotkey_manager() -> Result<(), String> {
     replace_global_hotkey_manager(&mut guard)
 }
 
+/// Stop the global hotkey runtime and drop the manager, keeping the sender.
 pub fn shutdown_global_hotkey_manager() {
     let mut guard = global_hotkey_service()
         .lock()
@@ -86,6 +103,9 @@ pub fn shutdown_global_hotkey_manager() {
     guard.manager = None;
 }
 
+/// Is a hotkey manager currently installed?
+///
+/// Used by the bridge to dedup re-arm requests after a permission grant.
 pub fn is_global_hotkey_manager_active() -> bool {
     global_hotkey_service()
         .lock()
@@ -101,6 +121,7 @@ pub fn is_global_hotkey_manager_active() -> bool {
 pub struct HotkeyManager {
     /// Kept for future use (e.g., manual event injection)
     _tx: Sender<HotkeyEvent>,
+    /// Platform event-tap worker; `None` once shut down.
     runtime: Option<platform::HotkeyRuntime>,
 }
 
@@ -130,15 +151,18 @@ impl HotkeyManager {
 }
 
 impl Drop for HotkeyManager {
+    /// Guarantees the event tap is torn down even on an early return or unwind.
     fn drop(&mut self) {
         self.shutdown();
     }
 }
 
+/// Smoke coverage for the process-global getters.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// is_global_hotkey_manager_active must return a bool without panicking if unset.
     #[test]
     fn is_global_hotkey_manager_active_returns_bool_safely() {
         // Smoke: getter must not panic on a fresh test runtime. The actual

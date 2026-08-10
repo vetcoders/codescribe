@@ -1,3 +1,19 @@
+//! Durable spill for oversized tool results in conversation history.
+//!
+//! A single large tool result, replayed on every subsequent turn, is what turns
+//! a working agent session into an unaffordable one. Above
+//! [`TOOL_OUTPUT_INLINE_LIMIT_BYTES`] the text is written to a content-addressed
+//! file under the config dir and the history keeps only a one-line reference.
+//!
+//! Nothing is destroyed: the reference names the path and the original byte
+//! count, so the agent can read it back. Even the failure path stays honest —
+//! if the spill cannot be written, the block says so rather than silently
+//! re-feeding the payload.
+//!
+//! Sibling guard: `app/agent/tools/output_guard.rs` caps a single *live* tool
+//! chunk in characters; this one caps *history* in bytes, because provider cost
+//! tracks encoded bytes.
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,13 +32,17 @@ use super::{ContentBlock, Message};
 /// not expose this operational safety valve.
 pub const TOOL_OUTPUT_INLINE_LIMIT_BYTES: usize = 64 * 1024;
 
+/// Content-addressed store for spilled tool output.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolOutputStore {
+    /// Directory holding the spilled `tool-output-<sha256>.txt` files.
     root: PathBuf,
+    /// Byte threshold above which a result is spilled instead of kept inline.
     inline_limit_bytes: usize,
 }
 
 impl ToolOutputStore {
+    /// Store rooted at `<config_dir>/context/tool_outputs` with the shipped limit.
     pub(crate) fn new() -> Self {
         Self::new_in(
             crate::config::Config::config_dir()
@@ -32,6 +52,7 @@ impl ToolOutputStore {
         )
     }
 
+    /// Store with an explicit root and threshold — the seam the tests drive.
     pub(crate) fn new_in(root: PathBuf, inline_limit_bytes: usize) -> Self {
         Self {
             root,
@@ -115,6 +136,10 @@ impl ToolOutputStore {
         }
     }
 
+    /// Write `body` to a file named by its SHA-256 and return the path.
+    ///
+    /// Content-addressed, so an identical payload spilled twice reuses the
+    /// existing file instead of writing a duplicate.
     fn persist(&self, body: &[u8]) -> Result<PathBuf> {
         fs::create_dir_all(&self.root).with_context(|| {
             format!(
@@ -137,6 +162,11 @@ impl ToolOutputStore {
     }
 }
 
+/// Write `body` to `path` atomically, owner-readable only.
+///
+/// Goes through a randomly-suffixed temp file created with `create_new` (mode
+/// `0600` on Unix), synced, then renamed — so a concurrent reader never sees a
+/// partial file, and tool output never lands world-readable.
 fn atomic_write_private(path: &Path, body: &[u8]) -> Result<()> {
     let suffix = thread_rng()
         .sample_iter(&Alphanumeric)
@@ -170,10 +200,12 @@ fn atomic_write_private(path: &Path, body: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Spill threshold, under-threshold passthrough, and storage-failure honesty.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Oversized text is written to disk and replaced by a path reference only.
     #[test]
     fn oversized_output_is_written_and_replaced_without_inline_body() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -202,6 +234,7 @@ mod tests {
         );
     }
 
+    /// Small results stay inline and must not create the spill directory.
     #[test]
     fn under_threshold_output_stays_inline_and_does_not_touch_disk() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -215,6 +248,7 @@ mod tests {
         assert!(!root.exists());
     }
 
+    /// On spill failure, history gets an omit marker — never the raw body again.
     #[test]
     fn storage_failure_omits_oversized_body_instead_of_refeeding_it() {
         let temp = tempfile::tempdir().expect("temp dir");

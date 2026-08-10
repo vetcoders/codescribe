@@ -298,7 +298,7 @@ private struct LLMLaneEditor: View {
         Button("Save", action: action)
             .font(CSFont.ui(11.5, .semibold))
             .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.chromeAccent)
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .disabled(draft.isEmpty)
             .accessibilityLabel(accessibilityLabel)
     }
@@ -311,7 +311,7 @@ private struct LLMLaneEditor: View {
         Button("Reset", action: action)
             .font(CSFont.ui(11.5, .semibold))
             .foregroundStyle(CSColor.textMutedAlt)
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .help(help)
             .accessibilityLabel(accessibilityLabel)
     }
@@ -337,7 +337,7 @@ struct WorkspaceRootsSection: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSectionLabel("Agent workspace roots")
 
-            Text("Directories the assistant scans to resolve a project name to a path (list_projects). One level deep; git checkouts only.")
+            Text("Directories the assistant scans for git checkouts to resolve a project name to a path (list_projects). Recursive, a few levels deep; build and hidden folders are skipped.")
                 .font(CSFont.ui(11.5))
                 .lineSpacing(2)
                 .foregroundStyle(CSColor.textMutedAlt)
@@ -357,7 +357,7 @@ struct WorkspaceRootsSection: View {
                     Label("Add root", systemImage: "plus")
                         .font(CSFont.ui(12, .semibold))
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .foregroundStyle(CSColor.textBody)
 
                 Spacer()
@@ -370,7 +370,7 @@ struct WorkspaceRootsSection: View {
                         .font(CSFont.ui(12, .semibold))
                         .foregroundStyle(isDirty ? CSColor.textHigh : CSColor.textFaint)
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!isDirty)
             }
             .padding(.top, 12)
@@ -385,7 +385,7 @@ struct WorkspaceRootsSection: View {
     private func rootRow(index: Int) -> some View {
         HStack(spacing: 10) {
             existsDot(for: rows[index])
-            TextField("~/Git", text: Binding(
+            TextField("/path/to/checkouts", text: Binding(
                 get: { index < rows.count ? rows[index] : "" },
                 set: { if index < rows.count { rows[index] = $0 } }
             ))
@@ -399,7 +399,7 @@ struct WorkspaceRootsSection: View {
             } label: {
                 CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.textFaint)
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -425,7 +425,9 @@ struct WorkspaceRootsSection: View {
 
     private func syncFromModel() {
         rows = model.agentWorkspaceRoots
-        if rows.isEmpty { rows = ["~/Git"] }
+        // Mirror of the runtime default (DEFAULT_AGENT_WORKSPACE_ROOT): with no
+        // configured roots the tool really scans the app's own data dir.
+        if rows.isEmpty { rows = ["~/.codescribe"] }
     }
 
     private func cleaned(_ input: [String]) -> [String] {
@@ -517,7 +519,7 @@ private struct KeyRow: View {
                                 .strokeBorder(CSColor.chromeAccent.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(draft.isEmpty)
 
                 Button(action: onTest) {
@@ -543,7 +545,7 @@ private struct KeyRow: View {
                             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(probePending || !isSet)
                 .help(isSet ? "Test this key" : "Save a key first to test it")
 
@@ -564,12 +566,13 @@ private struct KeyRow: View {
                                 .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!isSet)
                 .help("Remove this key from the Keychain")
             }
 
-            if let accountProvider {
+            if let accountProvider,
+               accountProvider.accountLoginEnabled || accountProvider.accountSignedIn {
                 AccountLoginRow(
                     provider: accountProvider,
                     loginPending: accountLoginPending,
@@ -660,9 +663,42 @@ private struct AccountLoginRow: View {
     let onSaveClientId: (String) -> Void
 
     @State private var clientIdDraft: String = ""
+    @State private var showAdvancedClientId = false
 
     private var signedIn: Bool { provider.accountSignedIn }
     private var accent: Color { signedIn ? CSColor.olive : CSColor.textFaint }
+
+    /// Short brand for the account row — OpenCode-style, not a client-id dump.
+    private var accountBrand: String {
+        switch provider.id {
+        case "openai-responses": return "ChatGPT"
+        case "xai-responses": return "xAI"
+        case "anthropic-messages": return "Claude"
+        default: return provider.displayName
+        }
+    }
+
+    /// Honest routing: signed-in OAuth account wins over a stored API key
+    /// (matches `assistive_snapshot` preference). Shown so the operator never
+    /// has to guess which credential the assistive path will send.
+    private var credentialSourceLabel: String? {
+        if signedIn && provider.apiKeySet {
+            return "using \(accountBrand) account (API key held as fallback)"
+        }
+        if signedIn {
+            return "using \(accountBrand) account"
+        }
+        if provider.apiKeySet {
+            return "using API key"
+        }
+        return nil
+    }
+
+    private var credentialSourceTint: Color {
+        if signedIn { return CSColor.oliveLight }
+        if provider.apiKeySet { return CSColor.amber }
+        return CSColor.textFaint
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -670,7 +706,7 @@ private struct AccountLoginRow: View {
                 Circle()
                     .fill(accent.opacity(0.85))
                     .frame(width: 7, height: 7)
-                Text("ChatGPT account")
+                Text("\(accountBrand) account")
                     .font(CSFont.ui(12.5, .semibold))
                     .foregroundStyle(CSColor.textBody)
                 // Carries "signed in as <email>" / "not signed in" /
@@ -694,7 +730,7 @@ private struct AccountLoginRow: View {
                         enabled: !loginPending,
                         action: onSignOut
                     )
-                    .help("Remove the stored ChatGPT account tokens")
+                    .help("Remove the stored \(accountBrand) account tokens")
                 }
                 Button(action: onStart) {
                     HStack(spacing: 6) {
@@ -706,7 +742,13 @@ private struct AccountLoginRow: View {
                         } else {
                             CSIconView(icon: .accountVerified, size: 12, weight: .semibold)
                         }
-                        Text(loginPending ? "Waiting for browser…" : "Sign in with ChatGPT")
+                        Text(
+                            loginPending
+                                ? (provider.id == "xai-responses"
+                                    ? "Approve in browser…"
+                                    : "Waiting for browser…")
+                                : "Sign in with \(accountBrand)"
+                        )
                             .font(CSFont.ui(12, .semibold))
                     }
                     .foregroundStyle(
@@ -724,43 +766,73 @@ private struct AccountLoginRow: View {
                             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .disabled(!provider.accountLoginEnabled || loginPending)
                 .help(provider.accountStatusMessage)
             }
 
-            // OAuth client id — non-secret app identity (NOT a credential), so a
-            // plain TextField with the value visible is correct here. Saving an
-            // empty field clears back to "awaiting app registration".
-            HStack(spacing: 8) {
-                Text("client id")
+            if let credentialSourceLabel {
+                Text(credentialSourceLabel)
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(credentialSourceTint)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule()
+                            .fill(credentialSourceTint.opacity(0.11))
+                    )
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(credentialSourceTint.opacity(0.24), lineWidth: 1)
+                    )
+                    .help(
+                        "Assistive traffic for this provider uses the account when signed in; "
+                            + "the API key remains a fallback if you sign out."
+                    )
+            }
+
+            // Client id is a non-secret public app identity. OpenAI + xAI ship
+            // defaults (NOTICE); operators almost never need to paste one. Keep
+            // the override under Advanced so the Keys panel matches OpenCode's
+            // "pick a login method" calm instead of a scary UUID field.
+            DisclosureGroup(isExpanded: $showAdvancedClientId) {
+                HStack(spacing: 8) {
+                    Text("client id")
+                        .font(CSFont.mono(10, .medium))
+                        .foregroundStyle(CSColor.textFaint)
+                    TextField(
+                        provider.oauthClientId == nil
+                            ? "Override OAuth client id…"
+                            : provider.oauthClientId ?? "",
+                        text: $clientIdDraft
+                    )
+                    .textFieldStyle(.plain)
+                    .font(CSFont.mono(11, .regular))
+                    .foregroundStyle(CSColor.textBody)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .fill(CSColor.surfaceRaised(0.03))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+                    )
+                    .onSubmit { onSaveClientId(clientIdDraft) }
+                    AccountActionButton(
+                        title: "Save",
+                        tint: CSColor.oliveLight,
+                        enabled: clientIdDraft != (provider.oauthClientId ?? ""),
+                        action: { onSaveClientId(clientIdDraft) }
+                    )
+                    .help("Optional override (settings.json) — empty restores the shipped default")
+                }
+                .padding(.top, 4)
+            } label: {
+                Text("Advanced · OAuth client id")
                     .font(CSFont.mono(10, .medium))
                     .foregroundStyle(CSColor.textFaint)
-                TextField(
-                    provider.oauthClientId == nil ? "Paste OAuth client id…" : "",
-                    text: $clientIdDraft
-                )
-                .textFieldStyle(.plain)
-                .font(CSFont.mono(11, .regular))
-                .foregroundStyle(CSColor.textBody)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .fill(CSColor.surfaceRaised(0.03))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                        .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-                )
-                .onSubmit { onSaveClientId(clientIdDraft) }
-                AccountActionButton(
-                    title: "Save",
-                    tint: CSColor.oliveLight,
-                    enabled: clientIdDraft != (provider.oauthClientId ?? ""),
-                    action: { onSaveClientId(clientIdDraft) }
-                )
-                .help("Store the client id (settings.json) — applies without restart")
             }
         }
         .onAppear { clientIdDraft = provider.oauthClientId ?? "" }
@@ -792,7 +864,7 @@ private struct AccountActionButton: View {
                         .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .disabled(!enabled)
     }
 }

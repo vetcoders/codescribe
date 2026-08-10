@@ -26,6 +26,8 @@ pub struct TurnConfig {
 }
 
 impl Default for TurnConfig {
+    /// Timings tuned for natural back-and-forth: 800ms of silence closes a turn,
+    /// 200ms of speech over the assistant counts as an interruption.
     fn default() -> Self {
         Self {
             min_speech_ms: 100,
@@ -40,6 +42,7 @@ impl Default for TurnConfig {
 /// Manages turn-taking in conversation
 #[derive(Debug)]
 pub struct TurnManager {
+    /// Thresholds governing every transition below.
     config: TurnConfig,
 
     /// Current speaker state
@@ -62,6 +65,7 @@ pub struct TurnManager {
 }
 
 impl Default for TurnManager {
+    /// Idle manager using [`TurnConfig::default`].
     fn default() -> Self {
         Self::new(TurnConfig::default())
     }
@@ -243,10 +247,13 @@ impl TurnManager {
     }
 }
 
+/// Covers the instant transitions; the silence-driven ones need a clock and are
+/// exercised at the pipeline level instead.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// First speech frame transitions Idle → UserSpeaking with `changed=true`.
     #[test]
     fn test_idle_to_speaking() {
         let mut manager = TurnManager::default();
@@ -256,6 +263,7 @@ mod tests {
         assert!(changed);
     }
 
+    /// Continued speech keeps UserSpeaking and reports `changed=false`.
     #[test]
     fn test_speech_continues() {
         let mut manager = TurnManager::default();
@@ -267,6 +275,7 @@ mod tests {
         assert!(!changed);
     }
 
+    /// `reset` returns the manager to Idle regardless of prior speech state.
     #[test]
     fn test_reset() {
         let mut manager = TurnManager::default();

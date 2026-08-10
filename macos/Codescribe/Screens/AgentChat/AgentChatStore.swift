@@ -959,7 +959,7 @@ final class AgentChatStore: ObservableObject {
     private func beginObservingExternalThreadChanges() {
         guard threadsProvider != nil else { return }
         let handler: (Notification) -> Void = { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshThreadsFromExternalChange() }
+            MainActor.assumeIsolated { self?.scheduleExternalThreadsRefresh() }
         }
         externalThreadsObservers = [
             NotificationCenter.default.addObserver(
@@ -975,6 +975,27 @@ final class AgentChatStore: ObservableObject {
                 using: handler
             ),
         ]
+    }
+
+    /// One pending refresh per main-queue tick. Every window in the app posts
+    /// `didBecomeKey` (observer has object: nil), and AppKit fires it from
+    /// INSIDE window-ordering operations (popover close → orderOut →
+    /// becomeKeyWindow) — sample 2026-08-07 10:43 caught the main thread
+    /// pinned 93/93 re-listing threads from within _NSPopoverCloseAndAnimate.
+    /// Coalescing onto the next tick collapses the storm AND moves the disk
+    /// re-read out of the notification callout.
+    private var externalRefreshScheduled = false
+
+    private func scheduleExternalThreadsRefresh() {
+        guard !externalRefreshScheduled else { return }
+        externalRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.externalRefreshScheduled = false
+                self.refreshThreadsFromExternalChange()
+            }
+        }
     }
 
     /// Re-read persisted threads after an external change signal. Deliberately
@@ -1681,6 +1702,22 @@ final class AgentChatStore: ObservableObject {
         if let existing = threads.first(where: { $0.backendId == backendId }) {
             threadID = existing.id
             loadMessagesIfNeeded(threadID)  // surface prior history before appending
+        } else if let draftIndex = threads.firstIndex(where: {
+            $0.id == selectedThreadID && $0.backendId == nil && $0.messages.isEmpty
+        }) {
+            // The user is sitting in an empty local-only draft ("+ New thread")
+            // watching their dictation stream: the voice turn must land THERE.
+            // Binding the draft to the core's thread id keeps the user where they
+            // are; minting a parallel thread here yanked the conversation into a
+            // surprise rail entry mid-sentence (UI_DIVERGENCE_AUDIT / operator
+            // report 2026-08-08).
+            threads[draftIndex].backendId = backendId
+            threads[draftIndex].messagesLoaded = true  // freshly bound → in sync
+            threads[draftIndex].title =
+                ThreadTitlePolicy.normalized(userTurn.text, limit: 48) ?? "Voice chat"
+            threads[draftIndex].meta = "now"
+            threadID = threads[draftIndex].id
+            isFirstExchange = true
         } else {
             let title = ThreadTitlePolicy.normalized(userTurn.text, limit: 48) ?? "Voice chat"
             var thread = ChatThread(title: title, meta: "now")
@@ -2303,6 +2340,18 @@ final class AgentChatStore: ObservableObject {
         )
     }
 
+    /// Row-level equality on everything the rail renders. Matched incoming
+    /// rows reuse the existing `ChatThread` instances (same `id`s), so equal
+    /// rows ⇒ identical identity set ⇒ selection resolution is a no-op too.
+    private static func railRowsEqual(_ lhs: [ChatThread], _ rhs: [ChatThread]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { l, r in
+            l.id == r.id && l.backendId == r.backendId && l.title == r.title
+                && l.meta == r.meta && l.isFavorite == r.isFavorite
+                && l.isRestored == r.isRestored
+        }
+    }
+
     private func replaceThreads(
         with incoming: [ChatThread],
         selectingBackendId backendId: String?,
@@ -2335,7 +2384,18 @@ final class AgentChatStore: ObservableObject {
             next.append(contentsOf: locals)
         }
 
-        threads = next.isEmpty && !allowEmpty ? [ChatThread(title: "New thread", meta: "now", messages: [])] : next
+        let resolved =
+            next.isEmpty && !allowEmpty
+            ? [ChatThread(title: "New thread", meta: "now", messages: [])] : next
+        // Identical rail rows must not publish: an unchanged `threads =`
+        // still tears down and rebuilds the whole window body (the 937189fd
+        // lesson). Matched rows reuse existing instances (same ids), so
+        // row-equality here also guarantees the selection below would not
+        // move — skipping the whole tail is safe.
+        if !next.isEmpty || allowEmpty, Self.railRowsEqual(resolved, threads) {
+            return
+        }
+        threads = resolved
         // Selection is user-owned. A completion refresh may reorder or replace
         // rail rows, but it must preserve the thread the user is reading. The
         // completed backend is only a fallback when that selection disappeared.

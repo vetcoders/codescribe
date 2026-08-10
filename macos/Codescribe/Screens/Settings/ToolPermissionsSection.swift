@@ -114,14 +114,14 @@ struct ToolPermissionsSection: View {
                 Button("Expand all") {
                     expandedServers = Set(grouped.map(\.server))
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .font(CSFont.mono(10.5, .semibold))
                 .foregroundStyle(CSColor.oliveLight)
 
                 Button("Collapse all") {
                     expandedServers.removeAll()
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .font(CSFont.mono(10.5, .semibold))
                 .foregroundStyle(CSColor.textFaint)
 

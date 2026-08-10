@@ -9,6 +9,8 @@ use crate::os::hotkeys::ModeHotkeyBindings;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// A modifier-only gesture Codescribe listens for, in the vocabulary used when
+/// reporting conflicts.
 pub enum HotkeyGesture {
     HoldFn,
     HoldCtrl,
@@ -21,6 +23,7 @@ pub enum HotkeyGesture {
 }
 
 impl HotkeyGesture {
+    /// Human-readable gesture name for Settings and conflict messages.
     pub fn label(self) -> &'static str {
         match self {
             Self::HoldFn => "Hold Fn/Globe",
@@ -36,11 +39,14 @@ impl HotkeyGesture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One reason a configured gesture may not reach Codescribe.
 pub struct HotkeyConflict {
     pub gesture: HotkeyGesture,
     pub message: String,
 }
 
+/// Every conflict for the current bindings: Codescribe's own collisions first,
+/// then collisions with enabled macOS symbolic hotkeys.
 pub fn detect_hotkey_conflicts(settings: &UserSettings) -> Vec<HotkeyConflict> {
     let bindings = ModeHotkeyBindings::from_settings(settings);
     let mut conflicts = detect_internal_conflicts(bindings);
@@ -70,11 +76,18 @@ pub fn deferred_insert_shortcut_conflict(shortcut: DeferredInsertShortcut) -> Op
         })
 }
 
+/// Non-macOS stub: with no symbolic-hotkey registry to consult, only a
+/// disabled shortcut counts as unavailable.
 #[cfg(not(target_os = "macos"))]
 pub fn deferred_insert_shortcut_conflict(shortcut: DeferredInsertShortcut) -> Option<String> {
     (!shortcut.is_enabled()).then(|| "Deferred insert shortcut is disabled".to_string())
 }
 
+/// Informational note for the Fn/Globe case.
+///
+/// When dictation is bound to Hold Fn *and* macOS still owns the Fn tap, the
+/// hold gesture can swallow that tap. This is deliberately not a
+/// [`HotkeyConflict`]: reporting it as one would block Save in Settings.
 pub fn fn_tap_intercept_note(settings: &UserSettings) -> Option<&'static str> {
     let bindings = ModeHotkeyBindings::from_settings(settings);
     if bindings.dictation != ShortcutBinding::HoldFn {
@@ -86,6 +99,8 @@ pub fn fn_tap_intercept_note(settings: &UserSettings) -> Option<&'static str> {
     )
 }
 
+/// Whether macOS still has a Fn/Globe tap action enabled — symbolic IDs 160
+/// (Emoji & Symbols) or 164 (Start Dictation).
 #[cfg(target_os = "macos")]
 fn fn_tap_symbols_enabled() -> bool {
     load_symbolic_signatures()
@@ -93,11 +108,17 @@ fn fn_tap_symbols_enabled() -> bool {
         .any(|signature| matches!(signature.id, 160 | 164))
 }
 
+/// Non-macOS stub: there is no Fn/Globe tap action to compete with.
 #[cfg(not(target_os = "macos"))]
 fn fn_tap_symbols_enabled() -> bool {
     false
 }
 
+/// Gestures currently reachable under `bindings`, across all three modes.
+///
+/// Dictation and assistive are expanded independently, so a mode bound to a
+/// hold gesture stays visible to conflict checks even when another mode is
+/// bound to a double-tap.
 fn active_gestures(bindings: ModeHotkeyBindings) -> Vec<HotkeyGesture> {
     let mut gestures = Vec::new();
 
@@ -134,6 +155,7 @@ fn active_gestures(bindings: ModeHotkeyBindings) -> Vec<HotkeyGesture> {
     gestures
 }
 
+/// Conflicts between Codescribe's own bindings, before macOS is consulted.
 fn detect_internal_conflicts(bindings: ModeHotkeyBindings) -> Vec<HotkeyConflict> {
     let mut conflicts = Vec::new();
 
@@ -180,6 +202,7 @@ fn detect_internal_conflicts(bindings: ModeHotkeyBindings) -> Vec<HotkeyConflict
     conflicts
 }
 
+/// Conflicts against the enabled entries of the macOS symbolic-hotkey registry.
 #[cfg(target_os = "macos")]
 fn detect_macos_symbolic_conflicts(bindings: ModeHotkeyBindings) -> Vec<HotkeyConflict> {
     let signatures = load_symbolic_signatures();
@@ -190,6 +213,7 @@ fn detect_macos_symbolic_conflicts(bindings: ModeHotkeyBindings) -> Vec<HotkeyCo
     collect_symbolic_conflicts(bindings, &signatures)
 }
 
+/// Non-macOS stub: there is no symbolic-hotkey registry to check.
 #[cfg(not(target_os = "macos"))]
 fn detect_macos_symbolic_conflicts(_bindings: ModeHotkeyBindings) -> Vec<HotkeyConflict> {
     Vec::new()
@@ -197,6 +221,8 @@ fn detect_macos_symbolic_conflicts(_bindings: ModeHotkeyBindings) -> Vec<HotkeyC
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// One enabled entry of the macOS symbolic-hotkey registry, reduced to the
+/// three fields a collision check needs.
 struct SymbolicSignature {
     id: u32,
     keycode: i64,
@@ -211,6 +237,8 @@ struct SymbolicSignature {
 const UNBOUND_KEYCODE: i64 = 65535;
 
 #[cfg(target_os = "macos")]
+/// Friendly name for the symbolic IDs worth naming in a conflict message;
+/// everything else is reported generically.
 fn symbolic_hotkey_name(id: u32) -> &'static str {
     match id {
         160 => "Show Emoji & Symbols (Globe/Fn)",
@@ -220,6 +248,8 @@ fn symbolic_hotkey_name(id: u32) -> &'static str {
 }
 
 #[cfg(target_os = "macos")]
+/// Cross every active gesture with every symbolic signature, skipping unbound
+/// entries and de-duplicating by `(gesture, symbolic id)`.
 fn collect_symbolic_conflicts(
     bindings: ModeHotkeyBindings,
     signatures: &[SymbolicSignature],
@@ -254,11 +284,20 @@ fn collect_symbolic_conflicts(
 }
 
 #[cfg(target_os = "macos")]
+/// Whether one gesture actually collides with one symbolic entry.
+///
+/// Ctrl-based hold gestures always answer `false`; only the modifier-only
+/// gestures (Fn, double Ctrl, double Option) are checked against the registry.
 fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSignature) -> bool {
+    /// Carbon left-Option keycode used by symbolic-hotkey entries.
     const LEFT_OPTION_KEYCODE: i64 = 58;
+    /// Carbon right-Option keycode used by symbolic-hotkey entries.
     const RIGHT_OPTION_KEYCODE: i64 = 61;
+    /// Carbon left-Control keycode used by symbolic-hotkey entries.
     const LEFT_CONTROL_KEYCODE: i64 = 59;
+    /// Carbon right-Control keycode used by symbolic-hotkey entries.
     const RIGHT_CONTROL_KEYCODE: i64 = 62;
+    /// Carbon Fn/Globe keycode; unbound sentinel must not be treated as this.
     const FN_KEYCODE: i64 = 63;
 
     match gesture {
@@ -295,14 +334,23 @@ fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSi
 }
 
 #[cfg(target_os = "macos")]
+/// Whether a symbolic entry binds the same key as the deferred-insert chord.
+///
+/// The modifier mask must match exactly, so a chord that merely contains the
+/// same modifiers is not reported as a collision.
 fn deferred_insert_conflicts_with_symbolic(
     shortcut: DeferredInsertShortcut,
     signature: SymbolicSignature,
 ) -> bool {
+    /// Carbon 'V' keycode for deferred-insert chords.
     const V_KEYCODE: i64 = 9;
+    /// NSEvent Control modifier bit in symbolic-hotkey parameter packs.
     const CONTROL: i64 = 0x0004_0000;
+    /// NSEvent Shift modifier bit in symbolic-hotkey parameter packs.
     const SHIFT: i64 = 0x0002_0000;
+    /// NSEvent Option modifier bit in symbolic-hotkey parameter packs.
     const OPTION: i64 = 0x0008_0000;
+    /// NSEvent Command modifier bit in symbolic-hotkey parameter packs.
     const COMMAND: i64 = 0x0010_0000;
 
     let modifiers = match shortcut {
@@ -315,6 +363,13 @@ fn deferred_insert_conflicts_with_symbolic(
 }
 
 #[cfg(target_os = "macos")]
+/// Read the enabled entries of `com.apple.symbolichotkeys.plist` through
+/// `plutil`.
+///
+/// Every failure path — missing plist, `plutil` unavailable or failing,
+/// unparseable JSON, short parameter list — degrades to an empty list, so a
+/// machine whose registry cannot be read reports no conflicts rather than
+/// blocking Settings.
 fn load_symbolic_signatures() -> Vec<SymbolicSignature> {
     use directories::BaseDirs;
     use serde::Deserialize;
@@ -322,12 +377,14 @@ fn load_symbolic_signatures() -> Vec<SymbolicSignature> {
     use std::process::Command;
     use tracing::debug;
 
+    /// Root of `com.apple.symbolichotkeys.plist` after `plutil -convert json`.
     #[derive(Debug, Deserialize)]
     struct SymbolicRegistry {
         #[serde(rename = "AppleSymbolicHotKeys")]
         hotkeys: HashMap<String, SymbolicEntry>,
     }
 
+    /// One system symbolic-hotkey slot; disabled or valueless entries are skipped.
     #[derive(Debug, Deserialize)]
     struct SymbolicEntry {
         #[serde(default)]
@@ -336,6 +393,7 @@ fn load_symbolic_signatures() -> Vec<SymbolicSignature> {
         value: Option<SymbolicValue>,
     }
 
+    /// Payload of an enabled slot; needs ≥3 parameters (ASCII, keycode, modifiers).
     #[derive(Debug, Deserialize)]
     struct SymbolicValue {
         #[serde(default)]
@@ -415,11 +473,13 @@ fn load_symbolic_signatures() -> Vec<SymbolicSignature> {
     signatures
 }
 
+/// Conflict-detection unit tests for internal and symbolic hotkey collisions.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ModeBinding, WorkMode};
 
+    /// Build settings with only the three mode bindings set; other fields default.
     fn settings_for(
         dictation: ShortcutBinding,
         formatting: ShortcutBinding,
@@ -444,6 +504,7 @@ mod tests {
         }
     }
 
+    /// Double-Ctrl dictation vs double-Left-Option formatting is an internal clash.
     #[test]
     fn internal_conflict_detects_double_ctrl_vs_left_option() {
         let settings = settings_for(
@@ -456,6 +517,7 @@ mod tests {
         assert_eq!(conflicts[0].gesture, HotkeyGesture::ToggleDoubleLeftOption);
     }
 
+    /// Distinct hold/toggle gestures for the three modes must report no conflicts.
     #[test]
     fn internal_conflict_empty_for_safe_combo() {
         let settings = settings_for(
@@ -467,6 +529,7 @@ mod tests {
         assert!(conflicts.is_empty());
     }
 
+    /// Dictation and assistive sharing one hold binding must surface as a conflict.
     #[test]
     fn internal_conflict_detects_assistive_dictation_binding_collision() {
         let settings = settings_for(
@@ -483,6 +546,7 @@ mod tests {
         );
     }
 
+    /// Both double-Ctrl dictation and assistive hold must stay in the active set.
     #[test]
     fn active_gestures_keeps_assistive_hold_visible_with_double_ctrl_dictation() {
         let bindings = ModeHotkeyBindings {
@@ -501,6 +565,7 @@ mod tests {
         );
     }
 
+    /// macOS Fn tap/double-tap system IDs must not be reported as Hold Fn conflicts.
     #[cfg(target_os = "macos")]
     #[test]
     fn symbolic_conflict_ignores_macos_fn_tap_for_hold_fn() {
@@ -530,6 +595,7 @@ mod tests {
         );
     }
 
+    /// A real Fn keycode with zero modifiers must collide with Hold Fn.
     #[cfg(target_os = "macos")]
     #[test]
     fn symbolic_conflict_detects_raw_fn_hold_signature() {
@@ -581,6 +647,7 @@ mod tests {
         );
     }
 
+    /// Deferred-insert collision requires exact keycode and exact modifier mask.
     #[cfg(target_os = "macos")]
     #[test]
     fn deferred_insert_collision_matches_key_and_exact_modifiers() {

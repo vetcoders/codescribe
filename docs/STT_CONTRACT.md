@@ -4,9 +4,13 @@
 > Goal: every UI/hotkey entry is one line to one handler; settings truth is one place.
 > **Operator lock: Apple STT is MUST-HAVE for live.** Whisper is never the primary live engine.
 > **Superseded on Whisper's role (2026-07-26, `AGENTS.md` — THE ONE RULE):** the target shape is
-> Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only. The
-> stop-time file final-pass below remains the accepted interim, but it is a stepping stone, not
-> the destination. Lexicon substitution is the FINAL automated layer, after Whisper.
+> Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only.
+> Lexicon substitution is the FINAL automated layer, after Whisper.
+>
+> **Status (2026-08-08):** on-the-go gap-fill now **exists** as Layer 1 tail-patch on both live
+> paths (`a6b1233d`), but it is **opt-in and off by default** — `CODESCRIBE_LAYERED_TRANSCRIPTION`
+> ships as `off` and no default flip has been taken. So for a stock install the stop-time file
+> final-pass described below is still what runs. It is the shipped path, not the destination.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -108,12 +112,22 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 
 Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPTION`, `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
 
+> **Power-user hazard (measured 2026-08-08).** Because `CODESCRIBE_LAYERED_TRANSCRIPTION` is
+> **not** promoted to `settings.json`, `Config::inject_file_env_for_runtime` copies it out of
+> `~/.codescribe/.env` into the process env on the first `Config::load()` — in _every_ process
+> that loads the core, tests and harnesses included. A stale `.env` line therefore arms Layer 1
+> silently. This was observed live: the same `make test-engine-parity` binary scored 0.931 with
+> the lane off and 0.833 with the operator's dotenv arming `phase1`, and the low score was the
+> _more accurate_ transcript. The parity target now pins the lane explicitly (`Makefile`), but
+> the general hazard stands for any tool that loads the core. Promoting the key the way
+> `CODESCRIBE_STT_ENGINE` was promoted is an open operator decision.
+
 **Final pass vs layered (orthogonal):**
 
-| Setting | Env | Default | Role |
-| --- | --- | --- | --- |
-| Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: full WAV re-pass routing (`always` / skip-if-complete / `off`) |
-| Layered | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off` | During-hold Layer 1 Whisper tail-patch when phase ≥ 1 (VAD path today) |
+| Setting    | Env                                | Default | Role                                                                                                                                                                |
+| ---------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Final pass | `FINAL_PASS_MODE`                  | `smart` | Stop-path only: full WAV re-pass routing (`always` / skip-if-complete / `off`)                                                                                      |
+| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off`   | During-hold Layer 1 Whisper tail-patch when phase ≥ 1, on **both** live paths — VAD/scheduler and the default Apple progressive live (wired 2026-08-08, `a6b1233d`) |
 
 Smart does **not** turn layered on. Off final-pass does **not** force Whisper at stop. Layered phase tokens (`phase1`…) are not final-pass tokens (`smart`/`always`/`off`).
 

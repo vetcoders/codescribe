@@ -123,7 +123,7 @@ struct OversizedMessageBody<Head: View>: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .help(showFull
             ? "Fold this message back to its head"
             : "Open the full text in a scrollable, selectable view")

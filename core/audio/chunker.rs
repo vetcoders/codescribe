@@ -27,6 +27,9 @@ use crate::vad;
 // Constants
 // ═══════════════════════════════════════════════════════════
 
+/// Gate mode every constructed session runs in. Not configurable at runtime:
+/// the Supervisor semantics (audio always flows, VAD only marks boundaries) are
+/// what the downstream quality gate and speech-sample accounting assume.
 const SILERO_GATE_MODE: VadGateMode = VadGateMode::Supervisor;
 /// Silence that closes a sealed utterance in buffered (Utterance) mode.
 ///
@@ -44,11 +47,19 @@ pub(crate) const DEFAULT_BUFFERED_MAX_UTTERANCE_SEC: f32 = 12.0;
 // Public types
 // ═══════════════════════════════════════════════════════════
 
+/// One segmentation decision handed to the consumer, carrying the audio it
+/// describes.
+///
+/// The distinction between `Utterance` and `UtteranceFinal` is the whole point
+/// of this type: it tells a downstream STT path whether the samples are a
+/// preview that will be superseded, or a sealed commit boundary.
 pub(crate) enum SpeechEvent {
     // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
     // legacy buffered-chunk payload of the pre-scheduler speech path. Field is
     // unread while SpeechMode::Stream is parked; revive or delete together with it.
     #[allow(dead_code)]
+    /// Fixed-size streaming chunk emitted by the parked [`SpeechMode::Stream`]
+    /// path. Never produced while buffered (utterance) mode is the only wiring.
     Chunk(Vec<f32>),
     /// Interim utterance slice emitted during long continuous speech to keep streaming responsive.
     Utterance(Vec<f32>),
@@ -62,16 +73,26 @@ pub(crate) enum SpeechEvent {
 // legacy fixed-chunk streaming mode superseded by the STT scheduler path.
 // Revive-or-delete decision belongs to the operator (forgotten-gems report).
 #[allow(dead_code)]
+/// How a session cuts the audio stream into events, chosen at construction and
+/// never changed for the session's lifetime.
 pub(crate) enum SpeechMode {
     // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
     // legacy fixed-chunk streaming mode superseded by the utterance/scheduler
     // path. Revive-or-delete belongs to the operator (forgotten-gems report).
     #[allow(dead_code)]
+    /// Emit a [`SpeechEvent::Chunk`] every `chunk_limit` samples regardless of
+    /// where speech boundaries fall.
     Stream {
+        /// Samples accumulated before a chunk is emitted.
         chunk_limit: usize,
+        /// Trailing samples replayed at the head of the next chunk, so a word
+        /// split across the cut is still heard whole by the STT pass.
         overlap_size: usize,
     },
+    /// Emit whole utterances delimited by VAD boundaries — the live path.
     Utterance {
+        /// Force-seal threshold: continuous speech longer than this is cut
+        /// anyway, so no single commit outgrows what live STT can carry.
         max_utterance_samples: usize,
         /// Periodic interim emit limit (samples). Continuous speech without VAD
         /// silence triggers an interim Utterance every `interim_limit` samples
@@ -80,6 +101,10 @@ pub(crate) enum SpeechMode {
     },
 }
 
+/// Where Silero sits relative to the audio path.
+///
+/// Only [`VadGateMode::Supervisor`] is wired today; the other two are kept as
+/// documented fallback semantics (see the forgotten-gem notes below).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum VadGateMode {
     // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
@@ -95,18 +120,32 @@ pub(crate) enum VadGateMode {
     Supervisor,
 }
 
+/// Tuned gate parameters resolved once at session construction.
 pub(crate) struct GateConfig {
+    /// Silero thresholds and duration bounds.
     pub vad: vad::VadConfig,
+    /// Audio retained *before* a detected speech start, so the first phoneme
+    /// survives the boundary.
     pub pre_roll_sec: f32,
+    /// Audio retained *after* a detected speech end, for the same reason.
     pub speech_pad_sec: f32,
+    /// Where the VAD sits relative to the audio path.
     pub mode: VadGateMode,
 }
 
+/// VAD failure telemetry drained by the caller.
+///
+/// Split into pending (since last drain) and total (session lifetime) counters
+/// so a consumer can both rate-limit warnings and report a session summary.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct VadErrorStats {
+    /// `predict()` failures since the last drain.
     pub predict_errors: u64,
+    /// Frames processed with no VAD model loaded, since the last drain.
     pub unavailable_frames: u64,
+    /// `predict()` failures over the whole session.
     pub total_predict_errors: u64,
+    /// Frames processed with no VAD model loaded, over the whole session.
     pub total_unavailable_frames: u64,
 }
 
@@ -114,6 +153,15 @@ pub(crate) struct VadErrorStats {
 // SpeechSession
 // ═══════════════════════════════════════════════════════════
 
+/// Stateful VAD gate + chunker for one recording session.
+///
+/// Owns two parallel views of the same audio: the raw stream at the capture
+/// sample rate (what is actually emitted) and a 16 kHz resampled view (what
+/// Silero sees). Boundaries are detected in the VAD domain and mapped back to
+/// raw indices, which is why the raw buffer carries its own absolute cursor and
+/// start offset rather than being indexed from zero.
+///
+/// Not `Send`-shared: drive it from a single audio callback path.
 pub(crate) struct SpeechSession {
     mode: SpeechMode,
     threshold: f32,
@@ -181,6 +229,8 @@ impl SpeechSession {
     // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
     // constructor of the parked SpeechMode::Stream path (see enum above).
     #[allow(dead_code)]
+    /// Build a fixed-chunk streaming session emitting every `chunk_duration_sec`
+    /// with `overlap_sec` of replayed tail. Parked path — see [`SpeechMode`].
     pub fn new_stream(sample_rate: u32, chunk_duration_sec: f32, overlap_sec: f32) -> Self {
         let config = hardcoded_gate_config();
         debug!("SpeechSession::new_stream gate_mode={:?}", config.mode);
@@ -275,11 +325,17 @@ impl SpeechSession {
         }
     }
 
+    /// Build a buffered (utterance) session at the capture `sample_rate` — the
+    /// live path. Silence and interim cadence come from the tuned defaults,
+    /// overridable through the `CODESCRIBE_BUFFERED_*` env vars.
     pub fn new_utterance(sample_rate: u32) -> Self {
         let interim_sec = utterance_interim_sec();
         Self::new_utterance_with_interim_and_silence(sample_rate, interim_sec, None)
     }
 
+    /// Same as [`Self::new_utterance`] but with the closing-silence threshold
+    /// pinned by the caller (clamped to 0.1–10 s), so a lane that knows its own
+    /// pause cadence is not bound to the global default.
     pub fn new_utterance_with_silence(sample_rate: u32, max_silence_sec: f32) -> Self {
         let interim_sec = utterance_interim_sec();
         Self::new_utterance_with_interim_and_silence(
@@ -289,6 +345,10 @@ impl SpeechSession {
         )
     }
 
+    /// Shared constructor behind both buffered entry points. Resolves the tuned
+    /// gate config, derives every sample-domain bound from it, and loads Silero.
+    /// A VAD that fails to load is not fatal — the session runs with `vad: None`
+    /// and reports the shortfall through [`Self::take_vad_error_stats`].
     fn new_utterance_with_interim_and_silence(
         sample_rate: u32,
         interim_sec: f32,
@@ -393,6 +453,12 @@ impl SpeechSession {
         }
     }
 
+    /// Push one capture callback's worth of audio and collect whatever events it
+    /// completed. Empty input is a no-op; `_sample_rate` is ignored because the
+    /// rate was fixed at construction.
+    ///
+    /// In Supervisor mode this delegates straight to [`Self::feed_supervisor`];
+    /// the body below is the parked pre-supervisor gate.
     pub fn feed(&mut self, audio: &[f32], _sample_rate: u32) -> Vec<SpeechEvent> {
         let mut events = Vec::new();
         if audio.is_empty() {
@@ -457,6 +523,14 @@ impl SpeechSession {
         events
     }
 
+    /// The live segmentation path: raw audio is buffered unconditionally while
+    /// Silero runs on a 16 kHz view and only *marks* boundaries, which are then
+    /// mapped back into raw indices.
+    ///
+    /// Emits, in order of precedence: interim previews during long continuous
+    /// speech, a force-seal when a segment outgrows `max_utterance_samples`, and
+    /// a final seal once a detected end is reached. Trims the raw buffer after
+    /// every emit so a long dictation cannot grow it without bound.
     fn feed_supervisor(&mut self, audio: &[f32]) -> Vec<SpeechEvent> {
         let mut events = Vec::new();
         if audio.is_empty() {
@@ -668,6 +742,13 @@ impl SpeechSession {
         events
     }
 
+    /// Close the session and emit whatever is still open.
+    ///
+    /// Recording usually stops mid-segment, so an open Supervisor segment is
+    /// sealed from the last emitted boundary to the cursor. Audio that VAD never
+    /// opened a segment for is dropped silently rather than emitted as a
+    /// degraded guess — a deliberate choice, since sending unvalidated silence
+    /// to STT produces hallucinated text.
     pub fn flush(&mut self) -> Option<SpeechEvent> {
         if self.gate_mode == VadGateMode::Supervisor {
             if let Some(start) = self.segment_start.take() {
@@ -708,6 +789,8 @@ impl SpeechSession {
         Some(self.emit_final())
     }
 
+    /// Take the pending buffer as a streaming chunk, replaying the configured
+    /// overlap tail into the next one.
     fn emit_chunk(&mut self) -> SpeechEvent {
         let chunk = std::mem::take(&mut self.pending_samples);
         if let SpeechMode::Stream { overlap_size, .. } = self.mode
@@ -721,6 +804,9 @@ impl SpeechSession {
         SpeechEvent::Chunk(chunk)
     }
 
+    /// Take the pending buffer as a sealed segment and reset every per-segment
+    /// accumulator (speech/silence counters, pre-roll, VAD iterator) so the next
+    /// segment starts from a clean state.
     fn emit_final(&mut self) -> SpeechEvent {
         let chunk = std::mem::take(&mut self.pending_samples);
         self.pending_speech.clear();
@@ -741,6 +827,12 @@ impl SpeechSession {
         }
     }
 
+    /// Fold one frame's probability into the peak trackers and frame counters,
+    /// emitting a DEBUG heartbeat every two seconds.
+    ///
+    /// The segment peak is only advanced while a segment is actually open,
+    /// which is what keeps [`Self::segment_speech_prob`] from reporting
+    /// confidence borrowed from a neighbouring segment.
     fn update_vad_heartbeat(&mut self, speech_prob: f32) {
         self.max_speech_prob = self.max_speech_prob.max(speech_prob);
         let iter_triggered = self
@@ -779,6 +871,11 @@ impl SpeechSession {
         }
     }
 
+    /// Run Silero on one frame, counting failures instead of propagating them.
+    ///
+    /// Both a `predict()` error and a missing model yield `0.0` (non-speech).
+    /// Assuming speech would be the dangerous default: it opens segments on
+    /// silence and feeds STT audio nobody spoke. `gate` only labels the warning.
     fn predict_speech_prob(&mut self, frame: &[f32], gate: &str) -> f32 {
         match self.vad.as_mut() {
             Some(vad) => match vad.predict(frame) {
@@ -808,6 +905,12 @@ impl SpeechSession {
         }
     }
 
+    /// Threshold gate with hysteresis: opening a segment needs `threshold`,
+    /// holding it open only `neg_threshold`, and a segment closes after
+    /// `min_silence_samples` below that floor.
+    ///
+    /// Silence inside a segment is buffered rather than dropped, so a short
+    /// pause that turns out not to end the utterance keeps its audio.
     fn gate_with_prob(&mut self, audio: &[f32], speech_prob: f32) -> GateDecision {
         let is_speech = speech_prob >= self.threshold;
 
@@ -888,10 +991,15 @@ impl SpeechSession {
         }
     }
 
+    /// Drain the speech-sample accounting accumulated since the last emit.
     fn take_pending_event_speech_vad_samples(&mut self) -> u64 {
         std::mem::take(&mut self.pending_event_speech_vad_samples)
     }
 
+    /// Queue an event together with its speech-sample accounting, keeping the
+    /// two in FIFO lockstep. The consumer reads them back in the same order via
+    /// [`Self::take_event_speech_vad_samples`], so an event never inherits the
+    /// speech time of its neighbour.
     fn push_event_with_speech_vad_samples(
         &mut self,
         events: &mut Vec<SpeechEvent>,
@@ -902,6 +1010,10 @@ impl SpeechSession {
         events.push(event);
     }
 
+    /// Gate driven by the Silero iterator state machine rather than a bare
+    /// threshold. Falls back to [`Self::gate_with_prob`] when no iterator state
+    /// exists. On a detected end the pending buffer is truncated to
+    /// pre-roll + speech + pad, so trailing silence never reaches STT.
     fn gate_with_iter(&mut self, audio: &[f32], speech_prob: f32) -> GateDecision {
         let Some(iter_state) = self.iter_state.as_mut() else {
             return self.gate_with_prob(audio, speech_prob);
@@ -958,6 +1070,8 @@ impl SpeechSession {
         }
     }
 
+    /// Keep the most recent `pre_roll_samples` of pre-speech audio in a ring, so
+    /// the frames just before a detected start are still available to prepend.
     fn push_pre_roll(&mut self, audio: &[f32]) {
         if self.pre_roll_samples == 0 {
             return;
@@ -970,6 +1084,8 @@ impl SpeechSession {
         }
     }
 
+    /// Sample rate of the audio carried by emitted events. In Supervisor mode
+    /// this is the capture rate, not Silero's 16 kHz working rate.
     pub fn output_sample_rate(&self) -> u32 {
         self.output_sample_rate
     }
@@ -999,6 +1115,8 @@ impl SpeechSession {
         self.event_speech_vad_samples.pop_front().unwrap_or(0)
     }
 
+    /// Drain VAD failure telemetry, or `None` when nothing failed since the last
+    /// call. The pending counters reset; the totals do not.
     pub(crate) fn take_vad_error_stats(&mut self) -> Option<VadErrorStats> {
         let predict_errors = std::mem::take(&mut self.vad_predict_errors_pending);
         let unavailable_frames = std::mem::take(&mut self.vad_unavailable_frames_pending);
@@ -1087,6 +1205,9 @@ impl SpeechSession {
         self.min_silence_samples
     }
 
+    /// Convert a 16 kHz VAD-domain sample index into the raw capture domain.
+    /// Identity when the raw rate is unknown (zero), which keeps the mapping
+    /// total rather than panicking on a misconfigured session.
     fn vad_to_raw_index(&self, vad_index: usize) -> usize {
         if self.raw_sample_rate == 0 {
             return vad_index;
@@ -1096,6 +1217,13 @@ impl SpeechSession {
             .max(0.0) as usize
     }
 
+    /// Resolve the absolute raw range a Supervisor seal should emit, clamped to
+    /// what the buffer still holds.
+    ///
+    /// When everything up to `end` was already emitted as interim previews, the
+    /// range collapses — so a pre-roll-sized window before `end` is emitted
+    /// instead of nothing, preserving a final boundary the consumer can commit
+    /// against. `None` means there is genuinely nothing left to emit.
     fn supervisor_emit_range(&self, segment_start: usize, end: usize) -> Option<(usize, usize)> {
         if end <= segment_start || end > self.raw_cursor {
             return None;
@@ -1117,6 +1245,10 @@ impl SpeechSession {
         (emit_start < end).then_some((emit_start, end))
     }
 
+    /// Copy an absolute raw range out of the buffer, or `None` when the range is
+    /// empty or has already been trimmed away. Absolute indices are translated
+    /// through `raw_buffer_start`, so a trimmed prefix cannot be misread as
+    /// valid audio.
     fn raw_slice(&self, start: usize, end: usize) -> Option<Vec<f32>> {
         if end <= start {
             return None;
@@ -1139,6 +1271,9 @@ impl SpeechSession {
         )
     }
 
+    /// Drop raw samples older than the absolute index `keep_from`, advancing the
+    /// buffer's start offset to match. This is what bounds memory across a long
+    /// dictation; calls with an already-trimmed index are no-ops.
     fn trim_raw_buffer(&mut self, keep_from: usize) {
         if keep_from <= self.raw_buffer_start {
             return;
@@ -1151,6 +1286,8 @@ impl SpeechSession {
     }
 }
 
+/// Interim preview cadence in buffered mode, from
+/// `CODESCRIBE_BUFFERED_INTERIM_SEC` (default 1.2 s, clamped to 1–30 s).
 fn utterance_interim_sec() -> f32 {
     std::env::var("CODESCRIBE_BUFFERED_INTERIM_SEC")
         .ok()
@@ -1159,6 +1296,9 @@ fn utterance_interim_sec() -> f32 {
         .clamp(1.0, 30.0)
 }
 
+/// Operator override for the closing-silence threshold via
+/// `CODESCRIBE_BUFFERED_SILENCE_SEC` (clamped to 0.1–10 s). `None` keeps
+/// [`DEFAULT_BUFFERED_SILENCE_SEC`].
 fn utterance_silence_sec_override() -> Option<f32> {
     std::env::var("CODESCRIBE_BUFFERED_SILENCE_SEC")
         .ok()
@@ -1166,6 +1306,9 @@ fn utterance_silence_sec_override() -> Option<f32> {
         .map(|v| v.clamp(0.1, 10.0))
 }
 
+/// Operator override for the force-seal ceiling via
+/// `CODESCRIBE_BUFFERED_MAX_UTTERANCE_SEC` (clamped to 3–120 s). `None` keeps
+/// [`DEFAULT_BUFFERED_MAX_UTTERANCE_SEC`].
 fn utterance_max_sec_override() -> Option<f32> {
     std::env::var("CODESCRIBE_BUFFERED_MAX_UTTERANCE_SEC")
         .ok()
@@ -1181,6 +1324,8 @@ fn utterance_max_sec_override() -> Option<f32> {
 // canonical tuned-gate preset retained as reference values for GateConfig
 // regressions; not wired to any runtime path today.
 #[allow(dead_code)]
+/// The tuned stream-mode gate preset: VAD defaults with pre-roll and speech pad
+/// held equal. Reference values for `GateConfig` regressions.
 pub(crate) fn hardcoded_gate_config() -> GateConfig {
     let vad_cfg = vad::VadConfig::default();
     let pre_roll = vad_cfg.pre_roll_sec;
@@ -1194,6 +1339,10 @@ pub(crate) fn hardcoded_gate_config() -> GateConfig {
     }
 }
 
+/// The live buffered-mode gate preset. Differs from [`hardcoded_gate_config`]
+/// in exactly two axes — closing silence and force-seal ceiling — because those
+/// are what make one dictation produce several sealed commits instead of one
+/// long tail. Both accept env overrides.
 pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
     // Buffered mode feeds final utterances through the serialized Commit lane.
     // Silence + max-utterance force multi-seal freezed+append (core engine).
@@ -1216,6 +1365,11 @@ pub(crate) fn hardcoded_utterance_gate_config() -> GateConfig {
     }
 }
 
+/// Load the embedded Silero model (zero filesystem I/O) for `sample_rate`.
+///
+/// Returns `None` on failure instead of erroring: a session without VAD still
+/// captures audio and reports the shortfall as telemetry, which beats refusing
+/// to record at all.
 pub(crate) fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Option<vad::SileroVad> {
     match vad::SileroVad::new_embedded(config.clone()) {
         Ok(mut vad) => {
@@ -1234,40 +1388,78 @@ pub(crate) fn init_silero_vad(sample_rate: u32, config: &vad::VadConfig) -> Opti
 // VAD iterator state machine
 // ═══════════════════════════════════════════════════════════
 
+/// One gate verdict for a frame: the audio to keep (if any) and whether the
+/// segment just ended.
 struct GateDecision {
+    /// Audio the gate lets through, already including any replayed pre-roll.
     audio: Option<Vec<f32>>,
+    /// `true` when this frame closed the segment.
     ended: bool,
 }
 
+/// Silero's start/end boundary state machine, ported from the reference
+/// `VADIterator`.
+///
+/// Works purely in the 16 kHz VAD sample domain and counts time in frames — it
+/// never sees raw audio, which is why the caller maps its indices back with
+/// [`SpeechSession::vad_to_raw_index`].
 #[derive(Debug)]
 struct VadIterState {
+    /// Thresholds and durations, precomputed into sample counts.
     params: VadIterParams,
+    /// Frames consumed so far, expressed in VAD-domain samples.
     current_sample: usize,
+    /// Candidate end position, held until the silence run is long enough to
+    /// confirm it. Zero means "no candidate".
     temp_end: usize,
+    /// Where speech resumed after a candidate end, used to continue rather than
+    /// re-open a segment.
     next_start: usize,
+    /// Last confirmed end, kept as the cut point when a max-length segment must
+    /// be split.
     prev_end: usize,
+    /// Whether a segment is currently open.
     triggered: bool,
+    /// Start position of the open segment.
     speech_start: usize,
 }
 
+/// [`VadIterState`] tuning, resolved once from [`GateConfig`] into VAD-domain
+/// sample counts so the hot path does no float arithmetic on durations.
 #[derive(Debug)]
 struct VadIterParams {
+    /// Probability at or above which a frame counts as speech onset.
     threshold: f32,
+    /// Silence run required to confirm a segment end.
     min_silence_samples: usize,
+    /// Shortest run that counts as real speech; below it, an end is ignored so
+    /// coughs and clicks do not seal a segment.
     min_speech_samples: usize,
+    /// Ceiling after which an open segment is split even without silence.
     max_speech_samples: f32,
+    /// Silero frame size — the granularity every counter advances by.
     frame_size_samples: usize,
+    /// Shorter silence run accepted as a split point once a segment has hit its
+    /// maximum length (~98 ms), so an over-long segment cuts at a plausible gap
+    /// instead of mid-word.
     min_silence_samples_at_max_speech: usize,
 }
 
+/// What one frame did to the boundary state machine.
 #[derive(Debug, Copy, Clone)]
 enum VadIterEvent {
+    /// No boundary change.
     None,
+    /// A segment opened at this VAD-domain sample.
     Start { start_sample: usize },
+    /// A segment closed at this VAD-domain sample.
     End { end_sample: usize },
 }
 
 impl VadIterState {
+    /// Precompute every duration in `config` into `sample_rate`-domain counts.
+    /// The max-speech budget subtracts one frame and both pads, so a segment
+    /// split lands inside the configured ceiling once padding is added back.
     fn new(config: &GateConfig, sample_rate: u32) -> Self {
         let sr_per_ms = sample_rate as f32 / 1000.0;
         let frame_size_samples = vad::CHUNK_SIZE;
@@ -1303,6 +1495,8 @@ impl VadIterState {
         }
     }
 
+    /// Return to the pre-speech state, keeping the tuned params. Note the frame
+    /// counter resets too, so VAD-domain indices restart from zero.
     fn reset(&mut self) {
         self.current_sample = 0;
         self.temp_end = 0;
@@ -1312,14 +1506,24 @@ impl VadIterState {
         self.speech_start = 0;
     }
 
+    /// Whether a speech segment is currently open.
     fn triggered(&self) -> bool {
         self.triggered
     }
 
+    /// VAD-domain start index of the open segment.
     fn current_speech_start(&self) -> usize {
         self.speech_start
     }
 
+    /// Advance one frame and report any boundary it produced.
+    ///
+    /// Three exits, in priority order: speech above `threshold` (opens a segment
+    /// or cancels a pending end); an open segment past `max_speech_samples`
+    /// (forced split, preferring a previously confirmed end over an arbitrary
+    /// cut); and speech below the hysteresis floor for `min_silence_samples`
+    /// (confirmed end, ignored when the speech run was shorter than
+    /// `min_speech_samples`).
     fn update(&mut self, speech_prob: f32) -> VadIterEvent {
         self.current_sample = self
             .current_sample
@@ -1401,17 +1605,26 @@ impl VadIterState {
 // Tests
 // ═══════════════════════════════════════════════════════════
 
+/// VAD iterator, gate defaults, supervisor flush, and unavailable-path tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// RAII guard that restores an env var on drop.
+    ///
+    /// The gate config reads `CODESCRIBE_BUFFERED_*` at construction, so these
+    /// tests must mutate process-wide env — which is why every test using this
+    /// guard is also `#[serial]`. Restoring the previous value (including its
+    /// absence) keeps the operator's own `~/.codescribe/.env` from leaking
+    /// between tests.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Remove `key` for the guard's lifetime.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             unsafe {
@@ -1420,6 +1633,7 @@ mod tests {
             Self { key, prev }
         }
 
+        /// Set `key` to `value` for the guard's lifetime.
         fn set(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
             unsafe {
@@ -1430,6 +1644,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the previous env value (or unset) when the guard leaves scope.
         fn drop(&mut self) {
             unsafe {
                 match self.prev.as_ref() {
@@ -1440,6 +1655,7 @@ mod tests {
         }
     }
 
+    /// Start on high prob, stay open on speech, End after enough silence frames.
     #[test]
     fn vad_iter_state_basic_lifecycle() {
         let config = GateConfig {
@@ -1484,6 +1700,7 @@ mod tests {
         // That's OK — the state machine correctly filters short bursts.
     }
 
+    /// reset() clears triggered state and the VAD-domain sample counter.
     #[test]
     fn vad_iter_state_reset() {
         let config = GateConfig {
@@ -1507,6 +1724,7 @@ mod tests {
         assert_eq!(state.current_sample, 0);
     }
 
+    /// hardcoded_gate_config defaults to Supervisor gate mode.
     #[test]
     #[serial]
     fn gate_mode_default_is_supervisor() {
@@ -1514,6 +1732,7 @@ mod tests {
         assert_eq!(config.mode, VadGateMode::Supervisor);
     }
 
+    /// Utterance silence uses DEFAULT_BUFFERED_SILENCE_SEC; stream keeps VAD base.
     #[test]
     #[serial]
     fn utterance_default_silence_uses_buffered_cadence_default() {
@@ -1535,6 +1754,7 @@ mod tests {
         assert_eq!(utterance.min_silence_samples(), utter_expected);
     }
 
+    /// BUFFERED_SILENCE_SEC overrides utterance only; stream silence stays base.
     #[test]
     #[serial]
     fn utterance_silence_env_override_does_not_change_stream_default() {
@@ -1554,6 +1774,7 @@ mod tests {
         assert_eq!(utterance.min_silence_samples(), utter_expected);
     }
 
+    /// new_utterance derives non-zero pre_roll from config (not hardcoded zero).
     #[test]
     fn test_utterance_pre_roll_nonzero() {
         // new_utterance() must calculate pre_roll from config, not hardcode 0.
@@ -1566,6 +1787,7 @@ mod tests {
         );
     }
 
+    /// Chunk, Utterance, and UtteranceFinal carry sample vectors as constructed.
     #[test]
     fn speech_event_variants() {
         let chunk = SpeechEvent::Chunk(vec![1.0, 2.0]);
@@ -1722,6 +1944,7 @@ mod tests {
         );
     }
 
+    /// Flush emits open segment and drains pending Silero speech-sample accounting.
     #[test]
     fn test_supervisor_flush_tracks_event_speech_samples() {
         let sr = 16000u32;
@@ -1756,6 +1979,7 @@ mod tests {
         );
     }
 
+    /// Busy flush emits only unseen tail and preserves FIFO speech accounting.
     #[test]
     fn test_supervisor_busy_flush_emits_tail_and_keeps_speech_sample_fifo() {
         let sr = 16000u32;
@@ -1807,6 +2031,7 @@ mod tests {
         );
     }
 
+    /// Flush clamps to visible buffer when segment_start was trimmed away.
     #[test]
     fn test_supervisor_flush_is_boundary_safe_when_start_was_trimmed() {
         let sr = 16000u32;
@@ -1852,6 +2077,7 @@ mod tests {
         );
     }
 
+    /// No unseen tail → emit preroll-sized final window with zero speech samples.
     #[test]
     fn test_supervisor_flush_emits_preroll_window_when_no_new_tail_exists() {
         let sr = 16000u32;
@@ -1890,6 +2116,7 @@ mod tests {
         );
     }
 
+    /// Missing VAD emits no speech events and records unavailable-frame telemetry.
     #[test]
     fn test_vad_unavailable_is_measured_and_does_not_assume_speech() {
         let sr = 16000u32;

@@ -31,10 +31,13 @@ const REAPER_TICK: Duration = Duration::from_secs(30);
 
 /// Resettable engine slot: `None` when unloaded, plus the last-use timestamp.
 struct EmbedderSlot {
+    /// Loaded engine, or `None` once the reaper has dropped its weights.
     engine: Option<EmbedderEngine>,
+    /// Refreshed on every `with_embedder` call; the reaper's idle clock.
     last_used: Instant,
 }
 
+/// The one process-wide engine slot.
 static SLOT: OnceLock<Mutex<EmbedderSlot>> = OnceLock::new();
 
 /// Config used to (re)load the engine. First value wins (default unless
@@ -44,6 +47,7 @@ static CONFIG: OnceLock<EmbedderConfig> = OnceLock::new();
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
 
+/// Accessor for the engine slot, initialized empty on first use.
 fn slot() -> &'static Mutex<EmbedderSlot> {
     SLOT.get_or_init(|| {
         Mutex::new(EmbedderSlot {
@@ -53,6 +57,7 @@ fn slot() -> &'static Mutex<EmbedderSlot> {
     })
 }
 
+/// The config every (re)load uses. First value set wins for the process.
 fn config() -> EmbedderConfig {
     CONFIG.get_or_init(EmbedderConfig::default).clone()
 }
@@ -66,8 +71,50 @@ fn idle_unload_after() -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs))
 }
 
+/// Probe text for the backend self-test. Short, ASCII, and meaningless — it only
+/// has to produce numbers.
+const BACKEND_PROBE_TEXT: &str = "probe";
+
+/// Build the engine and refuse to hand back one that cannot produce finite
+/// vectors. On a non-finite accelerated backend the process is demoted to CPU
+/// and the load retried once; a non-finite CPU result is a hard error.
 fn load_engine() -> Result<EmbedderEngine> {
-    let engine = EmbedderEngine::with_config(config())?;
+    let mut engine = EmbedderEngine::with_config(config())?;
+
+    // Verify the backend produces finite vectors before anyone trusts it.
+    //
+    // Measured 2026-08-09 on macOS 27.0 / Metal: this exact model returned 384
+    // dimensions of NaN for EVERY input, while the same weights on the CPU
+    // returned unit-norm vectors with sensible similarities (cargo/kargo 0.836).
+    // Nothing surfaced, because the sole consumer — the semantic dedup gate —
+    // compares against a threshold, and every comparison with NaN is false: the
+    // gate reported `gate_drops=0` across 378 real deliveries and read as
+    // "nothing to drop" rather than "I am blind". A 471 MB model was loaded on
+    // every delivery to compute nothing.
+    //
+    // The self-test costs one embedding at load time and converts a silent
+    // wrong answer into a loud, self-healing one.
+    let probe = engine.embed(BACKEND_PROBE_TEXT)?;
+    let degenerate = probe.is_empty() || probe.iter().any(|value| !value.is_finite());
+    if degenerate && !super::engine::is_demoted_to_cpu() {
+        warn!(
+            "Embedder backend returned non-finite output ({} dims); demoting this process to CPU and reloading",
+            probe.len()
+        );
+        super::engine::demote_to_cpu();
+        engine = EmbedderEngine::with_config(config())?;
+        let retry = engine.embed(BACKEND_PROBE_TEXT)?;
+        anyhow::ensure!(
+            !retry.is_empty() && retry.iter().all(|value| value.is_finite()),
+            "Embedder produced non-finite output on CPU as well; refusing to serve a blind semantic gate"
+        );
+        info!("Embedder recovered on CPU after a non-finite accelerated backend");
+    } else if degenerate {
+        anyhow::bail!(
+            "Embedder produced non-finite output on CPU; refusing to serve a blind semantic gate"
+        );
+    }
+
     info!("Embedder engine loaded");
     Ok(engine)
 }
@@ -188,10 +235,12 @@ pub fn dimension() -> Result<usize> {
     with_embedder(|engine| Ok(engine.dimension()))
 }
 
+/// Similarity math and idle-unload env parsing (no model download required).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Identical vectors must score cosine similarity ≈ 1.0.
     #[test]
     fn test_similarity_function() {
         let a = vec![1.0, 2.0, 3.0];
@@ -200,6 +249,7 @@ mod tests {
         assert!((sim - 1.0).abs() < 0.001);
     }
 
+    /// `CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS=0` disables unload; unset → 45 min.
     #[test]
     fn idle_unload_disabled_when_zero() {
         // SAFETY: single-threaded test mutating a process env var it owns.

@@ -39,23 +39,34 @@ pub(super) fn capture_combo_context_with_image(
 ///   Skeleton + `assistive.txt` persona remain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AssistiveLane {
+    /// Spoken text goes to the agent as-is; no skeleton, no persona.
     VoiceChat,
+    /// A selection is present and is the thing being transformed.
     ActOnSelection,
 }
 
 impl AssistiveLane {
+    /// Whether this lane wraps the wire in the `assistive.txt` persona.
     pub(crate) fn use_assistive_persona(self) -> bool {
         matches!(self, Self::ActOnSelection)
     }
 }
 
+/// What the assistive path actually sends, plus how it was decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AssistiveDelivery {
+    /// The assembled message handed to the agent (skeleton and/or context tags).
     pub wire: String,
+    /// Which lane produced [`Self::wire`].
     pub lane: AssistiveLane,
+    /// The spoken transcript before any assembly — kept for display and logging.
     pub raw_transcript: String,
 }
 
+/// Pick the lane from whether a selection exists, wherever it currently lives.
+///
+/// A selection may still sit inline on the context (legacy path) or have already
+/// moved into the bucket during combo capture; either counts.
 pub(super) fn decide_assistive_lane(
     context: &AssistiveContext,
     bucket: &ContextBucket,
@@ -73,6 +84,11 @@ pub(super) fn decide_assistive_lane(
     }
 }
 
+/// Build the outgoing agent message for whichever lane applies.
+///
+/// Both lanes append the bucket's context tags; only ActOnSelection prepends the
+/// instruction skeleton, and it is given the bucket length so the header can
+/// never claim "no selection" while `<selection_N>` tags ride below it.
 pub(super) fn assemble_assistive_delivery_lane(
     transcript: &str,
     context: &AssistiveContext,

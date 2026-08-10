@@ -81,7 +81,7 @@ struct AudioPanel: View {
                 Button("Refresh") {
                     model.refreshAudioInput()
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .font(CSFont.mono(11, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
                 .accessibilityLabel("Refresh audio input devices")
@@ -135,7 +135,7 @@ struct AudioPanel: View {
                 Button("Use system default") {
                     model.resetAudioInputDevice()
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .font(CSFont.mono(10.5, .semibold))
                 .foregroundStyle(CSColor.chromeAccent)
                 .disabled(model.settings.audioInputDevice == nil)

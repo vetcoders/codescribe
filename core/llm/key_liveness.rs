@@ -14,11 +14,22 @@ use serde_json::json;
 use crate::config::Config;
 use crate::config::keychain::KEYCHAIN_ACCOUNTS;
 use crate::llm::lane_truth;
-use crate::llm::provider::{LlmMode, ProviderKind};
+use crate::llm::provider::{ALL_PROVIDERS, LlmMode, ProviderKind, WireFamily};
 
+/// Wall-clock budget for connect and request; probes must stay cheap for Settings.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Anthropic Messages API version header required by the wire family probe.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// UI-safe outcome of one liveness probe.
+///
+/// Deliberately coarse: Settings needs to tell the user what to *do*, so
+/// "provider processed the request" collapses to [`Ok`] even for a 4xx that
+/// only means the probe body was wrong — the key itself authenticated. Only
+/// transport failures and 5xx stay unverifiable ([`Network`]).
+///
+/// [`Ok`]: ApiKeyLivenessStatus::Ok
+/// [`Network`]: ApiKeyLivenessStatus::Network
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiKeyLivenessStatus {
     Ok,
@@ -29,6 +40,11 @@ pub enum ApiKeyLivenessStatus {
     Unsupported,
 }
 
+/// One probe verdict for one Keychain account.
+///
+/// `probed_endpoint` records the URL actually called after lane/provider
+/// resolution — the answer to "which server rejected my key", which is the
+/// difference between a bad key and a misrouted lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiKeyLivenessResult {
     pub account: String,
@@ -38,6 +54,8 @@ pub struct ApiKeyLivenessResult {
 }
 
 impl ApiKeyLivenessResult {
+    /// Verdict with no endpoint attached — for the cases decided before any
+    /// request is made (unknown account, missing key, unsupported probe).
     fn new(account: &str, status: ApiKeyLivenessStatus, message: impl Into<String>) -> Self {
         Self {
             account: account.to_string(),
@@ -47,12 +65,21 @@ impl ApiKeyLivenessResult {
         }
     }
 
+    /// Record the endpoint this verdict came from.
     fn with_probed_endpoint(mut self, endpoint: String) -> Self {
         self.probed_endpoint = Some(endpoint);
         self
     }
 }
 
+/// Probe one Keychain account and classify the result for Settings.
+///
+/// Resolution order is what keeps this honest: unknown accounts and missing
+/// keys are answered without a request; `GITHUB_TOKEN` gets its own REST probe;
+/// everything else resolves to a provider — the three generic lane accounts to
+/// the default one, a vendor's own key through the registry — and is probed by
+/// *wire family*, not by vendor, so a new provider on an existing protocol
+/// gets a real verdict instead of "unsupported".
 pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
     if !KEYCHAIN_ACCOUNTS.contains(&account) {
         return ApiKeyLivenessResult::new(
@@ -94,17 +121,36 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         }
     };
 
-    match account {
+    if account == "GITHUB_TOKEN" {
+        return probe_github_token(&client, account, &api_key);
+    }
+
+    // The lane accounts belong to the default provider; every other account is
+    // some provider's own key, resolved through the registry so a new vendor
+    // gets a real probe instead of "unsupported".
+    let provider = match account {
         "LLM_API_KEY" | "LLM_FORMATTING_API_KEY" | "LLM_ASSISTIVE_API_KEY" => {
-            probe_openai_key(&client, &config, account, &api_key)
+            Some(ProviderKind::default())
         }
-        "LLM_ANTHROPIC_API_KEY" => probe_anthropic_key(&client, &config, account, &api_key),
-        "GITHUB_TOKEN" => probe_github_token(&client, account, &api_key),
-        _ => ApiKeyLivenessResult::new(
+        _ => ALL_PROVIDERS
+            .into_iter()
+            .find(|kind| kind.api_key_env_key() == account),
+    };
+    let Some(provider) = provider else {
+        return ApiKeyLivenessResult::new(
             account,
             ApiKeyLivenessStatus::Unsupported,
             "no liveness probe is available for this key",
-        ),
+        );
+    };
+
+    // Probe shape follows the protocol, not the vendor: xAI answers the same
+    // Responses ping as OpenAI.
+    match provider.wire_family() {
+        WireFamily::OpenAiResponses => {
+            probe_responses_key(&client, &config, provider, account, &api_key)
+        }
+        WireFamily::AnthropicMessages => probe_anthropic_key(&client, &config, account, &api_key),
     }
 }
 
@@ -141,14 +187,33 @@ pub fn classify_probe_response(status: StatusCode, body: &str) -> ApiKeyLiveness
     ApiKeyLivenessStatus::Network
 }
 
-fn probe_openai_key(
+/// One-token Responses ping.
+///
+/// Endpoint and model resolution splits on who owns the lane config: the
+/// generic lane accounts keep their per-account resolution (they may point at
+/// a self-hosted server), while a vendor's own key is probed against that
+/// vendor's endpoint and model.
+fn probe_responses_key(
     client: &Client,
     config: &Config,
+    provider: ProviderKind,
     account: &str,
     api_key: &str,
 ) -> ApiKeyLivenessResult {
-    let endpoint = lane_truth::endpoint_for_account(config, account);
-    let model = lane_truth::model_for_account(config, account);
+    // The three lane accounts keep their per-account endpoint/model resolution
+    // (they can point at a self-hosted server); a vendor's own key is probed
+    // against that vendor's endpoint and model.
+    let (endpoint, model) = if provider.owns_generic_lane_config() {
+        (
+            lane_truth::endpoint_for_account(config, account),
+            lane_truth::model_for_account(config, account),
+        )
+    } else {
+        (
+            lane_truth::provider_endpoint(LlmMode::Assistive, provider, config),
+            lane_truth::model_for_provider(LlmMode::Assistive, provider, config),
+        )
+    };
     let request = json!({
         "model": model,
         "input": [{
@@ -170,6 +235,8 @@ fn probe_openai_key(
     response_result(account, endpoint, response)
 }
 
+/// One-token Messages ping against the Anthropic wire family, with the
+/// `x-api-key` + `anthropic-version` header pair that endpoint requires.
 fn probe_anthropic_key(
     client: &Client,
     config: &Config,
@@ -199,6 +266,10 @@ fn probe_anthropic_key(
     response_result(account, endpoint, response)
 }
 
+/// Probe a GitHub token with an authenticated `GET /user`.
+///
+/// Not an LLM provider, so it bypasses the registry entirely. The endpoint is
+/// overridable via `CODESCRIBE_GITHUB_PROBE_ENDPOINT` for tests.
 fn probe_github_token(client: &Client, account: &str, api_key: &str) -> ApiKeyLivenessResult {
     let endpoint = env_non_empty("CODESCRIBE_GITHUB_PROBE_ENDPOINT")
         .unwrap_or_else(|| "https://api.github.com/user".to_string());
@@ -211,6 +282,12 @@ fn probe_github_token(client: &Client, account: &str, api_key: &str) -> ApiKeyLi
     response_result(account, endpoint, response)
 }
 
+/// Turn a probe's transport result into a verdict, tagging it with the endpoint
+/// that was called.
+///
+/// This is the request boundary referenced by [`classify_probe_response`]: a
+/// transport failure has no HTTP status to classify, so it is resolved to
+/// [`ApiKeyLivenessStatus::Network`] here rather than there.
 fn response_result(
     account: &str,
     probed_endpoint: String,
@@ -232,6 +309,7 @@ fn response_result(
     result.with_probed_endpoint(probed_endpoint)
 }
 
+/// User-facing sentence for a status. Written for Settings, not for logs.
 fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
     match status {
         ApiKeyLivenessStatus::Ok => "key accepted and quota available",
@@ -243,6 +321,7 @@ fn message_for_status(status: ApiKeyLivenessStatus) -> &'static str {
     }
 }
 
+/// Read an env var, treating whitespace-only as unset.
 fn env_non_empty(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -250,6 +329,7 @@ fn env_non_empty(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Classification contract tests and a loopback Responses probe for endpoint truth.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +339,7 @@ mod tests {
     use std::thread;
     use tempfile::TempDir;
 
+    /// Live probe records the normalized `/v1/responses` URL after lane endpoint resolution.
     #[test]
     #[serial]
     fn openai_probe_reports_the_normalized_endpoint_it_called() {
@@ -297,9 +378,10 @@ mod tests {
             .connect_timeout(PROBE_TIMEOUT)
             .build()
             .expect("build probe client");
-        let result = probe_openai_key(
+        let result = probe_responses_key(
             &client,
             &Config::default(),
+            ProviderKind::OpenAiResponses,
             "LLM_ASSISTIVE_API_KEY",
             "test-key",
         );
@@ -315,6 +397,7 @@ mod tests {
         );
     }
 
+    /// 2xx means the provider accepted the key and returned a usable response.
     #[test]
     fn classifies_success_as_ok() {
         assert_eq!(
@@ -323,6 +406,7 @@ mod tests {
         );
     }
 
+    /// Auth failures are the only client errors that map to Invalid.
     #[test]
     fn classifies_401_and_403_as_invalid() {
         assert_eq!(
@@ -335,6 +419,7 @@ mod tests {
         );
     }
 
+    /// Quota markers in the body override a non-auth 4xx into NoQuota.
     #[test]
     fn classifies_insufficient_quota_body_as_no_quota() {
         assert_eq!(
@@ -346,6 +431,7 @@ mod tests {
         );
     }
 
+    /// 429 alone is treated as exhausted quota even without a body string.
     #[test]
     fn classifies_429_without_body_as_no_quota() {
         assert_eq!(
@@ -354,6 +440,7 @@ mod tests {
         );
     }
 
+    /// Anthropic low-credit copy is a body-only NoQuota signal on 400.
     #[test]
     fn classifies_anthropic_low_credit_body_as_no_quota() {
         assert_eq!(
@@ -365,6 +452,7 @@ mod tests {
         );
     }
 
+    /// 402 and billing_error body both mean valid key without spendable credit.
     #[test]
     fn classifies_402_billing_error_as_no_quota() {
         assert_eq!(
@@ -376,6 +464,7 @@ mod tests {
         );
     }
 
+    /// Request-level 400 (model missing) still proves the key authenticated.
     #[test]
     fn classifies_400_model_not_found_as_ok() {
         // A 400 with a request-level error (not quota/auth) means the server
@@ -389,6 +478,7 @@ mod tests {
         );
     }
 
+    /// Other 4xx after auth are Ok — probe shape may be wrong, key is live.
     #[test]
     fn classifies_other_client_errors_as_ok() {
         assert_eq!(
@@ -401,6 +491,7 @@ mod tests {
         );
     }
 
+    /// 5xx stays Network/unknown — key validity cannot be asserted.
     #[test]
     fn classifies_server_errors_as_network_unknown() {
         assert_eq!(
@@ -413,12 +504,14 @@ mod tests {
         );
     }
 
+    /// Restores a process env var on drop; tests using it must be `serial`.
     struct EnvGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set `key` for the test lifetime and remember the prior value.
         fn set(key: &'static str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: process-env tests in this module are serialized.
@@ -426,6 +519,7 @@ mod tests {
             Self { key, previous }
         }
 
+        /// Unset `key` for the test lifetime and remember the prior value.
         fn remove(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             // SAFETY: process-env tests in this module are serialized.
@@ -435,6 +529,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Put the previous env value back (or remove the key if it was absent).
         fn drop(&mut self) {
             // SAFETY: process-env tests in this module are serialized.
             unsafe {

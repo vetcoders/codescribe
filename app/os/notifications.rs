@@ -18,8 +18,11 @@ unsafe extern "C" {}
 
 use crate::os::Id;
 
+/// Once guard for macOS notification authorization request (no re-prompt spam).
 static AUTH_ONCE: Once = Once::new();
 
+/// Bridge a Rust `&str` into an autoreleased `NSString`. A string containing
+/// an interior NUL degrades to an empty `NSString` rather than panicking.
 fn ns_string(s: &str) -> Id {
     unsafe {
         let cls = Class::get("NSString").unwrap();
@@ -65,6 +68,11 @@ fn ensure_authorized() {
     });
 }
 
+/// The current `UNUserNotificationCenter`, or null when it cannot be used.
+///
+/// Guards on [`has_app_bundle`] first: asking for the center outside a bundle
+/// is what raises the ObjC exception, so the check has to happen before the
+/// call, not after.
 fn notification_center() -> Id {
     unsafe {
         if !has_app_bundle() {

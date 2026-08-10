@@ -40,7 +40,9 @@ pub struct CsAttachment {
 /// cannot reach a model (empty when ready).
 #[derive(uniffi::Record)]
 pub struct CsAgentAvailability {
+    /// Whether the assistive lane can reach a model right now.
     pub available: bool,
+    /// Actionable reason the lane is unreachable; empty when `available`.
     pub detail: String,
 }
 
@@ -48,15 +50,26 @@ pub struct CsAgentAvailability {
 /// call/session/thread identity used by the Rust execution gateway.
 #[derive(uniffi::Record)]
 pub struct CsToolApprovalRequest {
+    /// Identifies the specific tool call awaiting a decision. Must be echoed
+    /// back verbatim to [`CodescribeAgent::resolve_tool_approval`].
     pub call_id: String,
+    /// Agent session the call belongs to; part of the exact-match resolve key.
     pub session_id: String,
+    /// Conversation thread the call belongs to; part of the same key.
     pub thread_id: String,
+    /// Tool name as the model addressed it.
     pub tool: String,
+    /// Originating MCP server, or `"native"` for a built-in tool.
     pub server: String,
+    /// Risk tier the permission gate assigned (read-only, mutating, …).
     pub risk: String,
+    /// Human-readable description of what the call will do.
     pub summary: String,
+    /// Shell command the call would run, when it runs one.
     pub command: Option<String>,
+    /// Working directory the call would use, when it declares one.
     pub cwd: Option<String>,
+    /// Filesystem paths the call declares it will touch.
     pub paths: Vec<String>,
 }
 
@@ -64,13 +77,23 @@ pub struct CsToolApprovalRequest {
 /// Mirrors `AgentUiEvent`; the Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
 pub trait CsAgentListener: Send + Sync {
+    /// Incremental assistant text as it streams in.
     fn on_text_delta(&self, delta: String);
+    /// Final assembled assistant text for the turn.
     fn on_text_done(&self, text: String);
+    /// Incremental reasoning text, when the model emits it.
     fn on_reasoning_delta(&self, delta: String);
+    /// A tool call started executing.
     fn on_tool_executing(&self, name: String, id: String);
+    /// A tool call is blocked awaiting the user's decision. The turn stays
+    /// suspended until [`CodescribeAgent::resolve_tool_approval`] answers.
     fn on_tool_approval_requested(&self, request: CsToolApprovalRequest);
+    /// A tool call finished; `is_error` marks a failed one.
     fn on_tool_result(&self, name: String, id: String, summary: String, is_error: bool);
+    /// The turn completed successfully. Not emitted for a cancelled turn.
     fn on_done(&self);
+    /// A non-fatal error worth surfacing. Provider failures and cancellation
+    /// arrive through the call's `Err` instead, never doubled here.
     fn on_error(&self, message: String);
 }
 
@@ -81,11 +104,16 @@ pub struct CodescribeAgent {
     /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
     /// itself even while the FFI object stays borrowed by other calls.
     turns: Arc<TurnRegistry>,
+    /// Tool calls suspended awaiting a user decision, keyed by
+    /// session + thread + call.
     approvals: Arc<ApprovalBroker>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
 impl CodescribeAgent {
+    /// Construct the FFI handle. Only initialises logging — provider, tools and
+    /// config are resolved lazily per send, so building the Swift app model
+    /// never triggers a Keychain prompt.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -194,6 +222,13 @@ impl CodescribeAgent {
         self.turns.cancel(&thread_id)
     }
 
+    /// Answer a pending tool-approval request, resuming the suspended call.
+    /// Returns `false` when no call matches — the identity must match on all
+    /// three of session, thread and call id, so a stale card cannot resume a
+    /// different call.
+    ///
+    /// `remember` persists an always-allow grant for the tool before the call
+    /// resumes; a failed write downgrades to allow-once rather than to a deny.
     pub fn resolve_tool_approval(
         &self,
         session_id: String,
@@ -294,10 +329,16 @@ impl CodescribeAgent {
 /// Everything a spawned agent turn needs, bundled so [`drive_turn`] stays a
 /// single testable unit (tests build one from a scripted provider + mock tools).
 struct PreparedTurn {
+    /// Agent session with history already restored and tools registered.
     session: AgentSession,
+    /// The user's message for this turn.
     text: String,
+    /// Vision attachments, already loaded and validated.
     attachments: Vec<ImageAttachment>,
+    /// Resolved stream options (system prompt, token cap).
     options: StreamOptions,
+    /// Receiving end of the session's UI event channel; its closure is what
+    /// terminates the forwarding loop in [`drive_turn`].
     ui_rx: tokio::sync::mpsc::Receiver<AgentUiEvent>,
 }
 
@@ -394,6 +435,9 @@ async fn drive_turn(
     }
 }
 
+/// Exact identity of one suspended tool call. All three components participate
+/// in equality: a decision must not resume a same-named call on another thread
+/// or from an earlier session.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ApprovalKey {
     session_id: String,
@@ -401,7 +445,11 @@ struct ApprovalKey {
     call_id: String,
 }
 
+/// A tool call parked awaiting the user's decision.
 struct PendingApproval {
+    /// Resumes the suspended call with the verdict. Dropping this sender
+    /// instead resolves the call to `false` — the fail-closed path used when a
+    /// thread is cancelled.
     tx: tokio::sync::oneshot::Sender<bool>,
     /// Where an "always allow" for this call is persisted.
     grant_target: GrantTarget,
@@ -423,6 +471,7 @@ enum GrantTarget {
 }
 
 impl GrantTarget {
+    /// Write the always-allow grant to its durable home.
     fn persist(&self) -> anyhow::Result<()> {
         use codescribe_core::agent::permissions::{AgentPermissions, PermissionLevel};
         match self {
@@ -436,6 +485,8 @@ impl GrantTarget {
         }
     }
 
+    /// Log-friendly identifier for the grant target (`server:tool`, or the
+    /// native tool identity).
     fn label(&self) -> String {
         match self {
             Self::Mcp {
@@ -447,6 +498,11 @@ impl GrantTarget {
     }
 }
 
+/// Suspension point between the Rust tool gateway and the Swift approval card.
+///
+/// Holds every call awaiting a decision. Shared behind an `Arc` because a
+/// pending call's own guard must be able to evict its entry after the FFI
+/// object has moved on.
 #[derive(Default)]
 struct ApprovalBroker {
     pending: Mutex<HashMap<ApprovalKey, PendingApproval>>,
@@ -464,6 +520,12 @@ fn recover<'a, T>(
 }
 
 impl ApprovalBroker {
+    /// Park a tool call and hand back the future its execution awaits.
+    ///
+    /// The future resolves to the user's verdict, or to `false` if the sender is
+    /// dropped — an unanswered call is never an implicit allow. A guard inside
+    /// the future evicts the entry however it completes, so an abandoned call
+    /// leaves no stale row behind.
     fn begin(
         self: &Arc<Self>,
         request: ToolApprovalRequest,
@@ -500,6 +562,9 @@ impl ApprovalBroker {
         })
     }
 
+    /// Deliver a verdict to the exactly-matching pending call, returning `false`
+    /// when none matches. Persisting a remembered grant happens before the call
+    /// resumes, so the tool's next invocation cannot race its own grant write.
     fn resolve(
         &self,
         session_id: &str,
@@ -535,6 +600,9 @@ impl ApprovalBroker {
         entry.tx.send(approved).is_ok()
     }
 
+    /// Drop every approval pending on `thread_id`. Each dropped sender resolves
+    /// its call to "not approved", so cancelling a thread can never leave a tool
+    /// waiting on a card the user will never see again.
     fn cancel_thread(&self, thread_id: &str) {
         let mut pending = recover(self.pending.lock());
         let keys = pending
@@ -548,12 +616,17 @@ impl ApprovalBroker {
     }
 }
 
+/// Evicts a pending approval from the broker when its awaiting future finishes
+/// — answered, cancelled, or dropped. Without it, an abandoned call would keep
+/// its row forever and a later card could resolve a call nobody is awaiting.
 struct PendingApprovalGuard {
     broker: Arc<ApprovalBroker>,
     key: ApprovalKey,
 }
 
 impl Drop for PendingApprovalGuard {
+    /// Remove this call's pending row so a finished awaiter cannot be resolved
+    /// again by a stale Swift approval card.
     fn drop(&mut self) {
         recover(self.broker.pending.lock()).remove(&self.key);
     }
@@ -567,12 +640,18 @@ impl Drop for PendingApprovalGuard {
 /// only its own entry on completion.
 #[derive(Default)]
 struct TurnRegistry {
+    /// In-flight turns per thread id.
     turns: Mutex<HashMap<String, Vec<TurnEntry>>>,
+    /// Monotonic source of the per-entry token.
     next_token: AtomicU64,
 }
 
+/// One in-flight turn: a unique token plus the handle that aborts it.
 struct TurnEntry {
+    /// Distinguishes concurrent turns on the same thread, so a completing turn
+    /// removes only its own entry.
     token: u64,
+    /// Aborts the spawned turn task at its next `.await`.
     abort: AbortHandle,
 }
 
@@ -596,6 +675,8 @@ impl TurnRegistry {
         }
     }
 
+    /// Remove one turn's entry by token, dropping the thread's row once it holds
+    /// no more turns. Called from [`TurnGuard::drop`], never directly.
     fn deregister(&self, thread_id: &str, token: u64) {
         let mut turns = recover(self.turns.lock());
         if let Some(entries) = turns.get_mut(thread_id) {
@@ -628,13 +709,19 @@ impl TurnRegistry {
 /// and removes its registry entry, so cancelled and completed turns never leak
 /// stale abort handles.
 struct TurnGuard {
+    /// Registry this guard removes its entry from on drop.
     registry: Arc<TurnRegistry>,
+    /// Thread the guarded turn belongs to.
     thread_id: String,
+    /// Token identifying this turn's entry.
     token: u64,
+    /// Abort handle fired on drop; a no-op once the task has finished.
     abort: AbortHandle,
 }
 
 impl Drop for TurnGuard {
+    /// Abort the spawned turn task (no-op if finished) and drop its registry
+    /// entry so cancelled and completed turns never leak abort handles.
     fn drop(&mut self) {
         self.abort.abort();
         self.registry.deregister(&self.thread_id, self.token);
@@ -790,10 +877,15 @@ async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
     }
 }
 
+/// Unit coverage for composer attachment validation, turn cancellation, and
+/// the approval broker — exercises the real `drive_turn` path with a scripted
+/// provider so no live model is required.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Per-process scratch directory for attachment fixtures, namespaced by pid
+    /// and `tag` so concurrent test binaries do not collide.
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("cs_bridge_attach_{}_{tag}", std::process::id()));
@@ -801,18 +893,21 @@ mod tests {
         dir
     }
 
+    /// Wrap a path as the composer attachment record.
     fn cs(path: &std::path::Path) -> CsAttachment {
         CsAttachment {
             path: path.to_string_lossy().into_owned(),
         }
     }
 
+    /// An empty attachment list must yield zero vision payloads, not invent one.
     #[test]
     fn empty_attachments_yield_no_images() {
         let images = validate_composer_attachments(&[]).unwrap();
         assert!(images.is_empty());
     }
 
+    /// A readable PNG path loads through core vision loading into one attachment.
     #[test]
     fn valid_image_loads_as_vision_attachment() {
         let dir = tmp_dir("valid");
@@ -827,6 +922,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Bad paths surface named, readable errors — never a silent skip of the file.
     #[test]
     fn unreadable_or_nonimage_is_a_readable_error_not_a_silent_drop() {
         let dir = tmp_dir("bad");
@@ -847,6 +943,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Exceeding `MAX_COMPOSER_VISION_IMAGES` is rejected before any image loads.
     #[test]
     fn too_many_images_is_rejected() {
         let attachments: Vec<CsAttachment> = (0..=MAX_COMPOSER_VISION_IMAGES)
@@ -879,6 +976,8 @@ mod tests {
     }
 
     impl ScriptedProvider {
+        /// Queue one event batch per expected `stream` call, in order. A call
+        /// past the end of the script yields an empty batch.
         fn new(scripts: Vec<Vec<AgentEvent>>) -> Self {
             Self {
                 scripts: Mutex::new(scripts.into()),
@@ -888,6 +987,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentProvider for ScriptedProvider {
+        /// Pop one scripted event batch and feed it through a channel, matching
+        /// the real provider stream shape without hitting the network.
         async fn stream(
             &self,
             _messages: &[Message],
@@ -909,6 +1010,8 @@ mod tests {
             Ok(rx)
         }
 
+        /// Build a user tool-result message for a completed call, as live
+        /// providers do when feeding the next model turn.
         fn build_tool_result(
             &self,
             call_id: &str,
@@ -925,6 +1028,7 @@ mod tests {
             )
         }
 
+        /// Wrap raw image bytes as a content block for vision-capable turns.
         fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
             ContentBlock::Image {
                 data: data.to_vec(),
@@ -932,6 +1036,7 @@ mod tests {
             }
         }
 
+        /// Stable provider label used in diagnostics and test logs.
         fn name(&self) -> &str {
             "scripted-provider"
         }
@@ -941,26 +1046,41 @@ mod tests {
     /// the cancellation tests key their cancel timing on.
     #[derive(Default)]
     struct RecordingListener {
+        /// Set once a tool call begins — the cancellation tests wait on this
+        /// before cancelling, so the cancel lands mid-tool rather than by luck.
         tool_started: AtomicBool,
+        /// Successful final texts seen; must stay 0 for a cancelled turn.
         text_done_count: AtomicUsize,
+        /// `Done` terminals seen; must stay 0 for a cancelled turn.
         done_count: AtomicUsize,
+        /// Errors delivered through the listener. Provider failures and
+        /// cancellation arrive via the call's `Err`, so this staying 0 is what
+        /// proves they are not double-signalled.
         error_count: AtomicUsize,
     }
 
     impl CsAgentListener for RecordingListener {
+        /// Streaming text deltas are ignored; cancellation tests key on tools.
         fn on_text_delta(&self, _delta: String) {}
+        /// Count successful final text emissions (must stay 0 after cancel).
         fn on_text_done(&self, _text: String) {
             self.text_done_count.fetch_add(1, Ordering::SeqCst);
         }
+        /// Reasoning deltas are unused by these cancellation fixtures.
         fn on_reasoning_delta(&self, _delta: String) {}
+        /// Arm `tool_started` so cancel tests wait until the tool is mid-flight.
         fn on_tool_executing(&self, _name: String, _id: String) {
             self.tool_started.store(true, Ordering::SeqCst);
         }
+        /// Approval requests are not asserted by the cancellation suite.
         fn on_tool_approval_requested(&self, _request: CsToolApprovalRequest) {}
+        /// Tool result payloads are not asserted by the cancellation suite.
         fn on_tool_result(&self, _name: String, _id: String, _summary: String, _is_error: bool) {}
+        /// Count successful Done terminals (must stay 0 after cancel).
         fn on_done(&self) {
             self.done_count.fetch_add(1, Ordering::SeqCst);
         }
+        /// Count listener errors; provider failures must use throw-only instead.
         fn on_error(&self, _message: String) {
             self.error_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -1020,6 +1140,7 @@ mod tests {
         ]
     }
 
+    /// Single-batch script for a plain text turn with no tool calls.
     fn text_turn_script(reply: &str) -> Vec<Vec<AgentEvent>> {
         vec![vec![
             AgentEvent::TextDone(reply.to_string()),
@@ -1030,6 +1151,8 @@ mod tests {
         ]]
     }
 
+    /// Neutral stream options: no system prompt, no caps — these tests assert
+    /// turn lifecycle, not prompt composition.
     fn test_options() -> StreamOptions {
         StreamOptions {
             model: String::new(),
@@ -1040,6 +1163,8 @@ mod tests {
         }
     }
 
+    /// Assemble a [`PreparedTurn`] over a scripted provider, so [`drive_turn`]
+    /// is exercised as the real unit without a live provider.
     fn scripted_turn(
         scripts: Vec<Vec<AgentEvent>>,
         registry: ToolRegistry,
@@ -1060,6 +1185,9 @@ mod tests {
         }
     }
 
+    /// Poll `flag` until set or `timeout` elapses, returning its final value.
+    /// Lets a test synchronise on the tool actually running instead of sleeping
+    /// a guessed interval.
     async fn wait_until_set(flag: &AtomicBool, timeout: Duration) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         while tokio::time::Instant::now() < deadline {
@@ -1071,6 +1199,8 @@ mod tests {
         flag.load(Ordering::SeqCst)
     }
 
+    /// Provider stream errors throw once as `CsError::Agent` and must not also
+    /// land on `on_error` (no double-signalling to Swift).
     #[tokio::test]
     async fn provider_error_is_reported_once_via_throw_only() {
         let listener = Arc::new(RecordingListener::default());
@@ -1108,6 +1238,8 @@ mod tests {
         );
     }
 
+    /// Cancelling mid-tool aborts before the delayed side effect, surfaces a
+    /// readable cancel error, and leaves the thread ready for a next turn.
     #[tokio::test]
     async fn cancel_turn_aborts_in_flight_tool_before_its_side_effect() {
         let side_effect = Arc::new(AtomicBool::new(false));
@@ -1187,6 +1319,8 @@ mod tests {
         assert!(messages.iter().any(|m| m.role == Role::Assistant));
     }
 
+    /// Dropping the `drive_turn` future (UniFFI cancel path) must abort the
+    /// inner task via `TurnGuard`, not leave a tool running detached.
     #[tokio::test]
     async fn dropping_the_turn_future_aborts_the_spawned_task() {
         let side_effect = Arc::new(AtomicBool::new(false));
@@ -1229,6 +1363,7 @@ mod tests {
         );
     }
 
+    /// Cancel on an idle thread is a quiet false — no panic on registry or FFI.
     #[test]
     fn cancel_with_no_active_turn_is_a_noop() {
         let turns = TurnRegistry::default();
@@ -1239,6 +1374,7 @@ mod tests {
         assert!(!agent.cancel_turn("idle-thread".to_string()));
     }
 
+    /// Resolve must match session + thread + call exactly; wrong keys stay pending.
     #[tokio::test]
     async fn approval_broker_resumes_only_the_exact_session_thread_and_call() {
         let broker = Arc::new(ApprovalBroker::default());
@@ -1264,6 +1400,7 @@ mod tests {
         assert!(pending.await);
     }
 
+    /// Dropping a thread's pending approvals resolves each awaiter as denied.
     #[tokio::test]
     async fn cancelling_thread_rejects_pending_approval() {
         let broker = Arc::new(ApprovalBroker::default());
@@ -1286,6 +1423,8 @@ mod tests {
         assert!(!pending.await);
     }
 
+    /// A cancel after successful completion is a no-op; the finished text stands
+    /// and the thread still accepts a subsequent turn.
     #[tokio::test]
     async fn completed_turn_is_not_broken_by_a_late_cancel() {
         let listener = Arc::new(RecordingListener::default());

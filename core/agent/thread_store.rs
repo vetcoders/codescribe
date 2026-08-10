@@ -1,3 +1,20 @@
+//! On-disk persistence for agent conversation threads.
+//!
+//! Each thread is one pretty-printed JSON file under the `threads/` directory,
+//! written atomically (temp file + rename) and projected into a denormalized
+//! `ThreadIndex` that backs the thread rail and its search. Binary
+//! attachments live beside them in `blobs/`.
+//!
+//! Two invariants shape this module:
+//!
+//! - **Whole-file rewrites are serialized.** Saves replace the entire file, so
+//!   every read-modify-write path holds the module's RMW lock across its whole
+//!   load-modify-save; an unlocked heal could otherwise overwrite an agent
+//!   turn's freshly delivered messages with a stale snapshot.
+//! - **Titles have owners.** A title is heuristic (derived from the first user
+//!   message) only until a manual rename or the title provider claims it; the
+//!   derivation paths never overwrite an owned title.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,9 +30,13 @@ use tracing::{debug, warn};
 use super::thread_index::ThreadIndex;
 use super::types::{ContentBlock, Message, Role};
 
+/// Subdirectory under app data holding per-thread JSON files.
 const THREADS_DIR_NAME: &str = "threads";
+/// Sibling of threads/ for binary attachments (images and other blobs).
 const BLOBS_DIR_NAME: &str = "blobs";
+/// File extension for persisted thread records.
 const THREAD_FILE_EXT: &str = "json";
+/// Placeholder title until heuristic/custom/generated ownership claims one.
 const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 
 /// Serializes every thread-file read-modify-write in this process. Thread JSON
@@ -26,6 +47,9 @@ const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 /// load→modify→save so their snapshot cannot go stale mid-flight.
 static THREAD_RMW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One persisted conversation: its identity, title ownership, transcript, and
+/// the provider/model it ran against. This is the whole on-disk record — a save
+/// rewrites the entire struct.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Thread {
     pub id: String,
@@ -60,6 +84,10 @@ impl Thread {
         !self.title_is_custom && !self.title_is_generated
     }
 
+    /// Append a note, optionally anchored to a message index, and bump
+    /// `updated_at`. Returns the created note so the caller can surface its id
+    /// without re-scanning. In-memory only — persist with
+    /// [`ThreadStore::save_thread`].
     pub fn add_note(
         &mut self,
         text: impl Into<String>,
@@ -77,6 +105,9 @@ impl Thread {
     }
 }
 
+/// Storage form of one message. Content blocks are kept as raw JSON rather
+/// than typed variants so a thread written by an older or newer build stays
+/// readable; conversion happens in [`ThreadMessage::to_message`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadMessage {
     pub role: String,
@@ -87,6 +118,7 @@ pub struct ThreadMessage {
 }
 
 impl From<&Message> for ThreadMessage {
+    /// Convert a runtime message into storage form (content blocks as JSON).
     fn from(message: &Message) -> Self {
         let content = message
             .content
@@ -104,6 +136,9 @@ impl From<&Message> for ThreadMessage {
 }
 
 impl ThreadMessage {
+    /// Rebuild the runtime [`Message`] from stored JSON. Unknown block types
+    /// and unrecognised roles degrade to text/user rather than failing, so a
+    /// thread from a newer build still loads.
     pub fn to_message(&self) -> Message {
         let content = self
             .content
@@ -119,6 +154,7 @@ impl ThreadMessage {
     }
 }
 
+/// A user annotation on a thread, optionally anchored to a message index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadNote {
     pub id: String,
@@ -128,12 +164,15 @@ pub struct ThreadNote {
     pub anchored_to_message: Option<usize>,
 }
 
+/// Cumulative token counts for a thread, as reported by the provider.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input: u64,
     pub output: u64,
 }
 
+/// Handle on a threads directory and its sibling blobs directory. Cheap to
+/// clone; holds no open files and no cached state, so every call re-reads disk.
 #[derive(Debug, Clone)]
 pub struct ThreadStore {
     threads_dir: PathBuf,
@@ -141,11 +180,16 @@ pub struct ThreadStore {
 }
 
 impl ThreadStore {
+    /// Open the store in the app's data directory (honouring
+    /// `CODESCRIBE_DATA_DIR`), creating the directories if needed.
     pub fn new() -> Result<Self> {
         let app_data = app_data_dir();
         Self::new_in(app_data.join(THREADS_DIR_NAME))
     }
 
+    /// Open the store rooted at an explicit threads directory, creating it and
+    /// its `blobs/` child if needed. Used by tests to stay off the real data
+    /// directory.
     pub fn new_in<P: AsRef<Path>>(threads_dir: P) -> Result<Self> {
         let threads_dir = threads_dir.as_ref().to_path_buf();
         let blobs_dir = threads_dir.join(BLOBS_DIR_NAME);
@@ -161,6 +205,9 @@ impl ThreadStore {
         })
     }
 
+    /// Persist a thread and refresh its index row. This is the single durable
+    /// write path: it takes the module's RMW lock, normalizes a degenerate
+    /// heuristic title, writes the JSON atomically, then updates the index.
     pub fn save_thread(&self, thread: &Thread) -> Result<()> {
         let _guard = THREAD_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         self.save_thread_locked(thread)
@@ -190,6 +237,9 @@ impl ThreadStore {
         Ok(())
     }
 
+    /// Load a thread, healing a degenerate heuristic title on the way out.
+    /// The returned thread is always usable even when the healing write fails
+    /// (read-only volume): the repair is best-effort and only warns.
     pub fn load_thread(&self, id: &str) -> Result<Thread> {
         let mut thread = self.load_thread_raw(id)?;
         if normalize_heuristic_title(&mut thread) {
@@ -255,6 +305,9 @@ impl ThreadStore {
         Ok(healed)
     }
 
+    /// Read and parse a thread file verbatim, with no title healing. The path
+    /// is re-canonicalized against the threads directory so a symlink cannot
+    /// redirect the read outside it.
     fn load_thread_raw(&self, id: &str) -> Result<Thread> {
         let path = self.thread_path(id)?;
         let path = canonical_existing_child(&self.threads_dir, &path)?;
@@ -264,6 +317,8 @@ impl ThreadStore {
             .with_context(|| format!("Failed to parse thread file: {}", path.display()))
     }
 
+    /// Remove a thread's file and its index row. Succeeds when the file is
+    /// already gone, so a half-deleted state can be cleaned up by re-running.
     pub fn delete_thread(&self, id: &str) -> Result<()> {
         let path = self.thread_path(id)?;
         if path.exists() {
@@ -277,6 +332,9 @@ impl ThreadStore {
         Ok(())
     }
 
+    /// Toggle the favorite flag. Favorites live only in the index projection,
+    /// so this never rewrites the thread file. Returns `false` when no such
+    /// index row exists.
     pub fn set_thread_favorite(&self, id: &str, is_favorite: bool) -> Result<bool> {
         validate_thread_id(id)?;
         let mut index = ThreadIndex::load_or_create(&self.threads_dir)?;
@@ -326,10 +384,15 @@ impl ThreadStore {
         Ok(true)
     }
 
+    /// Public accessor for a thread's file path, validated the same way as
+    /// every internal path construction. The file need not exist.
     pub fn thread_file_path(&self, id: &str) -> Result<PathBuf> {
         self.thread_path(id)
     }
 
+    /// Write a binary attachment into `blobs/` under a sanitized, collision-free
+    /// name and return its path. The caller-supplied name is advisory only —
+    /// directory components and unsafe characters are stripped.
     pub fn save_blob(&self, data: &[u8], name: &str) -> Result<PathBuf> {
         let sanitized = sanitize_filename(name);
         let path = self.unique_blob_path(&sanitized);
@@ -337,14 +400,18 @@ impl ThreadStore {
         Ok(path)
     }
 
+    /// Mint a new thread id: a `t_` prefix, the creation date for at-a-glance
+    /// sorting, and a random suffix for uniqueness within the day.
     pub fn generate_id() -> String {
         format!("t_{}_{}", Utc::now().format("%Y-%m-%d"), random_suffix(6))
     }
 
+    /// Directory holding the thread JSON files and their index.
     pub fn threads_dir(&self) -> &Path {
         &self.threads_dir
     }
 
+    /// Directory holding binary attachments written by [`ThreadStore::save_blob`].
     pub fn blobs_dir(&self) -> &Path {
         &self.blobs_dir
     }
@@ -361,6 +428,9 @@ impl ThreadStore {
         Ok(self.threads_dir.join(format!("{id}.{THREAD_FILE_EXT}")))
     }
 
+    /// Pick a free path in `blobs/` for a sanitized file name: the name itself
+    /// when unused, otherwise a random-suffixed variant. After 1024 collisions
+    /// it falls back to a millisecond timestamp rather than looping forever.
     fn unique_blob_path(&self, file_name: &str) -> PathBuf {
         let candidate = self.blobs_dir.join(file_name);
         if !candidate.exists() {
@@ -401,6 +471,9 @@ pub fn title_is_meaningful(title: &str) -> bool {
     !trimmed.starts_with("<<<") && trimmed.chars().any(char::is_alphanumeric)
 }
 
+/// Replace an unreadable heuristic title with one derived from the messages.
+/// Returns whether anything changed. A title owned by the user or the title
+/// provider is left alone, as is any heuristic title that already reads well.
 fn normalize_heuristic_title(thread: &mut Thread) -> bool {
     if !thread.title_is_heuristic() || title_is_meaningful(&thread.title) {
         return false;
@@ -409,6 +482,9 @@ fn normalize_heuristic_title(thread: &mut Thread) -> bool {
     true
 }
 
+/// Derive a title from the first readable line of the first user message,
+/// skipping assistive wire labels. Falls back to [`DEFAULT_THREAD_TITLE`] when
+/// there is no user message or nothing in it survives normalization.
 fn derive_title_from_messages(messages: &[ThreadMessage]) -> String {
     let Some(first_user) = messages
         .iter()
@@ -431,6 +507,10 @@ fn derive_title_from_messages(messages: &[ThreadMessage]) -> String {
     DEFAULT_THREAD_TITLE.to_string()
 }
 
+/// Walk a stored content block and collect every human-readable text chunk in
+/// order. Recurses into arrays and tool results; numeric arrays (raw byte
+/// payloads) and non-text block types are skipped so binary never reaches a
+/// title.
 fn collect_title_text(value: &Value, out: &mut Vec<String>) {
     match value {
         Value::String(text) if !text.trim().is_empty() => out.push(text.to_string()),
@@ -458,6 +538,9 @@ fn collect_title_text(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Turn one candidate line into a title, or reject it. Strips context-bucket
+/// markers, drops assistive wire labels and unreadable lines, collapses
+/// whitespace, and clips to 72 characters.
 fn normalize_title_line(line: &str) -> Option<String> {
     let stripped = strip_context_markers(line);
     let line = stripped.as_deref().unwrap_or(line);
@@ -530,6 +613,9 @@ fn find_context_marker(text: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Whether the letter runs on either side of a removed marker look like halves
+/// of one word, meaning they should be joined without a space. See
+/// [`strip_context_markers`] for why this heuristic exists.
 fn glues_split_word(left: &str, right: &str) -> bool {
     let left_fragment: Vec<char> = left
         .chars()
@@ -540,6 +626,10 @@ fn glues_split_word(left: &str, right: &str) -> bool {
     fragment_lacks_vowel(&left_fragment) || fragment_lacks_vowel(&right_fragment)
 }
 
+/// Whether a letter run is two or more characters with no vowel from
+/// [`TITLE_FRAGMENT_VOWELS`] — the signature of a word fragment rather than a
+/// standalone PL/EN word. Single letters are left alone (they may be real
+/// words).
 fn fragment_lacks_vowel(fragment: &[char]) -> bool {
     fragment.len() >= 2
         && !fragment.iter().any(|ch| {
@@ -548,6 +638,9 @@ fn fragment_lacks_vowel(fragment: &[char]) -> bool {
         })
 }
 
+/// Whether a line is assistive-prompt scaffolding rather than the user's own
+/// words. Covers both the canonical English labels and the Polish ones that
+/// threads persisted before the rename still carry, so neither becomes a title.
 fn is_assistive_wire_label(line: &str) -> bool {
     let lower = line.to_lowercase();
     [
@@ -576,6 +669,10 @@ fn is_assistive_wire_label(line: &str) -> bool {
     .any(|prefix| lower.starts_with(prefix))
 }
 
+/// Root directory for all app-owned data. `CODESCRIBE_DATA_DIR` (tilde
+/// expanded) overrides it — the hook tests and isolated runs rely on — and the
+/// hardcoded Application Support path is the last resort when the platform
+/// directories cannot be resolved.
 pub(crate) fn app_data_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("CODESCRIBE_DATA_DIR") {
         return PathBuf::from(shellexpand::tilde(&custom).into_owned());
@@ -589,6 +686,9 @@ pub(crate) fn app_data_dir() -> PathBuf {
         })
 }
 
+/// Reduce a caller-supplied attachment name to a safe leaf file name: drop any
+/// directory components, replace everything outside `[A-Za-z0-9._-]`, fall back
+/// to `blob.bin` when nothing usable remains, and cap the length.
 fn sanitize_filename(name: &str) -> String {
     let raw = Path::new(name)
         .file_name()
@@ -617,6 +717,9 @@ fn sanitize_filename(name: &str) -> String {
     out
 }
 
+/// Reject thread ids that could escape the threads directory once joined into
+/// a path. Called from [`ThreadStore::thread_path`], i.e. at every path
+/// construction rather than at each API entry point.
 fn validate_thread_id(id: &str) -> Result<()> {
     if id.trim().is_empty() {
         bail!("Thread id cannot be empty");
@@ -627,6 +730,10 @@ fn validate_thread_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Canonicalize an existing path and prove it still lives under `base`. This
+/// is the second half of the traversal guard: id validation blocks the obvious
+/// `..`, this blocks a symlink pointing out of the threads directory. Both
+/// paths must exist.
 fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
     let base = base
         .canonicalize()
@@ -644,6 +751,7 @@ fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Wire/storage spelling of a message role.
 fn role_to_string(role: Role) -> &'static str {
     match role {
         Role::User => "user",
@@ -652,6 +760,8 @@ fn role_to_string(role: Role) -> &'static str {
     }
 }
 
+/// Parse a stored role, defaulting to `User`. Deliberately total: an
+/// unrecognised role must not make a whole thread unreadable.
 fn role_from_string(value: &str) -> Role {
     match value.to_ascii_lowercase().as_str() {
         "assistant" => Role::Assistant,
@@ -660,6 +770,9 @@ fn role_from_string(value: &str) -> Role {
     }
 }
 
+/// Project a runtime content block into its storage JSON. Image bytes are
+/// spilled to the shared asset store and referenced by path, so thread files
+/// stay text; see the inline note on the image arm for the degraded cases.
 fn content_block_to_value(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text(text) => json!({
@@ -723,6 +836,10 @@ fn content_block_to_value(block: &ContentBlock) -> Value {
     }
 }
 
+/// Rebuild a runtime content block from storage JSON. The inverse of
+/// [`content_block_to_value`], and likewise total: a missing or unknown `type`
+/// degrades to text rather than failing the load. Legacy `image` entries
+/// restore without bytes, since the thread file never carried them.
 fn value_to_content_block(value: &Value) -> ContentBlock {
     let Some(value_type) = value.get("type").and_then(Value::as_str) else {
         return ContentBlock::Text(value.to_string());
@@ -807,6 +924,9 @@ fn value_to_content_block(value: &Value) -> ContentBlock {
     }
 }
 
+/// Write a file atomically: create the parent, write a sibling `.tmp`, then
+/// rename over the target. A crash mid-write leaves either the old file or the
+/// temp file — never a truncated thread.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -826,6 +946,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Lowercase alphanumeric suffix used to make ids and blob names unique.
 fn random_suffix(len: usize) -> String {
     thread_rng()
         .sample_iter(&Alphanumeric)
@@ -835,10 +956,12 @@ fn random_suffix(len: usize) -> String {
         .to_ascii_lowercase()
 }
 
+/// Mint a note id, shaped like a thread id but with an `n_` prefix.
 fn generate_note_id() -> String {
     format!("n_{}_{}", Utc::now().format("%Y-%m-%d"), random_suffix(6))
 }
 
+/// Persistence, title ownership, index projection, and image-asset round-trips.
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -849,6 +972,7 @@ mod tests {
 
     use super::*;
 
+    /// Fixture thread with notes, dual messages, summary, and token usage.
     fn sample_thread(id: String, updated_at: DateTime<Utc>) -> Thread {
         Thread {
             id,
@@ -889,6 +1013,7 @@ mod tests {
         }
     }
 
+    /// Save then load yields equal Thread and a single index row.
     #[test]
     fn round_trip_save_and_load_thread() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -906,6 +1031,7 @@ mod tests {
         Ok(())
     }
 
+    /// Degenerate `<<<` title is replaced from PL assistive wire before persist.
     #[test]
     fn save_replaces_assistive_delimiter_title_before_json_and_index_persist() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -929,6 +1055,7 @@ mod tests {
         Ok(())
     }
 
+    /// EN and legacy PL wire labels never become derived titles.
     #[test]
     fn assistive_wire_labels_are_skipped_in_both_label_languages() {
         // Canonical EN labels (current wires) and legacy PL labels (threads
@@ -960,6 +1087,7 @@ mod tests {
         );
     }
 
+    /// EN assistive wire yields the user instruction as the derived title.
     #[test]
     fn save_replaces_assistive_delimiter_title_for_english_wire() -> Result<()> {
         // EN mirror of the PL fixture above: the canonical wire produced after
@@ -982,6 +1110,7 @@ mod tests {
         Ok(())
     }
 
+    /// Mid-word selection markers rejoin in titles; message bodies stay raw.
     #[test]
     fn save_strips_context_bucket_marker_and_rejoins_split_word_in_title() -> Result<()> {
         // Incident input, verbatim: a selection capture landed mid-word and the
@@ -1011,6 +1140,7 @@ mod tests {
         Ok(())
     }
 
+    /// Boundary markers collapse spaces; mid-word glues; non-markers stay.
     #[test]
     fn title_markers_at_word_boundaries_collapse_to_single_space() {
         assert_eq!(
@@ -1054,6 +1184,7 @@ mod tests {
         );
     }
 
+    /// Marker strip still enforces the 72-character title clip.
     #[test]
     fn title_marker_strip_still_clips_at_72_chars() {
         let padding = "x".repeat(100);
@@ -1064,6 +1195,7 @@ mod tests {
         assert!(!title.contains("selection"));
     }
 
+    /// Pre-0.13 `<<<` titles heal on file, index, and markdown export once.
     #[test]
     fn legacy_delimiter_fixture_heals_file_index_and_export_idempotently() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1100,6 +1232,7 @@ mod tests {
         Ok(())
     }
 
+    /// Legacy `input_text`/`output_text` aliases restore as plain Text blocks.
     #[test]
     fn legacy_openai_text_aliases_restore_as_plain_text() {
         let message = ThreadMessage {
@@ -1124,6 +1257,7 @@ mod tests {
         }
     }
 
+    /// Delete removes the thread file and its denormalized index entry.
     #[test]
     fn delete_removes_thread_and_index_entry() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1141,6 +1275,7 @@ mod tests {
         Ok(())
     }
 
+    /// Blobs land under blobs/ with sanitized names and exact bytes.
     #[test]
     fn save_blob_writes_binary_data() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1153,6 +1288,7 @@ mod tests {
         Ok(())
     }
 
+    /// Freshly minted thread ids do not collide across a short burst.
     #[test]
     fn generated_ids_are_unique() {
         let mut seen = HashSet::new();
@@ -1162,6 +1298,7 @@ mod tests {
         }
     }
 
+    /// Notes accept an optional message-index anchor and land on the thread.
     #[test]
     fn add_note_supports_optional_message_anchor() {
         let mut thread = sample_thread(ThreadStore::generate_id(), Utc::now());
@@ -1171,6 +1308,7 @@ mod tests {
         assert!(thread.notes.iter().any(|value| value.id == note.id));
     }
 
+    /// Save upserts the index; stale summary text stops matching search.
     #[test]
     fn save_thread_updates_index_search_results() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1207,6 +1345,7 @@ mod tests {
         Ok(())
     }
 
+    /// Favoriting updates the index summary without rewriting message bodies.
     #[test]
     fn set_thread_favorite_updates_index_entry() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1230,6 +1369,7 @@ mod tests {
         Ok(())
     }
 
+    /// Manual rename trims, marks custom, clears generated, and syncs index.
     #[test]
     fn set_thread_title_marks_custom_and_persists() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1272,6 +1412,7 @@ mod tests {
         Ok(())
     }
 
+    /// Missing `title_is_generated` deserializes as false (heuristic state).
     #[test]
     fn legacy_thread_json_defaults_generated_ownership_to_false() -> Result<()> {
         let thread = sample_thread(ThreadStore::generate_id(), Utc::now());
@@ -1287,6 +1428,7 @@ mod tests {
         Ok(())
     }
 
+    /// Generated then custom titles are exclusive ownership transitions.
     #[test]
     fn generated_and_custom_title_transitions_are_exclusive() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1325,6 +1467,7 @@ mod tests {
         Ok(())
     }
 
+    /// Generated titles reject blanks/delimiters and never overwrite custom.
     #[test]
     fn generated_title_rejects_blank_missing_and_custom_without_mutation() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1359,6 +1502,7 @@ mod tests {
         Ok(())
     }
 
+    /// Inline image bytes persist as disk assets and restore without raw JSON.
     #[test]
     fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -1405,6 +1549,7 @@ mod tests {
         Ok(())
     }
 
+    /// Identical image bytes map to one asset path and are not rewritten.
     #[test]
     fn inline_image_asset_is_written_once_across_saves() -> Result<()> {
         let block = ContentBlock::Image {
@@ -1439,6 +1584,7 @@ mod tests {
         Ok(())
     }
 
+    /// Legacy data_omitted images restore empty and re-persist the marker.
     #[test]
     fn legacy_data_omitted_image_restores_without_bytes_and_repersists_safely() {
         let legacy = json!({
@@ -1468,6 +1614,7 @@ mod tests {
         );
     }
 
+    /// Thread paths end with `{id}.json` and reject path-traversal ids.
     #[test]
     fn thread_file_path_validates_id() -> Result<()> {
         let tmp = TempDir::new()?;

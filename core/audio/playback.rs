@@ -34,6 +34,8 @@ pub fn play_sound(name: &str) {
     }
 }
 
+/// Non-macOS stub: sound feedback is a nicety, so it degrades to silence
+/// rather than forcing every caller to `cfg` around it.
 #[cfg(not(target_os = "macos"))]
 pub fn play_sound(_name: &str) {
     // No-op on non-macOS platforms
@@ -74,6 +76,8 @@ pub fn play_sound_with_volume(name: &str, volume: f32) {
     }
 }
 
+/// Non-macOS stub for the volume-aware variant — silent, same as
+/// [`play_sound`].
 #[cfg(not(target_os = "macos"))]
 pub fn play_sound_with_volume(_name: &str, _volume: f32) {
     // No-op on non-macOS platforms

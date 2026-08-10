@@ -33,22 +33,32 @@ pub const MAX_READ_FAILURES_BEFORE_BLOCKED: u32 = 5;
 /// Backoff ceiling for failing polls.
 pub const MAX_BACKOFF_SECS: u64 = 300;
 
+/// On-disk JSON filename under the agent_monitors directory.
 const MONITOR_FILE_NAME: &str = "monitors.json";
 
 /// Monitor-visible lifecycle of one observed run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunMonitorState {
+    /// Registered and live, but no cursor movement observed yet.
     Started,
+    /// Cursor movement seen since the last poll — the run is alive.
     Running,
+    /// No progress past `stale_after_secs` and no promised artifact to explain it.
     Stale,
+    /// Meta reports a block, or it stayed unreadable past the failure budget.
     Blocked,
+    /// Terminal success with the promised report artifact present.
     Completed,
+    /// Terminal failure: meta says `failed`, or the exit code is non-zero.
     Failed,
+    /// Terminal success *claimed* without its promised artifact — never
+    /// reported as [`Completed`](Self::Completed).
     NeedsRerun,
 }
 
 impl RunMonitorState {
+    /// Stable kebab-case wire/log name for this state.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Started => "started",
@@ -103,6 +113,7 @@ pub struct RunMonitorRecord {
 }
 
 impl RunMonitorRecord {
+    /// Still worth polling: neither finished nor cancelled.
     pub fn is_active(&self) -> bool {
         !self.done && !self.cancelled
     }
@@ -120,6 +131,7 @@ pub struct RunMonitorRegistration {
     pub stale_after_secs: u64,
 }
 
+/// On-disk shape of the monitor store: a flat list, rewritten atomically.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RunMonitorStoreData {
     monitors: Vec<RunMonitorRecord>,
@@ -134,10 +146,13 @@ pub struct RunMonitorStore {
 }
 
 impl RunMonitorStore {
+    /// Open the store under the app data dir (`CODESCRIBE_DATA_DIR`-aware).
     pub fn new() -> Result<Self> {
         Self::new_in(super::thread_store::app_data_dir().join("agent_monitors"))
     }
 
+    /// Open the store in an explicit directory, creating it if absent. The
+    /// isolation seam tests use instead of the shared data dir.
     pub fn new_in<P: AsRef<Path>>(dir: P) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)
@@ -147,10 +162,12 @@ impl RunMonitorStore {
         })
     }
 
+    /// Path of the backing JSON file — the inspectable evidence surface.
     pub fn file_path(&self) -> &Path {
         &self.file_path
     }
 
+    /// Read the store. A missing file is an empty store, not an error.
     fn load(&self) -> Result<RunMonitorStoreData> {
         if !self.file_path.exists() {
             return Ok(RunMonitorStoreData::default());
@@ -161,6 +178,8 @@ impl RunMonitorStore {
             .with_context(|| format!("Failed to parse {}", self.file_path.display()))
     }
 
+    /// Write the store atomically (tmp file + rename) so a crash mid-write
+    /// cannot leave a truncated ledger behind.
     fn save(&self, data: &RunMonitorStoreData) -> Result<()> {
         let raw = serde_json::to_string_pretty(data).context("Failed to serialize monitors")?;
         let tmp = self.file_path.with_extension("tmp");
@@ -213,10 +232,12 @@ impl RunMonitorStore {
         Ok(record)
     }
 
+    /// Every record, including finished and cancelled ones.
     pub fn list(&self) -> Result<Vec<RunMonitorRecord>> {
         Ok(self.load()?.monitors)
     }
 
+    /// Only the records still worth polling.
     pub fn active(&self) -> Result<Vec<RunMonitorRecord>> {
         Ok(self
             .load()?
@@ -226,6 +247,7 @@ impl RunMonitorStore {
             .collect())
     }
 
+    /// Look one record up by its harness-side `monitor_id`.
     pub fn get(&self, monitor_id: &str) -> Result<Option<RunMonitorRecord>> {
         Ok(self
             .load()?
@@ -423,11 +445,17 @@ pub fn observe_record(record: &RunMonitorRecord, now: DateTime<Utc>) -> Result<R
 /// Why a heartbeat is being delivered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeartbeatKind {
+    /// A previously-notified stall or block started progressing again.
     Recovered,
+    /// The run went quiet past its stale bar.
     Stalled,
+    /// The run's control-plane meta reports a block or is unreadable.
     Blocked,
+    /// The run finished successfully.
     Completed,
+    /// The run finished unsuccessfully.
     Failed,
+    /// The run claimed success without its promised report artifact.
     NeedsRerun,
 }
 
@@ -556,6 +584,7 @@ pub fn active_state_summary(records: &[RunMonitorRecord]) -> Vec<(RunMonitorStat
     seen
 }
 
+/// Store durability, classification, heartbeat, and path-safety unit tests.
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -563,10 +592,12 @@ mod tests {
 
     use super::*;
 
+    /// Fixed UTC instant so store/classification tests stay deterministic.
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 1, 9, 0, 0).single().unwrap()
     }
 
+    /// Build a minimal registration with 1s poll / 60s stale defaults.
     fn registration(run_id: &str, thread: &str, meta: &Path) -> RunMonitorRegistration {
         RunMonitorRegistration {
             run_id: run_id.to_string(),
@@ -579,6 +610,7 @@ mod tests {
         }
     }
 
+    /// Register survives a fresh store open on the same directory (restart).
     #[test]
     fn store_registers_persists_and_resumes_across_instances() {
         let tmp = TempDir::new().unwrap();
@@ -600,6 +632,7 @@ mod tests {
         assert_eq!(active[0].run_id, "work-1");
     }
 
+    /// Same (run_id, thread) reuses monitor_id; a new thread is distinct.
     #[test]
     fn register_is_idempotent_per_run_and_thread() {
         let tmp = TempDir::new().unwrap();
@@ -622,6 +655,7 @@ mod tests {
         assert_eq!(store.list().unwrap().len(), 2);
     }
 
+    /// Cancel marks done/cancelled, empties active, keeps the record on disk.
     #[test]
     fn cancel_keeps_inspectable_evidence_and_stops_activity() {
         let tmp = TempDir::new().unwrap();
@@ -640,6 +674,7 @@ mod tests {
         assert!(!store.cancel("mon-missing", now()).unwrap());
     }
 
+    /// Every classify_run_state branch: live, stale, block, complete, fail, rerun.
     #[test]
     fn classify_covers_the_full_state_machine() {
         // Live and progressing.
@@ -688,6 +723,7 @@ mod tests {
         );
     }
 
+    /// Fixture record with optional last_notified_state for heartbeat tests.
     fn record_with(last_notified: Option<RunMonitorState>) -> RunMonitorRecord {
         RunMonitorRecord {
             monitor_id: "mon-test".to_string(),
@@ -711,6 +747,7 @@ mod tests {
         }
     }
 
+    /// Heartbeats fire once per degradation/terminal; quiet Running stays silent.
     #[test]
     fn heartbeat_decisions_dedupe_and_stay_meaningful() {
         // Quiet progress never notifies.
@@ -763,6 +800,7 @@ mod tests {
         );
     }
 
+    /// Poll backoff doubles with failures and clamps at MAX_BACKOFF_SECS.
     #[test]
     fn backoff_grows_and_caps() {
         assert_eq!(next_poll_delay_secs(5, 0), 5);
@@ -772,6 +810,7 @@ mod tests {
         assert_eq!(next_poll_delay_secs(0, 0), 1);
     }
 
+    /// Tail read respects MAX_HEARTBEAT_EXCERPT_BYTES; missing path is None.
     #[test]
     fn bounded_tail_clips_to_budget() {
         let tmp = TempDir::new().unwrap();
@@ -782,6 +821,7 @@ mod tests {
         assert!(bounded_tail(&tmp.path().join("missing.log"), 64).is_none());
     }
 
+    /// Accepts safe run ids; rejects empty, path separators, and leading dots.
     #[test]
     fn run_id_validation_rejects_traversal_shapes() {
         assert!(is_valid_run_id("work-260801-104012-91713"));
@@ -791,6 +831,7 @@ mod tests {
         assert!(!is_valid_run_id(".hidden"));
     }
 
+    /// Observation tracks meta growth and terminal report presence correctly.
     #[test]
     fn observe_reads_meta_and_flags_progress() {
         let tmp = TempDir::new().unwrap();

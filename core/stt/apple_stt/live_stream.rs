@@ -50,6 +50,8 @@ pub enum LiveStreamEvent {
     },
 }
 
+/// Wire shape of a progress NDJSON line. Every field is optional because one
+/// struct covers all `event` kinds — which key is populated depends on the kind.
 #[derive(Debug, Deserialize)]
 struct StreamEventLine {
     #[serde(default)]
@@ -65,6 +67,8 @@ struct StreamEventLine {
     error: Option<String>,
 }
 
+/// Wire shape of one timed segment inside a `final` event, before validation into
+/// a [`TranscriptSegment`].
 #[derive(Debug, Deserialize)]
 struct StreamSegmentLine {
     text: String,
@@ -154,6 +158,8 @@ impl LiveStreamSession {
         })
     }
 
+    /// The rate declared to the bridge at open time; PCM fed to
+    /// [`LiveStreamSession::write_pcm`] must match it.
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -210,6 +216,7 @@ impl LiveStreamSession {
         // the bridge's own settle grace means the child is wedged (alive but
         // mute). Without this, a 1-second clip waited the full 45s floor with
         // the overlay stuck in "finalising" and no way to cancel.
+        /// Silence budget after the last event before a wedged bridge is killed.
         const IDLE_CUTOFF: Duration = Duration::from_secs(10);
         let mut last_event_at = std::time::Instant::now();
 
@@ -269,6 +276,7 @@ impl LiveStreamSession {
 }
 
 impl Drop for LiveStreamSession {
+    /// Best-effort teardown: close stdin, kill the bridge child, join the reader.
     fn drop(&mut self) {
         drop(self.stdin.take());
         let _ = self.child.kill();
@@ -279,6 +287,11 @@ impl Drop for LiveStreamSession {
     }
 }
 
+/// Reader-thread body: parse bridge stdout line by line and forward typed events.
+///
+/// Stops on a terminal event, an unparsable line ending the stream, or a closed
+/// receiver — so a dropped session does not leave this thread pinned to a live
+/// pipe. Lines that fail to parse are skipped rather than killing the session.
 fn read_stream_stdout(stdout: impl std::io::Read, tx: Sender<LiveStreamEvent>) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
@@ -382,10 +395,12 @@ pub fn progressive_live_enabled() -> bool {
     !mode.eq_ignore_ascii_case("wav") && !mode.eq_ignore_ascii_case("transcribe_live")
 }
 
+/// Bridge stdout line parsers for progressive multi-seal events.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Partial, phrase-final, and summary JSON lines map to the typed event enum.
     #[test]
     fn parse_partial_and_final_and_summary() {
         let partial =
@@ -420,6 +435,7 @@ mod tests {
         }
     }
 
+    /// Each `final` event is its own sealed phrase; summary is not a full replace.
     #[test]
     fn multi_phrase_finals_are_independent_seals() {
         let lines = [

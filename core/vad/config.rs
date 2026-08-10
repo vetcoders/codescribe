@@ -35,16 +35,28 @@ pub struct VadConfig {
     pub tail_drop_enabled: bool,
 }
 
+/// Default speech probability threshold for Silero.
 pub const SILERO_DEFAULT_THRESHOLD: f32 = 0.5;
+/// Default minimum speech duration (one 1024-sample Silero frame at 16 kHz).
 pub const SILERO_DEFAULT_MIN_SPEECH_SEC: f32 = 0.064;
+/// Default silence run that closes a speech segment.
 pub const SILERO_DEFAULT_MAX_SILENCE_SEC: f32 = 0.3;
+/// Default forced-flush ceiling for a single utterance.
 pub const SILERO_DEFAULT_MAX_UTTERANCE_SEC: f32 = 30.0;
+/// Default pre-roll retained ahead of speech onset (one Silero frame).
 pub const SILERO_DEFAULT_PRE_ROLL_SEC: f32 = 0.064;
+/// Default silence run still treated as an in-utterance gap, not a boundary.
+/// Overridable via `CODESCRIBE_UTTERANCE_GAP_SEC`.
 pub const SILERO_DEFAULT_UTTERANCE_GAP_SEC: f32 = 0.5;
+/// Default trailing-silence run that qualifies for Whisper tail-drop.
+/// Overridable via `CODESCRIBE_TAIL_SILENCE_SEC`.
 pub const SILERO_DEFAULT_TAIL_SILENCE_SEC: f32 = 2.0;
+/// Whether the Whisper tail-drop post-filter is on by default.
+/// Overridable via `CODESCRIBE_TAIL_DROP_ENABLED`.
 pub const SILERO_DEFAULT_TAIL_DROP_ENABLED: bool = true;
 
 impl Default for VadConfig {
+    /// Silero defaults plus env overrides for gap/tail/drop knobs.
     fn default() -> Self {
         Self {
             threshold: SILERO_DEFAULT_THRESHOLD,
@@ -108,6 +120,7 @@ impl VadConfig {
     }
 }
 
+/// Read `key` as `f32`, falling back to `default` when unset or unparseable.
 fn env_f32(key: &str, default: f32) -> f32 {
     env::var(key)
         .ok()
@@ -115,6 +128,8 @@ fn env_f32(key: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
+/// Read `key` as a boolean (`1/true/yes/on` vs `0/false/no/off`), falling back
+/// to `default` when unset or unrecognized.
 fn env_bool(key: &str, default: bool) -> bool {
     env::var(key)
         .ok()
@@ -126,17 +141,20 @@ fn env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Unit tests for env-backed `VadConfig` defaults and sensitivity presets.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Restores one process env key on drop so serial tests do not leak overrides.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set `key=value`, remembering the previous value for restore.
         fn set(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: tests are serialized and intentionally mutate process env.
@@ -144,6 +162,7 @@ mod tests {
             Self { key, prev }
         }
 
+        /// Remove `key`, remembering the previous value for restore.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: tests are serialized and intentionally mutate process env.
@@ -153,6 +172,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the previous env value, or remove the key if it was absent.
         fn drop(&mut self) {
             if let Some(prev) = &self.prev {
                 // SAFETY: tests are serialized and intentionally mutate process env.
@@ -164,6 +184,7 @@ mod tests {
         }
     }
 
+    /// Pins every `SILERO_DEFAULT_*` field when the env knobs are unset.
     #[test]
     #[serial]
     fn test_default_config() {
@@ -191,6 +212,7 @@ mod tests {
         assert_eq!(config.tail_drop_enabled, SILERO_DEFAULT_TAIL_DROP_ENABLED);
     }
 
+    /// Sensitive threshold sits strictly below conservative.
     #[test]
     #[serial]
     fn test_sensitive_vs_conservative() {
@@ -202,6 +224,7 @@ mod tests {
         assert!(sensitive.threshold < conservative.threshold);
     }
 
+    /// `CODESCRIBE_*` env overrides flow into `Default::default()`.
     #[test]
     #[serial]
     fn tail_silence_env_overrides_are_honored() {

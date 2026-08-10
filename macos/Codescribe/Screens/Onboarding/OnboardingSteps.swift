@@ -112,7 +112,7 @@ struct OnboardingChoiceCard: View {
                     )
             )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
     }
 }
 

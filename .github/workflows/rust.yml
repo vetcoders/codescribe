@@ -3,8 +3,20 @@
 #
 # Runs on self-hosted macOS runners (Swift 6.0 / CoreML / Metal available).
 # format: cargo fmt --check
-# quality: cargo clippy -D warnings + cargo test (workspace).
-# Full local gate (incl. real-API / heavy e2e tests) still via: make check
+# quality: cargo clippy -D warnings + `make verify`.
+#
+# The test step invokes `make verify` by name rather than repeating its cargo
+# line here. That is deliberate: it is the repo's one hermetic gate, so CI and a
+# local run are the same command with one definition site instead of two recipes
+# that resemble each other until they quietly stop.
+#
+# What CI does NOT run: every `class=operator` row in the Makefile GATE LEDGER —
+# the parity bars (private fixture corpus), the 318 Swift front-end tests
+# (Xcode + a built ffi dylib), `smoke-macos27` (this host), and the #[ignore]
+# real-API / model / audio-device tests. Those are bench instruments, host-local
+# by nature, and `make -s gate-ledger` prints the full classification.
+# (This block used to claim `make check` was the "full local gate incl. real-API
+# / heavy e2e tests". It is not — `make check` executes no tests at all.)
 
 name: Rust Quality
 
@@ -55,14 +67,18 @@ jobs:
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # Runs the default (non-#[ignore]) workspace test set.
-      # CODESCRIBE_DISABLE_KEYCHAIN=1: keychain-backed tests must bypass the
-      #   macOS Keychain (no interactive unlock / signed host on the runner) —
-      #   see core/config/keychain.rs and the Makefile `test` target.
+      # The hermetic gate, by name. `make verify` pins the env this step used to
+      # set inline (CODESCRIBE_DISABLE_KEYCHAIN=1 so keychain-backed tests never
+      # touch the real macOS Keychain — no interactive unlock on a runner, see
+      #   core/config/keychain.rs — plus CODESCRIBE_NO_EMBED=1 so the build does
+      #   not depend on a model cache), runs the workspace tests AND the
+      #   doctests, then validates the env registry and the gate ledger.
+      #
+      # Invoked by name rather than repeated as a cargo line: one definition
+      # site means a local run and this job cannot drift apart.
+      #
       # #[ignore]-gated tests (real LLM APIs, Whisper/STT models, audio devices,
-      #   live SSE) are intentionally NOT run here — they need secrets/hardware
-      #   absent on CI and stay behind `make test` / `make test-e2e-real` locally.
-      - name: cargo test --workspace
-        env:
-          CODESCRIBE_DISABLE_KEYCHAIN: "1"
-        run: cargo test --workspace
+      #   live SSE) are still NOT run here — they need secrets/hardware absent
+      #   on CI and stay behind the class=operator rows of the GATE LEDGER.
+      - name: make verify
+        run: make verify

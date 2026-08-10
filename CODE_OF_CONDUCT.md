@@ -1,6 +1,6 @@
 # Code of Conduct
 
-Codescribe is maintained by vetcoders for people building practical macOS voice tools. We want issues, discussions, and pull requests to stay useful, direct, and respectful.
+Codescribe is maintained by Vetcoders for people building practical macOS voice tools. We want issues, discussions, and pull requests to stay useful, direct, and respectful.
 
 ## Expected Behavior
 

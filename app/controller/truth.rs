@@ -13,17 +13,29 @@ use super::final_pass::engine_label_from_verdict;
 use super::helpers::SessionTelemetrySnapshot;
 use super::types::{RecordingFallbackClass, RecordingTranscriptSource};
 
+/// Collapse a whitespace-only transcript to `None` — blank is not a transcript.
 fn non_empty_transcript(text: Option<String>) -> Option<String> {
     text.filter(|text| !text.trim().is_empty())
 }
 
+/// The adjudicated outcome of one recording: what to deliver, and how much to
+/// trust it.
+///
+/// Every field is provenance the sidecar (`truth.json`) and the UI read back, so
+/// the app can be honest about which engine actually served and why.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RecordingTruthVerdict {
+    /// The text to deliver, or `None` when nothing trustworthy survived.
     pub(crate) raw_text: Option<String>,
+    /// Which lane produced [`Self::raw_text`].
     pub(crate) transcript_source: Option<RecordingTranscriptSource>,
+    /// How degraded that lane is, when it is a fallback at all.
     pub(crate) fallback_class: Option<RecordingFallbackClass>,
+    /// Why no speech was accepted; set means the verdict is deliberately empty.
     pub(crate) no_speech_reason: Option<String>,
+    /// Share of the recording VAD classified as speech.
     pub(crate) speech_pct: Option<f32>,
+    /// Engine average log-probability, the hallucination signal.
     pub(crate) avg_logprob: Option<f32>,
     /// Typed confidence flags (engine-owned + app-level provenance).
     /// Stored as the core enum rather than `Vec<String>` so downstream
@@ -40,10 +52,13 @@ pub(crate) struct RecordingTruthVerdict {
     /// Actual serving engine label for sidecar/UI (`local_apple`, `local_whisper`, …).
     /// Preference-derived labels are forbidden when a verdict is present.
     pub(crate) engine_label: Option<String>,
+    /// Why this recording is flagged for review, if it is.
     pub(crate) commit_trigger: Option<String>,
+    /// Human-readable one-liner for the UI, derived from source and flags.
     pub(crate) display_status: String,
 }
 
+/// Append `flag` unless it is already present — the flag list is a set.
 pub(crate) fn push_typed_flag(
     flags: &mut Vec<TranscriptionConfidenceFlag>,
     flag: TranscriptionConfidenceFlag,
@@ -53,6 +68,10 @@ pub(crate) fn push_typed_flag(
     }
 }
 
+/// Record that AI formatting returned the input unchanged.
+///
+/// Skipped on the assistive lane, where an unchanged reply is a legitimate
+/// answer rather than a no-op worth flagging.
 pub(crate) fn apply_ai_noop_signal(
     assistive: bool,
     is_ai_noop: bool,
@@ -70,6 +89,12 @@ pub(crate) fn apply_ai_noop_signal(
     *commit_trigger = Some("ai_noop".to_string());
 }
 
+/// Why this recording should be surfaced for review, or `None` when it is clean.
+///
+/// No-speech wins outright; then the confidence flags in a fixed priority order;
+/// then the fallback class. The ordering deliberately mirrors the original
+/// string-based implementation so display behaviour survived the move to typed
+/// flags unchanged.
 pub(crate) fn truth_review_trigger(
     fallback_class: Option<RecordingFallbackClass>,
     no_speech_reason: Option<&str>,
@@ -99,6 +124,7 @@ pub(crate) fn truth_review_trigger(
     }
 }
 
+/// One-line status for the UI, in the same precedence as the review trigger.
 pub(crate) fn truth_display_status(
     source: Option<RecordingTranscriptSource>,
     fallback_class: Option<RecordingFallbackClass>,
@@ -131,6 +157,11 @@ pub(crate) fn truth_display_status(
 // allow(too_many_arguments): verdict aggregates independent recording-truth
 // signals collected at one call site; a params struct would only restate the
 // same names. Revisit if call sites multiply.
+/// Assemble a [`RecordingTruthVerdict`], deriving the review trigger and the
+/// display status from the signals passed in.
+///
+/// The single construction point for a verdict, so trigger and status can never
+/// disagree with the flags they were computed from.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_truth_verdict(
     raw_text: Option<String>,
@@ -172,6 +203,23 @@ pub(crate) fn build_truth_verdict(
     }
 }
 
+/// Decide what a finished recording actually delivers, and label its provenance.
+///
+/// The live transcript is the floor of truth. When a local final pass produced
+/// text, it is **merged** into the live assembly (live kept, Whisper filling the
+/// gaps) rather than replacing it — full-replace would delete correct live
+/// tokens and is a doctrine violation. See
+/// [`codescribe_core::quality::merge_live_whisper`].
+///
+/// Resolution order:
+/// 1. Local final pass — an explicit no-speech verdict is authoritative and
+///    returns empty; otherwise the text merges with the live floor.
+/// 2. A final pass that came back *shorter* than the live assembly is rejected
+///    as a length regression, keeping the stream and flagging provenance.
+/// 3. Session-level no-speech telemetry.
+/// 4. Cloud verdict, then the streaming floor — both always marked degraded,
+///    because neither was verified by a final pass.
+/// 5. Nothing usable: an empty verdict carrying the reason.
 pub(crate) fn adjudicate_recording_truth(
     use_local_stt: bool,
     local_final_pass_attempted: bool,
@@ -267,12 +315,32 @@ pub(crate) fn adjudicate_recording_truth(
             } else if let Some(stream) = streaming_text.as_ref() {
                 // Product: never full-replace live with Whisper. Merge live floor
                 // + Whisper gap-fill (85% Apple×Whisper thesis; Teacher AlignOp).
-                let merged = codescribe_core::quality::merge_live_whisper(stream, final_text);
+                // Known-terms catalog (Voice Lab canonical terms) lets Whisper win
+                // a disagreement region on code-switched entities Apple garbled
+                // ("delivered ≠ what I spoke", operator 2026-08-10). Load failure
+                // degrades to the legacy live-floor behavior, never blocks the stop.
+                let known_terms: Vec<String> =
+                    codescribe_core::quality::overlay_quality::custom_lexicon_entries()
+                        .map(|entries| {
+                            let mut terms: Vec<String> =
+                                entries.into_iter().map(|e| e.canonical).collect();
+                            terms.sort();
+                            terms.dedup();
+                            terms
+                        })
+                        .unwrap_or_default();
+                let merged = codescribe_core::quality::merge_live_whisper_with_terms(
+                    stream,
+                    final_text,
+                    &known_terms,
+                );
                 info!(
                     mode = ?merged.mode,
                     equal = merged.equal_tokens,
                     whisper_fill = merged.whisper_fill_tokens,
                     live_subs = merged.live_kept_substitutes,
+                    whisper_won_subs = merged.whisper_won_substitutes,
+                    known_terms = known_terms.len(),
                     live_chars = stream.chars().count(),
                     whisper_chars = final_text.chars().count(),
                     merged_chars = merged.text.chars().count(),
@@ -461,6 +529,10 @@ pub(crate) fn adjudicate_recording_truth(
     )
 }
 
+/// Engine label for the sidecar and UI.
+///
+/// The engine reported by the verdict always wins; the per-source mapping is a
+/// preference-derived guess and is used only when no actual label exists.
 pub(crate) fn truth_engine_label(
     source: Option<RecordingTranscriptSource>,
     actual_engine_label: Option<&str>,

@@ -11,7 +11,9 @@ use tracing::{debug, info};
 // Constants
 // ═══════════════════════════════════════════════════════════
 
+/// Hard cap on fetched body size (streaming + Content-Length), including bombs.
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024; // 1MB
+/// Maximum HTTP redirects followed before the SSRF-safe client aborts.
 const MAX_REDIRECTS: usize = 3;
 
 // ═══════════════════════════════════════════════════════════
@@ -56,6 +58,10 @@ fn is_private_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Classify an IPv4 address as private/internal.
+///
+/// Covers RFC 1918 ranges, link-local (`169.254.0.0/16` — the cloud metadata
+/// service address lives here), loopback, and the unspecified `0.0.0.0/8` block.
 fn is_private_ipv4(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     match octets[0] {
@@ -69,6 +75,8 @@ fn is_private_ipv4(ip: Ipv4Addr) -> bool {
     }
 }
 
+/// Classify an IPv6 address as private/internal: loopback (`::1`), unspecified
+/// (`::`), link-local (`fe80::/10`), and unique-local (`fc00::/7`).
 fn is_private_ipv6(ip: Ipv6Addr) -> bool {
     ip.is_loopback() || ip.is_unspecified() || ip.is_unicast_link_local() || ip.is_unique_local()
 }
@@ -128,6 +136,7 @@ fn check_ipv6_private(host: &str) -> Option<bool> {
 /// each hop against `is_private_host`.
 fn ssrf_safe_client() -> reqwest::Client {
     use std::sync::OnceLock;
+    /// Process-wide SSRF-safe reqwest client (timeout, redirect revalidation).
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
     CLIENT
@@ -491,10 +500,12 @@ fn url_to_title(url: &str) -> String {
 // Tests
 // ═══════════════════════════════════════════════════════════
 
+/// HTML strip, title extract, URL heuristics, and SSRF host-classification tests.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Tags vanish; visible heading/paragraph text remains.
     #[test]
     fn test_strip_html_basic() {
         let html = "<html><body><h1>Hello</h1><p>World</p></body></html>";
@@ -504,6 +515,7 @@ mod tests {
         assert!(!text.contains('<'));
     }
 
+    /// Script and style bodies are dropped; surrounding text survives.
     #[test]
     fn test_strip_html_script_style() {
         let html = "<p>Before</p><script>alert('x')</script><style>.x{}</style><p>After</p>";
@@ -514,6 +526,7 @@ mod tests {
         assert!(!text.contains(".x"));
     }
 
+    /// Named entities (`&amp;`, `&lt;`, `&gt;`) decode in stripped text.
     #[test]
     fn test_strip_html_entities() {
         let html = "<p>A &amp; B &lt; C &gt; D</p>";
@@ -521,6 +534,7 @@ mod tests {
         assert!(text.contains("A & B < C > D"));
     }
 
+    /// Runs of whitespace collapse to a single space after strip.
     #[test]
     fn test_strip_html_whitespace_collapse() {
         let html = "<p>  Hello   World  </p>";
@@ -528,24 +542,28 @@ mod tests {
         assert_eq!(text, "Hello World");
     }
 
+    /// `<title>` content is returned when present.
     #[test]
     fn test_extract_title() {
         let html = "<html><head><title>My Page</title></head><body></body></html>";
         assert_eq!(extract_title(html), "My Page");
     }
 
+    /// Title entities are decoded the same way as body text.
     #[test]
     fn test_extract_title_with_entities() {
         let html = "<title>A &amp; B</title>";
         assert_eq!(extract_title(html), "A & B");
     }
 
+    /// Missing title yields an empty string, not a panic or placeholder.
     #[test]
     fn test_extract_title_missing() {
         let html = "<html><body>No title here</body></html>";
         assert_eq!(extract_title(html), "");
     }
 
+    /// Only http(s) prefixes count; ftp and bare text do not.
     #[test]
     fn test_looks_like_url() {
         assert!(looks_like_url("https://example.com"));
@@ -555,12 +573,14 @@ mod tests {
         assert!(!looks_like_url("ftp://example.com"));
     }
 
+    /// Display title falls back to the host segment of the URL.
     #[test]
     fn test_url_to_title() {
         assert_eq!(url_to_title("https://example.com/page"), "example.com");
         assert_eq!(url_to_title("http://docs.rs/crate"), "docs.rs");
     }
 
+    /// Decimal and hex numeric entities decode to characters.
     #[test]
     fn test_numeric_entity() {
         let html = "<p>&#65;&#x42;</p>";
@@ -568,6 +588,7 @@ mod tests {
         assert!(text.contains("AB"));
     }
 
+    /// Multibyte Polish diacritics survive the byte-oriented strip walk.
     #[test]
     fn test_strip_html_polish_diacritics() {
         let html = "<p>Zażółć gęślą jaźń</p>";
@@ -575,6 +596,7 @@ mod tests {
         assert_eq!(text, "Zażółć gęślą jaźń");
     }
 
+    /// Mixed UTF-8 text and entities remain correct after strip.
     #[test]
     fn test_strip_html_mixed_multibyte_and_entities() {
         let html = "<div>Résumé &amp; café</div><p>日本語テスト</p>";
@@ -583,6 +605,7 @@ mod tests {
         assert!(text.contains("日本語テスト"));
     }
 
+    /// Multibyte title text (including em dash) is preserved.
     #[test]
     fn test_extract_title_multibyte() {
         let html = "<html><head><title>Strona główna — informacje</title></head></html>";
@@ -591,6 +614,7 @@ mod tests {
 
     // ── SSRF protection tests ──
 
+    /// Loopback literal targets are rejected by the fetch gate.
     #[tokio::test]
     async fn test_ssrf_private_ip_blocked() {
         let result = fetch_url_as_text("https://127.0.0.1/secret").await;
@@ -598,6 +622,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("blocked"));
     }
 
+    /// `localhost` hostnames are blocked before any network I/O.
     #[tokio::test]
     async fn test_ssrf_localhost_blocked() {
         let result = fetch_url_as_text("https://localhost/admin").await;
@@ -605,6 +630,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("blocked"));
     }
 
+    /// `.internal` suffix hosts are treated as private and blocked.
     #[tokio::test]
     async fn test_ssrf_internal_blocked() {
         let result = fetch_url_as_text("https://metadata.internal/latest").await;
@@ -612,6 +638,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("blocked"));
     }
 
+    /// Classic RFC 1918 `192.168/16` addresses are blocked.
     #[tokio::test]
     async fn test_ssrf_rfc1918_blocked() {
         let result = fetch_url_as_text("https://192.168.1.1/config").await;
@@ -619,6 +646,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("blocked"));
     }
 
+    /// Non-http(s) schemes are rejected with an unsupported-scheme error.
     #[tokio::test]
     async fn test_ftp_scheme_rejected() {
         let result = fetch_url_as_text("ftp://evil.com/payload").await;
@@ -631,6 +659,7 @@ mod tests {
         );
     }
 
+    /// Upper edge of `172.16.0.0/12` (`172.31.x.x`) is still private.
     #[test]
     fn test_ssrf_172_31_blocked() {
         // 172.31.x.x is private (RFC 1918: 172.16.0.0/12)
@@ -638,6 +667,7 @@ mod tests {
         assert!(is_private_host(&url));
     }
 
+    /// `172.32.x.x` is outside RFC 1918 and must not be blocked as private.
     #[test]
     fn test_ssrf_172_32_not_blocked() {
         // 172.32.x.x is PUBLIC — outside RFC 1918 range
@@ -645,36 +675,42 @@ mod tests {
         assert!(!is_private_host(&url));
     }
 
+    /// `10.0.0.0/8` private range is blocked.
     #[test]
     fn test_ssrf_10_blocked() {
         let url = reqwest::Url::parse("https://10.0.0.1/admin").unwrap();
         assert!(is_private_host(&url));
     }
 
+    /// Well-known public IPs pass the host private check.
     #[test]
     fn test_ssrf_public_ip_allowed() {
         let url = reqwest::Url::parse("https://8.8.8.8/dns").unwrap();
         assert!(!is_private_host(&url));
     }
 
+    /// Link-local (`169.254/16`, cloud metadata) is blocked.
     #[test]
     fn test_ssrf_link_local_blocked() {
         let url = reqwest::Url::parse("https://169.254.1.1/meta").unwrap();
         assert!(is_private_host(&url));
     }
 
+    /// IPv6 loopback (`::1`) is blocked.
     #[test]
     fn test_ssrf_ipv6_loopback_blocked() {
         let url = reqwest::Url::parse("https://[::1]/admin").unwrap();
         assert!(is_private_host(&url));
     }
 
+    /// IPv6 unique-local (`fc00::/7`) is blocked.
     #[test]
     fn test_ssrf_ipv6_unique_local_blocked() {
         let url = reqwest::Url::parse("https://[fd00::1]/admin").unwrap();
         assert!(is_private_host(&url));
     }
 
+    /// Public IPv6 addresses are not classified as private.
     #[test]
     fn test_ssrf_ipv6_public_allowed() {
         let url = reqwest::Url::parse("https://[2606:4700:4700::1111]/dns").unwrap();
@@ -683,6 +719,7 @@ mod tests {
 
     // ── HTML edge cases ──
 
+    /// HTML-looking content inside `<script>` must not leak into plain text.
     #[test]
     fn test_strip_html_nested_script() {
         let html = "<p>A</p><script>var x = '<p>not real</p>';</script><p>B</p>";
@@ -692,11 +729,13 @@ mod tests {
         assert!(!text.contains("not real"));
     }
 
+    /// Empty input strips to empty output.
     #[test]
     fn test_strip_html_empty() {
         assert_eq!(strip_html(""), "");
     }
 
+    /// Tag-free input is returned unchanged (aside from trim of edges if any).
     #[test]
     fn test_strip_html_no_tags() {
         assert_eq!(strip_html("plain text"), "plain text");

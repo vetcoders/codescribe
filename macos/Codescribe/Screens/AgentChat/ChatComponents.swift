@@ -656,7 +656,7 @@ private struct CodeBlockView: View {
                     .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
             )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .help("Copy code")
     }
 }

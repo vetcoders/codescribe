@@ -119,4 +119,4 @@ Download new version from Releases and replace the old app.
 
 ---
 
-_Created by vetcoders (c)2026_
+_Created by Vetcoders (c)2026_

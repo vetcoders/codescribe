@@ -65,16 +65,26 @@ struct CreatorPanel: View {
             SettingsSectionLabel("Quick start")
                 .padding(.top, 24)
             HStack(spacing: 10) {
-                QuickStartCard(icon: .mic, title: "Test mic", subtitle: "Check levels & engine")
-                QuickStartCard(icon: .overlay, title: "Open overlay", subtitle: "Summon the agent")
-                QuickStartCard(icon: .shortcuts, title: "Tune shortcuts", subtitle: "Hotkeys & cadence")
+                QuickStartCard(
+                    icon: .mic,
+                    title: "Test mic",
+                    subtitle: "Check levels & engine",
+                    accessibilityId: "settings-quickstart-test-mic"
+                ) { model.performQuickStart(.testMic) }
+                QuickStartCard(
+                    icon: .overlay,
+                    title: "Open overlay",
+                    subtitle: "Start a dictation session",
+                    accessibilityId: "settings-quickstart-open-overlay"
+                ) { model.performQuickStart(.openOverlay) }
+                QuickStartCard(
+                    icon: .shortcuts,
+                    title: "Tune shortcuts",
+                    subtitle: "Hotkeys & cadence",
+                    accessibilityId: "settings-quickstart-tune-shortcuts"
+                ) { model.performQuickStart(.tuneShortcuts) }
             }
             .padding(.top, 11)
-
-            SettingsSectionLabel("Launchpads")
-                .padding(.top, 24)
-            LaunchpadChips()
-                .padding(.top, 11)
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 24)
@@ -206,7 +216,7 @@ private struct LanguageIdentityPicker: View {
                             )
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .accessibilityLabel(choice.accessibilityLabel)
                 .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
                 .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -288,7 +298,7 @@ private struct PermissionChecklistRow: View {
                         .font(CSFont.mono(11, .semibold))
                         .foregroundStyle(CSColor.terracottaLight)
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
             }
         }
         .padding(.horizontal, 15)
@@ -320,68 +330,52 @@ private struct PermissionChecklistRow: View {
 
 // MARK: - Quick start card
 
+/// A quick-start card IS a button: every card carries a real action (routing or
+/// dictation start). Cards must never render as inert click-bait again —
+/// UI_DIVERGENCE_AUDIT pkt 4 called the previous inert tiles out as fake UX,
+/// and the duplicate "Launchpads" decoration row below them was removed with it.
 private struct QuickStartCard: View {
     let icon: CSIcon
     let title: String
     let subtitle: String
+    let accessibilityId: String
+    let action: () -> Void
+
+    @State private var hovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            CSIconView(icon: icon, size: 16, color: CSColor.textHigh)
-            Text(title)
-                .font(CSFont.ui(13, .semibold))
-                .foregroundStyle(CSColor.textHigh)
-                .padding(.top, 9)
-            Text(subtitle)
-                .font(CSFont.ui(11.5))
-                .lineSpacing(2)
-                .foregroundStyle(CSColor.textMutedAlt)
-                .padding(.top, 3)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 16)
-        .background(
-            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-                .fill(CSColor.surfaceRaised(0.025))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-        )
-    }
-}
-
-// MARK: - Launchpad chips
-
-private struct LaunchpadChips: View {
-    // "Dictation" is the active launchpad (terracotta); the rest are available.
-    var body: some View {
-        HStack(spacing: 8) {
-            chip("Dictation", active: true)
-            chip("Formatting", active: false)
-            chip("Agent chat", active: false)
-            chip("Quick Notes", active: false)
-            Spacer(minLength: 0)
-        }
-    }
-
-    @ViewBuilder
-    private func chip(_ text: String, active: Bool) -> some View {
-        Text(text)
-            .font(CSFont.ui(12, active ? .semibold : .medium))
-            .foregroundStyle(active ? CSColor.terracottaLight : Color(hex: 0xC7CABF))
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 0) {
+                CSIconView(icon: icon, size: 16, color: CSColor.textHigh)
+                Text(title)
+                    .font(CSFont.ui(13, .semibold))
+                    .foregroundStyle(CSColor.textHigh)
+                    .padding(.top, 9)
+                Text(subtitle)
+                    .font(CSFont.ui(11.5))
+                    .lineSpacing(2)
+                    .foregroundStyle(CSColor.textMutedAlt)
+                    .padding(.top, 3)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            .padding(.vertical, 16)
             .background(
-                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .fill(active ? CSColor.terracotta.opacity(0.12) : CSColor.surfaceRaised(0.03))
+                RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                    .fill(CSColor.surfaceRaised(hovered ? 0.05 : 0.025))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                    .strokeBorder(active ? CSColor.terracotta.opacity(0.26) : CSColor.hairline(0.08), lineWidth: 1)
+                RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                    .strokeBorder(CSColor.hairline(hovered ? 0.14 : 0.07), lineWidth: 1)
             )
+            .contentShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+        }
+        .csFocusRing(cornerRadius: CSRadius.card)
+        .onHover { hovered = $0 }
+        .accessibilityLabel(title)
+        .accessibilityHint(subtitle)
+        .accessibilityIdentifier(accessibilityId)
     }
 }
 

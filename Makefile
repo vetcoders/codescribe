@@ -9,7 +9,8 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
-        demo demo-raw demo-assistive check semgrep fix clean help \
+        demo demo-raw demo-assistive check verify semgrep fix clean help \
+        dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-full release-dmgs notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks
 
@@ -32,6 +33,29 @@ CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODE
 # not exported to recipe children, which is exactly how `make release-standard`
 # used to reach --sign with an empty identity.
 CODESCRIBE_DIST_CODESIGN_IDENTITY ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(CODESCRIBE_CODESIGN_IDENTITY))
+# The production licence verification key has the same resolution problem the
+# signing identity above already solved: CI passes it as a repository variable
+# (release.yml), a local checkout had no source at all, and core/build.rs only
+# discovers it is missing ~2 minutes into cargo — as a bare panic that names
+# neither make nor where to get the key. Resolve it from the canonical secrets
+# file so distribution targets are self-sufficient.
+#
+# Deliberately a SEPARATE variable from CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:
+# install-app and scripts/smoke-macos27.sh disarm distribution keying with
+# `env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX`, and that must keep working — a
+# plain `?=` fallback here would silently re-arm the production key in a local
+# build that deliberately wants the development verifier.
+CODESCRIBE_LICENSE_PUBLIC_KEY_FILE ?= $(HOME)/.vibecrafted/secrets/codescribe/license-public.hex
+CODESCRIBE_DIST_LICENSE_KEY = $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(shell cat $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
+# Sparkle's update-verification public key has the same missing-local-source
+# problem: release.yml supplies SPARKLE_ED_PUBLIC_KEY as a repository variable,
+# macos/project.yml substitutes it into SUPublicEDKey, and
+# scripts/verify-dmg-payload.sh refuses a bundle whose key is empty ("Sparkle
+# would reject every update"). A local `make release-standard` had no way to
+# supply it, so a locally cut release failed the gate at the very last check —
+# after codesigning, notarisation and stapling had already been paid for.
+CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE ?= $(HOME)/.vibecrafted/secrets/codescribe/sparkle-public.b64
+CODESCRIBE_DIST_SPARKLE_KEY = $(if $(SPARKLE_ED_PUBLIC_KEY),$(SPARKLE_ED_PUBLIC_KEY),$(shell cat $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
 CODESCRIBE_APP_NAME ?= Codescribe
 CODESCRIBE_DISPLAY_NAME ?= Codescribe
 # SwiftUI app build profile for `make app` / `make app-bindings`
@@ -76,18 +100,20 @@ build:
 
 # Slim public default: Silero VAD + MiniLM. Whisper is runtime/cache/Settings download.
 # Do NOT set CODESCRIBE_EMBED_WHISPER here — that is the fat experimental SKU only.
-release-codescribe:
+release-codescribe: dist-preflight
 	@echo "Building codescribe-ffi (release dylib, embedded: Silero + MiniLM; Whisper runtime)..."
 	@echo "  The app front-end is no longer a Rust bin; this builds the UniFFI bridge dylib."
 	@echo "  Produce the runnable SwiftUI app with: make app PROFILE=release"
 	@echo "  Fat Whisper embed: make release-codescribe-embedded"
-	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo build --release -p codescribe-ffi
+	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo build --release -p codescribe-ffi
 
 # Optional fat SKU / offline curiosity: bake Whisper into the dylib (~1GB+).
 # Not the daily release path. Pair with `make release-full` for a _full DMG.
-release-codescribe-embedded: ensure-models
+release-codescribe-embedded: dist-preflight ensure-models
 	@echo "Building codescribe-ffi (FAT: Silero + MiniLM + Whisper embedded)..."
-	@CODESCRIBE_EMBED_WHISPER=1 cargo build --release -p codescribe-ffi
+	@CODESCRIBE_EMBED_WHISPER=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 cargo build --release -p codescribe-ffi
 
 # ── SwiftUI app (macos/) via the codescribe-ffi UniFFI bridge ────────────────
 # Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
@@ -100,27 +126,29 @@ app-bindings:
 	@echo "Regenerating UniFFI Swift bindings + Xcode project (PROFILE=$(PROFILE), no xcodebuild)..."
 	@SKIP_XCODEBUILD=1 ./scripts/build-app.sh $(PROFILE)
 
-release-qube:
+release-qube: dist-preflight
 	@echo "Building qube-* (release, runtime model resolve from HF cache)..."
-	@CODESCRIBE_NO_EMBED=1 cargo build --release --target-dir target-noembed --bin qube-daemon --bin qube-report
+	@CODESCRIBE_NO_EMBED=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 cargo build --release --target-dir target-noembed --bin qube-daemon --bin qube-report
 
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing qube tools (slim: Silero + MiniLM; Whisper from cache / Settings)..."
+	@echo "Installing qube tools + codescribe CLI (slim: Silero + MiniLM; Whisper from cache / Settings)..."
+	@echo "Local install uses the development license verifier — same contract as install-app."
 	@./scripts/download-embedder.sh || true
-	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo install --path . --force
+	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
+	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
-	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
 	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 	@echo "Note: Whisper is not embedded — download via Settings → Dictation or make download-model"
 
 install-no-embed:
 	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
-	@CODESCRIBE_NO_EMBED=1 cargo install --path . --force
+	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
+	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
-	@pwd > ~/.codescribe/repo_path
 	@$(MAKE) hooks
 	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 	@echo "Note: Set CODESCRIBE_MODEL_PATH at runtime if Whisper is needed"
@@ -227,6 +255,69 @@ bump-major:
 # Quality
 # ============================================================================
 
+# ── GATE LEDGER ─────────────────────────────────────────────────────────────
+#
+# What green means here. A verification command is authoritative ONLY for what
+# it executes, and no surface may cite it as proof of something it does not run.
+# This block is the single place that says which is which; `check` enforces it
+# through scripts/validate-gates.sh, and tests/gate_registry.rs runs the same
+# validator under `cargo test` so the classification reaches CI — CI never
+# invokes a Makefile quality target itself.
+#
+# Adding a verification target without a row here fails the gate. So does
+# wiring one into .github/workflows/ without flipping its `ci=` field, and so
+# does claiming CI coverage no workflow provides. Both directions are checked.
+#
+#   class=static     no tests executed — format, lint, security scanning only
+#   class=hermetic   runs from a clean checkout: no operator dotenv, no private
+#                    corpus, no GUI, no API keys, no audio device, no Xcode
+#   class=operator   needs this host: ~/.codescribe/.env, real API keys, mic or
+#                    BlackHole, the private fixture corpus, Xcode, or a human
+#   ci=yes|no        whether a workflow in .github/workflows/ invokes THIS TARGET
+#                    BY NAME. Narrow on purpose, because it is the only claim a
+#                    script can check without guessing. It does NOT mean "this
+#                    check never runs in CI": release.yml reaches the DMG payload
+#                    check by calling scripts/verify-dmg-payload.sh directly, so
+#                    `verify-dmg` is honestly ci=no while its check does run.
+#                    Targets reached transitively through $(MAKE) inside another
+#                    recipe are likewise not followed. Say the rest in the reach
+#                    text — a field that quietly widened its meaning would be the
+#                    same failure this ledger exists to stop.
+#
+# `make verify` is the one hermetic gate, and it is literally what CI runs —
+# not a second recipe that resembles it. Everything below class=operator is a
+# bench instrument: real proof, host-local, never a merge gate.
+#
+# gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
+# gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace; no tests
+# gate: semgrep class=static ci=no -- semgrep scan --config auto (semgrep.yml runs semgrep directly, not this target)
+# gate: verify class=hermetic ci=yes -- the workspace test set + doctests + env registry + this ledger; the command rust.yml runs
+# gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
+# gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity (scripts/canaries.sh --host)
+# gate: verify-dmg class=operator ci=no -- fail-closed payload check against an already-built DMG; release.yml runs the same check via scripts/verify-dmg-payload.sh, not via this target
+# gate: test class=operator ci=no -- workspace tests + #[ignore] real-API tests + STT pipeline; sources ~/.codescribe/.env and opens Console
+# gate: test-quick class=operator ci=no -- workspace tests only, but still sources ~/.codescribe/.env and opens Console
+# gate: test-all class=operator ci=no -- test + ignored + STT pipeline + SSE streaming; needs LLM keys
+# gate: test-e2e class=operator ci=no -- e2e tests in release profile; sources the operator dotenv
+# gate: test-e2e-real class=operator ci=no -- e2e against real LLM APIs; needs LLM_API_KEY and LLM_ASSISTIVE_API_KEY
+# gate: test-sse class=operator ci=no -- live SSE streaming against a real endpoint
+# gate: test-sse-release class=operator ci=no -- test-sse in the release profile
+# gate: test-sse-heavy class=operator ci=no -- test-sse release + Responses chain/resume
+# gate: test-responses-live class=operator ci=no -- Responses live chain/resume against a real endpoint
+# gate: test-formatting class=operator ci=no -- AI formatting tests against a real LLM
+# gate: test-engine class=operator ci=no -- live-assembly and final-boundary unit lanes with output
+# gate: test-engine-apple class=operator ci=no -- Apple live engine over BlackHole; needs the private fixture corpus
+# gate: test-engine-apple-channel class=operator ci=no -- Apple channel path from WAV; needs the private fixture corpus
+# gate: test-engine-candle class=operator ci=no -- candle/Metal engine lane; needs local models
+# gate: test-engine-parity class=operator ci=no -- Layer 0 parity bar vs the Apple reference; private corpus, host-local bench
+# gate: test-engine-parity-layered class=operator ci=no -- Layer 1 parity arm judged on structure; private corpus, host-local bench
+# gate: test-engine-parity-both class=operator ci=no -- runs both parity arms and prints the delta
+# gate: test-teacher class=operator ci=no -- teacher CLI proof run, writes an HTML report
+# gate: test-swift class=operator ci=no -- 318 SwiftUI front-end tests; needs Xcode and a built ffi dylib
+# gate: smoke-macos27 class=operator ci=no -- host smoke after an OS/Xcode bump; operator-only rows report SKIP
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
 format:
 	@cargo fmt
 
@@ -237,6 +328,7 @@ lint:
 	@cargo clippy --workspace -- -D warnings
 
 TEST_LOG := /tmp/codescribe-tests.log
+SWIFT_TEST_LOG := /tmp/codescribe-swift-tests.log
 TEST_SSE_CARGO_JOBS ?= 2
 TEST_SSE_PROFILE ?= debug
 TEST_SSE_PROFILE_ARGS := $(if $(filter release,$(TEST_SSE_PROFILE)),--release,)
@@ -334,12 +426,22 @@ test-formatting:
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 # ── Core engine (freezed+append / Apple live multi-utterance) ────────────────
+# Private fixtures live OUTSIDE the repo (real operator speech, deprivatized
+# twice — .gitignore keeps tests/assets/data_assets empty by design). Resolve
+# through the documented order: CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets
+# → the in-repo drop dir (tests/assets/data_assets/README.md). Hardcoding the
+# third tier is what left every ENGINE_* target dead on a populated host.
+DATA_ASSETS_DIR := $(shell ./scripts/lib/data-assets.sh dir)
 # Clip for STT engine e2e (mic-sim → transcription_session). Override:
-#   make test-engine-apple ENGINE_CLIP=tests/assets/data_assets/01_no-to-dobra.wav
+#   make test-engine-apple ENGINE_CLIP=~/.codescribe/data_assets/01_no-to-dobra.wav
 #   make test-engine-apple ENGINE_ALL_CLIPS=1
-ENGINE_CLIP ?= tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav
+ENGINE_CLIP ?= $(DATA_ASSETS_DIR)/02_kubernetes-wymaga-konfiguracji.wav
 ENGINE_ALL_CLIPS ?= 0
 ENGINE_BRIDGE ?= target/release/codescribe-stt-bridge
+# Pin host triple so bridge binaries do not inherit the builder's macOS
+# version (measured: host macosx28.0 / minos 28.0 on a 27 beta machine).
+# Keep in lockstep with the SpeechAnalyzer / SFSpeech surface we ship against.
+ENGINE_BRIDGE_TARGET ?= arm64-apple-macos26.0
 # Minimal .app wrapper: TCC grants privacy prompts to bundles, not loose binaries.
 ENGINE_BRIDGE_APP ?= target/release/CodescribeSTTBridge.app
 # Live verbose: session/STT tracing during the long Apple/Candle run.
@@ -382,9 +484,9 @@ test-engine:
 # stable across rebuilds. Prefer it when present; fall back to ad-hoc.
 BRIDGE_SIGN_ID ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),-)
 $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_stt/bridge-Info.plist
-	@echo "Building codescribe-stt-bridge → $(ENGINE_BRIDGE)"
+	@echo "Building codescribe-stt-bridge → $(ENGINE_BRIDGE) (-target $(ENGINE_BRIDGE_TARGET))"
 	@mkdir -p $(dir $(ENGINE_BRIDGE))
-	@swiftc -O -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift \
+	@swiftc -O -target $(ENGINE_BRIDGE_TARGET) -o $(ENGINE_BRIDGE) core/stt/apple_stt/codescribe-stt-bridge.swift \
 		-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
 		-Xlinker core/stt/apple_stt/bridge-Info.plist
 	@codesign --force --sign "$(BRIDGE_SIGN_ID)" --identifier com.vetcoders.codescribe.stt-bridge $(ENGINE_BRIDGE) 2>/dev/null || \
@@ -422,10 +524,257 @@ engine-auth: $(ENGINE_BRIDGE)
 # live output for the same audio (tests/assets/data_assets/README.md). RED
 # until streaming bridge v2 lands — that is the point, not a flake. Every run
 # prints token similarity + a word-level diff for the grinding loop.
+#
+# LANE PINNED, not inherited. `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user
+# key (not promoted to settings.json), so `Config::inject_file_env_for_runtime`
+# copies it out of ~/.codescribe/.env into the process environment. An operator
+# running their daily dictation on `phase1` therefore armed Layer 1 *inside this
+# Layer-0 target* — and Layer 1 is supposed to diverge from Apple, so the bar
+# went red for doing its job. Measured 2026-08-08, one binary, consecutive runs:
+# `Other: 1` → 0.931 PASS, then `Other: 22` → 0.833 FAIL. Explicit `off` also
+# blocks the injection at source (it only fills keys absent from the env).
+
+# The lane the CALLER asked for — and it is exactly what the recipe pins below
+# throw away. `make` cannot see a recipe-level `VAR=x cmd` assignment, but it
+# does see `VAR=x make …` / `make VAR=x`, so `origin` separates "the caller
+# pinned a lane" from "nobody asked". The operator's own `~/.codescribe/.env` is
+# injected in-process by the core, never into this shell, so a daily `phase1`
+# dotenv leaves this empty and the guard below stays silent for daily runs.
+ifneq ($(origin CODESCRIBE_LAYERED_TRANSCRIPTION),undefined)
+PARITY_LANE_REQUEST := $(CODESCRIBE_LAYERED_TRANSCRIPTION)
+endif
+
+# Refuse a run whose pin contradicts the request, instead of measuring the other
+# lane and reporting it as the caller's.
+#
+# This is review finding P1-01 made impossible. A dispatch verifier ran
+# `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 make test-engine-parity`; the recipe
+# pin silently won, Layer 0 was measured twice, and the layered arm was recorded
+# green while asserting nothing about Layer 1. The Rust-side guard
+# (`measured_lane_matches_request`, tests/e2e_overlay_delivery_parity.rs) cannot
+# catch that shape: by the time the test runs, request and measurement agree —
+# they agree on the WRONG lane, because the intent was dropped one layer up,
+# here. $(1) = lane this target pins, $(2) = target that actually measures the
+# requested one.
+define parity_lane_refuse
+	@if [ -n "$(PARITY_LANE_REQUEST)" ] && [ "$(PARITY_LANE_REQUEST)" != "$(1)" ]; then \
+	  printf 'parity lane refused: you asked for CODESCRIBE_LAYERED_TRANSCRIPTION=%s, but `%s` pins the lane to %s.\n' \
+	    '$(PARITY_LANE_REQUEST)' '$@' '$(1)' >&2; \
+	  printf 'The pin wins inside the recipe, so this run would measure %s and report that number as yours.\n' '$(1)' >&2; \
+	  printf 'Measure what you asked for:  make %s\n' '$(2)' >&2; \
+	  exit 2; \
+	fi
+endef
+
 .PHONY: test-engine-parity
 test-engine-parity: $(ENGINE_BRIDGE)
-	@CAPTURE_TEST=e2e_apple_live_parity \
-	  ./scripts/e2e-blackhole-dictation.sh tests/assets/data_assets/05_apple-live-parity.wav
+	$(call parity_lane_refuse,off,test-engine-parity-layered)
+	@CODESCRIBE_LAYERED_TRANSCRIPTION=off \
+	 CAPTURE_TEST=e2e_apple_live_parity \
+	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
+
+# Layer 1 armed: Apple live commits, then Whisper re-transcribes each sealed
+# window and patches it in place (`ReplaceRange { source: TailPatch }`).
+#
+# NOT the same bar. This lane is judged on STRUCTURE ONLY — head present, tail
+# sealed, no lost spans, measured lane matches the request. The Apple-fidelity
+# numbers are printed and never asserted here, because Layer 1 exists to diverge
+# from Apple toward what was actually said: gap-filling grows the denominator, so
+# a MORE accurate layer scores LOWER against Apple. That is the mechanical shape
+# of the layer working, not a contract breach.
+#
+# The single decisive fact behind the rule: `apple_reference_is_a_ruler_not_the_truth`
+# pins the Apple reference at 0.805 against the human transcription of the same
+# audio, so 1.000 on the Apple bar would mean reproducing Apple's ERRORS.
+#
+# Accuracy-vs-human is printed for both lanes and gates neither: its reference is
+# a private fixture (`~/.codescribe/data_assets`), so a bar on it would evaporate
+# on any tree without the operator's corpus. Which number gates a merge stays an
+# operator decision — see
+# .vibecrafted/plans/w12-layered-live-closure/reports/default-flip-memo-layered.md
+#
+# What Layer 1 must still not do is leave the number byte-identical: identical
+# means the patches never reached the measured assembly (guarded always-on by
+# `parity_assembly_reads_layer1_tail_patches`).
+#
+# Run both arms with `test-engine-parity-both`. SFSpeech is nondeterministic at
+# word level (Layer-0 sample n=10 straddles 0.90: 0.778 … 0.931), so a single
+# pair of runs is an observation, not a verdict.
+.PHONY: test-engine-parity-layered
+test-engine-parity-layered: $(ENGINE_BRIDGE)
+	$(call parity_lane_refuse,phase1,test-engine-parity)
+	@CODESCRIBE_LAYERED_TRANSCRIPTION=phase1 \
+	 CAPTURE_TEST=e2e_apple_live_parity \
+	  ./scripts/e2e-blackhole-dictation.sh 05_apple-live-parity.wav
+
+# Both arms in one command, because "run both and compare" was a comment nobody
+# could execute: until this target, `test-engine-parity-layered` was referenced
+# by nothing at all — not a verifier, not a doc, not another target — so the
+# layered arm existed on paper while every gate measured Layer 0 (review P1-01).
+#
+# This runs each arm through its own guarded target, retains both logs, and
+# prints the two similarity numbers side by side with their delta. It does NOT
+# invent a bar for the layered arm: the Layer-0 bar (0.90 vs the Apple-fidelity
+# reference) is the wrong instrument for a layer whose job is to DIVERGE from
+# Apple, and restating bars is an operator decision (see the memo path above).
+# What this target owes you is two honest measurements from one command; the
+# verdict on the delta stays human.
+#
+# Read the arms asymmetrically, because they are judged asymmetrically: arm 1
+# (layer0) can go red on the similarity bar, arm 2 (layer1) can only go red on
+# structure. An `rc=1` on arm 2 is therefore never "the number dropped".
+#
+# SFSpeech is nondeterministic at word level (measured spread 0.898–0.931 over
+# 5 runs), so one pair of runs is an observation, not a verdict — run it a few
+# times before believing a delta.
+#
+# `sim` reads the number from two places on purpose: the harness only echoes its
+# `parity similarity` line on the PASS path, so a RED arm would otherwise report
+# "<no measurement>" while its number sat in the assertion message. A red arm
+# with a number is the whole point here — measured 2026-08-08, phase1 scored
+# 0.863 against the Apple reference and the first version of this target hid it.
+#
+# Do NOT probe this target with `make -n`: the recipe recurses through $(MAKE),
+# and GNU make runs such lines even in dry-run mode, so the tee'd arm logs get
+# clobbered with dry-run output. The authoritative evidence is the per-run log
+# the harness retains under target/e2e-blackhole/<fixture>-<timestamp>.log.
+.PHONY: test-engine-parity-both
+test-engine-parity-both:
+	@if [ -n "$(PARITY_LANE_REQUEST)" ]; then \
+	  printf 'parity lane refused: this target runs BOTH lanes, so pinning CODESCRIBE_LAYERED_TRANSCRIPTION=%s cannot be honoured.\n' \
+	    '$(PARITY_LANE_REQUEST)' >&2; \
+	  printf 'Drop the pin (`make test-engine-parity-both`), or measure one lane with test-engine-parity / test-engine-parity-layered.\n' >&2; \
+	  exit 2; \
+	fi
+	@set -o pipefail; \
+	 mkdir -p target/e2e-blackhole; \
+	 off_log=target/e2e-blackhole/two-arm-layer0.log; \
+	 on_log=target/e2e-blackhole/two-arm-phase1.log; \
+	 sim() { \
+	   v="$$(awk '/^parity similarity [0-9]/ { for (i = 1; i <= NF; i++) if ($$i == "=") v = $$(i + 1) } END { print v }' "$$1")"; \
+	   [ -n "$$v" ] || v="$$(awk -F'similarity ' '/similarity [0-9.]+ < bar/ { split($$2, a, " "); v = a[1] } END { print v }' "$$1")"; \
+	   printf '%s' "$$v"; \
+	 }; \
+	 acc() { \
+	   awk '/^parity accuracy-vs-human [0-9]/ { for (i = 1; i <= NF; i++) if ($$i == "=") v = $$(i + 1) } END { print v }' "$$1"; \
+	 }; \
+	 echo "=== arm 1/2 — Layer 0 (lane pinned off) ==="; \
+	 $(MAKE) --no-print-directory test-engine-parity 2>&1 | tee "$$off_log"; \
+	 off_rc=$$?; \
+	 echo "=== arm 2/2 — Layer 1 (lane pinned phase1) ==="; \
+	 $(MAKE) --no-print-directory test-engine-parity-layered 2>&1 | tee "$$on_log"; \
+	 on_rc=$$?; \
+	 off_sim="$$(sim "$$off_log")"; on_sim="$$(sim "$$on_log")"; \
+	 off_acc="$$(acc "$$off_log")"; on_acc="$$(acc "$$on_log")"; \
+	 echo "=== two-arm parity ==="; \
+	 printf 'layer0 (off)    similarity %s  accuracy-vs-human %s  (rc=%s, log %s)\n' \
+	   "$${off_sim:-<no measurement>}" "$${off_acc:-<none>}" "$$off_rc" "$$off_log"; \
+	 printf 'layer1 (phase1) similarity %s  accuracy-vs-human %s  (rc=%s, log %s)\n' \
+	   "$${on_sim:-<no measurement>}" "$${on_acc:-<none>}" "$$on_rc" "$$on_log"; \
+	 if [ -n "$$off_sim" ] && [ -n "$$on_sim" ]; then \
+	   awk -v a="$$off_sim" -v b="$$on_sim" 'BEGIN { printf "delta similarity (phase1 - off) %+.3f  <- fidelity to APPLE; gap-fill lowers this by design\n", b - a }'; \
+	   if [ "$$off_sim" = "$$on_sim" ]; then \
+	     printf 'WARNING: arms are byte-identical — either the tail patches never reached the measured assembly, or the clip has nothing to patch. See parity_assembly_reads_layer1_tail_patches.\n' >&2; \
+	   fi; \
+	   if [ -n "$$off_acc" ] && [ -n "$$on_acc" ]; then \
+	     awk -v a="$$off_acc" -v b="$$on_acc" 'BEGIN { printf "delta accuracy  (phase1 - off) %+.3f  <- fidelity to what was SAID; this is the sign that answers \"is Layer 1 better?\"\n", b - a }'; \
+	   else \
+	     printf 'delta accuracy: <none> — no human transcription beside the fixture, so neither arm was scored on accuracy. The similarity delta alone CANNOT tell you whether Layer 1 is better; it only tells you it is different.\n' >&2; \
+	   fi; \
+	 else \
+	   printf 'no delta: an arm printed no similarity number. Since the harness now surfaces its measurements on the FAILING path too, this means the arm stopped before scoring at all — a precondition failure (missing loopback, no mic grant, no fixture) rather than a parity verdict. Read the arm log; do NOT report this as a red bar.\n' >&2; \
+	 fi; \
+	 [ "$$off_rc" -eq 0 ] && [ "$$on_rc" -eq 0 ]
+
+# Host smoke for the macOS surfaces we own — run after every OS/Xcode bump.
+# Headless, raises no TCC dialog, posts no synthetic events; operator-only rows
+# report SKIP instead of passing quietly. SMOKE_ARGS='--with-inference' adds the
+# Metal/candle cold-vs-warm row. See docs in scripts/smoke-macos27.sh.
+.PHONY: smoke-macos27
+smoke-macos27:
+	@./scripts/smoke-macos27.sh $(SMOKE_ARGS)
+
+# SwiftUI front-end unit tests (macos/CodescribeTests) — the only gate that
+# executes them. 318 tests in ~4.3 s once the dylib and project exist.
+#
+# Deliberately NOT wired into `check`: it needs Xcode and a built ffi dylib,
+# and the self-hosted CI runners are cargo-only. Run it locally after touching
+# anything under macos/.
+#
+# Two invocation traps this target exists to close, both of which read as
+# "the Swift tests cannot run here" when hit by hand:
+#
+#   1. `CODE_SIGN_IDENTITY="-" xcodebuild …` does nothing. xcodebuild takes
+#      build settings from ARGUMENTS, never from the environment, so the
+#      env-prefix form leaves project.yml's `Codescribe Dev` identity in place
+#      and the build dies with "No certificate matching 'Codescribe Dev'
+#      found" — before a single test runs. It must be a positional KEY=value.
+#   2. `-scheme Codescribe` is mandatory. xcodegen emits no scheme for
+#      bundle.unit-test targets, so no `-target CodescribeTests` invocation can
+#      resolve the SPM dependencies.
+#
+# The identity is ad-hoc on purpose and is NOT $(CODESCRIBE_CODESIGN_IDENTITY):
+# handing xcodebuild a real "Apple Development: …" identity propagates to the
+# SPM package targets, which then fail with `Signing for
+# "HighlightSwift_HighlightSwift" requires a development team`. Tests need a
+# host that launches, not a distributable identity.
+#
+# Narrow a run with SWIFT_TEST_ARGS:
+#   make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'
+#
+# WALL-CLOCK BUDGET. This gate used to report rc=0 whether the suite took 4 s or
+# 47 s, which is how a 10x regression lived in the tree with "4.1-4.5 s (n=4)"
+# recorded beside it as fact. Measured 2026-08-08, identical tree, identical 317
+# tests, three consecutive runs: 47.5 / 28.2 / 4.5 s at ~3 s of CPU — the spread
+# was BLOCKING (real Keychain calls from an XCTest host the core read as
+# production), not work. Fixed at the source in core/config/keychain.rs; the
+# budget stays because the next such regression should be a red gate, not
+# folklore about an unexplained hang.
+#
+# 30 s is ~6x the measured fast mode and would have failed both bad runs above,
+# while leaving room for a loaded host (this machine also runs CI). Raise it for
+# a genuinely busy box rather than deleting it:
+#   make test-swift SWIFT_TEST_MAX_SECONDS=90
+SWIFT_TEST_CODESIGN_IDENTITY ?= -
+SWIFT_TEST_MAX_SECONDS ?= 30
+.PHONY: test-swift
+test-swift:
+	@set -o pipefail; \
+	if [ ! -f target/$(PROFILE)/libcodescribe_ffi.dylib ]; then \
+	  echo "test-swift: target/$(PROFILE)/libcodescribe_ffi.dylib is missing." >&2; \
+	  echo "test-swift: run 'make app-bindings' (or 'make app') first." >&2; \
+	  exit 2; \
+	fi; \
+	echo "=== Swift front-end tests (CodescribeTests) ==="; \
+	cd macos && xcodebuild test \
+	  -scheme Codescribe \
+	  -destination 'platform=macOS,arch=arm64' \
+	  CODE_SIGN_IDENTITY="$(SWIFT_TEST_CODESIGN_IDENTITY)" \
+	  $(SWIFT_TEST_ARGS) 2>&1 | tee $(SWIFT_TEST_LOG) | \
+	  grep -E "^Test Case .* (failed|error)|Executed [0-9]+ tests|^\*\* TEST|error:"; \
+	rc=$${PIPESTATUS[0]}; \
+	executed=$$(grep -oE 'Executed [0-9]+ test' $(SWIFT_TEST_LOG) | tail -1 | grep -oE '[0-9]+'); \
+	if [ "$$rc" -eq 0 ] && [ "$${executed:-0}" -eq 0 ]; then \
+	  echo "test-swift: xcodebuild said TEST SUCCEEDED but executed 0 tests." >&2; \
+	  echo "test-swift: a -only-testing filter that matches nothing exits 0 — that is a" >&2; \
+	  echo "test-swift: silent pass, not a green gate. Check SWIFT_TEST_ARGS." >&2; \
+	  rc=3; \
+	fi; \
+	secs=$$(sed -nE 's/^.*Executed [0-9]+ tests?,.* in ([0-9.]+) \([0-9.]+\) seconds.*$$/\1/p' $(SWIFT_TEST_LOG) | tail -1); \
+	slowest=$$(sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$$/\3 \1.\2/p" $(SWIFT_TEST_LOG) | sort -rn | head -1); \
+	echo "test-swift: full log $(SWIFT_TEST_LOG) (rc=$$rc, executed=$${executed:-0}, seconds=$${secs:-unknown})"; \
+	if [ -n "$$slowest" ]; then echo "test-swift: slowest test $$slowest"; fi; \
+	if [ "$$rc" -eq 0 ] && [ -n "$$secs" ] && \
+	   awk -v s="$$secs" -v m="$(SWIFT_TEST_MAX_SECONDS)" 'BEGIN{exit !(s>m)}'; then \
+	  echo "test-swift: suite took $$secs s, over the $(SWIFT_TEST_MAX_SECONDS) s budget." >&2; \
+	  echo "test-swift: green-but-slow is the shape this gate exists to catch — a 10x swing" >&2; \
+	  echo "test-swift: here has meant the core is doing real (blocking) work for a test run," >&2; \
+	  echo "test-swift: not that the machine is busy. Check the slowest test above, then" >&2; \
+	  echo "test-swift: core/config/keychain.rs::in_xctest_host and macos/CodescribeTests/README.md." >&2; \
+	  echo "test-swift: if the host really is loaded: make test-swift SWIFT_TEST_MAX_SECONDS=90" >&2; \
+	  rc=4; \
+	fi; \
+	exit $$rc
 
 # Apple live engine proof.
 #
@@ -444,7 +793,7 @@ test-engine-apple: $(ENGINE_BRIDGE)
 	@if [ "$(ENGINE_ALL_CLIPS)" = "1" ]; then \
 	  set -e; \
 	  echo "=== harness path (BlackHole isolated; daily Sound defaults restored on exit) ==="; \
-	  for clip in tests/assets/data_assets/0[1-4]_*.wav; do \
+	  for clip in $(DATA_ASSETS_DIR)/0[1-4]_*.wav; do \
 	    echo "=== BlackHole device capture: $$clip ==="; \
 	    ./scripts/e2e-blackhole-dictation.sh "$$clip"; \
 	  done; \
@@ -543,6 +892,13 @@ demo-assistive:
 	@echo "=== Assistive Mode Demo ==="
 	@cargo run --release --example demo_full_pipeline -- --assistive $(AUDIO)
 
+# Static gate: everything that can be decided without running the product.
+#
+# This target used to end with a bare "Quality gate passed" while executing not
+# one test, and .github/workflows/rust.yml called it "the full local gate (incl.
+# real-API / heavy e2e tests)". Both readings were wrong in the same direction —
+# toward more confidence than the commands earn. The closing line now names what
+# ran and what did not; `make verify` is the target that runs tests.
 check:
 	@echo "=== Format Check (Rust) ==="
 	@cargo fmt --all -- --check
@@ -552,7 +908,75 @@ check:
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="
 	@semgrep scan --config auto --error .
-	@echo "Quality gate passed"
+	@echo "=== Env registry ==="
+	@bash scripts/validate-envs.sh
+	@echo "=== Gate ledger ==="
+	@bash scripts/validate-gates.sh
+	@echo ""
+	@echo "check: static gate passed — format, lint, security, env registry, gate ledger."
+	@echo "check: NO tests were executed. Run 'make verify' for the test gate."
+
+# The hermetic gate — and the one CI runs, by name (.github/workflows/rust.yml).
+#
+# Hermetic means: nothing here reaches for this host. It does NOT source
+# ~/.codescribe/.env the way every `make test*` target does via ENV_LOAD, it
+# opens no Console window, it needs no API key, no audio device, no Xcode and no
+# private fixture corpus. That is the whole reason it can be both the agent's
+# gate and CI's job: one command, one definition site, no drift between them.
+#
+# CODESCRIBE_DISABLE_KEYCHAIN=1 keeps keychain-backed tests off the real macOS
+# Keychain (no interactive unlock on a runner — see core/config/keychain.rs);
+# CODESCRIBE_NO_EMBED=1 is build-time and keeps the model payload out, so the
+# gate builds the same way on a runner as it does for an agent on this host.
+#
+# --all-targets does NOT include doctests, so they are run explicitly after it;
+# dropping that second line would silently narrow the gate.
+#
+# `set -e` is load-bearing, not boilerplate. A `;`-joined recipe takes the exit
+# code of its LAST command, so without it this target printed "hermetic gate
+# passed" and returned 0 over `error: test failed, to rerun pass -p
+# codescribe-ffi --lib` — the first run of this gate produced exactly the lie it
+# was written to remove. Any line added below must stay in the `-e` chain.
+verify:
+	@set -eo pipefail; \
+	echo "=== Verify (hermetic: workspace tests) ==="; \
+	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
+	  cargo test --workspace --all-targets; \
+	echo "=== Verify (hermetic: doctests) ==="; \
+	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
+	  cargo test --workspace --doc; \
+	echo "=== Verify (env registry) ==="; \
+	bash scripts/validate-envs.sh; \
+	echo "=== Verify (gate ledger) ==="; \
+	bash scripts/validate-gates.sh; \
+	echo ""; \
+	echo "verify: hermetic gate passed."; \
+	echo "verify: NOT covered here — every class=operator target in the GATE LEDGER"; \
+	echo "verify: (parity bars, Swift front-end suite, host smoke, real-API e2e)."
+
+# Print the classified verification surface. Asserts nothing, so it carries no
+# ledger row of its own — it only shows the ledger `check` and `verify` enforce.
+.PHONY: gate-ledger
+gate-ledger:
+	@bash scripts/validate-gates.sh --list
+
+# ── Canaries: claims vs. execution truth ─────────────────────────────────────
+# The env registry says which vars EXIST; the gate ledger says what gates RUN.
+# Neither checks whether a VALUE the repo claims is still the value the code
+# executes — the gap every recent expensive surprise lived in (docs said the
+# idle-unload default was 300 s while the code ran 2700 s; a benchmark measured
+# a hard-coded model path; a release died on its LAST gate over a key with no
+# local source). scripts/canaries.sh is the catalog: every row names the
+# incident it was born from. `--list` prints the catalog without running it.
+verify-canaries:
+	@bash scripts/canaries.sh
+
+smoke-canaries:
+	@bash scripts/canaries.sh --host
+
+.PHONY: canary-catalog
+canary-catalog:
+	@bash scripts/canaries.sh --list
 
 semgrep:
 	@semgrep scan --config auto --error --quiet .
@@ -632,12 +1056,21 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-minor' 'Bump minor (0.5.1 -> 0.6.0)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'bump-major' 'Bump major (0.5.1 -> 1.0.0)'
 	@printf '\n'
-	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — GATES (run anywhere, decide merge)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Static gate: fmt + prettier + clippy + semgrep + registries. NO tests'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify' 'Hermetic test gate — exactly what CI runs (rust.yml)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'lint' 'Run clippy + fmt check'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'format' 'Format Rust code'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'fix' 'Format all code (Rust + Prettier)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Run full test suite (incl. ignored real-API tests)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Run tests without real-API calls'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
+	@printf '\n'
+	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — BENCH INSTRUMENTS (this host only, never a merge gate)'
+	@printf '%s\n' '  Full classification: make -s gate-ledger'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Full suite incl. ignored real-API tests (sources ~/.codescribe/.env)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Workspace tests, no real API (sources ~/.codescribe/.env)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-swift' '318 SwiftUI front-end tests (needs Xcode + ffi dylib)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'smoke-macos27' 'Host smoke after an OS/Xcode bump (SMOKE_ARGS=--with-inference)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e' 'Run E2E tests (mock)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-sse' 'Run SSE streaming tests (real API)'
@@ -645,29 +1078,72 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine' 'Core freezed+append unit bar (fast, no STT)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-apple' 'Apple live multi-utterance e2e (ENGINE_CLIP / ENGINE_ALL_CLIPS=1)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-candle' 'Candle live multi-utterance e2e (same engine bar)'
+	@printf '%s\n' '  make test-engine-parity-both Both parity arms + delta (needs the private corpus)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-teacher' 'Teacher CLI proof HTML (live×whisper×human)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'Run full test suite'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' 'Verify formatting + clippy + semgrep (CI-safe)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'semgrep' 'Run release security scan'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'hooks' 'Install pre-commit + pre-push + commit-msg hooks'
 
 # ============================================================================
 # Release & Distribution
 # ============================================================================
 
-# Daily slim DMG (public default): Silero + MiniLM, Whisper NOT embedded.
-dmg:
-	@./scripts/build-dmg.sh
+# Distribution preflight — fail in a second, not two minutes into cargo.
+# Every release-profile build needs the production licence key; core/build.rs
+# panics without it, but only after compiling codescribe-core.
+dist-preflight:
+	@key='$(CODESCRIBE_DIST_LICENSE_KEY)'; \
+	if [ $${#key} -ne 64 ] || [ -n "$$(printf '%s' "$$key" | tr -d '0-9a-fA-F')" ]; then \
+		echo "ERROR: distribution builds need the production licence verification key (64 hex chars)."; \
+		echo "  looked in: \$$CODESCRIBE_LICENSE_PUBLIC_KEY_HEX, then $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)"; \
+		echo "  fix either:"; \
+		echo "    printf %s <64-hex> > $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)"; \
+		echo "    export CODESCRIBE_LICENSE_PUBLIC_KEY_HEX=<64-hex>"; \
+		echo "  note: 'VAR=x make a && make b' scopes VAR to 'make a' only — use export,"; \
+		echo "        or the second command builds without the key and dies inside build.rs."; \
+		exit 1; \
+	fi
+	@echo "dist preflight: licence key OK (64 hex from $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),environment,$(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)))"
 
-dmg-signed:
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign
+# Signed artifacts additionally need a Developer ID (not the Apple Development
+# identity `make install-app` prefers for TCC stability).
+dist-preflight-signed: dist-preflight
+	@ident='$(CODESCRIBE_DIST_CODESIGN_IDENTITY)'; \
+	if [ -z "$$ident" ] || [ "$$ident" = "-" ]; then \
+		echo "ERROR: signed distribution needs a 'Developer ID Application' identity."; \
+		echo "  check with: security find-identity -v -p codesigning"; \
+		echo "  override with: make ... CODESCRIBE_DIST_CODESIGN_IDENTITY='Developer ID Application: ...'"; \
+		exit 1; \
+	fi
+	@echo "dist preflight: signing identity OK ($(CODESCRIBE_DIST_CODESIGN_IDENTITY))"
+	@sk='$(CODESCRIBE_DIST_SPARKLE_KEY)'; \
+	if [ -z "$$sk" ] || [ "$$(printf '%s' "$$sk" | base64 -d 2>/dev/null | wc -c | tr -d ' ')" != "32" ]; then \
+		echo "ERROR: signed distribution needs the Sparkle update public key (Ed25519, base64)."; \
+		echo "  looked in: \$$SPARKLE_ED_PUBLIC_KEY, then $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)"; \
+		echo "  without it the bundle ships an empty SUPublicEDKey and"; \
+		echo "  scripts/verify-dmg-payload.sh refuses the DMG *after* notarisation —"; \
+		echo "  the most expensive place in the pipeline to discover a missing input."; \
+		exit 1; \
+	fi
+	@echo "dist preflight: Sparkle public key OK (32-byte Ed25519 from $(if $(SPARKLE_ED_PUBLIC_KEY),environment,$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)))"
+
+# Daily slim DMG (public default): Silero + MiniLM, Whisper NOT embedded.
+dmg: dist-preflight
+	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" ./scripts/build-dmg.sh
+
+dmg-signed: dist-preflight-signed
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
+	 ./scripts/build-dmg.sh --sign
 
 # Daily signed+notarized public artifact (same as make dmg-signed + notarize).
 # Does NOT download/embed Whisper. Apple STT works out of the box; Whisper is
 # opt-in via Settings → Dictation download (or make download-model).
 # Ends with the fail-closed payload gate (signed ≠ complete; see 0.13.2 MiniLM miss).
-release-standard:
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize
+release-standard: dist-preflight-signed
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
+	 ./scripts/build-dmg.sh --sign --notarize
 	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
 	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
 	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}.dmg 2>/dev/null | head -1); \
@@ -679,8 +1155,11 @@ release-standard:
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
 # Ends with the fail-closed payload gate (full = Silero + MiniLM + Whisper).
-release-full: ensure-models
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
+release-full: dist-preflight-signed ensure-models
+	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
+	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
+	 ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
 	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
 	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
 	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}_full.dmg 2>/dev/null | head -1); \

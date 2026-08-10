@@ -61,6 +61,19 @@ private struct OverlayTranscriptSegment: Equatable {
         return true
     }
 
+    /// Map a Rust-canonical char offset inside `text` onto the corresponding
+    /// offset inside `renderedText`. Annotations are inserted decoration, so
+    /// every one of them sitting at or before `offset` pushes it right by
+    /// `" [" + text + "]"`. Context markers anchor to RENDERED offsets, so
+    /// rebasing them after a patch has to go through this translation.
+    func renderedOffset(forTextOffset offset: Int) -> Int {
+        let bounded = min(max(offset, 0), text.count)
+        let shift = annotations
+            .filter { $0.position <= bounded }
+            .reduce(0) { $0 + $1.text.count + 3 }
+        return bounded + shift
+    }
+
     mutating func insertAnnotation(position: UInt64, text annotationText: String) -> Bool {
         guard let offset = Int(exactly: position), offset <= text.count else { return false }
         annotations.append(OverlayTranscriptAnnotation(position: offset, text: annotationText))
@@ -189,6 +202,16 @@ final class OverlayState: ObservableObject {
     /// so VAD silence and quality-gate rejection read differently.
     @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
     @Published private(set) var indicatorMode: CsIndicatorMode = .hold
+
+    // MARK: Session capture clock (UI_DIVERGENCE_AUDIT pkt 5 — overlay timer)
+    /// Monotonic uptime stamp of the moment capture began for the open session.
+    /// The overlay's live `00:00` counter derives from this: the user's absolute
+    /// reference for audio sync, transcription lag, and stream drift.
+    @Published private(set) var captureStartedAtUptime: TimeInterval?
+    /// Freeze stamp — set when capture stops (Finish / native release / abort) so
+    /// the counter halts at the session's true duration instead of ticking
+    /// through the final pass.
+    @Published private(set) var captureEndedAtUptime: TimeInterval?
 
     // MARK: Panel placement (persisted; the window orchestrator repositions live)
     /// Anchored placement: one of six screen anchors, applied on every show().
@@ -438,18 +461,21 @@ final class OverlayState: ObservableObject {
     }
 
     /// Text shown in the listening body, in the SAME prominent slot that renders
-    /// "listening…"/"starting…" during capture. The transcribing phase wins over any
-    /// committed text so the post-capture state surfaces "transcribing…" here (not the
-    /// raw streaming assembly) — the main-status counterpart to the header pill.
-    /// During final pass we keep the assembled transcript visible (user sees result
-    /// while AI formatting runs) — status/footer communicate the phase.
+    /// "listening…"/"starting…" during capture.
+    ///
+    /// CAPTURED WORDS ALWAYS WIN OVER PHASE. The previous shape let the
+    /// transcribing phase replace the live canvas with "transcribing…", so
+    /// stopping a recording made the user's own words vanish behind a spinner
+    /// until the final text swapped in — the operator dictated the bug report
+    /// into the very canvas that then ate it (2026-08-09 20:13): "wyłączenie
+    /// nagrywania zastępuje tekst … i podmienia dopiero ostateczny tekst a tego
+    /// ma nie być". The overlay doctrine forbids exactly this class: never drop
+    /// visible transcript. Phase placeholders render only on an EMPTY canvas;
+    /// the header pill carries the phase otherwise.
     var listeningDisplay: String {
-        if isFinalPass {
-            // Keep the captured assembly visible during final pass / AI formatting.
-            return !liveText.isEmpty ? liveText : "final pass…"
-        }
-        if transcribing { return "transcribing…" }
         if !liveText.isEmpty { return liveText }
+        if isFinalPass { return "final pass…" }
+        if transcribing { return "transcribing…" }
         return warmingUp ? "starting…" : "listening…"
     }
 
@@ -498,6 +524,34 @@ final class OverlayState: ObservableObject {
         Task { @MainActor in await self.runStart(language: language) }
     }
 
+    /// Whole seconds of capture for the open session; nil before any capture.
+    /// Reads the frozen end stamp once capture stopped, so the final pass does
+    /// not keep the clock ticking.
+    func elapsedCaptureSeconds() -> Int? {
+        guard let started = captureStartedAtUptime else { return nil }
+        let end = captureEndedAtUptime ?? nowProvider()
+        return max(0, Int(end - started))
+    }
+
+    /// `mm:ss` (or `h:mm:ss` past the hour) for the overlay's live counter.
+    var sessionTimerText: String {
+        let total = elapsedCaptureSeconds() ?? 0
+        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%02d:%02d", m, s)
+    }
+
+    private func beginCaptureClock() {
+        captureStartedAtUptime = nowProvider()
+        captureEndedAtUptime = nil
+    }
+
+    private func freezeCaptureClock() {
+        guard captureStartedAtUptime != nil, captureEndedAtUptime == nil else { return }
+        captureEndedAtUptime = nowProvider()
+    }
+
     /// Stop the mic and flip to the finalized transcript returned by the core.
     /// Ignored while already transcribing so a second Finish tap during the
     /// awaited `stopRecording()` cannot re-enter and hit "no active recording".
@@ -520,6 +574,7 @@ final class OverlayState: ObservableObject {
         isFormatting = false
         formatFailureStatus = nil
         errorMessage = nil
+        beginCaptureClock()
         recording = true
         do {
             // Whisper is optional gap-fill when Apple is live. initModel soft-fails
@@ -628,6 +683,7 @@ final class OverlayState: ObservableObject {
         // instead of leaving the recording UI up while the final pass runs.
         transcribing = true
         warmingUp = false
+        freezeCaptureClock()
         levelMeter.reset()
         do {
             // The controller bridge returns "" here; the authoritative transcript
@@ -843,9 +899,29 @@ final class OverlayState: ObservableObject {
 
     private func captureQualityIfEdited(action: String) {
         guard mode == .formatted else { return }
+        // `commitOverlayQualityRecord` is a free FFI function, not a call on the
+        // injected `engine` — so a mocked engine does NOT stop it, and the XCTest
+        // suite was appending two synthetic corrections ("original delivered
+        // transcript here with user fix") to the OPERATOR'S live
+        // ~/.codescribe/quality/corrections.jsonl on every run. 276 of 501 rows
+        // in the real store came from test runs, and they surfaced in Settings ›
+        // Dictionary as if the user had made them (operator screenshot
+        // 2026-08-09 14:21, three seconds after a suite finished). The keychain
+        // test-host gate landed earlier did not cover this path.
+        guard !QualityCaptureHost.isRunningTests else { return }
         let delivered = deliveredText.trimmingCharacters(in: .whitespacesAndNewlines)
         let edited = formattedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !edited.isEmpty, delivered != edited else { return }
+        guard !edited.isEmpty else { return }
+        let isEdited = delivered != edited
+        // Unedited transcripts used to never reach the review queue — but "not
+        // corrected on the overlay" means "no time right now", not "perfect"
+        // (operator, 2026-08-09). Capture them once per session, on close, so
+        // Settings › Dictionary can serve as the deferred correction desk. The
+        // identical delivered/edited pair teaches the lexicon nothing (word-pair
+        // extraction over a zero delta yields zero rules), so this fills the
+        // queue without poisoning learning.
+        guard isEdited || action == "close" else { return }
+        let recordedAction = isEdited ? action : "close-unreviewed"
         // Bridge FFI (generated by uniffi) appends the quality JSONL and feeds safe
         // candidates to lexicon.custom.jsonl. That is blocking disk I/O, so it runs
         // off the main actor — Copy/Send/Close must never wait on the disk.
@@ -867,7 +943,7 @@ final class OverlayState: ObservableObject {
                 rawText: rawForRecord,
                 deliveredText: delivered,
                 editedText: edited,
-                action: action,
+                action: recordedAction,
                 formattingLevel: formattingLevel,
                 avgLogprob: avgLogprob,
                 speechPct: speechPct,
@@ -947,6 +1023,7 @@ final class OverlayState: ObservableObject {
             formattedText = ""
             isFormatting = false
             errorMessage = nil
+            beginCaptureClock()
         }
         recording = true
         refreshOverlayPolicyTruth()
@@ -972,6 +1049,10 @@ final class OverlayState: ObservableObject {
             isFormatting = false
             formatFailureStatus = nil
             errorMessage = nil
+            beginCaptureClock()
+        }
+        if captureStartedAtUptime == nil {
+            beginCaptureClock()
         }
         recording = true
         refreshOverlayPolicyTruth()
@@ -983,6 +1064,7 @@ final class OverlayState: ObservableObject {
         cancelWarmupWatchdog()
         recording = false
         isFinalPass = false
+        freezeCaptureClock()
         finalizeTranscript()
     }
 
@@ -999,6 +1081,7 @@ final class OverlayState: ObservableObject {
         cancelWarmupWatchdog()
         warmingUp = false
         transcribing = true
+        freezeCaptureClock()
         levelMeter.reset()
         hasMeasuredAudioLevel = false
     }
@@ -1129,6 +1212,7 @@ final class OverlayState: ObservableObject {
         audioReady = false
         vadActive = false
         isFinalPass = false
+        freezeCaptureClock()
         levelMeter.reset()
         hasMeasuredAudioLevel = false
         if shouldResetTranscript {
@@ -1278,11 +1362,59 @@ final class OverlayState: ObservableObject {
             showToast("Skipped unbound transcript patch")
             return
         }
+        // Snapshot the live-text geometry BEFORE the patch. `contextMarkers`
+        // hold absolute offsets into `rawLiveText` captured at selection time,
+        // so a patch that changes an earlier span's length slides every marker
+        // behind it out of alignment. Rebasing has to happen in the same
+        // transaction — a `{selection_N}` fence that drifts into the middle of
+        // an unrelated word is worse for the agent lane than no fence at all.
+        let origin = liveTextOffset(ofSegmentAt: index)
+        let before = committedSegments[index]
+        let spanStart = origin + before.renderedOffset(forTextOffset: Int(exactly: start) ?? .max)
+        let spanEnd = origin + before.renderedOffset(forTextOffset: Int(exactly: end) ?? .max)
+        let renderedLengthBefore = before.renderedText.count
+
         guard committedSegments[index].replaceRange(start: start, end: end, replacement: text) else {
             showToast("Skipped out-of-range transcript patch")
             return
         }
+        rebaseContextMarkers(
+            spanStart: spanStart,
+            spanEnd: spanEnd,
+            delta: committedSegments[index].renderedText.count - renderedLengthBefore
+        )
         syncCommittedUtterances()
+    }
+
+    /// Offset at which `committedSegments[index]` starts inside `rawLiveText`.
+    /// Mirrors that property's own assembly (blank segments dropped, one space
+    /// between the survivors) — the two must not drift apart.
+    private func liveTextOffset(ofSegmentAt index: Int) -> Int {
+        var offset = 0
+        for segment in committedSegments[..<index] {
+            let rendered = segment.renderedText
+            guard !rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            offset += rendered.count + 1
+        }
+        return offset
+    }
+
+    /// Slide context markers across a patch applied to `spanStart..<spanEnd`
+    /// (live-text coordinates) that changed its length by `delta`.
+    private func rebaseContextMarkers(spanStart: Int, spanEnd: Int, delta: Int) {
+        guard !contextMarkers.isEmpty else { return }
+        for index in contextMarkers.indices {
+            let position = contextMarkers[index].position
+            if position <= spanStart { continue }
+            if position >= spanEnd {
+                contextMarkers[index].position = max(0, position + delta)
+            } else {
+                // The characters this marker anchored to no longer exist.
+                // Collapse to the patch boundary: never dropped (lost intent),
+                // never left past the replacement (drifted intent).
+                contextMarkers[index].position = spanStart
+            }
+        }
     }
 
     func applyInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String) {

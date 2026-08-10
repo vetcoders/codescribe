@@ -13,13 +13,18 @@ use chrono::{DateTime, NaiveDate, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+/// Build-time contract shared with `core/build.rs`: the env-var name the public
+/// key arrives on, plus the development key and its fingerprint.
 mod key_contract;
 pub use key_contract::{
     DEV_LICENSE_PUBLIC_KEY_FINGERPRINT, DEV_LICENSE_PUBLIC_KEY_HEX, LICENSE_PUBLIC_KEY_ENV,
 };
 
+/// Wire prefix for Codescribe keys (`CSK1.<payload>.<signature>`).
 pub const LICENSE_PREFIX: &str = "CSK1";
+/// Default paid SKU that unlocks agentic features under the stock policy.
 pub const DEFAULT_AGENTIC_SKU: &str = "agentic-lifetime";
+/// Days of offline use after last online validation before grace expires.
 pub const OFFLINE_GRACE_DAYS: i64 = 30;
 
 /// SHA-256 of the RFC 8032 development public key. Release builds compare
@@ -27,6 +32,13 @@ pub const OFFLINE_GRACE_DAYS: i64 = 30;
 /// selected.
 pub const LICENSE_PUBLIC_KEY_FINGERPRINT: &str = env!("CODESCRIBE_LICENSE_PUBLIC_KEY_FINGERPRINT");
 
+/// Decode the Ed25519 verifying key injected at build time.
+///
+/// # Panics
+///
+/// Panics if the injected hex is malformed. That is deliberate: `build.rs`
+/// validates the key before compilation, so a bad value here means the build
+/// contract was bypassed and there is no safe way to keep verifying licenses.
 fn license_public_key_bytes() -> [u8; 32] {
     let encoded = env!("CODESCRIBE_LICENSE_PUBLIC_KEY_HEX");
     let mut bytes = [0_u8; 32];
@@ -38,6 +50,11 @@ fn license_public_key_bytes() -> [u8; 32] {
     bytes
 }
 
+/// The signed payload of a CSK1 key.
+///
+/// `deny_unknown_fields` is part of the contract: an issuer that adds a field
+/// without bumping `v` must fail verification rather than have the new field
+/// silently ignored by older builds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LicenseClaims {
@@ -49,14 +66,28 @@ pub struct LicenseClaims {
     pub seat_limit: u16,
 }
 
+/// Entitlement state derived from a key plus the clock.
+///
+/// Only reachable through [`evaluate_license`]; a signature that verifies is
+/// necessary but not sufficient, since `updates_until` and the offline grace
+/// window are applied on top.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LicenseState {
+    /// No key supplied, or the supplied key was blank.
     Unlicensed,
+    /// Verified and inside its updates window.
     Active,
+    /// Verified, but running on a stale online validation. `days_left` counts
+    /// down the remainder of [`OFFLINE_GRACE_DAYS`].
     GraceOffline { days_left: u8 },
+    /// Verified, but past `updates_until` or past the offline grace window.
     ExpiredUpdates,
 }
 
+/// Evaluated license state together with the claims it was derived from.
+///
+/// `claims` is `Some` whenever a key verified, including in the expired states,
+/// so callers can show the SKU and dates behind a lapsed entitlement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LicenseStatus {
     pub state: LicenseState,
@@ -64,6 +95,7 @@ pub struct LicenseStatus {
 }
 
 impl LicenseStatus {
+    /// The no-key status: `Unlicensed` with no claims.
     pub fn unlicensed() -> Self {
         Self {
             state: LicenseState::Unlicensed,
@@ -71,6 +103,11 @@ impl LicenseStatus {
         }
     }
 
+    /// Whether the verified SKU falls inside `policy`'s paid set.
+    ///
+    /// Deliberately independent of [`LicenseState`]: it answers "was this SKU
+    /// ever entitled", not "is the entitlement current". Callers that gate a
+    /// feature must check both.
     pub fn allows_agentic(&self, policy: &LicensePolicy) -> bool {
         self.claims
             .as_ref()
@@ -86,6 +123,7 @@ pub struct LicensePolicy {
 }
 
 impl LicensePolicy {
+    /// Build a policy from an explicit paid-SKU set.
     pub fn new(agentic_skus: impl IntoIterator<Item = String>) -> Self {
         Self {
             agentic_skus: agentic_skus.into_iter().collect(),
@@ -94,22 +132,37 @@ impl LicensePolicy {
 }
 
 impl Default for LicensePolicy {
+    /// Stock product policy: only [`DEFAULT_AGENTIC_SKU`] is agentic-entitled.
     fn default() -> Self {
         Self::new([DEFAULT_AGENTIC_SKU.to_string()])
     }
 }
 
+/// Why a key was rejected.
+///
+/// The variants distinguish *shape* failures from *trust* failures so the UI can
+/// tell a mistyped key apart from a forged one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LicenseError {
+    /// Not exactly three dot-separated parts.
     InvalidFormat,
+    /// Parsed, but the prefix is not [`LICENSE_PREFIX`].
     UnsupportedPrefix,
+    /// The payload segment is not base64url (no padding).
     InvalidPayloadEncoding,
+    /// The signature segment is not base64url, or not a well-formed Ed25519
+    /// signature.
     InvalidSignatureEncoding,
+    /// Well-formed signature that does not verify against the build-injected
+    /// public key — a forged or foreign key.
     InvalidSignature,
+    /// Signature verified, but the claims violate the schema. Carries the
+    /// offending rule.
     InvalidSchema(String),
 }
 
 impl fmt::Display for LicenseError {
+    /// Stable user-facing reason strings for each verification failure class.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidFormat => write!(f, "license key must have three dot-separated parts"),
@@ -126,6 +179,12 @@ impl fmt::Display for LicenseError {
 
 impl std::error::Error for LicenseError {}
 
+/// Parse and cryptographically verify a `CSK1.<payload>.<signature>` key.
+///
+/// Signature verification runs *before* the payload is deserialized, so
+/// untrusted JSON never reaches serde. Uses `verify_strict` to reject
+/// small-order and non-canonical public keys. Time is not consulted here — see
+/// [`evaluate_license`] for the expiry and offline-grace policy.
 pub fn validate_license_key(key: &str) -> Result<LicenseClaims, LicenseError> {
     let mut parts = key.trim().split('.');
     let prefix = parts.next().ok_or(LicenseError::InvalidFormat)?;
@@ -158,6 +217,13 @@ pub fn validate_license_key(key: &str) -> Result<LicenseClaims, LicenseError> {
     Ok(claims)
 }
 
+/// Verify a key and fold in the clock to produce a [`LicenseStatus`].
+///
+/// The caller owns time, so this stays deterministic and testable. Policy:
+/// absent/blank key is `Unlicensed`; past `updates_until` is `ExpiredUpdates`;
+/// a fresh online validation (or a licence never validated online) is `Active`;
+/// otherwise the offline age is measured against [`OFFLINE_GRACE_DAYS`], and a
+/// backwards clock is treated as `Active` rather than as expiry.
 pub fn evaluate_license(
     key: Option<&str>,
     now: DateTime<Utc>,
@@ -193,6 +259,12 @@ pub fn evaluate_license(
     })
 }
 
+/// Schema gate applied to claims that already passed signature verification.
+///
+/// Pins `v == 1`, a non-empty SKU, a 64-character lowercase-hex `email_hash`, a
+/// non-zero `seat_limit`, and `updates_until >= issued`. These are issuer
+/// invariants: a violation means a legitimately signed but malformed key, which
+/// is refused rather than interpreted.
 fn validate_claims(claims: &LicenseClaims) -> Result<(), LicenseError> {
     if claims.v != 1 {
         return Err(LicenseError::InvalidSchema("v must equal 1".into()));
@@ -223,6 +295,11 @@ fn validate_claims(claims: &LicenseClaims) -> Result<(), LicenseError> {
     Ok(())
 }
 
+/// Development-only issuance helpers.
+///
+/// Gated behind `cfg(test)` / the `licensing-dev` feature so the signing key
+/// cannot reach a release build. Keys minted here only verify against the
+/// development public key, which `build.rs` refuses to compile into a release.
 #[cfg(any(test, feature = "licensing-dev"))]
 pub mod test_util {
     use base64::Engine as _;
@@ -237,6 +314,10 @@ pub mod test_util {
         0x7f, 0x60,
     ];
 
+    /// Mint a `CSK1` key for `claims` using the development signing key.
+    ///
+    /// Emits whatever it is given — including claims that [`super::validate_claims`]
+    /// will reject — so tests can construct malformed-but-signed keys.
     pub fn sign_dev_license(claims: &LicenseClaims) -> String {
         let payload = serde_json::to_vec(claims).expect("development claims must serialize");
         let signature = SigningKey::from_bytes(&DEV_SIGNING_KEY_BYTES).sign(&payload);
@@ -247,12 +328,14 @@ pub mod test_util {
     }
 }
 
+/// CSK1 verify/evaluate and policy-boundary unit tests (dev signing key only).
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, TimeZone};
 
     use super::*;
 
+    /// Valid v1 claims with the default agentic SKU and a one-year updates window.
     fn claims() -> LicenseClaims {
         LicenseClaims {
             v: 1,
@@ -264,10 +347,12 @@ mod tests {
         }
     }
 
+    /// Fixed evaluation clock at 2026-08-04 12:00 UTC for deterministic grace math.
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 4, 12, 0, 0).unwrap()
     }
 
+    /// Signed default-SKU key evaluates Active and passes stock agentic policy.
     #[test]
     fn licensing_valid_key_is_active_and_entitles_agentic() {
         let key = test_util::sign_dev_license(&claims());
@@ -276,6 +361,7 @@ mod tests {
         assert!(status.allows_agentic(&LicensePolicy::default()));
     }
 
+    /// Bad signature, wrong prefix, and schema-invalid claims each map distinctly.
     #[test]
     fn licensing_rejects_bad_signature_schema_and_prefix() {
         let valid = test_util::sign_dev_license(&claims());
@@ -300,6 +386,7 @@ mod tests {
         ));
     }
 
+    /// Offline age from last_online_validation yields GraceOffline with days_left.
     #[test]
     fn licensing_grace_counts_from_last_online_validation() {
         let key = test_util::sign_dev_license(&claims());
@@ -308,6 +395,7 @@ mod tests {
         assert_eq!(status.state, LicenseState::GraceOffline { days_left: 18 });
     }
 
+    /// Day 29 stays in grace; day 30 flips to ExpiredUpdates.
     #[test]
     fn licensing_thirty_day_boundary_flips_state() {
         let key = test_util::sign_dev_license(&claims());
@@ -319,6 +407,7 @@ mod tests {
         assert_eq!(at_30.state, LicenseState::ExpiredUpdates);
     }
 
+    /// A policy with a different paid-SKU set denies the default agentic key.
     #[test]
     fn licensing_paid_sku_boundary_is_configurable() {
         let key = test_util::sign_dev_license(&claims());

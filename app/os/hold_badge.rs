@@ -79,6 +79,7 @@ pub struct HoldBadgeConfig {
 }
 
 impl Default for HoldBadgeConfig {
+    /// Default hold badge: 12 px red dot, 150 ms updates, Hold mode.
     fn default() -> Self {
         Self {
             diameter: 12.0,
@@ -108,10 +109,12 @@ impl HoldBadgeConfig {
     }
 }
 
+/// Mode visual contracts and size-change-without-mutate visible config.
 #[cfg(test)]
 mod tests {
     use super::{BadgeMode, HoldBadgeConfig};
 
+    /// Processing pulses orange; Assistive glows purple and is slightly larger.
     #[test]
     fn hold_badge_modes_encode_processing_and_assistive_affordances() {
         assert_eq!(BadgeMode::Processing.color(), (1.0, 0.5, 0.0, 0.85));
@@ -125,6 +128,7 @@ mod tests {
         assert_eq!(BadgeMode::Assistive.diameter_multiplier(), 1.2);
     }
 
+    /// from_mode keeps layout fields while swapping color/diameter for the mode.
     #[test]
     fn hold_badge_config_from_mode_preserves_layout_and_applies_mode_visuals() {
         let base = HoldBadgeConfig::default();
@@ -146,6 +150,7 @@ mod tests {
         assert_eq!(assistive.update_interval_ms, base.update_interval_ms);
     }
 
+    /// Next show reads new base diameter; already-visible config stays frozen.
     #[test]
     fn badge_size_change_applies_to_next_show_without_mutating_visible_config() {
         let visible = HoldBadgeConfig::from_mode_with_base_diameter(BadgeMode::Hold, 8.0);
@@ -166,6 +171,12 @@ mod tests {
 // macOS implementation
 // ─────────────────────────────────────────────────────────────
 
+/// macOS badge implementation: AppKit panel, Accessibility caret tracking, and
+/// the position/pulse updater thread.
+///
+/// Panel work must happen on the main thread, so the public entry points
+/// dispatch there; the generation gate described on `BADGE_GENERATION` is what
+/// keeps a queued show from resurrecting a badge the user already dismissed.
 #[cfg(target_os = "macos")]
 mod imp {
     use super::{BadgeMode, HoldBadgeConfig};
@@ -189,42 +200,70 @@ mod imp {
     use crate::os::Id;
 
     // Accessibility API bindings (use raw pointers compatible with C FFI)
+    /// Opaque `AXUIElementRef` / `AXValueRef` handle.
+    ///
+    /// Kept as a raw pointer rather than a typed wrapper because these values
+    /// cross the C FFI boundary; ownership is manual — every `+1` handle
+    /// returned by the AX calls below must be `CFRelease`d.
     type AXId = *mut std::ffi::c_void;
 
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
+        /// Read one attribute off an AX element. Returns [`AX_ERROR_SUCCESS`]
+        /// and writes a `+1` handle to `value` on success.
         fn AXUIElementCopyAttributeValue(element: AXId, attribute: AXId, value: *mut AXId) -> i32;
+        /// Create the system-wide AX element (the root for "whatever is focused
+        /// right now"). Returns a `+1` handle. Requires Accessibility trust.
         fn AXUIElementCreateSystemWide() -> AXId;
+        /// Unwrap an `AXValueRef` into a caller-provided struct matching
+        /// `type_` (one of the `AX_VALUE_*` constants). `false` on mismatch.
         fn AXValueGetValue(value: AXId, type_: i32, value_ptr: *mut std::ffi::c_void) -> bool;
+        /// Release a `+1` CoreFoundation handle.
         fn CFRelease(cf: *const std::ffi::c_void);
     }
 
     // CGColor functions
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
+        /// Create a `+1` `CGColorRef` from `components` in `space`.
         fn CGColorCreate(
             space: *const std::ffi::c_void,
             components: *const f64,
         ) -> *const std::ffi::c_void;
+        /// Create a `+1` device RGB color space.
         fn CGColorSpaceCreateDeviceRGB() -> *const std::ffi::c_void;
+        /// Release a color space obtained above.
         fn CGColorSpaceRelease(space: *const std::ffi::c_void);
+        /// Release a color obtained above.
         fn CGColorRelease(color: *const std::ffi::c_void);
     }
 
     // AX constants
+    /// `kAXErrorSuccess` — the only return value treated as a usable result.
     const AX_ERROR_SUCCESS: i32 = 0;
+    /// Attribute naming the element that currently has keyboard focus.
     const AX_FOCUSED_UIELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
+    /// Attribute naming an element's role, matched against the text-input roles
+    /// in `focused_element_accepts_text`.
     const AX_ROLE_ATTRIBUTE: &str = "AXRole";
+    /// Attribute holding the current selection/caret range.
     const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
+    /// Attribute holding an element's screen-space origin.
     const AX_POSITION_ATTRIBUTE: &str = "AXPosition";
+    /// Attribute holding an element's size.
     const AX_SIZE_ATTRIBUTE: &str = "AXSize";
 
     // AXValue types
+    /// `kAXValueCGPointType` discriminator for [`AXValueGetValue`].
     const AX_VALUE_CGPOINT_TYPE: i32 = 1;
+    /// `kAXValueCGSizeType` discriminator for [`AXValueGetValue`].
     const AX_VALUE_CGSIZE_TYPE: i32 = 2;
+    /// `kAXValueCFRangeType` discriminator for [`AXValueGetValue`].
     const AX_VALUE_CFRANGE_TYPE: i32 = 3;
 
     // Window level constants
+    /// `NSStatusWindowLevel`. Sits above the floating level (3), which is what
+    /// keeps the badge on top while it stays a non-activating panel.
     const NS_STATUS_WINDOW_LEVEL: i64 = 25;
 
     // ── inlined AppKit helpers (were `ui::shared::helpers::shell`) ──
@@ -265,6 +304,13 @@ mod imp {
     }
 
     lazy_static::lazy_static! {
+        /// Process-wide badge state shared by the show/hide entry points and the
+        /// updater thread.
+        ///
+        /// Never hold this lock across `panel_close`: closing a panel can
+        /// re-enter this module through AppKit notifications and deadlock. The
+        /// updater uses `try_lock` so a busy tick is skipped rather than
+        /// blocking the UI.
         static ref BADGE_STATE: Arc<Mutex<HoldBadgeState>> = Arc::new(Mutex::new(HoldBadgeState {
             window: None,
             timer_running: false,
@@ -368,6 +414,7 @@ mod imp {
 
             // Extract range. Populated by `AXValueGetValue` through an out-pointer;
             // fields are written by the framework, so `dead_code` on them is spurious.
+            /// C layout for AX selected-text range out-parameter from AXValueGetValue.
             #[repr(C)]
             #[allow(dead_code)]
             struct CFRange {
@@ -841,6 +888,11 @@ pub use imp::{
 // Non-macOS no-op stubs (keep the public surface compiling)
 // ─────────────────────────────────────────────────────────────
 
+/// No-op badge surface for non-macOS targets.
+///
+/// Mirrors `imp`'s public functions so the rest of the app compiles and links
+/// unchanged off macOS; there is no AppKit or Accessibility equivalent to wire
+/// up, so every entry point is inert.
 #[cfg(not(target_os = "macos"))]
 mod stubs {
     use super::{BadgeMode, HoldBadgeConfig};

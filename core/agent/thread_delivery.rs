@@ -11,20 +11,31 @@ use chrono::{DateTime, Utc};
 
 use super::{ContentBlock, Message, Role, Thread, ThreadMessage, ThreadStore};
 
+/// Placeholder title for a thread with nothing usable to derive one from.
+///
+/// Doubles as the "still heuristic" marker: a thread carrying this title has
+/// neither a custom nor a generated one, so it stays title-eligible.
 const DEFAULT_THREAD_TITLE: &str = "Codescribe Agent Chat";
 
 /// Completed-turn origin. It is intentionally a core delivery concept rather
 /// than UI state: callers use it for lifecycle evidence without logging content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadDeliverySource {
+    /// Hotkey-driven voice turn delivered through the assistive lane.
     VoiceAssistive,
+    /// Typed turn sent from the chat composer.
     Composer,
+    /// Pre-gateway send path still routed here so nothing bypasses persistence.
     LegacyFallback,
     /// Resident run-monitor heartbeat re-entering an existing thread.
     Monitor,
 }
 
 impl ThreadDeliverySource {
+    /// Stable kebab-case identifier for logs and lifecycle evidence.
+    ///
+    /// These strings are matched by log analysis, so they are part of the
+    /// contract and are deliberately not derived from the variant names.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::VoiceAssistive => "voice-assistive",
@@ -38,22 +49,36 @@ impl ThreadDeliverySource {
 /// Provider-agnostic durable state for one completed agent thread delivery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadDeliveryInput {
+    /// Thread identity. Voice and composer turns of one conversation must share
+    /// it — a differing id splits the conversation into two threads.
     pub backend_id: String,
+    /// The **full** turn history to persist, not a delta: `deliver` replaces the
+    /// stored messages with this vector rather than appending to them.
     pub messages: Vec<ThreadMessage>,
+    /// Provider that produced this turn, recorded for provenance.
     pub provider: String,
+    /// Model that produced this turn.
     pub model: String,
+    /// Which send path delivered it; logged, never persisted on the thread.
     pub source: ThreadDeliverySource,
+    /// Conversation mode (for example `assistive`).
     pub mode: String,
+    /// Thread tags, replaced wholesale on every delivery.
     pub tags: Vec<String>,
+    /// Delivery time, used verbatim as the thread's `updated_at`.
     pub timestamp: DateTime<Utc>,
 }
 
 /// Durable proof returned only after the thread JSON and index upsert succeed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadDeliveryReceipt {
+    /// Thread the delivery landed on, echoed back for correlation.
     pub backend_id: String,
+    /// This delivery created the thread rather than updating an existing one.
     pub created: bool,
+    /// Message count now persisted on disk.
     pub message_count: usize,
+    /// Timestamp written to the thread.
     pub updated_at: DateTime<Utc>,
     /// This delivery introduced the first completed user/assistant exchange.
     pub first_exchange: bool,
@@ -62,24 +87,49 @@ pub struct ThreadDeliveryReceipt {
     pub title_eligible: bool,
 }
 
+/// The single write path for completed agent turns.
+///
+/// Every send path goes through here so thread identity, title/summary
+/// projection, and index upsert have exactly one implementation. Owning the
+/// [`ThreadStore`] is what keeps voice and composer turns converging on one
+/// thread JSON and one index row instead of racing to write their own.
 #[derive(Debug, Clone)]
 pub struct ThreadDeliveryGateway {
     store: ThreadStore,
 }
 
 impl ThreadDeliveryGateway {
+    /// Open the gateway over the user's real threads directory.
     pub fn new() -> Result<Self> {
         Ok(Self {
             store: ThreadStore::new().context("Failed to initialize ThreadStore")?,
         })
     }
 
+    /// Open the gateway over an explicit threads directory.
+    ///
+    /// Lets tests exercise the full persistence contract against a temp dir
+    /// instead of the user's data.
     pub fn new_in<P: AsRef<Path>>(threads_dir: P) -> Result<Self> {
         Ok(Self {
             store: ThreadStore::new_in(threads_dir)?,
         })
     }
 
+    /// Persist a completed turn and return proof it landed.
+    ///
+    /// An upsert keyed on `backend_id`: an existing thread is loaded and updated
+    /// in place, otherwise one is created. The stored message list is *replaced*
+    /// by the input, and provider, model, mode, and tags are refreshed to match
+    /// the delivering turn.
+    ///
+    /// The title is re-derived only while it is still heuristic, so a custom or
+    /// already-generated title survives every later delivery. The receipt reports
+    /// `first_exchange` (this delivery completed the first user→assistant pair)
+    /// and `title_eligible` (that first exchange may launch title generation).
+    ///
+    /// The receipt is returned only after the thread JSON and the index upsert
+    /// both succeed — no receipt is issued for a partial write.
     pub fn deliver(&self, input: ThreadDeliveryInput) -> Result<ThreadDeliveryReceipt> {
         let ThreadDeliveryInput {
             backend_id,
@@ -167,6 +217,11 @@ impl ThreadDeliveryGateway {
     }
 }
 
+/// Whether the history contains a completed user→assistant exchange.
+///
+/// Ordering matters: an assistant message must appear *after* the first user
+/// message. A greeting emitted before the user says anything is not an exchange,
+/// and must not make the thread title-eligible.
 fn has_completed_exchange(messages: &[ThreadMessage]) -> bool {
     let Some(first_user) = messages
         .iter()
@@ -196,6 +251,10 @@ fn derive_thread_title(messages: &[Message]) -> String {
     title
 }
 
+/// One-line preview for the thread rail: the latest assistant reply, clipped to
+/// 240 characters.
+///
+/// Clipping is by `char`, not by byte, so a multi-byte boundary cannot panic.
 fn derive_thread_summary(messages: &[Message]) -> Option<String> {
     messages
         .iter()
@@ -211,6 +270,11 @@ fn derive_thread_summary(messages: &[Message]) -> Option<String> {
         })
 }
 
+/// Message text with its **line structure intact**, or `None` if blank.
+///
+/// Blocks are joined with newlines because the title path strips boilerplate
+/// line by line — collapsing whitespace first would destroy the boundaries it
+/// needs. Contrast [`extract_text_from_message`].
 fn raw_text_from_message(message: &Message) -> Option<String> {
     let mut out = Vec::new();
     for block in &message.content {
@@ -220,6 +284,10 @@ fn raw_text_from_message(message: &Message) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Message text flattened to a single whitespace-normalized line, or `None` if
+/// blank.
+///
+/// The display form, used for summaries and as the title fallback.
 fn extract_text_from_message(message: &Message) -> Option<String> {
     let mut out = Vec::new();
     for block in &message.content {
@@ -233,6 +301,10 @@ fn extract_text_from_message(message: &Message) -> Option<String> {
     (!normalized.is_empty()).then_some(normalized)
 }
 
+/// Append a block's text to `out`, recursing into tool results.
+///
+/// Non-text blocks and whitespace-only text are skipped, so blocks that carry no
+/// readable content contribute nothing to a title or summary.
 fn extract_text_from_block(block: &ContentBlock, out: &mut Vec<String>) {
     match block {
         ContentBlock::Text(text) if !text.trim().is_empty() => out.push(text.to_string()),
@@ -245,6 +317,10 @@ fn extract_text_from_block(block: &ContentBlock, out: &mut Vec<String>) {
     }
 }
 
+/// Lowercase line prefixes that mark preamble rather than the user's request.
+///
+/// Bilingual by necessity: prompts reach the agent in Polish and English, and a
+/// thread titled "INSTRUKCJA UŻYTKOWNIKA" tells the user nothing.
 const BOILERPLATE_LINE_PREFIXES: &[&str] = &[
     "instrukcja",
     "instruction",
@@ -255,6 +331,10 @@ const BOILERPLATE_LINE_PREFIXES: &[&str] = &[
     "system:",
 ];
 
+/// First line that reads like an actual request, whitespace-normalized.
+///
+/// Returns `None` when every line is blank or boilerplate; the caller then falls
+/// back to the unstripped text rather than showing an empty title.
 fn strip_boilerplate_title(raw: &str) -> Option<String> {
     raw.lines().find_map(|line| {
         let trimmed = line.trim();
@@ -266,6 +346,7 @@ fn strip_boilerplate_title(raw: &str) -> Option<String> {
     })
 }
 
+/// Whether a line is preamble: a known prefix, or an all-caps header.
 fn is_boilerplate_line(line: &str) -> bool {
     let lower = line.to_lowercase();
     BOILERPLATE_LINE_PREFIXES
@@ -274,6 +355,10 @@ fn is_boilerplate_line(line: &str) -> bool {
         || is_all_caps_header(line)
 }
 
+/// Whether a line has letters and none of them are lowercase.
+///
+/// Requiring at least one letter keeps pure punctuation or digit lines (`---`,
+/// `2026`) from being classified as shouted headers.
 fn is_all_caps_header(line: &str) -> bool {
     let mut has_alpha = false;
     for ch in line.chars() {
@@ -287,6 +372,8 @@ fn is_all_caps_header(line: &str) -> bool {
     has_alpha
 }
 
+/// Delivery gateway contract tests: single-thread upsert, title eligibility,
+/// and boilerplate stripping against a temp store.
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -299,12 +386,14 @@ mod tests {
     use super::*;
     use crate::agent::{ThreadIndex, ThreadIndexData, ThreadNote, TokenUsage};
 
+    /// Fixed UTC timestamp on 2026-07-19 at the given hour for deterministic tests.
     fn timestamp(hour: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 7, 19, hour, 0, 0)
             .single()
             .expect("fixed timestamp should be valid")
     }
 
+    /// One-block text `ThreadMessage` with the given role and wall-clock.
     fn message(role: &str, text: &str, at: DateTime<Utc>) -> ThreadMessage {
         ThreadMessage {
             role: role.to_string(),
@@ -314,6 +403,7 @@ mod tests {
         }
     }
 
+    /// Build a full `ThreadDeliveryInput` with fixed provider/model/mode/tags.
     fn input(
         backend_id: &str,
         source: ThreadDeliverySource,
@@ -332,6 +422,7 @@ mod tests {
         }
     }
 
+    /// User then assistant messages at the same timestamp (one completed exchange).
     fn exchange(at: DateTime<Utc>, user: &str, assistant: &str) -> Vec<ThreadMessage> {
         vec![
             message("user", user, at),
@@ -339,6 +430,7 @@ mod tests {
         ]
     }
 
+    /// Assert the temp dir has exactly one thread JSON and one index row.
     fn assert_single_thread_artifacts(threads_dir: &Path) -> Result<()> {
         // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- test-only directory is created by TempDir and initialized by ThreadDeliveryGateway/ThreadStore before inspection.
         let thread_files = fs::read_dir(threads_dir)?
@@ -364,6 +456,7 @@ mod tests {
         Ok(())
     }
 
+    /// Voice and composer inputs share backend id while preserving distinct sources.
     #[test]
     fn thread_delivery_input_constructs_voice_and_composer_sources() {
         let at = timestamp(8);
@@ -387,6 +480,7 @@ mod tests {
         assert_eq!(composer.tags, vec!["agent", "overlay"]);
     }
 
+    /// Same backend id: voice then composer land on one JSON file and one index row.
     #[test]
     fn thread_delivery_upserts_voice_and_composer_into_one_json_and_index_row() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -444,6 +538,7 @@ mod tests {
         Ok(())
     }
 
+    /// Two different backend ids leave two artifacts; the single-thread verifier panics.
     #[test]
     #[should_panic(expected = "same backend id must leave exactly one thread JSON artifact")]
     fn thread_delivery_verifier_rejects_a_different_second_backend_id() {
@@ -473,6 +568,7 @@ mod tests {
             .expect("artifact verifier should reject the identity split");
     }
 
+    /// Custom titles survive deliver; first_exchange may still fire, title_eligible does not.
     #[test]
     fn thread_delivery_preserves_custom_title_and_disables_title_eligibility() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -514,6 +610,7 @@ mod tests {
         Ok(())
     }
 
+    /// Title derivation skips ALL-CAPS / instruction preambles and keeps the request line.
     #[test]
     fn thread_delivery_title_skips_boilerplate_preamble() {
         let message = Message {
@@ -530,6 +627,7 @@ mod tests {
         );
     }
 
+    /// Plain first-line user text becomes the title without boilerplate stripping.
     #[test]
     fn thread_delivery_title_keeps_plain_first_line() {
         let message = Message {
@@ -545,6 +643,7 @@ mod tests {
         );
     }
 
+    /// When every line is boilerplate, fall back to the unstripped first-user text.
     #[test]
     fn thread_delivery_title_falls_back_when_all_boilerplate() {
         let message = Message {

@@ -16,6 +16,7 @@ use tracing::trace;
 
 use crate::os::hold_badge::BadgeMode;
 
+/// Process-local callback the UniFFI bridge registers to mirror status to Swift.
 type TrayStatusSink = Arc<dyn Fn(TrayStatusSnapshot) + Send + Sync + 'static>;
 
 /// Status of the Codescribe system, formerly reflected in the AppKit tray icon.
@@ -78,6 +79,10 @@ pub struct TrayStatusSnapshot {
 }
 
 impl TrayStatusSnapshot {
+    /// Derive a snapshot from a status plus the active session lane.
+    ///
+    /// `Thinking` always resolves to [`BadgeMode::Processing`] regardless of the
+    /// lane — processing outranks the assistive/hold distinction.
     pub fn new(status: TrayStatus, assistive: bool) -> Self {
         let indicator_mode = if status == TrayStatus::Thinking {
             BadgeMode::Processing
@@ -92,6 +97,8 @@ impl TrayStatusSnapshot {
         }
     }
 
+    /// Pair a status with an already-resolved badge mode, bypassing the
+    /// assistive derivation in [`TrayStatusSnapshot::new`].
     pub fn with_indicator_mode(status: TrayStatus, indicator_mode: BadgeMode) -> Self {
         Self {
             status,
@@ -99,11 +106,18 @@ impl TrayStatusSnapshot {
         }
     }
 
+    /// Whether the agent (assistive) lane should be visible right now.
+    ///
+    /// True only while starting or listening: the lane is armed before the
+    /// pipeline emits `Listening`, so the warm-up must already read as
+    /// assistive or the menu bar flashes dictation styling first.
     pub fn is_assistive_visible(&self) -> bool {
         self.indicator_mode == BadgeMode::Assistive
             && matches!(self.status, TrayStatus::Starting | TrayStatus::Listening)
     }
 
+    /// Lane-aware tooltip: agent wording while assistive is visible, otherwise
+    /// the plain [`TrayStatus`] text.
     pub fn tooltip(&self) -> String {
         if self.is_assistive_visible() {
             match self.status {
@@ -116,6 +130,8 @@ impl TrayStatusSnapshot {
         }
     }
 
+    /// Lane-aware menu status line, mirroring
+    /// [`TrayStatusSnapshot::tooltip`].
     pub fn menu_label(&self) -> &'static str {
         if self.is_assistive_visible() {
             match self.status {
@@ -129,12 +145,16 @@ impl TrayStatusSnapshot {
     }
 }
 
+/// Process-wide store of the latest snapshot, seeded idle on first access.
 fn current_status_store() -> &'static RwLock<TrayStatusSnapshot> {
+    /// Process-wide latest tray snapshot; seeded Idle on first access.
     static CURRENT_STATUS: OnceLock<RwLock<TrayStatusSnapshot>> = OnceLock::new();
     CURRENT_STATUS.get_or_init(|| RwLock::new(TrayStatusSnapshot::new(TrayStatus::Idle, false)))
 }
 
+/// Process-wide slot holding the bridge sink, empty until Swift registers one.
 fn tray_status_sink_store() -> &'static RwLock<Option<TrayStatusSink>> {
+    /// Optional UniFFI/Swift sink slot; empty until bridge registers.
     static TRAY_STATUS_SINK: OnceLock<RwLock<Option<TrayStatusSink>>> = OnceLock::new();
     TRAY_STATUS_SINK.get_or_init(|| RwLock::new(None))
 }
@@ -221,6 +241,8 @@ pub fn update_tray_status(status: TrayStatus) {
     notify_tray_status(snapshot);
 }
 
+/// Forward a snapshot to the registered sink, or trace it when the Swift
+/// listener has not attached yet. Never blocks and never fails the producer.
 fn notify_tray_status(snapshot: TrayStatusSnapshot) {
     let sink = tray_status_sink_store()
         .read()
@@ -239,10 +261,12 @@ fn notify_tray_status(snapshot: TrayStatusSnapshot) {
     }
 }
 
+/// Assistive-visible predicate for starting/listening vs terminal states.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Starting and Listening with assistive lane count as assistive-visible.
     #[test]
     fn assistive_visible_covers_starting_and_listening_only() {
         // The assistive lane is set before the pipeline emits `Listening`, so the
@@ -256,6 +280,7 @@ mod tests {
         }
     }
 
+    /// Idle/Success/Thinking and non-assistive lanes stay non-assistive.
     #[test]
     fn assistive_visible_ignores_terminal_and_non_assistive_states() {
         assert!(!TrayStatusSnapshot::new(TrayStatus::Idle, true).is_assistive_visible());

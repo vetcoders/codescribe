@@ -8,21 +8,40 @@
 /// Maximum buffer size before forced flush (防DoS - prevents unbounded memory growth)
 const MAX_BUFFER_SIZE: usize = 64 * 1024; // 64KB
 
+/// Which recognized tag a span of the stream belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TagKind {
+    /// `<speak>` — spoken output, chunked for TTS.
     Speak,
+    /// `<tool name="...">` — a tool invocation with a JSON argument body.
     Tool,
+    /// Anything else; treated as plain text rather than a tag.
     Unknown,
 }
 
+/// One parsed unit of demuxed LLM output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DemuxEvent {
+    /// A speakable chunk, already cut on a sentence or word boundary.
     Speak(String),
-    Tool { name: String, args: String },
+    /// A complete tool call. Only emitted once the closing tag arrived.
+    Tool {
+        /// Value of the `name` attribute, empty when the tag omitted it.
+        name: String,
+        /// Raw tag body, passed through verbatim (typically JSON).
+        args: String,
+    },
+    /// Text outside any recognized tag, including malformed tags.
     Text(String),
+    /// A tag is open but not yet closed — signals the stream is mid-tag.
     Partial(TagKind),
 }
 
+/// Incremental tag parser over an SSE-style chunked LLM stream.
+///
+/// Feed chunks as they arrive; the parser retains partial state across calls and
+/// emits events only once they are complete. Speak content is additionally cut
+/// into chunks between `speak_min_chars` and `speak_max_chars`.
 #[derive(Debug, Clone)]
 pub struct StreamingTagParser {
     buffer: String,
@@ -31,28 +50,43 @@ pub struct StreamingTagParser {
     speak_max_chars: usize,
 }
 
+/// Position of the parser inside the tag grammar.
 #[derive(Debug, Clone)]
 enum ParserState {
+    /// Outside any tag; bytes flow through as text until a `<` appears.
     Text,
+    /// Saw `<` but not yet the matching `>`.
     TagOpen,
+    /// Inside a recognized tag, accumulating its body until the closing tag.
     TagContent {
+        /// Which tag family this body belongs to.
         kind: TagKind,
+        /// Bare tag name, used to build the closing tag.
         tag: String,
+        /// The literal opening tag, replayed verbatim if the tag never closes.
         open_tag: String,
+        /// `name` attribute for tool tags.
         tool_name: Option<String>,
+        /// Char offset in `content` already emitted as speak chunks.
         last_emit: usize,
+        /// Body accumulated so far across chunks.
         content: String,
     },
 }
 
+/// Parsed shape of an opening tag literal.
 #[derive(Debug)]
 struct TagInfo {
+    /// Recognized family for the tag name.
     kind: TagKind,
+    /// Bare tag name as written.
     tag: String,
+    /// `name` attribute value for tool tags.
     tool_name: Option<String>,
 }
 
 impl StreamingTagParser {
+    /// Parser with the default speak chunk window (40..160 chars).
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
@@ -62,6 +96,8 @@ impl StreamingTagParser {
         }
     }
 
+    /// Parser with a custom speak chunk window. Both bounds are clamped to at
+    /// least 1 so chunking can never stall on a zero-width window.
     pub fn with_speak_chunking(min_chars: usize, max_chars: usize) -> Self {
         Self {
             buffer: String::new(),
@@ -261,11 +297,15 @@ impl StreamingTagParser {
 }
 
 impl Default for StreamingTagParser {
+    /// Same empty state as [`StreamingTagParser::new`].
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Drain `content` into speak chunks, advancing `last_emit` past everything
+/// emitted. Stops as soon as no further boundary fits the window, leaving the
+/// remainder buffered for the next chunk.
 fn emit_speak_chunks(
     min_chars: usize,
     max_chars: usize,
@@ -294,6 +334,10 @@ fn emit_speak_chunks(
     }
 }
 
+/// Parse an opening tag literal such as `<tool name="x">`.
+///
+/// Returns `None` for closing tags and malformed input, so the caller can fall
+/// back to treating the literal as plain text.
 fn parse_open_tag(tag: &str) -> Option<TagInfo> {
     if !tag.starts_with('<') || !tag.ends_with('>') {
         return None;
@@ -330,6 +374,8 @@ fn parse_open_tag(tag: &str) -> Option<TagInfo> {
     })
 }
 
+/// Guess which tag a still-incomplete `<...` prefix is turning into, so the
+/// consumer learns what is coming before the tag closes.
 fn partial_kind(buf: &str) -> TagKind {
     let s = buf.trim_start_matches('<').trim_start_matches('/');
     if "speak".starts_with(s) || s.starts_with("speak") {
@@ -341,6 +387,10 @@ fn partial_kind(buf: &str) -> TagKind {
     TagKind::Unknown
 }
 
+/// Read a quoted attribute value out of a tag's attribute string.
+///
+/// Hand-rolled rather than regex-based: it skips malformed pairs instead of
+/// failing the whole tag, matching the parser's treat-garbage-as-text stance.
 fn find_attr_value(attrs: &str, key: &str) -> Option<String> {
     let bytes = attrs.as_bytes();
     let mut i = 0;
@@ -390,6 +440,11 @@ fn find_attr_value(attrs: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Find where to cut the next speak chunk, starting at `start`.
+///
+/// Preference order: sentence punctuation once `min_chars` is reached, then the
+/// last word boundary before `max_chars`, then a hard cut at `max_chars`.
+/// Returns `None` when not enough content has arrived to justify a cut.
 fn find_speak_boundary(
     content: &str,
     start: usize,
@@ -431,10 +486,12 @@ fn find_speak_boundary(
     None
 }
 
+/// Streaming tag parser coverage: speak, tool, partial tags, and flush.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A complete `<speak>` chunk emits one Speak event with the body.
     #[test]
     fn parses_speak_single_chunk() {
         let mut p = StreamingTagParser::new();
@@ -442,6 +499,7 @@ mod tests {
         assert_eq!(ev, vec![DemuxEvent::Speak("hi".to_string())]);
     }
 
+    /// `<tool name=…>` captures name + JSON args as a Tool event.
     #[test]
     fn parses_tool_with_name() {
         let mut p = StreamingTagParser::new();
@@ -455,6 +513,7 @@ mod tests {
         );
     }
 
+    /// Plain text and tags interleave without losing surrounding Text spans.
     #[test]
     fn parses_text_and_tags() {
         let mut p = StreamingTagParser::new();
@@ -469,6 +528,7 @@ mod tests {
         );
     }
 
+    /// Tag name split across feeds surfaces Partial then completes as Speak.
     #[test]
     fn handles_partial_tag() {
         let mut p = StreamingTagParser::new();
@@ -478,6 +538,7 @@ mod tests {
         assert_eq!(ev2, vec![DemuxEvent::Speak("hi".to_string())]);
     }
 
+    /// `flush` emits buffered open-speak content when the stream ends mid-tag.
     #[test]
     fn flushes_open_speak() {
         let mut p = StreamingTagParser::new();

@@ -85,6 +85,12 @@ struct RecorderVad {
 }
 
 impl RecorderVad {
+    /// Spawn the VAD thread and return a handle, or `None` if it cannot start.
+    ///
+    /// `None` is a soft failure: auto-silence is lost but recording continues.
+    /// The probability starts at 0.0 (no speech seen), which is what makes the
+    /// `seen_speech` gate in the capture callback work — a 1.0 start would let
+    /// initial silence trip the auto-stop before the user says anything.
     fn new(sample_rate: u32) -> Option<Self> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(128);
         // 0.0 = no speech seen yet (the critical fix)
@@ -120,6 +126,10 @@ impl RecorderVad {
 }
 
 impl Drop for RecorderVad {
+    /// Close the sample channel *before* joining the worker.
+    ///
+    /// The worker loops over the receiver, so joining first would deadlock: the
+    /// loop only ends once the sender is gone.
     fn drop(&mut self) {
         // Close channel first so the worker loop can exit before join().
         drop(self.tx.take());
@@ -154,6 +164,11 @@ const STREAMING_BUFFER_CAP_SECONDS: usize = 300;
 
 // --- configuration ---
 
+/// Tunables for a recording session.
+///
+/// `sample_rate` is a request, not a guarantee: the stream is opened at the
+/// device's native rate, and [`Recorder::actual_sample_rate`] reports what was
+/// actually used.
 #[derive(Debug, Clone)]
 pub struct RecorderConfig {
     /// Sample rate (Hz)
@@ -172,6 +187,12 @@ pub struct RecorderConfig {
 }
 
 impl Default for RecorderConfig {
+    /// Defaults derived from [`vad::VadConfig`], with auto-silence read from the
+    /// `AUTO_SILENCE` environment variable.
+    ///
+    /// Deriving rather than duplicating keeps one source of truth for the VAD
+    /// thresholds. Note this `Default` is environment-sensitive: two calls in
+    /// the same process can differ if `AUTO_SILENCE` changes between them.
     fn default() -> Self {
         // Keep a single source of truth for VAD thresholds/silence durations.
         // VAD internals are hardcoded in `vad::VadConfig`.
@@ -191,6 +212,8 @@ impl Default for RecorderConfig {
 
 // --- diagnostics ---
 
+/// Counters for the most recently completed take, filled in by
+/// [`Recorder::stop`].
 #[derive(Debug, Default, Clone)]
 pub struct RecorderDiagnostics {
     pub frames: usize,
@@ -217,12 +240,27 @@ pub struct SnapshotResult {
 
 // --- audio buffer ---
 
+/// Shared capture buffer: mono i16 samples, written from the CoreAudio callback.
+///
+/// A `VecDeque` because streaming sessions evict from the front once the
+/// retention cap is reached.
 type AudioBuffer = Arc<Mutex<VecDeque<i16>>>;
 
+/// Per-block tap on the live capture stream, receiving mono f32 samples.
+///
+/// Invoked on the CoreAudio callback thread — anything slow or blocking here
+/// shows up as dropped audio.
 pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 
 // --- recorder ---
 
+/// Microphone capture session over cpal.
+///
+/// Owns the input stream, the shared sample buffer and — when auto-silence is
+/// enabled — a [`RecorderVad`] that dies with the recorder. Samples accumulate
+/// until [`Recorder::stop`] writes them to a temp WAV;
+/// [`Recorder::snapshot_wav`] can slice the buffer without interrupting
+/// capture.
 pub struct Recorder {
     pub config: RecorderConfig,
     buffer: AudioBuffer,
@@ -236,6 +274,9 @@ pub struct Recorder {
     /// Actual sample rate used for recording (may differ from config)
     actual_sample_rate: u32,
     on_data: Option<AudioCallback>,
+    /// Disk spill of the full streaming take (operator decision B): survives
+    /// the RAM ring cap; `None` when disabled or not a streaming session.
+    spill: Option<SpillSink>,
     /// Callback invoked when VAD (silence detection) stops recording
     on_vad_stop: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Local VAD for auto-silence (replaces global VadWorker)
@@ -282,6 +323,7 @@ impl Recorder {
             on_data: None,
             on_vad_stop: None,
             recorder_vad: None,
+            spill: None,
         })
     }
 
@@ -290,6 +332,11 @@ impl Recorder {
         self.on_data = Some(callback);
     }
 
+    /// Warn when a VAD-stop callback is registered while auto-silence is off.
+    ///
+    /// The registration is kept, not rejected — but it can never fire, and a
+    /// silent no-op callback is the kind of thing that reads as a broken
+    /// recorder rather than a disabled feature.
     fn warn_inert_vad_stop_callback(&self, context: &str) {
         if self.on_vad_stop.is_some() && !self.config.auto_silence {
             warn!(
@@ -452,6 +499,31 @@ impl Recorder {
         let buffer_cap_samples =
             has_streaming_callback.then(|| streaming_buffer_cap_samples(native_sample_rate));
 
+        // Disk spill (operator decision B): streaming sessions keep the FULL
+        // take on disk while the RAM ring stays capped for live consumers.
+        self.spill = None;
+        let spill_tx = if has_streaming_callback
+            && audio_spill_from_env_value(std::env::var("CODESCRIBE_AUDIO_SPILL").ok().as_deref())
+        {
+            match SpillSink::spawn(native_sample_rate, &std::env::temp_dir()) {
+                Ok(sink) => {
+                    let tx = sink.sender();
+                    self.spill = Some(sink);
+                    info!(
+                        "Audio spill armed: full take survives the {}s ring cap",
+                        STREAMING_BUFFER_CAP_SECONDS
+                    );
+                    tx
+                }
+                Err(e) => {
+                    warn!("Audio spill unavailable, ring-only session: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Share local VAD with audio callback (RecorderVad is Send via channel+atomic)
         let vad_prob = self
             .recorder_vad
@@ -473,12 +545,17 @@ impl Recorder {
                         cb(&mono_samples);
                     }
 
-                    // Convert mono f32 samples to i16 and append to buffer.
+                    // Convert once; the ring and the disk spill share the samples.
+                    let mono_i16 = convert_mono_f32_to_i16(&mono_samples);
+                    if let Some(ref tx) = spill_tx {
+                        // Send-only on the audio thread; the writer thread does the I/O.
+                        let _ = tx.send(mono_i16.clone());
+                    }
                     if let Ok(mut buf) = buffer.lock() {
                         append_mono_i16_samples(
                             &mut buf,
                             &buffer_start_offset,
-                            &mono_samples,
+                            &mono_i16,
                             buffer_cap_samples,
                         );
                     }
@@ -615,6 +692,29 @@ impl Recorder {
         self.device = None;
         self.is_recording.store(false, Ordering::SeqCst);
 
+        // The stream is gone, so every callback-held spill sender is dropped —
+        // finalize returns the COMPLETE take (immune to the ring cap).
+        let spill_take = self.spill.take().and_then(SpillSink::finalize);
+        if let Some((path, samples)) = spill_take
+            && samples > 0
+        {
+            self.last_duration = samples as f32 / self.actual_sample_rate as f32;
+            self.diagnostics.frames = samples;
+            self.diagnostics.bytes = samples * std::mem::size_of::<i16>();
+            self.diagnostics.duration_sec = self.last_duration;
+            info!(
+                "Captured audio (spill, full take): {} frames ({:.2}s) at {}Hz",
+                samples, self.last_duration, self.actual_sample_rate
+            );
+            info!("Audio successfully saved to WAV file");
+            self.buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            self.buffer_start_offset.store(0, Ordering::SeqCst);
+            return Ok(Some(path));
+        }
+
         // Get buffer data
         let wav_data = {
             let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -729,12 +829,21 @@ impl Recorder {
 }
 
 impl Default for Recorder {
+    /// # Panics
+    ///
+    /// Panics if the recorder cannot be constructed. Prefer [`Recorder::new`],
+    /// which surfaces the same failure as a `Result`.
     fn default() -> Self {
         Self::new().expect("Failed to create default recorder")
     }
 }
 
 impl Drop for Recorder {
+    /// Tear down the input stream if the caller never reached
+    /// [`Recorder::stop`].
+    ///
+    /// Defensive only: it releases the device, but the buffered audio is
+    /// discarded rather than written to a WAV.
     fn drop(&mut self) {
         // Defensive cleanup: ensure stream is stopped when Recorder is dropped
         if self.stream.is_some() {
@@ -749,20 +858,133 @@ impl Drop for Recorder {
 
 // Note: RMS-based silence detection replaced with Silero VAD (see vad module)
 
+/// Retention cap in samples for a streaming session
+/// (`STREAMING_BUFFER_CAP_SECONDS` at `sample_rate`).
+///
+/// Only applied when a streaming callback is consuming the audio live; a plain
+/// recorder keeps the whole take so `stop()` can write all of it.
 fn streaming_buffer_cap_samples(sample_rate: u32) -> usize {
     (sample_rate as usize).saturating_mul(STREAMING_BUFFER_CAP_SECONDS)
 }
 
+/// Parse `CODESCRIBE_AUDIO_SPILL`: ON by default; only `0`/`false`/`no`/`off`
+/// (case-insensitive) opt out.
+///
+/// Default ON because the operator decision (2026-08-10, option B) is that a
+/// streaming session must never lose audio to the RAM ring cap — a >5 min
+/// phone-call take archived without its head is worse than a temp file.
+fn audio_spill_from_env_value(value: Option<&str>) -> bool {
+    value
+        .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true)
+}
+
+/// Disk spill for a streaming session: every captured chunk is forwarded to a
+/// dedicated writer thread over a channel (the CoreAudio callback only clones
+/// and sends — no disk I/O on the audio thread) and lands in a WAV via
+/// incremental `hound` writes. `finalize()` closes the writer and returns the
+/// COMPLETE take, immune to [`STREAMING_BUFFER_CAP_SECONDS`] eviction.
+struct SpillSink {
+    tx: Option<std::sync::mpsc::Sender<Vec<i16>>>,
+    handle: Option<std::thread::JoinHandle<Result<(PathBuf, usize)>>>,
+}
+
+impl SpillSink {
+    /// Open the spill WAV in `dir` and start the writer thread.
+    fn spawn(sample_rate: u32, dir: &std::path::Path) -> Result<Self> {
+        let path = dir.join(format!(
+            "codescribe_recording_{}.wav",
+            chrono::Utc::now().timestamp_millis()
+        ));
+        let spec = hound::WavSpec {
+            channels: CHANNELS,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec)
+            .map_err(|e| anyhow::anyhow!("spill wav create {}: {e}", path.display()))?;
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<i16>>();
+        let handle = std::thread::Builder::new()
+            .name("audio-spill".into())
+            .spawn(move || -> Result<(PathBuf, usize)> {
+                let mut written = 0usize;
+                while let Ok(chunk) = rx.recv() {
+                    for sample in &chunk {
+                        writer
+                            .write_sample(*sample)
+                            .map_err(|e| anyhow::anyhow!("spill wav write: {e}"))?;
+                    }
+                    written += chunk.len();
+                }
+                writer
+                    .finalize()
+                    .map_err(|e| anyhow::anyhow!("spill wav finalize: {e}"))?;
+                Ok((path, written))
+            })
+            .map_err(|e| anyhow::anyhow!("spill thread spawn: {e}"))?;
+        Ok(Self {
+            tx: Some(tx),
+            handle: Some(handle),
+        })
+    }
+
+    /// Clone of the sender for the capture callback (send-only, non-blocking).
+    fn sender(&self) -> Option<std::sync::mpsc::Sender<Vec<i16>>> {
+        self.tx.clone()
+    }
+
+    /// Feed one mono i16 chunk. Test-only surface: the live path sends
+    /// through [`Self::sender`] clones from the capture callback.
+    #[cfg(test)]
+    fn feed(&self, chunk: Vec<i16>) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(chunk);
+        }
+    }
+
+    /// Close the channel, join the writer, return the finalized take.
+    /// `None` means the spill failed — callers fall back to the RAM ring.
+    fn finalize(mut self) -> Option<(PathBuf, usize)> {
+        self.tx.take(); // drop our sender; callback senders die with the stream
+        let handle = self.handle.take()?;
+        match handle.join() {
+            Ok(Ok(result)) => Some(result),
+            Ok(Err(e)) => {
+                warn!("Audio spill failed during write/finalize: {e}");
+                None
+            }
+            Err(_) => {
+                warn!("Audio spill writer thread panicked");
+                None
+            }
+        }
+    }
+}
+
+/// Parse `AUTO_SILENCE`: absent is off, and only `0`/`false`/`no`/`off`
+/// (case-insensitive) disable it once set.
+///
+/// Off by default because auto-stop cutting someone off mid-sentence is worse
+/// than making them stop the recording themselves.
 fn auto_silence_from_env_value(value: Option<&str>) -> bool {
     value
         .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
         .unwrap_or(false)
 }
 
+/// The VAD-stop emission gate, extracted so the policy is testable without a
+/// live audio device: both the feature and a registered callback are required.
 fn should_invoke_vad_stop_callback(auto_silence: bool, callback_registered: bool) -> bool {
     auto_silence && callback_registered
 }
 
+/// Average interleaved frames down to mono.
+///
+/// The device is opened at its native channel count, but VAD, Whisper and the
+/// WAV writer are all mono, so this is the single conversion point. A trailing
+/// partial frame is averaged over the samples it actually has, and mono input
+/// short-circuits without copying per frame.
 fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
     let channels = channels.max(1);
     if channels == 1 {
@@ -775,16 +997,30 @@ fn downmix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
         .collect()
 }
 
+/// Convert mono f32 samples to i16 and append them, evicting from the front
+/// once `cap_samples` is exceeded.
+///
+/// Samples are clamped to `[-1.0, 1.0]` before scaling, so an out-of-range block
+/// saturates instead of wrapping to the opposite polarity. `buffer_start_offset`
+/// advances by exactly the number of evicted samples, which is what keeps
+/// [`Recorder::snapshot_wav`] offsets absolute across a trimmed buffer.
+fn convert_mono_f32_to_i16(samples: &[f32]) -> Vec<i16> {
+    samples
+        .iter()
+        .map(|sample| {
+            let clamped = sample.clamp(-1.0, 1.0);
+            (clamped * i16::MAX as f32) as i16
+        })
+        .collect()
+}
+
 fn append_mono_i16_samples(
     buffer: &mut VecDeque<i16>,
     buffer_start_offset: &AtomicUsize,
-    samples: &[f32],
+    samples: &[i16],
     cap_samples: Option<usize>,
 ) {
-    buffer.extend(samples.iter().map(|sample| {
-        let clamped = sample.clamp(-1.0, 1.0);
-        (clamped * i16::MAX as f32) as i16
-    }));
+    buffer.extend(samples.iter().copied());
 
     if let Some(cap_samples) = cap_samples
         && buffer.len() > cap_samples
@@ -820,12 +1056,63 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
     Ok(())
 }
 
+/// Recorder defaults, auto-silence gating, streaming buffer cap, and downmix.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 
+    /// Operator decision B (2026-08-10): the RAM ring caps at
+    /// STREAMING_BUFFER_CAP_SECONDS, so a phone-call take longer than 5 min
+    /// lost its head in the archived WAV. The disk spill must retain EVERY
+    /// sample of the session regardless of the ring cap.
+    #[test]
+    fn spill_sink_retains_full_take_beyond_streaming_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rate = 1_000u32; // 1 kHz keeps the test fast; cap math is per-second
+        let sink = SpillSink::spawn(rate, dir.path()).expect("spawn spill sink");
+        let chunk = vec![7i16; rate as usize]; // 1 s per chunk
+        let seconds = STREAMING_BUFFER_CAP_SECONDS + 5;
+        for _ in 0..seconds {
+            sink.feed(chunk.clone());
+        }
+        let (path, samples) = sink.finalize().expect("spill finalize");
+        assert_eq!(samples, seconds * rate as usize, "spill must evict nothing");
+        let reader = hound::WavReader::open(&path).expect("open spilled wav");
+        assert_eq!(reader.len() as usize, seconds * rate as usize);
+        assert_eq!(reader.spec().sample_rate, rate);
+        assert_eq!(reader.spec().channels, 1);
+    }
+
+    /// Sample values survive the spill byte-exact (no resample, no transcode).
+    #[test]
+    fn spill_sink_roundtrips_sample_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sink = SpillSink::spawn(16_000, dir.path()).expect("spawn spill sink");
+        let pattern: Vec<i16> = vec![i16::MIN, -1, 0, 1, i16::MAX, 1234, -4321];
+        sink.feed(pattern.clone());
+        let (path, samples) = sink.finalize().expect("spill finalize");
+        assert_eq!(samples, pattern.len());
+        let read: Vec<i16> = hound::WavReader::open(&path)
+            .expect("open spilled wav")
+            .into_samples::<i16>()
+            .map(|s| s.expect("sample"))
+            .collect();
+        assert_eq!(read, pattern);
+    }
+
+    /// Spill defaults ON for streaming sessions; only explicit falsey opts out.
+    #[test]
+    fn audio_spill_env_parser_defaults_on() {
+        assert!(audio_spill_from_env_value(None));
+        for disabled in ["0", "false", "no", "off", "OFF"] {
+            assert!(!audio_spill_from_env_value(Some(disabled)));
+        }
+        assert!(audio_spill_from_env_value(Some("1")));
+    }
+
+    /// Default config tracks Silero hang_sec; SAMPLE_RATE/CHANNELS stay 16k mono.
     #[test]
     fn test_recorder_config_default() {
         let config = RecorderConfig::default();
@@ -838,6 +1125,7 @@ mod tests {
         );
     }
 
+    /// Absent/falsey env → off; any other non-empty value opts auto-silence in.
     #[test]
     fn auto_silence_env_parser_defaults_off_and_honors_opt_in() {
         assert!(
@@ -858,6 +1146,7 @@ mod tests {
         }
     }
 
+    /// Callback registration survives when auto_silence is false (emission gated).
     #[test]
     fn vad_stop_callback_is_retained_but_inert_when_auto_silence_disabled() {
         let config = RecorderConfig {
@@ -874,6 +1163,7 @@ mod tests {
         );
     }
 
+    /// With auto_silence on, set_on_vad_stop arms the retained callback slot.
     #[test]
     fn vad_stop_callback_is_armed_when_auto_silence_enabled() {
         let config = RecorderConfig {
@@ -890,6 +1180,7 @@ mod tests {
         );
     }
 
+    /// Emission needs both auto_silence and a registered callback (AND gate).
     #[test]
     fn vad_stop_callback_emission_is_gated_by_auto_silence() {
         assert!(
@@ -906,13 +1197,16 @@ mod tests {
         );
     }
 
+    /// Cap drops oldest i16 samples and advances absolute start offset.
     #[test]
     fn streaming_i16_buffer_is_capped_and_tracks_absolute_offset() {
         let mut buf = VecDeque::new();
         let start_offset = std::sync::atomic::AtomicUsize::new(0);
 
-        append_mono_i16_samples(&mut buf, &start_offset, &[0.10, 0.20, 0.30, 0.40], Some(6));
-        append_mono_i16_samples(&mut buf, &start_offset, &[0.50, 0.60, 0.70, 0.80], Some(6));
+        let first = convert_mono_f32_to_i16(&[0.10, 0.20, 0.30, 0.40]);
+        let second = convert_mono_f32_to_i16(&[0.50, 0.60, 0.70, 0.80]);
+        append_mono_i16_samples(&mut buf, &start_offset, &first, Some(6));
+        append_mono_i16_samples(&mut buf, &start_offset, &second, Some(6));
 
         assert_eq!(buf.len(), 6, "streaming buffer must not grow past cap");
         let retained: Vec<i16> = buf.iter().copied().collect();
@@ -935,6 +1229,7 @@ mod tests {
         );
     }
 
+    /// Interleaved N-channel PCM averages to mono; mono input is identity.
     #[test]
     fn downmix_to_mono_averages_interleaved_native_channels() {
         let stereo = [1.0, -1.0, 0.25, 0.75, -0.50, -0.25];
@@ -951,6 +1246,7 @@ mod tests {
         assert_eq!(downmix_to_mono(&already_mono, 1), already_mono);
     }
 
+    /// Default `Recorder::new` constructs without error (device open deferred).
     #[tokio::test]
     async fn test_recorder_new() {
         let recorder = Recorder::new();

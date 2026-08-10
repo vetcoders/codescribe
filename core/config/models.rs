@@ -12,11 +12,21 @@ use crate::hf_cache;
 
 /// Default Whisper model name used for runtime fallback lookup.
 pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+/// Hugging Face repo backing [`DEFAULT_MODEL`], used for cache lookup and for
+/// the Settings → Dictation download.
 pub const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 
+/// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
+/// Weight file names, of which **any one** satisfies the completeness check —
+/// upstream repos ship either `model.safetensors` or `weights.safetensors`.
 const REQUIRED_MODEL_WEIGHTS: [&str; 2] = ["weights.safetensors", "model.safetensors"];
 
+/// Canonicalize a path, falling back to the original on failure.
+///
+/// Resolution must not fail just because a path cannot be canonicalized (a
+/// symlink into an unmounted volume, a permission gap): the caller gets a usable
+/// path and a warning rather than an error.
 fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     match path.canonicalize() {
         Ok(canonical) => canonical,
@@ -30,6 +40,11 @@ fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     }
 }
 
+/// Whether `path` holds a fully usable Whisper model.
+///
+/// Requires every [`REQUIRED_MODEL_FILES`] entry plus at least one of
+/// [`REQUIRED_MODEL_WEIGHTS`]. This is the gate that keeps half-downloaded
+/// directories from being advertised or resolved as loadable models.
 fn is_complete_whisper_model_dir(path: &Path) -> bool {
     REQUIRED_MODEL_FILES
         .iter()
@@ -39,6 +54,11 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
             .any(|name| path.join(name).exists())
 }
 
+/// Find a complete Hugging Face cache snapshot for a model reference.
+///
+/// A reference containing `/` is treated as a repo id and looked up directly.
+/// The bare [`DEFAULT_MODEL`] alias maps to [`DEFAULT_WHISPER_REPO`]. Any other
+/// bare name is a models-dir alias, not a repo, so it yields `None` here.
 fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     let trimmed = model_ref.trim();
     if trimmed.is_empty() {
@@ -64,6 +84,11 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     None
 }
 
+/// Owner of the resolved runtime models directory.
+///
+/// Scope is deliberately narrow: it locates and inspects model directories on
+/// disk. It performs no loading and no downloading, and it is only consulted
+/// when embedded Whisper is unavailable.
 pub struct ModelManager {
     models_dir: PathBuf,
 }
@@ -80,6 +105,12 @@ impl ModelManager {
         Ok(Self { models_dir })
     }
 
+    /// Locate the models directory, creating the user-level fallback if needed.
+    ///
+    /// Order: `CODESCRIBE_MODELS_DIR` override, bundled `Contents/Resources/models`,
+    /// the development tree two levels above the executable, a repo-root-relative
+    /// `../../models`, and finally `~/.codescribe/models` (created on demand, so
+    /// this tier always succeeds).
     fn resolve_models_dir() -> Result<PathBuf> {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
@@ -127,6 +158,11 @@ impl ModelManager {
         Ok(user_models)
     }
 
+    /// Where a model of this name would live: the path itself if `model_name` is
+    /// an existing absolute path, otherwise the name joined onto the models dir.
+    ///
+    /// Purely positional — the returned path is not checked for completeness and
+    /// need not exist.
     pub fn get_model_path(&self, model_name: &str) -> PathBuf {
         // Check if it's an absolute path that exists
         let candidate = PathBuf::from(model_name);
@@ -137,6 +173,10 @@ impl ModelManager {
         self.models_dir.join(model_name)
     }
 
+    /// Resolve a reference that may be a path or a models-dir alias.
+    ///
+    /// Differs from [`Self::get_model_path`] by accepting *relative* paths that
+    /// exist (canonicalizing them) before falling back to alias semantics.
     pub fn resolve_model_reference(&self, model_ref: &str) -> PathBuf {
         let candidate = PathBuf::from(model_ref);
         if candidate.exists() {
@@ -146,11 +186,20 @@ impl ModelManager {
         self.models_dir.join(model_ref)
     }
 
+    /// Whether the reference resolves to a *complete* model directory.
+    ///
+    /// A directory that exists but is missing weights or metadata reports
+    /// `false` — existence alone is not the contract.
     pub fn check_model_exists(&self, model_name: &str) -> bool {
         let path = self.resolve_model_reference(model_name);
         is_complete_whisper_model_dir(&path)
     }
 
+    /// Sorted names of every complete model in the models directory.
+    ///
+    /// Half-downloaded directories are filtered out rather than listed, so the
+    /// result is safe to surface as user-selectable options. A missing models
+    /// directory yields an empty list, not an error.
     pub fn list_models(&self) -> Result<Vec<String>> {
         if !self.models_dir.exists() {
             return Ok(Vec::new());
@@ -174,6 +223,7 @@ impl ModelManager {
         Ok(out)
     }
 
+    /// The resolved models directory this manager is anchored to.
     pub fn models_dir(&self) -> &PathBuf {
         &self.models_dir
     }
@@ -233,10 +283,15 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
 /// Live status of the default local Whisper model for Settings / bridge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhisperModelStatus {
+    /// Transcription can start: either embedded, or a complete model on disk.
     pub available: bool,
+    /// The binary carries an embedded payload, so no download is ever required.
     pub embedded: bool,
+    /// Resolved on-disk model directory, when one was found.
     pub path: Option<String>,
+    /// Model alias the runtime fallback looks for ([`DEFAULT_MODEL`]).
     pub model_id: String,
+    /// Hugging Face repo a download would pull from ([`DEFAULT_WHISPER_REPO`]).
     pub repo: String,
     /// Short human size hint for the UI (not a network probe).
     pub size_hint: String,
@@ -341,6 +396,11 @@ where
     Ok(canonicalize_or_self(dest))
 }
 
+/// Copy a warm Hugging Face cache snapshot into the user models directory.
+///
+/// Lets Settings → Download complete without network traffic when the cache is
+/// already populated. Existing destination files are left alone, so an
+/// interrupted copy resumes rather than restarting.
 fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
     for name in REQUIRED_MODEL_FILES {
@@ -364,6 +424,12 @@ fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one file from the Hugging Face resolve endpoint into `dest`.
+///
+/// Downloads to a sibling `.partial` file and renames on success, so an aborted
+/// transfer can never leave a truncated file that passes the completeness check.
+/// A non-empty `dest` is treated as already done. `HF_TOKEN` is sent as bearer
+/// auth when set, for gated repos.
 fn download_hf_file<F>(
     client: &reqwest::blocking::Client,
     repo: &str,
@@ -437,6 +503,7 @@ where
     Ok(())
 }
 
+/// ModelManager resolution, completeness gates, and env-override isolation tests.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,12 +511,14 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Restores a single env var on drop; tests must run under `serial`.
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
     }
 
     impl EnvGuard {
+        /// Set `key` to `value`, remembering the previous value for `Drop`.
         fn set(key: &'static str, value: &Path) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: these tests run under `serial` and restore the prior env.
@@ -457,6 +526,7 @@ mod tests {
             Self { key, prev }
         }
 
+        /// Unset `key`, remembering the previous value for `Drop`.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: these tests run under `serial` and restore the prior env.
@@ -466,6 +536,7 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the prior env value, or remove the key if it was unset.
         fn drop(&mut self) {
             if let Some(prev) = &self.prev {
                 // SAFETY: these tests run under `serial` and restore the prior env.
@@ -477,6 +548,7 @@ mod tests {
         }
     }
 
+    /// Create a directory that passes `is_complete_whisper_model_dir`.
     fn create_complete_whisper_model(path: &Path) {
         fs::create_dir_all(path).unwrap();
         fs::write(path.join("config.json"), "{}").unwrap();
@@ -485,6 +557,7 @@ mod tests {
         fs::write(path.join("model.safetensors"), "weights").unwrap();
     }
 
+    /// Smoke: `list_models` succeeds against the live models dir.
     #[test]
     #[serial]
     fn test_model_manager_list_models() {
@@ -495,6 +568,7 @@ mod tests {
         println!("Found models: {:?}", models.unwrap());
     }
 
+    /// Non-existent model ids report missing.
     #[test]
     #[serial]
     fn test_model_manager_check_exists() {
@@ -503,6 +577,7 @@ mod tests {
         assert!(!manager.check_model_exists("nonexistent-model-xyz"));
     }
 
+    /// Complete custom models under `CODESCRIBE_MODELS_DIR` are listed and found.
     #[test]
     #[serial]
     fn test_model_manager_custom_models() {
@@ -532,6 +607,7 @@ mod tests {
         }
     }
 
+    /// Incomplete Whisper dirs are neither listed nor treated as existing.
     #[test]
     #[serial]
     fn test_model_manager_rejects_incomplete_whisper_models() {
@@ -552,6 +628,7 @@ mod tests {
         assert_eq!(manager.list_models().unwrap(), vec!["complete-whisper"]);
     }
 
+    /// Complete `CODESCRIBE_MODEL_PATH` wins over the bundled default tier.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_prefers_complete_env_override() {
@@ -571,13 +648,14 @@ mod tests {
         assert_eq!(resolved, canonicalize_or_self(env_model));
     }
 
+    /// HF-style repo ids resolve to a complete snapshot under the cache root.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_uses_hf_repo_id_from_cache() {
         let temp_dir = TempDir::new().unwrap();
         let hf_cache = temp_dir.path().join("hf-cache");
         let snapshot = hf_cache
-            .join("models--Vetcoders--custom-whisper")
+            .join("models--vetcoders--custom-whisper")
             .join("snapshots")
             .join("abc123");
 
@@ -591,7 +669,7 @@ mod tests {
         let _hf_cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
 
         let resolved =
-            resolve_runtime_whisper_model_path(Some("Vetcoders/custom-whisper")).unwrap();
+            resolve_runtime_whisper_model_path(Some("vetcoders/custom-whisper")).unwrap();
         assert_eq!(resolved, snapshot);
     }
 
@@ -603,6 +681,7 @@ mod tests {
     //    `BaseDirs::new()` does not silently find the developer's real HF cache
     //    and turn the negative path into a false positive.
 
+    /// Point HOME and HF cache env vars at empty temps so real caches cannot leak in.
     fn isolate_from_real_hf_cache(temp_dir: &Path) -> Vec<EnvGuard> {
         let empty_hf_cache = temp_dir.join("empty-hf-cache");
         std::fs::create_dir_all(&empty_hf_cache).unwrap();
@@ -618,6 +697,7 @@ mod tests {
         ]
     }
 
+    /// Incomplete env override does not stick; empty tiers error instead.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_skips_incomplete_env_override() {
@@ -640,6 +720,7 @@ mod tests {
         );
     }
 
+    /// All-empty fallback chain returns guidance mentioning env and `hf download`.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_errors_with_guidance_when_all_tiers_empty() {
@@ -664,6 +745,7 @@ mod tests {
         );
     }
 
+    /// Missing paths return unchanged rather than failing resolution.
     #[test]
     #[serial]
     fn canonicalize_or_self_returns_input_when_path_does_not_exist() {
@@ -672,6 +754,7 @@ mod tests {
         assert_eq!(returned, phantom);
     }
 
+    /// Status surface advertises default model id, repo, and size-hint shape.
     #[test]
     #[serial]
     fn whisper_model_status_reports_default_ids() {

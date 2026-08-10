@@ -15,18 +15,27 @@ use tracing::warn;
 use crate::config::Config;
 use crate::os::permissions::{PermissionKind, PermissionStatus, permission_status};
 
+/// The canonical "first run is complete" sentinel. Its presence is the single
+/// thing [`should_show_onboarding`] ultimately reads.
 fn setup_done_path() -> PathBuf {
     Config::config_dir().join("setup_done")
 }
 
+/// Legacy half-marker: onboarding finished, in builds that tracked onboarding
+/// and settings completion separately. Only read by the migration.
 fn onboarding_done_path() -> PathBuf {
     Config::config_dir().join("onboarding_done")
 }
 
+/// Legacy half-marker: settings bootstrap finished. Migration requires it
+/// *together with* [`onboarding_done_path`] before writing the canonical
+/// sentinel.
 fn legacy_bootstrap_done_path() -> PathBuf {
     Config::config_dir().join("bootstrap_done")
 }
 
+/// Resume marker holding the wizard step to reopen on. Distinct from the
+/// completion sentinel: this one exists only while onboarding is unfinished.
 fn onboarding_progress_path() -> PathBuf {
     Config::config_dir().join("onboarding_progress")
 }
@@ -100,6 +109,9 @@ pub fn mark_onboarding_done() {
     let _ = fs::write(setup_done, "done");
 }
 
+/// TCC scopes that must be Granted before `setup_done` may remain valid.
+///
+/// Full Disk Access is intentionally absent — optional step, never a gate.
 const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 5] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
@@ -135,16 +147,29 @@ fn permission_step_index(kind: PermissionKind) -> Option<usize> {
         .map(|offset| WIZARD_STEPS_BEFORE_PERMISSIONS + offset)
 }
 
+/// Whether this process is running from inside an `.app` bundle.
+///
+/// The permission model only applies to bundled runs, so this gates the whole
+/// invalidation path. Unresolvable executable path is treated as "not
+/// bundled" — the conservative answer, since it cannot revoke a sentinel.
 fn current_runtime_is_app_bundle() -> bool {
     std::env::current_exe()
         .map(|path| executable_is_app_bundle(&path))
         .unwrap_or(false)
 }
 
+/// Pure half of [`current_runtime_is_app_bundle`], testable without a real
+/// executable path.
 fn executable_is_app_bundle(path: &std::path::Path) -> bool {
     path.to_string_lossy().contains(".app/Contents/MacOS/")
 }
 
+/// Pick one permission's status out of an already-probed snapshot.
+///
+/// Taking the statuses as parameters keeps the decision logic pure and
+/// testable. `FullDiskAccess` is answered `Granted` unconditionally because it
+/// is optional — it appears in the step order but never in
+/// `REQUIRED_SETUP_PERMISSIONS`, so it must never invalidate the sentinel.
 fn permission_status_from_snapshot(
     kind: PermissionKind,
     microphone: PermissionStatus,
@@ -163,6 +188,13 @@ fn permission_status_from_snapshot(
     }
 }
 
+/// The step onboarding should reopen on, or `None` to leave `setup_done`
+/// standing.
+///
+/// Pure decision core of [`invalidate_setup_done_if_permissions_missing`].
+/// Returns the *earliest* required permission that is not granted, in
+/// `REQUIRED_SETUP_PERMISSIONS` order, so the user resumes at the first gap
+/// rather than the last one probed.
 fn setup_done_refresh_target(
     setup_done_exists: bool,
     app_bundle_runtime: bool,
@@ -191,6 +223,13 @@ fn setup_done_refresh_target(
         .and_then(permission_step_index)
 }
 
+/// Revoke a `setup_done` that no longer reflects reality, and leave a resume
+/// marker pointing at the first missing scope.
+///
+/// A user can grant permissions during onboarding and revoke them later in
+/// System Settings; without this the app would keep believing setup is done
+/// while the features behind those scopes are dead. Effectful wrapper around
+/// [`setup_done_refresh_target`] — it probes the system and writes files.
 fn invalidate_setup_done_if_permissions_missing() {
     let setup_done = setup_done_path();
     if !setup_done.exists() {
@@ -229,6 +268,11 @@ fn invalidate_setup_done_if_permissions_missing() {
     }
 }
 
+/// Fold the two legacy completion markers into the canonical sentinel.
+///
+/// Both halves are required: a user who finished onboarding but never
+/// completed settings bootstrap has not finished first run, and must not be
+/// migrated into a completed state.
 fn migrate_legacy_setup_done_marker() {
     let setup_done = setup_done_path();
     if setup_done.exists() {
@@ -255,6 +299,7 @@ pub fn should_show_onboarding() -> bool {
     !setup_done_path().exists()
 }
 
+/// Resume-flow layout, required-permission gates, and legacy marker remaps.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +369,7 @@ mod tests {
         );
     }
 
+    /// All five required grants leave `setup_done` intact (no resume step).
     #[test]
     fn all_required_permissions_granted_keeps_setup_done() {
         assert_eq!(
@@ -415,6 +461,7 @@ mod tests {
         assert_eq!(parse_onboarding_progress("not-a-number"), None);
     }
 
+    /// Bundle path under `*.app/Contents/MacOS/` vs bare cargo/bin install.
     #[test]
     fn app_bundle_detection_matches_bundle_layout() {
         assert!(executable_is_app_bundle(std::path::Path::new(

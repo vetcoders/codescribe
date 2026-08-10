@@ -111,6 +111,65 @@ extension View {
     }
 }
 
+/// Keyboard focus ring that follows the control's own rounded geometry.
+///
+/// AppKit's default ring is a squarish halo that ignores a custom chip's
+/// corner radius — on the dark glass surfaces it reads as a grey box stamped
+/// across the control (operator screenshots 2026-08-09, next to Claude
+/// Desktop's accent ring as the bar to clear). This style draws our ring —
+/// a thin accent stroke hugging the control 2pt out, rounded to
+/// `cornerRadius + 2` so the inner and outer curves stay concentric; the
+/// weight and offset are calibrated against Claude Desktop's ring, which the
+/// operator holds up as the reference ("olbrzymie i brzydkie" was the verdict
+/// on the first, thicker cut). Suppressing the system halo is the adopting
+/// Button's job: use `View.csFocusRing(cornerRadius:)`, never
+/// `.buttonStyle(.csFocusRing(...))` alone.
+///
+/// Keyboard-only by construction: `CSFocusPolicy` releases focus after
+/// pointer clicks, so the ring appears exactly when a keyboard user is
+/// navigating — the accessibility cue stays, only its geometry is ours.
+struct CSFocusRingButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat
+    @Environment(\.isFocused) private var isFocused
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius + 2, style: .continuous)
+                    .strokeBorder(
+                        CSColor.chromeAccent.opacity(isFocused ? 0.9 : 0),
+                        lineWidth: 1.5
+                    )
+                    .padding(-2)
+            )
+            .animation(.easeOut(duration: 0.12), value: isFocused)
+    }
+}
+
+extension ButtonStyle where Self == CSFocusRingButtonStyle {
+    /// Plain-look button carrying the Codescribe focus ring. Use instead of
+    /// `.plain` on custom-drawn chips, cards, and segments.
+    static func csFocusRing(cornerRadius: CGFloat) -> CSFocusRingButtonStyle {
+        CSFocusRingButtonStyle(cornerRadius: cornerRadius)
+    }
+}
+
+extension View {
+    /// The one correct way to adopt the Codescribe focus ring on a Button.
+    ///
+    /// `focusEffectDisabled()` is an environment write and only flows DOWN the
+    /// tree — inside `makeBody` it reaches the label's descendants, never the
+    /// Button that actually draws AppKit's grey halo. So the kill switch must
+    /// ride on the Button itself, paired here with the style so the two can't
+    /// drift apart (adopting the style alone leaves the system ring stacked
+    /// on top of ours — operator screenshot 2026-08-09, the "stodoła").
+    func csFocusRing(cornerRadius: CGFloat) -> some View {
+        buttonStyle(.csFocusRing(cornerRadius: cornerRadius))
+            .focusEffectDisabled()
+    }
+}
+
 /// Dark glass container: ultraThinMaterial tinted + hairline border + deep shadow.
 struct GlassPanel<Content: View>: View {
     var cornerRadius: CGFloat = CSRadius.window

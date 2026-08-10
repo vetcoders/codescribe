@@ -90,12 +90,14 @@ pub fn extract_segments(
     (full_text, segments)
 }
 
+/// Segment extraction and timestamp-token range resolution.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokenizers::Tokenizer;
     use tokenizers::models::wordlevel::WordLevel;
 
+    /// Tiny word-level tokenizer with known `<|t|>` ids for hermetic tests.
     fn test_tokenizer() -> Tokenizer {
         let vocab = [
             ("[UNK]".to_string(), 0_u32),
@@ -119,6 +121,7 @@ mod tests {
         Tokenizer::new(model)
     }
 
+    /// Begin/end token ids are derived from the tokenizer vocab, not hard-coded.
     #[test]
     fn timestamp_range_resolves_from_tokenizer() {
         let tokenizer = test_tokenizer();
@@ -129,6 +132,7 @@ mod tests {
         assert!(!range.is_timestamp(12));
     }
 
+    /// Closed timestamp pairs become segments with decoded text and start/end times.
     #[test]
     fn extract_segments_parses_closed_spans() {
         let tokenizer = test_tokenizer();
@@ -147,6 +151,7 @@ mod tests {
         assert_eq!(segments[1].end_ts, 0.08);
     }
 
+    /// Tokens after the last closed timestamp span stay in full text, not segments.
     #[test]
     fn extract_segments_ignores_unclosed_trailing_span() {
         let tokenizer = test_tokenizer();

@@ -24,19 +24,40 @@
 #
 #   scripts/e2e-blackhole-dictation.sh [fixture.wav]
 #
+# The fixture argument may be a bare basename, a repo-relative path, or an
+# absolute path: it is resolved through the documented three-tier order
+# (CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets → the gitignored in-repo
+# drop dir). See scripts/lib/data-assets.sh.
+#
 # Requires: BlackHole 2ch installed (brew install --cask blackhole-2ch) and
 # microphone permission for the *terminal* running this script.
 #
 # Optional env:
+#   CODESCRIBE_DATA_ASSETS    explicit fixtures directory (highest precedence)
 #   BLACKHOLE_DEVICE          default "BlackHole 2ch"
 #   DAILY_INPUT_DEVICE        preferred restore if saved default was BH
 #   DAILY_OUTPUT_DEVICE       preferred restore if saved default was BH
 #   FORCE_LEAVE_BH_DEFAULTS=1 skip forced un-hijack of BH-as-default (debug only)
+#   BLACKHOLE_LOCK_WAIT_SEC    max wait for another harness run (default 600)
 #
 # Exit: 0 pass · 1 mismatch/empty · 2 preconditions missing.
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# Everything below is repo-root relative — including sourcing the fixture
+# resolver — and the script goes on to touch the operator's audio devices, so a
+# failed cd must stop the run, not silently relocate it.
+cd "$(dirname "$0")/.." || exit 2
+
+# Private fixtures live OUTSIDE the repo (real operator speech, deprivatized
+# twice). Resolution order — env → home → gitignored in-repo drop dir — is the
+# documented contract in tests/assets/data_assets/README.md, shared with the
+# Rust e2e tests and scripts/bench-stt.sh.
+if [ ! -f ./scripts/lib/data-assets.sh ]; then
+  printf 'missing scripts/lib/data-assets.sh (fixture resolver)\n' >&2
+  exit 2
+fi
+# shellcheck source=scripts/lib/data-assets.sh
+. ./scripts/lib/data-assets.sh
 
 DEVICE="${BLACKHOLE_DEVICE:-BlackHole 2ch}"
 DAILY_INPUT_DEVICE="${DAILY_INPUT_DEVICE:-MacBook Pro Microphone}"
@@ -45,9 +66,12 @@ DAILY_OUTPUT_DEVICE="${DAILY_OUTPUT_DEVICE:-MacBook Pro Speakers}"
 # written once the loopback is verified to carry signal end to end; until then
 # the run fails loudly rather than reporting a vacuous pass.
 CAPTURE_TEST="${CAPTURE_TEST:-e2e_device_capture_dictation}"
-FIXTURE="${1:-tests/assets/data_assets/02_kubernetes-wymaga-konfiguracji.wav}"
+FIXTURE_REQUEST="${1:-02_kubernetes-wymaga-konfiguracji.wav}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cs-bh-e2e.XXXXXX")"
 DEFAULTS_FILE="$WORK/audio-defaults.env"
+BLACKHOLE_HARNESS_LOCK_DIR="${TMPDIR:-/tmp}/codescribe-blackhole-harness.lock"
+BLACKHOLE_HARNESS_LOCK_PID="$BLACKHOLE_HARNESS_LOCK_DIR/pid"
+BLACKHOLE_HARNESS_LOCK_OWNED=0
 
 restore_daily_audio() {
   # Always attempt restore — even mid-fail — so a harness crash cannot leave
@@ -74,6 +98,11 @@ restore_daily_audio() {
       esac
     fi
   fi
+  if [ "$BLACKHOLE_HARNESS_LOCK_OWNED" = "1" ] &&
+    [ "$(sed -n '1p' "$BLACKHOLE_HARNESS_LOCK_PID" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$BLACKHOLE_HARNESS_LOCK_PID"
+    rmdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null || true
+  fi
   rm -rf "$WORK"
 }
 
@@ -83,11 +112,68 @@ fail() { printf '\033[31mFAIL\033[0m %s\n' "$1" >&2; exit "${2:-1}"; }
 info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWARN\033[0m %s\n' "$1" >&2; }
 
+# BlackHole is one physical bus. Two parity processes playing different
+# positions of the same fixture into it corrupt each other's capture: one run
+# can receive the other's middle as its head while the other loses its tail.
+# Serialize the whole snapshot -> loopback -> capture -> restore transaction.
+# The PID lease is reclaimed after a crashed owner; a missing PID is allowed a
+# short grace period because mkdir and publishing the PID are separate syscalls.
+acquire_blackhole_harness_lock() {
+  local wait_seconds="${BLACKHOLE_LOCK_WAIT_SEC:-600}"
+  local deadline owner missing_pid_observations=0 announced=0
+  case "$wait_seconds" in
+    ''|*[!0-9]*) fail "BLACKHOLE_LOCK_WAIT_SEC must be a non-negative integer" 2 ;;
+  esac
+  deadline=$(( $(date +%s) + wait_seconds ))
+
+  while ! mkdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null; do
+    owner="$(sed -n '1p' "$BLACKHOLE_HARNESS_LOCK_PID" 2>/dev/null || true)"
+    case "$owner" in
+      ''|*[!0-9]*)
+        missing_pid_observations=$((missing_pid_observations + 1))
+        if [ "$missing_pid_observations" -ge 3 ]; then
+          rm -f "$BLACKHOLE_HARNESS_LOCK_PID"
+          rmdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null || true
+          missing_pid_observations=0
+          continue
+        fi
+        ;;
+      *)
+        missing_pid_observations=0
+        if ! kill -0 "$owner" 2>/dev/null; then
+          rm -f "$BLACKHOLE_HARNESS_LOCK_PID"
+          rmdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null || true
+          continue
+        fi
+        ;;
+    esac
+    if [ "$announced" = "0" ]; then
+      info "BlackHole harness busy (owner pid ${owner:-publishing}); waiting for exclusive capture"
+      announced=1
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] ||
+      fail "timed out waiting ${wait_seconds}s for exclusive BlackHole harness lock (owner pid ${owner:-unknown})" 2
+    sleep 1
+  done
+
+  printf '%s\n' "$$" >"$BLACKHOLE_HARNESS_LOCK_PID"
+  BLACKHOLE_HARNESS_LOCK_OWNED=1
+  if [ "$announced" = "1" ]; then
+    info "exclusive BlackHole capture acquired"
+  fi
+}
+
 # ── Preconditions ───────────────────────────────────────────────────────────
-[ -f "$FIXTURE" ] || fail "fixture not found: $FIXTURE" 2
+# A missing corpus is a PRECONDITION failure (exit 2), not a parity verdict:
+# resolve_data_asset already printed every path it looked at.
+FIXTURE="$(resolve_data_asset "$FIXTURE_REQUEST")" ||
+  fail "cannot resolve fixture '$FIXTURE_REQUEST' — see the checked paths above" 2
+info "fixture: $FIXTURE"
 command -v swift >/dev/null 2>&1 || fail "swift not on PATH" 2
 [ -f ./scripts/audio-default-devices.swift ] ||
   fail "missing scripts/audio-default-devices.swift (daily/harness separation helper)" 2
+
+acquire_blackhole_harness_lock
 
 # Snapshot system defaults FIRST — restore runs on every EXIT.
 ./scripts/audio-default-devices.swift save "$DEFAULTS_FILE" ||
@@ -268,6 +354,13 @@ if [ "${ENGINE:-apple}" = "apple" ]; then
   export CODESCRIBE_BRIDGE_DISCLAIM=1
 fi
 
+# Which lane is this run measuring? The core injects ~/.codescribe/.env into the
+# process environment (CODESCRIBE_LAYERED_TRANSCRIPTION is a power-user key, not
+# a promoted setting), so an unpinned run can silently score a different layer
+# than the caller intended. Print it here and let the test assert it against the
+# events it actually saw (`measured_lane_matches_request`).
+info "layered lane: ${CODESCRIBE_LAYERED_TRANSCRIPTION:-<unpinned — the core may inject ~/.codescribe/.env>}"
+
 # Pre-build so compile time cannot eat into anything timing-sensitive.
 cargo test --test e2e_overlay_delivery_parity --no-run >"$WORK/build.log" 2>&1 ||
   { tail -20 "$WORK/build.log" >&2; fail "test build failed" 2; }
@@ -278,9 +371,47 @@ cargo test --test e2e_overlay_delivery_parity \
   "$CAPTURE_TEST" -- --ignored --nocapture >"$WORK/test.log" 2>&1
 STATUS=$?
 
+# The parity numbers (similarity, word-level diff) are the POINT of this
+# harness — every grinding iteration is supposed to produce a measurement. They
+# were being written into $WORK, which the EXIT trap wipes, so each run's
+# evidence evaporated with the temp dir. Retain the log under target/ (gitignored,
+# so the operator's speech never reaches git) before anything can delete it.
+KEPT_LOG="$WORK/test.log"
+KEEP_DIR="target/e2e-blackhole"
+if mkdir -p "$KEEP_DIR" 2>/dev/null; then
+  CANDIDATE="$KEEP_DIR/$(basename "${FIXTURE%.wav}")-$(date +%Y%m%d-%H%M%S).log"
+  cp "$WORK/test.log" "$CANDIDATE" 2>/dev/null && KEPT_LOG="$CANDIDATE"
+fi
+
+# Surface the measurement, not just the verdict: a baseline without the number
+# cannot be compared against the next iteration.
+#
+# This filter is load-bearing beyond the console. `make test-engine-parity-both`
+# tees THIS stdout per arm and parses the numbers back out of it, so a line the
+# test prints but this grep omits is invisible to the two-arm comparison — it
+# exists in the retained log and nowhere a gate can reach. `parity lane` and the
+# accuracy arm were exactly that until now: printed by the test since 2026-08-08
+# and never surfaced. Add new `parity …` lines here in the same commit that
+# prints them.
+surface_measurements() {
+  grep -E "^(transcript|chars|coverage|parity (lane|similarity|accuracy-vs-human|accuracy-headroom|ratio-ceiling|verdict))" \
+    "$KEPT_LOG" 2>/dev/null || true
+}
+
 if [ $STATUS -ne 0 ]; then
-  tail -40 "$WORK/test.log" >&2
-  fail "dictation test failed (exit $STATUS); full log: $WORK/test.log"
+  # A RED arm that measured is not an arm that failed to measure. The parity
+  # numbers print long before the bars are asserted, so a run that scores
+  # cleanly and then trips a bar still owes the caller its numbers — otherwise
+  # `test-engine-parity-both` reports "<no measurement>" and blames a
+  # precondition failure (missing loopback / mic grant / fixture) for what was
+  # actually a completed measurement failing a threshold. Measured 2026-08-08:
+  # the layered arm scored 0.821 vs Apple and 0.923 vs human, then failed the
+  # word-count ratio bar — and the two-arm table reported none of it.
+  # `tail -40` cannot cover this: on a long fixture the numbers have already
+  # scrolled past 40 lines by the time the panic lands.
+  surface_measurements
+  tail -40 "$KEPT_LOG" >&2
+  fail "dictation test failed (exit $STATUS); full log: $KEPT_LOG"
 fi
 
 # `cargo test <name>` exits 0 when the filter matches NOTHING ("0 passed").
@@ -293,4 +424,5 @@ if [ "${PASSED:-0}" -lt 1 ]; then
 fi
 
 info "PASS — capture path transcribed the fixture ($PASSED test(s))"
-grep -E "^(transcript|chars|coverage)" "$WORK/test.log" 2>/dev/null || true
+info "test log retained: $KEPT_LOG"
+surface_measurements

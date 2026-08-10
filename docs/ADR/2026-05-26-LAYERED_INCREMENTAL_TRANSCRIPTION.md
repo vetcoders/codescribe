@@ -58,7 +58,7 @@ flowchart TB
 
     subgraph L0["Layer 0 — Apple Live (in overlay)"]
         APPLE[SFSpeechAnalyzer<br/>core/stt/apple_stt/mod.rs]
-        OVL[Overlay glass tafla<br/>app/ui/overlay/mod.rs<br/>after 1fbf42b: declutter shipped]
+        OVL[Overlay glass tafla<br/>macos/Codescribe/Screens/Overlay/OverlayState.swift]
     end
 
     subgraph L1[Layer 1 — Whisper Tail Patch]
@@ -247,6 +247,10 @@ they simply show Layer 0 output.
 
 ## What is shipped today, what is missing
 
+> **Snapshot of 2026-05-26, kept as the ADR's starting position.** For what the runtime
+> actually executes now, read [Phase delivery status (2026-08-08)](#phase-delivery-status-2026-08-08)
+> below — that table is the current truth; this one is the baseline it moved from.
+
 | Capability                 | Today                                                               | Needed for layered model                                 |
 | -------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------- |
 | Apple Speech adapter       | ✅ 522 LOC, `CODESCRIBE_STT_ENGINE=auto` default / `apple` override | Settings toggle                                          |
@@ -277,11 +281,18 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 - Wire Apple as default engine when available; Whisper-as-primary remains the fallback.
 - New `core/stt/tail_patcher/` module + `EngineEvent::ReplaceRange { source: TailPatch }`.
 - Overlay gains `ReplaceRange` render path (visible "cursor walks back, patch lands").
-- **Wiring status (2026-08-05):** Layer 1 is live on the **VAD/scheduler** session path
-  (`vad_transcription_session`) when phase ≥ 1. Apple **progressive** live
-  (`apple_stream_transcription_session`) does not yet attach tail-patch audio —
-  enabling phase1 on default Apple progressive logs a warn and is a no-op for Layer 1
-  until that branch is wired (escape hatch: `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`).
+- **Wiring status (2026-08-08, W2-A `a6b1233d`):** Layer 1 is live on **both** live paths
+  when phase ≥ 1 — the **VAD/scheduler** session (`vad_transcription_session`) and the
+  default Apple **progressive** live session (`apple_stream_transcription_session`).
+  On the Apple path every sealed `UtteranceFinal` resolves to its retained PCM window
+  (W1-B bounded retention) and is handed to an async Layer 1 lane together with the exact
+  committed string the `ReplaceRange` offsets are computed against. Bounded queue with
+  counted drops (capture is never blocked), at most one job in flight, inference on
+  `spawn_blocking`, and every queued engine event flushed before the patch is emitted so a
+  `ReplaceRange` can never overtake the `UtteranceFinal` it patches. A boundary that cannot
+  address retained audio stays counted as unresolved and is never handed to Whisper.
+  The `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` escape hatch remains, but it is no longer needed
+  to reach Layer 1.
 - Acceptance test: operator's bench audio reproduces — Layer 0 shows Polish live; Layer 1 fills
   "Bytów to New York" + "framework Vibecrafted" + "Hugging Face" within ~1 s of utterance end.
 
@@ -305,6 +316,25 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 - New `core/pipeline/final_bam.rs` runs on `stop()` against full WAV + shown buffer.
 - Emits the final batch of `ReplaceRange` events, then `SessionFinalised`.
 - Operator's stop trigger (`make install-app` / hotkey release) remains the human control surface.
+
+### Phase delivery status (2026-08-08)
+
+What this ADR proposed vs. what the runtime actually executes today. Everything below
+`phase1` is still **off by default** — `CODESCRIBE_LAYERED_TRANSCRIPTION=off` is the shipped
+value and no default flip has been taken (see the W3-B default-flip memo).
+
+| Phase                                 | Proposed module                          | Delivered?                               | Where it actually lives                                                                                                                                                                                                                                                               |
+| ------------------------------------- | ---------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 — Layer 1 tail patch**            | `core/stt/tail_patcher/`                 | ✅ **delivered, opt-in**                 | `core/stt/tail_patcher/` exists as proposed; wired into `core/pipeline/streaming/session.rs` (VAD/scheduler) and `core/pipeline/streaming/apple_live_session.rs` (Apple progressive, W2-A `a6b1233d`)                                                                                 |
+| **1 — overlay `ReplaceRange` render** | `app/ui/overlay/mod.rs`                  | ✅ delivered, moved                      | `OverlayState.applyReplaceRange` → `OverlayTranscriptSegment.replaceRange` (Swift)                                                                                                                                                                                                    |
+| **1 — orchestrator**                  | `app/controller/layered_orchestrator.rs` | ❌ **not built — and not needed so far** | Both live paths call the shared `tail_patch_enabled` / `compute_tail_patch_job` / `emit_tail_patch_result` primitives directly. One gate, one `LayerSummary` shape, no separate state machine. Revisit only when Layers 2–4 need a single audio cursor (see Consequences)             |
+| **2 — Lexicon**                       | `core/lexicon/`                          | ⚠️ **partial, different shape**          | No `core/lexicon/` module. Lexicon substitution lives in `core/pipeline/stream_postprocess.rs::apply_lexicon` and runs **at seal time** on the Apple progressive path (W1-A `d180add9`) — as the doctrine's final automated layer, not as a debounced Layer 2 sub-pass                |
+| **2 — Inline LLM polish**             | `core/llm/inline_polish.rs`              | ❌ not built                             | No inline per-utterance LLM pass exists. Stop-path AI formatting (`core/llm/ai_formatting.rs`) is a different surface with a different contract                                                                                                                                       |
+| **3 — Paralingual monitor**           | `core/vad/paralingual_classifier.rs`     | ❌ not built                             | `EngineEvent::InsertAnnotation` travels end-to-end (contracts → IPC wire → `OverlayState.applyInsertAnnotation`), but the only site that _constructs_ one is a unit test in `app/presentation/emitter.rs`. The transport is ready; nothing produces paralingual annotations           |
+| **4 — Final BAM**                     | `core/pipeline/final_bam.rs`             | ❌ not built                             | `SessionFinalised` is emitted (carrying `LayerSummary`) by the live paths, not by a session-end contextual pass. Stop-path re-pass routing is `FINAL_PASS_MODE`, which is a _different_ mechanism — it re-runs Whisper on the full WAV, it does not do bounded cross-utterance polish |
+
+**Reading rule for the phase specs above:** they describe intent, not inventory. A module path
+in Phases 2–4 is a proposal until this table marks it delivered.
 
 ## Non-goals
 
@@ -378,11 +408,15 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 - `core/vad/config.rs:40-69` — Silero VAD parameters (operator-tuned, not vanilla Snakers)
 - `core/vad/discriminator.rs:90-150` — utterance segmentation
 - `core/pipeline/contracts.rs:346-380` — current `EngineEvent` / `TranscriptionEngineMode`
-- `app/ui/overlay/mod.rs:1380-1400` — `append_transcription_delta` (current append path)
+- `macos/Codescribe/Screens/Overlay/OverlayState.swift` — `applyPreview` / `applyFinal`
+  (append path) and `applyReplaceRange` → `OverlayTranscriptSegment.replaceRange`
+  (bounded-patch path, returns `false` and drops the patch when the range does not
+  address the committed segment). The AppKit `app/ui/overlay/mod.rs` this ADR was written
+  against was excised when the UI moved to Swift.
 - Bench corpus: `~/.codescribe/bench-stt-2026-05-26/` — 7 stacks compared on operator's audio
 - Operator's vision verbatim (this conversation, 2026-05-26): five layers, cursor-back patches,
   paralingual annotations, final BAM, NEVER REWRITE FROM ZERO
 
 ---
 
-_𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by vetcoders (c)2024-2026 LibraxisAI_
+_𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI_

@@ -280,7 +280,8 @@ struct MockSettingsEngine: SettingsEngine {
     func keyAccounts() -> [String] {
         [
             "LLM_API_KEY", "STT_API_KEY", "LLM_FORMATTING_API_KEY",
-            "LLM_ASSISTIVE_API_KEY", "LLM_ANTHROPIC_API_KEY", "GITHUB_TOKEN",
+            "LLM_ASSISTIVE_API_KEY", "LLM_ANTHROPIC_API_KEY", "LLM_XAI_API_KEY",
+            "GITHUB_TOKEN",
         ]
     }
     func setApiKey(account: String, secret: String) throws {}
@@ -492,7 +493,7 @@ extension CsSettings {
         formattingLevel: "correction",
         whisperModel: "whisper-large-v3-turbo",
         layeredTranscription: nil,
-        agentWorkspaceRoots: ["~/Git"],
+        agentWorkspaceRoots: ["~/.codescribe"],
         bufferDelayMs: nil,
         typingCps: nil,
         emitWordsMax: nil,
@@ -514,6 +515,7 @@ extension CsKeyStatus {
         llmFormattingApiKeySet: true,
         llmAssistiveApiKeySet: true,
         llmAnthropicApiKeySet: false,
+        llmXaiApiKeySet: false,
         githubTokenSet: false
     )
 
@@ -525,6 +527,7 @@ extension CsKeyStatus {
         case "LLM_FORMATTING_API_KEY": return llmFormattingApiKeySet
         case "LLM_ASSISTIVE_API_KEY": return llmAssistiveApiKeySet
         case "LLM_ANTHROPIC_API_KEY": return llmAnthropicApiKeySet
+        case "LLM_XAI_API_KEY": return llmXaiApiKeySet
         case "GITHUB_TOKEN": return githubTokenSet
         default: return false
         }
@@ -545,16 +548,17 @@ extension CsApiKeyProbeResult {
 }
 
 extension CsProviderOption {
-    /// Preview seed mirroring the core provider identities (OpenAI + Anthropic).
+    /// Preview seed mirroring the core provider identities (OpenAI, Anthropic, xAI).
     static let sampleProviders: [CsProviderOption] = [
+        // OpenAI + xAI ship public desktop client ids (NOTICE); Anthropic does not.
         CsProviderOption(
             id: "openai-responses",
             displayName: "OpenAI (Responses)",
             apiKeyAccount: "LLM_ASSISTIVE_API_KEY",
             apiKeySet: true,
             accountSignedIn: false,
-            accountLoginEnabled: false,
-            accountStatusMessage: "awaiting app registration",
+            accountLoginEnabled: true,
+            accountStatusMessage: "not signed in",
             oauthClientId: nil,
             models: []
         ),
@@ -566,6 +570,17 @@ extension CsProviderOption {
             accountSignedIn: false,
             accountLoginEnabled: false,
             accountStatusMessage: "provider account login unavailable",
+            oauthClientId: nil,
+            models: []
+        ),
+        CsProviderOption(
+            id: "xai-responses",
+            displayName: "xAI (Grok)",
+            apiKeyAccount: "LLM_XAI_API_KEY",
+            apiKeySet: false,
+            accountSignedIn: false,
+            accountLoginEnabled: true,
+            accountStatusMessage: "not signed in",
             oauthClientId: nil,
             models: []
         ),

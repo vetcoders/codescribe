@@ -160,7 +160,7 @@ struct DictationOverlayView: View {
                 autoPasteControlLabel(showTitle: false)
             }
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: CSRadius.pill)
         .help("Auto Paste: \(state.autoPasteAccessibilityValue)")
         .accessibilityLabel("Auto Paste")
         .accessibilityValue(state.autoPasteAccessibilityValue)
@@ -208,7 +208,7 @@ struct DictationOverlayView: View {
             CSIconView(icon: .more, size: 15, weight: .medium)
         }
         .menuStyle(.button)
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityIdentifier("overlay-placement-menu")
@@ -234,10 +234,29 @@ struct DictationOverlayView: View {
                 .csMono(11, .medium)
                 .foregroundStyle(CSColor.textFaint)
             Spacer(minLength: 0)
+            sessionTimer
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 4)
+    }
+
+    /// Live `00:00` session counter — the absolute reference for audio sync,
+    /// transcription lag, and stream drift (UI_DIVERGENCE_AUDIT pkt 5). Ticks
+    /// only while `.listening`; the state freezes the underlying stamp when
+    /// capture stops, so the final displayed value is the session's true length.
+    @ViewBuilder
+    private var sessionTimer: some View {
+        if state.mode == .listening, state.captureStartedAtUptime != nil {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                Text(state.sessionTimerText)
+                    .csMono(11, .semibold)
+                    .foregroundStyle(CSColor.textFaint)
+            }
+            .accessibilityIdentifier("overlay-session-timer")
+            .accessibilityLabel("Recording time")
+            .accessibilityValue(state.sessionTimerText)
+        }
     }
 
     // MARK: Body
@@ -502,7 +521,7 @@ struct DictationOverlayView: View {
             )
         }
         .menuStyle(.button)
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .menuIndicator(.hidden)
         .help(state.manualFormatHelp)
         .disabled(!state.canFormat)
@@ -525,7 +544,7 @@ struct DictationOverlayView: View {
         Button(action: action) {
             actionButtonLabel(title: title, icon: icon, tone: tone, iconOnly: iconOnly)
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .help(help ?? title)
         .accessibilityLabel(title)
         .accessibilityHint(help ?? title)
@@ -758,7 +777,7 @@ private struct CloseDot: View {
             .frame(width: 16, height: 16)
             .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .onHover { inside in
             hovered = inside
         }

@@ -28,8 +28,11 @@ use super::{FRAME_SAMPLES, NUM_CODEBOOKS, SAMPLE_RATE};
 /// Uses linear interpolation for efficiency. For production use with
 /// critical quality needs, consider rubato or similar library.
 pub struct Resampler24k {
+    /// Scratch output buffer, reused across calls to avoid per-frame allocation.
     buffer: Vec<f32>,
+    /// Output/input rate ratio; `1.0` (within tolerance) means passthrough.
     ratio: f32,
+    /// Rate this resampler was built for — a change forces a rebuild.
     input_rate: u32,
 }
 
@@ -578,10 +581,12 @@ impl ConversationEngine {
     }
 }
 
+/// ConversationEngine construction, idle state, reset, and 24 kHz resample.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Engine builds from default MoshiConfig without error.
     #[test]
     fn test_engine_creation() {
         let config = MoshiConfig::default();
@@ -589,6 +594,7 @@ mod tests {
         assert!(engine.is_ok());
     }
 
+    /// Fresh engine is Idle, not speaking, and not initialized.
     #[test]
     fn test_initial_state() {
         let engine = ConversationEngine::new(MoshiConfig::default()).unwrap();
@@ -597,6 +603,7 @@ mod tests {
         assert!(!engine.is_initialized());
     }
 
+    /// reset clears system prompt from conversation context.
     #[test]
     fn test_reset() {
         let mut engine = ConversationEngine::new(MoshiConfig::default()).unwrap();
@@ -605,6 +612,7 @@ mod tests {
         assert!(engine.context().system_prompt().is_none());
     }
 
+    /// 48 kHz audio downsamples to half length for Moshi 24 kHz path.
     #[test]
     fn test_resampler_48k_to_24k() {
         let mut resampler = Resampler24k::new(48000);
@@ -618,6 +626,7 @@ mod tests {
         assert!((output.len() as i32 - 240).abs() <= 1);
     }
 
+    /// Already-24 kHz input is length-preserving passthrough.
     #[test]
     fn test_resampler_24k_passthrough() {
         let mut resampler = Resampler24k::new(24000);

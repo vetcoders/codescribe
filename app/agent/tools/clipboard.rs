@@ -1,3 +1,11 @@
+//! Native clipboard tools (canonical: `read_clipboard` / `write_clipboard`).
+//!
+//! Reading prefers text and falls back to an image, re-encoded as PNG so the
+//! agent always receives one predictable media type. Writing is
+//! [`ToolRisk::Mutating`]: it overwrites user-owned clipboard state with no
+//! restore path. Both operations are injected through function parameters, which
+//! is what lets the tests exercise the fallback without a real pasteboard.
+
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
@@ -5,8 +13,10 @@ use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
 use serde_json::{Value, json};
 
+/// Acknowledgement returned by a successful clipboard write.
 const OK_TEXT: &str = "ok";
 
+/// Register both clipboard tools on the shared [`ToolRegistry`].
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -25,6 +35,7 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register write_clipboard tool");
 }
 
+/// Tool schema for `read_clipboard` (takes no arguments).
 fn read_clipboard_definition() -> ToolDefinition {
     ToolDefinition {
         name: "read_clipboard".to_string(),
@@ -36,6 +47,7 @@ fn read_clipboard_definition() -> ToolDefinition {
     }
 }
 
+/// Tool schema for `write_clipboard`.
 fn write_clipboard_definition() -> ToolDefinition {
     ToolDefinition {
         name: "write_clipboard".to_string(),
@@ -53,6 +65,7 @@ fn write_clipboard_definition() -> ToolDefinition {
     }
 }
 
+/// Dispatch adapter for `read_clipboard`, bound to the real OS accessors.
 async fn handle_read(_input: Value) -> Vec<ToolResultContent> {
     match read_clipboard_with(
         crate::os::clipboard::get_clipboard,
@@ -63,6 +76,7 @@ async fn handle_read(_input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Dispatch adapter for `write_clipboard`, bound to the real OS setter.
 async fn handle_write(input: Value) -> Vec<ToolResultContent> {
     match write_clipboard_with(&input, crate::os::clipboard::set_clipboard) {
         Ok(content) => vec![content],
@@ -70,6 +84,11 @@ async fn handle_write(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Read the clipboard through injected accessors: text first, image second.
+///
+/// A failing text read is expected, not exceptional — an image-only clipboard
+/// takes that path — so it is logged at debug and the fallback runs. An empty
+/// clipboard, or one holding neither, is an error.
 fn read_clipboard_with<GetText, GetImage>(
     get_text: GetText,
     get_image: GetImage,
@@ -95,6 +114,7 @@ where
     bail!("Clipboard is empty or contains unsupported data")
 }
 
+/// Write the required `text` field through an injected setter.
 fn write_clipboard_with<SetClipboard>(
     input: &Value,
     mut setter: SetClipboard,
@@ -111,6 +131,10 @@ where
     Ok(ToolResultContent::Text(OK_TEXT.to_string()))
 }
 
+/// Fetch a clipboard image and re-encode it as PNG.
+///
+/// `Ok(None)` means the clipboard simply holds no image; only a malformed
+/// buffer or a failed encode is an error.
 fn read_clipboard_image_png() -> Result<Option<Vec<u8>>> {
     let mut clipboard = Clipboard::new().context("Failed to initialize clipboard")?;
     let image = match clipboard.get_image() {
@@ -133,10 +157,13 @@ fn read_clipboard_image_png() -> Result<Option<Vec<u8>>> {
     Ok(Some(png_data))
 }
 
+/// Exercises the read precedence, the image fallback, and the write path
+/// through injected accessors — no real pasteboard involved.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Text path wins when the text accessor succeeds (image is not consulted).
     #[test]
     fn read_clipboard_returns_text_first() {
         let result = read_clipboard_with(
@@ -151,6 +178,7 @@ mod tests {
         );
     }
 
+    /// When text fails, a successful image accessor becomes PNG tool content.
     #[test]
     fn read_clipboard_falls_back_to_image() {
         let result = read_clipboard_with(
@@ -168,6 +196,7 @@ mod tests {
         );
     }
 
+    /// Write path invokes the injected setter with the JSON `text` field.
     #[test]
     fn write_clipboard_uses_setter() {
         let input = json!({ "text": "Paste me" });

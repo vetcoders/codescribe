@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+/// The license key contract, included by path so the build script and the
+/// crate it builds share one definition of the dev key and its fingerprint
+/// instead of two copies that can drift apart.
 #[path = "licensing/key_contract.rs"]
 mod license_key_contract;
 use license_key_contract::{
@@ -29,19 +32,32 @@ use license_key_contract::{
 
 /// Default Whisper model to embed
 const DEFAULT_MODEL_NAME: &str = "whisper-large-v3-turbo-mlx-q8";
+/// Hugging Face repo id for the default Whisper snapshot (HF cache + download hints).
 const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 
 /// Default TTS model to embed
 const DEFAULT_TTS_MODEL_NAME: &str = "csm-1b";
+/// Hugging Face repo id for the default CSM TTS snapshot.
 const DEFAULT_TTS_REPO: &str = "sesame/csm-1b";
+/// Hugging Face repo id for Mimi codec weights used with TTS embedding.
 const DEFAULT_MIMI_REPO: &str = "kyutai/mimi";
 
 /// Default embedder model — MiniLM multilingual (~224MB fp16, always embedded like Silero)
 /// Override with CODESCRIBE_EMBEDDER_REPO for alternative models
 const DEFAULT_EMBEDDER_MODEL_NAME: &str = "minilm-l12-v2";
+/// Default sentence-transformers MiniLM repo embedded unless `CODESCRIBE_NO_EMBED`.
 const DEFAULT_EMBEDDER_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
+/// Env flag: local install path skips release license-key hardening in `main`.
 const LOCAL_INSTALL_ENV: &str = "CODESCRIBE_LOCAL_INSTALL";
 
+/// Resolve every optional model asset and emit the `embed_*` cfgs the crate
+/// compiles against.
+///
+/// Each asset has its own policy, and they are not symmetrical: Silero VAD is
+/// non-negotiable and its absence panics; MiniLM embeds by default; Whisper and
+/// TTS are opt-in. A requested-but-missing model degrades to a `cargo:warning`
+/// and a runtime lookup rather than failing the build — only the committed
+/// Silero file is treated as a repo invariant.
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
@@ -64,16 +80,6 @@ fn main() {
     configure_license_public_key(is_release && !is_local_install);
 
     if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
-        let codescribe_dir = dirs::home_dir()
-            .map(|h| h.join(".codescribe"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/.codescribe"));
-
-        if is_release {
-            let _ = fs::create_dir_all(&codescribe_dir);
-            let repo_path_file = codescribe_dir.join("repo_path");
-            let _ = fs::write(&repo_path_file, &manifest_dir);
-        }
-
         let out_dir = env::var("OUT_DIR").unwrap();
         let embed_model = env::var("CODESCRIBE_EMBED_MODEL")
             .ok()
@@ -118,9 +124,13 @@ fn main() {
             );
             let whisper_content = format!(
                 r#"
+                /// Embedded Whisper config.json bytes (opt-in fat SKU only).
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                /// Embedded Whisper tokenizer.json bytes.
                 pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                /// Embedded Whisper mel filter bank (mel_filters.npz).
                 pub static MEL_FILTERS: &[u8] = include_bytes!(r"{}");
+                /// Embedded Whisper model weights (safetensors).
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
                 "#,
                 model_path.join("config.json").display(),
@@ -164,11 +174,17 @@ fn main() {
             );
             let tts_content = format!(
                 r#"
+                /// Embedded TTS config.json bytes.
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                /// Embedded TTS tokenizer.json bytes.
                 pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                /// Embedded TTS model.safetensors weights.
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
+                /// Placeholder Mimi config (factory defaults; not file-backed).
                 pub static MIMI_CONFIG: &[u8] = &[]; // Mimi uses factory config
+                /// Embedded Mimi codec weights for TTS decoding.
                 pub static MIMI_WEIGHTS: &[u8] = include_bytes!(r"{}");
+                /// Optional voice-token blob (empty when unused).
                 pub static VOICE_TOKENS: &[u8] = &[]; // Optional voice tokens
                 "#,
                 tts_model_path.join("config.json").display(),
@@ -214,8 +230,11 @@ fn main() {
             );
             let embedder_content = format!(
                 r#"
+                /// Embedded MiniLM embedder config.json bytes.
                 pub static CONFIG: &[u8] = include_bytes!(r"{}");
+                /// Embedded MiniLM tokenizer.json bytes.
                 pub static TOKENIZER: &[u8] = include_bytes!(r"{}");
+                /// Embedded MiniLM model.safetensors weights.
                 pub static WEIGHTS: &[u8] = include_bytes!(r"{}");
                 "#,
                 embedder_model_path.join("config.json").display(),
@@ -247,6 +266,7 @@ fn main() {
         if silero_path.exists() {
             let silero_content = format!(
                 r#"
+                /// Embedded Silero VAD ONNX model bytes (always required).
                 pub static MODEL: &[u8] = include_bytes!(r"{}");
                 "#,
                 silero_path.display(),
@@ -323,6 +343,14 @@ fn main() {
     }
 }
 
+/// Bake the license verification key into the binary, refusing to ship a
+/// release that would verify against the development key.
+///
+/// Release builds must supply the key through the environment; three separate
+/// conditions abort instead of degrading — the `licensing-dev` feature being
+/// on, the env key being absent, and a supplied key whose fingerprint is the
+/// known development one. A build that cannot verify licences honestly is
+/// worse than no build, so each of these panics rather than warns.
 fn configure_license_public_key(is_release: bool) {
     if is_release && env::var_os("CARGO_FEATURE_LICENSING_DEV").is_some() {
         panic!("licensing-dev is forbidden in release builds");
@@ -352,6 +380,11 @@ fn configure_license_public_key(is_release: bool) {
     println!("cargo:rustc-env=CODESCRIBE_LICENSE_PUBLIC_KEY_FINGERPRINT={fingerprint}");
 }
 
+/// Decode a 64-character hex Ed25519 public key.
+///
+/// Asserts the shape before decoding: anything else — a UUID, a truncated
+/// paste, a path — fails the build here rather than producing a binary whose
+/// licence verification silently never matches.
 fn decode_license_public_key(value: &str) -> [u8; 32] {
     assert!(
         value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -366,6 +399,11 @@ fn decode_license_public_key(value: &str) -> [u8; 32] {
     bytes
 }
 
+/// Last-resort path resolution for a model, once no HF snapshot matched.
+///
+/// An absolute path is taken verbatim, a multi-component relative path is
+/// resolved against the manifest dir, and a bare name is looked up under
+/// `<manifest>/models/`.
 fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
     let candidate = PathBuf::from(embed_model);
     if candidate.is_absolute() {
@@ -379,6 +417,12 @@ fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
     Path::new(manifest_dir).join("models").join(embed_model)
 }
 
+/// Locate the Whisper snapshot to embed.
+///
+/// `CODESCRIBE_MODEL_PATH` wins when it points at a real snapshot — it is the
+/// explicit operator override. Otherwise a repo-id-shaped name is looked up in
+/// the HF cache, the default name falls back to the default repo, and anything
+/// left resolves as a plain path.
 fn resolve_whisper_embed_model_path(
     manifest_dir: &str,
     embed_model: &str,
@@ -403,6 +447,9 @@ fn resolve_whisper_embed_model_path(
     resolve_embed_model_path(manifest_dir, embed_model)
 }
 
+/// Locate the TTS snapshot to embed. Same cache-then-path resolution as
+/// Whisper, minus the `CODESCRIBE_MODEL_PATH` override, which is Whisper's
+/// alone.
 fn resolve_tts_embed_model_path(
     manifest_dir: &str,
     embed_model: &str,
@@ -420,6 +467,9 @@ fn resolve_tts_embed_model_path(
     resolve_embed_model_path(manifest_dir, embed_model)
 }
 
+/// Locate the embedder snapshot. The repo is always consulted first — unlike
+/// Whisper and TTS there is no bare-name special case, because the embedder
+/// repo is either the default or an explicit `CODESCRIBE_EMBEDDER_REPO`.
 fn resolve_embedder_model_path(manifest_dir: &str, embed_model: &str, repo: &str) -> PathBuf {
     if let Some(snapshot) = find_hf_snapshot(repo) {
         return snapshot;
@@ -427,6 +477,11 @@ fn resolve_embedder_model_path(manifest_dir: &str, embed_model: &str, repo: &str
     resolve_embed_model_path(manifest_dir, embed_model)
 }
 
+/// Every directory that may hold a Hugging Face cache, deduplicated.
+///
+/// Covers the project override, the three standard HF env vars, the default
+/// user cache, and Codescribe's own embeddings dir. Sorted and deduped because
+/// several of these routinely point at the same place.
 fn hf_cache_bases() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(path) = env::var("CODESCRIBE_HF_CACHE") {
@@ -453,6 +508,7 @@ fn hf_cache_bases() -> Vec<PathBuf> {
     out
 }
 
+/// First snapshot of `repo` found across the candidate cache bases.
 fn find_hf_snapshot(repo: &str) -> Option<PathBuf> {
     for base in hf_cache_bases() {
         if let Some(snapshot) = find_hf_snapshot_in_base(&base, repo) {
@@ -462,6 +518,12 @@ fn find_hf_snapshot(repo: &str) -> Option<PathBuf> {
     None
 }
 
+/// Newest snapshot of `repo` under one cache base.
+///
+/// The `models--owner--name` directory is tried first; failing that, the base
+/// is scanned case-insensitively, because HF repo ids differ in case between
+/// what a caller writes and what the cache recorded. Among the snapshots, the
+/// most recently modified wins — that is the one a `hf download` just wrote.
 fn find_hf_snapshot_in_base(base: &PathBuf, repo: &str) -> Option<PathBuf> {
     let repo_dir = base.join(format!("models--{}", repo.replace('/', "--")));
     let snapshots_dir = repo_dir.join("snapshots");
@@ -513,6 +575,11 @@ fn find_hf_snapshot_in_base(base: &PathBuf, repo: &str) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Read a boolean build flag from the environment.
+///
+/// Anything set counts as true except the explicit negatives (`0`, `false`,
+/// `off`, `no`); an unset *or* whitespace-only value falls back to `default`,
+/// so an empty CI variable does not silently mean "on".
 fn env_flag(name: &str, default: bool) -> bool {
     match env::var(name) {
         Ok(value) => {

@@ -1,3 +1,15 @@
+//! Denormalized index over the agent thread store.
+//!
+//! Threads live as individual JSON files; listing and searching them by opening
+//! every file does not scale, so this module keeps a single `index.json` of
+//! [`ThreadSummary`] rows carrying a precomputed `search_text`.
+//!
+//! The index is a derived cache and is treated as such: a summary schema change
+//! bumps `INDEX_VERSION`, and an older file is rebuilt from the thread files on
+//! load. Only user-owned state that exists nowhere else — the favourite flag —
+//! is carried across a rebuild. Writes go through a temp-file rename, so a crash
+//! mid-write leaves the previous index intact rather than a truncated one.
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
@@ -11,9 +23,12 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::thread_store::{Thread, ThreadMessage};
 
+/// On-disk filename for the denormalized thread index under the threads dir.
 const INDEX_FILE_NAME: &str = "index.json";
+/// Schema version for `index.json`. Bump forces rebuild from thread files on load.
 const INDEX_VERSION: u32 = 3;
 
+/// On-disk shape of `index.json`: a schema version plus the summary rows.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadIndexData {
     pub version: u32,
@@ -21,6 +36,7 @@ pub struct ThreadIndexData {
 }
 
 impl Default for ThreadIndexData {
+    /// Empty index at the current `INDEX_VERSION` (no summary rows yet).
     fn default() -> Self {
         Self {
             version: INDEX_VERSION,
@@ -29,6 +45,12 @@ impl Default for ThreadIndexData {
     }
 }
 
+/// One thread reduced to what the list UI and search need.
+///
+/// Everything here is derived from the thread file except `is_favorite`, which
+/// is stored only in the index and therefore has to be preserved across a
+/// rebuild. New fields carry `#[serde(default)]` so an index written by an older
+/// build still deserializes and can be migrated rather than discarded.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThreadSummary {
     pub id: String,
@@ -57,6 +79,10 @@ pub struct ThreadSummary {
 }
 
 impl ThreadSummary {
+    /// Reduce a full thread to its summary row.
+    ///
+    /// `is_favorite` is passed in rather than read from the thread because it is
+    /// index-only state the caller must carry over.
     fn from_thread(thread: &Thread, is_favorite: bool) -> Self {
         let latest_message = thread
             .messages
@@ -94,6 +120,12 @@ impl ThreadSummary {
         }
     }
 
+    /// The haystack for [`ThreadIndex::search`].
+    ///
+    /// Borrows the precomputed `search_text` when present; otherwise rebuilds a
+    /// reduced haystack (title, mode, tags, summary) on the fly, so rows written
+    /// by a build that predates `search_text` remain searchable instead of
+    /// silently matching nothing.
     fn searchable_text(&self) -> Cow<'_, str> {
         if !self.search_text.is_empty() {
             return Cow::Borrowed(&self.search_text);
@@ -122,6 +154,7 @@ impl ThreadSummary {
     }
 }
 
+/// Conjunctive list filter. Every set field must match; `Default` matches all.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThreadFilter {
     pub mode: Option<String>,
@@ -130,6 +163,10 @@ pub struct ThreadFilter {
     pub tag: Option<String>,
 }
 
+/// An open thread index bound to its `index.json` path.
+///
+/// Every mutation persists immediately, so the in-memory copy and the file do
+/// not drift. Rows are kept sorted newest-first.
 #[derive(Debug, Clone)]
 pub struct ThreadIndex {
     path: PathBuf,
@@ -137,6 +174,12 @@ pub struct ThreadIndex {
 }
 
 impl ThreadIndex {
+    /// Open the index under `threads_dir`, creating or migrating it as needed.
+    ///
+    /// An index older than `INDEX_VERSION` is rebuilt from the thread files and
+    /// written back before returning, so callers never observe stale summaries.
+    /// The resolved path is canonicalized and asserted to stay under
+    /// `threads_dir` before it is read.
     pub fn load_or_create(threads_dir: &Path) -> Result<Self> {
         fs::create_dir_all(threads_dir).with_context(|| {
             format!(
@@ -177,6 +220,10 @@ impl ThreadIndex {
         Ok(index)
     }
 
+    /// Insert or refresh the summary for `thread`, then persist.
+    ///
+    /// Upsert by id: re-adding an existing thread rewrites its row while keeping
+    /// the favourite flag, so a routine save cannot silently unfavourite it.
     pub fn add(&mut self, thread: &Thread) -> Result<()> {
         match self
             .data
@@ -197,11 +244,16 @@ impl ThreadIndex {
         self.save()
     }
 
+    /// Drop the row for `id` and persist. Removing an absent id is a no-op.
     pub fn remove(&mut self, id: &str) -> Result<()> {
         self.data.threads.retain(|summary| summary.id != id);
         self.save()
     }
 
+    /// Set the favourite flag for `id`, persisting only on an actual change.
+    ///
+    /// Returns whether the thread is known — `Ok(false)` means no such id, which
+    /// is distinct from "already in that state" (`Ok(true)`, no write).
     pub fn set_favorite(&mut self, id: &str, is_favorite: bool) -> Result<bool> {
         let Some(entry) = self
             .data
@@ -221,6 +273,7 @@ impl ThreadIndex {
         Ok(true)
     }
 
+    /// Summaries matching `filter`, newest-updated first. `None` lists all.
     pub fn list(&self, filter: Option<&ThreadFilter>) -> Vec<&ThreadSummary> {
         let mut entries = self
             .data
@@ -232,6 +285,11 @@ impl ThreadIndex {
         entries
     }
 
+    /// Substring AND-search over each row's haystack, newest-updated first.
+    ///
+    /// Every whitespace-separated term must appear somewhere in the row; order
+    /// and word boundaries are not considered. A blank query degenerates to
+    /// [`Self::list`] rather than returning nothing.
     pub fn search(&self, query: &str) -> Vec<&ThreadSummary> {
         let terms = normalize_terms(query);
         if terms.is_empty() {
@@ -251,21 +309,28 @@ impl ThreadIndex {
         entries
     }
 
+    /// Persist the index via the temp-file-and-rename path.
     pub fn save(&self) -> Result<()> {
         let data =
             serde_json::to_vec_pretty(&self.data).context("Failed to serialize thread index")?;
         atomic_write(&self.path, &data)
     }
 
+    /// Borrow the raw index data, including the schema version.
     pub fn data(&self) -> &ThreadIndexData {
         &self.data
     }
 }
 
+/// Order rows newest-updated first — the invariant `index.json` is stored in.
 fn sort_by_updated_desc(entries: &mut [ThreadSummary]) {
     entries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
 }
 
+/// Split a query into lowercased terms, matching how haystacks are normalized.
+///
+/// ASCII-only case folding, so it is symmetric with [`normalize_snippet`] — both
+/// sides must fold identically or nothing would match.
 fn normalize_terms(query: &str) -> Vec<String> {
     query
         .to_ascii_lowercase()
@@ -275,11 +340,18 @@ fn normalize_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
+/// Flatten a thread into one normalized haystack, capped at 16 KiB.
+///
+/// Fields are appended in descending value — title, mode, tags, summary, then
+/// the newest note and message, then the remaining notes and messages — so when
+/// the cap truncates, it drops the least useful text. The cap is what keeps
+/// `index.json` bounded regardless of how long a conversation runs.
 fn build_search_text(
     thread: &Thread,
     latest_note: Option<&str>,
     latest_message: Option<&str>,
 ) -> String {
+    /// Hard cap on precomputed search haystack size so `index.json` stays bounded.
     const MAX_SEARCH_TEXT_BYTES: usize = 16_384;
     let mut out = String::with_capacity(1024);
     append_search_chunk(&mut out, &thread.title, MAX_SEARCH_TEXT_BYTES);
@@ -317,6 +389,12 @@ fn build_search_text(
     out
 }
 
+/// Rebuild every summary by re-reading the thread files in `threads_dir`.
+///
+/// Favourite flags from `existing` are carried over by id; everything else is
+/// re-derived. Unreadable or unparseable thread files are skipped rather than
+/// failing the rebuild — one corrupt file must not make the whole history
+/// unopenable.
 fn rebuild_index_from_threads(
     threads_dir: &Path,
     existing: &ThreadIndexData,
@@ -363,6 +441,10 @@ fn rebuild_index_from_threads(
     })
 }
 
+/// Whether `path` is a thread file: a `t_`-prefixed name with a `.json`
+/// extension.
+///
+/// The prefix check is what keeps `index.json` itself out of a rebuild.
 fn is_thread_json_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -373,6 +455,12 @@ fn is_thread_json_file(path: &Path) -> bool {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
 }
 
+/// Append `value` to the haystack, space-separated, without exceeding `max_len`.
+///
+/// Truncation lands on a grapheme boundary via [`grapheme_prefix_len`], so a
+/// clipped chunk can never split a multi-byte character and produce invalid
+/// UTF-8. A chunk whose first grapheme does not fit is dropped entirely rather
+/// than partially written.
 fn append_search_chunk(out: &mut String, value: &str, max_len: usize) {
     if value.is_empty() || out.len() >= max_len {
         return;
@@ -393,6 +481,10 @@ fn append_search_chunk(out: &mut String, value: &str, max_len: usize) {
     out.push_str(&normalized[..prefix_len]);
 }
 
+/// Collapse whitespace runs to single spaces and lowercase ASCII.
+///
+/// Case folding is ASCII-only: non-ASCII letters keep their case, so a query and
+/// a haystack agree only because both sides run through this same reduction.
 fn normalize_snippet(value: &str) -> String {
     value
         .split_whitespace()
@@ -401,6 +493,13 @@ fn normalize_snippet(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Longest byte prefix of `value` that fits `max_len` and ends on a grapheme
+/// cluster boundary.
+///
+/// Clusters, not chars: combining marks and zero-width joiners stay attached to
+/// their base character, so adversarial input (long combining sequences,
+/// zero-width padding) truncates safely instead of panicking on a non-boundary
+/// slice. Returns 0 when not even the first cluster fits.
 fn grapheme_prefix_len(value: &str, max_len: usize) -> usize {
     if value.len() <= max_len {
         return value.len();
@@ -416,6 +515,10 @@ fn grapheme_prefix_len(value: &str, max_len: usize) -> usize {
     boundary
 }
 
+/// Normalized preview prose for one message, or `None` when it carries no text.
+///
+/// `None` is what lets callers walk backwards to the newest message that
+/// actually reads as text, skipping tool calls and image blocks.
 fn thread_message_preview_text(message: &ThreadMessage) -> Option<String> {
     let mut chunks = Vec::new();
     for value in &message.content {
@@ -468,6 +571,10 @@ fn collect_message_text(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
+/// Whether `summary` satisfies every set field of `filter`.
+///
+/// Mode and tag compare case-insensitively; the boolean fields only ever
+/// narrow, so `has_notes: false` means "don't care", not "must have none".
 fn matches_filter(summary: &ThreadSummary, filter: &ThreadFilter) -> bool {
     if let Some(mode) = &filter.mode
         && !summary.mode.eq_ignore_ascii_case(mode)
@@ -495,6 +602,11 @@ fn matches_filter(summary: &ThreadSummary, filter: &ThreadFilter) -> bool {
     true
 }
 
+/// Write `data` to `path` by writing a sibling `.tmp` and renaming over it.
+///
+/// The rename is atomic within a filesystem, so a crash or a concurrent reader
+/// sees either the old index or the new one — never a half-written file that
+/// would fail to parse and force a full rebuild.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -514,6 +626,11 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Canonicalize `path` and prove it stays inside `base`, or fail.
+///
+/// Both sides are canonicalized first so the containment check survives
+/// symlinks and `..` components — comparing the raw paths would accept a
+/// symlinked index pointing anywhere on disk. Requires the path to exist.
 fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
     let base = base
         .canonicalize()
@@ -531,6 +648,7 @@ fn canonical_existing_child(base: &Path, path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Index load/migrate/search/list/favorite contract tests against temp dirs.
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -541,6 +659,7 @@ mod tests {
     use super::*;
     use crate::agent::thread_store::{Thread, ThreadMessage, TokenUsage};
 
+    /// Minimal thread fixture with fixed tags, one message, and token usage.
     fn sample_thread(
         id: &str,
         title: &str,
@@ -575,6 +694,7 @@ mod tests {
         }
     }
 
+    /// AND search requires every term; results sort newest-updated first.
     #[test]
     fn search_matches_all_words_and_sorts_by_latest() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -616,6 +736,7 @@ mod tests {
         Ok(())
     }
 
+    /// List filter ANDs mode, favorites, notes, and tag constraints.
     #[test]
     fn list_applies_filters() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -654,6 +775,7 @@ mod tests {
         Ok(())
     }
 
+    /// Search haystack includes assistant message and note body text.
     #[test]
     fn search_includes_message_and_note_text() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -691,6 +813,7 @@ mod tests {
         Ok(())
     }
 
+    /// Legacy input_text/output_text feed preview/search without leaking type tags.
     #[test]
     fn legacy_openai_text_aliases_feed_preview_and_search_without_type_leak() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -743,6 +866,7 @@ mod tests {
         Ok(())
     }
 
+    /// Stale index version rebuilds from thread files and preserves favorites.
     #[test]
     fn load_migrates_legacy_index_summaries_from_thread_files() -> Result<()> {
         let tmp = TempDir::new()?;
@@ -823,6 +947,7 @@ mod tests {
         Ok(())
     }
 
+    /// Truncation lands on grapheme boundaries; first-cluster-too-large is dropped.
     #[test]
     fn append_search_chunk_respects_grapheme_boundary_at_limit() {
         let mut out = "x".repeat(16_382);
@@ -859,6 +984,7 @@ mod tests {
         assert!(out.len() <= 16_384);
     }
 
+    /// Favorite flag survives reload from disk after set_favorite.
     #[test]
     fn set_favorite_persists_to_disk() -> Result<()> {
         let tmp = TempDir::new()?;

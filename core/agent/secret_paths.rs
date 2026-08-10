@@ -39,6 +39,7 @@ fn classify(text: &str) -> bool {
     // Credential directories anywhere in the path — including the bare
     // directory itself ("~/.ssh", "/Users/op/.aws", with or without a
     // trailing slash): listing the directory already leaks the key inventory.
+    /// Path markers for credential dirs; bare dir and children both escalate.
     const SECRET_DIRS: &[&str] = &["/.ssh", "/.aws", "/.gnupg", "/.kube"];
     let no_trailing = lower.trim_end_matches('/');
     if SECRET_DIRS
@@ -51,6 +52,11 @@ fn classify(text: &str) -> bool {
     is_secret_basename(basename)
 }
 
+/// Whether a filename (no directory part) names credential-bearing content.
+///
+/// Covers dotted env files, the MCP config and its backups, the grant store,
+/// conventional credential dotfiles, key material by extension, and the usual
+/// SSH key stems.
 fn is_secret_basename(name: &str) -> bool {
     // Dotted env files: .env, .env.local, .env.debug.example, …
     if name.starts_with(".env") {
@@ -68,22 +74,26 @@ fn is_secret_basename(name: &str) -> bool {
         return true;
     }
     // Key material by extension / conventional stem.
+    /// File extensions treated as private-key / keystore material.
     const KEY_SUFFIXES: &[&str] = &[".pem", ".p12", ".pfx", ".key", ".keychain-db", ".keystore"];
     if KEY_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
         return true;
     }
+    /// Conventional SSH private-key basenames (exact or `.pub`/numbered suffix).
     const KEY_STEMS: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
     KEY_STEMS.iter().any(|stem| {
         name == *stem || (name.starts_with(stem) && name.as_bytes().get(stem.len()) == Some(&b'.'))
     })
 }
 
+/// Unit tests for secret-path classification and nested JSON scanning.
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
 
+    /// Env, MCP config, grants, SSH/AWS dirs, and key material all escalate.
     #[test]
     fn env_and_mcp_config_paths_are_secret() {
         for path in [
@@ -109,6 +119,7 @@ mod tests {
         }
     }
 
+    /// Workspace files and bare query words must not escalate to Ask.
     #[test]
     fn ordinary_workspace_paths_and_bare_words_pass() {
         for path in [
@@ -130,6 +141,7 @@ mod tests {
         assert!(find_secret_path(&json!({ "query": "mcp.json" })).is_none());
     }
 
+    /// Paths hidden in argv arrays / nested objects are still discovered.
     #[test]
     fn nested_arrays_and_objects_are_scanned() {
         let input = json!({

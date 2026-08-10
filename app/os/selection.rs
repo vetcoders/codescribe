@@ -21,6 +21,9 @@ use core_foundation::string::CFString;
 #[cfg(target_os = "macos")]
 use std::ptr;
 
+/// What the assistive prompt knows about the user's screen: which app owned
+/// focus and what was selected in it. Both fields are best-effort — either may
+/// be `None` without that being an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AssistiveContext {
     pub frontmost_app: Option<String>,
@@ -35,19 +38,27 @@ pub struct CapturedAssistiveContext {
     pub image_png: Option<Vec<u8>>,
 }
 
+/// Raw spoils of one clipboard round-trip, before they are shaped into an
+/// [`AssistiveContext`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CopiedSelectionPayload {
     text: Option<String>,
     image_png: Option<Vec<u8>>,
 }
 
+/// A cached context plus the instant it was captured, so staleness can be
+/// judged at read time rather than by a background sweep.
 #[derive(Debug, Clone)]
 struct TimedAssistiveContext {
     captured_at: std::time::Instant,
     ctx: AssistiveContext,
 }
 
+/// Process-wide slot holding at most one recent capture. A poisoned lock is
+/// recovered rather than propagated — losing context must never panic a
+/// recording.
 fn recent_assistive_context_store() -> &'static Mutex<Option<TimedAssistiveContext>> {
+    /// Process-wide once-cell for the most recent timed assistive context.
     static STORE: OnceLock<Mutex<Option<TimedAssistiveContext>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(None))
 }
@@ -79,6 +90,7 @@ pub fn get_recent_assistive_context(max_age: Duration) -> Option<AssistiveContex
     None
 }
 
+/// Drop the cached context so one test cannot observe another's capture.
 #[cfg(test)]
 fn clear_recent_assistive_context_for_tests() {
     let mut guard = recent_assistive_context_store()
@@ -87,6 +99,8 @@ fn clear_recent_assistive_context_for_tests() {
     *guard = None;
 }
 
+/// Read a boolean env knob. Any value other than `0`/`false`/`no`/`off`
+/// (case-insensitive) counts as enabled; an unset key yields `default`.
 fn env_flag(key: &str, default: bool) -> bool {
     std::env::var(key)
         .ok()
@@ -97,6 +111,7 @@ fn env_flag(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Read a `usize` env knob; unset or unparsable yields `default`.
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
@@ -104,6 +119,7 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Read a `u64` env knob; unset or unparsable yields `default`.
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -234,6 +250,7 @@ fn activate_running_app_by_name(app_name: &str) -> bool {
     use objc::runtime::{Class, Object};
     use objc::{msg_send, sel, sel_impl};
 
+    /// `NSApplicationActivateIgnoringOtherApps` bit for force-front activation.
     const ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
 
     // SAFETY: sharedWorkspace/runningApplications return shared autoreleased
@@ -329,6 +346,7 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
     }
 }
 
+/// Non-macOS stub: there is no app-activation path off macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn activate_app_by_name(_app_name: &str) -> bool {
     false
@@ -373,6 +391,7 @@ fn nsworkspace_frontmost_app_name() -> Option<String> {
     }
 }
 
+/// Non-macOS stub: no AppKit focus signal, so focus is never confirmable.
 #[cfg(not(target_os = "macos"))]
 fn nsworkspace_frontmost_app_name() -> Option<String> {
     None
@@ -424,21 +443,33 @@ pub(crate) fn wait_for_frontmost_app(expected_app: &str, budget: Duration) -> bo
     }
 }
 
+/// Non-macOS stub: focus can never be confirmed, so this never claims it was.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn wait_for_frontmost_app(_expected_app: &str, _budget: Duration) -> bool {
     false
 }
 
+/// Trim an app name, collapsing blank-after-trim to `None`.
 fn normalized_app_name(app_name: Option<String>) -> Option<String> {
     app_name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
 }
 
+/// Whether this app name is Codescribe itself — the guard against capturing
+/// our own overlay as if it were the user's document.
 fn is_codescribe_app(app_name: &str) -> bool {
     app_name.trim().eq_ignore_ascii_case("codescribe")
 }
 
+/// Pick which app the capture should treat as the user's, and say whether it
+/// must be re-activated first.
+///
+/// Codescribe's own overlay can steal focus between the hotkey and the capture,
+/// so a prior frontmost app wins whenever the current one is Codescribe or
+/// unknown. Returns `(app, should_restore_prior_app)`; the flag is `true` only
+/// when the prior app was chosen and therefore has to be brought forward before
+/// a synthetic Cmd+C would land in it.
 fn resolve_effective_frontmost_app(
     current_frontmost_app: Option<String>,
     prior_frontmost_app: Option<String>,
@@ -463,6 +494,9 @@ fn resolve_effective_frontmost_app(
     }
 }
 
+/// Test seam mirroring the real capture flow with the selection read injected,
+/// so the app-resolution and Codescribe-guard branches can be exercised without
+/// osascript, the clipboard, or synthetic key events.
 #[cfg(test)]
 fn capture_assistive_context_from_parts(
     current_frontmost_app: Option<String>,
@@ -512,6 +546,12 @@ fn copy_landed_by_change_count(prev: Option<i64>, post: Option<i64>) -> bool {
     }
 }
 
+/// Bring the target app forward when needed, confirm focus actually landed,
+/// then read its selection.
+///
+/// The focus confirmation is bounded by `copy_delay_ms` (clamped to 80–200ms):
+/// a stuck activation degrades to a best-effort capture instead of wedging the
+/// recording path.
 fn capture_selected_content_with_effective_frontmost(
     max_chars: usize,
     copy_delay_ms: u64,
@@ -600,6 +640,11 @@ pub(crate) fn current_frontmost_app_name() -> Option<String> {
     nsworkspace_frontmost_app_name()
 }
 
+/// Frontmost app name via the `System Events` osascript query.
+///
+/// Slower than [`nsworkspace_frontmost_app_name`] and it rides the Automation
+/// TCC path, so a denial shows up here as a failed query rather than an error.
+/// Returns `None` on any failure — best-effort by design.
 #[cfg(target_os = "macos")]
 fn frontmost_app_name() -> Option<String> {
     use std::process::Command;
@@ -632,11 +677,27 @@ fn frontmost_app_name() -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// Non-macOS stub: no frontmost-app concept to query.
 #[cfg(not(target_os = "macos"))]
 fn frontmost_app_name() -> Option<String> {
     None
 }
 
+/// Read the current selection, preferring Accessibility and falling back to a
+/// snapshot-restored synthetic Cmd+C.
+///
+/// Two-stage by cost and by cleanliness: AX touches no clipboard at all, so
+/// native AppKit apps never reach the fallback. Apps that expose no
+/// `AXSelectedText` (terminals, Electron) do, and there the user's clipboard is
+/// snapshotted, Cmd+C is simulated, and the snapshot is restored.
+///
+/// `NSPasteboard.changeCount` decides whether the copy landed — it is
+/// content-agnostic, so a selection identical to the previous clipboard is not
+/// a false negative and a stale non-text clipboard is not a false positive.
+/// When that signal is unavailable the code falls back to comparing content and
+/// treats "unchanged" as no selection, so arbitrary clipboard data cannot leak
+/// into a prompt. Set `ASSISTIVE_CONTEXT_COPY_FALLBACK=0` to disable the Cmd+C
+/// stage entirely.
 #[cfg(target_os = "macos")]
 fn selected_content_from_frontmost(
     max_chars: usize,
@@ -750,6 +811,10 @@ fn selected_content_from_frontmost(
     captured
 }
 
+/// Read both clipboard payloads, then restore the user's clipboard.
+///
+/// The ordering is the whole point: image bytes must be retained *before*
+/// restoration, or the selected image is gone by the time anyone asks for it.
 fn capture_copied_payload_and_restore(
     text_reader: impl FnOnce() -> Option<String>,
     image_reader: impl FnOnce() -> Option<Vec<u8>>,
@@ -773,29 +838,43 @@ fn capture_copied_payload_and_restore(
 // ---------------------------------------------------------------------------
 
 // Accessibility API bindings (use raw pointers compatible with C FFI)
+/// Opaque handle to an `AXUIElement` / `AXValue` / `CFString`, kept as a raw
+/// pointer for C FFI compatibility.
 #[cfg(target_os = "macos")]
 type AXId = *mut std::ffi::c_void;
 
 #[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
+    /// Copy one attribute off an AX element. Returns an `AXError` (0 = success)
+    /// and writes an owned value the caller must `CFRelease`.
     fn AXUIElementCopyAttributeValue(element: AXId, attribute: AXId, value: *mut AXId) -> i32;
+    /// Create the system-wide AX element — the entry point for querying
+    /// whatever currently holds focus. Owned; requires `CFRelease`.
     fn AXUIElementCreateSystemWide() -> AXId;
+    /// Unwrap a boxed `AXValue` into a plain struct (here a `CFRange`).
+    /// Returns `false` when the value is not of the requested type.
     fn AXValueGetValue(value: AXId, type_: i32, value_ptr: *mut std::ffi::c_void) -> bool;
+    /// Release a Core Foundation object obtained under the "copy" rule.
     fn CFRelease(cf: *const std::ffi::c_void);
 }
 
 // AX constants
+/// AX API success code (`kAXErrorSuccess`).
 #[cfg(target_os = "macos")]
 const AX_ERROR_SUCCESS: i32 = 0;
+/// AX attribute name for the currently focused UI element.
 #[cfg(target_os = "macos")]
 const AX_FOCUSED_UIELEMENT_ATTRIBUTE: &str = "AXFocusedUIElement";
+/// AX attribute name for the focused element's selected text string.
 #[cfg(target_os = "macos")]
 const AX_SELECTED_TEXT_ATTRIBUTE: &str = "AXSelectedText";
+/// AX attribute name for the focused element's selected text range.
 #[cfg(target_os = "macos")]
 const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
 
 // AXValue types
+/// `AXValueType` for `CFRange` when unwrapping selection range values.
 #[cfg(target_os = "macos")]
 const AX_VALUE_CFRANGE_TYPE: i32 = 3;
 
@@ -901,6 +980,8 @@ pub fn get_selected_text_length() -> Option<usize> {
             return None;
         }
 
+        /// Local mirror of Core Foundation's `CFRange`, laid out for the
+        /// `AXValueGetValue` out-parameter.
         #[repr(C)]
         struct CFRange {
             location: i64,
@@ -927,6 +1008,8 @@ pub fn get_selected_text_length() -> Option<usize> {
     }
 }
 
+/// Non-macOS stub: no Accessibility API and no pasteboard round-trip, so no
+/// selection is ever captured.
 #[cfg(not(target_os = "macos"))]
 fn selected_content_from_frontmost(
     _max_chars: usize,
@@ -936,11 +1019,13 @@ fn selected_content_from_frontmost(
     CopiedSelectionPayload::default()
 }
 
+/// Assistive frontmost, prompt-shape, copy-landed, and cache TTL unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// When Codescribe is current, prior frontmost app is preferred and restore flagged.
     #[test]
     fn effective_frontmost_prefers_prior_when_codescribe_is_current() {
         let (app, should_restore) = resolve_effective_frontmost_app(
@@ -952,6 +1037,7 @@ mod tests {
         assert!(should_restore);
     }
 
+    /// Capture path after overlay activation targets prior app, not Codescribe.
     #[test]
     fn assistive_capture_uses_prior_frontmost_after_overlay_activation() {
         let ctx = capture_assistive_context_from_parts(
@@ -971,6 +1057,7 @@ mod tests {
         assert!(input.contains("SELECTED_TEXT:\n<<<\n"));
     }
 
+    /// No selection emits explicit empty-marker text, never an empty heredoc block.
     #[test]
     fn assistive_input_handles_missing_selection_without_empty_context_block() {
         let ctx = AssistiveContext {
@@ -987,6 +1074,7 @@ mod tests {
         assert!(input.contains("frontmost_app: GitHub Desktop"));
     }
 
+    /// Bucket count > 0 rewrites header so models do not treat selections as a leak.
     #[test]
     fn assistive_input_header_tells_truth_when_bucket_carries_selection() {
         // Incident t_2026-07-21_zcryie: "no selection" header alongside
@@ -1003,6 +1091,7 @@ mod tests {
         assert!(!input.contains("brak dostępnego zaznaczenia"));
     }
 
+    /// Live selection keeps heredoc shape even when a bucket count is also set.
     #[test]
     fn assistive_input_live_selection_wins_over_bucket_flag() {
         // Live selection path keeps its exact heredoc shape regardless of the
@@ -1020,6 +1109,7 @@ mod tests {
         );
     }
 
+    /// Change-count delta (any direction) is authoritative proof a copy landed.
     #[test]
     fn copy_landed_when_change_count_increments() {
         // Authoritative: count moved => copy landed.
@@ -1028,12 +1118,14 @@ mod tests {
         assert!(copy_landed_by_change_count(Some(8), Some(3)));
     }
 
+    /// Stable change count means the synthetic Cmd+C did not write.
     #[test]
     fn copy_not_landed_when_change_count_unchanged() {
         // Selection equals previous clipboard, or copy hit a no-op: count stable.
         assert!(!copy_landed_by_change_count(Some(42), Some(42)));
     }
 
+    /// Missing count on either side defers to content comparison (assume landed).
     #[test]
     fn copy_landed_falls_back_when_change_count_unavailable() {
         // Binding unavailable on either side => defer to content comparison.
@@ -1042,6 +1134,7 @@ mod tests {
         assert!(copy_landed_by_change_count(None, None));
     }
 
+    /// Image bytes are read before clipboard restore so they cannot vanish.
     #[test]
     fn copied_image_is_retained_before_clipboard_restore() {
         use std::cell::Cell;
@@ -1060,6 +1153,7 @@ mod tests {
         assert_eq!(captured.image_png, Some(vec![1, 2, 3, 4]));
     }
 
+    /// No prior app keeps Codescribe as frontmost and does not request restore.
     #[test]
     fn effective_frontmost_preserves_codescribe_guard_without_prior_app() {
         let (app, should_restore) =
@@ -1069,6 +1163,7 @@ mod tests {
         assert!(!should_restore);
     }
 
+    /// Fresh cache TTL returns the stored context unchanged.
     #[test]
     #[serial]
     fn recent_assistive_context_roundtrips_while_fresh() {
@@ -1086,6 +1181,7 @@ mod tests {
         );
     }
 
+    /// Expired cache entry is dropped so later prompts cannot leak old context.
     #[test]
     #[serial]
     fn stale_recent_assistive_context_is_cleared() {

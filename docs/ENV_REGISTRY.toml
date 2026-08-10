@@ -35,6 +35,13 @@ reload = "restart"
 category = "audio"
 description = "Audio input device name (empty = system default)"
 
+[vars.CODESCRIBE_AUDIO_SPILL]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "audio"
+description = "Disk spill of the full streaming take (default on); the RAM ring stays capped at 300s, spill keeps every sample so long sessions archive whole. 0/false/no/off disables"
+
 [vars.AUTO_SILENCE]
 default = "1"
 type = "bool"
@@ -482,11 +489,18 @@ category = "stt"
 description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
 
 [vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
-default = "off"
+default = "phase1"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Layered incremental transcription phase gate: off (default) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on the VAD/scheduler session path only (not yet on Apple progressive live). phase1 = Apple Layer 0 + Whisper ReplaceRange patches when that path is active."
+description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Power-user key: not promoted to settings.json, so a stale ~/.codescribe/.env line arms it in every process that loads the core."
+
+[vars.CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO]
+default = "0.5"
+type = "f32"
+reload = "hot"
+category = "stt"
+description = "Layer 1 safety threshold: a tail-patch whose changed-character ratio against the committed utterance exceeds this is dropped whole rather than applied, so a divergent re-transcription can never overwrite the live canvas"
 
 [vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
 default = "1"
@@ -635,6 +649,13 @@ reload = "restart"
 category = "stt"
 description = "Apple live session transport: stream (AudioBuffer live) or wav (legacy VAD+scheduler escape hatch)"
 
+[vars.CODESCRIBE_APPLE_DICTATION_TRANSCRIBER]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "Arm the DictationTranscriber PoC lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Read by both the Rust side and the inherited bridge child, so one key arms the whole path. Not a shipped default — flipping it is an operator decision"
+
 [vars.CODESCRIBE_ONNX_CPU_ONLY]
 default = "0"
 type = "bool"
@@ -766,6 +787,13 @@ reload = "rebuild"
 category = "embedder"
 description = "HF repo for E5 embedder (used for embedding at build/runtime)"
 
+[vars.CODESCRIBE_EMBEDDER_DEVICE]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Embedder device override: 'cpu' forces MiniLM off Metal (diagnostic switch from the 2026-08-09 NaN-on-Metal fix; empty = auto with finite-embedding self-test and CPU demotion)"
+
 [vars.CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS]
 default = "2700"
 type = "u64"
@@ -847,6 +875,63 @@ reload = "hot"
 category = "llm"
 description = "Anthropic Messages API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=anthropic-messages (override for proxies)"
 
+[vars.CODESCRIBE_OPENAI_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the OpenAI account-login OAuth client id. Non-secret (a public client id); the operator-facing value lives in settings.json under LLM_OPENAI_OAUTH_CLIENT_ID. Unset on both surfaces, Codescribe uses the shipped Codex CLI public app id (see NOTICE)"
+
+[vars.CODESCRIBE_OPENAI_OAUTH_ISSUER]
+default = "https://auth.openai.com"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the OpenAI OAuth issuer base URL used for device-code / PKCE account login (proxies and staging only)"
+
+[vars.CODESCRIBE_ANTHROPIC_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the Anthropic account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_ANTHROPIC_OAUTH_CLIENT_ID"
+
+[vars.CODESCRIBE_ANTHROPIC_OAUTH_ISSUER]
+default = "https://console.anthropic.com"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the Anthropic OAuth issuer base URL used for account login (proxies and staging only)"
+
+[vars.LLM_XAI_API_KEY]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+secret = true
+description = "xAI (Grok) API key for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses. Stored in the Codescribe Keychain bundle under its own account, so it coexists with the OpenAI and Anthropic keys"
+
+[vars.LLM_XAI_ENDPOINT]
+default = "https://api.x.ai/v1/responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "xAI Responses API endpoint for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses (override for proxies). xAI speaks the OpenAI Responses protocol, so this lane uses the Responses request builder unchanged"
+
+[vars.CODESCRIBE_XAI_OAUTH_CLIENT_ID]
+default = ""
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Dev/CI fallback for the xAI account-login OAuth client id. Non-secret; the operator-facing value lives in settings.json under LLM_XAI_OAUTH_CLIENT_ID. Leaving both unset still works: xAI's Grok CLI public client id ships as the default (see NOTICE), same pattern as OpenAI's Codex CLI app id"
+
+[vars.CODESCRIBE_XAI_OAUTH_ISSUER]
+default = "https://auth.x.ai"
+type = "string"
+reload = "restart"
+category = "llm"
+description = "Override the xAI OAuth issuer base URL used for account login (proxies and staging only). Note that the published desktop client is registered against the loopback redirect http://127.0.0.1:56121/callback; changing the issuer does not change that redirect"
+
 [vars.LLM_USE_STREAMING]
 default = "1"
 type = "bool"
@@ -902,6 +987,13 @@ type = "bool"
 reload = "hot"
 category = "llm"
 description = "Reuse previous OpenAI Responses API response_id to continue the same thread"
+
+[vars.CODESCRIBE_AGENT_MAX_TURN_ITERATIONS]
+default = "200"
+type = "usize"
+reload = "restart"
+category = "llm"
+description = "Hard ceiling on tool-call iterations inside one agent turn. Hitting it raises an explicit loop_guard error — never a fabricated success"
 
 [vars.CODESCRIBE_AI_CLIENT_TIMEOUT_MS]
 default = "90000"
@@ -1165,6 +1257,13 @@ reload = "restart"
 category = "quality"
 description = "Start bundled qube-daemon on app launch when available; otherwise preserve the preference for external launchd/shell automation"
 
+[vars.CODESCRIBE_QUBE_DONOR]
+default = "off"
+type = "string"
+reload = "hot"
+category = "quality"
+description = "Opt-in qube donor at stop (off|on, default off). When on, copies each session's WAV + delivered transcript into ~/.codescribe/qube_inbox/<YYYY-MM-DD>/<session_ts>.{wav,txt} for lexicon candidate mining by qube-daemon. Writes files only — never runs Whisper. Orthogonal to FINAL_PASS_MODE (works under off/smart/always). Persist failures log a warning and never fail delivery."
+
 [vars.QUBE_DAEMON_USE_CLOUD_STT]
 default = "0"
 type = "bool"
@@ -1242,6 +1341,20 @@ type = "bool"
 reload = "rebuild"
 category = "build"
 description = "Build-script marker for optimized local app installs; permits only the checked-in development license verifier and is explicitly removed by distribution builds"
+
+[vars.CODESCRIBE_LICENSE_SIGNER_SEED_HEX]
+default = ""
+type = "secret"
+reload = "restart"
+category = "build"
+description = "Offline Ed25519 signing seed (64 hex chars) read ONLY by the `license_signer` example when minting production licenses; the app runtime never reads it and it must never be stored in .env or CI"
+
+[vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX]
+default = ""
+type = "string"
+reload = "rebuild"
+category = "build"
+description = "Ed25519 license verification public key (exactly 64 hex chars) embedded at build time by core/build.rs. Non-secret (it is a public key), but release builds refuse to build without it and refuse the development key's fingerprint — a build that embeds a dev key would ship unverifiable licensing"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Debug / Test
@@ -1440,11 +1553,11 @@ category = "assistive"
 description = "When true, Enter sends the agent message (Shift+Enter for newline). When false, Enter inserts newline (Cmd+Enter sends)."
 
 [vars.AGENT_WORKSPACE_ROOTS]
-default = "~/Git"
+default = "~/.codescribe"
 type = "string"
 reload = "restart"
 category = "assistive"
-description = "Colon-separated workspace root directories the agent's list_projects tool scans (one level deep) to resolve a project name to an absolute path. Defaults to ~/Git."
+description = "Colon-separated workspace root directories the agent's list_projects tool scans (recursively, bounded depth, build/hidden dirs pruned) to resolve a project name to an absolute path. Defaults to ~/.codescribe — always exists, holds no checkouts, imposes no directory convention."
 
 [vars.ASSISTIVE_CONTEXT_PROMPT_MAX_CHARS]
 default = "5000"

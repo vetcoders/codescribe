@@ -27,10 +27,12 @@ pub fn review_doctrine_prompt_section() -> String {
         .to_string()
 }
 
+/// Pins load-bearing doctrine anchors the agent tool must keep in its section text.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Doctrine tool output must include STT overlay / append-plus-gap-fill contract anchors.
     #[test]
     fn doctrine_section_carries_the_load_bearing_anchors() {
         let section = review_doctrine_prompt_section();

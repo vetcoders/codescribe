@@ -8,6 +8,10 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Transcribe one file, with the language either given or detected.
+///
+/// Progress and timings go to stderr while only the transcript goes to stdout,
+/// so the output stays pipeable into a file or another tool.
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
 
@@ -25,15 +29,24 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // Find model: ~/.codescribe/models/ (unified standard)
+    // Find model: CODESCRIBE_MODEL_PATH first — a measurement instrument that
+    // ignores the product's override silently benchmarks the default model
+    // against itself (this is exactly what happened to the 2026-08-09 F16-vs-q8
+    // comparison). Fallback: ~/.codescribe/models/ (unified standard).
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let model_candidates =
-        [PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8")];
+    let model_candidates = [
+        env::var("CODESCRIBE_MODEL_PATH").ok().map(PathBuf::from),
+        Some(PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8")),
+    ];
 
     let model_path = model_candidates
         .iter()
+        .flatten()
         .find(|p| p.join("tokenizer.json").exists())
-        .expect("No complete model found. Need tokenizer.json in model directory.");
+        .expect(
+            "No complete model found. Need tokenizer.json in the model directory \
+             (checked $CODESCRIBE_MODEL_PATH, then ~/.codescribe/models/).",
+        );
 
     eprintln!("═══════════════════════════════════════════════════════════");
     eprintln!("  Local Whisper Transcription");

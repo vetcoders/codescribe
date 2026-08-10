@@ -1,29 +1,53 @@
+//! Captured context carried alongside a voice turn: text selections and
+//! pasteboard images.
+//!
+//! Each capture is labelled (`selection_1`, `image_1`, …) and referenced from
+//! the outgoing message rather than inlined blindly. Payloads above
+//! [`DEFAULT_INLINE_LIMIT_BYTES`] spill to disk and travel as a path, so a large
+//! selection cannot bloat the prompt.
+//!
+//! Context loss is never an acceptable failure mode: archiving keeps in-memory
+//! items when the write fails, and oversized images still persist and degrade
+//! honestly instead of being dropped.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
+/// Payload size above which a capture spills to disk instead of going inline.
 pub(crate) const DEFAULT_INLINE_LIMIT_BYTES: usize = 16 * 1024;
 
+/// Reference handed back to the caller after a successful capture, so the
+/// transcript can point at the stored item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ContextMarker {
+    /// Character position in the transcript the capture was anchored at.
     pub position: usize,
+    /// Stable label (`selection_1`, `image_1`, …) used in the wire block.
     pub label: String,
 }
 
+/// How a captured selection is stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SelectionPayload {
+    /// Small enough to travel inside the message body.
     Inline(String),
+    /// Spilled to disk; the message carries only the path.
     Path(PathBuf),
 }
 
+/// One labelled text selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectionItem {
+    /// Wire label for this selection.
     label: String,
+    /// Inline text or a spill path.
     payload: SelectionPayload,
 }
 
+/// How a captured pasteboard image is stored on disk for the vision path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ImagePayload {
     /// Stored under `context/images/`; referenced via vision marker block.
@@ -32,12 +56,20 @@ enum ImagePayload {
     OversizedPath(PathBuf),
 }
 
+/// One labelled captured image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ImageItem {
+    /// Wire label for this image.
     label: String,
+    /// Durable path, flagged when it exceeded the inline limit.
     payload: ImagePayload,
 }
 
+/// Per-turn accumulator of captured selections and images.
+///
+/// Holds no transcript state of its own: callers add captures, then either
+/// fold them into an outgoing message via
+/// [`ContextBucket::append_to_message`] or archive them.
 #[derive(Debug)]
 pub(crate) struct ContextBucket {
     selections_dir: PathBuf,
@@ -48,6 +80,7 @@ pub(crate) struct ContextBucket {
 }
 
 impl ContextBucket {
+    /// Bucket rooted at `<data_dir>/context/`, with the default inline limit.
     pub(crate) fn for_codescribe_data_dir(data_dir: impl AsRef<Path>) -> Self {
         let root = data_dir.as_ref().join("context");
         Self::new(
@@ -57,6 +90,8 @@ impl ContextBucket {
         )
     }
 
+    /// Bucket with explicit spill directories and inline limit. Directories are
+    /// created lazily, on first capture that actually needs them.
     pub(crate) fn new(
         selections_dir: PathBuf,
         images_dir: PathBuf,
@@ -166,11 +201,14 @@ impl ContextBucket {
         Ok(Some(dir))
     }
 
+    /// Test helper: whether nothing at all has been captured.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty() && self.images.is_empty()
     }
 
+    /// Whether any text selection was captured. Images do not count — callers
+    /// gate the `<codescribe_context>` block on selections alone.
     pub(crate) fn has_selection_items(&self) -> bool {
         !self.items.is_empty()
     }
@@ -181,11 +219,17 @@ impl ContextBucket {
         self.items.len()
     }
 
+    /// Test helper: number of captured images.
     #[cfg(test)]
     pub(crate) fn image_count(&self) -> usize {
         self.images.len()
     }
 
+    /// Capture a text selection anchored at `position`.
+    ///
+    /// Returns `None` for whitespace-only input — an empty capture is a silent
+    /// no-op, not an error. Selections above `inline_limit_bytes` (counted in
+    /// UTF-8 bytes) spill to `selections_dir` and travel as a path.
     pub(crate) fn add_selection(
         &mut self,
         position: usize,
@@ -259,6 +303,12 @@ impl ContextBucket {
         Ok(Some(ContextMarker { position: 0, label }))
     }
 
+    /// Fold captured context onto the end of an outgoing message.
+    ///
+    /// Selections render as a `<codescribe_context>` block of labelled tags;
+    /// images render as the vision marker list consumed by
+    /// `build_image_attachments_from_text`. Returns the message unchanged when
+    /// nothing was captured.
     pub(crate) fn append_to_message(&self, message: &str) -> String {
         if self.items.is_empty() && self.images.is_empty() {
             return message.to_string();
@@ -307,10 +357,12 @@ impl ContextBucket {
     }
 }
 
+/// Selection/image capture, spill, vision markers, and archive contracts.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Labels stay ordered (`selection_N`) and emit matching open/close tags.
     #[test]
     fn three_selections_keep_order_and_explicit_tags() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -334,6 +386,7 @@ mod tests {
         );
     }
 
+    /// Oversize selection spills to disk; wire body carries PATH only, not text.
     #[test]
     fn oversized_selection_is_persisted_and_message_contains_path_only() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -359,6 +412,7 @@ mod tests {
         assert!(message.contains("<selection_1>"));
     }
 
+    /// Inline limit is UTF-8 bytes, not Unicode scalar count (multi-byte spill).
     #[test]
     fn byte_limit_counts_utf8_bytes() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -373,6 +427,7 @@ mod tests {
         assert!(!message.contains("żż"));
     }
 
+    /// Whitespace-only selection is a silent no-op (no marker, no archive dirt).
     #[test]
     fn empty_selection_is_a_silent_noop() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -388,6 +443,7 @@ mod tests {
         assert_eq!(bucket.append_to_message("voice"), "voice");
     }
 
+    /// PNG capture writes under images/ and appends the vision path marker list.
     #[test]
     fn image_capture_stores_file_and_emits_vision_marker() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -412,6 +468,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
     }
 
+    /// Oversized images still persist and append a path (honest degrade, no drop).
     #[test]
     fn oversized_image_still_persists_and_appends_path() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -424,6 +481,7 @@ mod tests {
         assert_eq!(bucket.image_count(), 1);
     }
 
+    /// Empty PNG byte slice is a silent no-op — no file, no marker.
     #[test]
     fn empty_image_is_noop() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -432,6 +490,7 @@ mod tests {
         assert!(bucket.is_empty());
     }
 
+    /// Archive writes inline files + spill/image paths, then clears memory.
     #[test]
     fn archive_preserves_inline_and_spill_truth_then_resets() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -479,6 +538,7 @@ mod tests {
         );
     }
 
+    /// Empty bucket archives to `None` and creates no archive directory.
     #[test]
     fn archive_of_empty_bucket_creates_nothing() {
         let temp = tempfile::tempdir().expect("temp dir");

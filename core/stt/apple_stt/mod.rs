@@ -36,15 +36,29 @@ use crate::pipeline::contracts::{
     TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
 };
 
+/// Floor macOS major version for the Apple STT path (SpeechAnalyzer era).
 const MIN_SUPPORTED_MACOS_MAJOR: u32 = 26;
+/// Product default locale when none is requested (pl-PL foundation).
 const DEFAULT_LOCALE: &str = "pl-PL";
+/// Bare bridge binary name: PATH lookup and sibling of the .app executable.
 const DEFAULT_BRIDGE_BIN: &str = "codescribe-stt-bridge";
 
+/// Env override for the Swift bridge binary path (wins over bundle/PATH).
 const ENV_STT_BRIDGE: &str = "CODESCRIBE_APPLE_STT_BRIDGE";
+/// Env override for Apple STT locale (normalized to BCP-47-ish tags).
 const ENV_LOCALE: &str = "CODESCRIBE_APPLE_STT_LOCALE";
+/// Env gate: allow auto-download of SpeechTranscriber locale assets.
 const ENV_ALLOW_DOWNLOAD: &str = "CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD";
+/// Opt-in gate for the `DictationTranscriber` PoC lane (W4-A). Read by BOTH
+/// sides: the bridge child inherits it from this process, so one key arms the
+/// whole path. Default OFF — the shipped pl-PL default stays SFSpeech until an
+/// operator STOP-1 decision says otherwise.
+pub const ENV_DICTATION_TRANSCRIBER: &str = "CODESCRIBE_APPLE_DICTATION_TRANSCRIBER";
 
+/// Wall-clock budget for one bridge transcribe call (spawn → response).
+/// Must sit above the in-bridge SFSpeech deadline so Whisper can fall through.
 const BRIDGE_TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Wall-clock budget for probe/init bridge calls (asset install can be slow).
 const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// In-bridge SFSpeech recognition deadline (seconds). Must stay under the
 /// Apple final-pass budget (~3 s) and far below `BRIDGE_TRANSCRIBE_TIMEOUT` so
@@ -57,18 +71,22 @@ const SF_SPEECH_RECOGNITION_DEADLINE_SECS: f64 = 2.5;
 pub struct AppleSpeechAnalyzerAdapter;
 
 impl AppleSpeechAnalyzerAdapter {
+    /// Construct the adapter. Zero-sized: all state lives in the bridge child
+    /// process and the process-wide `OnceLock` caches below.
     pub fn new() -> Self {
         Self
     }
 }
 
 impl Default for AppleSpeechAnalyzerAdapter {
+    /// Same as [`Self::new`]: zero-sized; runtime state lives in the bridge child.
     fn default() -> Self {
         Self
     }
 }
 
 impl TranscriptionAdapter for AppleSpeechAnalyzerAdapter {
+    /// Transcribe one utterance via the Swift bridge (Apple on-device backends).
     fn transcribe(
         &self,
         utterance: &SpeechUtterance,
@@ -78,6 +96,12 @@ impl TranscriptionAdapter for AppleSpeechAnalyzerAdapter {
     }
 }
 
+/// One protocol-v1 request line written to the bridge child's stdin.
+///
+/// Borrows its strings from the caller so a request can be built without
+/// allocating per invocation; `audio_path` is omitted from the wire entirely
+/// for commands that carry audio over stdin (`stream`) or carry none (`probe`,
+/// `request_auth`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct BridgeRequest<'a> {
@@ -92,34 +116,103 @@ struct BridgeRequest<'a> {
 /// Apple bridge backend selected for a locale (matches Swift `AppleSttBackend`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppleSttBackend {
+    /// `SpeechTranscriber` (`SpeechAnalyzer`) — first choice when the locale is
+    /// both supported and installed.
     SpeechTranscriber,
+    /// `DictationTranscriber` (SpeechAnalyzer family) — opt-in PoC lane (W4-A).
+    DictationTranscriber,
+    /// `SFSpeechRecognizer` on-device — the pl-PL product foundation, used when
+    /// the SpeechAnalyzer family cannot serve the locale.
     SfSpeechRecognizer,
 }
 
 impl AppleSttBackend {
+    /// Wire label as emitted and understood by the Swift bridge.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SpeechTranscriber => "speech_transcriber",
+            Self::DictationTranscriber => "dictation_transcriber",
             Self::SfSpeechRecognizer => "sf_speech_recognizer",
         }
     }
 
+    /// Parse a bridge `backend` label (case-insensitive). `None` for an unknown
+    /// label, so a newer bridge cannot silently masquerade as a known backend.
     pub fn from_bridge(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "speech_transcriber" => Some(Self::SpeechTranscriber),
+            "dictation_transcriber" => Some(Self::DictationTranscriber),
             "sf_speech_recognizer" => Some(Self::SfSpeechRecognizer),
             _ => None,
         }
     }
 
+    /// Map to the pipeline-level engine mode carried in a transcription verdict
+    /// (provenance for final-pass adjudication and the Active STT status line).
     pub fn engine_mode(self) -> TranscriptionEngineMode {
         match self {
             Self::SpeechTranscriber => TranscriptionEngineMode::SpeechTranscriber,
+            Self::DictationTranscriber => TranscriptionEngineMode::DictationTranscriber,
             Self::SfSpeechRecognizer => TranscriptionEngineMode::SfSpeechOnDevice,
         }
     }
 }
 
+/// Whether Speech Recognition TCC (`SFSpeechRecognizer` authorization) is
+/// required for the selected Apple backend.
+///
+/// - **SFSpeechRecognizer** — yes; Apple gates that API with Speech Recognition.
+/// - **SpeechTranscriber / DictationTranscriber** (SpeechAnalyzer family) — no.
+///   Measured 2026-08-08: DT transcribed the pl-PL parity fixture end to end
+///   while `SFSpeechRecognizer.authorizationStatus()` read `notDetermined`.
+///   Mic grant stays independent on the live-capture surface.
+/// - **None** — treat as SF-leaning so a speech-blocked SF fall-through still
+///   requests/fails auth instead of silently opening an unusable session.
+pub fn speech_recognition_tcc_required(backend: Option<AppleSttBackend>) -> bool {
+    match backend {
+        Some(AppleSttBackend::SpeechTranscriber | AppleSttBackend::DictationTranscriber) => false,
+        Some(AppleSttBackend::SfSpeechRecognizer) | None => true,
+    }
+}
+
+/// Init-time Speech Recognition TCC decision (backend-scoped, mic-orthogonal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeechAuthInitDecision {
+    /// ST/DT path: Speech Recognition TCC is not a prerequisite.
+    NotRequired,
+    /// SF path already authorized (or no speech_auth field).
+    Proceed,
+    /// SF path still undetermined — request once, then re-probe.
+    RequestAuthorization,
+    /// SF path denied/restricted/unknown — hard-fail init.
+    HardFail,
+}
+
+/// Pure matrix: `(backend × speech_auth) → init gate`.
+///
+/// Mic permission is intentionally not an input — live capture gates mic
+/// separately in `app/os/permissions`.
+pub fn speech_auth_init_decision(
+    backend: Option<AppleSttBackend>,
+    speech_auth: Option<&str>,
+) -> SpeechAuthInitDecision {
+    if !speech_recognition_tcc_required(backend) {
+        return SpeechAuthInitDecision::NotRequired;
+    }
+    match speech_auth {
+        None | Some("authorized") => SpeechAuthInitDecision::Proceed,
+        Some("not_determined") => SpeechAuthInitDecision::RequestAuthorization,
+        Some(_) => SpeechAuthInitDecision::HardFail,
+    }
+}
+
+/// One protocol-v1 response line read from the bridge child's stdout.
+///
+/// Every field is `#[serde(default)]` on purpose: a single response shape
+/// serves `probe`, `transcribe`, `transcribe_live`, `request_auth` and the
+/// closing line of a `stream` session, and each command populates a different
+/// subset. A missing field must degrade to "not reported", never to a parse
+/// error that hides an otherwise usable response.
 #[derive(Debug, Deserialize, Default)]
 struct BridgeResponse {
     #[serde(default)]
@@ -145,11 +238,15 @@ struct BridgeResponse {
 }
 
 impl BridgeResponse {
+    /// Success under either spelling the bridge may use: the boolean `ok` flag
+    /// or a textual `status: "ok"`.
     fn is_ok(&self) -> bool {
         self.ok || self.status.eq_ignore_ascii_case("ok")
     }
 }
 
+/// One timestamped span from a bridge transcription result, in seconds
+/// relative to the start of the audio.
 #[derive(Debug, Deserialize)]
 struct BridgeSegment {
     text: String,
@@ -165,6 +262,7 @@ struct BridgeSegment {
 /// identity). That poison was the product padaka: every toggle-start preflight
 /// failed with a stale auth error until full app restart.
 pub fn init() -> Result<()> {
+    /// Process-wide success cache for [`init`]: only `Ok(())` is stored, never failures.
     static INIT_OK: OnceLock<()> = OnceLock::new();
     if INIT_OK.get().is_some() {
         return Ok(());
@@ -178,33 +276,49 @@ pub fn init() -> Result<()> {
     }
 }
 
+/// Uncached init body: platform gate → probe → Speech TCC gate → locale
+/// readiness. Every `bail!` here is a user-actionable message, because this is
+/// the error the start-recording preflight surfaces verbatim.
 fn init_impl() -> Result<()> {
     ensure_supported_platform()?;
     let locale = resolved_locale(None);
     let allow_download = env_bool(ENV_ALLOW_DOWNLOAD, true);
     let mut probe = probe_bridge(&locale, allow_download)?;
 
-    // Speech Recognition TCC lives on the process that calls SFSpeechRecognizer
-    // (the bridge helper, attributed to the hosting app when launched from
-    // Codescribe.app). When still undetermined, ask once — headless CLI can
-    // fail the dialog, but the main app also requests on launch so product
-    // path has two chances before we hard-fail.
-    if probe.speech_auth.as_deref() == Some("not_determined") {
-        tracing::info!(
-            "Apple STT speech_auth=not_determined — requesting authorization via bridge"
-        );
-        let _ = request_speech_auth_bridge(&locale, allow_download);
-        probe = probe_bridge(&locale, allow_download)?;
-    }
-
-    if let Some(auth) = probe.speech_auth.as_deref()
-        && auth != "authorized"
-    {
-        bail!(
-            "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
-             System Settings › Privacy & Security › Speech Recognition \
-             (or Settings › Dictation permission matrix)"
-        );
+    // Speech Recognition TCC is scoped to the SFSpeech path only (W4-B).
+    // SpeechTranscriber / SpeechAnalyzer family must not force the Speech
+    // grant when Apple docs do not require it — Polish ST-ready locales can
+    // onboard with mic alone. Headless bridge identity (CODESCRIBE_BRIDGE_DISCLAIM)
+    // still differs from the .app TCC slot (D1); that is process-scoped, not
+    // a reason to over-gate ST.
+    match speech_auth_init_decision(probe.backend, probe.speech_auth.as_deref()) {
+        SpeechAuthInitDecision::NotRequired | SpeechAuthInitDecision::Proceed => {}
+        SpeechAuthInitDecision::RequestAuthorization => {
+            tracing::info!(
+                "Apple STT SF path speech_auth=not_determined — requesting authorization via bridge"
+            );
+            let _ = request_speech_auth_bridge(&locale, allow_download);
+            probe = probe_bridge(&locale, allow_download)?;
+            match speech_auth_init_decision(probe.backend, probe.speech_auth.as_deref()) {
+                SpeechAuthInitDecision::NotRequired | SpeechAuthInitDecision::Proceed => {}
+                SpeechAuthInitDecision::RequestAuthorization | SpeechAuthInitDecision::HardFail => {
+                    let auth = probe.speech_auth.as_deref().unwrap_or("not_determined");
+                    bail!(
+                        "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
+                         System Settings › Privacy & Security › Speech Recognition \
+                         (or Settings › Dictation permission matrix) — required for SFSpeech path"
+                    );
+                }
+            }
+        }
+        SpeechAuthInitDecision::HardFail => {
+            let auth = probe.speech_auth.as_deref().unwrap_or("unknown");
+            bail!(
+                "speech_auth_{auth}: enable Speech Recognition for Codescribe in \
+                 System Settings › Privacy & Security › Speech Recognition \
+                 (or Settings › Dictation permission matrix) — required for SFSpeech path"
+            );
+        }
     }
 
     if !probe.supported {
@@ -326,6 +440,14 @@ fn transcribe_file_with_backend(
     Ok((raw_transcript_from_bridge_response(response), backend))
 }
 
+/// Live-path entry point: transcribe in-memory PCM through the bridge.
+///
+/// Defaults to streaming v2 (one long-lived recognition request fed raw PCM,
+/// the system-dictation shape). The older per-request WAV window path measured
+/// 0.228 parity against system Apple live, which is why streaming exists; it
+/// stays reachable through `CODESCRIBE_APPLE_STT_LIVE_MODE` as an A/B escape
+/// hatch. The host timeout is sized from audio wall-clock plus the bridge's
+/// post-EOF settle grace, so a slow settle is not mistaken for a hang.
 fn transcribe_via_bridge(
     audio: &[f32],
     sample_rate: u32,
@@ -515,6 +637,8 @@ fn parse_stream_bridge_response(stdout: &str) -> Result<BridgeResponse> {
     bail!("Apple STT bridge stream returned no response lines")
 }
 
+/// Convert a successful bridge response into the pipeline transcript contract,
+/// dropping segments that fail the timestamp sanity check.
 fn raw_transcript_from_bridge_response(response: BridgeResponse) -> RawTranscript {
     let segments = response
         .segments
@@ -528,6 +652,9 @@ fn raw_transcript_from_bridge_response(response: BridgeResponse) -> RawTranscrip
     }
 }
 
+/// Validate one bridge segment. Rejects empty text and any non-finite or
+/// inverted timestamp pair, so downstream tail/gap arithmetic never runs on a
+/// NaN or a negative-length span.
 fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<TranscriptSegment> {
     let text = seg.text.trim().to_string();
     if text.is_empty()
@@ -548,10 +675,15 @@ fn bridge_segment_to_transcript_segment(seg: BridgeSegment) -> Option<Transcript
 /// (partial pass + commit + re-transcribe in the live session). Serialize
 /// all bridge invocations process-wide.
 fn bridge_global_lock() -> &'static Mutex<()> {
+    /// Process-wide mutex serializing all bridge child spawns (AVAudioEngine safety).
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Run one request/response bridge command end to end: spawn, write the JSON
+/// request line, close stdin so the child can finish, then parse the single
+/// response line. A bridge-reported error becomes an `Err` carrying the
+/// bridge's own message, so caller context stacks on top of the real cause.
 fn run_bridge_with_timeout(
     request: &BridgeRequest<'_>,
     timeout: Option<std::time::Duration>,
@@ -689,6 +821,8 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
     }
 }
 
+/// Router-facing reduction of a `probe` response: can this locale be served,
+/// by which backend, and what does Speech TCC currently say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProbeResult {
     supported: bool,
@@ -711,6 +845,9 @@ fn interpret_probe_response(response: &BridgeResponse) -> ProbeResult {
     }
 }
 
+/// Ask the bridge which backend can serve `locale`. Uses the generous probe
+/// budget: with `allow_download` set, the bridge may install SpeechTranscriber
+/// assets during this call.
 fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
     let request = BridgeRequest {
         protocol_version: 1,
@@ -724,6 +861,9 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
     Ok(interpret_probe_response(&response))
 }
 
+/// Trigger the system Speech Recognition authorization prompt through the
+/// bridge. Called at most once per init, only on the SF path, and always
+/// followed by a re-probe — the response itself is not the auth truth.
 fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<BridgeResponse> {
     let request = BridgeRequest {
         protocol_version: 1,
@@ -755,11 +895,12 @@ pub fn preferred_backend_for_probe(
 }
 
 /// Mirrors `probe()` fall-through in `codescribe-stt-bridge.swift`:
-/// ST only when supported **and** installed; otherwise try SF on-device;
-/// when neither is ready, surface ST not-installed (negative path).
+/// ST only when supported **and** installed; then the opt-in DT lane under the
+/// same supported+installed rule; otherwise SF on-device; when nothing is
+/// ready, surface the supported-but-uninstalled lane (negative path).
 ///
 /// Returns the backend string the bridge would emit, plus installed flag for
-/// the selected backend. `None` backend means neither path is ready.
+/// the selected backend. `None` backend means no path is ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeFallthrough {
     pub backend: Option<&'static str>,
@@ -767,39 +908,73 @@ pub struct ProbeFallthrough {
     pub locale_installed: bool,
 }
 
-pub fn probe_st_sf_fallthrough(
+/// `DictationTranscriber` lane state for the router (W4-A).
+///
+/// `enabled` is the product gate: DT is a measurement PoC, so it stays OFF
+/// until an operator opts in with [`ENV_DICTATION_TRANSCRIBER`]. With the gate
+/// closed the router must reproduce the shipped ST → SF behaviour exactly —
+/// otherwise landing the PoC would silently flip the pl-PL default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DictationLane {
+    pub enabled: bool,
+    pub supported: bool,
+    pub installed: bool,
+}
+
+/// Whether the operator armed the DT PoC lane in this process.
+pub fn dictation_transcriber_enabled() -> bool {
+    env_bool(ENV_DICTATION_TRANSCRIBER, false)
+}
+
+impl DictationLane {
+    /// Lane can actually serve the locale right now (armed, supported, installed).
+    fn ready(self) -> bool {
+        self.enabled && self.supported && self.installed
+    }
+
+    /// Lane merely *knows* the locale (armed and supported, assets absent).
+    /// Drives the "assets missing" negative path rather than "unsupported".
+    fn listed(self) -> bool {
+        self.enabled && self.supported
+    }
+}
+
+/// Resolve the backend for a locale from the three lane snapshots, in the
+/// layer order ST → DT → SF. See [`ProbeFallthrough`] for the negative-path
+/// contract when nothing is ready.
+pub fn probe_backend_fallthrough(
     st_supported: bool,
     st_installed: bool,
+    dictation: DictationLane,
     sf_on_device_ready: bool,
 ) -> ProbeFallthrough {
-    if st_supported {
-        if st_installed {
-            return ProbeFallthrough {
-                backend: Some("speech_transcriber"),
-                locale_supported: true,
-                locale_installed: true,
-            };
-        }
-        // ST supported but not installed: fall through to SF when ready.
-        if sf_on_device_ready {
-            return ProbeFallthrough {
-                backend: Some("sf_speech_recognizer"),
-                locale_supported: true,
-                locale_installed: true,
-            };
-        }
-        // Negative path: ST listed, assets missing, SF cannot serve.
-        return ProbeFallthrough {
-            backend: Some("speech_transcriber"),
-            locale_supported: true,
-            locale_installed: false,
-        };
+    let ready = |backend: &'static str| ProbeFallthrough {
+        backend: Some(backend),
+        locale_supported: true,
+        locale_installed: true,
+    };
+
+    if st_supported && st_installed {
+        return ready("speech_transcriber");
+    }
+    if dictation.ready() {
+        return ready("dictation_transcriber");
     }
     if sf_on_device_ready {
+        return ready("sf_speech_recognizer");
+    }
+    // Nothing can serve: report the lane that *listed* the locale so the caller
+    // sees "assets missing" rather than "unsupported". ST outranks DT here for
+    // the same reason it outranks it when ready — layer order is ST → DT → SF.
+    if st_supported || dictation.listed() {
         return ProbeFallthrough {
-            backend: Some("sf_speech_recognizer"),
+            backend: Some(if st_supported {
+                "speech_transcriber"
+            } else {
+                "dictation_transcriber"
+            }),
             locale_supported: true,
-            locale_installed: true,
+            locale_installed: false,
         };
     }
     ProbeFallthrough {
@@ -817,6 +992,7 @@ pub struct SfSpeechSettleGate {
 }
 
 impl SfSpeechSettleGate {
+    /// A fresh, unsettled gate.
     pub fn new() -> Self {
         Self {
             settled: std::sync::atomic::AtomicBool::new(false),
@@ -835,16 +1011,22 @@ impl SfSpeechSettleGate {
             .is_ok()
     }
 
+    /// Observe whether the race has already been decided. Read-only: this never
+    /// claims the settle, so it cannot be used in place of [`Self::try_settle`].
     pub fn is_settled(&self) -> bool {
         self.settled.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
+/// Bridge binary to spawn, resolved against the running executable.
 fn bridge_binary() -> PathBuf {
     let current_exe = std::env::current_exe().ok();
     bridge_binary_for_current_exe(current_exe.as_deref())
 }
 
+/// Resolution order: explicit env override → bridge bundled beside the `.app`
+/// executable → bare command name left for `PATH` lookup at spawn time.
+/// Testable seam: `current_exe` is injected rather than read from the process.
 fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
     if let Some(override_bin) = bridge_override_binary() {
         return override_bin;
@@ -853,6 +1035,7 @@ fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
     bundled_bridge_binary_for_exe(current_exe).unwrap_or_else(|| PathBuf::from(DEFAULT_BRIDGE_BIN))
 }
 
+/// The `CODESCRIBE_APPLE_STT_BRIDGE` override, if set to a non-blank value.
 fn bridge_override_binary() -> Option<PathBuf> {
     match std::env::var(ENV_STT_BRIDGE) {
         Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value.trim())),
@@ -860,6 +1043,11 @@ fn bridge_override_binary() -> Option<PathBuf> {
     }
 }
 
+/// The bridge shipped inside the app bundle, beside the main executable.
+///
+/// Requires the full `<name>.app/Contents/MacOS/` shape before accepting a
+/// sibling file: a loose binary in some unrelated directory named `MacOS` must
+/// not be mistaken for a bundled, co-signed bridge.
 fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> {
     let executable_dir = current_exe?.parent()?;
     let contents_dir = executable_dir.parent()?;
@@ -886,15 +1074,20 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// and then silently falls back to Candle). Explicit `CODESCRIBE_STT_ENGINE=apple`
 /// bypasses this and still probes + fails loudly.
 pub(crate) fn is_bridge_resolvable() -> bool {
+    /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
     static RESOLVABLE: OnceLock<bool> = OnceLock::new();
     *RESOLVABLE.get_or_init(bridge_binary_resolvable)
 }
 
+/// Uncached body behind [`is_bridge_resolvable`].
 fn bridge_binary_resolvable() -> bool {
     let current_exe = std::env::current_exe().ok();
     bridge_binary_resolvable_for_current_exe(current_exe.as_deref())
 }
 
+/// Mirrors [`bridge_binary_for_current_exe`] resolution, but answers "does it
+/// exist" instead of "what would we spawn". An explicit override is checked as
+/// a real file: a broken override must fail here rather than at spawn time.
 fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool {
     if let Some(override_bin) = bridge_override_binary() {
         return bridge_candidate_resolvable(&override_bin);
@@ -906,6 +1099,8 @@ fn bridge_binary_resolvable_for_current_exe(current_exe: Option<&Path>) -> bool 
     which_in_path(DEFAULT_BRIDGE_BIN).is_some()
 }
 
+/// A path-like candidate must exist as a file; a bare command name is looked
+/// up on `PATH` instead.
 fn bridge_candidate_resolvable(candidate: &Path) -> bool {
     let bin = candidate.to_string_lossy();
     if candidate.is_absolute() || bin.contains(std::path::MAIN_SEPARATOR) {
@@ -915,6 +1110,7 @@ fn bridge_candidate_resolvable(candidate: &Path) -> bool {
     which_in_path(&bin).is_some()
 }
 
+/// Minimal `which`: first `PATH` entry containing `bin` as a file.
 fn which_in_path(bin: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     std::env::split_paths(&paths)
@@ -922,6 +1118,9 @@ fn which_in_path(bin: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Hard gate: macOS at or above [`MIN_SUPPORTED_MACOS_MAJOR`]. Fails with a
+/// message naming the detected version, because this is the first thing an
+/// operator sees when Apple STT refuses to initialize.
 fn ensure_supported_platform() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!(
@@ -942,7 +1141,10 @@ fn ensure_supported_platform() -> Result<()> {
     Ok(())
 }
 
+/// Process-cached macOS major version. The failure is cached too — `sw_vers`
+/// cannot start working mid-process, so a retry would only re-pay the spawn.
 fn macos_major_version() -> Result<u32> {
+    /// Cached `sw_vers` major (or error string); detection failures stay sticky.
     static VERSION: OnceLock<std::result::Result<u32, String>> = OnceLock::new();
     let cached =
         VERSION.get_or_init(|| detect_macos_major_version().map_err(|e| format!("{:#}", e)));
@@ -952,6 +1154,8 @@ fn macos_major_version() -> Result<u32> {
     }
 }
 
+/// Read the OS version via `sw_vers -productVersion`. Non-macOS targets fail
+/// fast instead of guessing.
 fn detect_macos_major_version() -> Result<u32> {
     #[cfg(not(target_os = "macos"))]
     {
@@ -972,6 +1176,7 @@ fn detect_macos_major_version() -> Result<u32> {
     }
 }
 
+/// Take the leading component of a `26`, `26.1`, `26.1.2`-shaped version.
 fn parse_macos_major_version(version: &str) -> Result<u32> {
     let major_str = version
         .trim()
@@ -984,6 +1189,8 @@ fn parse_macos_major_version(version: &str) -> Result<u32> {
     Ok(major)
 }
 
+/// Locale for a request: `CODESCRIBE_APPLE_STT_LOCALE` wins, then the caller's
+/// language hint, then [`DEFAULT_LOCALE`].
 fn resolved_locale(language: Option<&str>) -> String {
     if let Ok(override_locale) = std::env::var(ENV_LOCALE) {
         let trimmed = override_locale.trim();
@@ -998,6 +1205,9 @@ fn resolved_locale(language: Option<&str>) -> String {
     }
 }
 
+/// Normalize to the BCP-47 shape Apple expects: `_` becomes `-`, and the bare
+/// language codes the product actually ships get their region back
+/// (`pl` → `pl-PL`, `en` → `en-US`). Anything else passes through untouched.
 fn normalize_locale(locale: &str) -> String {
     let normalized = locale.trim().replace('_', "-");
     if normalized.is_empty() {
@@ -1011,6 +1221,8 @@ fn normalize_locale(locale: &str) -> String {
     }
 }
 
+/// Read a boolean env flag. An unset *or* unparseable value yields `default`,
+/// so a typo never silently flips a lane the operator did not arm.
 fn env_bool(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(value) => parse_bool_flag(&value).unwrap_or(default),
@@ -1018,6 +1230,7 @@ fn env_bool(name: &str, default: bool) -> bool {
     }
 }
 
+/// Parse the accepted boolean spellings; `None` for anything unrecognized.
 fn parse_bool_flag(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -1026,11 +1239,18 @@ fn parse_bool_flag(value: &str) -> Option<bool> {
     }
 }
 
+/// Scratch WAV handed to the bridge by path, removed on drop.
+///
+/// Only the legacy `transcribe_live` A/B path needs this; the product default
+/// (`stream`) feeds PCM over stdin and never touches the filesystem.
 struct TempWavFile {
     path: PathBuf,
 }
 
 impl TempWavFile {
+    /// Write mono PCM16 to a uniquely-named file in the system temp directory.
+    /// Samples are clamped before scaling so out-of-range input wraps to the
+    /// rail instead of overflowing into the opposite sign.
     fn write(samples: &[f32], sample_rate: u32) -> Result<Self> {
         if sample_rate == 0 {
             bail!("sample_rate must be > 0");
@@ -1058,22 +1278,33 @@ impl TempWavFile {
         Ok(Self { path })
     }
 
+    /// Path to hand to the bridge. Valid only while this guard is alive.
     fn path(&self) -> &Path {
         &self.path
     }
 }
 
 impl Drop for TempWavFile {
+    /// Best-effort unlink of the temp WAV; missing file / IO errors are ignored.
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
+/// Unit tests for bridge protocol, resolver order, probe fall-through, and DT gates.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// The shipped product state: DT PoC lane not armed.
+    const DT_LANE_CLOSED: DictationLane = DictationLane {
+        enabled: false,
+        supported: false,
+        installed: false,
+    };
+
+    /// Stream NDJSON events are skipped; the closing BridgeResponse summary is kept.
     #[test]
     fn parse_stream_bridge_response_skips_events_keeps_summary() {
         let stdout = r#"
@@ -1090,6 +1321,7 @@ mod tests {
         assert_eq!(resp.backend.as_deref(), Some("sf_speech_recognizer"));
     }
 
+    /// Stream with only progress events (no summary line) must error honestly.
     #[test]
     fn parse_stream_bridge_response_errors_when_only_events() {
         let stdout = "{\"event\":\"ready\"}\n{\"event\":\"end\"}\n";
@@ -1100,6 +1332,7 @@ mod tests {
         );
     }
 
+    /// Explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins; missing path does not fall through.
     #[test]
     #[serial]
     fn bridge_resolvable_honors_explicit_override_path() {
@@ -1132,6 +1365,7 @@ mod tests {
         let _ = std::fs::remove_file(&present);
     }
 
+    /// Resolution order: env override → bundled beside .app → bare PATH command.
     #[test]
     #[serial]
     fn bridge_resolver_prefers_env_then_bundle_then_path() {
@@ -1217,30 +1451,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Adapter must be Send+Sync so engine routers can share it across threads.
     #[test]
     fn adapter_is_send_sync() {
+        /// Compile-time Send+Sync bound check (no runtime body).
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<AppleSpeechAnalyzerAdapter>();
     }
 
+    /// Short language codes expand to the product default region (pl→pl-PL, en→en-US).
     #[test]
     fn locale_normalization_for_short_codes() {
         assert_eq!(normalize_locale("pl"), "pl-PL");
         assert_eq!(normalize_locale("en"), "en-US");
     }
 
+    /// Full tags stay as-is; underscore region separators normalize to hyphen.
     #[test]
     fn locale_normalization_preserves_tags() {
         assert_eq!(normalize_locale("pl-PL"), "pl-PL");
         assert_eq!(normalize_locale("en_GB"), "en-GB");
     }
 
+    /// `sw_vers`-style product versions parse to the major component only.
     #[test]
     fn parse_macos_major_version_standard_formats() {
         assert_eq!(parse_macos_major_version("26.0").unwrap(), 26);
         assert_eq!(parse_macos_major_version("26.1.3\n").unwrap(), 26);
     }
 
+    /// Common truthy/falsy env spellings; unknown tokens stay None (not false).
     #[test]
     fn parse_bool_flag_common_values() {
         assert_eq!(parse_bool_flag("1"), Some(true));
@@ -1250,6 +1490,7 @@ mod tests {
         assert_eq!(parse_bool_flag("maybe"), None);
     }
 
+    /// pl-PL probe ready via SFSpeech on-device (product foundation, not legacy).
     #[test]
     fn probe_pl_via_sf_speech_is_ready() {
         let response: BridgeResponse = serde_json::from_str(
@@ -1277,6 +1518,7 @@ mod tests {
         );
     }
 
+    /// en-US probe prefers SpeechTranscriber when supported and installed.
     #[test]
     fn probe_en_us_prefers_speech_transcriber() {
         let response: BridgeResponse = serde_json::from_str(
@@ -1296,6 +1538,7 @@ mod tests {
         assert_eq!(backend, AppleSttBackend::SpeechTranscriber);
     }
 
+    /// Neither ST nor SF can serve the locale → honest unsupported error.
     #[test]
     fn probe_neither_backend_is_honest_error() {
         let err = preferred_backend_for_probe(false, false, None).unwrap_err();
@@ -1306,6 +1549,7 @@ mod tests {
         );
     }
 
+    /// ST listed but uninstalled falls through to SF when SF is ready.
     #[test]
     fn probe_st_supported_not_installed_falls_to_sf_when_ready() {
         // Bridge fall-through shape: ST was in catalog but not installed; SF
@@ -1331,6 +1575,7 @@ mod tests {
         assert_eq!(backend, AppleSttBackend::SfSpeechRecognizer);
     }
 
+    /// ST uninstalled and SF unavailable refuses readiness (no fake install).
     #[test]
     fn probe_st_supported_not_installed_without_sf_is_not_ready() {
         // When SF cannot serve either, probe may still report ST with
@@ -1343,6 +1588,146 @@ mod tests {
         );
     }
 
+    /// DT is a distinct bridge backend label with its own engine-mode provenance.
+    #[test]
+    fn dictation_transcriber_backend_round_trips() {
+        // W4-A: DT is a third bridge backend label, not an alias of ST.
+        let backend =
+            AppleSttBackend::from_bridge("dictation_transcriber").expect("DT label is known");
+        assert_eq!(backend, AppleSttBackend::DictationTranscriber);
+        assert_eq!(backend.as_str(), "dictation_transcriber");
+        assert_eq!(
+            backend.engine_mode(),
+            TranscriptionEngineMode::DictationTranscriber,
+            "DT provenance must stay distinguishable from ST in the verdict"
+        );
+        assert_eq!(AppleSttBackend::from_bridge("dictation"), None);
+    }
+
+    /// DT is SpeechAnalyzer family: Speech Recognition TCC is not required (W4-B).
+    #[test]
+    fn dictation_transcriber_does_not_require_speech_tcc() {
+        // Measured 2026-08-08: DT transcribed the pl-PL parity fixture with
+        // SFSpeechRecognizer.authorizationStatus() == notDetermined. DT is
+        // SpeechAnalyzer family, so W4-B's SF-only TCC scope covers it.
+        assert!(!speech_recognition_tcc_required(Some(
+            AppleSttBackend::DictationTranscriber
+        )));
+        assert_eq!(
+            speech_auth_init_decision(
+                Some(AppleSttBackend::DictationTranscriber),
+                Some("not_determined")
+            ),
+            SpeechAuthInitDecision::NotRequired
+        );
+    }
+
+    /// DT lane is opt-in; with the gate closed, pl-PL still resolves to SF.
+    #[test]
+    fn dictation_lane_is_opt_in_and_never_flips_the_default() {
+        // Gate closed: pl-PL (ST-less) must still resolve to SF — the shipped default.
+        let closed = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: false,
+                supported: true,
+                installed: true,
+            },
+            true,
+        );
+        assert_eq!(closed.backend, Some("sf_speech_recognizer"));
+
+        // Gate open: DT takes precedence over SF for the same locale.
+        let open = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: true,
+            },
+            true,
+        );
+        assert_eq!(open.backend, Some("dictation_transcriber"));
+        assert!(open.locale_supported && open.locale_installed);
+    }
+
+    /// Layer order stays ST → DT → SF: installed ST outranks an armed DT lane.
+    #[test]
+    fn dictation_lane_never_outranks_an_installed_speech_transcriber() {
+        let out = probe_backend_fallthrough(
+            true,
+            true,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: true,
+            },
+            true,
+        );
+        assert_eq!(
+            out.backend,
+            Some("speech_transcriber"),
+            "layer order stays ST → DT → SF"
+        );
+    }
+
+    /// DT supported but assets missing reports not-installed (or SF fall-through).
+    #[test]
+    fn dictation_lane_supported_but_not_installed_is_honest() {
+        // DT listed for the locale, assets absent, SF cannot serve: report DT
+        // not-installed rather than inventing readiness.
+        let out = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: false,
+            },
+            false,
+        );
+        assert_eq!(out.backend, Some("dictation_transcriber"));
+        assert!(out.locale_supported);
+        assert!(!out.locale_installed);
+
+        // …and with SF ready it falls through to SF, never to a fake DT.
+        let with_sf = probe_backend_fallthrough(
+            false,
+            false,
+            DictationLane {
+                enabled: true,
+                supported: true,
+                installed: false,
+            },
+            true,
+        );
+        assert_eq!(with_sf.backend, Some("sf_speech_recognizer"));
+    }
+
+    /// With the DT gate closed, ST/SF fall-through table is unchanged.
+    #[test]
+    fn dictation_lane_preserves_the_st_sf_fallthrough_when_gate_is_closed() {
+        let closed = DT_LANE_CLOSED;
+        assert_eq!(
+            probe_backend_fallthrough(true, true, closed, false).backend,
+            Some("speech_transcriber")
+        );
+        assert_eq!(
+            probe_backend_fallthrough(true, false, closed, true).backend,
+            Some("sf_speech_recognizer")
+        );
+        let negative = probe_backend_fallthrough(true, false, closed, false);
+        assert_eq!(negative.backend, Some("speech_transcriber"));
+        assert!(!negative.locale_installed);
+        assert_eq!(
+            probe_backend_fallthrough(false, false, closed, false).backend,
+            None
+        );
+    }
+
+    /// SFSpeech in-bridge deadline sits under Apple (~3s) and bridge (30s) budgets.
     #[test]
     fn sf_speech_deadline_sits_under_bridge_and_apple_budgets() {
         // Const bounds live in const blocks (clippy::assertions_on_constants);
@@ -1398,6 +1783,7 @@ mod tests {
         );
     }
 
+    /// Timeout settle wins; a late recognition callback must not resume again.
     #[test]
     fn sf_speech_settle_timeout_wins_then_callback_is_ignored() {
         let gate = SfSpeechSettleGate::new();
@@ -1412,7 +1798,7 @@ mod tests {
     #[test]
     fn probe_st_supported_uninstalled_branch_falls_to_sf_or_refuses() {
         // Branch 1: ST listed, assets missing, SF ready → bridge returns SF.
-        let via_sf = probe_st_sf_fallthrough(true, false, true);
+        let via_sf = probe_backend_fallthrough(true, false, DT_LANE_CLOSED, true);
         assert_eq!(via_sf.backend, Some("sf_speech_recognizer"));
         assert!(via_sf.locale_supported);
         assert!(via_sf.locale_installed);
@@ -1425,7 +1811,7 @@ mod tests {
         assert_eq!(backend, AppleSttBackend::SfSpeechRecognizer);
 
         // Branch 2: ST listed, assets missing, SF not ready → not installed refusal.
-        let stuck = probe_st_sf_fallthrough(true, false, false);
+        let stuck = probe_backend_fallthrough(true, false, DT_LANE_CLOSED, false);
         assert_eq!(stuck.backend, Some("speech_transcriber"));
         assert!(stuck.locale_supported);
         assert!(!stuck.locale_installed);
@@ -1459,6 +1845,79 @@ mod tests {
         assert!(probe.supported && probe.installed);
     }
 
+    /// W4-B acceptance matrix: backend × speech_auth → init gate.
+    /// Mic is intentionally absent — live capture gates mic elsewhere.
+    #[test]
+    fn speech_tcc_backend_scope_matrix() {
+        use AppleSttBackend::*;
+        use SpeechAuthInitDecision::*;
+
+        // ST path never requires Speech Recognition TCC (mic remains separate).
+        for auth in [
+            None,
+            Some("authorized"),
+            Some("not_determined"),
+            Some("denied"),
+            Some("restricted"),
+        ] {
+            assert_eq!(
+                speech_auth_init_decision(Some(SpeechTranscriber), auth),
+                NotRequired,
+                "ST must ignore speech_auth={auth:?}"
+            );
+            assert!(!speech_recognition_tcc_required(Some(SpeechTranscriber)));
+        }
+
+        // SF path still requires Speech authorized.
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("authorized")),
+            Proceed
+        );
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("not_determined")),
+            RequestAuthorization
+        );
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("denied")),
+            HardFail
+        );
+        assert_eq!(
+            speech_auth_init_decision(Some(SfSpeechRecognizer), Some("restricted")),
+            HardFail
+        );
+        assert!(speech_recognition_tcc_required(Some(SfSpeechRecognizer)));
+
+        // DT (DictationTranscriber / SpeechAnalyzer family) follows ST when added:
+        // no SFSpeech TCC prerequisite. Proven here via the same ST rule surface.
+        assert!(!speech_recognition_tcc_required(Some(SpeechTranscriber)));
+
+        // No backend label (SF fall-through blocked by auth only) still gates SF.
+        assert_eq!(
+            speech_auth_init_decision(None, Some("not_determined")),
+            RequestAuthorization
+        );
+        assert_eq!(speech_auth_init_decision(None, Some("denied")), HardFail);
+        assert!(speech_recognition_tcc_required(None));
+    }
+
+    /// Mic grant is orthogonal to speech_auth: decision API has no mic input.
+    #[test]
+    fn speech_tcc_matrix_mic_is_orthogonal() {
+        // Contract proof: speech_auth_init_decision has no mic input — mic grant
+        // for live capture lives in app/os/permissions and is independent.
+        // SF denied still HardFail regardless of any mic status a caller holds.
+        assert_eq!(
+            speech_auth_init_decision(Some(AppleSttBackend::SfSpeechRecognizer), Some("denied")),
+            SpeechAuthInitDecision::HardFail
+        );
+        // ST denied speech still NotRequired even if mic were denied or granted.
+        assert_eq!(
+            speech_auth_init_decision(Some(AppleSttBackend::SpeechTranscriber), Some("denied")),
+            SpeechAuthInitDecision::NotRequired
+        );
+    }
+
+    /// Bridge segments become RawTranscript spans and survive Silero tail-drop mapping.
     #[test]
     fn bridge_response_segments_flow_to_raw_transcript_and_silero_tail_drop() {
         let response: BridgeResponse = serde_json::from_str(

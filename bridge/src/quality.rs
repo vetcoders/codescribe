@@ -28,6 +28,7 @@ pub struct CsQualityCommitResult {
 }
 
 impl From<OverlayCorrectionCommit> for CsQualityCommitResult {
+    /// Core commit → toast payload (pairs, evidence flag, ready acknowledgement).
     fn from(commit: OverlayCorrectionCommit) -> Self {
         Self {
             pairs_learned: commit.pairs_learned,
@@ -53,6 +54,7 @@ pub struct CsQualityRecord {
 }
 
 impl From<QualityRecord> for CsQualityRecord {
+    /// Flatten a stored record: logical id, delivered→variant, action from meta.
     fn from(record: QualityRecord) -> Self {
         let action = record
             .meta
@@ -87,6 +89,7 @@ pub struct CsVoiceLabSaveResult {
 }
 
 impl From<VoiceLabSaveOutcome> for CsVoiceLabSaveResult {
+    /// Core Voice Lab outcome → FFI: saved record plus honest learn telemetry.
     fn from(outcome: VoiceLabSaveOutcome) -> Self {
         Self {
             record: outcome.record.into(),
@@ -120,6 +123,7 @@ pub struct CsLexiconEntry {
 }
 
 impl From<CustomLexiconEntry> for CsLexiconEntry {
+    /// Core lexicon row → UniFFI (variant, canonical, source tag).
     fn from(entry: CustomLexiconEntry) -> Self {
         Self {
             variant: entry.variant,
@@ -137,6 +141,17 @@ pub struct CsTokenConfidence {
     pub logprob: f32,
 }
 
+/// Persist one overlay correction: the quality record always lands, while lexicon
+/// learning is gated by `formatting_level`.
+///
+/// Only the Correction level teaches word pairs; higher levels are recorded as
+/// evidence with `pairs_learned = 0`, because a creative rewrite is not a
+/// transcription fix and would poison the lexicon. An unrecognised
+/// `formatting_level` is rejected before anything is written.
+///
+/// The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
+/// stored alongside the text so later analysis can correlate corrections with how
+/// unsure the engine was.
 #[uniffi::export]
 #[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(
@@ -203,6 +218,7 @@ pub struct CsDictionaryTeachResult {
 }
 
 impl From<DictionaryTeachResult> for CsDictionaryTeachResult {
+    /// Core Teach counts → UniFFI counters for the Dictionary panel toast.
     fn from(value: DictionaryTeachResult) -> Self {
         Self {
             from_corrections: value.from_corrections,
@@ -224,10 +240,12 @@ pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, 
         })
 }
 
+/// Bridge quality projections and commit gate contracts (level normalize/reject).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Projection maps id/revision/texts, meta.action, and confidence fields.
     #[test]
     fn quality_record_projection_maps_live_fields_and_action() {
         let record = QualityRecord {
@@ -264,6 +282,7 @@ mod tests {
         );
     }
 
+    /// `creative` normalizes to max evidence; lexicon stays empty (no teach).
     #[test]
     #[serial_test::serial]
     fn commit_overlay_quality_record_normalizes_level_and_keeps_max_out_of_lexicon() {
@@ -320,6 +339,7 @@ mod tests {
         );
     }
 
+    /// Unknown formatting_level fails closed before any quality write lands.
     #[test]
     fn commit_overlay_quality_record_rejects_unknown_level_before_write() {
         let error = commit_overlay_quality_record(

@@ -9,8 +9,12 @@
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
+/// Registry name of this tool, shared with the thread-context enrolment so the
+/// two can never drift apart.
 pub const MONITOR_RUN_TOOL: &str = "monitor_run";
 
+/// Register `monitor_run` and enrol it for thread context — the service loop
+/// needs the caller's thread id to know where to post heartbeats.
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -24,6 +28,7 @@ pub fn register(registry: &mut ToolRegistry) {
     registry.enable_thread_context(MONITOR_RUN_TOOL);
 }
 
+/// Schema for `monitor_run`: a single required canonical `run_id`.
 fn monitor_run_definition() -> ToolDefinition {
     ToolDefinition {
         name: MONITOR_RUN_TOOL.to_string(),
@@ -47,6 +52,8 @@ fn monitor_run_definition() -> ToolDefinition {
     }
 }
 
+/// Validate the run id, bind the monitor to the calling thread, and return a
+/// receipt describing what will be observed and how often.
 async fn handle_monitor_run(input: Value) -> Vec<ToolResultContent> {
     let Some(run_id) = input
         .get("run_id")
@@ -85,16 +92,19 @@ async fn handle_monitor_run(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Input validation for monitor_run before store / control-plane access.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Empty args surface as a readable Error content block, not a panic.
     #[tokio::test]
     async fn missing_run_id_is_a_readable_error() {
         let result = handle_monitor_run(json!({})).await;
         assert!(matches!(result[0], ToolResultContent::Error(_)));
     }
 
+    /// Unbound agent thread is rejected without touching durable run storage.
     #[tokio::test]
     async fn unbound_thread_is_rejected_before_touching_the_store() {
         let result = handle_monitor_run(json!({"run_id": "work-x"})).await;

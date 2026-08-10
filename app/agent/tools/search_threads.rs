@@ -1,3 +1,9 @@
+//! Native thread-search tool (canonical: `search_threads`).
+//!
+//! Read-only lookup over the local thread index — titles, tags, summaries,
+//! notes, and message text. Every match carries a snippet anchored on the first
+//! query term, so the agent can judge relevance without opening the thread.
+
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
     ThreadIndex, ThreadStore, ThreadSummary, ToolDefinition, ToolRegistry, ToolResultContent,
@@ -6,10 +12,14 @@ use codescribe_core::agent::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
+/// Matches returned when the caller omits `limit`.
 const DEFAULT_LIMIT: usize = 5;
+/// Upper bound on `limit`, enforced by clamping rather than rejection.
 const MAX_LIMIT: usize = 20;
+/// Characters of context carried in each match snippet.
 const SNIPPET_CHARS: usize = 320;
 
+/// Register the read-only `search_threads` tool on the shared [`ToolRegistry`].
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -20,6 +30,7 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register search_threads tool");
 }
 
+/// Tool schema for `search_threads`.
 fn search_threads_definition() -> ToolDefinition {
     ToolDefinition {
         name: "search_threads".to_string(),
@@ -44,6 +55,7 @@ fn search_threads_definition() -> ToolDefinition {
     }
 }
 
+/// Dispatch adapter for `search_threads`: turns a [`Result`] into tool content.
 async fn handle_search_threads(input: Value) -> Vec<ToolResultContent> {
     match search_threads_from_input(&input) {
         Ok(output) => vec![ToolResultContent::Text(output)],
@@ -51,6 +63,10 @@ async fn handle_search_threads(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Validate the request, run it against the live index, and render pretty JSON.
+///
+/// `query` must be present and non-blank; `limit` is clamped into
+/// `1..=MAX_LIMIT` rather than rejected.
 fn search_threads_from_input(input: &Value) -> Result<String> {
     let query = input
         .get("query")
@@ -77,6 +93,7 @@ fn search_threads_from_input(input: &Value) -> Result<String> {
     .context("Failed to serialize search_threads output")
 }
 
+/// Query an index and project the top `limit` summaries into tool output shape.
 fn search_index(index: &ThreadIndex, query: &str, limit: usize) -> Vec<SearchThreadMatch> {
     index
         .search(query)
@@ -86,27 +103,42 @@ fn search_index(index: &ThreadIndex, query: &str, limit: usize) -> Vec<SearchThr
         .collect()
 }
 
+/// Serialized envelope returned to the agent.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct SearchThreadsOutput {
+    /// Query as it was actually run (trimmed).
     query: String,
+    /// Number of matches in `matches` — already limit-bounded.
     count: usize,
+    /// Matches in index-ranked order.
     matches: Vec<SearchThreadMatch>,
 }
 
+/// One matching thread, flattened for the agent.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct SearchThreadMatch {
+    /// Thread id, usable to open the thread.
     id: String,
+    /// Display title.
     title: String,
+    /// Last update, RFC 3339.
     updated_at: String,
+    /// Thread mode (e.g. `assistive`).
     mode: String,
+    /// Thread tags.
     tags: Vec<String>,
+    /// Query-anchored excerpt of the indexed corpus.
     snippet: String,
+    /// Stored summary, when one exists.
     summary: Option<String>,
+    /// Most recent message text, when one exists.
     latest_message: Option<String>,
+    /// Most recent note text, when one exists.
     latest_note: Option<String>,
 }
 
 impl SearchThreadMatch {
+    /// Project an indexed summary into output shape, computing its snippet.
     fn from_summary(summary: &ThreadSummary, query: &str) -> Self {
         Self {
             id: summary.id.clone(),
@@ -122,6 +154,11 @@ impl SearchThreadMatch {
     }
 }
 
+/// Build a whitespace-normalized excerpt centred on the query.
+///
+/// Concatenates title, summary, latest note, latest message, and the indexed
+/// search text, then starts ~24 characters before the first occurrence of the
+/// query's first term (or at the beginning when it is absent).
 fn snippet_for_summary(summary: &ThreadSummary, query: &str) -> String {
     let haystack = [
         summary.title.as_str(),
@@ -155,6 +192,7 @@ fn snippet_for_summary(summary: &ThreadSummary, query: &str) -> String {
         .collect::<String>()
 }
 
+/// Covers ranking, the limit, and snippet anchoring over a temp index.
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
@@ -162,6 +200,7 @@ mod tests {
 
     use super::*;
 
+    /// Build an indexable thread with one assistant message.
     fn sample_thread(
         id: &str,
         title: &str,
@@ -196,6 +235,7 @@ mod tests {
         }
     }
 
+    /// Search index returns a capped, JSON-serializable match list for the agent tool.
     #[test]
     fn search_index_returns_limited_json_ready_matches() {
         let tmp = tempfile::TempDir::new().expect("temp dir should be created");

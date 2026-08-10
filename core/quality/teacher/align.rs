@@ -58,6 +58,11 @@ pub fn align_words(a: &[Token], b: &[Token]) -> Vec<AlignOp> {
     coalesce_substitutes(ops)
 }
 
+/// Collapse an adjacent delete/insert pair into a single [`AlignOp::Substitute`].
+///
+/// The LCS backtrace emits a mismatch as two separate ops in whichever order the
+/// DP table happened to favour; both orders mean "both sides had a token here and
+/// the norms differ", so both are folded into one substitution.
 fn coalesce_substitutes(ops: Vec<AlignOp>) -> Vec<AlignOp> {
     let mut out = Vec::with_capacity(ops.len());
     let mut idx = 0;

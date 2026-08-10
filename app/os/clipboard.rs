@@ -63,27 +63,41 @@ const KEYCODE_RIGHT_ARROW: CGKeyCode = 124;
 /// Delay in milliseconds before restoring the original clipboard content
 /// Can be overridden via RESTORE_CLIPBOARD_DELAY_MS environment variable
 const DEFAULT_RESTORE_DELAY_MS: u64 = 200;
+/// How long an armed transcript stays deliverable before the press is refused.
+///
+/// Bounded so a command pressed long after dictation cannot paste text the user
+/// has forgotten about into whatever window happens to be focused now.
 pub const DEFERRED_INSERT_TTL: Duration = Duration::from_secs(120);
 
 /// Serializes explicit clipboard replacements against delayed restores. A new
 /// write invalidates every older restore before that write can land.
 static CLIPBOARD_RESTORE_EPOCH: Mutex<u64> = Mutex::new(0);
 
+/// A transcript waiting for the user to press the deferred-insert command.
 #[derive(Debug, Clone)]
 struct DeferredInsertSlot {
+    /// Text to paste when the command fires.
     text: String,
+    /// Arming instant, measured against [`DEFERRED_INSERT_TTL`].
     armed_at: Instant,
 }
 
+/// The single armed transcript. Process-local: arming never touches the system
+/// pasteboard, so the user's clipboard survives an insert that never happens.
 static DEFERRED_INSERT_SLOT: Mutex<Option<DeferredInsertSlot>> = Mutex::new(None);
 
+/// Why a deferred-insert press did or did not paste.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferredInsertDelivery {
+    /// The armed transcript was pasted and the slot consumed.
     Delivered,
+    /// Nothing was armed — the press was a no-op.
     NothingToInsert,
+    /// The slot outlived [`DEFERRED_INSERT_TTL`]; it is dropped, not pasted.
     Expired,
 }
 
+/// [`arm_deferred_insert`] with an injectable arming instant, for tests.
 fn arm_deferred_insert_at(text: String, armed_at: Instant) -> bool {
     if text.is_empty() {
         return false;
@@ -101,6 +115,10 @@ pub fn arm_deferred_insert(text: String) -> bool {
     arm_deferred_insert_at(text, Instant::now())
 }
 
+/// Consume the armed slot, or report why there is nothing to paste.
+///
+/// An expired slot is taken and dropped rather than left behind, so a stale
+/// transcript cannot be resurrected by a later press.
 fn take_deferred_insert_at(now: Instant) -> Result<String, DeferredInsertDelivery> {
     let mut slot = DEFERRED_INSERT_SLOT
         .lock()
@@ -114,6 +132,10 @@ fn take_deferred_insert_at(now: Instant) -> Result<String, DeferredInsertDeliver
     Ok(armed.text)
 }
 
+/// [`deliver_deferred_insert`] with the clock and paste step injected.
+///
+/// The seam that lets the arm/expire/deliver-once rules be tested without
+/// posting real keyboard events or touching the system pasteboard.
 fn deliver_deferred_insert_at<F>(now: Instant, paste: F) -> Result<DeferredInsertDelivery>
 where
     F: FnOnce(&str) -> Result<()>,
@@ -135,11 +157,14 @@ pub fn deliver_deferred_insert() -> Result<DeferredInsertDelivery> {
 /// Permission truth required before posting a synthetic Cmd+V.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SyntheticPastePreflight {
+    /// `CGPreflightPostEventAccess`: may this process post CGEvents at all.
     pub cg_post_event_access: bool,
+    /// `AXIsProcessTrusted`: is the app listed under Accessibility.
     pub ax_trusted: bool,
 }
 
 impl SyntheticPastePreflight {
+    /// Both signals must hold; either one missing means the keystroke is dropped.
     pub(crate) fn can_post_events(self) -> bool {
         self.cg_post_event_access && self.ax_trusted
     }
@@ -150,7 +175,9 @@ impl SyntheticPastePreflight {
 pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
+        /// Whether this process may post CGEvents (synthetic keystrokes).
         fn CGPreflightPostEventAccess() -> bool;
+        /// Whether Accessibility trusts this process for AX automation.
         fn AXIsProcessTrusted() -> bool;
     }
 
@@ -164,6 +191,7 @@ pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
     }
 }
 
+/// Off macOS there is no synthetic-paste permission to grant — report denied.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn synthetic_paste_preflight() -> SyntheticPastePreflight {
     SyntheticPastePreflight {
@@ -315,6 +343,13 @@ fn set_clipboard_with_epoch(text: &str) -> Result<u64> {
     Ok(*restore_epoch)
 }
 
+/// Replace the clipboard contents, discarding the restore epoch.
+///
+/// For callers that own the clipboard outright. A paste that must hand the
+/// clipboard back needs the epoch, so it uses `set_clipboard_with_epoch`.
+///
+/// # Errors
+/// Returns an error if the clipboard cannot be opened or written.
 pub fn set_clipboard(text: &str) -> Result<()> {
     set_clipboard_with_epoch(text).map(|_| ())
 }
@@ -400,6 +435,7 @@ pub(crate) fn pasteboard_change_count() -> Option<i64> {
     }
 }
 
+/// No AppKit pasteboard off macOS; callers fall back to content comparison.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn pasteboard_change_count() -> Option<i64> {
     None
@@ -433,6 +469,14 @@ fn simulate_right_arrow() -> Result<()> {
     Ok(())
 }
 
+/// Hand the clipboard back on a background thread once the paste has settled.
+///
+/// The restore is conditional on `paste_epoch` still being current. Any
+/// clipboard write in the meantime — a "degrade to copy" fallback, a second
+/// dictation — bumps the epoch, and this thread then exits without writing, so
+/// a delayed restore can never clobber newer content the user is waiting on.
+///
+/// Returns the handle so tests can join instead of racing the delay.
 fn schedule_clipboard_restore(
     snapshot: ClipboardSnapshot,
     paste_epoch: u64,
@@ -575,11 +619,13 @@ pub fn paste_and_restore(text: &str) -> Result<()> {
     paste_text_smart(text, true)
 }
 
+/// Clipboard snapshot/restore, epoch cancel, and deferred-insert unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Round-trip plain text through set_clipboard / get_clipboard when available.
     #[test]
     #[serial]
     fn test_set_and_get_clipboard() {
@@ -597,6 +643,7 @@ mod tests {
         assert_eq!(retrieved, test_text);
     }
 
+    /// Empty set is a soft no-op (warns) and must not error.
     #[test]
     #[serial]
     fn test_empty_clipboard_warning() {
@@ -606,6 +653,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// Capture records non-empty text and reports `is_empty() == false`.
     #[test]
     #[serial]
     fn test_clipboard_snapshot_capture() {
@@ -631,6 +679,7 @@ mod tests {
         assert!(!snapshot.is_empty());
     }
 
+    /// Restore puts prior text back after an intervening set_clipboard.
     #[test]
     #[serial]
     fn test_clipboard_snapshot_restore() {
@@ -669,6 +718,7 @@ mod tests {
         assert_eq!(restored, original);
     }
 
+    /// Empty snapshots clear the pasteboard so deferred insert is lossless.
     #[test]
     #[serial]
     fn empty_clipboard_snapshot_restores_empty_state() {
@@ -707,6 +757,7 @@ mod tests {
         assert!(clipboard.get_text().is_err(), "clipboard should be empty");
     }
 
+    /// A newer set bumps the epoch so a delayed restore cannot clobber it.
     #[test]
     #[serial]
     fn degrade_copy_cancels_pending_paste_restore() {
@@ -747,6 +798,7 @@ mod tests {
         assert_eq!(current, "degraded tagged transcript");
     }
 
+    /// Arming stores text in-process only; the system pasteboard is untouched.
     #[test]
     #[serial]
     fn deferred_insert_arm_does_not_touch_clipboard() {
@@ -769,6 +821,7 @@ mod tests {
         let _ = take_deferred_insert_at(Instant::now());
     }
 
+    /// Latest arm wins; second press after delivery reports NothingToInsert.
     #[test]
     #[serial]
     fn deferred_insert_press_delivers_once_and_rearm_replaces_payload() {
@@ -791,6 +844,7 @@ mod tests {
         );
     }
 
+    /// Delivery path restores the user's clipboard after the temporary paste set.
     #[test]
     #[serial]
     fn deferred_insert_press_restores_user_clipboard_after_delivery() {
@@ -828,6 +882,7 @@ mod tests {
         assert_eq!(restored, "user clipboard before deferred insert");
     }
 
+    /// Past TTL yields Expired, never pastes, and consumes the slot.
     #[test]
     #[serial]
     fn deferred_insert_expiry_never_delivers_stale_text() {
@@ -850,6 +905,7 @@ mod tests {
         );
     }
 
+    /// Soft-skip when the host has no pasteboard; panic on unexpected errors.
     fn skip_if_clipboard_unavailable<T>(result: Result<T>, action: &str) -> Option<T> {
         match result {
             Ok(value) => Some(value),
@@ -861,19 +917,23 @@ mod tests {
         }
     }
 
+    /// Detect arboard "not supported with the current system configuration" hosts.
     fn is_clipboard_unavailable(error: &anyhow::Error) -> bool {
         format!("{error:#}").contains("not supported with the current system configuration")
     }
 
+    /// RAII guard that restores the operator clipboard after each serial test.
     struct ClipboardTestGuard(Option<ClipboardSnapshot>);
 
     impl ClipboardTestGuard {
+        /// Best-effort capture; missing clipboard yields a no-op Drop.
         fn capture() -> Self {
             Self(ClipboardSnapshot::capture().ok())
         }
     }
 
     impl Drop for ClipboardTestGuard {
+        /// Restore the pre-test snapshot if capture succeeded.
         fn drop(&mut self) {
             if let Some(snapshot) = &self.0 {
                 let _ = snapshot.restore();

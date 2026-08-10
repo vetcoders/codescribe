@@ -27,14 +27,20 @@
 //!
 //! # Where Layer 1 is wired today
 //!
-//! - **Wired:** `core/pipeline/streaming/session.rs` → `vad_transcription_session`
-//!   (Whisper/VAD scheduler path, or Apple with `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`).
-//!   Gate: [`layered_phase`] ≥ 1; attaches FINAL audio per work item, spawns
-//!   Whisper re-transcribe + [`compute_tail_patch`], emits
+//! Both live paths are wired; gate is [`layered_phase`] ≥ 1 on each.
+//!
+//! - **VAD/scheduler:** `core/pipeline/streaming/session.rs` →
+//!   `vad_transcription_session` (Whisper engine, or Apple with
+//!   `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`). Attaches FINAL audio per work item,
+//!   spawns Whisper re-transcribe + [`compute_tail_patch`], emits
 //!   `ReplaceRange { source: TailPatch }`, counts in `SessionFinalised.layer_summary`.
-//! - **Not wired yet:** Apple progressive live session
-//!   (`apple_stream_transcription_session`). Enabling phase1 with default Apple
-//!   progressive live does not spawn tail patches (session logs a warn).
+//! - **Apple progressive live:** `core/pipeline/streaming/apple_live_session.rs`
+//!   → `apple_stream_transcription_session` (W2-A). Each sealed `UtteranceFinal`
+//!   resolves to its retained PCM window and is handed to the async Layer 1
+//!   lane, at most one job in flight so Whisper never sits on the event-drain
+//!   loop. A boundary that cannot address retained audio is never patched; a
+//!   full queue drops the request rather than stalling capture; the bounded
+//!   backlog left when capture stops is settled before `SessionFinalised`.
 //!
 //! # Invariants (from the ADR "Hard invariants")
 //!
@@ -68,14 +74,19 @@ use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
 /// Env flag gating the layered transcription pipeline.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — defaults to OFF. Returns
-/// the active phase number when set, so callers can gate Layer 1..4 wiring.
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — **defaults to phase1**.
+/// The live tail patch is a core element of the triangulation, not an opt-in
+/// (operator directive 2026-08-09: "korekcje na żywo to live tail patch, który
+/// MUSI być podstawowym elementem"). Explicit `off`/`0`/`false` disables;
+/// explicit `phaseN` selects a phase.
 ///
-/// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Layered
-/// stays an explicit opt-in (Settings / env). Kept here (not in the config hub)
-/// so this cut stays isolated; the orchestrator can promote it to a typed
-/// config field when it lands.
+/// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Kept
+/// here (not in the config hub) so this cut stays isolated; the orchestrator
+/// can promote it to a typed config field when it lands.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
+
+/// Phase served when the flag is unset — Layer 1 live tail patch on.
+const LAYERED_DEFAULT_PHASE: u8 = 1;
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
 pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO";
@@ -96,12 +107,16 @@ pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
     }
 }
 
-/// Active layered-transcription phase, or `None` when the flag is unset/off.
+/// Active layered-transcription phase. Unset → the default phase (live tail
+/// patch on); an explicit `off`/`0`/`false` — or unparseable garbage — is the
+/// only way to `None`.
 ///
 /// Independent of `FINAL_PASS_MODE` / Smart completeness skip.
 pub fn layered_phase() -> Option<u8> {
-    let raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok()?;
-    parse_layered_phase_value(&raw)
+    match std::env::var(LAYERED_TRANSCRIPTION_ENV) {
+        Ok(raw) => parse_layered_phase_value(&raw),
+        Err(_) => Some(LAYERED_DEFAULT_PHASE),
+    }
 }
 
 /// Tuning for the tail-patch diff.
@@ -114,6 +129,7 @@ pub struct TailPatchConfig {
 }
 
 impl Default for TailPatchConfig {
+    /// Conservative default: skip the patch if more than half the tokens would change.
     fn default() -> Self {
         Self {
             max_change_ratio: 0.5,
@@ -157,9 +173,15 @@ struct Token {
     char_start: usize,
     /// Char index one past the last char (exclusive).
     char_end: usize,
+    /// Token body with surrounding whitespace stripped.
     text: String,
 }
 
+/// Split on whitespace into tokens carrying char-offset spans.
+///
+/// Offsets are char- not byte-based so Polish diacritics cannot skew the
+/// bounded ranges emitted downstream. Whitespace never enters a token, so
+/// leading/trailing whitespace in a Whisper re-transcription is inert.
 fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut start: Option<usize> = None;
@@ -375,6 +397,8 @@ pub fn compute_tail_patch(
     TailPatchOutcome::Patches(events)
 }
 
+/// Sort key for offset-stable application: the start offset of a
+/// `ReplaceRange`, and 0 for any other event shape.
 fn event_start(event: &EngineEvent) -> usize {
     match event {
         EngineEvent::ReplaceRange { start, .. } => *start,
@@ -382,6 +406,7 @@ fn event_start(event: &EngineEvent) -> usize {
     }
 }
 
+/// Pure unit tests for Layer-1 tail-patch diff outcomes and phase parsing.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +424,7 @@ mod tests {
         buf
     }
 
+    /// Exact re-transcription match must yield `NoChange` (no empty ReplaceRange).
     #[test]
     fn identical_text_is_no_change() {
         let cfg = TailPatchConfig::default();
@@ -406,6 +432,7 @@ mod tests {
         assert_eq!(outcome, TailPatchOutcome::NoChange);
     }
 
+    /// Empty Layer-0 floor has nothing to patch against; always `Skipped`.
     #[test]
     fn empty_committed_is_skipped() {
         let cfg = TailPatchConfig::default();
@@ -413,6 +440,7 @@ mod tests {
         assert!(matches!(outcome, TailPatchOutcome::Skipped { .. }));
     }
 
+    /// Substitution fixes a mixed-language mishear without full-buffer rewrite.
     #[test]
     fn single_substitution_corrects_mixed_language_token() {
         // Layer 0 (Apple, PL-dominant) misheard the English place name.
@@ -435,6 +463,7 @@ mod tests {
         );
     }
 
+    /// Insertion fills a token Apple dropped while preserving surrounding text.
     #[test]
     fn insertion_fills_missing_token() {
         // Whisper recovered a technical term Apple dropped entirely.
@@ -449,6 +478,7 @@ mod tests {
         );
     }
 
+    /// Leading insertion anchors at char 0 with a trailing space in the patch text.
     #[test]
     fn leading_insertion_anchors_at_start() {
         let cfg = TailPatchConfig::default();
@@ -458,6 +488,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), "witaj świecie cześć");
     }
 
+    /// Leading/trailing whitespace in Whisper output must not enter offsets.
     #[test]
     fn retranscribed_whitespace_never_skews_offsets() {
         // Whisper output routinely carries leading/trailing whitespace. tokenize
@@ -470,6 +501,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), "ala ma psa");
     }
 
+    /// v1 never deletes tokens the user already saw (deletions stay on Layer 0).
     #[test]
     fn deletion_is_left_intact_in_v1() {
         // Whisper saw fewer words; v1 must not remove text the user already saw.
@@ -481,6 +513,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), committed);
     }
 
+    /// Change ratio above the safety threshold skips the whole patch wholesale.
     #[test]
     fn divergent_retranscription_is_skipped() {
         let cfg = TailPatchConfig::default();
@@ -492,6 +525,7 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), committed);
     }
 
+    /// Multiple substitutions emit descending-by-start for offset-stable apply.
     #[test]
     fn multiple_edits_apply_offset_stable() {
         // Two independent substitutions in one utterance; applying all emitted
@@ -516,6 +550,7 @@ mod tests {
         );
     }
 
+    /// Polish diacritics: offsets are char-based so apply never corrupts UTF-8.
     #[test]
     fn unicode_offsets_are_char_based() {
         // Polish diacritics: offsets must be char- not byte-based or the apply
@@ -530,6 +565,7 @@ mod tests {
         );
     }
 
+    /// Default config lands on the 0.5 unit-interval safety threshold.
     #[test]
     fn config_from_env_clamps_to_unit_interval() {
         // Out-of-range / garbage values fall back to default.
@@ -537,6 +573,7 @@ mod tests {
         assert_eq!(cfg.max_change_ratio, 0.5);
     }
 
+    /// Accepts `phaseN` / bare digits in 1..=4; rejects out-of-range and off tokens.
     #[test]
     fn layered_phase_parses_phase_prefix() {
         // Pure parse — no process env (suite stays deterministic under parallel exec).
@@ -550,6 +587,7 @@ mod tests {
         assert_eq!(parse_layered_phase_value("0"), None);
     }
 
+    /// FINAL_PASS_MODE vocabulary must never parse as a layered phase.
     #[test]
     fn layered_phase_rejects_final_pass_mode_tokens() {
         // Orthogonality: FINAL_PASS_MODE vocabulary must never enable Layer 1.

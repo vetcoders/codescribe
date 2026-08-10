@@ -121,9 +121,10 @@ pub struct CsSettings {
     pub layered_transcription: Option<String>,
     /// Workspace root directories the agent scans (`list_projects` tool) to
     /// resolve project names to paths (`AGENT_WORKSPACE_ROOTS`, colon-joined on
-    /// the wire). Effective value: never empty here — defaults to `["~/Git"]` so
-    /// the Settings UI always shows the root the tool will actually scan. Written
-    /// back via `update_config` with the same key (env-managed, NOT promoted).
+    /// the wire). Effective value: never empty here — defaults to
+    /// `["~/.codescribe"]` so the Settings UI always shows the root the tool
+    /// will actually scan. Written back via `update_config` with the same key
+    /// (env-managed, NOT promoted).
     pub agent_workspace_roots: Vec<String>,
     pub buffer_delay_ms: Option<u64>,
     pub typing_cps: Option<f32>,
@@ -154,6 +155,9 @@ pub struct CsPromptSnapshot {
 }
 
 impl From<PromptSnapshot> for CsPromptSnapshot {
+    /// Flatten the core snapshot for the FFI record: the prompt path becomes a
+    /// lossy UTF-8 string (Swift has no `PathBuf`) and the provenance enum
+    /// collapses to its stable `as_str` tag.
     fn from(snapshot: PromptSnapshot) -> Self {
         Self {
             content: snapshot.content,
@@ -164,6 +168,9 @@ impl From<PromptSnapshot> for CsPromptSnapshot {
     }
 }
 
+/// Resolve a formatting-policy id to the prompt file that policy edits.
+/// `"off"` is rejected rather than silently mapped: the Off policy runs no LLM
+/// pass, so it owns no prompt for the editor to open or restore.
 fn formatting_prompt_kind(level: &str) -> Result<PromptKind, CsError> {
     let policy = FormattingPolicy::parse(level).map_err(|error| CsError::Config {
         msg: error.to_string(),
@@ -185,17 +192,32 @@ pub struct CsKeyStatus {
     /// Anthropic assistive-lane key (`LLM_ANTHROPIC_API_KEY`) — separate from the
     /// OpenAI assistive key so both providers can be configured at once.
     pub llm_anthropic_api_key_set: bool,
+    /// xAI assistive-lane key (`LLM_XAI_API_KEY`). Present for the same reason
+    /// as the Anthropic field: the Keys panel lists a row per Keychain account
+    /// and reads its indicator from this record, so an account without a field
+    /// here renders as permanently "not set" even after the operator saves it.
+    pub llm_xai_api_key_set: bool,
     pub github_token_set: bool,
 }
 
 /// UI-safe API-key liveness bucket. No variant carries secret material.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsApiKeyProbeStatus {
+    /// The key authenticated. Also covers a processed-but-rejected request
+    /// (most 4xx other than auth/quota): the server got far enough to prove the
+    /// credential is live, even when this particular probe body was refused.
     Ok,
+    /// The provider rejected the credential itself (401 / 403).
     Invalid,
+    /// The key authenticates but the account cannot pay for the call
+    /// (429 / 402, or an explicit quota/billing marker in the body).
     NoQuota,
+    /// No verdict was reachable — transport failure or a provider 5xx.
     Network,
+    /// Nothing is stored for this account, so no request was made.
     Missing,
+    /// This account has no cheap liveness probe (e.g. `STT_API_KEY`) or belongs
+    /// to no registered provider.
     Unsupported,
 }
 
@@ -240,17 +262,16 @@ pub struct CsProviderOption {
     pub api_key_set: bool,
     /// True when provider-account tokens are stored for this provider.
     pub account_signed_in: bool,
-    /// True when the account-login flow can start. For OpenAI this requires a
-    /// configured OAuth client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, or
-    /// dev env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); until then Settings
-    /// renders the disabled "Sign in with ChatGPT" affordance.
+    /// True when the account-login flow can start. OpenAI and xAI ship public
+    /// desktop client ids (see `NOTICE`); operator settings/env still override.
+    /// Anthropic stays gated until the operator pastes a registration.
     pub account_login_enabled: bool,
     /// Human-readable account status ("signed in as <email>", "not signed in",
     /// or "awaiting app registration"). Never contains secrets.
     pub account_status_message: String,
-    /// Operator-configured OAuth client id (settings → env resolution). A
-    /// non-secret app identity — shown and editable in the Keys panel. `None`
-    /// means the account login is still gated on app registration.
+    /// Resolved OAuth client id (settings → env → shipped default). Non-secret
+    /// app identity. The Keys panel no longer surfaces this for editing by
+    /// default; advanced override still goes through settings keys.
     pub oauth_client_id: Option<String>,
     /// Always empty for live Settings; retained for bridge compatibility with
     /// older Swift bindings and preview seed objects.
@@ -260,12 +281,18 @@ pub struct CsProviderOption {
 /// Stable lane identity used by the secret-free lane truth FFI snapshot.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsLlmLane {
+    /// Shared fallback lane configured by `LLM_ENDPOINT` / `LLM_MODEL`. Not a
+    /// runtime lane of its own — it backs the other two when they are unset.
     Main,
+    /// Automatic post-dictation formatting lane.
     Formatting,
+    /// Assistive/agent lane (act-on-selection and voice chat).
     Assistive,
 }
 
 impl From<CsLlmLane> for lane_truth::LaneTruthLane {
+    /// Cross the FFI boundary inward: the bridge enum exists only so
+    /// `LaneTruthLane` itself never has to be exported to Swift.
     fn from(value: CsLlmLane) -> Self {
         match value {
             CsLlmLane::Main => Self::Main,
@@ -291,6 +318,8 @@ pub struct CsLaneTruthSnapshot {
 }
 
 impl From<lane_truth::LaneTruthSnapshot> for CsLaneTruthSnapshot {
+    /// Field-for-field projection outward. The core snapshot is already
+    /// secret-free, so this conversion only re-homes the lane discriminant.
     fn from(value: lane_truth::LaneTruthSnapshot) -> Self {
         Self {
             lane: match value.lane {
@@ -398,6 +427,7 @@ pub struct CodescribeConfig {}
 /// recording worker threads start. Persisted settings remain the source of
 /// truth; an explicit launch-time process override keeps precedence.
 fn bootstrap_audio_input_runtime() {
+    /// Once-only seed of `AUDIO_INPUT_DEVICE` from persisted config at boot.
     static AUDIO_INPUT_BOOTSTRAP: Once = Once::new();
     AUDIO_INPUT_BOOTSTRAP.call_once(|| {
         if cfg!(test) || std::env::var_os("AUDIO_INPUT_DEVICE").is_some() {
@@ -419,6 +449,12 @@ fn bootstrap_audio_input_runtime() {
 
 #[uniffi::export]
 impl CodescribeConfig {
+    /// Construct the bridge handle. Not a pure allocation: this is the app's
+    /// first-touch entry point, so it also initializes logging, seeds the
+    /// recorder's audio-input selector once (`bootstrap_audio_input_runtime`),
+    /// and resumes run monitors persisted by a previous process. Later handles
+    /// are cheap — the side effects are guarded to run only once, and are
+    /// skipped entirely under `cfg!(test)`.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
@@ -530,7 +566,9 @@ impl CodescribeConfig {
                 settings.whisper_model.clone(),
                 &env_file,
             ),
-            layered_transcription: effective_env_string(
+            // Promoted single-brain key: settings.json wins the read-back, so
+            // the Layered toggle reflects the user's write, not stale boot env.
+            layered_transcription: effective_settings_string(
                 "CODESCRIBE_LAYERED_TRANSCRIPTION",
                 settings.layered_transcription.clone(),
                 &env_file,
@@ -709,6 +747,7 @@ impl CodescribeConfig {
             llm_formatting_api_key_set: key_present("LLM_FORMATTING_API_KEY"),
             llm_assistive_api_key_set: key_present("LLM_ASSISTIVE_API_KEY"),
             llm_anthropic_api_key_set: key_present("LLM_ANTHROPIC_API_KEY"),
+            llm_xai_api_key_set: key_present("LLM_XAI_API_KEY"),
             github_token_set: key_present("GITHUB_TOKEN"),
         }
     }
@@ -740,20 +779,26 @@ impl CodescribeConfig {
                     account_signed_in: account_status.signed_in,
                     account_login_enabled: account_status.client_id_configured,
                     account_status_message: account_status.message,
-                    oauth_client_id: matches!(kind, ProviderKind::OpenAiResponses)
-                        .then(account_auth::configured_client_id)
-                        .flatten(),
+                    // Resolved id (including shipped defaults) for diagnostics;
+                    // the Keys panel hides the field by default. Per-provider
+                    // settings keys are used if an advanced override is saved.
+                    oauth_client_id: account_auth::client_id_for_provider(*kind).ok(),
                     models: Vec::new(),
                 }
             })
             .collect()
     }
 
-    /// Start provider-account login for the selected provider. Today this is
-    /// only supported for OpenAI Responses and is gated by the configured OAuth
-    /// client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, dev-env fallback
-    /// `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); absent client id returns a config
-    /// error whose message contains "awaiting app registration".
+    /// Start provider-account login for the selected provider.
+    ///
+    /// Flow is chosen from the provider's OAuth registry row:
+    /// - **Loopback** (OpenAI): bind local callback, open authorize URL.
+    /// - **Device code** (xAI / OpenCode SuperGrok): request RFC 8628 device
+    ///   code, open verification URL (no `127.0.0.1` listener — consent cannot
+    ///   hang waiting on a dead loopback port).
+    /// - **Paste code** (Anthropic): refused here until a paste UI lands.
+    ///
+    /// Gated by the provider's client id (settings / env / shipped default).
     pub fn start_account_login(
         &self,
         provider_id: String,
@@ -763,41 +808,81 @@ impl CodescribeConfig {
         })?;
         let client_id =
             account_auth::client_id_for_provider(provider).map_err(account_auth_to_cs)?;
-        let mut opts = account_auth::ServerOptions::new(client_id);
-        opts.issuer = account_auth::issuer_from_env();
+        let oauth = account_auth::provider_oauth_config(provider).map_err(account_auth_to_cs)?;
 
-        let login = account_auth_runtime()?
-            .block_on(account_auth::run_login_server(opts))
-            .map_err(account_auth_to_cs)?;
-        let auth_url = login.auth_url.clone();
-        let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
-            msg: "account login state lock poisoned".to_string(),
-        })?;
-        if let Some(previous) = guard.take() {
-            previous.cancel();
+        // Supersede any prior attempt (loopback or device) so fixed ports and
+        // poll loops never race two logins.
+        {
+            let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                msg: "account login state lock poisoned".to_string(),
+            })?;
+            if let Some(previous) = guard.take() {
+                previous.cancel();
+            }
         }
-        *guard = Some(login);
 
-        Ok(CsAccountLoginResult {
-            provider_id: provider.as_str().to_string(),
-            status: "started".to_string(),
-            message: "open the browser to finish sign-in".to_string(),
-            auth_url: Some(auth_url),
-            signed_in: false,
-            client_id_configured: true,
-        })
+        match oauth.login_flow {
+            account_auth::LoginFlow::DeviceCode => {
+                let mut config = account_auth::DeviceAuthConfig::new(provider, client_id);
+                // Await will re-clamp; start uses the full default budget.
+                config.max_wait = std::time::Duration::from_secs(15 * 60);
+                let device = account_auth_runtime()?
+                    .block_on(account_auth::request_device_code(&config))
+                    .map_err(account_auth_to_cs)?;
+                let auth_url = device.verification_url.clone();
+                let user_code = device.user_code.clone();
+                let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                    msg: "account login state lock poisoned".to_string(),
+                })?;
+                *guard = Some(PendingAccountLogin::Device { config, device });
+                Ok(CsAccountLoginResult {
+                    provider_id: provider.as_str().to_string(),
+                    status: "started".to_string(),
+                    message: format!(
+                        "open the browser and approve access (code {user_code} if asked)"
+                    ),
+                    auth_url: Some(auth_url),
+                    signed_in: false,
+                    client_id_configured: true,
+                })
+            }
+            account_auth::LoginFlow::Loopback => {
+                let opts = account_auth::ServerOptions::new(provider, client_id)
+                    .map_err(account_auth_to_cs)?;
+                let login = account_auth_runtime()?
+                    .block_on(account_auth::run_login_server(opts))
+                    .map_err(account_auth_to_cs)?;
+                let auth_url = login.auth_url.clone();
+                let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
+                    msg: "account login state lock poisoned".to_string(),
+                })?;
+                *guard = Some(PendingAccountLogin::Loopback(login));
+                Ok(CsAccountLoginResult {
+                    provider_id: provider.as_str().to_string(),
+                    status: "started".to_string(),
+                    message: "open the browser to finish sign-in".to_string(),
+                    auth_url: Some(auth_url),
+                    signed_in: false,
+                    client_id_configured: true,
+                })
+            }
+            account_auth::LoginFlow::PasteCode => Err(CsError::Config {
+                msg: format!(
+                    "{} signs in by pasting a code; that UI is not wired yet",
+                    provider.display_name()
+                ),
+            }),
+        }
     }
 
     /// Block until the in-flight provider-account login completes, fails, or
     /// times out. Swift calls this from a background queue right after
-    /// `start_account_login` opened the browser. On timeout (user closed the
-    /// browser, walked away) the local callback server is shut down — honest
-    /// status, no zombie port. A second `start_account_login` while pending
-    /// cancels the first, so this returns "failed" for the superseded attempt.
+    /// `start_account_login` opened the browser. On timeout the pending
+    /// loopback server is shut down (or the device poll is abandoned). A
+    /// second `start_account_login` while pending cancels the first.
     ///
     /// P2-09: 300s default (from caller) is intentional; OAuth human steps can
-    /// exceed short timeouts. No configurability knob added. P2-08: discovery
-    /// flows share this; cancel is best-effort via supersede + teardown.
+    /// exceed short timeouts. No configurability knobs.
     pub fn await_account_login(
         &self,
         provider_id: String,
@@ -820,32 +905,59 @@ impl CodescribeConfig {
             ));
         };
 
-        let cancel = login.cancel_handle();
-        let outcome = account_auth_runtime()?.block_on(async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(timeout_seconds.max(1)),
-                login.block_until_done(),
-            )
-            .await
-        });
-
-        match outcome {
-            Ok(Ok(())) => {
-                let message = account_auth::account_status(provider).message;
-                Ok(account_login_result(provider, "signed_in", &message))
+        let timeout = std::time::Duration::from_secs(timeout_seconds.max(1));
+        match login {
+            PendingAccountLogin::Loopback(login) => {
+                let cancel = login.cancel_handle();
+                let outcome = account_auth_runtime()?.block_on(async move {
+                    tokio::time::timeout(timeout, login.block_until_done()).await
+                });
+                match outcome {
+                    Ok(Ok(())) => {
+                        let message = account_auth::account_status(provider).message;
+                        Ok(account_login_result(provider, "signed_in", &message))
+                    }
+                    Ok(Err(error)) => {
+                        Ok(account_login_result(provider, "failed", &error.to_string()))
+                    }
+                    Err(_elapsed) => {
+                        cancel.shutdown();
+                        let message = format!(
+                            "sign-in was not completed within {timeout_seconds}s; the local login server was shut down"
+                        );
+                        Ok(account_login_result(provider, "timeout", &message))
+                    }
+                }
             }
-            Ok(Err(error)) => Ok(account_login_result(provider, "failed", &error.to_string())),
-            Err(_elapsed) => {
-                cancel.shutdown();
-                let message = format!(
-                    "sign-in was not completed within {timeout_seconds}s; the local login server was shut down"
-                );
-                Ok(account_login_result(provider, "timeout", &message))
+            PendingAccountLogin::Device { mut config, device } => {
+                config.max_wait = timeout;
+                let outcome = account_auth_runtime()?.block_on(async move {
+                    tokio::time::timeout(
+                        timeout,
+                        account_auth::complete_device_code_login(&config, &device),
+                    )
+                    .await
+                });
+                match outcome {
+                    Ok(Ok(())) => {
+                        let message = account_auth::account_status(provider).message;
+                        Ok(account_login_result(provider, "signed_in", &message))
+                    }
+                    Ok(Err(error)) => {
+                        Ok(account_login_result(provider, "failed", &error.to_string()))
+                    }
+                    Err(_elapsed) => {
+                        let message = format!(
+                            "sign-in was not completed within {timeout_seconds}s; device authorization abandoned"
+                        );
+                        Ok(account_login_result(provider, "timeout", &message))
+                    }
+                }
             }
         }
     }
 
-    /// Cancel any in-flight provider-account login and free the callback port.
+    /// Cancel any in-flight provider-account login (loopback port or device poll).
     pub fn cancel_account_login(&self) {
         if let Ok(mut guard) = active_account_login().lock()
             && let Some(login) = guard.take()
@@ -1244,12 +1356,19 @@ fn reload_hotkey_runtime() {
     codescribe::os::hotkeys::apply_hotkey_config(&Config::load_without_keychain());
 }
 
+/// One user-owned prompt file held in memory across a reset, so a reset that
+/// keeps prompts can write the exact original bytes back after the data root
+/// has already been moved to Trash.
 #[derive(Debug)]
 struct PreservedPrompt {
     kind: PromptKind,
     bytes: Vec<u8>,
 }
 
+/// Read every user-owned prompt file before the reset moves its directory away.
+/// A prompt that does not exist yet is simply absent from the result — only a
+/// real read failure aborts, because losing bytes we could not read would make
+/// the later restore silently lossy.
 fn capture_base_prompts() -> std::io::Result<Vec<PreservedPrompt>> {
     let mut preserved = Vec::new();
     for kind in PromptKind::USER_OWNED {
@@ -1263,6 +1382,10 @@ fn capture_base_prompts() -> std::io::Result<Vec<PreservedPrompt>> {
     Ok(preserved)
 }
 
+/// Write captured prompt bytes back through the core's atomic prompt writer,
+/// recreating the prompts directory the reset just removed. Tagged with
+/// `AppResetPreservation` so the prompt audit distinguishes a restore from a
+/// user edit.
 fn restore_base_prompts(prompts: &[PreservedPrompt]) -> std::io::Result<()> {
     for prompt in prompts {
         write_prompt_bytes(
@@ -1297,6 +1420,9 @@ fn app_data_dirs() -> Vec<PathBuf> {
     selected.into_iter().map(|(path, _)| path).collect()
 }
 
+/// The user's `~/.Trash`, which is where a reset parks data so it stays
+/// recoverable. Fails loudly when the home directory cannot be resolved rather
+/// than inventing a fallback destination.
 fn codescribe_trash_dir() -> Result<PathBuf, CsError> {
     BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".Trash"))
@@ -1305,6 +1431,10 @@ fn codescribe_trash_dir() -> Result<PathBuf, CsError> {
         })
 }
 
+/// External audit log for resets, deliberately outside the app data roots
+/// (`~/Library/Logs/Codescribe/`) so the record of a reset survives the reset
+/// that produced it. `validate_reset_source` refuses any source that would
+/// swallow this path.
 fn reset_audit_path() -> Result<PathBuf, CsError> {
     BaseDirs::new()
         .map(|dirs| {
@@ -1316,6 +1446,9 @@ fn reset_audit_path() -> Result<PathBuf, CsError> {
         })
 }
 
+/// Sum the live reset impact across the data roots. Byte and file counts add up
+/// across roots; `threads` does not — the thread index is a single store, so the
+/// first root that carries one wins instead of double-counting a shared index.
 fn reset_preview_for_dirs(dirs: &[PathBuf]) -> CsResetPreview {
     let mut preview = CsResetPreview::default();
     for root in dirs {
@@ -1333,6 +1466,10 @@ fn reset_preview_for_dirs(dirs: &[PathBuf]) -> CsResetPreview {
     preview
 }
 
+/// Recursive on-disk size of a path. Symlinks count as zero and are never
+/// followed, so a link into a huge external tree cannot inflate the preview (or
+/// walk out of the reset scope). Unreadable entries contribute zero rather than
+/// failing the whole preview.
 fn path_size(path: &Path) -> u64 {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return 0;
@@ -1352,6 +1489,9 @@ fn path_size(path: &Path) -> u64 {
         .fold(0_u64, u64::saturating_add)
 }
 
+/// Count `(audio_files, transcript_days)` under the transcriptions root. A "day"
+/// is a direct child directory that contains at least one file at any depth, so
+/// an empty leftover day folder is not reported as user data.
 fn transcription_counts(path: &Path) -> (u64, u64) {
     let Ok(entries) = fs::read_dir(path) else {
         return (0, 0);
@@ -1373,6 +1513,9 @@ fn transcription_counts(path: &Path) -> (u64, u64) {
     (audio_files, days)
 }
 
+/// Recursively count `(audio_files, all_files)` inside one transcription day.
+/// Symlinks are skipped entirely so the walk cannot escape the day folder or
+/// count the same bytes twice.
 fn count_transcription_tree(path: &Path) -> (u64, u64) {
     let Ok(entries) = fs::read_dir(path) else {
         return (0, 0);
@@ -1401,6 +1544,9 @@ fn count_transcription_tree(path: &Path) -> (u64, u64) {
     (audio, files)
 }
 
+/// Extension-based recording test for the reset preview. Case-insensitive, and
+/// deliberately extension-only: the preview must stay cheap, so no file is
+/// opened to sniff its container.
 fn is_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -1412,6 +1558,9 @@ fn is_audio_file(path: &Path) -> bool {
         })
 }
 
+/// Number of conversations recorded in the thread index. A missing, unreadable,
+/// or malformed index counts as zero: the preview is advisory and must never
+/// block a reset on a corrupt artifact.
 fn thread_index_count(path: &Path) -> u64 {
     let Ok(bytes) = fs::read(path) else {
         return 0;
@@ -1427,10 +1576,17 @@ fn thread_index_count(path: &Path) -> u64 {
         .map_or(0, |count| count as u64)
 }
 
+/// Filename-safe UTC timestamp for Trash destinations: RFC3339 shape but with
+/// dashes instead of colons in the time part. Milliseconds are kept so two
+/// resets inside the same second still produce distinct names.
 fn timestamp_slug(now: &DateTime<Utc>) -> String {
     now.format("%Y-%m-%dT%H-%M-%S%.3fZ").to_string()
 }
 
+/// First non-colliding `root/stem[-N][.ext]`. A reset must never overwrite an
+/// earlier recoverable copy sitting in Trash, so collisions get a numeric
+/// suffix; after 10 000 attempts it falls back to the process id rather than
+/// looping or returning a path that already exists.
 fn unique_destination(root: &Path, stem: &str, extension: Option<&str>) -> PathBuf {
     for suffix in 0_u32..=10_000 {
         let numbered = if suffix == 0 {
@@ -1449,6 +1605,12 @@ fn unique_destination(root: &Path, stem: &str, extension: Option<&str>) -> PathB
     root.join(format!("{stem}-{}", std::process::id()))
 }
 
+/// Last-line guard before a directory is moved out from under the user. Refuses
+/// a filesystem root, the home directory itself, any source that contains the
+/// Trash destination (which would move the destination into itself), and any
+/// source that contains the external audit log (which would erase the record of
+/// the reset). Operates on canonicalized paths, so a symlinked data dir cannot
+/// disguise an unsafe target.
 fn validate_reset_source(source: &Path, trash_root: &Path) -> std::io::Result<()> {
     let source = source.canonicalize()?;
     let trash = trash_root.canonicalize()?;
@@ -1469,6 +1631,10 @@ fn validate_reset_source(source: &Path, trash_root: &Path) -> std::io::Result<()
     Ok(())
 }
 
+/// Create the timestamped `codescribe-reset-<ts>` folder in Trash that will
+/// receive this reset's data roots. Uses `create_dir` (not `create_dir_all`) for
+/// the leaf so an already-existing destination is an error rather than a silent
+/// merge into someone else's reset.
 fn create_reset_destination(trash_root: &Path, now: &DateTime<Utc>) -> std::io::Result<PathBuf> {
     fs::create_dir_all(trash_root)?;
     let reset_destination = unique_destination(
@@ -1480,6 +1646,10 @@ fn create_reset_destination(trash_root: &Path, now: &DateTime<Utc>) -> std::io::
     Ok(reset_destination)
 }
 
+/// Move each existing data root into the prepared Trash destination, validating
+/// every source first. The first root lands as `codescribe-data` and the rest as
+/// `application-support-<n>`, so the recovered folder is self-describing.
+/// Returns the `(source, destination)` pairs for the audit record.
 fn move_reset_dirs_to_destination(
     dirs: &[PathBuf],
     reset_destination: &Path,
@@ -1508,6 +1678,10 @@ fn move_path_recoverably(source: &Path, destination: &Path) -> std::io::Result<(
     })
 }
 
+/// `move_path_recoverably` with an injectable rename, so tests can force the
+/// cross-volume branch without a second volume. The ordering is the safety
+/// property: the copy must fully succeed before the source is removed, and a
+/// failed copy reports both errors instead of leaving a half-move behind.
 fn move_path_recoverably_with<F>(
     source: &Path,
     destination: &Path,
@@ -1530,6 +1704,11 @@ where
     }
 }
 
+/// Recursively copy a tree, recreating symlinks as links instead of copying
+/// through them — following a link would both duplicate foreign data into Trash
+/// and break the user's ability to restore the tree as it was. Regular files are
+/// `sync_all`'d before the caller removes the source, so a crash mid-reset
+/// cannot leave the data neither copied nor kept.
 fn copy_path_without_following_symlinks(source: &Path, destination: &Path) -> std::io::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.file_type().is_symlink() {
@@ -1556,6 +1735,10 @@ fn copy_path_without_following_symlinks(source: &Path, destination: &Path) -> st
     OpenOptions::new().read(true).open(destination)?.sync_all()
 }
 
+/// Delete a tree without ever descending through a symlink — a link is unlinked,
+/// never traversed, so removing the source after a cross-volume copy cannot
+/// reach outside the reset scope. An already-absent path is success, which keeps
+/// the copy-then-remove path idempotent on retry.
 fn remove_path_without_following_symlinks(path: &Path) -> std::io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -1572,6 +1755,9 @@ fn remove_path_without_following_symlinks(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Move a single `mcp.json` to Trash, leaving every sibling in the config
+/// directory untouched. `Ok(None)` means there was nothing to clear — an absent
+/// file is not an error, so the Settings action is idempotent.
 fn clear_mcp_configuration_to(
     mcp_path: &Path,
     trash_root: &Path,
@@ -1590,6 +1776,10 @@ fn clear_mcp_configuration_to(
     Ok(Some(destination))
 }
 
+/// One line of the reset audit record. Borrowed throughout because a reset
+/// writes several of these (`started`, then a terminal status) from the same
+/// live values, and the record must describe scope and counts only — never file
+/// contents, prompts, or key material.
 struct ResetAuditEvent<'a> {
     audit_path: &'a Path,
     timestamp: &'a DateTime<Utc>,
@@ -1603,6 +1793,10 @@ struct ResetAuditEvent<'a> {
     preserved_prompt_files: usize,
 }
 
+/// Append one JSON line to the external reset audit log and fsync it. Strictly
+/// append-only and flushed per entry: the `started` line has to survive even if
+/// the reset that follows crashes, which is the only way to tell an interrupted
+/// reset from one that never began.
 fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
     if let Some(parent) = event.audit_path.parent() {
         fs::create_dir_all(parent)?;
@@ -1633,6 +1827,9 @@ fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
     file.sync_data()
 }
 
+/// Parse the on-disk `.env` once per settings read. An absent or unparseable
+/// file yields an empty map so the caller falls through to the remaining tiers
+/// instead of failing the whole snapshot.
 fn load_config_env_file() -> HashMap<String, String> {
     let path = Config::env_path();
     if path.exists() {
@@ -1642,15 +1839,21 @@ fn load_config_env_file() -> HashMap<String, String> {
     }
 }
 
+/// Trim and collapse a blank string to `None`. The tier lookups below treat
+/// "present but empty" as "not configured", so a stray `KEY=` never shadows a
+/// real value from a lower tier.
 fn non_empty(value: String) -> Option<String> {
     let value = value.trim().to_string();
     (!value.is_empty()).then_some(value)
 }
 
+/// A persisted settings value, normalized to `None` when blank.
 fn setting_string(value: Option<String>) -> Option<String> {
     value.and_then(non_empty)
 }
 
+/// A value from the parsed `.env` file, normalized to `None` when blank. Reads
+/// the file, not the process env, so a UI write is visible without `set_var`.
 fn file_env_string(key: &str, env_file: &HashMap<String, String>) -> Option<String> {
     env_file.get(key).cloned().and_then(non_empty)
 }
@@ -1679,6 +1882,10 @@ fn effective_env_string(
         .or_else(|| env_string(key))
 }
 
+/// Typed counterpart of `effective_settings_string` for numeric knobs: already
+/// parsed settings first, then `.env`, then process env. A value that fails to
+/// parse is skipped rather than propagated, so a malformed override falls
+/// through to the next tier instead of poisoning the snapshot.
 fn effective_settings_parse<T>(
     key: &str,
     setting: Option<T>,
@@ -1712,7 +1919,14 @@ fn key_present(account: &str) -> bool {
     lane_truth::secret(account).is_some()
 }
 
+/// Process-wide tokio runtime dedicated to the OAuth login server. This bridge
+/// slice is otherwise sync, so the runtime is built lazily and kept alive for
+/// the process: `start_account_login` and `await_account_login` are separate FFI
+/// calls that must share one reactor for the pending callback server to survive
+/// between them. A build failure is cached and returned as a config error rather
+/// than retried per call.
 fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
+    /// Process-wide OAuth login reactor; build errors are cached as strings.
     static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     match RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -1726,11 +1940,38 @@ fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
     }
 }
 
-fn active_account_login() -> &'static Mutex<Option<account_auth::LoginServer>> {
-    static ACTIVE: OnceLock<Mutex<Option<account_auth::LoginServer>>> = OnceLock::new();
+/// One in-flight account login — either a loopback callback server (OpenAI)
+/// or an RFC 8628 device-code poll handle (xAI SuperGrok / OpenCode path).
+enum PendingAccountLogin {
+    Loopback(account_auth::LoginServer),
+    Device {
+        config: account_auth::DeviceAuthConfig,
+        device: account_auth::DeviceCode,
+    },
+}
+
+impl PendingAccountLogin {
+    /// Abandon this attempt. Loopback shuts the listener; device just drops
+    /// (the awaiter times out or is superseded by a new start).
+    fn cancel(self) {
+        match self {
+            Self::Loopback(login) => login.cancel(),
+            Self::Device { .. } => {}
+        }
+    }
+}
+
+/// The single in-flight login, if any. At most one sign-in can be pending:
+/// starting a second supersedes and cancels the first.
+fn active_account_login() -> &'static Mutex<Option<PendingAccountLogin>> {
+    /// At most one in-flight login; a new start cancels the previous.
+    static ACTIVE: OnceLock<Mutex<Option<PendingAccountLogin>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(None))
 }
 
+/// Flatten an account-auth error into the bridge's config error. The core error
+/// type stays out of the FFI surface; only its rendered message crosses, and
+/// that message is already written to be safe to show a user.
 fn account_auth_to_cs(error: account_auth::AccountAuthError) -> CsError {
     CsError::Config {
         msg: error.to_string(),
@@ -1758,6 +1999,9 @@ fn account_login_result(
 }
 
 impl From<ApiKeyLivenessStatus> for CsApiKeyProbeStatus {
+    /// One-to-one re-homing of the core verdict. The arms are written out rather
+    /// than derived so adding a core status is a compile error here instead of a
+    /// silently mismapped UI bucket.
     fn from(status: ApiKeyLivenessStatus) -> Self {
         match status {
             ApiKeyLivenessStatus::Ok => Self::Ok,
@@ -1771,6 +2015,9 @@ impl From<ApiKeyLivenessStatus> for CsApiKeyProbeStatus {
 }
 
 impl From<ApiKeyLivenessResult> for CsApiKeyProbeResult {
+    /// Carry the whole probe result across, including `probed_endpoint` — the
+    /// Keys panel shows which endpoint answered, so dropping it here would make
+    /// a self-hosted misconfiguration indistinguishable from a bad key.
     fn from(result: ApiKeyLivenessResult) -> Self {
         Self {
             account: result.account,
@@ -1781,10 +2028,14 @@ impl From<ApiKeyLivenessResult> for CsApiKeyProbeResult {
     }
 }
 
+/// Pins the bridge-side projection of a core key probe.
 #[cfg(test)]
 mod api_key_probe_tests {
     use super::{ApiKeyLivenessResult, ApiKeyLivenessStatus, CsApiKeyProbeResult};
 
+    /// The endpoint the core actually probed must survive the FFI conversion:
+    /// without it, "Invalid" on a self-hosted endpoint is indistinguishable
+    /// from "Invalid" against the vendor cloud.
     #[test]
     fn bridge_probe_result_preserves_the_endpoint_used_by_core() {
         let result = CsApiKeyProbeResult::from(ApiKeyLivenessResult {
@@ -1812,6 +2063,10 @@ fn ensure_known_account(account: &str) -> Result<(), CsError> {
     }
 }
 
+/// Covers the destructive reset path against real temp directories: what the
+/// reset scope resolves to, that data lands recoverably in a Trash stand-in,
+/// that the audit log only ever grows, and that the cross-volume fallback
+/// copies before it removes.
 #[cfg(test)]
 mod reset_tests {
     use super::{
@@ -1835,12 +2090,15 @@ mod reset_tests {
         std::env::temp_dir().join(format!("cs_reset_{}_{tag}_{nanos}", std::process::id()))
     }
 
+    /// Scoped process-env override that restores the prior value on drop, so a
+    /// reset test cannot leak `CODESCRIBE_DATA_DIR` into the next one.
     struct EnvGuard {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvGuard {
+        /// Set `key`, remembering whatever was there before.
         fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
             let previous = std::env::var_os(key);
             // SAFETY: reset tests that mutate process env are serialized.
@@ -1850,6 +2108,8 @@ mod reset_tests {
     }
 
     impl Drop for EnvGuard {
+        /// Put the previous value back, or unset the key when it was absent —
+        /// restoring an empty string instead would not be the same state.
         fn drop(&mut self) {
             // SAFETY: restores the serialized test's prior process environment.
             unsafe {
@@ -1861,6 +2121,8 @@ mod reset_tests {
         }
     }
 
+    /// Write a fixture file, creating its parents. Panics on failure: a fixture
+    /// that did not materialize would make the assertions below meaningless.
     fn write(path: &Path, bytes: &[u8]) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create fixture parent");
@@ -1868,6 +2130,8 @@ mod reset_tests {
         std::fs::write(path, bytes).expect("write fixture");
     }
 
+    /// Frozen reset timestamp so audit-line assertions can compare the rendered
+    /// RFC3339 string exactly instead of matching a shape.
     fn fixed_timestamp() -> DateTime<Utc> {
         "2026-07-16T16:15:00Z"
             .parse()
@@ -2008,6 +2272,9 @@ mod reset_tests {
         remove_path_without_following_symlinks(&sandbox).expect("clean reset fixture");
     }
 
+    /// Two entries for one reset must both survive in order. The log is the only
+    /// evidence a reset started, so an implementation that truncated or
+    /// overwrote would erase the `started` line whenever the reset completed.
     #[test]
     fn reset_audit_log_is_append_only_and_keeps_each_entry() {
         let sandbox = scratch("audit");
@@ -2072,6 +2339,10 @@ mod reset_tests {
         remove_path_without_following_symlinks(&sandbox).expect("clean audit fixture");
     }
 
+    /// With rename forced to fail (the cross-volume case), the tree must arrive
+    /// complete at the destination *and* the source must be gone — proving the
+    /// fallback is a real move, not a copy that leaves the data behind or a
+    /// removal that runs before the copy is safe.
     #[test]
     fn reset_cross_volume_fallback_copies_before_source_removal() {
         let sandbox = scratch("fallback");
@@ -2092,6 +2363,8 @@ mod reset_tests {
         remove_path_without_following_symlinks(&sandbox).expect("clean fallback fixture");
     }
 
+    /// "Clear MCP configuration" is a scalpel, not the reset: `mcp.json` moves
+    /// to Trash intact while a sibling `settings.json` is left byte-identical.
     #[test]
     fn reset_clear_mcp_configuration_moves_only_mcp_json() {
         let sandbox = scratch("mcp");
@@ -2119,6 +2392,10 @@ mod reset_tests {
     }
 }
 
+/// Covers the settings read/write round trip through the real bridge object:
+/// which store a UI write lands in (promoted settings.json vs `.env`), and that
+/// a fresh handle reconstructs the same truth from disk with no in-memory
+/// carryover. Every test here mutates process env, so all are `#[serial]`.
 #[cfg(test)]
 mod settings_snapshot_tests {
     use super::{CodescribeConfig, remove_path_without_following_symlinks};
@@ -2127,6 +2404,9 @@ mod settings_snapshot_tests {
     use std::ffi::{OsStr, OsString};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Unique scratch data dir under the OS temp dir. Keyed by pid and
+    /// nanosecond so a `#[serial]` test never inherits a previous run's
+    /// settings.json.
     fn scratch(tag: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2138,6 +2418,9 @@ mod settings_snapshot_tests {
         ))
     }
 
+    /// The assistive provider is a promoted key: a Settings write must land in
+    /// settings.json (which survives a reinstall) and must NOT be mirrored into
+    /// the `.env` power-user store, or the two would drift apart.
     #[test]
     #[serial]
     fn assistive_provider_ui_write_is_promoted_to_settings_json() {
@@ -2186,6 +2469,10 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
+    /// The tray must report persisted truth, never an optimistic echo. The
+    /// settings temp path is deliberately blocked to force a write failure; the
+    /// following read has to show the last value that actually reached disk, not
+    /// the one the user just asked for.
     #[test]
     #[serial]
     fn tray_toggles_roundtrip_auto_paste_and_format_truth_after_write_failure() {
@@ -2228,6 +2515,9 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
+    /// Clearing the input device must persist a real absence, not `Some("")`.
+    /// An empty override would read as a configured device named "" and pin the
+    /// recorder away from the live system default forever.
     #[test]
     #[serial]
     fn audio_input_reset_persists_absence_not_an_empty_override() {
@@ -2264,6 +2554,9 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
+    /// Promoted keys read settings.json before process env. Launch-time
+    /// bootstrap can leave a stale `LLM_MODEL` in the environment; if env won,
+    /// a fresh UI write would appear to save and then silently revert.
     #[test]
     #[serial]
     fn load_settings_prefers_persisted_model_over_stale_process_env() {
@@ -2301,6 +2594,10 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
+    /// Workspace roots must round-trip through durable settings.json and be
+    /// rebuilt identically by a brand-new bridge handle. The failure this pins:
+    /// a fresh instance falling back to the `["~/.codescribe"]` default and
+    /// quietly discarding the operator's configured roots.
     #[test]
     #[serial]
     fn workspace_roots_persist_across_fresh_config_instances() {
@@ -2335,7 +2632,7 @@ mod settings_snapshot_tests {
         }
 
         // A new bridge object has no in-memory carryover; it must reconstruct
-        // the exact list from settings.json and must not replace it with ~/Git.
+        // the exact list from settings.json, never the built-in default.
         let fresh = CodescribeConfig::new().load_settings();
         assert_eq!(fresh.agent_workspace_roots, expected);
         let second_fresh = CodescribeConfig::new().load_settings();
@@ -2347,12 +2644,16 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
+    /// Scoped process-env override restored on drop. Carries a `remove` arm as
+    /// well as `set`, because these tests must be able to prove a value came
+    /// from disk — which requires unsetting the env tier that would mask it.
     struct EnvGuard {
         key: &'static str,
         previous: Option<OsString>,
     }
 
     impl EnvGuard {
+        /// Pin `key` to a value for the duration of the test.
         fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
             let previous = std::env::var_os(key);
             // SAFETY: this module serializes every process-env test.
@@ -2360,6 +2661,9 @@ mod settings_snapshot_tests {
             Self { key, previous }
         }
 
+        /// Unset `key` for the duration of the test. Needed because the
+        /// operator's own environment can otherwise leak a real override into
+        /// the run and decide the assertion instead of the persisted store.
         fn remove(key: &'static str) -> Self {
             let previous = std::env::var_os(key);
             // SAFETY: this module serializes every process-env test.
@@ -2369,6 +2673,7 @@ mod settings_snapshot_tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restore the captured value, or unset when there was none.
         fn drop(&mut self) {
             // SAFETY: this module serializes every process-env test.
             unsafe {

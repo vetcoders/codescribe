@@ -5,23 +5,103 @@ import XCTest
 
 @MainActor
 final class SettingsTruthTests: XCTestCase {
-    func testRailKeyboardFocusMapsToDSHairlineWithoutChangingActiveFill() {
+    /// The rail is a native `List(.sidebar)` now: selection fill, focus ring and
+    /// keyboard navigation belong to AppKit, so the app owns only the CONTENT —
+    /// which group a section sits in, its symbol, and what the search matches.
+    func testEverySectionDeclaresItsGroupAndASymbolForTheNativeSidebar() {
+        let visible = SettingsSection.allCases.filter { $0.availability != .hidden }
+        XCTAssertEqual(visible.count, 10)
+
+        for section in visible {
+            XCTAssertFalse(section.symbol.isEmpty, "\(section.rawValue) needs an SF Symbol")
+            XCTAssertFalse(section.searchKeywords.isEmpty, "\(section.rawValue) needs search aliases")
+        }
+
+        // Every group carries rows, and every section lands in exactly one.
+        for group in SettingsSectionGroup.allCases {
+            XCTAssertFalse(
+                visible.filter { $0.group == group }.isEmpty,
+                "group \(group.rawValue) would render as an empty header"
+            )
+        }
         XCTAssertEqual(
-            settingsRailItemVisualState(isActive: true, isKeyboardFocused: false),
-            SettingsRailItemVisualState(showsActiveFill: true, showsHairline: true)
+            visible.map(\.group).count,
+            visible.count,
+            "group is total — no section can be absent from the rail"
         )
+    }
+
+    func testSettingsSearchMatchesTitlesAndWhatThePanelActuallyDoes() {
+        // Empty query keeps the whole rail.
         XCTAssertEqual(
-            settingsRailItemVisualState(isActive: true, isKeyboardFocused: true),
-            SettingsRailItemVisualState(showsActiveFill: true, showsHairline: true)
+            SettingsSection.matching(query: "   ").count,
+            SettingsSection.allCases.filter { $0.availability != .hidden }.count
         )
+
+        // Title match, case-insensitive.
+        XCTAssertEqual(SettingsSection.matching(query: "hotkeys"), [.shortcuts])
+        XCTAssertEqual(SettingsSection.matching(query: "LICENSE"), [.license])
+
+        // Keyword match: the user searches for the job, not the tab name.
+        XCTAssertTrue(SettingsSection.matching(query: "api key").contains(.keys))
+        XCTAssertTrue(SettingsSection.matching(query: "mikrofon").contains(.audio))
+        XCTAssertTrue(SettingsSection.matching(query: "whisper").contains(.engine))
+        XCTAssertTrue(SettingsSection.matching(query: "słownik").contains(.voiceLab))
+
+        // A miss returns nothing rather than the whole list.
+        XCTAssertTrue(SettingsSection.matching(query: "zzzz").isEmpty)
+    }
+
+    /// Pagination must not lose a subsystem or strand a page: every page belongs
+    /// to a real section, selecting a section lands on its first page, and a
+    /// section without pages keeps rendering whole.
+    func testPaginatedSectionsRouteToPagesWithoutLosingSubsystems() {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+
         XCTAssertEqual(
-            settingsRailItemVisualState(isActive: false, isKeyboardFocused: true),
-            SettingsRailItemVisualState(showsActiveFill: false, showsHairline: true)
+            SettingsPage.pages(in: .agent),
+            [.agentLanes, .agentWorkspace, .agentStatus, .agentTools, .agentMcp],
+            "the Agent panel's five subsystems each need their own page"
         )
-        XCTAssertEqual(
-            settingsRailItemVisualState(isActive: false, isKeyboardFocused: false),
-            SettingsRailItemVisualState(showsActiveFill: false, showsHairline: false)
-        )
+        for page in SettingsPage.allCases {
+            XCTAssertFalse(page.title.isEmpty)
+            XCTAssertFalse(page.symbol.isEmpty)
+            XCTAssertTrue(SettingsPage.pages(in: page.section).contains(page))
+        }
+
+        // Landing on a paginated section opens its first page.
+        model.select(SettingsSection.agent)
+        XCTAssertEqual(model.page, .agentLanes)
+        XCTAssertEqual(model.route, .page(.agentLanes))
+
+        // Selecting a page keeps the parent section consistent.
+        model.select(SettingsPage.agentMcp)
+        XCTAssertEqual(model.section, .agent)
+        XCTAssertEqual(model.route, .page(.agentMcp))
+
+        // Leaving for an unpaginated section clears the page.
+        model.select(SettingsSection.audio)
+        XCTAssertNil(model.page)
+        XCTAssertEqual(model.route, .section(.audio))
+
+        // Route selection round-trips through the rail's binding type.
+        model.select(SettingsRoute.page(.agentTools))
+        XCTAssertEqual(model.route, .page(.agentTools))
+        model.select(SettingsRoute.section(.license))
+        XCTAssertEqual(model.route, .section(.license))
+    }
+
+    func testSettingsSearchReachesInsideLongSections() {
+        // A page keyword surfaces its parent section…
+        XCTAssertTrue(SettingsPage.matching(query: "mcp").contains(.agentMcp))
+        XCTAssertEqual(SettingsPage.matching(query: "mcp").first?.section, .agent)
+        // …even though the section's own title and keywords do not mention it.
+        XCTAssertFalse(SettingsSection.agent.title.lowercased().contains("mcp"))
+
+        XCTAssertTrue(SettingsPage.matching(query: "permission").contains(.agentTools))
+        XCTAssertTrue(SettingsPage.matching(query: "roots").contains(.agentWorkspace))
+        XCTAssertTrue(SettingsPage.matching(query: "zzzz").isEmpty)
+        XCTAssertEqual(SettingsPage.matching(query: "  ").count, SettingsPage.allCases.count)
     }
 
     func testSectionAvailabilityKeepsPromisesHonest() {
@@ -179,6 +259,20 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertFalse(ToolPermissionGrouping.matches(items[1], query: "zzz"))
     }
 
+    func testCreatorQuickStartCardsRouteOrStartDictation() {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+        var dictationStarts = 0
+        model.onQuickStartDictation = { dictationStarts += 1 }
+
+        model.performQuickStart(.testMic)
+        XCTAssertEqual(model.section, .audio)
+        model.performQuickStart(.tuneShortcuts)
+        XCTAssertEqual(model.section, .shortcuts)
+        model.performQuickStart(.openOverlay)
+        XCTAssertEqual(dictationStarts, 1)
+        XCTAssertEqual(model.section, .shortcuts, "openOverlay must not touch rail routing")
+    }
+
     func testLegacyKeysAndAgentDeepLinksResolveToDedicatedPanels() {
         SettingsDeepLink.pendingSection = nil
         defer { SettingsDeepLink.pendingSection = nil }
@@ -191,6 +285,35 @@ final class SettingsTruthTests: XCTestCase {
         SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
         XCTAssertEqual(SettingsDeepLink.consume()?.destination, .agent)
         XCTAssertNil(SettingsDeepLink.consume())
+    }
+
+    /// The Rust core decides "am I a test?" partly from this process's environment
+    /// (`core/config/keychain.rs::in_xctest_host`). It has to: this suite hosts its tests
+    /// inside the app, so the core sees an app binary, no libtest, and no
+    /// `target/**/deps/` path — every Rust harness signal reads production.
+    ///
+    /// Getting that wrong is not cosmetic. Before the detector existed, the core made real
+    /// Keychain calls from an ad-hoc-signed host whose signature changes on every rebuild,
+    /// and this file's `testHoldBadgeControlRoundTrips…` swung between 0.001 s and 43.059 s
+    /// across otherwise identical runs. The detector keys on env markers Xcode exports and
+    /// has moved between versions, so it fails OPEN — no markers means "production", i.e.
+    /// the slow, wrong classification comes back silently.
+    ///
+    /// This assertion is the only thing standing between that and a future Xcode bump.
+    func testXCTestEnvMarkersPinTheSignalTheCoreKeysOn() {
+        let env = ProcessInfo.processInfo.environment
+        let markers = ["XCTestConfigurationFilePath", "XCTestSessionIdentifier", "XCTestBundlePath"]
+        let present = markers.filter { env[$0] != nil }
+        XCTAssertFalse(
+            present.isEmpty,
+            """
+            No XCTest environment marker found in the test host, so \
+            core/config/keychain.rs::in_xctest_host() now returns false for this very run and \
+            the core is treating the Swift suite as a production launch again. \
+            Looked for: \(markers.joined(separator: ", ")). \
+            Fix the marker list on BOTH sides before trusting this suite's timings.
+            """
+        )
     }
 
     func testSettingsSplitConstructionDoesNotWriteConfigOrKeychain() {

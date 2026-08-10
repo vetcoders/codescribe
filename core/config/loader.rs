@@ -29,8 +29,19 @@ use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
 };
 
+/// Has the process already seeded its environment from config? Seeding happens
+/// once, at the first load; later loads read snapshots instead, so a background
+/// thread never sees `set_var` racing under it.
 static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
+
+/// Serializes the one bootstrap load, so two concurrent `Config::load()` calls
+/// cannot both decide they are the first writer.
 static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Keys this process seeded itself. After bootstrap they are reported as absent
+/// by [`Config::config_runtime_env_var`], so a later Settings write wins over
+/// the value config planted at startup — that is what makes settings hot-apply
+/// without a restart. Only a genuinely external env var keeps its priority.
 static CONFIG_SEEDED_ENV_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 impl Config {
@@ -56,6 +67,13 @@ impl Config {
         Self::load_with_keychain_population(false)
     }
 
+    /// The single load path behind both public entry points.
+    ///
+    /// Order matters throughout: legacy `.env` keys are migrated, then one-time
+    /// imports into `settings.json` run, then non-promoted `.env` values are
+    /// injected into the process env — promoted keys are deliberately skipped so
+    /// a stale `~/.codescribe/.env` cannot shadow a choice made in the UI.
+    /// Only after that are defaults, settings, and finally explicit env applied.
     fn load_with_keychain_population(populate_keychain: bool) -> Self {
         let _bootstrap_guard = Self::config_env_bootstrap_guard();
         let seed_process_env = Self::can_seed_process_env();
@@ -121,6 +139,8 @@ impl Config {
         config
     }
 
+    /// Hold the bootstrap lock for the duration of a load. Skipped under `cfg(test)`,
+    /// where each test intentionally re-runs bootstrap against its own temp dir.
     fn config_env_bootstrap_guard() -> Option<std::sync::MutexGuard<'static, ()>> {
         if cfg!(test) {
             None
@@ -134,20 +154,27 @@ impl Config {
         }
     }
 
+    /// May this load still write to the process environment? True exactly once
+    /// in production — afterwards, mutating env would race threads that are
+    /// already running.
     fn can_seed_process_env() -> bool {
         cfg!(test) || !CONFIG_ENV_BOOTSTRAPPED.load(Ordering::SeqCst)
     }
 
+    /// Close the seeding window after a successful bootstrap load.
     fn mark_process_env_bootstrapped(seed_process_env: bool) {
         if seed_process_env && !cfg!(test) {
             CONFIG_ENV_BOOTSTRAPPED.store(true, Ordering::SeqCst);
         }
     }
 
+    /// Lazily-initialized set of self-seeded keys.
     fn seeded_env_keys() -> &'static Mutex<HashSet<String>> {
         CONFIG_SEEDED_ENV_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
     }
 
+    /// Record that this process — not the user's shell — set `key`. No-op under
+    /// test, where each case manages its own environment.
     fn remember_seeded_env_key(key: &str) {
         if cfg!(test) {
             return;
@@ -157,6 +184,8 @@ impl Config {
         }
     }
 
+    /// Was this value planted by config itself? If so it must not outrank a
+    /// fresh persisted setting.
     fn was_seeded_env_key(key: &str) -> bool {
         if cfg!(test) {
             return false;
@@ -167,6 +196,11 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Read runtime env truth, with two deliberate departures from
+    /// `std::env::var`: Keychain-backed accounts are served from the cached
+    /// secret rather than the environment, and a key this process seeded during
+    /// bootstrap reads as absent afterwards — so persisted settings win over
+    /// config's own startup copy.
     fn config_runtime_env_var(key: &str) -> Result<String, VarError> {
         if super::keychain::KEYCHAIN_ACCOUNTS.contains(&key) {
             return super::keychain::cached_runtime_key(key).ok_or(VarError::NotPresent);
@@ -239,18 +273,29 @@ impl Config {
         }
     }
 
+    /// Treat a whitespace-only value as unset — an empty env var is a common way
+    /// to accidentally "configure" a key into a broken state.
     fn env_missing_or_empty(key: &str) -> bool {
         Self::config_runtime_env_var(key)
             .ok()
             .is_none_or(|value| value.trim().is_empty())
     }
 
+    /// Seed a default without ever overwriting a value the user actually set.
     fn config_init_set_env_if_missing(key: &str, value: impl AsRef<str>) {
         if Self::env_missing_or_empty(key) {
             Self::config_init_set_env(key, value.as_ref());
         }
     }
 
+    /// Give all three LLM lanes (base, formatting, assistive) a complete
+    /// endpoint/model/provider triple, so a lane whose override is unset still
+    /// resolves instead of failing at first use. The base endpoint is reused for
+    /// every lane; only explicitly configured values differ.
+    ///
+    /// Deliberately seeds no API key: a missing credential must surface as an
+    /// auth error the user can act on, not as a silent fallback to some other
+    /// lane's key.
     fn apply_default_llm_runtime_env(&mut self) {
         let endpoint = self
             .llm_endpoint
@@ -499,6 +544,9 @@ impl Config {
         Self::config_init_set_env(key, value);
     }
 
+    /// Write to the process env during bootstrap only, and remember the key.
+    /// After the window closes this is a no-op — the value has to reach the
+    /// runtime through a settings snapshot instead.
     fn config_init_set_env(key: &str, value: impl AsRef<str>) {
         if !Self::can_seed_process_env() {
             return;
@@ -733,6 +781,11 @@ impl Config {
         {
             Self::config_init_set_env("QUBE_DAEMON_AUTOSTART", if v { "1" } else { "0" });
         }
+        if Self::config_runtime_env_var("CODESCRIBE_QUBE_DONOR").is_err()
+            && let Some(ref v) = settings.qube_donor
+        {
+            Self::safe_set_env("CODESCRIBE_QUBE_DONOR", v);
+        }
         if Self::config_runtime_env_var("AGENT_ENTER_SENDS").is_err()
             && let Some(v) = settings.agent_enter_sends
         {
@@ -782,9 +835,10 @@ impl Config {
             Self::safe_set_env("FINAL_PASS_MODE", v);
             Self::safe_set_env("CODESCRIBE_FINAL_PASS_MODE", v);
         }
-        if Self::config_runtime_env_var("CODESCRIBE_LAYERED_TRANSCRIPTION").is_err()
-            && let Some(ref v) = settings.layered_transcription
-        {
+        // Promoted single-brain (2026-08-10): settings.json wins at boot, same
+        // as CODESCRIBE_STT_ENGINE — a leftover .env line must not lottery the
+        // Layered toggle back OFF.
+        if let Some(ref v) = settings.layered_transcription {
             Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
         }
         if Self::config_runtime_env_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").is_err()
@@ -887,7 +941,10 @@ impl Config {
             // .env so boot cannot re-lottery via a stale CODESCRIBE_STT_ENGINE.
             if matches!(
                 key,
-                "CODESCRIBE_STT_ENGINE" | "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE"
+                "CODESCRIBE_STT_ENGINE"
+                    | "FINAL_PASS_MODE"
+                    | "CODESCRIBE_FINAL_PASS_MODE"
+                    | "CODESCRIBE_LAYERED_TRANSCRIPTION"
             ) {
                 Self::reconcile_stt_runtime_key(key, value);
             }
@@ -984,6 +1041,10 @@ impl Config {
                             settings_ref.final_pass_mode = Some(normalized.clone());
                             Self::reconcile_stt_runtime_key(key, &normalized);
                         }
+                    }
+                    "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
+                        settings_ref.layered_transcription = Some((*value).to_string());
+                        Self::reconcile_stt_runtime_key(key, value);
                     }
                     // ── u64 ──
                     "HOLD_START_DELAY_MS" => {
@@ -1111,6 +1172,12 @@ impl Config {
         Ok(())
     }
 
+    /// Handle the LLM override keys, where blank means *clear* rather than
+    /// "store an empty string". Removing the field lets the resolver fall back
+    /// to the default; storing `""` would pin the lane to an unusable endpoint.
+    ///
+    /// Returns `false` for keys it does not own, so the caller continues with
+    /// its normal typed routing.
     fn apply_optional_override(
         settings: &mut super::settings::UserSettings,
         key: &str,
@@ -1401,6 +1468,9 @@ impl Config {
     }
 }
 
+/// Resolve a path and require it to be a regular file. Canonicalizing first
+/// collapses symlinks and `..`, so a directory or dangling link is rejected
+/// before anything reads through it.
 fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
     let path = path.canonicalize()?;
     if !path.is_file() {
@@ -1409,6 +1479,14 @@ fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// Guards for the three-tier precedence this module implements: explicit
+/// process env, then `settings.json`, then optional `.env`.
+///
+/// The recurring failure being tested is *shadowing* — a value written in one
+/// tier being silently masked by another, or a persistence write leaking into
+/// the process env and pinning a stale value for the rest of the session. Cases
+/// therefore assert on the real files and on `std::env` directly, not just on
+/// the returned `Config`.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1417,17 +1495,21 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Set a var for the current test case.
     fn set_env_for_test<V: AsRef<std::ffi::OsStr>>(key: &str, value: V) {
         // SAFETY: these tests are marked `serial` and do not start background workers,
         // so process-env mutation stays confined to the active test case.
         unsafe { std::env::set_var(key, value) };
     }
 
+    /// Unset a var for the current test case.
     fn remove_env_for_test(key: &str) {
         // SAFETY: same invariant as `set_env_for_test` above.
         unsafe { std::env::remove_var(key) };
     }
 
+    /// Put a var back the way it was, including the "was absent" case — the one
+    /// most easily lost when restoring by hand.
     fn restore_env_for_test(key: &str, previous: Option<String>) {
         if let Some(value) = previous {
             set_env_for_test(key, value);
@@ -1436,12 +1518,16 @@ mod tests {
         }
     }
 
+    /// RAII guard that clears one env var and restores it on drop. Tests here
+    /// must start from "the operator has not set this", because a variable
+    /// inherited from the developer's own shell would mask the tier under test.
     struct TestEnvGuard {
         key: &'static str,
         previous: Option<String>,
     }
 
     impl TestEnvGuard {
+        /// Clear `key`, remembering whatever was there before.
         fn unset(key: &'static str) -> Self {
             let previous = std::env::var(key).ok();
             remove_env_for_test(key);
@@ -1450,11 +1536,15 @@ mod tests {
     }
 
     impl Drop for TestEnvGuard {
+        /// Restore the captured env value (or absence) when the guard leaves scope.
         fn drop(&mut self) {
             restore_env_for_test(self.key, self.previous.take());
         }
     }
 
+    /// Point config at a fresh temp dir and clear the vars that would otherwise
+    /// preempt what is being tested. The returned guard owns the directory both
+    /// `settings.json` and `.env` live in.
     fn setup_isolated_data_dir() -> TempDir {
         let tmp = TempDir::new().expect("tempdir");
         set_env_for_test("CODESCRIBE_DATA_DIR", tmp.path());
@@ -1464,6 +1554,9 @@ mod tests {
         tmp
     }
 
+    /// Every LLM write key as `(key, sample value, JSON pointer)`. A `None`
+    /// pointer marks a key with no durable `settings.json` home — it is still
+    /// exercised, to prove writing it does not invent one.
     fn llm_write_key_cases() -> &'static [(&'static str, &'static str, Option<&'static str>)] {
         &[
             (
@@ -1502,6 +1595,7 @@ mod tests {
         ]
     }
 
+    /// Write one key via single or batch path, then reload `UserSettings` for compare.
     fn save_snapshot(key: &str, value: &str, batch: bool) -> UserSettings {
         let _tmp = setup_isolated_data_dir();
         let config = Config::default();
@@ -1515,6 +1609,7 @@ mod tests {
         UserSettings::load()
     }
 
+    /// Assert a promoted LLM optional field is absent in loaded settings.
     fn assert_optional_override_absent(settings: &UserSettings, key: &str) {
         let actual = match key {
             "LLM_ENDPOINT" => settings.llm_endpoint.as_deref(),
@@ -1529,6 +1624,7 @@ mod tests {
         assert_eq!(actual, None, "{key} must be unset, got {actual:?}");
     }
 
+    /// Promoted save must land in settings.json and must not set process env.
     #[test]
     #[serial]
     fn save_to_env_persists_promoted_setting_without_process_env_mutation() {
@@ -1546,6 +1642,7 @@ mod tests {
         );
     }
 
+    /// HOLD_ARM_MODIFIER string values persist and resolve to the enum on load.
     #[test]
     #[serial]
     fn hold_arm_modifier_roundtrips_through_persistence_and_fresh_load() {
@@ -1568,6 +1665,7 @@ mod tests {
         }
     }
 
+    /// Badge/indicator keys stay env-managed; settings.json bytes must not change.
     #[test]
     #[serial]
     fn hold_indicator_ui_writes_existing_env_keys_without_settings_json_drift() {
@@ -1637,6 +1735,7 @@ mod tests {
         );
     }
 
+    /// AUTO_PASTE single/batch writes reload live without shadowing process env.
     #[test]
     #[serial]
     fn auto_paste_single_and_batch_writes_are_hot_reloadable_without_env_shadow() {
@@ -1664,6 +1763,7 @@ mod tests {
         assert!(std::env::var("AUTO_PASTE_ENABLED").is_err());
     }
 
+    /// FORMATTING_LEVEL aliases normalize identically on single and batch paths.
     #[test]
     #[serial]
     fn formatting_policy_single_and_batch_writes_normalize_every_alias() {
@@ -1714,6 +1814,7 @@ mod tests {
         }
     }
 
+    /// Blank LLM override removes the JSON path and restores lane_truth fallback.
     #[test]
     #[serial]
     fn empty_llm_override_unsets_json_path_and_restores_resolved_fallback() {
@@ -1764,6 +1865,7 @@ mod tests {
         );
     }
 
+    /// Blank assistive provider removes the JSON path and restores default provider.
     #[test]
     #[serial]
     fn empty_assistive_provider_unsets_json_path_and_restores_default() {
@@ -1800,6 +1902,7 @@ mod tests {
         );
     }
 
+    /// Single and batch LLM writes must produce bit-identical UserSettings snapshots.
     #[test]
     #[serial]
     fn llm_key_single_and_batch_writes_produce_identical_settings_snapshots() {
@@ -1812,6 +1915,7 @@ mod tests {
         }
     }
 
+    /// Batch blank LLM overrides clear every optional JSON path and restore defaults.
     #[test]
     #[serial]
     fn save_to_env_many_blank_llm_overrides_remove_json_paths_and_restore_fallbacks() {
@@ -1865,6 +1969,7 @@ mod tests {
         );
     }
 
+    /// Batch promoted settings persist without mutating process env or creating .env.
     #[test]
     #[serial]
     fn save_to_env_many_persists_batch_without_process_env_mutation() {
@@ -1895,6 +2000,7 @@ mod tests {
         );
     }
 
+    /// Load seeds OpenAI Responses endpoint/model defaults without requiring API keys.
     #[test]
     #[serial]
     fn load_injects_openai_responses_defaults_without_api_key() {
@@ -1944,6 +2050,7 @@ mod tests {
         assert!(std::env::var("LLM_ASSISTIVE_API_KEY").is_err());
     }
 
+    /// apply_user_settings copies hold/double-tap/silence/exclusive timing into Config.
     #[test]
     #[serial]
     fn test_hotkey_timing_params_applied_from_settings() {
@@ -1979,6 +2086,7 @@ mod tests {
         restore_env_for_test("HOLD_EXCLUSIVE", prev_hold_exclusive);
     }
 
+    /// settings.json can disable local STT; load must honor that flag.
     #[test]
     #[serial]
     fn test_load_respects_use_local_stt_from_settings_json() {
@@ -1995,6 +2103,7 @@ mod tests {
         );
     }
 
+    /// Whisper initial_prompt stays off until settings explicitly opts in.
     #[test]
     #[serial]
     fn test_stt_initial_prompt_defaults_off_and_requires_opt_in() {
@@ -2023,6 +2132,7 @@ mod tests {
         );
     }
 
+    /// Explicit process env can force STT initial_prompt off over settings.json.
     #[test]
     #[serial]
     fn test_runtime_env_can_force_stt_initial_prompt_off_over_settings() {
@@ -2041,6 +2151,7 @@ mod tests {
         );
     }
 
+    /// settings.json can disable the live transcription overlay.
     #[test]
     #[serial]
     fn test_load_respects_transcription_overlay_enabled_from_settings_json() {
@@ -2058,6 +2169,7 @@ mod tests {
         );
     }
 
+    /// settings.json can switch UI-initiated recording from dictation to assistive.
     #[test]
     #[serial]
     fn test_load_respects_tray_start_assistive_from_settings_json() {
@@ -2081,6 +2193,7 @@ mod tests {
         );
     }
 
+    /// Legacy .env USE_LOCAL_STT migrates into settings.json on first load.
     #[test]
     #[serial]
     fn test_load_migrates_use_local_stt_from_env_file_before_settings_json_exists() {
@@ -2098,6 +2211,7 @@ mod tests {
         assert!(UserSettings::settings_path().exists());
     }
 
+    /// Promoted settings.json keys beat stale .env values and are not re-injected.
     #[test]
     #[serial]
     fn test_load_prefers_settings_json_over_promoted_env_file_values() {
@@ -2126,6 +2240,7 @@ mod tests {
         restore_env_for_test("AI_FORMATTING_ENABLED", previous);
     }
 
+    /// Non-promoted env-managed keys (e.g. STT_API_KEY) still load from optional .env.
     #[test]
     #[serial]
     fn test_load_still_honors_env_managed_values_from_optional_env_file() {
@@ -2139,6 +2254,7 @@ mod tests {
         assert_eq!(config.stt_api_key.as_deref(), Some("test-from-env-file"));
     }
 
+    /// Explicit runtime env must not synthesize or persist into settings.json.
     #[test]
     #[serial]
     fn test_runtime_env_does_not_persist_into_settings_during_migration() {

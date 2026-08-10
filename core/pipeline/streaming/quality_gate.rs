@@ -9,6 +9,8 @@ use crate::vad;
 
 // ── Hallucination filter ─────────────────────────────────────────────────────
 
+/// Phrases Whisper emits on silence regardless of language (subtitle-corpus
+/// residue). Matched exactly, or as a substring in short low-word-count text.
 const WHISPER_HALLUCINATIONS_COMMON: &[&str] = &[
     "thank you",
     "thanks for watching",
@@ -22,19 +24,31 @@ const WHISPER_HALLUCINATIONS_COMMON: &[&str] = &[
     "www.",
 ];
 
+/// Polish-only silence artifacts, dropped unconditionally when language is `pl`.
 const WHISPER_HALLUCINATIONS_PL: &[&str] = &["napisy stworzone przez społeczność"];
 
+/// Polish words that are legitimate speech as often as they are artifacts, so
+/// they only count as hallucinations below `PL_EXACT_LOW_CONFIDENCE_LOGPROB`.
 const WHISPER_HALLUCINATIONS_PL_LOW_CONFIDENCE: &[&str] = &["tłumaczenie", "transkrypcja"];
+/// `avg_logprob` below which the ambiguous Polish terms above are treated as
+/// artifacts rather than speech.
 const PL_EXACT_LOW_CONFIDENCE_LOGPROB: f32 = -1.0;
 
+/// Short Polish utterances that are real speech and must never be filtered,
+/// even when they collide with hallucination heuristics.
 const SHORT_SPEECH_WHITELIST: &[&str] = &[
     "tak", "nie", "co?", "co", "dobra", "dobrze", "ok", "okej", "no", "no?", "mhm", "aha", "jasne",
     "pewnie", "super", "hej", "halo", "cześć", "siema", "dzięki", "proszę",
 ];
 
+/// Utterances shorter than this are dropped when VAD confidence is also low.
 const MIN_UTTERANCE_SEC: f32 = 0.50;
+/// Speech probability below which a sub-`MIN_UTTERANCE_SEC` clip is discarded.
 const SHORT_UTTERANCE_LOW_CONFIDENCE: f32 = 0.55;
+/// Word rate above which a transcript is faster than human speech — an anomaly
+/// signal, not a hard drop.
 pub(crate) const MAX_WORDS_PER_SEC: f32 = 5.0;
+/// Word-rate checks need this many words before the ratio means anything.
 const WORD_RATE_MIN_WORDS: usize = 6;
 
 /// Minimum fraction of Silero-positive VAD frames required in an interim chunk
@@ -43,6 +57,7 @@ const WORD_RATE_MIN_WORDS: usize = 6;
 /// Only applies to non-final (interim) emissions; final/flush always transcribes.
 pub(crate) const MIN_SPEECH_RATIO_FOR_INFERENCE: f32 = 0.15;
 
+/// Whether the language tag is Polish (`pl` or any `pl-*` region variant).
 fn is_polish_language(language: Option<&str>) -> bool {
     language
         .map(|lang| {
@@ -52,6 +67,9 @@ fn is_polish_language(language: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+/// Words per second for this transcript over its audio duration, or `None`
+/// when the sample is too short to carry a meaningful rate (`WORD_RATE_MIN_WORDS`)
+/// or the audio length is unusable. Compare against `MAX_WORDS_PER_SEC`.
 pub(crate) fn text_words_per_second(
     text: &str,
     audio_samples: usize,
@@ -71,6 +89,9 @@ pub(crate) fn text_words_per_second(
     Some(words as f32 / duration_s)
 }
 
+/// Drain the session's VAD error counters and, if this batch degraded, emit one
+/// `vad_degraded` warning carrying both batch and cumulative totals. Taking the
+/// stats resets them, so a healthy batch stays silent.
 pub(crate) fn emit_vad_warning(event_sink: &Arc<dyn EventSink>, session: &mut SpeechSession) {
     if let Some(stats) = session.take_vad_error_stats() {
         event_sink.on_event(&EngineEvent::Warning {
@@ -86,6 +107,9 @@ pub(crate) fn emit_vad_warning(event_sink: &Arc<dyn EventSink>, session: &mut Sp
     }
 }
 
+/// Whether a clip is both shorter than `MIN_UTTERANCE_SEC` and below
+/// `SHORT_UTTERANCE_LOW_CONFIDENCE` — a click or breath, not speech. Both
+/// conditions are required: a short clip Silero is confident about survives.
 pub(crate) fn should_drop_short_utterance(
     audio_samples: usize,
     sample_rate: u32,
@@ -126,10 +150,14 @@ pub(crate) fn should_drop_silence_chunk(
     speech_ratio < MIN_SPEECH_RATIO_FOR_INFERENCE
 }
 
+/// Convert a Silero sample count (always 16 kHz) to milliseconds.
 pub(crate) fn silero_vad_samples_to_ms(samples: u64) -> u64 {
     samples.saturating_mul(1_000) / u64::from(vad::VAD_SAMPLE_RATE)
 }
 
+/// Percentage of an utterance Silero classified as speech, capped at 100 — the
+/// telemetry counterpart to `should_drop_silence_chunk`'s gate. `None` when the
+/// audio length is unusable.
 pub(crate) fn utterance_vad_speech_pct(
     audio_samples: usize,
     sample_rate: u32,
@@ -148,6 +176,13 @@ pub(crate) fn utterance_vad_speech_pct(
     Some(((speech_vad_samples as f32 / audio_16k as f32) * 100.0).min(100.0))
 }
 
+/// Whether this transcript is a Whisper silence artifact rather than speech.
+///
+/// Order matters: `SHORT_SPEECH_WHITELIST` wins outright, then exact-list
+/// matches, then substring matches confined to short low-word-count text, then
+/// the repetition heuristic. The ambiguous Polish terms additionally require
+/// `avg_logprob` below `PL_EXACT_LOW_CONFIDENCE_LOGPROB`, so a confidently
+/// transcribed "tłumaczenie" survives.
 pub(crate) fn is_hallucination_with_quality(
     text: &str,
     language: Option<&str>,
@@ -241,10 +276,12 @@ fn is_repetition_hallucination(lower: &str) -> bool {
     false
 }
 
+/// Hallucination heuristics: exact lists, confidence gates, and repetition.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Known filler phrases still trip; whitelist and normal speech stay clean.
     #[test]
     fn hallucination_existing_matches_preserved() {
         // Exact-match list entries still flagged.
@@ -268,6 +305,7 @@ mod tests {
         ));
     }
 
+    /// Polish technical terms only flag when confidence is clearly low.
     #[test]
     fn hallucination_polish_exact_terms_require_low_confidence() {
         assert!(!is_hallucination_with_quality(
@@ -297,6 +335,7 @@ mod tests {
         ));
     }
 
+    /// Long single-word and phrase loops are treated as Whisper hallucinations.
     #[test]
     fn hallucination_repetition_detected() {
         // Single word looped many times (long enough to be implausible speech).
@@ -313,6 +352,7 @@ mod tests {
         ));
     }
 
+    /// Short natural repeats and varied speech stay below the hallucination bar.
     #[test]
     fn hallucination_legit_repeat() {
         // Short legitimate repeats must NOT be flagged (below min-words gate).

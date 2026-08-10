@@ -35,9 +35,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SITE_VERSION="$(sed -n 's/^const SITE_VERSION = "\([^"]*\)";$/\1/p' site/src/components/Install.astro)"
+          SITE_VERSION="$(sed -n 's/^export const SITE_VERSION = "\([^"]*\)";$/\1/p' site/src/lib/release.ts)"
           if [[ -z "$SITE_VERSION" ]]; then
-            echo "Could not read SITE_VERSION from site/src/components/Install.astro" >&2
+            echo "Could not read SITE_VERSION from site/src/lib/release.ts" >&2
             exit 1
           fi
           curl --fail --silent --show-error --location --head \

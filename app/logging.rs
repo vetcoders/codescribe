@@ -14,6 +14,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Once;
 
+/// Once guard so tracing/logging subscribers install exactly once per process.
 static INIT: Once = Once::new();
 
 /// Install the global tracing subscriber (stderr + file) and the panic hook.
@@ -28,6 +29,9 @@ pub fn init_logging() {
     });
 }
 
+/// Build and install the subscriber: a stderr layer always, plus a file layer
+/// when the log file can be opened. An unopenable log file degrades to
+/// stderr-only rather than losing tracing altogether.
 fn init_tracing() {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{EnvFilter, fmt};
