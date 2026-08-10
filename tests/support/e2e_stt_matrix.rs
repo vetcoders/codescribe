@@ -12,6 +12,8 @@ use std::time::SystemTime;
 pub const STT_OPT_IN_ENV: &str = "CODESCRIBE_E2E_STT";
 pub const ROUNDTRIP_OPT_IN_ENV: &str = "CODESCRIBE_E2E_ROUNDTRIP";
 
+/// Default fp16 alias (composed dir: mlx-community weights + q8 companions).
+pub const WHISPER_FP16_MODEL: &str = "whisper-large-v3-turbo";
 pub const WHISPER_TURBO_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
 pub const WHISPER_LARGE_MODEL: &str = "whisper-large-v3-mlx-q8";
 
@@ -143,6 +145,16 @@ pub fn discover_local_whisper_model_for(
         });
     }
 
+    // The fp16 default and the legacy q8 dir are the same turbo model, so both
+    // report as UserTurbo; the fp16 alias wins, mirroring runtime precedence.
+    let user_fp16 = home_dir.join(".codescribe/models").join(WHISPER_FP16_MODEL);
+    if whisper_model_is_complete(&user_fp16) {
+        return Some(ModelDiscovery {
+            source: ModelSource::UserTurbo,
+            path: user_fp16,
+        });
+    }
+
     let user_turbo = home_dir
         .join(".codescribe/models")
         .join(WHISPER_TURBO_MODEL);
@@ -182,8 +194,9 @@ pub fn discover_local_whisper_model_for(
 
 pub fn model_discovery_hint(home_dir: &Path) -> String {
     format!(
-        "Looked for complete Whisper model in CODESCRIBE_MODEL_PATH, {home}/.codescribe/models/{turbo}, {home}/.codescribe/models/{large}, and HF cache snapshots. Required files: config.json, tokenizer.json, mel_filters.npz, weights.safetensors or model.safetensors.",
+        "Looked for complete Whisper model in CODESCRIBE_MODEL_PATH, {home}/.codescribe/models/{fp16}, {home}/.codescribe/models/{turbo}, {home}/.codescribe/models/{large}, and HF cache snapshots. Required files: config.json, tokenizer.json, mel_filters.npz, weights.safetensors or model.safetensors.",
         home = home_dir.display(),
+        fp16 = WHISPER_FP16_MODEL,
         turbo = WHISPER_TURBO_MODEL,
         large = WHISPER_LARGE_MODEL
     )

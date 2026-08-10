@@ -769,9 +769,9 @@ extension CsWhisperModelStatus {
         available: false,
         embedded: false,
         path: nil,
-        modelId: "whisper-large-v3-turbo-mlx-q8",
-        repo: "LibraxisAI/whisper-large-v3-turbo-mlx-q8",
-        sizeHint: "~900 MB"
+        modelId: "whisper-large-v3-turbo",
+        repo: "mlx-community/whisper-large-v3-turbo",
+        sizeHint: "~1.6 GB"
     )
 }
 
