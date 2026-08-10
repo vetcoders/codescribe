@@ -666,6 +666,15 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
      */
     func isAvailable()  -> Bool
 
+    /**
+     * Answer a pending tool-approval request, resuming the suspended call.
+     * Returns `false` when no call matches — the identity must match on all
+     * three of session, thread and call id, so a stale card cannot resume a
+     * different call.
+     *
+     * `remember` persists an always-allow grant for the tool before the call
+     * resumes; a failed write downgrades to allow-once rather than to a deny.
+     */
     func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool)  -> Bool
 
     /**
@@ -744,6 +753,11 @@ open class CodescribeAgent: CodescribeAgentProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribeagent(self.handle, $0) }
     }
+    /**
+     * Construct the FFI handle. Only initialises logging — provider, tools and
+     * config are resolved lazily per send, so building the Swift app model
+     * never triggers a Keychain prompt.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -837,6 +851,15 @@ open func isAvailable() -> Bool  {
 })
 }
 
+    /**
+     * Answer a pending tool-approval request, resuming the suspended call.
+     * Returns `false` when no call matches — the identity must match on all
+     * three of session, thread and call id, so a stale card cannot resume a
+     * different call.
+     *
+     * `remember` persists an always-allow grant for the tool before the call
+     * resumes; a failed write downgrades to allow-once rather than to a deny.
+     */
 open func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool) -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeagent_resolve_tool_approval(
@@ -1033,6 +1056,10 @@ open class CodescribeAgentStatus: CodescribeAgentStatusProtocol, @unchecked Send
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribeagentstatus(self.handle, $0) }
     }
+    /**
+     * Construct the handle and ensure logging is initialised, since Swift may
+     * reach this before any other bridge entry point has run.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -1160,19 +1187,17 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     /**
      * Block until the in-flight provider-account login completes, fails, or
      * times out. Swift calls this from a background queue right after
-     * `start_account_login` opened the browser. On timeout (user closed the
-     * browser, walked away) the local callback server is shut down — honest
-     * status, no zombie port. A second `start_account_login` while pending
-     * cancels the first, so this returns "failed" for the superseded attempt.
+     * `start_account_login` opened the browser. On timeout the pending
+     * loopback server is shut down (or the device poll is abandoned). A
+     * second `start_account_login` while pending cancels the first.
      *
      * P2-09: 300s default (from caller) is intentional; OAuth human steps can
-     * exceed short timeouts. No configurability knob added. P2-08: discovery
-     * flows share this; cancel is best-effort via supersede + teardown.
+     * exceed short timeouts. No configurability knobs.
      */
     func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws  -> CsAccountLoginResult
 
     /**
-     * Cancel any in-flight provider-account login and free the callback port.
+     * Cancel any in-flight provider-account login (loopback port or device poll).
      */
     func cancelAccountLogin()
 
@@ -1396,14 +1421,16 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func signOutAccount(providerId: String) throws
 
     /**
-     * Start provider-account login for the selected provider. Every endpoint —
-     * issuer, authorize path, callback port — comes from that provider's OAuth
-     * registry row, so the browser is never sent to another vendor's login.
-     * Gated by the provider's own configured client id (its settings key, its
-     * dev-env fallback); absent client id returns a config error whose message
-     * contains "awaiting app registration". Providers whose flow is not a
-     * loopback callback (Anthropic pastes a code) are refused here rather than
-     * half-served.
+     * Start provider-account login for the selected provider.
+     *
+     * Flow is chosen from the provider's OAuth registry row:
+     * - **Loopback** (OpenAI): bind local callback, open authorize URL.
+     * - **Device code** (xAI / OpenCode SuperGrok): request RFC 8628 device
+     * code, open verification URL (no `127.0.0.1` listener — consent cannot
+     * hang waiting on a dead loopback port).
+     * - **Paste code** (Anthropic): refused here until a paste UI lands.
+     *
+     * Gated by the provider's client id (settings / env / shipped default).
      */
     func startAccountLogin(providerId: String) throws  -> CsAccountLoginResult
 
@@ -1482,6 +1509,14 @@ open class CodescribeConfig: CodescribeConfigProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribeconfig(self.handle, $0) }
     }
+    /**
+     * Construct the bridge handle. Not a pure allocation: this is the app's
+     * first-touch entry point, so it also initializes logging, seeds the
+     * recorder's audio-input selector once (`bootstrap_audio_input_runtime`),
+     * and resumes run monitors persisted by a previous process. Later handles
+     * are cheap — the side effects are guarded to run only once, and are
+     * skipped entirely under `cfg!(test)`.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -1526,14 +1561,12 @@ open func availableProviders() -> [CsProviderOption]  {
     /**
      * Block until the in-flight provider-account login completes, fails, or
      * times out. Swift calls this from a background queue right after
-     * `start_account_login` opened the browser. On timeout (user closed the
-     * browser, walked away) the local callback server is shut down — honest
-     * status, no zombie port. A second `start_account_login` while pending
-     * cancels the first, so this returns "failed" for the superseded attempt.
+     * `start_account_login` opened the browser. On timeout the pending
+     * loopback server is shut down (or the device poll is abandoned). A
+     * second `start_account_login` while pending cancels the first.
      *
      * P2-09: 300s default (from caller) is intentional; OAuth human steps can
-     * exceed short timeouts. No configurability knob added. P2-08: discovery
-     * flows share this; cancel is best-effort via supersede + teardown.
+     * exceed short timeouts. No configurability knobs.
      */
 open func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64)throws  -> CsAccountLoginResult  {
     return try  FfiConverterTypeCsAccountLoginResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -1546,7 +1579,7 @@ open func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64)throws  -
 }
 
     /**
-     * Cancel any in-flight provider-account login and free the callback port.
+     * Cancel any in-flight provider-account login (loopback port or device poll).
      */
 open func cancelAccountLogin()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_cancel_account_login(
@@ -1987,14 +2020,16 @@ open func signOutAccount(providerId: String)throws   {try rustCallWithError(FfiC
 }
 
     /**
-     * Start provider-account login for the selected provider. Every endpoint —
-     * issuer, authorize path, callback port — comes from that provider's OAuth
-     * registry row, so the browser is never sent to another vendor's login.
-     * Gated by the provider's own configured client id (its settings key, its
-     * dev-env fallback); absent client id returns a config error whose message
-     * contains "awaiting app registration". Providers whose flow is not a
-     * loopback callback (Anthropic pastes a code) are refused here rather than
-     * half-served.
+     * Start provider-account login for the selected provider.
+     *
+     * Flow is chosen from the provider's OAuth registry row:
+     * - **Loopback** (OpenAI): bind local callback, open authorize URL.
+     * - **Device code** (xAI / OpenCode SuperGrok): request RFC 8628 device
+     * code, open verification URL (no `127.0.0.1` listener — consent cannot
+     * hang waiting on a dead loopback port).
+     * - **Paste code** (Anthropic): refused here until a paste UI lands.
+     *
+     * Gated by the provider's client id (settings / env / shipped default).
      */
 open func startAccountLogin(providerId: String)throws  -> CsAccountLoginResult  {
     return try  FfiConverterTypeCsAccountLoginResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
@@ -2256,6 +2291,10 @@ open class CodescribeDictation: CodescribeDictationProtocol, @unchecked Sendable
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribedictation(self.handle, $0) }
     }
+    /**
+     * Build an idle dictation handle and initialize logging. No microphone or
+     * model work happens here — call `set_listener` then `start_recording`.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -2752,6 +2791,10 @@ open class CodescribeHotkeys: CodescribeHotkeysProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribehotkeys(self.handle, $0) }
     }
+    /**
+     * Construct the hotkey facade and initialise logging. Creates no listener,
+     * controller or tap — `start()` owns that.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -3276,6 +3319,11 @@ public func FfiConverterTypeCodescribeHotkeys_lower(_ value: CodescribeHotkeys) 
 
 
 
+/**
+ * UniFFI handle exposing MCP server CRUD plus the B2 permission surface.
+ * Stateless: every call re-reads on-disk truth, so Swift never caches a
+ * snapshot that a hand edit or another process could have invalidated.
+ */
 public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
 
     /**
@@ -3346,6 +3394,11 @@ public protocol CodescribeMcpAdminProtocol: AnyObject, Sendable {
     func updateServer(name: String, server: CsMcpServerInput) throws
 
 }
+/**
+ * UniFFI handle exposing MCP server CRUD plus the B2 permission surface.
+ * Stateless: every call re-reads on-disk truth, so Swift never caches a
+ * snapshot that a hand edit or another process could have invalidated.
+ */
 open class CodescribeMcpAdmin: CodescribeMcpAdminProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
@@ -3385,6 +3438,9 @@ open class CodescribeMcpAdmin: CodescribeMcpAdminProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribemcpadmin(self.handle, $0) }
     }
+    /**
+     * Construct the handle, initializing logging on first use.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -3674,6 +3730,9 @@ open class CodescribeNotes: CodescribeNotesProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribenotes(self.handle, $0) }
     }
+    /**
+     * Construct the handle from Swift, initialising logging on first use.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -3918,6 +3977,11 @@ open class CodescribeThreads: CodescribeThreadsProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribethreads(self.handle, $0) }
     }
+    /**
+     * Construct the handle, initialising logging on first use. Holds no state:
+     * every method reopens the store, so the handle can outlive any data-dir
+     * mutation the engine performs.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -4134,6 +4198,13 @@ public func FfiConverterTypeCodescribeThreads_lower(_ value: CodescribeThreads) 
 
 
 
+/**
+ * UniFFI handle Swift holds to observe tray status.
+ *
+ * Deliberately stateless: the listener, the last-forwarded snapshot, and the
+ * generation counter are all process-global, so constructing more than one
+ * handle does not fork the status stream.
+ */
 public protocol CodescribeTrayStatusProtocol: AnyObject, Sendable {
 
     /**
@@ -4148,6 +4219,13 @@ public protocol CodescribeTrayStatusProtocol: AnyObject, Sendable {
     func setListener(listener: CsTrayStatusListener)
 
 }
+/**
+ * UniFFI handle Swift holds to observe tray status.
+ *
+ * Deliberately stateless: the listener, the last-forwarded snapshot, and the
+ * generation counter are all process-global, so constructing more than one
+ * handle does not fork the status stream.
+ */
 open class CodescribeTrayStatus: CodescribeTrayStatusProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
@@ -4187,6 +4265,9 @@ open class CodescribeTrayStatus: CodescribeTrayStatusProtocol, @unchecked Sendab
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribetraystatus(self.handle, $0) }
     }
+    /**
+     * Initialize logging and install the core-side sink.
+     */
 public convenience init() {
     let handle =
         try! rustCall() {
@@ -4292,20 +4373,45 @@ public protocol CsAgentDeliveryListener: AnyObject, Sendable {
      */
     func onTurnStarted(threadId: String, userText: String)
 
+    /**
+     * One streamed token chunk of the assistant reply; append to the bubble.
+     */
     func onTextDelta(delta: String)
 
+    /**
+     * Final reply text for the turn — authoritative over accumulated deltas.
+     */
     func onTextDone(text: String)
 
+    /**
+     * One streamed chunk of reasoning/thinking text, rendered separately.
+     */
     func onReasoningDelta(delta: String)
 
+    /**
+     * A tool call started; `id` correlates it with the matching result.
+     */
     func onToolExecuting(name: String, id: String)
 
+    /**
+     * A tool call finished, carrying a display summary and its error flag.
+     */
     func onToolResult(name: String, id: String, summary: String, isError: Bool)
 
+    /**
+     * Terminal: the turn completed normally.
+     */
     func onDone()
 
+    /**
+     * Terminal: the turn failed; `message` is displayable.
+     */
     func onError(message: String)
 
+    /**
+     * Terminal: the turn was cancelled. Distinct from `on_done` so the UI can
+     * mark the thread rather than present a finished reply.
+     */
     func onCancelled(threadId: String)
 
 }
@@ -4378,6 +4484,9 @@ open func onTurnStarted(threadId: String, userText: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * One streamed token chunk of the assistant reply; append to the bubble.
+     */
 open func onTextDelta(delta: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_text_delta(
             self.uniffiCloneHandle(),
@@ -4386,6 +4495,9 @@ open func onTextDelta(delta: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * Final reply text for the turn — authoritative over accumulated deltas.
+     */
 open func onTextDone(text: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_text_done(
             self.uniffiCloneHandle(),
@@ -4394,6 +4506,9 @@ open func onTextDone(text: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * One streamed chunk of reasoning/thinking text, rendered separately.
+     */
 open func onReasoningDelta(delta: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_reasoning_delta(
             self.uniffiCloneHandle(),
@@ -4402,6 +4517,9 @@ open func onReasoningDelta(delta: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * A tool call started; `id` correlates it with the matching result.
+     */
 open func onToolExecuting(name: String, id: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_tool_executing(
             self.uniffiCloneHandle(),
@@ -4411,6 +4529,9 @@ open func onToolExecuting(name: String, id: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * A tool call finished, carrying a display summary and its error flag.
+     */
 open func onToolResult(name: String, id: String, summary: String, isError: Bool)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_tool_result(
             self.uniffiCloneHandle(),
@@ -4422,6 +4543,9 @@ open func onToolResult(name: String, id: String, summary: String, isError: Bool)
 }
 }
 
+    /**
+     * Terminal: the turn completed normally.
+     */
 open func onDone()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_done(
             self.uniffiCloneHandle(),$0
@@ -4429,6 +4553,9 @@ open func onDone()  {try! rustCall() {
 }
 }
 
+    /**
+     * Terminal: the turn failed; `message` is displayable.
+     */
 open func onError(message: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_error(
             self.uniffiCloneHandle(),
@@ -4437,6 +4564,10 @@ open func onError(message: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * Terminal: the turn was cancelled. Distinct from `on_done` so the UI can
+     * mark the thread rather than present a finished reply.
+     */
 open func onCancelled(threadId: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentdeliverylistener_on_cancelled(
             self.uniffiCloneHandle(),
@@ -4771,20 +4902,46 @@ public func FfiConverterTypeCsAgentDeliveryListener_lower(_ value: CsAgentDelive
  */
 public protocol CsAgentListener: AnyObject, Sendable {
 
+    /**
+     * Incremental assistant text as it streams in.
+     */
     func onTextDelta(delta: String)
 
+    /**
+     * Final assembled assistant text for the turn.
+     */
     func onTextDone(text: String)
 
+    /**
+     * Incremental reasoning text, when the model emits it.
+     */
     func onReasoningDelta(delta: String)
 
+    /**
+     * A tool call started executing.
+     */
     func onToolExecuting(name: String, id: String)
 
+    /**
+     * A tool call is blocked awaiting the user's decision. The turn stays
+     * suspended until [`CodescribeAgent::resolve_tool_approval`] answers.
+     */
     func onToolApprovalRequested(request: CsToolApprovalRequest)
 
+    /**
+     * A tool call finished; `is_error` marks a failed one.
+     */
     func onToolResult(name: String, id: String, summary: String, isError: Bool)
 
+    /**
+     * The turn completed successfully. Not emitted for a cancelled turn.
+     */
     func onDone()
 
+    /**
+     * A non-fatal error worth surfacing. Provider failures and cancellation
+     * arrive through the call's `Err` instead, never doubled here.
+     */
     func onError(message: String)
 
 }
@@ -4840,6 +4997,9 @@ open class CsAgentListenerImpl: CsAgentListener, @unchecked Sendable {
 
 
 
+    /**
+     * Incremental assistant text as it streams in.
+     */
 open func onTextDelta(delta: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_text_delta(
             self.uniffiCloneHandle(),
@@ -4848,6 +5008,9 @@ open func onTextDelta(delta: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * Final assembled assistant text for the turn.
+     */
 open func onTextDone(text: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_text_done(
             self.uniffiCloneHandle(),
@@ -4856,6 +5019,9 @@ open func onTextDone(text: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * Incremental reasoning text, when the model emits it.
+     */
 open func onReasoningDelta(delta: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_reasoning_delta(
             self.uniffiCloneHandle(),
@@ -4864,6 +5030,9 @@ open func onReasoningDelta(delta: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * A tool call started executing.
+     */
 open func onToolExecuting(name: String, id: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_tool_executing(
             self.uniffiCloneHandle(),
@@ -4873,6 +5042,10 @@ open func onToolExecuting(name: String, id: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * A tool call is blocked awaiting the user's decision. The turn stays
+     * suspended until [`CodescribeAgent::resolve_tool_approval`] answers.
+     */
 open func onToolApprovalRequested(request: CsToolApprovalRequest)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_tool_approval_requested(
             self.uniffiCloneHandle(),
@@ -4881,6 +5054,9 @@ open func onToolApprovalRequested(request: CsToolApprovalRequest)  {try! rustCal
 }
 }
 
+    /**
+     * A tool call finished; `is_error` marks a failed one.
+     */
 open func onToolResult(name: String, id: String, summary: String, isError: Bool)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_tool_result(
             self.uniffiCloneHandle(),
@@ -4892,6 +5068,9 @@ open func onToolResult(name: String, id: String, summary: String, isError: Bool)
 }
 }
 
+    /**
+     * The turn completed successfully. Not emitted for a cancelled turn.
+     */
 open func onDone()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_done(
             self.uniffiCloneHandle(),$0
@@ -4899,6 +5078,10 @@ open func onDone()  {try! rustCall() {
 }
 }
 
+    /**
+     * A non-fatal error worth surfacing. Provider failures and cancellation
+     * arrive through the call's `Err` instead, never doubled here.
+     */
 open func onError(message: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csagentlistener_on_error(
             self.uniffiCloneHandle(),
@@ -5208,8 +5391,15 @@ public func FfiConverterTypeCsAgentListener_lower(_ value: CsAgentListener) -> U
  */
 public protocol CsAppActionListener: AnyObject, Sendable {
 
+    /**
+     * Bring the Agent surface forward. UI-only — must not touch the mic.
+     */
     func onShowAgent()
 
+    /**
+     * Drive the Agent-owned composer microphone. The bridge has already claimed
+     * (or verified) capture ownership before this fires.
+     */
     func onAgentCapture(command: CsAgentCaptureCommand)
 
 }
@@ -5266,6 +5456,9 @@ open class CsAppActionListenerImpl: CsAppActionListener, @unchecked Sendable {
 
 
 
+    /**
+     * Bring the Agent surface forward. UI-only — must not touch the mic.
+     */
 open func onShowAgent()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csappactionlistener_on_show_agent(
             self.uniffiCloneHandle(),$0
@@ -5273,6 +5466,10 @@ open func onShowAgent()  {try! rustCall() {
 }
 }
 
+    /**
+     * Drive the Agent-owned composer microphone. The bridge has already claimed
+     * (or verified) capture ownership before this fires.
+     */
 open func onAgentCapture(command: CsAgentCaptureCommand)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_capture(
             self.uniffiCloneHandle(),
@@ -5440,10 +5637,20 @@ public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListen
  */
 public protocol CsTranscriptionListener: AnyObject, Sendable {
 
+    /**
+     * The engine is spinning up capture; no audio is flowing yet.
+     */
     func onRecordingPreparing()
 
+    /**
+     * The microphone is live and utterances may start arriving.
+     */
     func onRecordingStarted()
 
+    /**
+     * Terminal state of a dictation session — capture and any post-capture pass
+     * are both finished. Always the last lifecycle callback.
+     */
     func onRecordingStopped()
 
     /**
@@ -5456,8 +5663,16 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
      */
     func onRecordingFinalising()
 
+    /**
+     * Latest interim text for the utterance in flight. Replace-not-append: each
+     * call supersedes the previous preview rather than extending it.
+     */
     func onPreview(text: String)
 
+    /**
+     * An already-previewed utterance was revised; `previous_text` is what the
+     * surface currently shows, so it can locate and swap the right span.
+     */
     func onCorrection(text: String, previousText: String)
 
     /**
@@ -5466,8 +5681,17 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
      */
     func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])
 
+    /**
+     * Bounded patch of an already-committed utterance: replace `[start, end)`
+     * within the segment stamped `utterance_id`. `source` names the layer that
+     * produced it, so the surface can attribute or style the edit.
+     */
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource)
 
+    /**
+     * Insert an annotation (hesitation pause, paralingual marker) at `position`
+     * inside the segment stamped `utterance_id`, without replacing any text.
+     */
     func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind)
 
     /**
@@ -5476,6 +5700,9 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
      */
     func onContextMarker(position: UInt64, marker: String)
 
+    /**
+     * The session closed; `layer_summary` carries the per-layer edit counters.
+     */
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary)
 
     /**
@@ -5485,6 +5712,9 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
      */
     func onFinalTranscriptReady(text: String)
 
+    /**
+     * Voice activity started (`true`) or stopped (`false`).
+     */
     func onVadActive(active: Bool)
 
     /**
@@ -5495,8 +5725,15 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
      */
     func onAudioLevel(rms: Float)
 
+    /**
+     * A session or utterance yielded no usable speech; `reason` explains which
+     * check rejected it, so the UI can distinguish silence from a failure.
+     */
     func onNoSpeech(reason: String)
 
+    /**
+     * Recoverable engine warning. Not fatal — the session keeps running.
+     */
     func onError(message: String)
 
 }
@@ -5563,6 +5800,9 @@ open class CsTranscriptionListenerImpl: CsTranscriptionListener, @unchecked Send
 
 
 
+    /**
+     * The engine is spinning up capture; no audio is flowing yet.
+     */
 open func onRecordingPreparing()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_preparing(
             self.uniffiCloneHandle(),$0
@@ -5570,6 +5810,9 @@ open func onRecordingPreparing()  {try! rustCall() {
 }
 }
 
+    /**
+     * The microphone is live and utterances may start arriving.
+     */
 open func onRecordingStarted()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_started(
             self.uniffiCloneHandle(),$0
@@ -5577,6 +5820,10 @@ open func onRecordingStarted()  {try! rustCall() {
 }
 }
 
+    /**
+     * Terminal state of a dictation session — capture and any post-capture pass
+     * are both finished. Always the last lifecycle callback.
+     */
 open func onRecordingStopped()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_stopped(
             self.uniffiCloneHandle(),$0
@@ -5599,6 +5846,10 @@ open func onRecordingFinalising()  {try! rustCall() {
 }
 }
 
+    /**
+     * Latest interim text for the utterance in flight. Replace-not-append: each
+     * call supersedes the previous preview rather than extending it.
+     */
 open func onPreview(text: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_preview(
             self.uniffiCloneHandle(),
@@ -5607,6 +5858,10 @@ open func onPreview(text: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * An already-previewed utterance was revised; `previous_text` is what the
+     * surface currently shows, so it can locate and swap the right span.
+     */
 open func onCorrection(text: String, previousText: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_correction(
             self.uniffiCloneHandle(),
@@ -5632,6 +5887,11 @@ open func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechP
 }
 }
 
+    /**
+     * Bounded patch of an already-committed utterance: replace `[start, end)`
+     * within the segment stamped `utterance_id`. `source` names the layer that
+     * produced it, so the surface can attribute or style the edit.
+     */
 open func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_replace_range(
             self.uniffiCloneHandle(),
@@ -5644,6 +5904,10 @@ open func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: 
 }
 }
 
+    /**
+     * Insert an annotation (hesitation pause, paralingual marker) at `position`
+     * inside the segment stamped `utterance_id`, without replacing any text.
+     */
 open func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_insert_annotation(
             self.uniffiCloneHandle(),
@@ -5668,6 +5932,9 @@ open func onContextMarker(position: UInt64, marker: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * The session closed; `layer_summary` carries the per-layer edit counters.
+     */
 open func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_session_finalised(
             self.uniffiCloneHandle(),
@@ -5690,6 +5957,9 @@ open func onFinalTranscriptReady(text: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * Voice activity started (`true`) or stopped (`false`).
+     */
 open func onVadActive(active: Bool)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_vad_active(
             self.uniffiCloneHandle(),
@@ -5712,6 +5982,10 @@ open func onAudioLevel(rms: Float)  {try! rustCall() {
 }
 }
 
+    /**
+     * A session or utterance yielded no usable speech; `reason` explains which
+     * check rejected it, so the UI can distinguish silence from a failure.
+     */
 open func onNoSpeech(reason: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_no_speech(
             self.uniffiCloneHandle(),
@@ -5720,6 +5994,9 @@ open func onNoSpeech(reason: String)  {try! rustCall() {
 }
 }
 
+    /**
+     * Recoverable engine warning. Not fatal — the session keeps running.
+     */
 open func onError(message: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_error(
             self.uniffiCloneHandle(),
@@ -6228,11 +6505,21 @@ public func FfiConverterTypeCsTranscriptionListener_lower(_ value: CsTranscripti
 
 
 
+/**
+ * Swift-side sink for menu-bar status updates.
+ */
 public protocol CsTrayStatusListener: AnyObject, Sendable {
 
+    /**
+     * Called once per distinct status change; duplicate snapshots are
+     * coalesced before they reach here.
+     */
     func onTrayStatus(status: CsTrayStatusPayload)
 
 }
+/**
+ * Swift-side sink for menu-bar status updates.
+ */
 open class CsTrayStatusListenerImpl: CsTrayStatusListener, @unchecked Sendable {
     fileprivate let handle: UInt64
 
@@ -6281,6 +6568,10 @@ open class CsTrayStatusListenerImpl: CsTrayStatusListener, @unchecked Sendable {
 
 
 
+    /**
+     * Called once per distinct status change; duplicate snapshots are
+     * coalesced before they reach here.
+     */
 open func onTrayStatus(status: CsTrayStatusPayload)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstraystatuslistener_on_tray_status(
             self.uniffiCloneHandle(),
@@ -6415,8 +6706,15 @@ public func FfiConverterTypeCsTrayStatusListener_lower(_ value: CsTrayStatusList
  */
 public protocol CsWhisperDownloadListener: AnyObject, Sendable {
 
+    /**
+     * One progress tick for `file`. `bytes_total` is `-1` when the server sent no
+     * Content-Length, so the UI must fall back to an indeterminate indicator.
+     */
     func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64)
 
+    /**
+     * The whole model is on disk at `path`.
+     */
     func onComplete(path: String)
 
 }
@@ -6472,6 +6770,10 @@ open class CsWhisperDownloadListenerImpl: CsWhisperDownloadListener, @unchecked 
 
 
 
+    /**
+     * One progress tick for `file`. `bytes_total` is `-1` when the server sent no
+     * Content-Length, so the UI must fall back to an indeterminate indicator.
+     */
 open func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_on_progress(
             self.uniffiCloneHandle(),
@@ -6482,6 +6784,9 @@ open func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64)  {try! 
 }
 }
 
+    /**
+     * The whole model is on disk at `path`.
+     */
 open func onComplete(path: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cswhisperdownloadlistener_on_complete(
             self.uniffiCloneHandle(),
@@ -6714,12 +7019,24 @@ public func FfiConverterTypeCsAccountLoginResult_lower(_ value: CsAccountLoginRe
  * cannot reach a model (empty when ready).
  */
 public struct CsAgentAvailability: Equatable, Hashable {
+    /**
+     * Whether the assistive lane can reach a model right now.
+     */
     public var available: Bool
+    /**
+     * Actionable reason the lane is unreachable; empty when `available`.
+     */
     public var detail: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(available: Bool, detail: String) {
+    public init(
+        /**
+         * Whether the assistive lane can reach a model right now.
+         */available: Bool,
+        /**
+         * Actionable reason the lane is unreachable; empty when `available`.
+         */detail: String) {
         self.available = available
         self.detail = detail
     }
@@ -7876,19 +8193,70 @@ public func FfiConverterTypeCsLexiconEntry_lower(_ value: CsLexiconEntry) -> Rus
 }
 
 
+/**
+ * Swift-visible license snapshot. Claims are absent when unlicensed.
+ */
 public struct CsLicenseStatus: Equatable, Hashable {
+    /**
+     * Coarse state driving the UI.
+     */
     public var state: CsLicenseState
+    /**
+     * Days of offline grace remaining; `Some` only for `GraceOffline`.
+     */
     public var daysLeft: UInt8?
+    /**
+     * Purchased SKU.
+     */
     public var sku: String?
+    /**
+     * Hashed licensee email — never the address itself.
+     */
     public var emailHash: String?
+    /**
+     * Issue date, stringified for the bridge.
+     */
     public var issued: String?
+    /**
+     * End of the updates window, stringified for the bridge.
+     */
     public var updatesUntil: String?
+    /**
+     * Seats the key covers.
+     */
     public var seatLimit: UInt16?
+    /**
+     * Whether agentic features are entitled under the default policy.
+     */
     public var agenticEntitled: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(state: CsLicenseState, daysLeft: UInt8?, sku: String?, emailHash: String?, issued: String?, updatesUntil: String?, seatLimit: UInt16?, agenticEntitled: Bool) {
+    public init(
+        /**
+         * Coarse state driving the UI.
+         */state: CsLicenseState,
+        /**
+         * Days of offline grace remaining; `Some` only for `GraceOffline`.
+         */daysLeft: UInt8?,
+        /**
+         * Purchased SKU.
+         */sku: String?,
+        /**
+         * Hashed licensee email — never the address itself.
+         */emailHash: String?,
+        /**
+         * Issue date, stringified for the bridge.
+         */issued: String?,
+        /**
+         * End of the updates window, stringified for the bridge.
+         */updatesUntil: String?,
+        /**
+         * Seats the key covers.
+         */seatLimit: UInt16?,
+        /**
+         * Whether agentic features are entitled under the default policy.
+         */agenticEntitled: Bool) {
         self.state = state
         self.daysLeft = daysLeft
         self.sku = sku
@@ -8520,6 +8888,11 @@ public func FfiConverterTypeCsModelOption_lower(_ value: CsModelOption) -> RustB
 }
 
 
+/**
+ * Full delivery truth for one overlay Insert, including the app names observed
+ * at the exact delivery boundary and the Paste Here shortcut (or the reason it
+ * was unavailable), so Swift can explain any degradation instead of guessing.
+ */
 public struct CsPasteResult: Equatable, Hashable {
     public var outcome: CsPasteOutcome
     public var targetAppName: String?
@@ -8758,10 +9131,9 @@ public struct CsProviderOption: Equatable, Hashable {
      */
     public var accountSignedIn: Bool
     /**
-     * True when the account-login flow can start. For OpenAI this requires a
-     * configured OAuth client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, or
-     * dev env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); until then Settings
-     * renders the disabled "Sign in with ChatGPT" affordance.
+     * True when the account-login flow can start. OpenAI and xAI ship public
+     * desktop client ids (see `NOTICE`); operator settings/env still override.
+     * Anthropic stays gated until the operator pastes a registration.
      */
     public var accountLoginEnabled: Bool
     /**
@@ -8770,9 +9142,9 @@ public struct CsProviderOption: Equatable, Hashable {
      */
     public var accountStatusMessage: String
     /**
-     * Operator-configured OAuth client id (settings → env resolution). A
-     * non-secret app identity — shown and editable in the Keys panel. `None`
-     * means the account login is still gated on app registration.
+     * Resolved OAuth client id (settings → env → shipped default). Non-secret
+     * app identity. The Keys panel no longer surfaces this for editing by
+     * default; advanced override still goes through settings keys.
      */
     public var oauthClientId: String?
     /**
@@ -8797,19 +9169,18 @@ public struct CsProviderOption: Equatable, Hashable {
          * True when provider-account tokens are stored for this provider.
          */accountSignedIn: Bool,
         /**
-         * True when the account-login flow can start. For OpenAI this requires a
-         * configured OAuth client id (settings `LLM_OPENAI_OAUTH_CLIENT_ID`, or
-         * dev env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID`); until then Settings
-         * renders the disabled "Sign in with ChatGPT" affordance.
+         * True when the account-login flow can start. OpenAI and xAI ship public
+         * desktop client ids (see `NOTICE`); operator settings/env still override.
+         * Anthropic stays gated until the operator pastes a registration.
          */accountLoginEnabled: Bool,
         /**
          * Human-readable account status ("signed in as <email>", "not signed in",
          * or "awaiting app registration"). Never contains secrets.
          */accountStatusMessage: String,
         /**
-         * Operator-configured OAuth client id (settings → env resolution). A
-         * non-secret app identity — shown and editable in the Keys panel. `None`
-         * means the account login is still gated on app registration.
+         * Resolved OAuth client id (settings → env → shipped default). Non-secret
+         * app identity. The Keys panel no longer surfaces this for editing by
+         * default; advanced override still goes through settings keys.
          */oauthClientId: String?,
         /**
          * Always empty for live Settings; retained for bridge compatibility with
@@ -9200,9 +9571,10 @@ public struct CsSettings: Equatable, Hashable {
     /**
      * Workspace root directories the agent scans (`list_projects` tool) to
      * resolve project names to paths (`AGENT_WORKSPACE_ROOTS`, colon-joined on
-     * the wire). Effective value: never empty here — defaults to `["~/Git"]` so
-     * the Settings UI always shows the root the tool will actually scan. Written
-     * back via `update_config` with the same key (env-managed, NOT promoted).
+     * the wire). Effective value: never empty here — defaults to
+     * `["~/.codescribe"]` so the Settings UI always shows the root the tool
+     * will actually scan. Written back via `update_config` with the same key
+     * (env-managed, NOT promoted).
      */
     public var agentWorkspaceRoots: [String]
     public var bufferDelayMs: UInt64?
@@ -9245,9 +9617,10 @@ public struct CsSettings: Equatable, Hashable {
         /**
          * Workspace root directories the agent scans (`list_projects` tool) to
          * resolve project names to paths (`AGENT_WORKSPACE_ROOTS`, colon-joined on
-         * the wire). Effective value: never empty here — defaults to `["~/Git"]` so
-         * the Settings UI always shows the root the tool will actually scan. Written
-         * back via `update_config` with the same key (env-managed, NOT promoted).
+         * the wire). Effective value: never empty here — defaults to
+         * `["~/.codescribe"]` so the Settings UI always shows the root the tool
+         * will actually scan. Written back via `update_config` with the same key
+         * (env-managed, NOT promoted).
          */agentWorkspaceRoots: [String], bufferDelayMs: UInt64?, typingCps: Float?, emitWordsMax: UInt64?, bufferedInterimSec: Float?, backendMaxUploadMb: UInt64?) {
         self.holdExclusive = holdExclusive
         self.holdArmModifier = holdArmModifier
@@ -9965,20 +10338,82 @@ public func FfiConverterTypeCsTokenUsage_lower(_ value: CsTokenUsage) -> RustBuf
  * call/session/thread identity used by the Rust execution gateway.
  */
 public struct CsToolApprovalRequest: Equatable, Hashable {
+    /**
+     * Identifies the specific tool call awaiting a decision. Must be echoed
+     * back verbatim to [`CodescribeAgent::resolve_tool_approval`].
+     */
     public var callId: String
+    /**
+     * Agent session the call belongs to; part of the exact-match resolve key.
+     */
     public var sessionId: String
+    /**
+     * Conversation thread the call belongs to; part of the same key.
+     */
     public var threadId: String
+    /**
+     * Tool name as the model addressed it.
+     */
     public var tool: String
+    /**
+     * Originating MCP server, or `"native"` for a built-in tool.
+     */
     public var server: String
+    /**
+     * Risk tier the permission gate assigned (read-only, mutating, …).
+     */
     public var risk: String
+    /**
+     * Human-readable description of what the call will do.
+     */
     public var summary: String
+    /**
+     * Shell command the call would run, when it runs one.
+     */
     public var command: String?
+    /**
+     * Working directory the call would use, when it declares one.
+     */
     public var cwd: String?
+    /**
+     * Filesystem paths the call declares it will touch.
+     */
     public var paths: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(callId: String, sessionId: String, threadId: String, tool: String, server: String, risk: String, summary: String, command: String?, cwd: String?, paths: [String]) {
+    public init(
+        /**
+         * Identifies the specific tool call awaiting a decision. Must be echoed
+         * back verbatim to [`CodescribeAgent::resolve_tool_approval`].
+         */callId: String,
+        /**
+         * Agent session the call belongs to; part of the exact-match resolve key.
+         */sessionId: String,
+        /**
+         * Conversation thread the call belongs to; part of the same key.
+         */threadId: String,
+        /**
+         * Tool name as the model addressed it.
+         */tool: String,
+        /**
+         * Originating MCP server, or `"native"` for a built-in tool.
+         */server: String,
+        /**
+         * Risk tier the permission gate assigned (read-only, mutating, …).
+         */risk: String,
+        /**
+         * Human-readable description of what the call will do.
+         */summary: String,
+        /**
+         * Shell command the call would run, when it runs one.
+         */command: String?,
+        /**
+         * Working directory the call would use, when it declares one.
+         */cwd: String?,
+        /**
+         * Filesystem paths the call declares it will touch.
+         */paths: [String]) {
         self.callId = callId
         self.sessionId = sessionId
         self.threadId = threadId
@@ -10683,11 +11118,33 @@ public func FfiConverterTypeCsAgentCaptureCommand_lower(_ value: CsAgentCaptureC
 
 public enum CsApiKeyProbeStatus: Equatable, Hashable {
 
+    /**
+     * The key authenticated. Also covers a processed-but-rejected request
+     * (most 4xx other than auth/quota): the server got far enough to prove the
+     * credential is live, even when this particular probe body was refused.
+     */
     case ok
+    /**
+     * The provider rejected the credential itself (401 / 403).
+     */
     case invalid
+    /**
+     * The key authenticates but the account cannot pay for the call
+     * (429 / 402, or an explicit quota/billing marker in the body).
+     */
     case noQuota
+    /**
+     * No verdict was reachable — transport failure or a provider 5xx.
+     */
     case network
+    /**
+     * Nothing is stored for this account, so no request was made.
+     */
     case missing
+    /**
+     * This account has no cheap liveness probe (e.g. `STT_API_KEY`) or belongs
+     * to no registered provider.
+     */
     case unsupported
 
 
@@ -10980,8 +11437,17 @@ public func FfiConverterTypeCsIndicatorMode_lower(_ value: CsIndicatorMode) -> R
 
 public enum CsLanguage: Equatable, Hashable {
 
+    /**
+     * Let Whisper detect the spoken language per recording.
+     */
     case auto
+    /**
+     * Force Polish decoding (`"pl"`).
+     */
     case polish
+    /**
+     * Force English decoding (`"en"`).
+     */
     case english
 
 
@@ -11131,12 +11597,30 @@ public func FfiConverterTypeCsLayerSource_lower(_ value: CsLayerSource) -> RustB
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Swift-visible projection of [`LicenseState`], flattened for UniFFI.
+ *
+ * The grace period's remaining days move to [`CsLicenseStatus::days_left`],
+ * since a UniFFI enum cannot carry an associated payload here.
+ */
 
 public enum CsLicenseState: Equatable, Hashable {
 
+    /**
+     * No key present, or none that validates.
+     */
     case unlicensed
+    /**
+     * Valid and inside its updates window.
+     */
     case active
+    /**
+     * Valid but running on offline grace.
+     */
     case graceOffline
+    /**
+     * Key is genuine; its updates window has closed.
+     */
     case expiredUpdates
 
 
@@ -11216,8 +11700,18 @@ public func FfiConverterTypeCsLicenseState_lower(_ value: CsLicenseState) -> Rus
 
 public enum CsLlmLane: Equatable, Hashable {
 
+    /**
+     * Shared fallback lane configured by `LLM_ENDPOINT` / `LLM_MODEL`. Not a
+     * runtime lane of its own — it backs the other two when they are unset.
+     */
     case main
+    /**
+     * Automatic post-dictation formatting lane.
+     */
     case formatting
+    /**
+     * Assistive/agent lane (act-on-selection and voice chat).
+     */
     case assistive
 
 
@@ -12769,6 +13263,19 @@ public func audioInputSnapshot()throws  -> CsAudioInputSnapshot  {
     )
 })
 }
+/**
+ * Persist one overlay correction: the quality record always lands, while lexicon
+ * learning is gated by `formatting_level`.
+ *
+ * Only the Correction level teaches word pairs; higher levels are recorded as
+ * evidence with `pairs_learned = 0`, because a creative rewrite is not a
+ * transcription fix and would poison the lexicon. An unrecognised
+ * `formatting_level` is rejected before anything is written.
+ *
+ * The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
+ * stored alongside the text so later analysis can correlate corrections with how
+ * unsure the engine was.
+ */
 public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws  -> CsQualityCommitResult  {
     return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(
@@ -12936,7 +13443,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 48769) {
+    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 61070) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
@@ -12987,7 +13494,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 64879) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 49762) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_reply() != 57150) {
@@ -13011,10 +13518,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_available_providers() != 37871) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_await_account_login() != 20029) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_await_account_login() != 4855) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_cancel_account_login() != 25089) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_cancel_account_login() != 44575) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_clear_api_key() != 28388) {
@@ -13122,7 +13629,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_sign_out_account() != 25379) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_start_account_login() != 8219) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_start_account_login() != 23026) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_api_key() != 58988) {
@@ -13338,142 +13845,142 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_turn_started() != 14316) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_text_delta() != 16080) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_text_delta() != 1059) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_text_done() != 9073) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_text_done() != 19223) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_reasoning_delta() != 32738) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_reasoning_delta() != 15767) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_tool_executing() != 61821) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_tool_executing() != 1451) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_tool_result() != 20007) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_tool_result() != 59000) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_done() != 31371) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_done() != 13257) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_error() != 21676) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_error() != 56139) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_cancelled() != 62708) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentdeliverylistener_on_cancelled() != 12469) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_text_delta() != 59591) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_text_delta() != 19167) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_text_done() != 62122) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_text_done() != 28130) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_reasoning_delta() != 7510) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_reasoning_delta() != 61742) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_executing() != 20871) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_executing() != 3020) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_approval_requested() != 33381) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_approval_requested() != 8795) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_result() != 21563) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_tool_result() != 33949) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_done() != 60002) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_done() != 26298) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_error() != 14110) {
+    if (uniffi_codescribe_ffi_checksum_method_csagentlistener_on_error() != 24588) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 1037) {
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 40684) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_capture() != 53198) {
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_capture() != 63731) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 5878) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 27049) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 28788) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 4381) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 43588) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 8692) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 55544) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_preview() != 47812) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_preview() != 34377) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 23365) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 49375) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 13855) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 3950) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 5659) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 39504) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 2625) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 11256) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 36351) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 5794) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final_transcript_ready() != 22215) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 51959) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 40828) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55568) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 47902) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 54696) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 40833) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 20067) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 44268) {
+    if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 48227) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_progress() != 23954) {
+    if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_progress() != 56545) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_complete() != 22222) {
+    if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_complete() != 46072) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 37889) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 34271) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagentstatus_new() != 3562) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagentstatus_new() != 27409) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribeconfig_new() != 36069) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribeconfig_new() != 56915) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribedictation_new() != 970) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribedictation_new() != 62362) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribehotkeys_new() != 17656) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribehotkeys_new() != 29673) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribemcpadmin_new() != 9749) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribemcpadmin_new() != 61972) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribenotes_new() != 24465) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribenotes_new() != 2592) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribethreads_new() != 6979) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribethreads_new() != 54305) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribetraystatus_new() != 7969) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribetraystatus_new() != 58125) {
         return InitializationResult.apiChecksumMismatch
     }
 

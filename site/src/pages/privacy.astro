@@ -1,7 +1,7 @@
 ---
-import Layout from '../layouts/Layout.astro';
-import LegalPage from '../components/LegalPage.astro';
-import { page } from '../lib/asset';
+import Layout from "../layouts/Layout.astro";
+import LegalPage from "../components/LegalPage.astro";
+import { page } from "../lib/asset";
 ---
 
 <Layout
@@ -51,13 +51,30 @@ import { page } from '../lib/asset';
     </table>
 
     <h2>What stays local</h2>
-    <p>These stay on your machine and cannot be flipped “to the cloud” by us:</p>
+    <p>
+      These stay on your machine and cannot be flipped “to the cloud” by us:
+    </p>
     <ul>
-      <li><strong>Whisper model</strong> — runtime-resolved local path/cache; local STT runs on-device.</li>
-      <li><strong>Audio recording</strong> — RAM only; deleted after transcription (unless you explicitly enable debug audio dumps).</li>
-      <li><strong>Transcripts</strong> — <code>~/.codescribe/transcriptions/</code>; you control retention.</li>
-      <li><strong>Configuration</strong> — settings plus optional <code>~/.codescribe/.env</code>.</li>
-      <li><strong>API keys</strong> — macOS Keychain (and/or restricted local config).</li>
+      <li>
+        <strong>Whisper model</strong> — runtime-resolved local path/cache; local
+        STT runs on-device.
+      </li>
+      <li>
+        <strong>Audio recording</strong> — RAM only; deleted after transcription (unless
+        you explicitly enable debug audio dumps).
+      </li>
+      <li>
+        <strong>Transcripts</strong> — <code>~/.codescribe/transcriptions/</code
+        >; you control retention.
+      </li>
+      <li>
+        <strong>Configuration</strong> — settings plus optional <code
+          >~/.codescribe/.env</code
+        >.
+      </li>
+      <li>
+        <strong>API keys</strong> — macOS Keychain (and/or restricted local config).
+      </li>
       <li><strong>Prompts</strong> — <code>~/.codescribe/prompts/</code>.</li>
     </ul>
     <p>
@@ -69,11 +86,11 @@ import { page } from '../lib/asset';
     <h2>What can leave your Mac (opt-in only)</h2>
     <h3>Optional AI formatting / agent calls</h3>
     <p>
-      When you enable AI formatting or agent features, transcribed text (not audio)
-      is sent to the provider you configure over HTTPS. That may be OpenAI-compatible
-      Responses/chat endpoints, Anthropic, a self-hosted stack such as LibraxisAI,
-      or local Ollama. We do not send audio files, unrelated transcripts, or
-      system inventory as part of those requests.
+      When you enable AI formatting or agent features, transcribed text (not
+      audio) is sent to the provider you configure over HTTPS. That may be
+      OpenAI-compatible Responses/chat endpoints, Anthropic, a self-hosted stack
+      such as LibraxisAI, or local Ollama. We do not send audio files, unrelated
+      transcripts, or system inventory as part of those requests.
     </p>
     <h3>Optional cloud STT</h3>
     <p>
@@ -89,40 +106,58 @@ import { page } from '../lib/asset';
     <h2>System permissions (TCC)</h2>
     <p>macOS may ask for:</p>
     <ul>
-      <li><strong>Microphone</strong> — record speech while you hold a hotkey or start a session.</li>
-      <li><strong>Accessibility</strong> — paste text and interact with the focused app when you ask it to.</li>
-      <li><strong>Input Monitoring</strong> — detect modifier/hotkey state (not a keylogger of content).</li>
-      <li><strong>Speech Recognition</strong> — when using Apple’s speech path for live letter-level transcript.</li>
+      <li>
+        <strong>Microphone</strong> — record speech while you hold a hotkey or start
+        a session.
+      </li>
+      <li>
+        <strong>Accessibility</strong> — paste text and interact with the focused
+        app when you ask it to.
+      </li>
+      <li>
+        <strong>Input Monitoring</strong> — detect modifier/hotkey state (not a keylogger
+        of content).
+      </li>
+      <li>
+        <strong>Speech Recognition</strong> — when using Apple’s speech path for live
+        letter-level transcript.
+      </li>
     </ul>
     <p>
-      We do not request camera, location, contacts, or blanket file access outside
-      the app’s data directory (except optional full-disk flows you deliberately enable).
+      We do not request camera, location, contacts, or blanket file access
+      outside the app’s data directory (except optional full-disk flows you
+      deliberately enable).
     </p>
 
     <h2>Tracking and analytics</h2>
     <p>
       <strong>No tracking, no analytics, no phone-home.</strong>
-      The product does not ship third-party analytics SDKs or silent telemetry
-      beacons. Network activity happens only when you configure and use a remote
-      provider (or download a release from GitHub).
+      The product does not ship third-party analytics SDKs or silent telemetry beacons.
+      Network activity happens only when you configure and use a remote provider (or
+      download a release from GitHub).
     </p>
 
     <h2>Data retention and rights</h2>
     <p>
-      Transcript history lives under <code>~/.codescribe/</code>. You can disable
-      history, delete files, or remove the whole directory. For EU users under GDPR-style
-      access/erasure/portability requests: your data is already on your Mac as plain
-      files you control. We do not operate a cloud account that holds your dictation
-      history by default.
+      Transcript history lives under <code>~/.codescribe/</code>. You can
+      disable history, delete files, or remove the whole directory. For EU users
+      under GDPR-style access/erasure/portability requests: your data is already
+      on your Mac as plain files you control. We do not operate a cloud account
+      that holds your dictation history by default.
     </p>
 
     <h2>Who we are</h2>
     <p>
-      Codescribe is built by VetCoders / LibraxisAI.
-      Questions: <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
-      · <a href={page('support')}>Support</a>
+      Codescribe is built by Vetcoders / LibraxisAI. Questions: <a
+        href="mailto:hello@vetcoders.io">hello@vetcoders.io</a
+      >
+      · <a href={page("support")}>Support</a>
       · source at
-      <a href="https://github.com/vetcoders/codescribe" target="_blank" rel="noopener noreferrer">github.com/vetcoders/codescribe</a>.
+      <a
+        href="https://github.com/vetcoders/codescribe"
+        target="_blank"
+        rel="noopener noreferrer">github.com/vetcoders/codescribe</a
+      >.
     </p>
   </LegalPage>
 </Layout>
