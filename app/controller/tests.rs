@@ -821,6 +821,29 @@ fn test_final_pass_action_on_complete_streaming_evidence() {
     );
     assert_eq!(shaped, StreamingCompleteness::Complete);
 
+    // The 2026-08-10 morning wall: live tail patches seeded the HEAD with
+    // sentences (healthy average), but the middle carried a ~450-char run-on.
+    // The local terminal-free-run check must flag it — averages hide walls.
+    let patched_head_runon_middle = format!(
+        "To jest zdanie pierwsze, całkiem zdrowe. Drugie też ma kropkę. {}",
+        "wersja poszła wczoraj na produkcję zrobiłem commit potem notaryzację ".repeat(7)
+    );
+    assert!(patched_head_runon_middle.chars().count() > 400);
+    let hidden_wall = assess_streaming_completeness_fields(
+        &patched_head_runon_middle,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        patched_head_runon_middle.chars().count(),
+        3,
+    );
+    assert_eq!(
+        hidden_wall,
+        StreamingCompleteness::CompleteShapeDeficient,
+        "a punctuated head must not mask a run-on middle"
+    );
+
     let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
     assert!(matches!(
         empty,
