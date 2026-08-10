@@ -186,7 +186,7 @@ private struct ThreadDetail: View {
                 Image(systemName: "sidebar.leading")
                     .font(.system(size: 14, weight: .medium))
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .foregroundStyle(isSidebarExpanded ? CSColor.textBody : CSColor.textFaint)
             .keyboardShortcut("s", modifiers: [.command, .control])
             .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
@@ -205,7 +205,7 @@ private struct ThreadDetail: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textFaint)
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
                 .accessibilityLabel(isPinned ? "Agent pinned, disable Always on Top" : "Agent unpinned, enable Always on Top")
                 .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
@@ -213,7 +213,7 @@ private struct ThreadDetail: View {
                 Button(action: { openSettings() }) {
                     CSIconView(icon: .settings, size: 16)
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .help("Settings")
 
                 threadMenu
@@ -355,11 +355,11 @@ private struct QueuedTurnRow: View {
             Spacer()
             if isEditing {
                 Button("Save") { commitEdit() }
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .font(CSFont.mono(10, .semibold))
                     .foregroundStyle(CSColor.oliveLight)
                 Button("Cancel") { isEditing = false }
-                    .buttonStyle(.plain)
+                    .csFocusRing(cornerRadius: 8)
                     .font(CSFont.mono(10, .medium))
                     .foregroundStyle(CSColor.textFaintAlt)
             } else {
@@ -368,7 +368,7 @@ private struct QueuedTurnRow: View {
                         .font(.system(size: 13))
                         .foregroundStyle(CSColor.textFaintAlt)
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .help("Edit queued message")
                 .accessibilityLabel("Edit queued message")
             }
@@ -377,7 +377,7 @@ private struct QueuedTurnRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(CSColor.textFaintAlt)
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .help("Cancel queued message")
             .accessibilityLabel("Cancel queued message")
         }

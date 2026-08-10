@@ -137,7 +137,7 @@ struct OnboardingButton: View {
                         .strokeBorder(border, lineWidth: 1)
                 )
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: CSRadius.input)
     }
 
     private var foreground: Color {

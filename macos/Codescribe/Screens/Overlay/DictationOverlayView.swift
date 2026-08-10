@@ -160,7 +160,7 @@ struct DictationOverlayView: View {
                 autoPasteControlLabel(showTitle: false)
             }
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: CSRadius.pill)
         .help("Auto Paste: \(state.autoPasteAccessibilityValue)")
         .accessibilityLabel("Auto Paste")
         .accessibilityValue(state.autoPasteAccessibilityValue)
@@ -208,7 +208,7 @@ struct DictationOverlayView: View {
             CSIconView(icon: .more, size: 15, weight: .medium)
         }
         .menuStyle(.button)
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityIdentifier("overlay-placement-menu")
@@ -521,7 +521,7 @@ struct DictationOverlayView: View {
             )
         }
         .menuStyle(.button)
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .menuIndicator(.hidden)
         .help(state.manualFormatHelp)
         .disabled(!state.canFormat)
@@ -544,7 +544,7 @@ struct DictationOverlayView: View {
         Button(action: action) {
             actionButtonLabel(title: title, icon: icon, tone: tone, iconOnly: iconOnly)
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .help(help ?? title)
         .accessibilityLabel(title)
         .accessibilityHint(help ?? title)
@@ -777,7 +777,7 @@ private struct CloseDot: View {
             .frame(width: 16, height: 16)
             .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .csFocusRing(cornerRadius: 8)
         .onHover { inside in
             hovered = inside
         }

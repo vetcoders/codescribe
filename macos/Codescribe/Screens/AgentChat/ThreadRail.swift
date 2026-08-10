@@ -92,7 +92,7 @@ struct ThreadRail: View {
                                 )
                                 .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .csFocusRing(cornerRadius: 8)
                         .help(title)
                         .accessibilityLabel(title)
                         .accessibilityAddTraits(isActive ? [.isSelected] : [])
@@ -116,7 +116,7 @@ struct ThreadRail: View {
                     )
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .csFocusRing(cornerRadius: 8)
             .help("New thread")
             .accessibilityLabel("New thread")
             .padding(.vertical, 12)
@@ -228,7 +228,7 @@ struct ThreadRail: View {
                             )
                     )
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
             }
             .padding(12)
             .overlay(alignment: .top) {
@@ -381,7 +381,7 @@ private struct ThreadRow: View {
                     .frame(width: 18, height: 18)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .csFocusRing(cornerRadius: 8)
                 .opacity(thread.isFavorite || isActive ? 1 : 0.38)
                 .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
             }

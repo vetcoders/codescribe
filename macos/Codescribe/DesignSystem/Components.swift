@@ -117,10 +117,13 @@ extension View {
 /// corner radius — on the dark glass surfaces it reads as a grey box stamped
 /// across the control (operator screenshots 2026-08-09, next to Claude
 /// Desktop's accent ring as the bar to clear). This style draws our ring —
-/// an accent stroke 3pt outside the content, rounded to `cornerRadius + 3`
-/// so the inner and outer curves stay concentric. Suppressing the system
-/// halo is the adopting Button's job: use `View.csFocusRing(cornerRadius:)`,
-/// never `.buttonStyle(.csFocusRing(...))` alone.
+/// a thin accent stroke hugging the control 2pt out, rounded to
+/// `cornerRadius + 2` so the inner and outer curves stay concentric; the
+/// weight and offset are calibrated against Claude Desktop's ring, which the
+/// operator holds up as the reference ("olbrzymie i brzydkie" was the verdict
+/// on the first, thicker cut). Suppressing the system halo is the adopting
+/// Button's job: use `View.csFocusRing(cornerRadius:)`, never
+/// `.buttonStyle(.csFocusRing(...))` alone.
 ///
 /// Keyboard-only by construction: `CSFocusPolicy` releases focus after
 /// pointer clicks, so the ring appears exactly when a keyboard user is
@@ -133,12 +136,12 @@ struct CSFocusRingButtonStyle: ButtonStyle {
         configuration.label
             .opacity(configuration.isPressed ? 0.82 : 1)
             .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius + 3, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius + 2, style: .continuous)
                     .strokeBorder(
-                        CSColor.chromeAccent.opacity(isFocused ? 0.85 : 0),
-                        lineWidth: 2
+                        CSColor.chromeAccent.opacity(isFocused ? 0.9 : 0),
+                        lineWidth: 1.5
                     )
-                    .padding(-3)
+                    .padding(-2)
             )
             .animation(.easeOut(duration: 0.12), value: isFocused)
     }
