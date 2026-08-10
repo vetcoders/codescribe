@@ -43,21 +43,31 @@ import { createHash, createPrivateKey, sign as edSign } from "node:crypto";
 
 // RFC 8032 test-vector seed — the checked-in development signer. Publicly
 // known, therefore forgeable; refuse it the same way license_signer.rs does.
-const DEV_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+const DEV_SEED_HEX =
+  "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
 // PKCS#8 wrapper for a raw Ed25519 seed (RFC 8410): fixed 16-byte prefix + seed.
-const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+const PKCS8_ED25519_PREFIX = Buffer.from(
+  "302e020100300506032b657004220420",
+  "hex"
+);
 
 const PORT = parseInt(process.env.PORT ?? "8787", 10);
 
-const seedHex = (process.env.CODESCRIBE_LICENSE_SIGNER_SEED_HEX ?? "").trim().toLowerCase();
+const seedHex = (process.env.CODESCRIBE_LICENSE_SIGNER_SEED_HEX ?? "")
+  .trim()
+  .toLowerCase();
 if (!/^[0-9a-f]{64}$/.test(seedHex)) {
-  console.error("CODESCRIBE_LICENSE_SIGNER_SEED_HEX must be exactly 64 hex characters");
+  console.error(
+    "CODESCRIBE_LICENSE_SIGNER_SEED_HEX must be exactly 64 hex characters"
+  );
   process.exit(1);
 }
 if (seedHex === DEV_SEED_HEX) {
   // A licence anyone can forge must not be issuable by the production tool.
-  console.error("refusing the development seed (RFC 8032 test vector — publicly known)");
+  console.error(
+    "refusing the development seed (RFC 8032 test vector — publicly known)"
+  );
   process.exit(1);
 }
 const signingKey = createPrivateKey({
@@ -98,9 +108,11 @@ function respond(res, status, body) {
 /// checked_add_months (Jan 31 + 1 month = Feb 28/29, never Mar 3), so a
 /// site-issued licence and a CLI-issued licence never disagree on dates.
 function addMonthsClamped(date, months) {
-  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
+  const target = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1)
+  );
   const lastDay = new Date(
-    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0),
+    Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)
   ).getUTCDate();
   target.setUTCDate(Math.min(date.getUTCDate(), lastDay));
   return target;
@@ -114,9 +126,13 @@ const server = createServer((req, res) => {
     respond(res, 404, { error: "POST /api/license/issue" });
     return;
   }
-  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress;
+  const ip =
+    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+    req.socket.remoteAddress;
   if (throttled(ip)) {
-    respond(res, 429, { error: "one licence per 15 seconds — try again in a moment" });
+    respond(res, 429, {
+      error: "one licence per 15 seconds — try again in a moment",
+    });
     return;
   }
 
@@ -152,14 +168,23 @@ const server = createServer((req, res) => {
       sku: process.env.LICENSE_SKU || "agentic-lifetime",
       email_hash: createHash("sha256").update(email).digest("hex"),
       issued: isoDate(today),
-      updates_until: isoDate(addMonthsClamped(today, parseInt(process.env.UPDATES_MONTHS ?? "12", 10))),
+      updates_until: isoDate(
+        addMonthsClamped(
+          today,
+          parseInt(process.env.UPDATES_MONTHS ?? "12", 10)
+        )
+      ),
       seat_limit: parseInt(process.env.SEAT_LIMIT ?? "3", 10),
     };
     const payload = Buffer.from(JSON.stringify(claims), "utf8");
     const signature = edSign(null, payload, signingKey);
 
     console.log(
-      JSON.stringify({ at: new Date().toISOString(), issued_for_hash: claims.email_hash, ip }),
+      JSON.stringify({
+        at: new Date().toISOString(),
+        issued_for_hash: claims.email_hash,
+        ip,
+      })
     );
     respond(res, 200, {
       license: `CSK1.${b64url(payload)}.${b64url(signature)}`,
