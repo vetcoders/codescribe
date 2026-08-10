@@ -35,6 +35,13 @@ reload = "restart"
 category = "audio"
 description = "Audio input device name (empty = system default)"
 
+[vars.CODESCRIBE_AUDIO_SPILL]
+default = "1"
+type = "bool"
+reload = "restart"
+category = "audio"
+description = "Disk spill of the full streaming take (default on); the RAM ring stays capped at 300s, spill keeps every sample so long sessions archive whole. 0/false/no/off disables"
+
 [vars.AUTO_SILENCE]
 default = "1"
 type = "bool"
