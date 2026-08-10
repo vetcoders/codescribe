@@ -3755,6 +3755,38 @@ fn test_action_quality_probe_is_independent_from_action_routing() {
     assert!((save_probe.drop_ratio - augment_probe.drop_ratio).abs() < 1e-6);
 }
 
+/// The 2026-08-10 morning failure: the transplant added 24 punctuation marks
+/// over an identical word sequence, the prefix/suffix delta read it as
+/// diff=1.000, and "high_rewrite_ratio" quarantined the shaped text. A
+/// shape-only delta must never trip the character-ratio triggers.
+#[test]
+fn test_quality_gate_exempts_shape_only_transplant_delta() {
+    let stats = crate::stream_postprocess::StreamPostProcessStats::default();
+    let raw = "dzień dobry mam na imię maciej mieszkam w kielcach a kibicuję chelsea \
+               dziś o osiemnastej mam spotkanie z moniką która przyjedzie z warszawy";
+    let shaped = "Dzień dobry, mam na imię Maciej, mieszkam w Kielcach, a kibicuję Chelsea. \
+                  Dziś o osiemnastej mam spotkanie z Moniką, która przyjedzie z Warszawy.";
+    let probe = ActionQualityProbe::from_transcripts(raw, shaped, &stats);
+    assert!(
+        probe.shape_only,
+        "identical word sequence must be shape_only"
+    );
+    assert!(
+        evaluate_quality_commit_trigger(false, &probe, crate::state::history::TranscriptKind::Raw)
+            .is_none(),
+        "punctuation/case-only delta must not be quarantined"
+    );
+
+    // A delta that changes even one word keeps the full gate.
+    let reworded = "Dzień dobry, mam na imię Maciej, mieszkam w Krakowie, a kibicuję Chelsea. \
+                    Dziś o osiemnastej mam spotkanie z Moniką, która przyjedzie z Warszawy.";
+    let reworded_probe = ActionQualityProbe::from_transcripts(raw, reworded, &stats);
+    assert!(
+        !reworded_probe.shape_only,
+        "word change is never shape_only"
+    );
+}
+
 #[test]
 fn test_quality_gate_triggers_commit_for_high_drop_ratio() {
     let stats = crate::stream_postprocess::StreamPostProcessStats {
