@@ -50,6 +50,14 @@ pub(super) struct ActionQualityProbe {
     /// 2026-08-09). Filled after construction because embedding is model work,
     /// not arithmetic.
     pub(crate) semantic_cosine: Option<f32>,
+    /// True when raw and final are the SAME word sequence and differ only in
+    /// punctuation, case, or whitespace — the punctuation transplant's output
+    /// by construction. The prefix/suffix delta reads a mid-text punctuation
+    /// insertion as a rewrite of everything after it (measured 2026-08-10:
+    /// diff_raw_final=1.000 on a 24-mark transplant, which quarantined the
+    /// shaped text and shipped the raw wall the operator had just waited
+    /// 8.5s for), so the character-ratio triggers must not judge these.
+    pub(crate) shape_only: bool,
 }
 
 /// Normalize a transcript before diffing so leading whitespace and a
@@ -109,8 +117,24 @@ impl ActionQualityProbe {
             correction_ratio,
             drop_ratio,
             semantic_cosine: None,
+            shape_only: word_sequence(raw_text) == word_sequence(final_text),
         }
     }
+}
+
+/// Case-folded alphanumeric word sequence — the invariant the punctuation
+/// transplant pins with its own tests. Two texts with equal sequences differ
+/// only in shape (punctuation/case/whitespace), never in words.
+fn word_sequence(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
 }
 
 /// Which gesture ended the recording that is now up for auto-paste.
@@ -386,6 +410,13 @@ pub(super) fn evaluate_quality_commit_trigger(
     }
     if quality_probe.drop_ratio >= QUALITY_GATE_DROP_RATIO {
         return Some("high_drop_ratio");
+    }
+    // Shape-only deltas (identical word sequence, only punctuation/case moved)
+    // are exempt from the character-ratio triggers: the prefix/suffix delta
+    // model reads them as full rewrites, but no word changed and the semantic
+    // and drop axes above have already had their say.
+    if quality_probe.shape_only {
+        return None;
     }
     if quality_probe.raw_final_diff_ratio >= QUALITY_GATE_DIFF_RATIO {
         return Some("high_rewrite_ratio");
