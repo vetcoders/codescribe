@@ -590,27 +590,26 @@ fn stop_path_residual_compose_from_partials_under_one_second() {
 }
 
 /// Live-lane fence does not invent a new FinalPassAction variant — the matrix
-/// stays mode×completeness; residual is a *source* for TailGapFill.
+/// stays mode×completeness (lane state feeds `smart_tail_gap_source`, which
+/// picks the residual *source*, never the typed action).
 #[test]
 fn stop_path_residual_live_lane_fence_preserves_action_matrix() {
-    use super::final_pass::{FinalPassAction, final_pass_action, final_pass_action_with_live_lane};
+    use super::final_pass::{FinalPassAction, final_pass_action};
 
     let incomplete = StreamingCompleteness::Incomplete {
         reason: "pending_tail",
     };
     assert_eq!(
-        final_pass_action_with_live_lane(FinalPassRoutingMode::Smart, incomplete, true),
+        final_pass_action(FinalPassRoutingMode::Smart, incomplete),
         FinalPassAction::TailGapFill
     );
     assert_eq!(
-        final_pass_action_with_live_lane(FinalPassRoutingMode::Smart, incomplete, false),
-        final_pass_action(FinalPassRoutingMode::Smart, incomplete)
-    );
-    let shape = StreamingCompleteness::CompleteShapeDeficient;
-    assert_eq!(
-        final_pass_action_with_live_lane(FinalPassRoutingMode::Smart, shape, false),
+        final_pass_action(
+            FinalPassRoutingMode::Smart,
+            StreamingCompleteness::CompleteShapeDeficient
+        ),
         FinalPassAction::PunctuationRepass,
-        "dead live lane keeps PunctuationRepass as the file safety net"
+        "shape deficiency keeps PunctuationRepass as the file safety net"
     );
 }
 

@@ -98,9 +98,8 @@ use assistive_delivery::{
 pub(crate) use final_pass::{
     FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
     StreamingCompleteness, StreamingCompletenessEvidence, append_tail_gap,
-    assess_streaming_completeness, compose_stop_path_residual_from_partials,
-    final_pass_action_with_live_lane, final_pass_routing_mode,
-    format_assistive_delivery_budget_line, format_final_pass_stages_line,
+    assess_streaming_completeness, compose_stop_path_residual_from_partials, final_pass_action,
+    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
     format_stop_path_budget_line, smart_tail_gap_source,
 };
 #[cfg(test)]
@@ -2820,8 +2819,9 @@ impl RecordingController {
             let live_lane_alive = session_snap.stats.is_some()
                 || completeness_evidence.committed_chars > 0
                 || !streaming_text.trim().is_empty();
-            let action =
-                final_pass_action_with_live_lane(effective_routing, completeness, live_lane_alive);
+            // `live_lane_alive` never alters the typed action — the fence
+            // lives in `smart_tail_gap_source` (residual vs file decode).
+            let action = final_pass_action(effective_routing, completeness);
             let smart_tail_source =
                 smart_tail_gap_source(live_lane_alive, &streaming_text, audio_path.is_some());
 
