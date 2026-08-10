@@ -31,11 +31,12 @@ fn onboarding_progress_path() -> PathBuf {
     Config::config_dir().join("onboarding_progress")
 }
 
-/// Canonical first-run wizard step count: `Welcome`, `Mode`, 5× `Permission`,
-/// `Language`, `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`. Mirrors the
-/// SwiftUI `OnboardingStep` flow; kept here so the persisted resume index can be
+/// Canonical first-run wizard step count: `Welcome`, `Mode`, 6× `Permission`
+/// (mic → accessibility → input → screen → speech → full-disk), `Language`,
+/// `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`. Mirrors the SwiftUI
+/// `OnboardingStep` flow; kept here so the persisted resume index can be
 /// clamped without depending on the (excised) AppKit step table.
-const TOTAL_ONBOARDING_STEPS: usize = 12;
+const TOTAL_ONBOARDING_STEPS: usize = 13;
 
 /// Persist the wizard's current step so a relaunch resumes where the user left
 /// off. Writer half of the `onboarding_progress` marker; the SwiftUI wizard is
@@ -71,11 +72,12 @@ pub fn mark_onboarding_done() {
     let _ = fs::write(setup_done, "done");
 }
 
-const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
+const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 5] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
     PermissionKind::InputMonitoring,
     PermissionKind::ScreenRecording,
+    PermissionKind::SpeechRecognition,
 ];
 
 /// Leading non-permission wizard steps (`Welcome`, `Mode`) that precede the
@@ -85,12 +87,13 @@ const REQUIRED_SETUP_PERMISSIONS: [PermissionKind; 4] = [
 const WIZARD_STEPS_BEFORE_PERMISSIONS: usize = 2;
 
 /// Permission steps in resume-flow order, immediately following the leading
-/// steps.
-const PERMISSION_STEP_ORDER: [PermissionKind; 5] = [
+/// steps. Must match Swift `OnboardingStep.flow` permission slots.
+const PERMISSION_STEP_ORDER: [PermissionKind; 6] = [
     PermissionKind::Microphone,
     PermissionKind::Accessibility,
     PermissionKind::InputMonitoring,
     PermissionKind::ScreenRecording,
+    PermissionKind::SpeechRecognition,
     PermissionKind::FullDiskAccess,
 ];
 
@@ -120,12 +123,14 @@ fn permission_status_from_snapshot(
     accessibility: PermissionStatus,
     input_monitoring: PermissionStatus,
     screen_recording: PermissionStatus,
+    speech_recognition: PermissionStatus,
 ) -> PermissionStatus {
     match kind {
         PermissionKind::Microphone => microphone,
         PermissionKind::Accessibility => accessibility,
         PermissionKind::InputMonitoring => input_monitoring,
         PermissionKind::ScreenRecording => screen_recording,
+        PermissionKind::SpeechRecognition => speech_recognition,
         PermissionKind::FullDiskAccess => PermissionStatus::Granted,
     }
 }
@@ -137,6 +142,7 @@ fn setup_done_refresh_target(
     accessibility: PermissionStatus,
     input_monitoring: PermissionStatus,
     screen_recording: PermissionStatus,
+    speech_recognition: PermissionStatus,
 ) -> Option<usize> {
     if !setup_done_exists || !app_bundle_runtime {
         return None;
@@ -151,6 +157,7 @@ fn setup_done_refresh_target(
                 accessibility,
                 input_monitoring,
                 screen_recording,
+                speech_recognition,
             ) != PermissionStatus::Granted
         })
         .and_then(permission_step_index)
@@ -163,7 +170,7 @@ fn invalidate_setup_done_if_permissions_missing() {
     }
 
     // Outside an app bundle the permission model does not apply, so setup_done is
-    // never invalidated here. Return before the four system-wide permission probes
+    // never invalidated here. Return before the system-wide permission probes
     // below (evaluated as call arguments) so dev/CLI runs pay nothing.
     if !current_runtime_is_app_bundle() {
         return;
@@ -176,6 +183,7 @@ fn invalidate_setup_done_if_permissions_missing() {
         permission_status(PermissionKind::Accessibility),
         permission_status(PermissionKind::InputMonitoring),
         permission_status(PermissionKind::ScreenRecording),
+        permission_status(PermissionKind::SpeechRecognition),
     ) else {
         return;
     };
@@ -217,4 +225,154 @@ pub fn should_show_onboarding() -> bool {
     migrate_legacy_setup_done_marker();
     invalidate_setup_done_if_permissions_missing();
     !setup_done_path().exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Wizard steps after the permission block in Swift `OnboardingStep.flow`:
+    /// `Language`, `ApiKey`, `HotkeyMode`, `AgenticReadiness`, `Done`.
+    const WIZARD_STEPS_AFTER_PERMISSIONS: usize = 5;
+
+    /// The persisted `onboarding_progress` marker is a raw index into the Swift
+    /// `OnboardingStep.flow` table, so the Rust step count must stay arithmetically
+    /// tied to the same layout. Drifting either side silently resumes users on the
+    /// wrong screen.
+    #[test]
+    fn total_steps_match_swift_flow_layout() {
+        assert_eq!(
+            TOTAL_ONBOARDING_STEPS,
+            WIZARD_STEPS_BEFORE_PERMISSIONS
+                + PERMISSION_STEP_ORDER.len()
+                + WIZARD_STEPS_AFTER_PERMISSIONS
+        );
+        assert_eq!(TOTAL_ONBOARDING_STEPS, 13);
+    }
+
+    /// Literal indices mirror `OnboardingStep.flow`. Speech Recognition sits after
+    /// Screen Recording and before the optional Full Disk Access step.
+    #[test]
+    fn permission_step_indices_mirror_swift_flow() {
+        assert_eq!(permission_step_index(PermissionKind::Microphone), Some(2));
+        assert_eq!(
+            permission_step_index(PermissionKind::Accessibility),
+            Some(3)
+        );
+        assert_eq!(
+            permission_step_index(PermissionKind::InputMonitoring),
+            Some(4)
+        );
+        assert_eq!(
+            permission_step_index(PermissionKind::ScreenRecording),
+            Some(5)
+        );
+        assert_eq!(
+            permission_step_index(PermissionKind::SpeechRecognition),
+            Some(6)
+        );
+        assert_eq!(
+            permission_step_index(PermissionKind::FullDiskAccess),
+            Some(7)
+        );
+    }
+
+    /// Apple live dictation is unusable without the Speech TCC grant, so a missing
+    /// one must invalidate `setup_done` like the other required scopes.
+    #[test]
+    fn speech_recognition_is_required_for_setup_done() {
+        assert!(REQUIRED_SETUP_PERMISSIONS.contains(&PermissionKind::SpeechRecognition));
+        assert_eq!(
+            setup_done_refresh_target(
+                true,
+                true,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::NotDetermined,
+            ),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn all_required_permissions_granted_keeps_setup_done() {
+        assert_eq!(
+            setup_done_refresh_target(
+                true,
+                true,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+            ),
+            None
+        );
+    }
+
+    /// Full Disk Access is optional — it is in the step order but never in
+    /// `REQUIRED_SETUP_PERMISSIONS`, so it can never invalidate `setup_done`.
+    #[test]
+    fn full_disk_access_never_invalidates_setup_done() {
+        assert!(!REQUIRED_SETUP_PERMISSIONS.contains(&PermissionKind::FullDiskAccess));
+        assert_eq!(
+            permission_status_from_snapshot(
+                PermissionKind::FullDiskAccess,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+            ),
+            PermissionStatus::Granted
+        );
+    }
+
+    /// Resume lands on the *earliest* missing scope, not the last one probed.
+    #[test]
+    fn earliest_missing_permission_wins_the_resume_step() {
+        assert_eq!(
+            setup_done_refresh_target(
+                true,
+                true,
+                PermissionStatus::Denied,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::Granted,
+                PermissionStatus::Denied,
+            ),
+            Some(2)
+        );
+    }
+
+    /// Outside an app bundle (dev/CLI runs) the TCC model does not apply, and with
+    /// no `setup_done` there is nothing to invalidate.
+    #[test]
+    fn non_bundle_or_missing_sentinel_never_invalidates() {
+        let all_missing = |bundle: bool, sentinel: bool| {
+            setup_done_refresh_target(
+                sentinel,
+                bundle,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+                PermissionStatus::Denied,
+            )
+        };
+        assert_eq!(all_missing(false, true), None);
+        assert_eq!(all_missing(true, false), None);
+    }
+
+    #[test]
+    fn app_bundle_detection_matches_bundle_layout() {
+        assert!(executable_is_app_bundle(std::path::Path::new(
+            "/Applications/Codescribe.app/Contents/MacOS/codescribe"
+        )));
+        assert!(!executable_is_app_bundle(std::path::Path::new(
+            "/Users/someone/.cargo/bin/codescribe"
+        )));
+    }
 }

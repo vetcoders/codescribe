@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
     ThreadIndex, ThreadStore, ThreadSummary, ToolDefinition, ToolRegistry, ToolResultContent,
+    ToolRisk,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -11,9 +12,10 @@ const SNIPPET_CHARS: usize = 320;
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             search_threads_definition(),
             Box::new(|input| Box::pin(handle_search_threads(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register search_threads tool");
 }

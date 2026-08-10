@@ -86,18 +86,20 @@ flowchart TB
 | `Dictation=HoldCtrlShift` | Ctrl+Shift   | Alternate hold dictation         |
 | `Dictation=HoldCtrlCmd`   | Ctrl+Command | macOS power users                |
 
-If `Assistive` itself is configured to a hold binding, that binding becomes the assistive hold trigger.
+Assistive hold has one arm gesture: add Shift to the active dictation hold. The
+legacy second selection-only combo is released. Arming captures any current
+selection immediately and attaches it invisibly when the transcript is sent.
 
 **Events:**
 
 ```rust
 HotkeyInput { key_type: Hold, action: Down, hold_mode: Raw }         // Fn only
 HotkeyInput { key_type: Hold, action: Down, hold_mode: Chat }        // Fn+Shift
-HotkeyInput { key_type: Hold, action: Down, hold_mode: Selection }   // Fn+Cmd
 HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
 ```
 
-**Mode modifiers (default Fn):** Shift → Chat, Cmd → Selection (while holding Fn).
+**Mode modifier (default Fn):** Shift → Agent arm while holding Fn. Command no
+longer creates a second assistive mode.
 
 **Engine and delivery parity:** Hold and toggle both start
 `StreamingRecorder::start_event_session` and fan the same `EngineEvent` stream
@@ -122,11 +124,9 @@ recent committed utterance; it must never create a second delivered utterance.
 | `Dictation=DoubleCtrl`        | Ctrl double-tap              | Raw dictation     |
 | `Disabled`                    | no toggle for that work mode | Hold-only profile |
 
-If a recording path does **not** carry an explicit hotkey override (`force_raw`
-or `force_ai`), the controller resolves delivery from Settings: formatting mode
-enabled means the default route is formatting; disabled means raw. Explicit
-hotkey bindings still win over that default (`Dictation` forces raw,
-`Formatting` forces formatting).
+Formatting is orthogonal to the trigger and destination. Hold, normal toggle,
+and assistive sessions all honor the session's Auto Format setting. The trigger
+chooses semantics and destination; it does not remove formatting capability.
 
 **Stop latency trade-off (supersedes ADR 2026-05-28 Faza 1 force-RAW):** with
 formatting enabled in Settings, a hands-off toggle stop performs one AI
@@ -150,6 +150,24 @@ continue to win.
 HotkeyInput { key_type: Toggle, action: Press, assistive: false } // Left Option
 HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Right Option
 ```
+
+### Unified dictation pipeline
+
+Every trigger enters one pipeline: capture → live overlay preview → final pass →
+editable transcript. Assistive is a session flag and may not fork capture,
+preview, or finalization. Overlay ON means the overlay is visible on every path.
+
+An assistive session has exactly two differences from dictation:
+
+1. Its semantics are Agent from the first instant (purple overlay
+   spectrometer; the shared processing phase remains orange).
+2. Its untouched final transcript auto-sends after the overlay delay. Any user
+   edit permanently cancels auto-send for that session; delivery then happens
+   only through the **To Agent** button.
+
+Selection is captured in the trigger handler, never at send time. The same Rust
+indicator mode drives the cursor badge, tray status dot, and overlay
+spectrometer, including live Shift arm transitions.
 
 ---
 
@@ -400,8 +418,9 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 When `HOLD_EXCLUSIVE=false` (default), modifier variants work out of the box:
 
-- Fn+Shift can start voice chat
-- Fn+Command can act on the current selection
+- Fn+Shift can start voice chat (default arm modifier; configurable to Cmd in Settings)
+- Armed hold with a selection acts on the selection (same arm gesture — default Shift, optional Cmd)
+- The unconfigured arm modifier does not arm assistive (W10-B detector truth)
 
 Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
@@ -412,12 +431,34 @@ Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 
 ## Troubleshooting
 
-| Symptom                      | Cause                           | Fix                                                           |
-| ---------------------------- | ------------------------------- | ------------------------------------------------------------- |
-| Hotkeys don't work           | Accessibility permission denied | System Settings → Privacy → Accessibility → Enable codescribe |
-| Double-tap too sensitive     | Interval too short              | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
-| Recording won't stop (hold)  | Key stuck in system             | Release all modifiers, try again                              |
-| VAD cuts utterance too early | VAD defaults too conservative   | Tune constants in `core/vad/config.rs` and rebuild            |
+| Symptom                                           | Cause                                      | Fix                                                           |
+| ------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------- |
+| Hotkeys don't work                                | Accessibility permission denied            | System Settings → Privacy → Accessibility → Enable codescribe |
+| Double-tap too sensitive                          | Interval too short                         | Increase `DOUBLE_TAP_INTERVAL_MS` (100–450ms)                 |
+| Recording won't stop (hold)                       | Key stuck in system                        | Release all modifiers, try again                              |
+| VAD cuts utterance too early                      | VAD defaults too conservative              | Tune constants in `core/vad/config.rs` and rebuild            |
+| Double-tap / arm “does nothing” with no UI change | Gesture blocked or arm ignored at detector | Check INFO logs for stable diagnostic lines (below)           |
+
+### Blocked / ignored gesture diagnostics (INFO)
+
+Every blocked double-tap and ignored arm attempt emits one **INFO** line with a
+stable `reason=` token (visibility only — routing is unchanged). Filter
+`~/.codescribe/logs/codescribe.log` (or the Diagnostics surface) for:
+
+```text
+blocked_double_tap gesture=left_option|right_option reason=binding_disabled|modifier_combo_active
+arm_ignored reason=wrong_arm_modifier
+```
+
+| Log line                                            | Meaning                                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `blocked_double_tap … reason=binding_disabled`      | Double-tap recognized, but that Option side is not assigned to a mode        |
+| `blocked_double_tap … reason=modifier_combo_active` | Double-tap recognized while another modifier/hold combo is active            |
+| `arm_ignored reason=wrong_arm_modifier`             | Hold base is down, but the non-configured arm key (Shift vs Cmd) was pressed |
+
+If **no** such line appears when you double-tap or arm, the OS never delivered
+the key event to Codescribe (permissions / focus / hardware) — that case is
+outside the detector.
 
 ---
 

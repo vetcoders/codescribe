@@ -1,11 +1,11 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.13.0-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.13.2-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
 
-**Native macOS tray dictation and assistive voice overlay with local Whisper live preview, optional cloud final transcript paths, and quality tooling.**
+**Native macOS tray dictation and assistive voice overlay: instant Apple-neural live canvas, Whisper filling the gaps on the go, lexicon correction last — append-only, never rewritten — plus quality tooling.**
 
 ## Overview
 
@@ -13,9 +13,12 @@ Codescribe is a native macOS menu-bar application that captures audio through gl
 transcription while you speak, and pastes or routes the final result into the focused application. The shipped product
 in this repo is a tray app whose SwiftUI front-end has two explicit surfaces: settings and overlays.
 
-Local Whisper is the low-latency path. Cloud STT is optional and currently used as a post-capture transcript backend,
-not as live cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default,
-configured in Settings or `~/.codescribe/.env`.
+The transcription shape is layered and append-only (see `AGENTS.md`, the one rule): Apple Speech is the instant
+letter-level live canvas; local Whisper transcribes partials on the go to fill the canvas gaps — it is not the live
+engine and not a stop-time authority; lexicon correction by dictionary substitution is the final automated layer, and
+human corrections feed the lexicon. Cloud STT is optional and used as a post-capture transcript backend, not as live
+cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default, configured in
+Settings or `~/.codescribe/.env`.
 
 ```mermaid
 flowchart TB
@@ -31,7 +34,7 @@ flowchart TB
         direction TB
         REC[Streaming Recorder]
         POST[Stream Postprocess]
-        STT[Whisper / Cloud Final Pass]
+        STT[Apple Live Canvas + Whisper Gap Fill + Lexicon]
         LLM[Responses API Formatting / Assistive]
         QL[Quality Loop]
     end
@@ -56,7 +59,7 @@ flowchart TB
 
 > **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
 
-> **Status:** current source version is `0.13.0` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
+> **Status:** current source version is `0.13.2` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -100,7 +103,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 ## Features
 
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
-- **Two DMG variants** — The standard DMG embeds Silero VAD + MiniLM support assets and resolves Whisper from cache/download. The `_full` DMG embeds Silero + MiniLM + Whisper for users who prefer one larger download.
+- **Two DMG variants** — Standard (daily) embeds Silero VAD + MiniLM; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for offline/curiosity installs.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -163,7 +166,7 @@ make version
 Tagged builds publish DMGs through GitHub Releases:
 
 1. Open [Releases](https://github.com/vetcoders/codescribe/releases)
-2. Download `Codescribe_<version>.dmg` for the standard build, or `Codescribe_<version>_full.dmg` for the larger build with embedded Whisper.
+2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
 > **Current truth:** `v0.12.3` is published on GitHub Releases as a Developer ID signed, notarized and stapled DMG (`releases/latest/download/Codescribe.dmg`); source install remains the freshest path for unreleased work on this branch. The release workflow is wired to fail if the required Apple signing/notary secrets are missing.
@@ -330,14 +333,18 @@ Codescribe uses **whisper-large-v3-turbo-mlx-q8**:
 
 ### Runtime Whisper (Current)
 
-User-delivery app builds (`make app PROFILE=release`, `make install-app`, the release DMG) embed the Rust support assets through the SwiftUI bundle pipeline: Silero VAD, the MiniLM semantic embedder, and Whisper (`CODESCRIBE_EMBED_WHISPER=1`). Fast developer Rust builds stay lean and resolve Whisper at runtime from the locations below; that same resolution order is the fallback whenever a build is not embedded.
+**Daily public builds are slim.** `make release`, `make dmg` / `dmg-signed`, and `make release-standard` embed **Silero VAD** (required) and **MiniLM** when available. **Whisper is not baked in** (~900 MB–1.5 GB saved). Install local Candle Whisper from **Settings → Dictation → Download Whisper**, or run `make download-model`.
+
+Optional fat SKU (offline / curiosity): `make release-full` or `CODESCRIBE_EMBED_WHISPER=1` / `make release-codescribe-embedded`.
+
+Runtime resolution when Whisper is not embedded:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
 3. `./models/whisper-large-v3-turbo-mlx-q8/`
 4. Hugging Face cache snapshots for `LibraxisAI/whisper-large-v3-turbo-mlx-q8`
 
-`CODESCRIBE_NO_EMBED=1` remains a development/recovery path and disables optional embedded support assets too; it is not the public standard DMG mode.
+`CODESCRIBE_NO_EMBED=1` is a development/recovery path that also skips MiniLM embed; it is not the public slim product path.
 
 Model files required:
 

@@ -3,7 +3,7 @@
 //! Reads the system SymbolicHotkeys registry and reports potential collisions
 //! with our modifier-only gestures (Fn/Ctrl/Option).
 
-use crate::config::{ShortcutBinding, UserSettings};
+use crate::config::{DeferredInsertShortcut, ShortcutBinding, UserSettings};
 use crate::os::hotkeys::ModeHotkeyBindings;
 #[cfg(target_os = "macos")]
 use std::collections::HashSet;
@@ -46,6 +46,33 @@ pub fn detect_hotkey_conflicts(settings: &UserSettings) -> Vec<HotkeyConflict> {
     let mut conflicts = detect_internal_conflicts(bindings);
     conflicts.extend(detect_macos_symbolic_conflicts(bindings));
     conflicts
+}
+
+/// Return the first enabled macOS symbolic shortcut colliding with the
+/// configured deferred-insert command. The shared CGEventTap remains alive for
+/// recording gestures; only this one-shot command is considered unavailable.
+#[cfg(target_os = "macos")]
+pub fn deferred_insert_shortcut_conflict(shortcut: DeferredInsertShortcut) -> Option<String> {
+    if !shortcut.is_enabled() {
+        return Some("Deferred insert shortcut is disabled".to_string());
+    }
+
+    load_symbolic_signatures()
+        .into_iter()
+        .find(|signature| deferred_insert_conflicts_with_symbolic(shortcut, *signature))
+        .map(|signature| {
+            format!(
+                "{} conflicts with {} (macOS #{}).",
+                shortcut.label(),
+                symbolic_hotkey_name(signature.id),
+                signature.id
+            )
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn deferred_insert_shortcut_conflict(shortcut: DeferredInsertShortcut) -> Option<String> {
+    (!shortcut.is_enabled()).then(|| "Deferred insert shortcut is disabled".to_string())
 }
 
 pub fn fn_tap_intercept_note(settings: &UserSettings) -> Option<&'static str> {
@@ -176,6 +203,13 @@ struct SymbolicSignature {
     modifiers: i64,
 }
 
+/// macOS writes `0xFFFF` into the ASCII and keycode slots of a symbolic hotkey
+/// that has no key assigned. Such an entry can stay `enabled = 1` in the plist
+/// while binding nothing at all, so it must never be read as a real key — least
+/// of all as Fn, whose keycode is 63.
+#[cfg(target_os = "macos")]
+const UNBOUND_KEYCODE: i64 = 65535;
+
 #[cfg(target_os = "macos")]
 fn symbolic_hotkey_name(id: u32) -> &'static str {
     match id {
@@ -195,6 +229,10 @@ fn collect_symbolic_conflicts(
 
     for gesture in active_gestures(bindings) {
         for signature in signatures {
+            // An unbound entry binds no key, so it cannot collide with anything.
+            if signature.keycode == UNBOUND_KEYCODE {
+                continue;
+            }
             if !gesture_conflicts_with_symbolic(gesture, *signature) {
                 continue;
             }
@@ -229,10 +267,14 @@ fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSi
             // (Emoji & Symbols / Dictation). Codescribe's HoldFn binding listens
             // for a held modifier gesture, so reporting those tap-only shortcuts as
             // "Hold Fn" conflicts is noisy and misleading.
+            //
+            // Only the real Fn keycode counts here. Treating the unbound sentinel
+            // as Fn made every empty-but-enabled system entry report a phantom
+            // "Hold Fn" conflict, which wedged the Save button in Settings.
             signature.id != 160
                 && signature.id != 164
-                && ((signature.keycode == FN_KEYCODE || signature.keycode == 65535)
-                    && signature.modifiers == 0)
+                && signature.keycode == FN_KEYCODE
+                && signature.modifiers == 0
         }
         HotkeyGesture::ToggleDoubleCtrl => {
             (signature.keycode == LEFT_CONTROL_KEYCODE
@@ -250,6 +292,26 @@ fn gesture_conflicts_with_symbolic(gesture: HotkeyGesture, signature: SymbolicSi
         | HotkeyGesture::HoldCtrlShift
         | HotkeyGesture::HoldCtrlCmd => false,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn deferred_insert_conflicts_with_symbolic(
+    shortcut: DeferredInsertShortcut,
+    signature: SymbolicSignature,
+) -> bool {
+    const V_KEYCODE: i64 = 9;
+    const CONTROL: i64 = 0x0004_0000;
+    const SHIFT: i64 = 0x0002_0000;
+    const OPTION: i64 = 0x0008_0000;
+    const COMMAND: i64 = 0x0010_0000;
+
+    let modifiers = match shortcut {
+        DeferredInsertShortcut::Disabled => return false,
+        DeferredInsertShortcut::CommandOptionV => COMMAND | OPTION,
+        DeferredInsertShortcut::CommandShiftV => COMMAND | SHIFT,
+        DeferredInsertShortcut::CommandControlV => COMMAND | CONTROL,
+    };
+    signature.keycode == V_KEYCODE && signature.modifiers == modifiers
 }
 
 #[cfg(target_os = "macos")]
@@ -486,5 +548,54 @@ mod tests {
             collect_symbolic_conflicts(ModeHotkeyBindings::from_settings(&settings), &signatures);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].gesture, HotkeyGesture::HoldFn);
+    }
+
+    /// Regression: macOS keeps system shortcut slots `enabled = 1` while leaving
+    /// them unbound (`0xFFFF` in the ASCII and keycode slots). Those carry
+    /// arbitrary IDs, so an ID allow-list cannot catch them — the unbound
+    /// keycode itself has to disqualify the entry. Reading the sentinel as Fn
+    /// turned six empty slots on a stock macOS install into six phantom
+    /// conflicts and disabled Save in Settings → Hotkeys.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn symbolic_conflict_ignores_unbound_entries_with_arbitrary_ids() {
+        let settings = settings_for(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let signatures: Vec<SymbolicSignature> = [235, 244, 245, 246, 247, 256]
+            .into_iter()
+            .map(|id| SymbolicSignature {
+                id,
+                keycode: UNBOUND_KEYCODE,
+                modifiers: 0,
+            })
+            .collect();
+
+        let conflicts =
+            collect_symbolic_conflicts(ModeHotkeyBindings::from_settings(&settings), &signatures);
+        assert!(
+            conflicts.is_empty(),
+            "unbound macOS entries must never be reported as conflicts, got: {conflicts:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn deferred_insert_collision_matches_key_and_exact_modifiers() {
+        let collision = SymbolicSignature {
+            id: 777,
+            keycode: 9,
+            modifiers: 0x0010_0000 | 0x0008_0000,
+        };
+        assert!(deferred_insert_conflicts_with_symbolic(
+            DeferredInsertShortcut::CommandOptionV,
+            collision
+        ));
+        assert!(!deferred_insert_conflicts_with_symbolic(
+            DeferredInsertShortcut::CommandShiftV,
+            collision
+        ));
     }
 }

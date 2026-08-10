@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
 use serde_json::{Value, json};
@@ -9,15 +9,18 @@ const OK_TEXT: &str = "ok";
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             read_clipboard_definition(),
             Box::new(|input| Box::pin(handle_read(input))),
+            ToolRisk::ReadOnly,
         )
         .expect("register read_clipboard tool");
     registry
-        .register(
+        .register_native(
             write_clipboard_definition(),
             Box::new(|input| Box::pin(handle_write(input))),
+            // Overwrites user-owned clipboard state without restore.
+            ToolRisk::Mutating,
         )
         .expect("register write_clipboard tool");
 }

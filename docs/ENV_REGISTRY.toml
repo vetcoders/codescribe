@@ -179,6 +179,14 @@ category = "streaming"
 description = "Silence duration before utterance flush in buffered mode (sec)"
 range = "0.1-10.0"
 
+[vars.CODESCRIBE_BUFFERED_MAX_UTTERANCE_SEC]
+default = "12.0"
+type = "f32"
+reload = "restart"
+category = "streaming"
+description = "Force-seal continuous speech in buffered mode after N seconds (sec)"
+range = "3.0-120.0"
+
 [vars.CODESCRIBE_UTTERANCE_GAP_SEC]
 default = "0.5"
 type = "f32"
@@ -410,11 +418,25 @@ category = "stt"
 description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
 
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
-default = "300"
+default = "2700"
 type = "u64"
 reload = "hot"
 category = "stt"
-description = "Unload idle Whisper engine after this many seconds (0 disables)"
+description = "Unload idle Whisper weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 disables unload (weights stay resident)."
+
+[vars.CANDLE_METAL_COMPUTE_PER_BUFFER]
+default = "50"
+type = "u64"
+reload = "restart"
+category = "stt"
+description = "Candle-owned tuning knob (read by candle-metal-kernels at device creation): compute encoders per Metal command buffer before rotation. Codescribe mirror-reads it to bound the forced free-pool prune after idle unload (memory::reclaim_metal_buffer_pool)."
+
+[vars.CANDLE_METAL_COMMAND_POOL_SIZE]
+default = "5"
+type = "u64"
+reload = "restart"
+category = "stt"
+description = "Candle-owned tuning knob (read by candle-metal-kernels at device creation): Metal command-buffer pool size. Codescribe mirror-reads it to bound the forced free-pool prune after idle unload (memory::reclaim_metal_buffer_pool)."
 
 [vars.WHISPER_INITIAL_PROMPT]
 default = ""
@@ -437,6 +459,20 @@ type = "string"
 reload = "restart"
 category = "stt"
 description = "Directory containing all models"
+
+[vars.CODESCRIBE_EMBED_MODEL]
+default = ""
+type = "string"
+reload = "rebuild"
+category = "stt"
+description = "Whisper model name embedded at build time (core/build.rs fat SKU path)"
+
+[vars.CODESCRIBE_ONNX_MODEL_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Override path to the ONNX Whisper model directory (onnx engine)"
 
 [vars.CODESCRIBE_STT_ENGINE]
 default = "auto"
@@ -592,6 +628,13 @@ reload = "restart"
 category = "stt"
 description = "Allow SpeechAnalyzer bridge to auto-install missing Apple speech assets"
 
+[vars.CODESCRIBE_APPLE_STT_LIVE_MODE]
+default = "stream"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Apple live session transport: stream (AudioBuffer live) or wav (legacy VAD+scheduler escape hatch)"
+
 [vars.CODESCRIBE_ONNX_CPU_ONLY]
 default = "0"
 type = "bool"
@@ -634,12 +677,26 @@ reload = "restart"
 category = "stt"
 description = "Cloud STT API key; prefer Settings / macOS Keychain"
 
+[vars.FINAL_PASS_MODE]
+default = "smart"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Stop-path final re-pass routing: always | smart (default) | off. Always = full WAV STT every stop; smart = skip when streaming completeness is adjudicated; off = streaming is final (repetition guardrail still runs). Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
+
+[vars.CODESCRIBE_FINAL_PASS_MODE]
+default = "smart"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Alias of FINAL_PASS_MODE (always|smart|off)"
+
 [vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
 default = "0"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "Run final-pass local STT on full audio (overrides streaming output)"
+description = "Legacy: falsey maps to FINAL_PASS_MODE=off, truthy to always. Prefer FINAL_PASS_MODE."
 
 [vars.CODESCRIBE_TOGGLE_FINAL_PASS]
 default = "1"
@@ -676,6 +733,13 @@ reload = "restart"
 category = "models"
 description = "Alternate HF hub cache directory"
 
+[vars.HF_TOKEN]
+default = ""
+type = "string"
+reload = "restart"
+category = "models"
+description = "HuggingFace token for gated model downloads (bearer auth)"
+
 [vars.BACKEND_MAX_UPLOAD_MB]
 default = "20"
 type = "u64"
@@ -703,11 +767,11 @@ category = "embedder"
 description = "HF repo for E5 embedder (used for embedding at build/runtime)"
 
 [vars.CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS]
-default = "300"
+default = "2700"
 type = "u64"
 reload = "hot"
 category = "embedder"
-description = "Unload idle embedder engine after this many seconds (0 disables)"
+description = "Unload idle embedder weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained. 0 disables unload."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM / AI Formatting
@@ -896,6 +960,20 @@ reload = "restart"
 category = "hotkeys"
 description = "Delay before hold recording starts (ms)"
 
+[vars.HOLD_ARM_MODIFIER]
+default = "shift"
+type = "string"
+reload = "restart"
+category = "hotkeys"
+description = "Modifier arming assistive chat on the dictation hold base (shift|cmd)"
+
+[vars.CODESCRIBE_DEFERRED_INSERT_SHORTCUT]
+default = "disabled"
+type = "string"
+reload = "restart"
+category = "hotkeys"
+description = "Global one-shot chord delivering the armed transcript at the caret (disabled|command_option_v|command_shift_v|command_control_v). Opt-in: listen-only tap cannot swallow the chord, so host-app collisions are possible"
+
 [vars.DOUBLE_TAP_INTERVAL_MS]
 default = "200"
 type = "u64"
@@ -1054,6 +1132,13 @@ type = "string"
 reload = "restart"
 category = "storage"
 description = "Override data directory (default: ~/.codescribe)"
+
+[vars.VIBECRAFTED_CONTROL_PLANE_DIR]
+default = ""
+type = "string"
+reload = "hot"
+category = "storage"
+description = "Override Vibecrafted control-plane root for run monitors (default: ~/.vibecrafted/control_plane)"
 
 [vars.CODESCRIBE_DISABLE_KEYCHAIN]
 default = "0"

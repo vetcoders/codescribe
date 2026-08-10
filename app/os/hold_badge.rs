@@ -4,6 +4,12 @@
 //! API) and falls back to the mouse cursor when no caret is available. Used to
 //! signal recording / processing / assistive states during dictation.
 //!
+//! ## K3 contract (W10-E)
+//! Size / visibility (`HOLD_BADGE_SIZE`, `HOLD_INDICATOR`) persist immediately
+//! when Settings or the tray writes them. A **visible** badge is **not** live-
+//! resized — the next `show_hold_badge` reads the config at request time (via
+//! the generation gate). Do not claim "restart required"; claim "next show".
+//!
 //! Resurrected as a self-contained `app/os` module (previously lived in the now
 //! excised `app/ui` AppKit layer). All AppKit/objc code is macOS-only; a no-op
 //! stub surface keeps non-macOS builds compiling.
@@ -15,7 +21,7 @@
 // ─────────────────────────────────────────────────────────────
 
 /// Badge display mode for different recording/processing states
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeMode {
     /// Hold mode (Ctrl): Red, solid - "trzymaj palec!"
     Hold,
@@ -87,9 +93,14 @@ impl Default for HoldBadgeConfig {
 impl HoldBadgeConfig {
     /// Create config from badge mode with appropriate colors
     pub fn from_mode(mode: BadgeMode) -> Self {
+        Self::from_mode_with_base_diameter(mode, Self::default().diameter)
+    }
+
+    /// Build the next show request from the currently persisted badge size.
+    pub fn from_mode_with_base_diameter(mode: BadgeMode, base_diameter: f64) -> Self {
         let base = Self::default();
         Self {
-            diameter: base.diameter * mode.diameter_multiplier(),
+            diameter: base_diameter * mode.diameter_multiplier(),
             color: mode.color(),
             mode,
             ..base
@@ -133,6 +144,21 @@ mod tests {
         );
         assert_eq!(assistive.offset, base.offset);
         assert_eq!(assistive.update_interval_ms, base.update_interval_ms);
+    }
+
+    #[test]
+    fn badge_size_change_applies_to_next_show_without_mutating_visible_config() {
+        let visible = HoldBadgeConfig::from_mode_with_base_diameter(BadgeMode::Hold, 8.0);
+        let next_show = HoldBadgeConfig::from_mode_with_base_diameter(BadgeMode::Hold, 4.0);
+
+        assert_eq!(
+            visible.diameter, 8.0,
+            "visible badge keeps its captured config"
+        );
+        assert_eq!(
+            next_show.diameter, 4.0,
+            "next show reads the new persisted size"
+        );
     }
 }
 

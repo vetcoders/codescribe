@@ -20,6 +20,7 @@ struct SettingsView: View {
                 .frame(width: 212)
             detail
         }
+        .csFocusPolicy()
         .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(Self.windowGradient.ignoresSafeArea())
         .preferredColorScheme(.dark)
@@ -48,6 +49,8 @@ struct SettingsView: View {
                     ShortcutsPanel(model: model)
                 case .providers:
                     KeysPanel(model: model)
+                case .agent:
+                    AgentPanel(model: model)
                 case .prompts:
                     PromptPanel(model: model)
                 case .user:
@@ -185,7 +188,7 @@ private struct SettingsRail: View {
     ) -> some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(visualState.showsActiveFill ? CSColor.terracotta : Self.inactiveDot)
+                .fill(visualState.showsActiveFill ? CSColor.chromeAccent : Self.inactiveDot)
                 .frame(width: 7, height: 7)
             Text(item.title)
                 .font(CSFont.ui(13, visualState.showsActiveFill ? .semibold : .medium))
@@ -196,12 +199,12 @@ private struct SettingsRail: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(visualState.showsActiveFill ? CSColor.terracotta.opacity(0.14) : .clear)
+                .fill(visualState.showsActiveFill ? CSColor.chromeAccent.opacity(0.14) : .clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                 .strokeBorder(
-                    visualState.showsHairline ? CSColor.terracotta.opacity(0.28) : .clear,
+                    visualState.showsHairline ? CSColor.chromeAccent.opacity(0.28) : .clear,
                     lineWidth: 1
                 )
         )
@@ -209,7 +212,7 @@ private struct SettingsRail: View {
     }
 
     private func labelColor(_ item: SettingsSection, isActive: Bool) -> Color {
-        if isActive { return CSColor.terracottaLight }
+        if isActive { return CSColor.chromeAccent }
         // Interactive-but-not-selected = brighter body; inert = muted.
         return item.isInteractive ? CSColor.textBody : CSColor.textMuted
     }
@@ -253,7 +256,7 @@ private struct SettingsRail: View {
         .overlay {
             RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
                 .strokeBorder(
-                    isKeyboardFocused ? CSColor.terracotta.opacity(0.28) : .clear,
+                    isKeyboardFocused ? CSColor.chromeAccent.opacity(0.28) : .clear,
                     lineWidth: 1
                 )
                 .padding(.horizontal, 8)

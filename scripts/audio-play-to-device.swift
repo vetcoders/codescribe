@@ -1,0 +1,263 @@
+#!/usr/bin/env swift
+//
+// audio-play-to-device — play a WAV into ONE named output device.
+//
+// This is the source half of the BlackHole loopback harness. `afplay` can only
+// use the system default output, so driving audio into a virtual device without
+// touching the operator's speakers needs an explicit device binding:
+//
+//     scripts/audio-play-to-device.swift "BlackHole 2ch" fixture.wav
+//
+// BlackHole loops its output back to its input, so a recorder listening on
+// "BlackHole 2ch" hears exactly this file — the same path a microphone takes,
+// through CoreAudio, at real time. That is the difference between "the decoder
+// parses a WAV" and "the app hears speech".
+//
+// Exit codes: 0 played to completion · 2 device not found · 3 file unreadable
+// · 4 audio engine failed. Device names are matched case-insensitively, exact
+// match first so "BlackHole 2ch" never picks "BlackHole 16ch".
+
+import AVFoundation
+import CoreAudio
+import Foundation
+
+func fail(_ message: String, code: Int32) -> Never {
+    FileHandle.standardError.write(Data("audio-play-to-device: \(message)\n".utf8))
+    exit(code)
+}
+
+/// Every output device's (id, name). Input-only devices are skipped so a name
+/// collision between an input and an output cannot bind the wrong one.
+func outputDevices() -> [(id: AudioDeviceID, name: String)] {
+    var size: UInt32 = 0
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    guard
+        AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr
+    else { return [] }
+
+    let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+    var ids = [AudioDeviceID](repeating: 0, count: count)
+    guard
+        AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr
+    else { return [] }
+
+    return ids.compactMap { id in
+        guard hasOutputStreams(id), let name = deviceName(id) else { return nil }
+        return (id, name)
+    }
+}
+
+func hasOutputStreams(_ id: AudioDeviceID) -> Bool {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreamConfiguration,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr, size > 0 else {
+        return false
+    }
+    let buffer = UnsafeMutableRawPointer.allocate(
+        byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+    defer { buffer.deallocate() }
+    guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, buffer) == noErr else {
+        return false
+    }
+    let list = buffer.assumingMemoryBound(to: AudioBufferList.self)
+    return UnsafeMutableAudioBufferListPointer(list).contains { $0.mNumberChannels > 0 }
+}
+
+func deviceName(_ id: AudioDeviceID) -> String? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioObjectPropertyName,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var name: CFString = "" as CFString
+    var size = UInt32(MemoryLayout<CFString>.size)
+    guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &name) == noErr else {
+        return nil
+    }
+    return name as String
+}
+
+// MARK: - Arguments
+
+let args = CommandLine.arguments
+guard args.count >= 3 else {
+    fail("usage: audio-play-to-device.swift <device-name> <file.wav> [--list]", code: 64)
+}
+let wanted = args[1]
+let path = args[2]
+
+let devices = outputDevices()
+if wanted == "--list" {
+    for device in devices { print(device.name) }
+    exit(0)
+}
+
+// Exact (case-insensitive) match wins; a prefix match is the fallback so a
+// trailing-space typo still works, but never silently across distinct devices.
+let matches =
+    devices.filter { $0.name.lowercased() == wanted.lowercased() }.isEmpty
+    ? devices.filter { $0.name.lowercased().hasPrefix(wanted.lowercased()) }
+    : devices.filter { $0.name.lowercased() == wanted.lowercased() }
+
+guard let device = matches.first else {
+    let known = devices.map(\.name).joined(separator: ", ")
+    fail("output device '\(wanted)' not found. Available: [\(known)]", code: 2)
+}
+guard matches.count == 1 else {
+    fail("device name '\(wanted)' is ambiguous: \(matches.map(\.name))", code: 2)
+}
+
+let url = URL(fileURLWithPath: path)
+guard FileManager.default.fileExists(atPath: url.path) else {
+    fail("file not found: \(url.path)", code: 3)
+}
+guard let file = try? AVAudioFile(forReading: url) else {
+    fail("cannot read as audio: \(url.path)", code: 3)
+}
+
+// MARK: - Play
+
+let engine = AVAudioEngine()
+let player = AVAudioPlayerNode()
+engine.attach(player)
+
+// Bind the engine's output to the requested device BEFORE starting it —
+// AVAudioEngine caches the device on start, so setting it afterwards is a no-op
+// that silently plays to the default output instead (i.e. the operator's
+// speakers, and no audio into the loopback at all).
+var deviceID = device.id
+let status = AudioUnitSetProperty(
+    engine.outputNode.audioUnit!,
+    kAudioOutputUnitProperty_CurrentDevice,
+    kAudioUnitScope_Global,
+    0,
+    &deviceID,
+    UInt32(MemoryLayout<AudioDeviceID>.size)
+)
+guard status == noErr else {
+    fail("cannot bind output to '\(device.name)' (OSStatus \(status))", code: 4)
+}
+
+engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
+
+// Normalize to a fixed peak before playback. A microphone feeding the system
+// engine goes through analog gain + AGC; a digital loopback does not, so a
+// quiet fixture reaches recognition 25 dB below full scale (measured:
+// 05_apple-live-parity peaks at -25 dBFS vs -16.7 for 02). Low SNR is where
+// recognition starts to GUESS — the same fixture scored 0.918 and 0.931 on two
+// identical runs. Fixing the level makes the input deterministic instead of
+// handicapped, without touching the fixture, which is evidence and must stay
+// byte-identical.
+let targetPeakDb: Float = -1.0
+var filePeak: Float = 0
+if let probe = AVAudioPCMBuffer(
+    pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
+    (try? file.read(into: probe)) != nil, let data = probe.floatChannelData
+{
+    for channel in 0..<Int(probe.format.channelCount) {
+        for frame in 0..<Int(probe.frameLength) {
+            filePeak = max(filePeak, abs(data[channel][frame]))
+        }
+    }
+    file.framePosition = 0
+}
+if filePeak > 0.0001 {
+    let target = pow(10, targetPeakDb / 20)
+    player.volume = min(target / filePeak, 32)
+    FileHandle.standardError.write(
+        Data(
+            "normalizing: peak \(String(format: "%.1f", 20 * log10(filePeak))) dBFS → \(targetPeakDb) dBFS (gain ×\(String(format: "%.2f", player.volume)))\n"
+                .utf8))
+}
+
+// Self-diagnosis: RMS tap on the mixer. A run that "completes" while the
+// engine renders silence would pass every exit-code check and still prove
+// nothing — the tap makes that state visible and fatal.
+final class PeakBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Float = 0
+    func update(_ candidate: Float) {
+        lock.lock()
+        if candidate > value { value = candidate }
+        lock.unlock()
+    }
+    var peak: Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+let peakBox = PeakBox()
+engine.mainMixerNode.installTap(
+    onBus: 0, bufferSize: 4096, format: engine.mainMixerNode.outputFormat(forBus: 0)
+) { buffer, _ in
+    guard let data = buffer.floatChannelData else { return }
+    let frames = Int(buffer.frameLength)
+    var peak: Float = 0
+    for channel in 0..<Int(buffer.format.channelCount) {
+        for frame in 0..<frames { peak = max(peak, abs(data[channel][frame])) }
+    }
+    peakBox.update(peak)
+}
+
+let finished = DispatchSemaphore(value: 0)
+do {
+    try engine.start()
+} catch {
+    fail("engine start failed: \(error.localizedDescription)", code: 4)
+}
+
+// Verify the binding actually held through start() — AVAudioEngine can revert
+// to the default device when the property write lands at the wrong moment.
+var boundDevice: AudioDeviceID = 0
+var boundSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+AudioUnitGetProperty(
+    engine.outputNode.audioUnit!,
+    kAudioOutputUnitProperty_CurrentDevice,
+    kAudioUnitScope_Global,
+    0,
+    &boundDevice,
+    &boundSize
+)
+if boundDevice != device.id {
+    let actual = deviceName(boundDevice) ?? "id \(boundDevice)"
+    fail("engine started on '\(actual)' instead of '\(device.name)' — binding did not hold", code: 4)
+}
+
+let seconds = Double(file.length) / file.processingFormat.sampleRate
+player.scheduleFile(file, at: nil) { finished.signal() }
+player.play()
+
+FileHandle.standardError.write(
+    Data("playing \(String(format: "%.1f", seconds))s into '\(device.name)'\n".utf8))
+
+// The completion handler fires when the last buffer is HANDED to the device, not
+// when it has been rendered, so add the file's own duration as the ceiling plus
+// a small tail for the device to drain.
+if finished.wait(timeout: .now() + seconds + 5) == .timedOut {
+    fail("playback did not finish within \(String(format: "%.1f", seconds + 5))s", code: 4)
+}
+// Let the device drain its last buffers before tearing the engine down.
+Thread.sleep(forTimeInterval: 0.4)
+player.stop()
+engine.stop()
+
+// A silent render is a failure, not a quiet success.
+let peak = peakBox.peak
+if peak < 0.0005 {
+    fail(
+        "engine rendered silence (peak \(peak)) — the file decoded but no signal reached '\(device.name)'",
+        code: 4
+    )
+}
+FileHandle.standardError.write(Data("rendered peak \(peak) into '\(device.name)'\n".utf8))

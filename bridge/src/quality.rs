@@ -9,14 +9,36 @@
 //! Privacy: local disk only.
 
 use codescribe_core::quality::overlay_quality::{
-    CustomLexiconEntry, QualityRecord, commit_overlay_correction_with_level,
-    custom_lexicon_entries, finalize_voice_lab_correction, recent_quality_records,
+    CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, QualityRecord,
+    VoiceLabSaveOutcome, commit_overlay_correction_with_confidence, custom_lexicon_entries,
+    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store,
 };
 
 use crate::CsError;
 
-/// UI-safe projection of a persisted overlay correction.
+/// Result of an overlay quality commit — honest learn count for the acknowledgement toast.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsQualityCommitResult {
+    /// Lexicon pairs actually upserted (0 when evidence-only or filtered out).
+    pub pairs_learned: u32,
+    /// True when the formatting level is not Correction.
+    pub evidence_only: bool,
+    /// Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
+    pub acknowledgement: String,
+}
+
+impl From<OverlayCorrectionCommit> for CsQualityCommitResult {
+    fn from(commit: OverlayCorrectionCommit) -> Self {
+        Self {
+            pairs_learned: commit.pairs_learned,
+            evidence_only: commit.evidence_only,
+            acknowledgement: commit.acknowledgement_message(),
+        }
+    }
+}
+
+/// UI-safe projection of a persisted overlay correction.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
 pub struct CsQualityRecord {
     pub id: String,
     pub revision: u64,
@@ -25,6 +47,9 @@ pub struct CsQualityRecord {
     pub edited_text: String,
     pub action: String,
     pub timestamp_ms: u64,
+    pub avg_logprob: Option<f32>,
+    pub speech_pct: Option<f32>,
+    pub confidence_flags: Vec<String>,
 }
 
 impl From<QualityRecord> for CsQualityRecord {
@@ -43,17 +68,41 @@ impl From<QualityRecord> for CsQualityRecord {
             edited_text: record.edited_text,
             action,
             timestamp_ms: record.timestamp_ms,
+            avg_logprob: record.avg_logprob,
+            speech_pct: record.speech_pct,
+            confidence_flags: record.confidence_flags,
         }
     }
 }
 
-/// Finalize one correction through the core's revision + atomic lexicon
-/// transaction and return the refreshed resolved record.
+/// Result of a Voice Lab save: the human revision is persisted whenever this
+/// crosses the bridge as `Ok`; learning telemetry never gates the save.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsVoiceLabSaveResult {
+    pub record: CsQualityRecord,
+    /// Word pairs actually upserted into the custom lexicon (0 is honest).
+    pub pairs_learned: u32,
+    /// Set when the revision saved but the lexicon write failed (I/O only).
+    pub lexicon_error: Option<String>,
+}
+
+impl From<VoiceLabSaveOutcome> for CsVoiceLabSaveResult {
+    fn from(outcome: VoiceLabSaveOutcome) -> Self {
+        Self {
+            record: outcome.record.into(),
+            pairs_learned: outcome.pairs_learned,
+            lexicon_error: outcome.lexicon_error,
+        }
+    }
+}
+
+/// Finalize one correction: the revision always saves; word-level lexicon
+/// pairs are derived and gated individually. `Err` means the SAVE failed.
 #[uniffi::export]
 pub fn quality_finalize_correction(
     correction_id: String,
     canonical: String,
-) -> Result<CsQualityRecord, CsError> {
+) -> Result<CsVoiceLabSaveResult, CsError> {
     finalize_voice_lab_correction(&correction_id, &canonical)
         .map(Into::into)
         .map_err(|error| CsError::Quality {
@@ -66,6 +115,8 @@ pub fn quality_finalize_correction(
 pub struct CsLexiconEntry {
     pub variant: String,
     pub canonical: String,
+    /// `correction` | `manual` | `import` | `legacy`
+    pub source: String,
 }
 
 impl From<CustomLexiconEntry> for CsLexiconEntry {
@@ -73,21 +124,34 @@ impl From<CustomLexiconEntry> for CsLexiconEntry {
         Self {
             variant: entry.variant,
             canonical: entry.canonical,
+            source: entry.source,
         }
     }
 }
 
+/// Typed carrier for future per-token confidence (W11-C spike; unused by UI yet).
+/// Wire is present so W12 overlay "yellow words" can land without another bridge reshape.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsTokenConfidence {
+    pub token: String,
+    pub logprob: f32,
+}
+
 #[uniffi::export]
+#[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(
     raw_text: String,
     delivered_text: String,
     edited_text: String,
     action: String,
     formatting_level: String,
-) -> Result<(), CsError> {
+    avg_logprob: Option<f32>,
+    speech_pct: Option<f32>,
+    confidence_flags: Vec<String>,
+) -> Result<CsQualityCommitResult, CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
     // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
-    commit_overlay_correction_with_level(
+    commit_overlay_correction_with_confidence(
         &raw_text,
         &delivered_text,
         &edited_text,
@@ -95,8 +159,11 @@ pub fn commit_overlay_quality_record(
         None,
         Some(&action),
         Some(&formatting_level),
+        avg_logprob,
+        speech_pct,
+        confidence_flags,
     )
-    .map(|_path| ())
+    .map(Into::into)
     .map_err(|e| CsError::Quality {
         msg: format!("quality commit failed: {}", e),
     })
@@ -126,6 +193,37 @@ pub fn lexicon_custom_entries() -> Result<Vec<CsLexiconEntry>, CsError> {
         })
 }
 
+/// Result of Dictionary "Teach" — promote corrections + proposed into live lexicon.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsDictionaryTeachResult {
+    pub from_corrections: u32,
+    pub from_proposed: u32,
+    pub total_rules: u32,
+    pub rules_from_correction_source: u32,
+}
+
+impl From<DictionaryTeachResult> for CsDictionaryTeachResult {
+    fn from(value: DictionaryTeachResult) -> Self {
+        Self {
+            from_corrections: value.from_corrections,
+            from_proposed: value.from_proposed,
+            total_rules: value.total_rules,
+            rules_from_correction_source: value.rules_from_correction_source,
+        }
+    }
+}
+
+/// Teach live dictionary from quality store (corrections.jsonl + proposed.jsonl).
+/// Product: Dictionary panel "Teach" so rules leave the udawany 0-learned state.
+#[uniffi::export]
+pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, CsError> {
+    teach_dictionary_from_store()
+        .map(Into::into)
+        .map_err(|error| CsError::Quality {
+            msg: format!("dictionary teach failed: {error:#}"),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +241,9 @@ mod tests {
             raw_text: "raw".into(),
             delivered_text: "delivered".into(),
             edited_text: "edited".into(),
+            avg_logprob: Some(-0.5),
+            speech_pct: Some(0.8),
+            confidence_flags: vec!["low_logprob".into()],
             meta: serde_json::json!({ "action": "copy" }),
         };
 
@@ -156,6 +257,9 @@ mod tests {
                 edited_text: "edited".into(),
                 action: "copy".into(),
                 timestamp_ms: 42,
+                avg_logprob: Some(-0.5),
+                speech_pct: Some(0.8),
+                confidence_flags: vec!["low_logprob".into()],
             }
         );
     }
@@ -186,6 +290,9 @@ mod tests {
             "synthetic canonical".into(),
             "copy".into(),
             "creative".into(),
+            Some(-1.2),
+            Some(0.75),
+            vec!["test_flag".into()],
         );
         let records = recent_quality_records(10).expect("read committed quality record");
         let lexicon = custom_lexicon_entries().expect("read custom lexicon");
@@ -198,9 +305,15 @@ mod tests {
         }
         std::fs::remove_dir_all(&temp_root).expect("remove temp quality root");
 
-        result.expect("bridge commit");
+        let commit = result.expect("bridge commit");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].formatting_level.as_deref(), Some("max"));
+        assert_eq!(records[0].avg_logprob, Some(-1.2));
+        assert_eq!(records[0].speech_pct, Some(0.75));
+        assert_eq!(records[0].confidence_flags, vec!["test_flag".to_string()]);
+        assert_eq!(commit.pairs_learned, 0);
+        assert!(commit.evidence_only);
+        assert_eq!(commit.acknowledgement, "Saved as evidence");
         assert!(
             lexicon.is_empty(),
             "Max evidence must not teach the lexicon"
@@ -215,6 +328,9 @@ mod tests {
             "canonical".into(),
             "close".into(),
             "mystery".into(),
+            None,
+            None,
+            vec![],
         )
         .expect_err("unknown level must be rejected");
 

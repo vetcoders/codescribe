@@ -98,6 +98,20 @@ pub fn safe_open(path: &Path) -> Result<std::fs::File> {
     Ok(file.into_std())
 }
 
+/// Open an existing file through a capability rooted at `root`.
+///
+/// Both paths are canonicalized before the relative path is derived, so a
+/// symlink that escapes the root is rejected before `cap_std` opens anything.
+pub fn safe_open_bounded(path: &Path, root: &Path) -> Result<std::fs::File> {
+    let root_canon = safe_canonicalize(root)?;
+    let relative = relative_existing_path(path, &root_canon)?;
+    let dir = open_root_dir(&root_canon)?;
+    let file = dir
+        .open(&relative)
+        .with_context(|| format!("Failed to open file: {}", path.display()))?;
+    Ok(file.into_std())
+}
+
 /// Read a file to string after canonicalizing the path.
 ///
 /// Safe wrapper around `std::fs::read_to_string`.

@@ -368,6 +368,11 @@ impl CodescribeThreads {
 /// Open the live thread index over the default on-disk data dir.
 fn open_index() -> Result<ThreadIndex, CsError> {
     let store = ThreadStore::new()?;
+    // Lazy, idempotent migration for 0.13.0-era rows that persisted the
+    // assistive heredoc delimiter (`<<<`) as their heuristic title. Keep the
+    // UniFFI surface unchanged: every list/search open simply observes healed
+    // ThreadStore + index truth.
+    store.heal_degenerate_titles()?;
     let index = ThreadIndex::load_or_create(store.threads_dir())?;
     Ok(index)
 }

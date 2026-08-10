@@ -266,7 +266,38 @@ fn emit_session_finalised(
 /// The engine processes audio → VAD → Whisper → PostProcess and emits
 /// `EngineEvent`s. No presentation logic (typing animation, buffer delay,
 /// etc.) — that's the consumer's responsibility.
+///
+/// When the active STT engine is Apple and progressive stream mode is on
+/// (default; escape hatch `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`), the session
+/// takes the system-dictation path: one long-lived SFSpeech stream whose
+/// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
+/// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
 pub(crate) async fn transcription_session(
+    chunk_receiver: mpsc::Receiver<Vec<f32>>,
+    event_sink: Arc<dyn EventSink>,
+    config: SessionConfig,
+) {
+    // Apple progressive stream branch — must run before the VAD/scheduler path
+    // consumes the receiver.
+    if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
+        super::apple_live_session::apple_stream_transcription_session(
+            chunk_receiver,
+            event_sink,
+            config,
+        )
+        .await;
+        return;
+    }
+
+    vad_transcription_session(chunk_receiver, event_sink, config).await;
+}
+
+/// Legacy VAD + per-window scheduler session body. Tests that assert the
+/// VAD-path contract (`vad_no_speech_detected`, final Stats) target this
+/// directly: routing in [`transcription_session`] reads process-global engine
+/// state, which sibling engine-selection tests mutate via `set_var` — going
+/// through the router makes the contract dependent on test scheduling.
+pub(crate) async fn vad_transcription_session(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
     config: SessionConfig,
@@ -624,10 +655,12 @@ pub(crate) async fn transcription_session(
                                         vad_started = true;
                                     }
 
+                                    // Gates (short-utterance duration) must measure the *full*
+                                    // sealed segment, not only the trailing silence-pad slice `u`.
                                     let outcome = enqueue_pending_utterance(
                                         &mut pending_utterances,
                                         PendingUtteranceWorkItem {
-                                            audio: u,
+                                            audio: full.clone(),
                                             inference_audio: full,
                                             is_final: true,
                                             scheduler_utterance_id,

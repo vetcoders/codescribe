@@ -217,14 +217,14 @@ final class OnboardingViewModel: ObservableObject {
     }
 
     /// Arm the one-shot deep-link so the Settings window lands on the MCP surface
-    /// (Settings › Engine). The view owns the actual open via SwiftUI's
+    /// (Settings › Agent). The view owns the actual open via SwiftUI's
     /// `@Environment(\.openSettings)` — the only reliable path in this accessory /
     /// LSUIElement app, where the private `showSettingsWindow:` selector has no
     /// responder (matching TrayMenuView / AgentChatView). Call this immediately
     /// before `openSettings()`; the wizard stays open behind Settings so the user
     /// can wire a server and return to continue.
     func prepareMcpSettingsDeepLink() {
-        SettingsDeepLink.pendingSection = .engine
+        SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
     }
 
     /// Dismiss the MCP setup prompt for this session so onboarding proceeds without
@@ -332,6 +332,26 @@ final class OnboardingViewModel: ObservableObject {
 
     func openSystemSettings(for kind: PermissionKind) {
         kind.openSystemSettings()
+    }
+
+    /// Same grant path as Settings › Dictation / Creator checklist:
+    /// - undetermined + in-app-requestable → system dialog from this process
+    /// - otherwise → Privacy deep-link (macOS never re-prompts once determined)
+    /// Always re-probes (and re-arms hotkeys) after the attempt settles.
+    func grantPermission(for kind: PermissionKind) {
+        let state = permissions.state(kind)
+        if state == .notDetermined, kind.supportsInAppPermissionRequest {
+            kind.requestInApp { [weak self] _ in
+                self?.reprobePermissions()
+            }
+            return
+        }
+        kind.openSystemSettings()
+        // User may flip the toggle and return without leaving the step — refresh
+        // once after the deep-link so a fast grant is visible immediately.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.reprobePermissions()
+        }
     }
 
     func refreshPermissions() {

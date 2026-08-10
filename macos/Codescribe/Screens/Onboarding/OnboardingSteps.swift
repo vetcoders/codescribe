@@ -58,7 +58,7 @@ private struct OnboardingStepHeader: View {
 }
 
 /// A single radio-style selectable card: title + optional subtitle, with a
-/// terracotta ring + filled dot when selected. Reused by the three choice steps.
+/// System-accent ring + filled dot when selected. Reused by the choice steps.
 struct OnboardingChoiceCard: View {
     let title: String
     let subtitle: String?
@@ -71,12 +71,12 @@ struct OnboardingChoiceCard: View {
                 ZStack {
                     Circle()
                         .strokeBorder(
-                            isSelected ? CSColor.terracotta.opacity(0.9) : CSColor.hairline(0.18),
+                            isSelected ? CSColor.chromeAccent.opacity(0.9) : CSColor.hairline(0.18),
                             lineWidth: 1.5
                         )
                         .frame(width: 16, height: 16)
                     if isSelected {
-                        Circle().fill(CSColor.terracotta).frame(width: 8, height: 8)
+                        Circle().fill(CSColor.chromeAccent).frame(width: 8, height: 8)
                     }
                 }
                 .padding(.top, 1)
@@ -98,7 +98,7 @@ struct OnboardingChoiceCard: View {
             .padding(.vertical, 13)
             .background(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(CSColor.terracotta.opacity(isSelected ? 0.07 : 0))
+                    .fill(CSColor.chromeAccent.opacity(isSelected ? 0.07 : 0))
                     .background(
                         RoundedRectangle(cornerRadius: 11, style: .continuous)
                             .fill(CSColor.surfaceRaised(isSelected ? 0 : 0.03))
@@ -107,7 +107,7 @@ struct OnboardingChoiceCard: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .strokeBorder(
-                        isSelected ? CSColor.terracotta.opacity(0.28) : CSColor.hairline(0.08),
+                        isSelected ? CSColor.chromeAccent.opacity(0.28) : CSColor.hairline(0.08),
                         lineWidth: 1
                     )
             )
@@ -369,13 +369,23 @@ struct AgenticReadinessStepView: View {
     }
 }
 
-// MARK: - Permission (all five scopes)
+// MARK: - Permission (mic → … → speech → full-disk)
 
 struct PermissionStepView: View {
     let kind: PermissionKind
     @ObservedObject var model: OnboardingViewModel
 
     private var state: PermissionState { model.permissions.state(kind) }
+
+    /// Primary CTA mirrors Settings matrix: in-app request while undetermined
+    /// (when the scope supports it), System Settings deep-link once determined.
+    private var primaryTitle: String {
+        if state.isGranted { return "Granted" }
+        if state == .notDetermined, kind.supportsInAppPermissionRequest {
+            return "Allow \(kind.rawValue)"
+        }
+        return "Open System Settings"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -395,8 +405,9 @@ struct PermissionStepView: View {
                 .padding(.top, 4)
 
             HStack(spacing: 10) {
-                OnboardingButton(title: "Open System Settings", kind: .primary) {
-                    model.openSystemSettings(for: kind)
+                OnboardingButton(title: primaryTitle, kind: .primary) {
+                    guard !state.isGranted else { return }
+                    model.grantPermission(for: kind)
                 }
                 OnboardingButton(title: "Refresh status", kind: .secondary) {
                     model.refreshPermissions()
@@ -406,6 +417,10 @@ struct PermissionStepView: View {
 
             if kind == .fullDiskAccess {
                 Text("Optional — skip it to limit file-aware features only.")
+                    .font(CSFont.mono(11, .medium))
+                    .foregroundStyle(CSColor.textFaint)
+            } else if kind == .speechRecognition {
+                Text("Required for Apple live dictation. Without it Codescribe cannot run on-device Speech.")
                     .font(CSFont.mono(11, .medium))
                     .foregroundStyle(CSColor.textFaint)
             } else {
@@ -568,7 +583,8 @@ struct DoneStepView: View {
     @ObservedObject var model: OnboardingViewModel
 
     private let summaryOrder: [PermissionKind] = [
-        .microphone, .accessibility, .inputMonitoring, .screenRecording, .fullDiskAccess,
+        .microphone, .accessibility, .inputMonitoring, .screenRecording,
+        .speechRecognition, .fullDiskAccess,
     ]
 
     var body: some View {
@@ -623,6 +639,7 @@ extension PermissionKind {
         case .accessibility: return "Accessibility Access"
         case .inputMonitoring: return "Input Monitoring Access"
         case .screenRecording: return "Screen Recording Access"
+        case .speechRecognition: return "Speech Recognition Access"
         case .fullDiskAccess: return "Full Disk Access"
         }
     }
@@ -638,6 +655,8 @@ extension PermissionKind {
             return "Detect keyboard shortcuts to start and stop voice recording."
         case .screenRecording:
             return "Capture screen context to give the AI assistant visual awareness of what you're working on."
+        case .speechRecognition:
+            return "Power Apple live dictation on-device. Speech never leaves your Mac."
         case .fullDiskAccess:
             return "Read project files for AI context. Optional — limits file-aware features if skipped."
         }

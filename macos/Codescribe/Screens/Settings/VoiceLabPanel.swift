@@ -33,6 +33,7 @@ struct VoiceLabLexiconRow: Identifiable, Equatable {
     let id: Int
     let variant: String
     let canonical: String
+    let source: String
 }
 
 func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionRow] {
@@ -54,21 +55,57 @@ func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
         VoiceLabLexiconRow(
             id: index,
             variant: entry.variant,
-            canonical: entry.canonical
+            canonical: entry.canonical,
+            source: entry.source
         )
     }
 }
 
+/// Honest Dictionary headline.
+/// Every custom lexicon variant→canonical is a **live rule** the engine applies.
+/// Correction provenance is a subset, not the only “real” count.
+func dictionaryHeadline(correctionsRecorded: Int, rulesLearned: Int) -> String {
+    "\(correctionsRecorded) corrections recorded · \(rulesLearned) rules in dictionary"
+}
+
+func dictionarySubtitle(
+    correctionsRecorded: Int,
+    rulesLearned: Int,
+    taughtFromCorrections: Int,
+    totalEntries: Int
+) -> String {
+    if rulesLearned > 0 {
+        return "\(rulesLearned) live rules (variant→canonical) · \(taughtFromCorrections) with correction provenance · \(totalEntries) store rows."
+    }
+    if correctionsRecorded > 0 {
+        return "\(correctionsRecorded) corrections on disk · dictionary empty — press Teach to mine rules from the store."
+    }
+    return "Correction history and custom dictionary. Teach promotes corrections + proposed → live lexicon."
+}
+
+
 struct VoiceLabPanel: View {
     @ObservedObject var model: SettingsViewModel
     @State private var editor = VoiceLabEditorState()
+    @State private var correctionIndex = 0
+    @State private var lexiconIndex = 0
 
     private var corrections: [VoiceLabCorrectionRow] {
         qualityCorrectionRows(model.qualityRecords)
     }
 
-    private var lexicon: [VoiceLabLexiconRow] {
-        customLexiconRows(model.customLexiconEntries)
+    /// Every flattened lexicon pair is a rule PostProcessor applies.
+    private var rulesLearnedCount: Int {
+        model.customLexiconEntries.count
+    }
+
+    /// Subset taught from correction / proposed provenance (source=correction).
+    private var taughtFromCorrectionsCount: Int {
+        model.customLexiconEntries.lazy.filter { $0.source == "correction" }.count
+    }
+
+    private var correctionsRecordedCount: Int {
+        corrections.count
     }
 
     var body: some View {
@@ -76,24 +113,48 @@ struct VoiceLabPanel: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 0) {
                     EyebrowLabel(text: "Settings · \(SettingsSection.voiceLab.title)")
-                    Text("See what your voice taught.")
+                    Text(dictionaryHeadline(
+                        correctionsRecorded: correctionsRecordedCount,
+                        rulesLearned: rulesLearnedCount
+                    ))
                         .font(CSFont.ui(26, .bold))
                         .tracking(-0.5)
                         .foregroundStyle(CSColor.textHigh)
                         .padding(.top, 6)
-                    Text("Corrections and custom words come from the live local quality loop.")
+                    Text(dictionarySubtitle(
+                        correctionsRecorded: correctionsRecordedCount,
+                        rulesLearned: rulesLearnedCount,
+                        taughtFromCorrections: taughtFromCorrectionsCount,
+                        totalEntries: model.customLexiconEntries.count
+                    ))
                         .font(CSFont.ui(12.5))
                         .foregroundStyle(CSColor.textMutedAlt)
                         .padding(.top, 8)
+                    if let teachMsg = model.voiceLabTeachMessage {
+                        Text(teachMsg)
+                            .font(CSFont.mono(11, .medium))
+                            .foregroundStyle(CSColor.oliveLight)
+                            .padding(.top, 8)
+                    }
                 }
                 Spacer(minLength: 0)
-                Button("Refresh") {
-                    model.refreshVoiceLab()
+                HStack(spacing: 12) {
+                    Button("Teach") {
+                        model.teachDictionaryFromStore()
+                    }
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.chromeAccent)
+                    .buttonStyle(.plain)
+                    .disabled(model.voiceLabTeachPending)
+                    .accessibilityLabel("Teach dictionary from corrections and proposed rules")
+                    Button("Refresh") {
+                        model.refreshVoiceLab()
+                    }
+                    .font(CSFont.mono(11, .semibold))
+                    .foregroundStyle(CSColor.chromeAccent)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
                 }
-                .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
-                .buttonStyle(.plain)
-                .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
             }
 
             SettingsSectionLabel("Recent corrections · \(corrections.count)")
@@ -101,7 +162,7 @@ struct VoiceLabPanel: View {
             correctionsSection
                 .padding(.top, 11)
 
-            SettingsSectionLabel("Custom dictionary · \(lexicon.count)")
+            SettingsSectionLabel("Custom dictionary · \(model.customLexiconEntries.count)")
                 .padding(.top, 24)
             lexiconSection
                 .padding(.top, 11)
@@ -118,8 +179,9 @@ struct VoiceLabPanel: View {
             emptyState("No corrections yet — edit a transcript in the overlay so the engine can learn.")
         } else {
             VStack(spacing: 8) {
-                ForEach(corrections) { row in
-                    VStack(alignment: .leading, spacing: 8) {
+                let safeIndex = min(correctionIndex, corrections.count - 1)
+                let row = corrections[safeIndex]
+                VStack(alignment: .leading, spacing: 8) {
                         Text("Heard: \(row.variant)")
                             .font(CSFont.ui(12.5, .medium))
                             .foregroundStyle(CSColor.textMutedAlt)
@@ -142,7 +204,7 @@ struct VoiceLabPanel: View {
                             HStack(spacing: 7) {
                                 Text("→")
                                     .font(CSFont.mono(11, .semibold))
-                                    .foregroundStyle(CSColor.terracottaLight)
+                                    .foregroundStyle(CSColor.chromeAccent)
                                 Text(row.editedText)
                                     .font(CSFont.ui(13, .semibold))
                                     .foregroundStyle(CSColor.textBody)
@@ -163,6 +225,12 @@ struct VoiceLabPanel: View {
                                 .font(CSFont.ui(10.5))
                                 .foregroundStyle(CSColor.terracottaLight)
                         }
+                        if let note = model.voiceLabEditNotes[row.id] {
+                            Text(note)
+                                .font(CSFont.ui(10.5))
+                                .foregroundStyle(CSColor.oliveLight)
+                                .accessibilityLabel("Correction saved. \(note)")
+                        }
                         HStack(spacing: 7) {
                             Text(row.action)
                                 .foregroundStyle(CSColor.oliveLight)
@@ -181,6 +249,16 @@ struct VoiceLabPanel: View {
                     .accessibilityLabel(
                         "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
                     )
+                HStack {
+                    Button("Previous") { correctionIndex = max(0, safeIndex - 1) }
+                        .disabled(safeIndex == 0)
+                    Spacer()
+                    Text("\(safeIndex + 1) of \(corrections.count)")
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                    Spacer()
+                    Button("Next") { correctionIndex = min(corrections.count - 1, safeIndex + 1) }
+                        .disabled(safeIndex == corrections.count - 1)
                 }
             }
         }
@@ -196,29 +274,46 @@ struct VoiceLabPanel: View {
     private var lexiconSection: some View {
         if let error = model.voiceLabReadError {
             readError(error)
-        } else if lexicon.isEmpty {
+        } else if model.customLexiconEntries.isEmpty {
             emptyState("The custom dictionary is empty — accepted overlay corrections will appear here.")
         } else {
             VStack(spacing: 8) {
-                ForEach(lexicon) { row in
-                    HStack(spacing: 10) {
+                let safeIndex = min(lexiconIndex, model.customLexiconEntries.count - 1)
+                let row = model.customLexiconEntries[safeIndex]
+                HStack(spacing: 10) {
                         Text(row.variant)
                             .font(CSFont.mono(11.5, .medium))
                             .foregroundStyle(CSColor.textMutedAlt)
                             .textSelection(.enabled)
                         Text("→")
                             .font(CSFont.mono(11, .semibold))
-                            .foregroundStyle(CSColor.terracottaLight)
+                            .foregroundStyle(CSColor.chromeAccent)
                         Text(row.canonical)
                             .font(CSFont.mono(11.5, .semibold))
                             .foregroundStyle(CSColor.textBody)
                             .textSelection(.enabled)
                         Spacer(minLength: 0)
+                        Text(row.source)
+                            .font(CSFont.mono(10, .medium))
+                            .foregroundStyle(CSColor.textFaintAlt)
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
                     .background(card)
                     .overlay(cardBorder)
+                    .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
+                HStack {
+                    Button("Previous") { lexiconIndex = max(0, safeIndex - 1) }
+                        .disabled(safeIndex == 0)
+                    Spacer()
+                    Text("\(safeIndex + 1) of \(model.customLexiconEntries.count)")
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                    Spacer()
+                    Button("Next") {
+                        lexiconIndex = min(model.customLexiconEntries.count - 1, safeIndex + 1)
+                    }
+                    .disabled(safeIndex == model.customLexiconEntries.count - 1)
                 }
             }
         }

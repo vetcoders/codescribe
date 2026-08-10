@@ -1,12 +1,16 @@
 use anyhow::{Context, Result};
-use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent};
+use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
-        .register(
+        .register_native(
             type_text_definition(),
             Box::new(|input| Box::pin(handle_type_text(input))),
+            // Injects keystrokes into whatever app is frontmost — if that is a
+            // terminal, this is arbitrary command execution outside every path
+            // and program policy. Must ask (review P1-06).
+            ToolRisk::Mutating,
         )
         .expect("register type_text tool");
 }

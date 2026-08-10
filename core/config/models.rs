@@ -101,6 +101,10 @@ impl ModelManager {
         }
 
         // 2. Development: exe in target/debug/ -> ../../models/
+        // NOTE: deliberately NOT matched from target/debug/deps (test
+        // binaries): the repo models/ dir holds only Silero, and models_dir
+        // means "directory with ALL models" — hijacking it from tests sends
+        // runtime Whisper resolution to the wrong place.
         let dev_path = exe_dir.join("../../models");
         if dev_path.exists() {
             return dev_path
@@ -218,11 +222,219 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
 
     Err(anyhow!(
         "Whisper runtime fallback model not available.\n\
-         Embedded Whisper is preferred, but this build/runtime path still needs a complete local model.\n\
-         Set CODESCRIBE_MODEL_PATH, configure LOCAL_MODEL, or warm the Hugging Face cache.\n\n\
-         Download with: hf download {}",
+         Public builds do not embed Whisper; install it from Settings → Dictation,\n\
+         set CODESCRIBE_MODEL_PATH, configure LOCAL_MODEL, or warm the Hugging Face cache.\n\n\
+         Download with: hf download {}\n\
+         Or: Settings → Dictation → Download Whisper",
         DEFAULT_WHISPER_REPO
     ))
+}
+
+/// Live status of the default local Whisper model for Settings / bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhisperModelStatus {
+    pub available: bool,
+    pub embedded: bool,
+    pub path: Option<String>,
+    pub model_id: String,
+    pub repo: String,
+    /// Short human size hint for the UI (not a network probe).
+    pub size_hint: String,
+}
+
+/// Snapshot whether Whisper is embedded, already on disk, or still needs download.
+pub fn whisper_model_status() -> WhisperModelStatus {
+    let embedded = crate::stt::whisper::embedded::is_embedded_available();
+    let path = resolve_runtime_whisper_model_path(None)
+        .ok()
+        .map(|p| p.display().to_string());
+    WhisperModelStatus {
+        available: embedded || path.is_some(),
+        embedded,
+        path,
+        model_id: DEFAULT_MODEL.to_string(),
+        repo: DEFAULT_WHISPER_REPO.to_string(),
+        size_hint: "~900 MB".to_string(),
+    }
+}
+
+/// Download the default Whisper model into `~/.codescribe/models/<DEFAULT_MODEL>/`.
+///
+/// Files are fetched from the Hugging Face resolve endpoint (same repo as
+/// `make download-model`). Optional `on_progress(file, bytes_done, bytes_total)`
+/// is called during each file transfer. Uses `HF_TOKEN` when set.
+pub fn download_default_whisper_model<F>(mut on_progress: F) -> Result<PathBuf>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    let manager = ModelManager::new()?;
+    let dest = manager.get_model_path(DEFAULT_MODEL);
+    if is_complete_whisper_model_dir(&dest) {
+        return Ok(canonicalize_or_self(dest));
+    }
+
+    // Prefer an already-complete HF cache snapshot: hardlink/copy into user models dir
+    // when possible so Settings "Download" is a no-op if hf cache is warm.
+    if let Some(snapshot) = hf_snapshot_for_model(DEFAULT_MODEL) {
+        if snapshot != dest {
+            copy_complete_model_dir(&snapshot, &dest)?;
+        }
+        if is_complete_whisper_model_dir(&dest) {
+            return Ok(canonicalize_or_self(dest));
+        }
+    }
+
+    fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("codescribe-whisper-download/0.13")
+        .timeout(std::time::Duration::from_secs(60 * 30))
+        .build()
+        .context("build HTTP client for Whisper download")?;
+
+    // Small files first so a failed auth fails fast before multi-hundred-MB weights.
+    for name in REQUIRED_MODEL_FILES {
+        download_hf_file(
+            &client,
+            DEFAULT_WHISPER_REPO,
+            name,
+            &dest.join(name),
+            &mut on_progress,
+        )?;
+    }
+
+    let weights_dest = dest.join("model.safetensors");
+    let weights_alt = dest.join("weights.safetensors");
+    if !weights_dest.exists() && !weights_alt.exists() {
+        // Prefer model.safetensors; fall back to weights.safetensors if 404.
+        match download_hf_file(
+            &client,
+            DEFAULT_WHISPER_REPO,
+            "model.safetensors",
+            &weights_dest,
+            &mut on_progress,
+        ) {
+            Ok(()) => {}
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "model.safetensors missing; trying weights.safetensors"
+                );
+                download_hf_file(
+                    &client,
+                    DEFAULT_WHISPER_REPO,
+                    "weights.safetensors",
+                    &weights_alt,
+                    &mut on_progress,
+                )?;
+            }
+        }
+    }
+
+    if !is_complete_whisper_model_dir(&dest) {
+        return Err(anyhow!(
+            "Whisper download finished but model dir is incomplete: {}",
+            dest.display()
+        ));
+    }
+
+    Ok(canonicalize_or_self(dest))
+}
+
+fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
+    for name in REQUIRED_MODEL_FILES {
+        let from = src.join(name);
+        let to = dest.join(name);
+        if from.exists() && !to.exists() {
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from the REQUIRED_MODEL_FILES compile-time constant, and the only caller passes the HF cache snapshot dir and `ModelManager::get_model_path(DEFAULT_MODEL)`. No caller-supplied path component reaches here.
+            fs::copy(&from, &to)
+                .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
+        }
+    }
+    for name in REQUIRED_MODEL_WEIGHTS {
+        let from = src.join(name);
+        let to = dest.join(name);
+        if from.exists() && !to.exists() {
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Same as above: `name` is a REQUIRED_MODEL_WEIGHTS constant, both dirs are derived from DEFAULT_MODEL.
+            fs::copy(&from, &to)
+                .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn download_hf_file<F>(
+    client: &reqwest::blocking::Client,
+    repo: &str,
+    filename: &str,
+    dest: &Path,
+    on_progress: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        on_progress(
+            filename,
+            dest.metadata().map(|m| m.len()).unwrap_or(0),
+            None,
+        );
+        return Ok(());
+    }
+
+    let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
+    let mut request = client.get(&url);
+    if let Ok(token) = std::env::var("HF_TOKEN") {
+        let token = token.trim();
+        if !token.is_empty() {
+            request = request.bearer_auth(token);
+        }
+    }
+
+    let mut response = request
+        .send()
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()
+        .with_context(|| format!("HTTP error for {url}"))?;
+
+    let total = response.content_length();
+    let partial = dest.with_file_name(format!(
+        "{}.partial",
+        dest.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download")
+    ));
+
+    if let Some(parent) = partial.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- `partial` is `dest` with a ".partial" suffix on its own file name; `dest` is built from ModelManager::get_model_path(DEFAULT_MODEL) plus REQUIRED_MODEL_* constants, never from request data. The URL is remote, the path is not.
+    let mut file = fs::File::create(&partial)
+        .with_context(|| format!("create partial {}", partial.display()))?;
+
+    use std::io::{Read, Write};
+    let mut buf = [0u8; 1024 * 256];
+    let mut done: u64 = 0;
+    loop {
+        let n = response
+            .read(&mut buf)
+            .with_context(|| format!("read body {url}"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .with_context(|| format!("write {}", partial.display()))?;
+        done += n as u64;
+        on_progress(filename, done, total);
+    }
+    file.flush()?;
+    drop(file);
+
+    fs::rename(&partial, dest)
+        .with_context(|| format!("rename {} → {}", partial.display(), dest.display()))?;
+    on_progress(filename, done, total.or(Some(done)));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -458,5 +670,17 @@ mod tests {
         let phantom = PathBuf::from("/__codescribe__/nonexistent/phantom/model");
         let returned = canonicalize_or_self(phantom.clone());
         assert_eq!(returned, phantom);
+    }
+
+    #[test]
+    #[serial]
+    fn whisper_model_status_reports_default_ids() {
+        let status = whisper_model_status();
+        assert_eq!(status.model_id, DEFAULT_MODEL);
+        assert_eq!(status.repo, DEFAULT_WHISPER_REPO);
+        assert!(status.size_hint.contains("MB"));
+        // embedded flag must match cfg(embed_model) payload; we only assert type wiring.
+        let _ = status.available;
+        let _ = status.embedded;
     }
 }

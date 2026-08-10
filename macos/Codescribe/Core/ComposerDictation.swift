@@ -79,9 +79,19 @@ final class RealComposerDictation: ComposerDictating {
             self.listener = listener
             dictation.setListener(listener: listener)
             do {
+                // Optional Whisper warm: Apple-live must start even when weights are
+                // missing (gap-fill degraded for the session). Bridge initModel is
+                // soft-fail for Apple; keep recording start unblocked either way.
                 if !modelReady {
-                    try await dictation.initModel()
-                    modelReady = true
+                    do {
+                        try await dictation.initModel()
+                        modelReady = true
+                    } catch {
+                        dictationLog.warning(
+                            "composer dictation: Whisper warm skipped (degraded gap-fill): \(error.localizedDescription, privacy: .public)"
+                        )
+                        // Leave modelReady false so a later session can retry.
+                    }
                 }
                 try await dictation.startRecording(language: nil)  // auto-detect language
                 store.setDictationPhase(.recording)
@@ -165,7 +175,10 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
         }
     }
     func onCorrection(text: String, previousText: String) {}
-    func onFinal(utteranceId: UInt64, text: String) {
+    func onFinal(
+        utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?,
+        confidenceFlags: [String]
+    ) {
         publishPreview {
             activePreview = ""
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -179,6 +192,7 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     }
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource) {}
     func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind) {}
+    func onContextMarker(position: UInt64, marker: String) {}
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {}
     func onFinalTranscriptReady(text: String) {
         publishFinalPreview(text)

@@ -83,7 +83,7 @@ struct AudioPanel: View {
                 }
                 .buttonStyle(.plain)
                 .font(CSFont.mono(11, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.chromeAccent)
                 .accessibilityLabel("Refresh audio input devices")
             }
 
@@ -137,7 +137,7 @@ struct AudioPanel: View {
                 }
                 .buttonStyle(.plain)
                 .font(CSFont.mono(10.5, .semibold))
-                .foregroundStyle(CSColor.terracottaLight)
+                .foregroundStyle(CSColor.chromeAccent)
                 .disabled(model.settings.audioInputDevice == nil)
                 .accessibilityLabel("Reset audio input to system default")
             }
@@ -177,7 +177,7 @@ struct AudioPanel: View {
                 Toggle("", isOn: soundFeedbackBinding)
                     .toggleStyle(.switch)
                     .labelsHidden()
-                    .tint(CSColor.terracotta)
+                    .tint(CSColor.chromeAccent)
                     .accessibilityLabel("Recording start sound")
                     .accessibilityValue(model.settings.beepOnStart ? "On" : "Off")
             }
@@ -193,7 +193,7 @@ struct AudioPanel: View {
                         .foregroundStyle(CSColor.textBody)
                 }
                 Slider(value: soundVolumeBinding, in: 0 ... 1, step: 0.05)
-                    .tint(CSColor.terracotta)
+                    .tint(CSColor.chromeAccent)
                     .disabled(!model.settings.beepOnStart)
                     .accessibilityLabel("Recording start sound volume")
                     .accessibilityValue("\(Int((model.settings.soundVolume * 100).rounded())) percent")

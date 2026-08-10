@@ -725,6 +725,26 @@ mod tests {
     }
 
     #[test]
+    fn stored_tool_output_reference_is_the_only_body_sent_to_openai() {
+        let reference = "[tool output stored: /tmp/tool-output-deadbeef.txt (90000 bytes)]";
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_large".to_string(),
+                content: vec![ContentBlock::Text(reference.to_string())],
+                is_error: false,
+            }],
+        )];
+
+        let items = build_request_input_items(&messages, None)
+            .expect("stored tool reference should serialize");
+        let payload = serde_json::to_string(&items).expect("OpenAI payload JSON");
+
+        assert!(payload.contains(reference));
+        assert!(!payload.contains("monster inline body"));
+    }
+
+    #[test]
     fn build_request_input_items_uses_output_text_for_assistant_history() {
         let messages = vec![
             Message::new(Role::User, vec![ContentBlock::Text("question".to_string())]),
@@ -765,6 +785,7 @@ mod tests {
 
     #[test]
     fn restored_thread_inline_image_reaches_prompt_on_next_turn() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         // Turn 2 on a restored thread: an inline composer image persisted via
         // the thread store must come back as a disk-backed asset and still
         // reach the request payload instead of being skipped as byteless.
@@ -795,6 +816,7 @@ mod tests {
 
     #[test]
     fn tool_result_image_asset_adds_native_input_image_item() {
+        let _env_serial = crate::test_env::data_dir_env_serial();
         let asset = AgentAssetStore::save_image(b"png bytes", "image/png")
             .expect("image asset should save");
         let asset_id = asset.asset_id.clone();

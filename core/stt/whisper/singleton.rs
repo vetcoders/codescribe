@@ -7,11 +7,24 @@
 //! ## Idle unload
 //!
 //! The Whisper model lives on the GPU (Metal) and is by far the largest single
-//! memory consumer (~3 GB resident). Keeping it loaded across long idle periods
-//! wastes that memory, so the engine is held in a *resettable* slot: after a
-//! configurable idle period with no transcription a background reaper drops it,
-//! returning the GPU/host memory to the system, and the next call transparently
-//! reloads it. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to disable.
+//! memory consumer (~3–7 GB resident after a good pass). Keeping it loaded
+//! across long idle periods wastes that memory, so the engine is held in a
+//! *resettable* slot: after a configurable idle period with no transcription a
+//! background reaper drops the **weights** (the `LocalWhisperEngine`), and the
+//! next call transparently reloads them.
+//!
+//! The Candle Metal `Device` is **not** recreated on reload — it is process-
+//! cached in `engine::process_device` so unload→reload does not leak
+//! IOAccelerator Mach ports / dispatch threads (the reason idle-unload was
+//! previously disabled with `DEFAULT_IDLE_UNLOAD_SECS = 0`).
+//!
+//! Dropping the weights alone is not enough: their `MTLBuffer`s return to the
+//! `MetalDevice` free-buffer pool, which candle only prunes during the next
+//! inference. The reaper therefore forces that prune right after the drop
+//! (`memory::reclaim_metal_buffer_pool`) so RSS actually falls while idle.
+//!
+//! Default TTL is 45 minutes. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
+//! keep weights resident for the whole process life.
 
 // This entire module is a public API for library consumers
 
@@ -33,13 +46,13 @@ use super::params::DecodingParams;
 /// Default model name (for dev/fallback mode)
 pub use crate::config::models::DEFAULT_MODEL;
 
-/// Default idle period after which the Whisper engine is unloaded to free GPU
-/// memory. Disabled by default (0): each idle-unload→reload recreates the Metal
-/// device (`Device::new_metal`), leaking IOAccelerator Mach ports + dispatch
-/// threads per cycle and forcing a ~20-30s cold reload after the idle gap.
-/// Keeping the engine resident (~3GB GPU floor) matches the old always-warm
-/// daemon. Re-enable per machine via `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=<secs>`.
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 0;
+/// Default idle period after which Whisper **weights** are unloaded.
+///
+/// 45 minutes balances the operator-measured ~7.5 GB resident floor against
+/// reload cost. Metal `Device` stays process-cached (see engine module), so
+/// reloads after TTL reuse the same device. Override with
+/// `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (`0` disables unload).
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 2700;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -167,12 +180,20 @@ fn reaper_loop() {
             Err(_) => continue,
         };
         if guard.engine.is_some() && guard.last_used.elapsed() >= threshold {
-            // Drop the engine (and its Metal device) while holding the lock so
-            // no transcription can be mid-flight, then return freed pages.
+            // Drop weights only (LocalWhisperEngine). The process-cached Metal
+            // Device in engine::process_device stays alive so the next cold load
+            // reuses it — no Device::new_metal churn / port leak.
             guard.engine = None;
+            // Dropped weight buffers only return to the MetalDevice free-buffer
+            // pool; force candle's prune or the multi-GB stays resident until
+            // the NEXT inference. Done under the slot lock so a concurrent
+            // reload cannot interleave with the pool sweep.
+            if let Some(device) = super::engine::cached_process_device() {
+                crate::memory::reclaim_metal_buffer_pool(&device);
+            }
             drop(guard);
             info!(
-                "Whisper engine unloaded after {}s idle; releasing GPU/host memory",
+                "Whisper weights unloaded after {}s idle (Metal device retained, buffer pool pruned); releasing host heap",
                 threshold.as_secs()
             );
             crate::memory::release_freed_heap();
@@ -182,13 +203,21 @@ fn reaper_loop() {
 
 /// Run `f` with the engine, loading it on demand and refreshing the idle clock.
 fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Result<R> {
+    let lock_started = Instant::now();
     let mut guard = slot()
         .lock()
         .map_err(|e| anyhow!("Failed to lock engine: {}", e))?;
-    if guard.engine.is_none() {
+    let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
+    let mut model_load_ms = 0u64;
+    let cold_load = guard.engine.is_none();
+    if cold_load {
+        let load_started = Instant::now();
         guard.engine = Some(load_engine()?);
+        model_load_ms = load_started.elapsed().as_millis() as u64;
+        info!("whisper_engine_cold_load model_load_ms={model_load_ms}");
         ensure_reaper();
     }
+    super::timing::record_engine_acquire(lock_wait_ms, model_load_ms, cold_load);
     guard.last_used = Instant::now();
     let engine = guard
         .engine
@@ -220,10 +249,17 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
     let mut guard = slot()
         .try_lock()
         .map_err(|_| anyhow!("Whisper engine busy, skipping correction"))?;
-    if guard.engine.is_none() {
+    let mut model_load_ms = 0u64;
+    let cold_load = guard.engine.is_none();
+    if cold_load {
+        let load_started = Instant::now();
         guard.engine = Some(load_engine()?);
+        model_load_ms = load_started.elapsed().as_millis() as u64;
+        info!("whisper_engine_cold_load model_load_ms={model_load_ms}");
         ensure_reaper();
     }
+    // try_lock never waits, so lock_wait is 0 by construction.
+    super::timing::record_engine_acquire(0, model_load_ms, cold_load);
     guard.last_used = Instant::now();
     let engine = guard
         .engine
@@ -409,9 +445,8 @@ mod tests {
         unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "120") };
         assert_eq!(idle_unload_after(), Some(Duration::from_secs(120)));
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
-        // DEFAULT_IDLE_UNLOAD_SECS is now 0 (idle-unload disabled by default),
-        // so with no override the reaper is off.
-        assert!(idle_unload_after().is_none());
+        // Default is 45 min weight-only unload (Metal device stays process-cached).
+        assert_eq!(idle_unload_after(), Some(Duration::from_secs(2700)));
     }
 
     #[test]

@@ -1,10 +1,8 @@
 //! Embedded Whisper model bytes.
 //!
-//! The default product build embeds Whisper when the model is available at
-//! build time. These helpers expose that payload to the singleton. When the
-//! build is produced with `CODESCRIBE_NO_EMBED=1` or without a complete model
-//! snapshot, the payload is intentionally absent and runtime lookup must take
-//! over.
+//! Whisper embed is **opt-in** (`CODESCRIBE_EMBED_WHISPER=1`) for fat/offline
+//! SKUs only. The daily public build leaves this payload empty and resolves
+//! Whisper at runtime (HF cache, `~/.codescribe/models`, Settings download).
 
 #[cfg(embed_model)]
 mod data {

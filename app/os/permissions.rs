@@ -47,6 +47,8 @@ pub enum PermissionKind {
     Accessibility,
     InputMonitoring,
     ScreenRecording,
+    /// SFSpeechRecognizer TCC — required for Apple live dictation.
+    SpeechRecognition,
     FullDiskAccess,
 }
 
@@ -58,6 +60,7 @@ pub fn permission_status(kind: PermissionKind) -> PermissionStatus {
         PermissionKind::Accessibility => check_accessibility(),
         PermissionKind::InputMonitoring => check_input_monitoring(),
         PermissionKind::ScreenRecording => check_screen_recording(),
+        PermissionKind::SpeechRecognition => check_speech_recognition(),
         PermissionKind::FullDiskAccess => check_full_disk_access(),
     }
 }
@@ -108,6 +111,30 @@ pub fn check_input_monitoring() -> PermissionStatus {
 
 #[cfg(not(target_os = "macos"))]
 pub fn check_input_monitoring() -> PermissionStatus {
+    PermissionStatus::Granted
+}
+
+/// Check Speech Recognition TCC (`SFSpeechRecognizer.authorizationStatus`).
+/// Required for Apple live dictation via the STT bridge.
+#[cfg(target_os = "macos")]
+pub fn check_speech_recognition() -> PermissionStatus {
+    unsafe {
+        let Some(sf_class) = Class::get("SFSpeechRecognizer") else {
+            return PermissionStatus::NotDetermined;
+        };
+        // SFSpeechRecognizerAuthorizationStatus:
+        // 0 notDetermined, 1 denied, 2 restricted, 3 authorized
+        let status: isize = msg_send![sf_class, authorizationStatus];
+        match status {
+            3 => PermissionStatus::Granted,
+            1 | 2 => PermissionStatus::Denied,
+            _ => PermissionStatus::NotDetermined,
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn check_speech_recognition() -> PermissionStatus {
     PermissionStatus::Granted
 }
 
@@ -323,6 +350,11 @@ unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
 }
+
+// Ensures `SFSpeechRecognizer` is available for `check_speech_recognition`.
+#[cfg(target_os = "macos")]
+#[link(name = "Speech", kind = "framework")]
+unsafe extern "C" {}
 
 /// Check screen recording permission status.
 #[cfg(target_os = "macos")]

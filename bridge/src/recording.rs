@@ -48,6 +48,75 @@ pub struct CsAudioInputSnapshot {
     pub runtime_configuration_matches: bool,
 }
 
+/// Whether local Whisper weights are ready (embedded or on-disk). Used by
+/// Settings → Dictation so users can download the model without a fat DMG.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsWhisperModelStatus {
+    pub available: bool,
+    pub embedded: bool,
+    pub path: Option<String>,
+    pub model_id: String,
+    pub repo: String,
+    pub size_hint: String,
+}
+
+impl From<codescribe_core::config::models::WhisperModelStatus> for CsWhisperModelStatus {
+    fn from(s: codescribe_core::config::models::WhisperModelStatus) -> Self {
+        Self {
+            available: s.available,
+            embedded: s.embedded,
+            path: s.path,
+            model_id: s.model_id,
+            repo: s.repo,
+            size_hint: s.size_hint,
+        }
+    }
+}
+
+/// Progress callbacks for Settings Whisper download (large, multi-file).
+/// `bytes_total` is `-1` when the server did not send Content-Length.
+#[uniffi::export(with_foreign)]
+pub trait CsWhisperDownloadListener: Send + Sync {
+    fn on_progress(&self, file: String, bytes_done: u64, bytes_total: i64);
+    fn on_complete(&self, path: String);
+}
+
+/// Snapshot Whisper availability without constructing a dictation session.
+#[uniffi::export]
+pub fn whisper_model_status() -> CsWhisperModelStatus {
+    CsWhisperModelStatus::from(codescribe_core::config::models::whisper_model_status())
+}
+
+/// Download the default Whisper model (idempotent if already complete).
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn download_whisper_model(
+    listener: Option<Arc<dyn CsWhisperDownloadListener>>,
+) -> Result<CsWhisperModelStatus, CsError> {
+    tokio::task::spawn_blocking(move || {
+        let path =
+            codescribe_core::config::models::download_default_whisper_model(|file, done, total| {
+                if let Some(ref listener) = listener {
+                    listener.on_progress(
+                        file.to_string(),
+                        done,
+                        total.map(|t| t as i64).unwrap_or(-1),
+                    );
+                }
+            })
+            .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+        if let Some(ref listener) = listener {
+            listener.on_complete(path.display().to_string());
+        }
+        Ok(CsWhisperModelStatus::from(
+            codescribe_core::config::models::whisper_model_status(),
+        ))
+    })
+    .await
+    .map_err(|e| CsError::Recording {
+        msg: format!("download_whisper_model join error: {e}"),
+    })?
+}
+
 fn normalized_device_name(device: Option<&str>) -> Option<String> {
     device
         .map(str::trim)
@@ -231,7 +300,16 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_recording_finalising(&self);
     fn on_preview(&self, text: String);
     fn on_correction(&self, text: String, previous_text: String);
-    fn on_final(&self, utterance_id: u64, text: String);
+    /// Completed VAD-bounded utterance. Optional STT quality fields feed the
+    /// overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
+    fn on_final(
+        &self,
+        utterance_id: u64,
+        text: String,
+        avg_logprob: Option<f32>,
+        speech_pct: Option<f32>,
+        confidence_flags: Vec<String>,
+    );
     fn on_replace_range(
         &self,
         utterance_id: u64,
@@ -247,6 +325,9 @@ pub trait CsTranscriptionListener: Send + Sync {
         text: String,
         kind: CsAnnotationKind,
     );
+    /// Insert a context-bucket marker at the global transcript character
+    /// position captured when the agent combo was pressed.
+    fn on_context_marker(&self, position: u64, marker: String);
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
     /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
     /// the SAME clean text that is pasted/delivered and written to history. Surfaces
@@ -328,17 +409,23 @@ impl ComposerTranscriptSource {
     }
 }
 
-/// Pick the composer return: the whole-WAV final pass wins whenever it produced
-/// non-empty text (it decodes the recording as one continuous utterance, so it
-/// avoids the mid-word cut artifacts of the streaming splice); otherwise the
-/// streaming accumulation is the fallback authority. Both inputs are trimmed.
+/// Pick the composer return.
+///
+/// Final pass wins when non-empty **and** not a catastrophic length regression
+/// vs the live streaming assembly (stream is the floor of truth). Empty/absent
+/// final, or a collapsing file-STT final (e.g. Apple SFSpeech 12 chars vs a
+/// long stream), falls back to streaming. Both inputs are trimmed.
 fn select_composer_transcript(
     final_pass: Option<&str>,
     streaming: &str,
 ) -> (String, ComposerTranscriptSource) {
     if let Some(text) = final_pass {
         let trimmed = text.trim();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty()
+            && !codescribe_core::pipeline::contracts::final_pass_is_length_regression(
+                trimmed, streaming,
+            )
+        {
             return (trimmed.to_string(), ComposerTranscriptSource::FinalPass);
         }
     }
@@ -408,12 +495,24 @@ impl EventSink for CsEventSink {
                 .listener
                 .on_correction(text.clone(), previous_text.clone()),
             EngineEvent::UtteranceFinal {
-                utterance_id, text, ..
+                utterance_id,
+                text,
+                avg_logprob,
+                vad_speech_pct,
+                confidence_flags,
+                ..
             } => {
                 // Compose the composer return here: the streaming recorder's own
                 // transcript buffer is never filled on this path.
                 self.transcript.append_final(text);
-                self.listener.on_final(*utterance_id, text.clone());
+                let flags: Vec<String> = confidence_flags.iter().map(ToString::to_string).collect();
+                self.listener.on_final(
+                    *utterance_id,
+                    text.clone(),
+                    *avg_logprob,
+                    *vad_speech_pct,
+                    flags,
+                );
             }
             EngineEvent::ReplaceRange {
                 utterance_id,
@@ -516,16 +615,29 @@ impl CodescribeDictation {
         }
     }
 
-    /// Load the Whisper engine (idempotent). Runs on a blocking thread because
-    /// model load touches the GPU and can take seconds.
-    /// Wraps `whisper::init` (stt/whisper/singleton.rs:199).
+    /// Optionally warm Whisper weights. Runs on a blocking thread because model
+    /// load touches the GPU and can take seconds.
+    ///
+    /// When the live engine is Apple, Whisper is **gap-fill only** (file final /
+    /// emergency recovery). Missing weights must never refuse recording start —
+    /// we log an honest degraded-mode note and return `Ok(())`. Candle-live
+    /// still requires a model and surfaces load errors.
+    /// Wraps `whisper::init` (stt/whisper/singleton.rs).
     pub async fn init_model(&self) -> Result<(), CsError> {
-        tokio::task::spawn_blocking(whisper::init)
+        let apple_live = codescribe::stt::active_engine_is_apple();
+        let result = tokio::task::spawn_blocking(whisper::init)
             .await
             .map_err(|e| CsError::Recording {
                 msg: format!("init_model task join error: {e}"),
-            })?
-            .map_err(|e| CsError::Recording { msg: e.to_string() })
+            })?;
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) if apple_live => {
+                tracing::warn!("no Whisper gap fill this session (Apple live continues): {e:#}");
+                Ok(())
+            }
+            Err(e) => Err(CsError::Recording { msg: e.to_string() }),
+        }
     }
 
     /// True when the Whisper engine is currently loaded. May flip back to
@@ -533,6 +645,11 @@ impl CodescribeDictation {
     /// Wraps `whisper::is_initialized` (stt/whisper/singleton.rs:207).
     pub fn is_model_loaded(&self) -> bool {
         whisper::is_initialized()
+    }
+
+    /// Whether the default Whisper weights are on disk / embedded (not necessarily loaded).
+    pub fn whisper_model_ready_status(&self) -> CsWhisperModelStatus {
+        CsWhisperModelStatus::from(codescribe_core::config::models::whisper_model_status())
     }
 
     /// Start microphone dictation. Builds a `CsEventSink` from the registered
@@ -789,7 +906,14 @@ mod tests {
         fn on_recording_finalising(&self) {}
         fn on_preview(&self, _text: String) {}
         fn on_correction(&self, _text: String, _previous_text: String) {}
-        fn on_final(&self, utterance_id: u64, text: String) {
+        fn on_final(
+            &self,
+            utterance_id: u64,
+            text: String,
+            _avg_logprob: Option<f32>,
+            _speech_pct: Option<f32>,
+            _confidence_flags: Vec<String>,
+        ) {
             self.final_calls.lock().unwrap().push((utterance_id, text));
         }
         fn on_replace_range(
@@ -809,6 +933,7 @@ mod tests {
             _kind: CsAnnotationKind,
         ) {
         }
+        fn on_context_marker(&self, _position: u64, _marker: String) {}
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
         fn on_final_transcript_ready(&self, _text: String) {}
         fn on_vad_active(&self, _active: bool) {}
@@ -909,13 +1034,21 @@ mod tests {
         );
     }
 
-    /// A non-empty final pass is the delivery-grade winner over the streaming
-    /// splice; both sides are trimmed on the way out.
+    /// A non-empty final pass of comparable length is the delivery-grade winner.
     #[test]
     fn select_composer_transcript_prefers_final_pass() {
         let (text, source) = select_composer_transcript(Some("  raz dwa trzy  "), "raz dwa tszy");
         assert_eq!(text, "raz dwa trzy");
         assert_eq!(source, ComposerTranscriptSource::FinalPass);
+    }
+
+    /// Collapsing file-final (Apple SFSpeech short) must not blank a real stream.
+    #[test]
+    fn select_composer_transcript_rejects_length_regression() {
+        let stream = "Im wystarczy i jeszcze sporo z freezed live assembly utterance dwa";
+        let (text, source) = select_composer_transcript(Some("Im wystarczy"), stream);
+        assert_eq!(text, stream.trim());
+        assert_eq!(source, ComposerTranscriptSource::StreamingFallback);
     }
 
     /// An absent or empty/whitespace final pass falls back to the streaming

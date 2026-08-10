@@ -201,7 +201,13 @@ pub(crate) fn merge_corrected_window(
     None
 }
 
-/// Apply final boundary text while preserving a non-empty preview fallback.
+/// Apply final-boundary commit text against the live preview assembly.
+///
+/// Product rule (core engine, 2026-07-24): the live/interim assembly is the
+/// **stream floor of truth** for an utterance. Commit-lane re-transcription
+/// (especially Apple SFSpeech on a long window) may collapse to a short tail.
+/// When that happens we **keep the richer preview** so freezed seals do not
+/// throw away speech that already landed in the open tail.
 ///
 /// Returns `true` when a boundary has usable content after reconciliation.
 pub(crate) fn apply_final_boundary_text(
@@ -209,12 +215,22 @@ pub(crate) fn apply_final_boundary_text(
     cleaned_final: &str,
 ) -> bool {
     let cleaned = cleaned_final.trim();
+    let preview = accumulated_text.trim();
     if cleaned.is_empty() {
-        !accumulated_text.trim().is_empty()
-    } else {
-        *accumulated_text = cleaned.to_string();
-        true
+        return !preview.is_empty();
     }
+    // Empty preview → take commit text.
+    if preview.is_empty() {
+        *accumulated_text = cleaned.to_string();
+        return true;
+    }
+    // Commit shorter than ~40% of preview = collapse (same rule as file final).
+    if crate::pipeline::contracts::final_pass_is_length_regression(cleaned, preview) {
+        // Keep preview already stored in accumulated_text.
+        return true;
+    }
+    *accumulated_text = cleaned.to_string();
+    true
 }
 
 #[derive(Debug, Default, Clone, Copy)]

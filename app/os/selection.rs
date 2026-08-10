@@ -27,6 +27,20 @@ pub struct AssistiveContext {
     pub selected_text: Option<String>,
 }
 
+/// One atomic selection capture. Image bytes are retained before clipboard
+/// restoration so an image selected via synthetic Cmd+C cannot disappear.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapturedAssistiveContext {
+    pub context: AssistiveContext,
+    pub image_png: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CopiedSelectionPayload {
+    text: Option<String>,
+    image_png: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Clone)]
 struct TimedAssistiveContext {
     captured_at: std::time::Instant,
@@ -114,13 +128,21 @@ pub fn capture_assistive_context() -> AssistiveContext {
 pub fn capture_assistive_context_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
 ) -> AssistiveContext {
+    capture_assistive_context_with_image_with_prior_frontmost(prior_frontmost_app).context
+}
+
+/// Capture text and image selection as one clipboard transaction. The image is
+/// read before the user's previous clipboard snapshot is restored.
+pub fn capture_assistive_context_with_image_with_prior_frontmost(
+    prior_frontmost_app: Option<String>,
+) -> CapturedAssistiveContext {
     // Unit tests should not trigger osascript / clipboard / event simulation.
     if cfg!(test) {
-        return AssistiveContext::default();
+        return CapturedAssistiveContext::default();
     }
 
     if !env_flag("ASSISTIVE_CONTEXT_ENABLED", true) {
-        return AssistiveContext::default();
+        return CapturedAssistiveContext::default();
     }
 
     let max_chars = env_usize("ASSISTIVE_CONTEXT_MAX_CHARS", 20000);
@@ -132,18 +154,42 @@ pub fn capture_assistive_context_with_prior_frontmost(
     } else {
         None
     };
-    capture_assistive_context_from_parts(
-        current_frontmost_app,
-        prior_frontmost_app,
-        |frontmost_app, should_restore_prior_app| {
-            capture_selected_text_with_effective_frontmost(
-                max_chars,
-                copy_delay_ms,
+    let (frontmost_app, should_restore_prior_app) =
+        resolve_effective_frontmost_app(current_frontmost_app, prior_frontmost_app);
+    if frontmost_app.as_deref().is_some_and(is_codescribe_app) {
+        debug!("Assistive context: frontmost is Codescribe, skipping selection capture");
+        return CapturedAssistiveContext {
+            context: AssistiveContext {
                 frontmost_app,
-                should_restore_prior_app,
-            )
+                selected_text: None,
+            },
+            image_png: None,
+        };
+    }
+
+    let captured = capture_selected_content_with_effective_frontmost(
+        max_chars,
+        copy_delay_ms,
+        frontmost_app.as_deref(),
+        should_restore_prior_app,
+    );
+    debug!(
+        "Assistive context captured (app_present={}, selected_chars={}, image_present={})",
+        frontmost_app.is_some(),
+        captured
+            .text
+            .as_ref()
+            .map(|s| s.chars().count())
+            .unwrap_or(0),
+        captured.image_png.is_some()
+    );
+    CapturedAssistiveContext {
+        context: AssistiveContext {
+            frontmost_app,
+            selected_text: captured.text,
         },
-    )
+        image_png: captured.image_png,
+    }
 }
 
 /// Capture only the frontmost app name (no selection, no clipboard).
@@ -182,9 +228,59 @@ pub fn capture_frontmost_app_only_with_prior_frontmost(
     }
 }
 
+/// Activate a running app by localized name without sending Apple Events.
+#[cfg(target_os = "macos")]
+fn activate_running_app_by_name(app_name: &str) -> bool {
+    use objc::runtime::{Class, Object};
+    use objc::{msg_send, sel, sel_impl};
+
+    const ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
+
+    // SAFETY: sharedWorkspace/runningApplications return shared autoreleased
+    // AppKit objects. We only inspect them and synchronously activate a match.
+    unsafe {
+        let Some(workspace_class) = Class::get("NSWorkspace") else {
+            return false;
+        };
+        let workspace: *mut Object = msg_send![workspace_class, sharedWorkspace];
+        if workspace.is_null() {
+            return false;
+        }
+        let applications: *mut Object = msg_send![workspace, runningApplications];
+        if applications.is_null() {
+            return false;
+        }
+
+        let count: usize = msg_send![applications, count];
+        for index in 0..count {
+            let application: *mut Object = msg_send![applications, objectAtIndex: index];
+            if application.is_null() {
+                continue;
+            }
+            let localized_name: *mut Object = msg_send![application, localizedName];
+            if localized_name.is_null() {
+                continue;
+            }
+            let name_cstr: *const std::ffi::c_char = msg_send![localized_name, UTF8String];
+            if name_cstr.is_null() {
+                continue;
+            }
+            let running_name = std::ffi::CStr::from_ptr(name_cstr).to_string_lossy();
+            if running_name.trim().eq_ignore_ascii_case(app_name) {
+                let activated: bool =
+                    msg_send![application, activateWithOptions: ACTIVATE_IGNORING_OTHER_APPS];
+                return activated;
+            }
+        }
+    }
+
+    false
+}
+
 /// Best-effort app activation by localized app name.
 ///
-/// Used to recover focus before synthetic paste when frontmost temporarily flips to Codescribe.
+/// Native NSRunningApplication activation is primary because it avoids
+/// Automation TCC. osascript remains a compatibility fallback.
 #[cfg(target_os = "macos")]
 pub fn activate_app_by_name(app_name: &str) -> bool {
     use std::process::Command;
@@ -194,6 +290,19 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
         return false;
     }
 
+    if activate_running_app_by_name(app_name) {
+        debug!(
+            app_name,
+            "Activated paste target through NSRunningApplication"
+        );
+        return true;
+    }
+
+    warn!(
+        app_name,
+        "Native app activation did not land; trying osascript compatibility fallback"
+    );
+
     let escaped = app_name.replace('\\', "\\\\").replace('\"', "\\\"");
     let script = format!("tell application \"{}\" to activate", escaped);
 
@@ -202,12 +311,8 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             if out.status.success() {
                 true
             } else {
-                // A non-zero exit here is the signature of a silent Automation
-                // TCC denial (errAEEventNotPermitted, -1743) as well as a
-                // missing target app. Surface it at warn so the cause is not
-                // lost in debug noise.
                 warn!(
-                    "App activation failed for '{}': exit={:?} (possible Automation TCC denial)",
+                    "osascript activation fallback failed for '{}': exit={:?}",
                     app_name,
                     out.status.code()
                 );
@@ -215,7 +320,10 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
             }
         }
         Err(e) => {
-            warn!("App activation failed for '{}': {}", app_name, e);
+            warn!(
+                "osascript activation fallback failed for '{}': {}",
+                app_name, e
+            );
             false
         }
     }
@@ -355,6 +463,7 @@ fn resolve_effective_frontmost_app(
     }
 }
 
+#[cfg(test)]
 fn capture_assistive_context_from_parts(
     current_frontmost_app: Option<String>,
     prior_frontmost_app: Option<String>,
@@ -403,12 +512,12 @@ fn copy_landed_by_change_count(prev: Option<i64>, post: Option<i64>) -> bool {
     }
 }
 
-fn capture_selected_text_with_effective_frontmost(
+fn capture_selected_content_with_effective_frontmost(
     max_chars: usize,
     copy_delay_ms: u64,
     frontmost_app: Option<&str>,
     should_restore_prior_app: bool,
-) -> Option<String> {
+) -> CopiedSelectionPayload {
     if should_restore_prior_app && let Some(app_name) = frontmost_app {
         if activate_app_by_name(app_name) {
             // Confirm focus actually landed on the target before capturing,
@@ -428,31 +537,56 @@ fn capture_selected_text_with_effective_frontmost(
         }
     }
 
-    selected_text_from_frontmost(max_chars, copy_delay_ms, frontmost_app)
+    selected_content_from_frontmost(max_chars, copy_delay_ms, frontmost_app)
 }
 
 /// Build the LLM input for assistive mode, including optional selection context.
-pub fn build_assistive_input(user_voice_text: &str, ctx: &AssistiveContext) -> String {
+///
+/// Skeleton labels are a canonical English machine protocol for the model
+/// (`USER_INSTRUCTION:` / `SELECTED_TEXT:` / `CONTEXT:`) — user content stays
+/// in the user's language. Legacy Polish labels remain recognized on the
+/// consuming side (thread titles, Swift presentation) for threads persisted
+/// before the rename.
+///
+/// `bucket_selection_count` is the ContextBucket truth from the caller: when
+/// selections ride in `<codescribe_context>` tags appended after this skeleton,
+/// the header must say so — with an honest count — instead of falsely declaring
+/// that no selection is available (incident t_2026-07-21_zcryie: the
+/// contradiction made the model treat correct selections as a leak).
+pub fn build_assistive_input(
+    user_voice_text: &str,
+    ctx: &AssistiveContext,
+    bucket_selection_count: usize,
+) -> String {
     let instruction = user_voice_text.trim();
     let selected_text = ctx.selected_text.as_deref().unwrap_or("").trim();
     let frontmost_app = ctx.frontmost_app.as_deref().unwrap_or("").trim();
 
     let mut out = String::new();
 
-    out.push_str("INSTRUKCJA_UŻYTKOWNIKA:\n<<<\n");
+    out.push_str("USER_INSTRUCTION:\n<<<\n");
     out.push_str(instruction);
     out.push_str("\n>\n\n");
 
     if !selected_text.is_empty() {
-        out.push_str("ZAZNACZONY_TEKST:\n<<<\n");
+        out.push_str("SELECTED_TEXT:\n<<<\n");
         out.push_str(selected_text);
         out.push_str("\n>\n");
+    } else if bucket_selection_count > 0 {
+        let noun = if bucket_selection_count == 1 {
+            "selection"
+        } else {
+            "selections"
+        };
+        out.push_str(&format!(
+            "SELECTED_TEXT: carried in <codescribe_context> ({bucket_selection_count} {noun}).\n"
+        ));
     } else {
-        out.push_str("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n");
+        out.push_str("SELECTED_TEXT: no selection available.\n");
     }
 
     if !frontmost_app.is_empty() {
-        out.push_str("\nKONTEKST:\n- frontmost_app: ");
+        out.push_str("\nCONTEXT:\n- frontmost_app: ");
         out.push_str(frontmost_app);
         out.push('\n');
     }
@@ -504,17 +638,20 @@ fn frontmost_app_name() -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn selected_text_from_frontmost(
+fn selected_content_from_frontmost(
     max_chars: usize,
     copy_delay_ms: u64,
     frontmost_app: Option<&str>,
-) -> Option<String> {
+) -> CopiedSelectionPayload {
     // Prefer Accessibility selection if available (doesn't depend on clipboard).
     //
     // Some apps report `AXSelectedTextRange.length == 0` even when `AXSelectedText` is non-empty,
     // so we do *not* early-return on length==0 before checking `AXSelectedText`.
     if let Some(selected) = crate::os::selection::get_selected_text(max_chars) {
-        return Some(selected);
+        return CopiedSelectionPayload {
+            text: Some(selected),
+            image_png: None,
+        };
     }
 
     // AX returned no selection. Fall back to a synthetic Cmd+C for ANY app — terminals
@@ -528,7 +665,7 @@ fn selected_text_from_frontmost(
             "Assistive context: AX gave no selection for {:?}; Cmd+C fallback disabled by env",
             frontmost_app
         );
-        return None;
+        return CopiedSelectionPayload::default();
     }
     // Only now (fallback path) pay for the system-wide AX length probe — it feeds
     // this diagnostic only, and the AX-selection early-return above skips it
@@ -551,7 +688,7 @@ fn selected_text_from_frontmost(
 
     if let Err(e) = clipboard::simulate_cmd_c() {
         warn!("Assistive context: failed to simulate Cmd+C: {}", e);
-        return None;
+        return CopiedSelectionPayload::default();
     }
 
     std::thread::sleep(Duration::from_millis(copy_delay_ms));
@@ -566,27 +703,28 @@ fn selected_text_from_frontmost(
         );
         // Nothing was copied, so the clipboard already holds prior content;
         // no restore needed.
-        return None;
+        return CopiedSelectionPayload::default();
     }
 
-    let mut copied = match clipboard::get_clipboard() {
-        Ok(t) => t,
-        Err(e) => {
-            debug!("Assistive context: clipboard read failed: {}", e);
-            String::new()
-        }
-    };
+    let mut captured = capture_copied_payload_and_restore(
+        || match clipboard::get_clipboard() {
+            Ok(text) => Some(text),
+            Err(error) => {
+                debug!("Assistive context: clipboard read failed: {}", error);
+                None
+            }
+        },
+        clipboard::get_image_png_best_effort,
+        || {
+            if let Some(snapshot) = snapshot
+                && let Err(error) = snapshot.restore()
+            {
+                debug!("Assistive context: clipboard restore failed: {}", error);
+            }
+        },
+    );
 
-    if let Some(snapshot) = snapshot
-        && let Err(e) = snapshot.restore()
-    {
-        debug!("Assistive context: clipboard restore failed: {}", e);
-    }
-
-    copied = copied.trim().to_string();
-    if copied.is_empty() {
-        return None;
-    }
+    let mut copied = captured.text.take().unwrap_or_default().trim().to_string();
 
     // changeCount is the authoritative detector. Only when it is unavailable do
     // we fall back to content comparison: if the clipboard text is unchanged,
@@ -599,7 +737,7 @@ fn selected_text_from_frontmost(
         debug!(
             "Assistive context: clipboard unchanged (changeCount unavailable); treating as no selection"
         );
-        return None;
+        copied.clear();
     }
 
     let copied_chars = copied.chars().count();
@@ -608,7 +746,21 @@ fn selected_text_from_frontmost(
         copied.push('…');
     }
 
-    Some(copied)
+    captured.text = (!copied.is_empty()).then_some(copied);
+    captured
+}
+
+fn capture_copied_payload_and_restore(
+    text_reader: impl FnOnce() -> Option<String>,
+    image_reader: impl FnOnce() -> Option<Vec<u8>>,
+    restore: impl FnOnce(),
+) -> CopiedSelectionPayload {
+    let captured = CopiedSelectionPayload {
+        text: text_reader(),
+        image_png: image_reader(),
+    };
+    restore();
+    captured
 }
 
 // ---------------------------------------------------------------------------
@@ -776,12 +928,12 @@ pub fn get_selected_text_length() -> Option<usize> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn selected_text_from_frontmost(
+fn selected_content_from_frontmost(
     _max_chars: usize,
     _copy_delay_ms: u64,
     _frontmost_app: Option<&str>,
-) -> Option<String> {
-    None
+) -> CopiedSelectionPayload {
+    CopiedSelectionPayload::default()
 }
 
 #[cfg(test)]
@@ -814,8 +966,9 @@ mod tests {
 
         assert_eq!(ctx.frontmost_app.as_deref(), Some("Terminal"));
         assert_eq!(ctx.selected_text.as_deref(), Some("selected terminal text"));
-        let input = build_assistive_input("opisz zaznaczenie", &ctx);
+        let input = build_assistive_input("opisz zaznaczenie", &ctx, 0);
         assert!(input.contains("selected terminal text"));
+        assert!(input.contains("SELECTED_TEXT:\n<<<\n"));
     }
 
     #[test]
@@ -825,13 +978,46 @@ mod tests {
             selected_text: None,
         };
 
-        let input = build_assistive_input("kontynuuj bez selekcji", &ctx);
+        let input = build_assistive_input("kontynuuj bez selekcji", &ctx, 0);
 
-        assert!(input.contains("INSTRUKCJA_UŻYTKOWNIKA"));
+        assert!(input.contains("USER_INSTRUCTION"));
         assert!(input.contains("kontynuuj bez selekcji"));
-        assert!(input.contains("ZAZNACZONY_TEKST: brak dostępnego zaznaczenia."));
-        assert!(!input.contains("ZAZNACZONY_TEKST:\n<<<\n\n>"));
+        assert!(input.contains("SELECTED_TEXT: no selection available."));
+        assert!(!input.contains("SELECTED_TEXT:\n<<<\n\n>"));
         assert!(input.contains("frontmost_app: GitHub Desktop"));
+    }
+
+    #[test]
+    fn assistive_input_header_tells_truth_when_bucket_carries_selection() {
+        // Incident t_2026-07-21_zcryie: "no selection" header alongside
+        // <selection_N> blocks made the model treat the selections as a leak.
+        let ctx = AssistiveContext {
+            frontmost_app: Some("Notes".to_string()),
+            selected_text: None,
+        };
+
+        let input = build_assistive_input("summarize the selection", &ctx, 3);
+
+        assert!(input.contains("SELECTED_TEXT: carried in <codescribe_context> (3 selections)."));
+        assert!(!input.contains("no selection available"));
+        assert!(!input.contains("brak dostępnego zaznaczenia"));
+    }
+
+    #[test]
+    fn assistive_input_live_selection_wins_over_bucket_flag() {
+        // Live selection path keeps its exact heredoc shape regardless of the
+        // bucket flag — only the label language changed.
+        let ctx = AssistiveContext {
+            frontmost_app: None,
+            selected_text: Some("live body".to_string()),
+        };
+
+        let input = build_assistive_input("edit this", &ctx, 1);
+
+        assert_eq!(
+            input,
+            "USER_INSTRUCTION:\n<<<\nedit this\n>\n\nSELECTED_TEXT:\n<<<\nlive body\n>\n"
+        );
     }
 
     #[test]
@@ -854,6 +1040,24 @@ mod tests {
         assert!(copy_landed_by_change_count(None, Some(5)));
         assert!(copy_landed_by_change_count(Some(5), None));
         assert!(copy_landed_by_change_count(None, None));
+    }
+
+    #[test]
+    fn copied_image_is_retained_before_clipboard_restore() {
+        use std::cell::Cell;
+
+        let restored = Cell::new(false);
+        let captured = capture_copied_payload_and_restore(
+            || None,
+            || {
+                assert!(!restored.get(), "image must be read before restore");
+                Some(vec![1, 2, 3, 4])
+            },
+            || restored.set(true),
+        );
+
+        assert!(restored.get());
+        assert_eq!(captured.image_png, Some(vec![1, 2, 3, 4]));
     }
 
     #[test]

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -7,14 +9,20 @@ use chrono::Utc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tracing::{debug, info, warn};
 
+use super::tool_output::ToolOutputStore;
 use super::{
     AgentAssetStore, AgentEvent, AgentProvider, AgentUiEvent, ContentBlock, Message, Role,
-    StreamOptions, ToolDefinition, ToolRegistry, ToolResultContent,
+    StreamOptions, ToolApprovalRequest, ToolDecision, ToolDefinition, ToolOrigin, ToolRegistry,
+    ToolResultContent,
 };
 
 const DEFAULT_MAX_ITERATIONS: usize = 25;
 const AGENT_STREAM_START_RETRY_MAX_ATTEMPTS: usize = 2;
 const AGENT_STREAM_START_RETRY_DELAY: Duration = Duration::from_millis(250);
+const TOOL_APPROVAL_TIMEOUT: Duration = Duration::from_secs(90);
+
+pub type ToolApprovalFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
+pub type ToolApprovalHandler = Arc<dyn Fn(ToolApprovalRequest) -> ToolApprovalFuture + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageAttachment {
@@ -37,6 +45,11 @@ pub struct AgentSession {
     pub(crate) thread_id: Option<String>,
     pub(crate) max_iterations: usize,
     pub(crate) ui_tx: Sender<AgentUiEvent>,
+    tool_output_store: ToolOutputStore,
+    approval_handler: Option<ToolApprovalHandler>,
+    approval_timeout: Duration,
+    execution_session_id: String,
+    execution_thread_id: String,
 }
 
 impl AgentSession {
@@ -52,7 +65,22 @@ impl AgentSession {
             thread_id: None,
             max_iterations: DEFAULT_MAX_ITERATIONS,
             ui_tx,
+            tool_output_store: ToolOutputStore::new(),
+            approval_handler: None,
+            approval_timeout: TOOL_APPROVAL_TIMEOUT,
+            execution_session_id: uuid::Uuid::new_v4().to_string(),
+            execution_thread_id: "unbound".to_string(),
         }
+    }
+
+    pub fn with_tool_approval(
+        mut self,
+        thread_id: impl Into<String>,
+        handler: ToolApprovalHandler,
+    ) -> Self {
+        self.execution_thread_id = thread_id.into();
+        self.approval_handler = Some(handler);
+        self
     }
 
     pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
@@ -64,13 +92,29 @@ impl AgentSession {
         self.thread_id.as_deref()
     }
 
+    /// Bind the durable thread identity used for approval requests and
+    /// thread-context tool dispatch. The voice lane has no approval handler, so
+    /// this is its only way to attach the ThreadStore id to tool execution.
+    pub fn bind_execution_thread(&mut self, thread_id: impl Into<String>) {
+        self.execution_thread_id = thread_id.into();
+    }
+
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
-    pub fn restore_messages(&mut self, messages: Vec<Message>) {
+    pub fn restore_messages(&mut self, mut messages: Vec<Message>) {
+        if let Err(error) = self.tool_output_store.spill_messages(&mut messages) {
+            warn!(%error, "Failed to normalize rehydrated tool-output history");
+        }
         self.messages = messages;
         self.thread_id = None;
+    }
+
+    #[cfg(test)]
+    fn with_tool_output_store(mut self, tool_output_store: ToolOutputStore) -> Self {
+        self.tool_output_store = tool_output_store;
+        self
     }
 
     async fn stream_with_retry(
@@ -351,24 +395,80 @@ impl AgentSession {
             });
 
             for (call_id, tool_name, arguments) in ready_calls {
-                send_ui_event(
-                    &self.ui_tx,
-                    AgentUiEvent::ToolExecuting {
-                        name: tool_name.clone(),
-                        id: call_id.clone(),
-                    },
-                )
-                .await;
+                let decision = self.tools.decide(
+                    &tool_name,
+                    &arguments,
+                    &call_id,
+                    &self.execution_session_id,
+                    &self.execution_thread_id,
+                );
+                let (authorization_error, approved_by_user, audit_decision) = match decision {
+                    ToolDecision::Allow => (None, false, "allowed"),
+                    ToolDecision::Deny(reason) => (Some(reason), false, "denied"),
+                    ToolDecision::RequireApproval(request) => {
+                        let request = *request;
+                        let approval = self
+                            .approval_handler
+                            .as_ref()
+                            .map(|handler| handler(request.clone()));
+                        send_ui_event(
+                            &self.ui_tx,
+                            AgentUiEvent::ToolApprovalRequested(request.clone()),
+                        )
+                        .await;
+                        match approval {
+                            Some(approval) => {
+                                match tokio::time::timeout(self.approval_timeout, approval).await {
+                                    Ok(true) => (None, true, "approved_once"),
+                                    Ok(false) => (
+                                        Some("Tool call rejected by the user".to_string()),
+                                        false,
+                                        "rejected",
+                                    ),
+                                    Err(_) => (
+                                        Some("Tool approval timed out".to_string()),
+                                        false,
+                                        "timeout",
+                                    ),
+                                }
+                            }
+                            None => (
+                                Some(
+                                    "Tool requires approval, but no approval UI is connected"
+                                        .to_string(),
+                                ),
+                                false,
+                                "denied",
+                            ),
+                        }
+                    }
+                };
 
                 let dispatch_started = Instant::now();
-                let tool_outputs = match self.tools.dispatch(&tool_name, arguments).await {
-                    Ok(outputs) => outputs,
-                    Err(error) => {
-                        warn!(
-                            "Tool '{}' execution failed for call {}: {}",
-                            tool_name, call_id, error
-                        );
-                        vec![ToolResultContent::Error(error.to_string())]
+                let tool_outputs = if let Some(reason) = authorization_error {
+                    vec![ToolResultContent::Error(reason)]
+                } else {
+                    send_ui_event(
+                        &self.ui_tx,
+                        AgentUiEvent::ToolExecuting {
+                            name: tool_name.clone(),
+                            id: call_id.clone(),
+                        },
+                    )
+                    .await;
+                    match self
+                        .tools
+                        .dispatch_in_thread(&tool_name, arguments, &self.execution_thread_id)
+                        .await
+                    {
+                        Ok(outputs) => outputs,
+                        Err(error) => {
+                            warn!(
+                                "Tool '{}' execution failed for call {}: {}",
+                                tool_name, call_id, error
+                            );
+                            vec![ToolResultContent::Error(error.to_string())]
+                        }
                     }
                 };
 
@@ -383,6 +483,29 @@ impl AgentSession {
                 // duration, outcome, and (on error) the error's first line. For MCP
                 // tools the server segment of the public name is surfaced.
                 let dispatch_ms = dispatch_started.elapsed().as_millis();
+                let policy = self.tools.policy(&tool_name);
+                let origin = policy
+                    .map(|policy| match &policy.origin {
+                        ToolOrigin::Native => "native".to_string(),
+                        ToolOrigin::Mcp { server, .. } => format!("mcp:{server}"),
+                    })
+                    .unwrap_or_else(|| "unregistered".to_string());
+                let risk = policy
+                    .map(|policy| policy.risk.as_str())
+                    .unwrap_or("unknown");
+                info!(
+                    call_id = %call_id,
+                    thread_id = %self.execution_thread_id,
+                    session_id = %self.execution_session_id,
+                    tool = %tool_name,
+                    origin = %origin,
+                    risk,
+                    decision = audit_decision,
+                    approved_by_user,
+                    outcome = if is_error { "error" } else { "ok" },
+                    duration_ms = dispatch_ms,
+                    "agent_tool_audit"
+                );
                 let server_label = mcp_server_name(&tool_name)
                     .map(|server| format!(" (mcp server `{server}`)"))
                     .unwrap_or_default();
@@ -416,6 +539,15 @@ impl AgentSession {
                             content_blocks.push(ContentBlock::Text(message))
                         }
                     }
+                }
+
+                if let Err(error) = self.tool_output_store.spill_content(&mut content_blocks) {
+                    warn!(
+                        tool = %tool_name,
+                        call_id = %call_id,
+                        %error,
+                        "Failed to persist oversized tool output; omitted it from context"
+                    );
                 }
 
                 let result_message =
@@ -496,7 +628,7 @@ fn first_error_line(outputs: &[ToolResultContent]) -> String {
         })
         .map(|message| {
             let line = message.lines().next().unwrap_or("").trim();
-            truncate_summary(line, 200)
+            truncate_summary(&redact_tool_summary(line), 200)
         })
         .unwrap_or_default()
 }
@@ -530,7 +662,7 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
         if text.is_empty() {
             return "Empty tool output".to_string();
         }
-        return truncate_summary(&text, SUMMARY_MAX_CHARS);
+        return truncate_summary(&redact_tool_summary(&text), SUMMARY_MAX_CHARS);
     }
 
     if image_count > 0 {
@@ -544,10 +676,75 @@ fn summarize_tool_result(outputs: &[ToolResultContent]) -> String {
         if error.is_empty() {
             return format!("{error_count} error result(s)");
         }
-        return truncate_summary(&error, SUMMARY_MAX_CHARS);
+        return truncate_summary(&redact_tool_summary(&error), SUMMARY_MAX_CHARS);
     }
 
     "No tool output".to_string()
+}
+
+fn redact_tool_summary(text: &str) -> String {
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) {
+        redact_json_value(&mut value);
+        return serde_json::to_string(&value)
+            .unwrap_or_else(|_| "[redacted tool output]".to_string());
+    }
+
+    if text
+        .split_whitespace()
+        .map(|token| {
+            token.trim_matches(|character| matches!(character, '\'' | '"' | ',' | ';' | '(' | ')'))
+        })
+        .any(|token| {
+            token.split_once('=').map_or_else(
+                || contains_sensitive_key(token),
+                |(key, _)| contains_sensitive_key(key),
+            )
+        })
+    {
+        return "[redacted sensitive tool output]".to_string();
+    }
+
+    text.to_string()
+}
+
+fn redact_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                if contains_sensitive_key(key) {
+                    *value = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_json_value(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_json_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn contains_sensitive_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    [
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        "apikey",
+        "authorization",
+        "cookie",
+        "environment",
+    ]
+    .iter()
+    .any(|sensitive| normalized.contains(sensitive))
 }
 
 fn truncate_summary(text: &str, max_chars: usize) -> String {
@@ -567,15 +764,18 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use async_trait::async_trait;
     use serde_json::json;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
 
+    use crate::agent::tool_output::ToolOutputStore;
     use crate::agent::{
         AgentEvent, AgentProvider, AgentSession, AgentUiEvent, ContentBlock, Message, Role,
-        StreamOptions, ToolDefinition, ToolRegistry, ToolResultContent,
+        StreamOptions, ToolDefinition, ToolExecutionPolicy, ToolOrigin, ToolRegistry,
+        ToolResultContent, ToolRisk,
     };
 
     struct LoopingProvider;
@@ -822,6 +1022,44 @@ mod tests {
         assert_eq!(session.thread_id(), None);
     }
 
+    #[test]
+    fn restore_messages_keeps_stored_tool_reference_without_reinflating() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("tool_outputs");
+        let reference = format!(
+            "[tool output stored: {}/tool-output-existing.txt (90000 bytes)]",
+            root.display()
+        );
+        let (ui_tx, _ui_rx) = mpsc::channel(4);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        )
+        .with_tool_output_store(ToolOutputStore::new_in(root.clone(), 1024));
+
+        session.restore_messages(vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_existing".to_string(),
+                content: vec![ContentBlock::Text(reference.clone())],
+                is_error: false,
+            }],
+        )]);
+
+        let restored = &session.messages()[0].content[0];
+        assert!(matches!(
+            restored,
+            ContentBlock::ToolResult { content, .. }
+                if content == &vec![ContentBlock::Text(reference)]
+        ));
+        assert!(
+            !root.exists(),
+            "rehydration must not rewrite stored references"
+        );
+        assert_eq!(session.thread_id(), None);
+    }
+
     #[tokio::test]
     async fn stops_when_iteration_limit_is_reached() {
         let mut registry = ToolRegistry::new();
@@ -1052,11 +1290,10 @@ mod tests {
             ui_events.push(event);
         }
         assert!(
-            ui_events.contains(&AgentUiEvent::ToolExecuting {
-                name: "missing_tool".to_string(),
-                id: "call_missing".to_string(),
-            }),
-            "expected ToolExecuting event, got {ui_events:?}"
+            ui_events
+                .iter()
+                .all(|event| !matches!(event, AgentUiEvent::ToolExecuting { .. })),
+            "denied/unregistered tools must not emit ToolExecuting: {ui_events:?}"
         );
         let tool_result_event = ui_events
             .iter()
@@ -1090,6 +1327,243 @@ mod tests {
         assert!(
             ui_events.contains(&AgentUiEvent::Done),
             "expected Done event, got {ui_events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_is_bound_before_handler_starts_and_allow_once_resumes_exact_call() {
+        let provider = ScriptedProvider::new(vec![
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: "call_approved".to_string(),
+                    name: "external_mutation".to_string(),
+                    arguments: json!({"path": "/workspace/file"}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_approval".to_string()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("mutation complete".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("resp_done".to_string()),
+                    clean: true,
+                },
+            ],
+        ]);
+        let handler_started = Arc::new(AtomicBool::new(false));
+        let started = Arc::clone(&handler_started);
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "external_mutation".to_string(),
+                    description: "mutates".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(move |_| {
+                    let started = Arc::clone(&started);
+                    Box::pin(async move {
+                        started.store(true, Ordering::SeqCst);
+                        vec![ToolResultContent::Text("changed".to_string())]
+                    })
+                }),
+                ToolExecutionPolicy {
+                    origin: ToolOrigin::Mcp {
+                        server: "desktop-commander".to_string(),
+                        upstream_tool: "write_file".to_string(),
+                    },
+                    risk: ToolRisk::Mutating,
+                    requires_approval: true,
+                },
+                None,
+            )
+            .expect("register tool");
+
+        let (approval_tx, approval_rx) = oneshot::channel::<bool>();
+        let approval_rx = Arc::new(Mutex::new(Some(approval_rx)));
+        let approval_handler = {
+            let approval_rx = Arc::clone(&approval_rx);
+            Arc::new(move |request: crate::agent::ToolApprovalRequest| {
+                assert_eq!(request.call_id, "call_approved");
+                assert_eq!(request.thread_id, "thread-exact");
+                let rx = approval_rx
+                    .lock()
+                    .expect("approval lock")
+                    .take()
+                    .expect("single approval");
+                Box::pin(async move { rx.await.unwrap_or(false) })
+                    as crate::agent::ToolApprovalFuture
+            })
+        };
+        let (ui_tx, mut ui_rx) = mpsc::channel(32);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), ui_tx)
+            .with_tool_approval("thread-exact", approval_handler);
+        let options = StreamOptions {
+            model: "gpt-test".to_string(),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            reset_chain: false,
+        };
+        let send = session.send("mutate".to_string(), Vec::new(), &options);
+        tokio::pin!(send);
+
+        loop {
+            let event = tokio::select! {
+                result = &mut send => panic!("send completed before approval: {result:?}"),
+                event = ui_rx.recv() => event.expect("approval event"),
+            };
+            if let AgentUiEvent::ToolApprovalRequested(request) = event {
+                assert_eq!(request.call_id, "call_approved");
+                assert!(
+                    !handler_started.load(Ordering::SeqCst),
+                    "handler must not start while approval is pending"
+                );
+                break;
+            }
+        }
+        approval_tx.send(true).expect("approve");
+        send.await.expect("approved send completes");
+        assert!(handler_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn rejected_approval_never_starts_handler() {
+        let provider = ScriptedProvider::new(vec![
+            vec![AgentEvent::ToolCallReady {
+                id: "call_rejected".to_string(),
+                name: "external_mutation".to_string(),
+                arguments: json!({}),
+            }],
+            vec![AgentEvent::TextDone("rejection handled".to_string())],
+        ]);
+        let handler_started = Arc::new(AtomicBool::new(false));
+        let started = Arc::clone(&handler_started);
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "external_mutation".to_string(),
+                    description: "mutates".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(move |_| {
+                    let started = Arc::clone(&started);
+                    Box::pin(async move {
+                        started.store(true, Ordering::SeqCst);
+                        vec![]
+                    })
+                }),
+                ToolExecutionPolicy {
+                    origin: ToolOrigin::Mcp {
+                        server: "desktop-commander".to_string(),
+                        upstream_tool: "write_file".to_string(),
+                    },
+                    risk: ToolRisk::Mutating,
+                    requires_approval: true,
+                },
+                None,
+            )
+            .expect("register tool");
+        let approval_handler =
+            Arc::new(|_| Box::pin(async { false }) as crate::agent::ToolApprovalFuture);
+        let (ui_tx, _ui_rx) = mpsc::channel(32);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), ui_tx)
+            .with_tool_approval("thread-reject", approval_handler);
+        session
+            .send(
+                "mutate".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                    reset_chain: false,
+                },
+            )
+            .await
+            .expect("rejection becomes a tool result");
+        assert!(!handler_started.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn timed_out_approval_never_starts_handler() {
+        let provider = ScriptedProvider::new(vec![
+            vec![AgentEvent::ToolCallReady {
+                id: "call_timeout".to_string(),
+                name: "external_mutation".to_string(),
+                arguments: json!({}),
+            }],
+            vec![AgentEvent::TextDone("timeout handled".to_string())],
+        ]);
+        let handler_started = Arc::new(AtomicBool::new(false));
+        let started = Arc::clone(&handler_started);
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_with_policy(
+                ToolDefinition {
+                    name: "external_mutation".to_string(),
+                    description: "mutates".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(move |_| {
+                    let started = Arc::clone(&started);
+                    Box::pin(async move {
+                        started.store(true, Ordering::SeqCst);
+                        Vec::new()
+                    })
+                }),
+                ToolExecutionPolicy {
+                    origin: ToolOrigin::Mcp {
+                        server: "desktop-commander".to_string(),
+                        upstream_tool: "write_file".to_string(),
+                    },
+                    risk: ToolRisk::Mutating,
+                    requires_approval: true,
+                },
+                None,
+            )
+            .expect("register tool");
+        let approval_handler = Arc::new(|_| {
+            Box::pin(std::future::pending::<bool>()) as crate::agent::ToolApprovalFuture
+        });
+        let (ui_tx, _ui_rx) = mpsc::channel(32);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), ui_tx)
+            .with_tool_approval("thread-timeout", approval_handler);
+        session.approval_timeout = Duration::from_millis(10);
+        session
+            .send(
+                "mutate".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                    reset_chain: false,
+                },
+            )
+            .await
+            .expect("timeout becomes a tool result");
+        assert!(!handler_started.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tool_summary_redacts_structured_and_plain_secrets() {
+        assert_eq!(
+            super::redact_tool_summary(r#"{"token":"hunter2","nested":{"password":"swordfish"}}"#),
+            r#"{"nested":{"password":"[REDACTED]"},"token":"[REDACTED]"}"#
+        );
+        assert_eq!(
+            super::redact_tool_summary("TOKEN=hunter2 result ok"),
+            "[redacted sensitive tool output]"
+        );
+        assert_eq!(
+            super::redact_tool_summary("Authorization: Bearer hunter2"),
+            "[redacted sensitive tool output]"
         );
     }
 

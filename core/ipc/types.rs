@@ -25,6 +25,10 @@ pub enum IpcEventPayload {
     /// delivery/Copy paths instead of the raw per-utterance streaming hypotheses.
     #[serde(rename = "final_transcript")]
     FinalTranscript { text: String },
+    /// A context-bucket reference captured during live dictation. `position` is
+    /// the transcript character offset snapshotted at combo press.
+    #[serde(rename = "context_marker")]
+    ContextMarker { position: u64, marker: String },
     /// Live microphone input level: RMS of one captured audio block (linear,
     /// 0..~1). Emitted continuously while a dictation session records so UI
     /// meters (the overlay waveform) can track the real voice instead of an
@@ -337,6 +341,19 @@ mod tests {
             obj.get("rms").and_then(Value::as_f64).map(|v| v as f32),
             Some(0.25)
         );
+    }
+
+    #[test]
+    fn context_marker_payload_serializes_position_and_marker() {
+        let payload = IpcEventPayload::ContextMarker {
+            position: 12,
+            marker: "{selection_2}".to_string(),
+        };
+        let value = serde_json::to_value(payload).expect("serialize context marker");
+
+        assert_eq!(value["event"], "context_marker");
+        assert_eq!(value["position"], 12);
+        assert_eq!(value["marker"], "{selection_2}");
     }
 
     #[test]

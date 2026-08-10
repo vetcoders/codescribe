@@ -21,12 +21,16 @@ final class TrayViewModel: ObservableObject {
     @Published var autoFormatLevel: FormattingPolicyOption = .correction
     @Published var notesModeEnabled: Bool = false
     @Published var startInAssistive: Bool = false
+    @Published var holdBadgeOption: HoldBadgeOption = .twelve
 
-    // Disclosure state for the nested groups. Notes is expanded by default to
-    // match the static mock; Diagnostics and History are collapsed.
-    @Published var notesExpanded: Bool = true
+    // Disclosure state for nested groups. Default ALL collapsed — the tray
+    // grew into a wall of toggles; open only what the user asks for.
+    // (Historical: Notes started expanded for the static mock; that made every
+    // cold open feel non-collapsed / "rozrośnięte".)
+    @Published var notesExpanded: Bool = false
     @Published var diagnosticsExpanded: Bool = false
     @Published var historyExpanded: Bool = false
+    @Published var quickSettingsExpanded: Bool = false
 
     // Transient result banner for the Notes actions ("Save selection" / "Save
     // last transcript"). Rendered inside the still-open popover so the user gets
@@ -47,6 +51,7 @@ final class TrayViewModel: ObservableObject {
     @Published private(set) var historyItems: [TrayTranscript] = []
 
     private let engine: TrayEngine?
+    private var holdBadgeObserver: NSObjectProtocol?
 
     // Navigation intents — bound by App.swift to the actual window/scene opens.
     var onIntent: (TrayIntent) -> Void = { _ in }
@@ -73,11 +78,36 @@ final class TrayViewModel: ObservableObject {
     init(engine: TrayEngine? = nil, isRecording: Bool = false) {
         self.engine = engine
         self.isRecording = isRecording
+        // K4: Settings writes arrive on the bus; reload tray badge display.
+        holdBadgeObserver = NotificationCenter.default.addObserver(
+            forName: ConfigChangeBus.holdBadgeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.reloadHoldBadgeFromDisk()
+            }
+        }
+    }
+
+    deinit {
+        if let holdBadgeObserver {
+            NotificationCenter.default.removeObserver(holdBadgeObserver)
+        }
     }
 
     // MARK: - Navigation intents
 
     func onShowAgent() { onIntent(.openChat) }
+
+    /// A popover is a short-lived surface. Do not carry an expanded wall of
+    /// history/settings into the operator's next tray visit.
+    func collapseDisclosures() {
+        notesExpanded = false
+        diagnosticsExpanded = false
+        historyExpanded = false
+        quickSettingsExpanded = false
+    }
 
     // MARK: - Derived status (mock copy + palette)
 
@@ -98,6 +128,7 @@ final class TrayViewModel: ObservableObject {
             autoFormatLevel = toggles.autoFormatLevel
             notesModeEnabled = toggles.notesMode
             startInAssistive = toggles.startInAssistive
+            holdBadgeOption = toggles.holdBadgeOption
         }
         Task { [weak self] in
             guard let self else { return }
@@ -174,6 +205,27 @@ final class TrayViewModel: ObservableObject {
             return
         }
         engine.setAutoFormatLevel(level)
+        refreshStatus()
+    }
+
+    /// K3: persists immediately; next badge show uses the new size.
+    /// K4: posts bus so Settings reflects the tray cycle without reopen.
+    func setHoldBadgeOption(_ option: HoldBadgeOption) {
+        guard let engine else {
+            holdBadgeOption = option
+            ConfigChangeBus.postHoldBadgeChanged()
+            return
+        }
+        if engine.setHoldBadgeOption(option) {
+            holdBadgeOption = option
+            ConfigChangeBus.postHoldBadgeChanged()
+        } else {
+            refreshStatus()
+        }
+    }
+
+    /// Peer-surface reload after Settings wrote HOLD_BADGE_SIZE / HOLD_INDICATOR.
+    func reloadHoldBadgeFromDisk() {
         refreshStatus()
     }
 

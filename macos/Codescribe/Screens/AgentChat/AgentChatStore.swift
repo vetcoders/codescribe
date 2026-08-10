@@ -1,3 +1,4 @@
+import AppKit
 import OSLog
 import SwiftUI
 
@@ -57,6 +58,22 @@ protocol AgentChatEngine: AnyObject {
     /// "cancelled" turn.
     @discardableResult
     func cancelReply(threadId: String) -> Bool
+    func installToolApprovalHandler(
+        _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+    )
+    @discardableResult
+    func resolveToolApproval(
+        _ request: PendingToolApproval, approved: Bool, remember: Bool
+    ) -> Bool
+}
+
+extension AgentChatEngine {
+    func installToolApprovalHandler(
+        _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+    ) {}
+    func resolveToolApproval(
+        _ request: PendingToolApproval, approved: Bool, remember: Bool
+    ) -> Bool { false }
 }
 
 /// Source-specific adapter for hotkey/voice turns owned by the shared controller
@@ -84,6 +101,20 @@ struct ActiveComposerTurn: Equatable {
     let backendThreadID: String
     let assistantMessageID: UUID
     var phase: ComposerTurnPhase
+}
+
+struct PendingToolApproval: Identifiable, Equatable {
+    var id: String { "\(sessionID):\(threadID):\(callID)" }
+    let callID: String
+    let sessionID: String
+    let threadID: String
+    let tool: String
+    let server: String
+    let risk: String
+    let summary: String
+    let command: String?
+    let cwd: String?
+    let paths: [String]
 }
 
 enum ChatRole {
@@ -117,12 +148,16 @@ struct ToolLine: Identifiable, Hashable {
     let id: UUID
     var callID: String?
     var verb: String     // "grep", "read" — rendered olive; "failed" — terracotta
-    let detail: String   // "events/bus.ts · ui/store.ts"
+    let detail: String   // tool name or "events/bus.ts · ui/store.ts"
     var state: ToolLineState
-    /// Failure reason for a `failed` line (from the tool's error output). `nil`
-    /// for successful lines and for reloaded/persisted turns, which do not carry
-    /// the reason. Drives the expandable disclosure in the tool-activity row.
+    /// Result summary for a settled line (success summary or failure reason).
+    /// `nil` for running lines and for reloaded/persisted turns that do not
+    /// carry payload. Drives the expandable inspect panel.
     var reason: String?
+    /// Wall-clock start of the live tool call (UI-only; not persisted).
+    var startedAt: Date?
+    /// Elapsed milliseconds once the call settles (UI-only; not persisted).
+    var durationMs: Int?
 
     init(
         id: UUID = UUID(),
@@ -130,7 +165,9 @@ struct ToolLine: Identifiable, Hashable {
         verb: String,
         detail: String,
         state: ToolLineState = .succeeded,
-        reason: String? = nil
+        reason: String? = nil,
+        startedAt: Date? = nil,
+        durationMs: Int? = nil
     ) {
         self.id = id
         self.callID = callID
@@ -138,6 +175,88 @@ struct ToolLine: Identifiable, Hashable {
         self.detail = detail
         self.state = state
         self.reason = reason
+        self.startedAt = startedAt
+        self.durationMs = durationMs
+    }
+
+    /// True when the row can open an inspect disclosure (summary, call id, or timing).
+    var hasInspectPayload: Bool {
+        ToolInspectPresentation.hasInspectPayload(
+            reason: reason,
+            callID: callID,
+            durationMs: durationMs
+        )
+    }
+
+    /// Plain-text technical dump for copy (name, status, duration, call id, summary).
+    var technicalCopyText: String {
+        ToolInspectPresentation.technicalCopy(
+            verb: verb,
+            detail: detail,
+            state: state,
+            reason: reason,
+            callID: callID,
+            durationMs: durationMs
+        )
+    }
+}
+
+/// Pure presentation helpers for tool-activity inspect (testable without SwiftUI).
+enum ToolInspectPresentation {
+    static func hasInspectPayload(reason: String?, callID: String?, durationMs: Int?) -> Bool {
+        if let reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if let callID, !callID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if let durationMs, durationMs >= 0 { return true }
+        return false
+    }
+
+    static func statusLabel(for state: ToolLineState) -> String {
+        switch state {
+        case .running: return "running"
+        case .succeeded: return "succeeded"
+        case .failed: return "failed"
+        case .cancelled: return "cancelled"
+        case .unknown: return "ended"
+        }
+    }
+
+    static func durationLabel(ms: Int?) -> String? {
+        guard let ms, ms >= 0 else { return nil }
+        if ms < 1000 { return "\(ms) ms" }
+        let seconds = Double(ms) / 1000.0
+        if seconds < 10 {
+            return String(format: "%.1f s", seconds)
+        }
+        return "\(Int(seconds.rounded())) s"
+    }
+
+    static func technicalCopy(
+        verb: String,
+        detail: String,
+        state: ToolLineState,
+        reason: String?,
+        callID: String?,
+        durationMs: Int?
+    ) -> String {
+        var lines: [String] = [
+            "tool: \(detail)",
+            "verb: \(verb)",
+            "status: \(statusLabel(for: state))",
+        ]
+        if let durationLabel = durationLabel(ms: durationMs) {
+            lines.append("duration: \(durationLabel)")
+        }
+        if let callID, !callID.isEmpty {
+            lines.append("call_id: \(callID)")
+        }
+        if let reason, !reason.isEmpty {
+            lines.append("summary: \(reason)")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -176,7 +295,7 @@ struct ChatMessage: Identifiable {
     var isStreaming: Bool = false     // word-reveal in progress (shows caret)
     var wasStopped: Bool = false      // cancelled terminal; partial text remains intact
     var reasoning: String = ""        // streamed model reasoning, rendered separately
-    var renderMode: MessageRenderMode = .raw  // raw default (C2b); rich = opt-in
+    var renderMode: MessageRenderMode = .rich
 }
 
 /// An image the user staged in the composer but has not sent yet. Referenced by
@@ -233,6 +352,105 @@ struct ChatThread: Identifiable {
     var totalTokens: UInt64? = nil
 }
 
+/// Shared Swift-side title guard for coordinator results, manual renames, and
+/// rail fallbacks. The durable owner is ThreadStore; this policy prevents a
+/// provider failure or stale legacy row from flashing transport punctuation in
+/// the live model before disk truth refreshes.
+enum ThreadTitlePolicy {
+    static func normalized(_ value: String?, limit: Int = 72) -> String? {
+        guard let value else { return nil }
+        let collapsed = strippingContextMarkers(from: value)
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+        guard !collapsed.hasPrefix("<<<"),
+              collapsed.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        return String(collapsed.prefix(limit))
+    }
+
+    static func firstUserExcerpt(in messages: [ChatMessage], limit: Int = 72) -> String? {
+        guard let message = messages.first(where: { $0.role == .you }) else { return nil }
+        let presented = AssistivePromptParser.presented(message)
+        return normalized(presented.text, limit: limit)
+    }
+
+    /// Vowel inventory used to recognise word fragments left behind by a
+    /// mid-word context-marker capture. Mirrors `TITLE_FRAGMENT_VOWELS` in
+    /// `core/agent/thread_store.rs` (the durable owner of title derivation).
+    private static let fragmentVowels = Set("aeiouyąęóàáâäãåèéêëìíîïòôöõùúûü")
+
+    /// Remove `{selection_N}` / `{image_N}` context-bucket markers from a
+    /// title candidate. Mirror of the Rust `strip_context_markers`: the
+    /// overlay space-pads a marker even when the capture lands mid-word
+    /// ("mnie" -> "mn {selection_1} ie"), so after removal a letter run of
+    /// two or more characters without any vowel is treated as a split-word
+    /// fragment and glued back without a space; otherwise a single space
+    /// stays. Titles only — message bodies keep their markers untouched.
+    static func strippingContextMarkers(from text: String) -> String {
+        guard text.contains("{selection_") || text.contains("{image_") else { return text }
+        var chars = Array(text)
+        while let marker = contextMarkerRange(in: chars) {
+            var leftEnd = marker.lowerBound
+            while leftEnd > 0, chars[leftEnd - 1].isWhitespace { leftEnd -= 1 }
+            var rightStart = marker.upperBound
+            while rightStart < chars.count, chars[rightStart].isWhitespace { rightStart += 1 }
+            // Unpadded marker (no whitespace on either side) is the overlay's
+            // lossless mid-word form ("mn{selection_1}ie") — glue without the
+            // vowel heuristic; that heuristic only serves legacy padded texts.
+            let noGap = leftEnd == marker.lowerBound && rightStart == marker.upperBound
+            let keepSpace = leftEnd > 0
+                && rightStart < chars.count
+                && !noGap
+                && !gluesSplitWord(chars: chars, leftEnd: leftEnd, rightStart: rightStart)
+            chars.replaceSubrange(leftEnd..<rightStart, with: keepSpace ? [" "] : [])
+        }
+        return String(chars)
+    }
+
+    private static func contextMarkerRange(in chars: [Character]) -> Range<Int>? {
+        var open = 0
+        while open < chars.count {
+            defer { open += 1 }
+            guard chars[open] == "{" else { continue }
+            for label in ["selection_", "image_"] {
+                let labelChars = Array(label)
+                let digitsStart = open + 1 + labelChars.count
+                guard digitsStart <= chars.count,
+                      Array(chars[(open + 1)..<digitsStart]) == labelChars else { continue }
+                var close = digitsStart
+                while close < chars.count, chars[close].isASCII, chars[close].isNumber {
+                    close += 1
+                }
+                if close > digitsStart, close < chars.count, chars[close] == "}" {
+                    return open..<(close + 1)
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func gluesSplitWord(chars: [Character], leftEnd: Int, rightStart: Int) -> Bool {
+        var left: [Character] = []
+        var index = leftEnd - 1
+        while index >= 0, chars[index].isLetter {
+            left.append(chars[index])
+            index -= 1
+        }
+        var right: [Character] = []
+        index = rightStart
+        while index < chars.count, chars[index].isLetter {
+            right.append(chars[index])
+            index += 1
+        }
+        return fragmentLacksVowel(left) || fragmentLacksVowel(right)
+    }
+
+    private static func fragmentLacksVowel(_ fragment: [Character]) -> Bool {
+        fragment.count >= 2 && !fragment.contains { ch in
+            ch.lowercased().contains { fragmentVowels.contains($0) }
+        }
+    }
+}
+
 // MARK: - Threads provider (read-only access to persisted codescribe threads)
 
 /// Backs the thread rail / drawer with real persisted threads from the
@@ -274,6 +492,7 @@ enum ComposerDictationPhase: Equatable {
 /// (`RealComposerDictation`, Core layer) wraps the `CodescribeDictation` bridge;
 /// kept bridge-free here so the view-model + #Preview stay standalone (nil = mic
 /// is a no-op, e.g. in previews).
+@MainActor
 protocol ComposerDictating: AnyObject {
     /// Start recording when idle, stop-and-insert when recording.
     func toggle()
@@ -294,6 +513,7 @@ final class AgentChatStore: ObservableObject {
     /// Images staged in the composer for the next message. Cleared when the
     /// message is dispatched.
     @Published var pendingAttachments: [PendingAttachment] = []
+    @Published private(set) var pendingToolApprovals: [PendingToolApproval] = []
 
     // MARK: Composer dictation
 
@@ -370,6 +590,38 @@ final class AgentChatStore: ObservableObject {
     /// Injected provider for persisted threads. `nil` → falls back to mock seed.
     var threadsProvider: ChatThreadsProviding?
 
+    /// Backs the composer slash-command palette. `nil` (previews, unit tests
+    /// without a runtime) ⇒ every command lists nothing rather than lying about
+    /// what is configured.
+    var paletteSource: ComposerPaletteSourcing?
+
+    /// Entries for one palette command, resolved on demand so a freshly saved
+    /// model or a just-granted tool shows up without reopening the window.
+    func paletteEntries(for command: ComposerPaletteCommand) -> [ComposerPaletteEntry] {
+        paletteSource?.entries(for: command) ?? []
+    }
+
+    /// Apply a palette pick. Failures surface as a system line in the thread —
+    /// silently ignoring a click would leave the operator believing the model
+    /// changed when it did not.
+    func applyPaletteEntry(_ entry: ComposerPaletteEntry, for command: ComposerPaletteCommand) {
+        guard let paletteSource else { return }
+        do {
+            try paletteSource.apply(entry, for: command)
+        } catch {
+            guard let threadID = currentThread?.id else { return }
+            append(
+                ChatMessage(
+                    role: .tool,
+                    timestamp: "now",
+                    text: "Nie udało się zastosować „\(entry.title)”: "
+                        + error.localizedDescription
+                ),
+                to: threadID
+            )
+        }
+    }
+
     private var revealTask: Task<Void, Never>?
     private var didStartDemo = false
 
@@ -421,6 +673,11 @@ final class AgentChatStore: ObservableObject {
     /// the first disk persist and a manual rename interleave.
     private var customTitleThreadIDs: Set<UUID> = []
 
+    /// NotificationCenter tokens for the event-driven rail refresh (wave S,
+    /// cut C): window activation + cross-surface `threadsDidChange`. Removed
+    /// on deinit; empty when no threads provider is wired (preview/mock).
+    private var externalThreadsObservers: [NSObjectProtocol] = []
+
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
          threads: [ChatThread]? = nil,
@@ -441,7 +698,19 @@ final class AgentChatStore: ObservableObject {
         }
         self.threads = seeded
         self.selectedThreadID = seeded.first?.id
+        engine?.installToolApprovalHandler { [weak self] request in
+            guard let self else { return }
+            self.pendingToolApprovals.removeAll { $0.id == request.id }
+            self.pendingToolApprovals.append(request)
+        }
         if let first = seeded.first { loadMessagesIfNeeded(first.id) }
+        beginObservingExternalThreadChanges()
+    }
+
+    deinit {
+        for observer in externalThreadsObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     var currentThread: ChatThread? {
@@ -477,6 +746,18 @@ final class AgentChatStore: ObservableObject {
 
     var isCancelling: Bool { selectedComposerTurnPhase == .cancelling }
 
+    var currentToolApprovals: [PendingToolApproval] {
+        guard let backendID = currentThread?.backendId else { return [] }
+        return pendingToolApprovals.filter { $0.threadID == backendID }
+    }
+
+    func resolveToolApproval(
+        _ request: PendingToolApproval, approved: Bool, remember: Bool = false
+    ) {
+        _ = engine?.resolveToolApproval(request, approved: approved, remember: remember)
+        pendingToolApprovals.removeAll { $0.id == request.id }
+    }
+
     // MARK: Thread ops
 
     func newThread() {
@@ -493,6 +774,49 @@ final class AgentChatStore: ObservableObject {
             selectingBackendId: currentThread?.backendId,
             keepLocalDrafts: true
         )
+    }
+
+    // MARK: External refresh (rail live refresh — wave S, cut C)
+
+    /// Wire the event-driven rail refresh. Two triggers, zero polling:
+    /// 1. `ThreadsChangeBus.threadsDidChange` — some surface finished a turn
+    ///    whose persistence this store did not perform itself.
+    /// 2. `NSWindow.didBecomeKeyNotification` — window activation. A thread
+    ///    saved by an overlay/assistive turn while the Agent window was
+    ///    inactive becomes discoverable on the next activation, no app restart
+    ///    (incident 2026-07-21: the reply persisted but the open window kept
+    ///    rendering the launch-time list).
+    /// Provider-gated: a preview/mock store has no disk truth to re-read.
+    private func beginObservingExternalThreadChanges() {
+        guard threadsProvider != nil else { return }
+        let handler: (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshThreadsFromExternalChange() }
+        }
+        externalThreadsObservers = [
+            NotificationCenter.default.addObserver(
+                forName: ThreadsChangeBus.threadsDidChange,
+                object: nil,
+                queue: .main,
+                using: handler
+            ),
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main,
+                using: handler
+            ),
+        ]
+    }
+
+    /// Re-read persisted threads after an external change signal. Deliberately
+    /// a no-op while a composer or voice turn is in flight: the turn's own
+    /// terminal already refreshes with the right selection, and a mid-stream
+    /// replace could drop a freshly minted thread that does not exist on disk
+    /// until its first stream completes.
+    func refreshThreadsFromExternalChange() {
+        guard threadsProvider != nil else { return }
+        guard activeComposerTurn == nil, voiceTurnPhase == nil else { return }
+        refreshThreads()
     }
 
     func searchThreads(_ query: String) {
@@ -529,8 +853,7 @@ final class AgentChatStore: ObservableObject {
     /// in memory only. No-ops on an empty or unchanged title. The chat header
     /// reads `currentThread.title`, so it updates reactively too.
     func rename(_ thread: ChatThread, to newTitle: String) {
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != thread.title,
+        guard let trimmed = ThreadTitlePolicy.normalized(newTitle), trimmed != thread.title,
               let ti = threads.firstIndex(where: { $0.id == thread.id }) else { return }
         if let backendId = thread.backendId {
             if threadsProvider?.renameThread(backendId: backendId, title: trimmed) != true {
@@ -586,6 +909,7 @@ final class AgentChatStore: ObservableObject {
         inFlightSends[thread.id] = nil
         if let backendId = thread.backendId {
             _ = engine?.cancelReply(threadId: backendId)
+            pendingToolApprovals.removeAll { $0.threadID == backendId }
         }
         if activeComposerTurn?.threadID == thread.id {
             activeComposerTurn = nil
@@ -753,6 +1077,9 @@ final class AgentChatStore: ObservableObject {
                         self?.recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
                     },
                     onToolResult: { [weak self] name, id, isError, reason in
+                        self?.pendingToolApprovals.removeAll {
+                            $0.threadID == backendId && $0.callID == id
+                        }
                         guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true else {
                             return
                         }
@@ -857,8 +1184,7 @@ final class AgentChatStore: ObservableObject {
     private func receiveGeneratedTitle(_ title: String?, for threadID: UUID, generationID: UUID) {
         guard var state = firstTurnTitleStates[threadID], state.generationID == generationID else { return }
         state.generationFinished = true
-        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !trimmed.isEmpty,
+        guard let trimmed = ThreadTitlePolicy.normalized(title),
               !customTitleThreadIDs.contains(threadID),
               state.pendingCustomTitle == nil,
               let ti = threads.firstIndex(where: { $0.id == threadID }) else {
@@ -970,6 +1296,7 @@ final class AgentChatStore: ObservableObject {
         activeComposerTurn = turn
         inFlightSends[turn.threadID]?.task.cancel()
         let firstAcknowledgement = engine?.cancelReply(threadId: turn.backendThreadID) ?? false
+        pendingToolApprovals.removeAll { $0.threadID == turn.backendThreadID }
 
         // A very fast Stop can beat Rust's registry setup while the provider and
         // persisted history are still loading. Retry only that unacknowledged
@@ -1003,9 +1330,11 @@ final class AgentChatStore: ObservableObject {
     // first-turn title sibling (`generateThreadTitle`), which carries no
     // conversation state and never touches the thread's response chain.
 
-    /// Open a voice turn: bind (or create) a thread for the core `backendId`,
-    /// insert the You-bubble + an assistant placeholder, and select it so the live
-    /// reply is visible. Subsequent `ingestVoice*` calls target this turn.
+    /// Open a voice turn: bind (or create) a thread for the core `backendId`
+    /// and insert the You-bubble + an assistant placeholder. Delivery events
+    /// never change the rail selection: a matching active thread renders live,
+    /// while a turn for another thread updates in the background. Only explicit
+    /// user actions (`select`, `newThread`, delete fallback) move selection.
     func ingestVoiceTurn(threadId backendId: String, userText: String) {
         // Defensive: a new voice turn can open before the previous one closed
         // (rapid double-press / a fresh session). Finalize the stale assistant
@@ -1039,7 +1368,7 @@ final class AgentChatStore: ObservableObject {
             threadID = existing.id
             loadMessagesIfNeeded(threadID)  // surface prior history before appending
         } else {
-            let title = userTurn.text.isEmpty ? "Voice chat" : String(userTurn.text.prefix(48))
+            let title = ThreadTitlePolicy.normalized(userTurn.text, limit: 48) ?? "Voice chat"
             var thread = ChatThread(title: title, meta: "now")
             thread.backendId = backendId
             thread.messagesLoaded = true  // freshly bound to a core id → in sync
@@ -1047,8 +1376,6 @@ final class AgentChatStore: ObservableObject {
             threadID = thread.id
             isFirstExchange = true
         }
-        selectedThreadID = threadID
-
         // A skeleton turn can carry context with an empty instruction (e.g. a
         // clipped dictation) — the bubble still renders for the chip.
         if !userTurn.text.isEmpty || userTurn.wireText != nil {
@@ -1307,6 +1634,7 @@ final class AgentChatStore: ObservableObject {
     private struct PersistedAttachmentMetadata: Codable, Hashable {
         let name: String
         let type: String
+        let path: String?
     }
 
     private struct PersistedAttachmentTurn: Codable, Hashable {
@@ -1327,7 +1655,9 @@ final class AgentChatStore: ObservableObject {
         turns.removeAll { $0.userTurnIndex == userTurnIndex }
         turns.append(PersistedAttachmentTurn(
             userTurnIndex: userTurnIndex,
-            attachments: attachments.map { PersistedAttachmentMetadata(name: $0.name, type: $0.type) }
+            attachments: attachments.map {
+                PersistedAttachmentMetadata(name: $0.name, type: $0.type, path: $0.url?.path)
+            }
         ))
         sidecar[backendId] = turns.sorted { $0.userTurnIndex < $1.userTurnIndex }
         writeAttachmentMetadataSidecar(sidecar)
@@ -1349,7 +1679,8 @@ final class AgentChatStore: ObservableObject {
         for index in restored.indices where restored[index].role == .you {
             if let metadata = byUserTurn[userTurnIndex], !metadata.isEmpty {
                 restored[index].attachments = metadata.map {
-                    MessageAttachment(name: $0.name, url: nil, type: $0.type)
+                    let url = $0.path.map(URL.init(fileURLWithPath:))
+                    return MessageAttachment(name: $0.name, url: url, type: $0.type)
                 }
             }
             userTurnIndex += 1
@@ -1386,7 +1717,13 @@ final class AgentChatStore: ObservableObject {
         let callID = rawCallID.isEmpty ? nil : rawCallID
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
-        let line = ToolLine(callID: callID, verb: "tool", detail: name, state: .running)
+        let line = ToolLine(
+            callID: callID,
+            verb: "tool",
+            detail: name,
+            state: .running,
+            startedAt: Date()
+        )
         if let row = toolRowIndex(before: ai, inThreadAt: ti) {
             if let callID,
                let existing = threads[ti].messages[row].toolLines.firstIndex(where: { $0.callID == callID }) {
@@ -1414,12 +1751,24 @@ final class AgentChatStore: ObservableObject {
         let callID = rawCallID.flatMap { $0.isEmpty ? nil : $0 }
         guard let ti = threads.firstIndex(where: { $0.id == threadID }),
               let ai = threads[ti].messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        var startedAt: Date?
+        var durationMs: Int?
+        if let row = toolRowIndex(before: ai, inThreadAt: ti),
+           let callID,
+           let existing = threads[ti].messages[row].toolLines.firstIndex(where: { $0.callID == callID }) {
+            startedAt = threads[ti].messages[row].toolLines[existing].startedAt
+            if let startedAt {
+                durationMs = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+            }
+        }
         let line = ToolLine(
             callID: callID,
             verb: isError ? "failed" : "ran",
             detail: name,
             state: isError ? .failed : .succeeded,
-            reason: (isError && !reason.isEmpty) ? reason : nil
+            reason: reason.isEmpty ? nil : reason,
+            startedAt: startedAt,
+            durationMs: durationMs
         )
         if let row = toolRowIndex(before: ai, inThreadAt: ti) {
             if let callID,
@@ -1546,10 +1895,13 @@ final class AgentChatStore: ObservableObject {
         }
 
         threads = next.isEmpty && !allowEmpty ? [ChatThread(title: "New thread", meta: "now", messages: [])] : next
-        if let backendId, let match = threads.first(where: { $0.backendId == backendId }) {
-            selectedThreadID = match.id
-        } else if let previousSelectedID, threads.contains(where: { $0.id == previousSelectedID }) {
+        // Selection is user-owned. A completion refresh may reorder or replace
+        // rail rows, but it must preserve the thread the user is reading. The
+        // completed backend is only a fallback when that selection disappeared.
+        if let previousSelectedID, threads.contains(where: { $0.id == previousSelectedID }) {
             selectedThreadID = previousSelectedID
+        } else if let backendId, let match = threads.first(where: { $0.backendId == backendId }) {
+            selectedThreadID = match.id
         } else {
             selectedThreadID = threads.first?.id
         }

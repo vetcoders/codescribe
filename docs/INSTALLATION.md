@@ -46,7 +46,26 @@ make notarize         # Notarize with Apple (requires Developer ID)
 # make release-dmgs    # Build + sign + notarize standard and full DMGs
 ```
 
-**Result**: `Codescribe_X.Y.Z.dmg` and `Codescribe_X.Y.Z_full.dmg` ready for distribution. The standard DMG embeds Silero + embedder and resolves Whisper from cache/download. The full DMG embeds Silero + embedder + Whisper.
+**Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero + MiniLM; Whisper via Settings download / cache) and optional `…_full.dmg` (embeds Whisper too). Daily operator flow is slim: `make release && make dmg-signed && make notarize`.
+
+### About panel commit stamp
+
+`CSBuildCommit` / `CSBuiltAt` are stamped in `scripts/build-app.sh` **before**
+cargo / UniFFI / xcodegen run.
+
+- Commit short SHA comes from `git rev-parse --short=9 HEAD`.
+- `-dirty` is appended only when **tracked** source differs from HEAD,
+  excluding UniFFI-generated `macos/Codescribe/Bridge/*`.
+- Untracked local files (e.g. `*.dmg.sha256`, scratch) do **not** force `-dirty`.
+
+A clean committed checkout must show e.g. `c5a3c290b`, never
+`c5a3c290b-dirty`, just because a previous build regenerated bindings.
+
+### Speech Recognition (required for Apple live)
+
+See [SPEECH_RECOGNITION_TCC.md](./SPEECH_RECOGNITION_TCC.md). First-run wizard
+includes a Speech Recognition step with the same grant path as Microphone
+(Allow dialog while undetermined; System Settings when already decided).
 
 ## Configuration
 

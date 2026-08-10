@@ -246,7 +246,13 @@ fn main() {
         }
 
         if is_release && whisper_embedded {
-            println!("cargo:warning=Whisper build policy: embedded by default");
+            println!(
+                "cargo:warning=Whisper build policy: OPT-IN embed active (CODESCRIBE_EMBED_WHISPER=1) — fat SKU, not daily default"
+            );
+        } else if is_release {
+            println!(
+                "cargo:warning=Whisper build policy: runtime/cache (slim default); set CODESCRIBE_EMBED_WHISPER=1 only for fat SKU"
+            );
         }
         println!("cargo:rustc-env=CODESCRIBE_MODEL_DIR=");
 

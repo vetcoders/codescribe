@@ -53,6 +53,7 @@ struct WaveformView: View {
     /// that breathes together on one slow synchronous cycle at reduced opacity —
     /// unmistakably "processing", not "listening", and not a hung freeze either.
     var transcribing: Bool = false
+    var indicatorMode: CsIndicatorMode = .hold
     /// Real capture level, when the engine streams it. nil → ambient animation.
     var meter: AudioLevelMeter? = nil
 
@@ -120,10 +121,12 @@ struct WaveformView: View {
     private func color(for i: Int) -> Color {
         // Muted terracotta so the phase reads as our brand "at work", clearly
         // dimmer than the live-capture bars.
-        if transcribing { return CSColor.terracotta.opacity(0.4) }
+        if transcribing { return CSColor.modeProcessing.opacity(0.55) }
         guard active else { return CSColor.hairline(0.16) }
-        // every 5th bar uses the lighter terracotta tint, per the mock.
-        return i % 5 == 0 ? CSColor.terracottaTintBars : CSColor.terracotta
+        if indicatorMode == .assistive {
+            return i % 5 == 0 ? CSColor.assistiveLight : CSColor.modeAgent
+        }
+        return i % 5 == 0 ? CSColor.terracottaTintBars : CSColor.modeRecording
     }
 }
 

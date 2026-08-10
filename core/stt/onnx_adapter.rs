@@ -979,6 +979,14 @@ mod tests {
     #[ignore] // Run with: cargo test -p codescribe-core onnx_init_from_hf_cache -- --ignored
     fn onnx_init_from_hf_cache() {
         let result = init();
+        if let Some(err) = result.as_ref().err()
+            && err.to_string().contains("not found in HF cache")
+        {
+            eprintln!(
+                "Skipping: ONNX model not in HF cache (hf download onnx-community/whisper-large-v3-turbo)"
+            );
+            return;
+        }
         assert!(result.is_ok(), "ONNX init failed: {:?}", result.err());
 
         // Verify we can get the engine lock
@@ -1006,7 +1014,15 @@ mod tests {
         use crate::pipeline::contracts::{SpeechUtterance, TranscriptionAdapter};
         use rand::Rng;
 
-        init().expect("ONNX init failed");
+        match init() {
+            Err(err) if err.to_string().contains("not found in HF cache") => {
+                eprintln!(
+                    "Skipping: ONNX model not in HF cache (hf download onnx-community/whisper-large-v3-turbo)"
+                );
+                return;
+            }
+            result => result.expect("ONNX init failed"),
+        }
         let adapter = OnnxWhisperAdapter::new();
 
         // 2 seconds of low-amplitude random noise at 16kHz (simulates real silence)

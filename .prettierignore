@@ -46,3 +46,7 @@
 **/*.m4a
 **/*.zip
 **/*.xcassets/**
+**/.remember/**
+**/.astro/**
+**/.loct-context-*.md
+AGENT_BUS.md

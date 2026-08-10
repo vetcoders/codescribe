@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Embedded into the codescribe-stt-bridge binary at link time
+  (-sectcreate __TEXT __info_plist). A bare CLI executable has no bundle, and
+  TCC refuses to show a privacy prompt for a process with no usage description
+  — it does not deny, it CRASHES the caller with
+  __TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__. Embedding this section is what
+  makes `codescribe-stt-bridge request_auth` able to raise the dialog, which the
+  engine test path (make test-engine-apple, scripts/e2e-blackhole-dictation.sh)
+  needs when the bridge runs outside Codescribe.app.
+
+  Inside the app the bridge inherits the app's authorization; this section only
+  matters for the standalone/test invocation.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.vetcoders.codescribe.stt-bridge</string>
+	<key>CFBundleName</key>
+	<string>Codescribe STT Bridge</string>
+	<key>CFBundleExecutable</key>
+	<string>codescribe-stt-bridge</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Codescribe records audio locally so it can transcribe your dictation.</string>
+</dict>
+</plist>

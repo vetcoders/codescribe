@@ -1,10 +1,149 @@
 import SwiftUI
 import AppKit
 
+enum StreamScrollFollowAction: Equatable {
+    case none
+    case scrollToLiveEdge
+}
+
+/// Operator-facing chat column density. Persisted via `ChatLayoutPolicy.defaultsKey`.
+///
+/// Plan P0-1: Comfortable / Wide / Full with remembered choice. Width still
+/// derives from the viewport (not a static pt constant); the mode only changes
+/// how aggressively the column fills available space and when the prose cap
+/// kicks in so code fences / tables can claim room on wide monitors.
+enum ChatWidthMode: String, CaseIterable, Identifiable {
+    case comfortable
+    case wide
+    case full
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .comfortable: return "Comfortable"
+        case .wide: return "Wide"
+        case .full: return "Full"
+        }
+    }
+
+    /// You-bubble share of usable width (chat-style trailing bubble).
+    var youFraction: CGFloat {
+        switch self {
+        case .comfortable: return 0.58
+        case .wide: return 0.72
+        case .full: return 0.88
+        }
+    }
+
+    /// Soft upper bound for leading (assistant/tool) prose. `nil` = fill usable.
+    var proseComfortCap: CGFloat? {
+        switch self {
+        case .comfortable: return 720
+        case .wide: return 920
+        case .full: return nil
+        }
+    }
+
+    static func resolve(_ raw: String) -> ChatWidthMode {
+        ChatWidthMode(rawValue: raw) ?? .wide
+    }
+}
+
+/// Container-relative bubble widths for AgentChat.
+///
+/// Wave 8ccf141a raised fixed caps (510→760 / ~900) but left a middle column on
+/// wide windows. Plan step 1 wants width from the *viewport*, not a static pt
+/// constant: You stays a readable bubble; assistant/tool use the full usable
+/// column (subject to `ChatWidthMode`) so code fences and tables stop clipping.
+enum ChatLayoutPolicy {
+    /// `UserDefaults` / `@AppStorage` key for the operator width preference.
+    static let defaultsKey = "codescribe.chatWidthMode"
+    /// Horizontal padding applied by `MessageList` around the LazyVStack.
+    static let listPadding: CGFloat = 20
+    /// Minimum readable bubble width on a narrow window.
+    static let minimumReadable: CGFloat = 280
+    /// Default mode when the preference is missing or unknown.
+    static let defaultMode: ChatWidthMode = .wide
+
+    /// Usable content width after list padding (both sides).
+    static func contentWidth(for containerWidth: CGFloat) -> CGFloat {
+        max(0, containerWidth - listPadding * 2)
+    }
+
+    /// Max width for a You bubble given the scroll viewport width.
+    static func youBubbleMaxWidth(
+        containerWidth: CGFloat,
+        mode: ChatWidthMode = defaultMode
+    ) -> CGFloat {
+        let usable = contentWidth(for: containerWidth)
+        guard usable > 0 else { return minimumReadable }
+        let proportional = usable * mode.youFraction
+        return max(minimumReadable, min(usable, proportional))
+    }
+
+    /// Max width for assistant / tool turns. Fills the column up to the mode's
+    /// prose comfort cap (Full has no cap) so ultrawide windows do not produce
+    /// unreadable body lines while still giving code/tables more room than the
+    /// old 900pt hard cap on typical laptop widths.
+    static func leadingColumnMaxWidth(
+        containerWidth: CGFloat,
+        mode: ChatWidthMode = defaultMode
+    ) -> CGFloat {
+        let usable = contentWidth(for: containerWidth)
+        guard usable > 0 else { return minimumReadable }
+        guard let cap = mode.proseComfortCap else {
+            return max(minimumReadable, usable)
+        }
+        return max(minimumReadable, min(usable, cap))
+    }
+}
+
+/// Explicit state machine for the message viewport. Content growth is allowed
+/// to move the viewport only while the operator is following the live edge.
+struct StreamScrollFollowState: Equatable {
+    enum Event: Equatable {
+        case contentChanged
+        case userScrollBegan
+        case userViewportChanged(isAtLiveEdge: Bool)
+        case userScrollEnded(isAtLiveEdge: Bool)
+        case jumpToCurrent
+        case threadChanged
+        case streamFinished
+    }
+
+    private(set) var followingLive = true
+    var showsJumpToCurrent: Bool { !followingLive }
+
+    mutating func handle(_ event: Event) -> StreamScrollFollowAction {
+        switch event {
+        case .contentChanged:
+            return followingLive ? .scrollToLiveEdge : .none
+        case .userScrollBegan:
+            followingLive = false
+            return .none
+        case .userViewportChanged:
+            // Geometry changes during an active gesture may still report the
+            // old live-edge position. Never let that stale signal steal the
+            // viewport back from the operator.
+            return .none
+        case let .userScrollEnded(isAtLiveEdge):
+            followingLive = isAtLiveEdge
+            return .none
+        case .jumpToCurrent, .threadChanged:
+            followingLive = true
+            return .scrollToLiveEdge
+        case .streamFinished:
+            return .none
+        }
+    }
+}
+
 /// Scrolling turn list: You (terracotta bubble, right) · Tool activity
 /// (DisclosureGroup, mono) · Assistant (amber "reasoned · Xs" chip + body,
 /// last turn streams with a blink caret). Auto-scrolls to the newest turn.
 struct MessageList: View {
+    let threadID: UUID
     let messages: [ChatMessage]
     /// Flips a bubble between raw mono and rich markdown. State lives in the
     /// store (per-message `renderMode`), never in this view.
@@ -14,17 +153,22 @@ struct MessageList: View {
     /// to the newest turn only while the user is already at the bottom. Scrolling up
     /// during a stream pauses the follow; returning to the bottom resumes it, so the
     /// view stops fighting the user's manual scroll on a long streamed message.
-    @State private var followTail = true
+    @State private var followState = StreamScrollFollowState()
+    /// Operator width density — shared with the header picker via `@AppStorage`.
+    @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode.rawValue
     private let scrollSpace = "chatMessageScroll"
     private let bottomAnchor = "chatMessageBottom"
 
+    private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
+
     var body: some View {
         GeometryReader { viewport in
+            let containerWidth = viewport.size.width
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 16) {
                         ForEach(messages) { message in
-                            turn(message)
+                            turn(message, containerWidth: containerWidth, mode: widthMode)
                                 .frame(maxWidth: .infinity, alignment: alignment(message.role))
                                 .id(message.id)
                         }
@@ -32,13 +176,20 @@ struct MessageList: View {
                             .frame(height: 1)
                             .id(bottomAnchor)
                     }
-                    .padding(20)
+                    .padding(ChatLayoutPolicy.listPadding)
                     .background(
                         GeometryReader { content in
                             Color.clear.preference(
                                 key: ChatBottomKey.self,
                                 value: content.frame(in: .named(scrollSpace)).maxY
                             )
+                        }
+                    )
+                    // Lives inside the document view so `enclosingScrollView`
+                    // resolves to this message list rather than an outer pane.
+                    .background(
+                        ChatLiveScrollObserver { event in
+                            _ = followState.handle(event)
                         }
                     )
                 }
@@ -49,28 +200,32 @@ struct MessageList: View {
                 // context menu below.
                 .textSelection(.enabled)
                 .onPreferenceChange(ChatBottomKey.self) { contentBottom in
-                    followTail = Self.followTailAfterScroll(
+                    let isAtLiveEdge = Self.followTailAfterScroll(
                         contentBottom: contentBottom,
                         viewportHeight: viewport.size.height
                     )
+                    _ = followState.handle(.userViewportChanged(isAtLiveEdge: isAtLiveEdge))
                 }
                 .onChange(of: Self.tailSignature(messages)) { _, _ in
-                    guard followTail else { return }
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    perform(followState.handle(.contentChanged), with: proxy)
+                }
+                .onChange(of: messages.last?.isStreaming == true) { wasStreaming, isStreaming in
+                    if wasStreaming, !isStreaming {
+                        _ = followState.handle(.streamFinished)
                     }
                 }
+                .onChange(of: threadID) { _, _ in
+                    perform(followState.handle(.threadChanged), with: proxy)
+                }
+                .onAppear {
+                    perform(.scrollToLiveEdge, with: proxy, animated: false)
+                }
                 .overlay(alignment: .bottom) {
-                    let pillVisible = Self.showLatestPill(
-                        followTail: followTail,
-                        isStreaming: messages.last?.isStreaming == true
-                    )
+                    let pillVisible = followState.showsJumpToCurrent
                     ZStack {
                         if pillVisible {
-                            LatestPill {
-                                withAnimation(.easeOut(duration: 0.25)) {
-                                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
-                                }
+                            JumpToCurrentButton {
+                                perform(followState.handle(.jumpToCurrent), with: proxy)
                             }
                             .padding(.bottom, 10)
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -82,6 +237,21 @@ struct MessageList: View {
         }
     }
 
+    private func perform(
+        _ action: StreamScrollFollowAction,
+        with proxy: ScrollViewProxy,
+        animated: Bool = true
+    ) {
+        guard action == .scrollToLiveEdge else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+    }
+
     // MARK: Pure scroll/pill logic (XCTest-covered, see MessageListFollowTailTests)
 
     /// At-bottom decision: the content's bottom edge sits within `slack` of the
@@ -89,12 +259,6 @@ struct MessageList: View {
     static func followTailAfterScroll(contentBottom: CGFloat, viewportHeight: CGFloat,
                                       slack: CGFloat = 40) -> Bool {
         contentBottom <= viewportHeight + slack
-    }
-
-    /// The "↓ Latest" pill shows only while the user is detached from the bottom
-    /// AND the newest turn is still streaming — never over a settled thread.
-    static func showLatestPill(followTail: Bool, isStreaming: Bool) -> Bool {
-        !followTail && isStreaming
     }
 
     /// Changes whenever a new turn lands or the streaming tail grows — the
@@ -119,19 +283,30 @@ struct MessageList: View {
     }
 
     @ViewBuilder
-    private func turn(_ message: ChatMessage) -> some View {
+    private func turn(
+        _ message: ChatMessage,
+        containerWidth: CGFloat,
+        mode: ChatWidthMode
+    ) -> some View {
         switch message.role {
-        case .you: YouTurn(message: message)
-        case .tool: ToolTurn(message: message)
-        case .assistant: AssistantTurn(message: message, onToggleRenderMode: onToggleRenderMode)
+        case .you:
+            YouTurn(message: message, containerWidth: containerWidth, mode: mode)
+        case .tool:
+            ToolTurn(message: message, containerWidth: containerWidth, mode: mode)
+        case .assistant:
+            AssistantTurn(
+                message: message,
+                containerWidth: containerWidth,
+                mode: mode,
+                onToggleRenderMode: onToggleRenderMode
+            )
         }
     }
 }
 
-/// Floating "↓ Latest" pill over the bottom edge: appears when the user scrolls
-/// away mid-stream; click jumps to the tail (follow-tail re-engages naturally via
-/// the bottom-edge preference). Styled after the composer chip pill pattern.
-private struct LatestPill: View {
+/// Floating return affordance. It remains available after a stream settles:
+/// finishing generation never takes the operator's chosen reading position.
+private struct JumpToCurrentButton: View {
     let action: () -> Void
     @State private var hovering = false
 
@@ -139,8 +314,8 @@ private struct LatestPill: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 CSIconView(icon: .chevronDown, size: 9, weight: .semibold,
-                           color: CSColor.terracottaLight)
-                Text("Latest")
+                           color: CSColor.chromeAccent)
+                Text("Current")
                     .font(CSFont.mono(10.5, .medium))
                     .foregroundStyle(hovering ? CSColor.textHigh : CSColor.textBody)
             }
@@ -156,7 +331,8 @@ private struct LatestPill: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Jump to the latest reply")
+        .accessibilityLabel("Jump to current")
+        .help("Jump to the current reply")
     }
 }
 
@@ -169,10 +345,117 @@ private struct ChatBottomKey: PreferenceKey {
     }
 }
 
+/// macOS 14-compatible user-intent detector. SwiftUI's geometry preference
+/// reports position but cannot distinguish a wheel/trackpad/scrollbar gesture
+/// from `ScrollViewProxy.scrollTo`; AppKit live-scroll notifications can.
+private struct ChatLiveScrollObserver: NSViewRepresentable {
+    let onEvent: (StreamScrollFollowState.Event) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onEvent: onEvent)
+    }
+
+    func makeNSView(context: Context) -> AttachmentView {
+        let view = AttachmentView()
+        view.onAttach = { [weak coordinator = context.coordinator] scrollView in
+            coordinator?.attach(to: scrollView)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: AttachmentView, context: Context) {
+        context.coordinator.onEvent = onEvent
+        nsView.attachWhenReady()
+    }
+
+    static func dismantleNSView(_ nsView: AttachmentView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class AttachmentView: NSView {
+        var onAttach: ((NSScrollView) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            attachWhenReady()
+        }
+
+        func attachWhenReady() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let scrollView = enclosingScrollView else { return }
+                onAttach?(scrollView)
+            }
+        }
+    }
+
+    final class Coordinator {
+        var onEvent: (StreamScrollFollowState.Event) -> Void
+        private weak var scrollView: NSScrollView?
+        private var observers: [NSObjectProtocol] = []
+
+        init(onEvent: @escaping (StreamScrollFollowState.Event) -> Void) {
+            self.onEvent = onEvent
+        }
+
+        func attach(to scrollView: NSScrollView) {
+            guard self.scrollView !== scrollView else { return }
+            detach()
+            self.scrollView = scrollView
+            let center = NotificationCenter.default
+            observers = [
+                center.addObserver(
+                    forName: NSScrollView.willStartLiveScrollNotification,
+                    object: scrollView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.onEvent(.userScrollBegan)
+                },
+                center.addObserver(
+                    forName: NSScrollView.didLiveScrollNotification,
+                    object: scrollView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.reportViewport(asScrollEnd: true)
+                },
+                center.addObserver(
+                    forName: NSScrollView.didEndLiveScrollNotification,
+                    object: scrollView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.reportViewport()
+                },
+            ]
+        }
+
+        func detach() {
+            let center = NotificationCenter.default
+            observers.forEach(center.removeObserver)
+            observers.removeAll()
+            scrollView = nil
+        }
+
+        private func reportViewport(asScrollEnd: Bool = false) {
+            guard let scrollView, let documentView = scrollView.documentView else { return }
+            let visibleBottom = scrollView.contentView.documentVisibleRect.maxY
+            let distanceFromLiveEdge = documentView.bounds.maxY - visibleBottom
+            let isAtLiveEdge = distanceFromLiveEdge <= 40
+            onEvent(asScrollEnd
+                ? .userScrollEnded(isAtLiveEdge: isAtLiveEdge)
+                : .userViewportChanged(isAtLiveEdge: isAtLiveEdge))
+        }
+
+        deinit {
+            detach()
+        }
+    }
+}
+
 // MARK: - You
 
 private struct YouTurn: View {
     let message: ChatMessage
+    let containerWidth: CGFloat
+    let mode: ChatWidthMode
 
     /// Copies the raw prompt text; for a text-less image turn falls back to the
     /// attachment filenames so the button still does something useful.
@@ -238,7 +521,13 @@ private struct YouTurn: View {
                 }
             }
         }
-        .frame(maxWidth: 510, alignment: .trailing)
+        .frame(
+            maxWidth: ChatLayoutPolicy.youBubbleMaxWidth(
+                containerWidth: containerWidth,
+                mode: mode
+            ),
+            alignment: .trailing
+        )
     }
 }
 
@@ -300,12 +589,18 @@ private struct ContextChip: View {
 /// style (icon/thumbnail + mono filename), minus the remove button. Shows a
 /// small inline thumbnail when the source image still loads; otherwise falls
 /// back to a photo glyph. Loaded once on appear so scrolling doesn't re-decode.
+/// Click opens an in-app preview sheet (metadata + zoom + Reveal/Copy path);
+/// restored turns with a nil URL surface an honest missing-asset state.
 private struct AttachmentChip: View {
     let attachment: MessageAttachment
     @State private var thumbnail: NSImage?
+    @State private var showPreview = false
 
     var body: some View {
-        HStack(spacing: 6) {
+        Button {
+            showPreview = true
+        } label: {
+            HStack(spacing: 6) {
             if let thumbnail {
                 Image(nsImage: thumbnail)
                     .resizable()
@@ -313,7 +608,7 @@ private struct AttachmentChip: View {
                     .frame(width: 18, height: 18)
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             } else {
-                CSIconView(icon: .photo, size: 11, color: CSColor.terracottaLight)
+                CSIconView(icon: .photo, size: 11, color: CSColor.chromeAccent)
             }
             Text(attachment.name)
                 .font(CSFont.mono(10.5, .medium))
@@ -321,20 +616,175 @@ private struct AttachmentChip: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: 160)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(CSColor.surfaceRaised(0.05))
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(CSColor.surfaceRaised(0.05))
-        .overlay(
-            RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
-                .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+        .buttonStyle(.plain)
+        .help(attachment.url == nil ? "Preview attachment (original file may be missing)" : "Preview attachment")
         .onAppear {
             if thumbnail == nil, let url = attachment.url {
                 thumbnail = NSImage(contentsOf: url)
             }
         }
+        .sheet(isPresented: $showPreview) {
+            AttachmentPreviewSheet(attachment: attachment)
+        }
+    }
+}
+
+/// In-app attachment inspector: image zoom when bytes still load, honest
+/// fallback when the source path is gone (restored threads), plus Reveal in
+/// Finder / Copy path / Open with default app.
+private struct AttachmentPreviewSheet: View {
+    let attachment: MessageAttachment
+    @Environment(\.dismiss) private var dismiss
+    @State private var image: NSImage?
+    @State private var zoom: CGFloat = 1.0
+
+    private var pathText: String {
+        attachment.url?.path ?? "(no source path — restored turn keeps name only)"
+    }
+
+    private var fileExists: Bool {
+        guard let url = attachment.url else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(attachment.name)
+                        .font(CSFont.mono(13, .semibold))
+                        .foregroundStyle(CSColor.textBodyAlt)
+                        .textSelection(.enabled)
+                    Text(attachment.type)
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                }
+                Spacer(minLength: 8)
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            Group {
+                if let image {
+                    ScrollView([.horizontal, .vertical]) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(
+                                width: max(240, image.size.width * zoom),
+                                height: max(160, image.size.height * zoom)
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .frame(minHeight: 280, maxHeight: 480)
+                    .background(CSColor.surfaceRaised(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+
+                    HStack(spacing: 10) {
+                        Text("Zoom")
+                            .font(CSFont.mono(10.5, .medium))
+                            .foregroundStyle(CSColor.textFaintAlt)
+                        Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
+                        Text(String(format: "%.0f%%", zoom * 100))
+                            .font(CSFont.mono(10.5, .medium))
+                            .foregroundStyle(CSColor.textMuted)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                } else if attachment.url == nil {
+                    missingBanner(
+                        title: "Original file not available",
+                        detail: "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk."
+                    )
+                } else if !fileExists {
+                    missingBanner(
+                        title: "File missing on disk",
+                        detail: pathText
+                    )
+                } else {
+                    missingBanner(
+                        title: "No inline preview",
+                        detail: "This type is not rendered in-app. Use Open to hand it to the system default app."
+                    )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Path")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                Text(pathText)
+                    .font(CSFont.mono(10.5))
+                    .foregroundStyle(CSColor.textBodyAlt)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CSColor.surfaceRaised(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+
+            HStack(spacing: 10) {
+                Button("Copy path") {
+                    chatCopy(pathText)
+                }
+                .disabled(attachment.url == nil)
+
+                Button("Reveal in Finder") {
+                    if let url = attachment.url {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                }
+                .disabled(!fileExists)
+
+                Button("Open") {
+                    if let url = attachment.url {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .disabled(!fileExists)
+                .keyboardShortcut(.defaultAction)
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 520, idealWidth: 640, minHeight: 420)
+        .onAppear {
+            if image == nil, let url = attachment.url, fileExists {
+                image = NSImage(contentsOf: url)
+            }
+        }
+    }
+
+    private func missingBanner(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(CSFont.mono(12, .semibold))
+                .foregroundStyle(CSColor.terracottaLight)
+            Text(detail)
+                .font(CSFont.mono(11))
+                .foregroundStyle(CSColor.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
+        .background(CSColor.surfaceRaised(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.terracotta.opacity(0.22), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
     }
 }
 
@@ -387,22 +837,17 @@ private struct WrapLayout: Layout {
 
 // MARK: - Tool activity
 
-/// One tool-activity line. A successful line is static (`verb detail`). A failed
-/// line that carries a reason becomes a compact disclosure: the row is tappable
-/// and reveals the full failure cause (mono, terracotta, wrapping to any length),
-/// collapsed by default so the list stays scannable. Both the verb/detail row and
-/// the revealed reason are text-selectable.
+/// One tool-activity line. Settled lines with summary, call id, or duration
+/// become a compact disclosure: tappable row → structured inspect panel
+/// (status, duration, call id, result/error, copy technical). Collapsed by
+/// default so the list stays scannable.
 private struct ToolLineRow: View {
     let line: ToolLine
-    @State private var showReason = false
-
-    private var reason: String? {
-        guard let reason = line.reason, !reason.isEmpty else { return nil }
-        return reason
-    }
+    @State private var showInspect = false
 
     private var isRunning: Bool { line.state == .running }
     private var isQuiet: Bool { line.state == .unknown || line.state == .cancelled }
+    private var canInspect: Bool { line.hasInspectPayload }
     private var rowColor: Color {
         switch line.state {
         case .running:
@@ -417,10 +862,9 @@ private struct ToolLineRow: View {
     }
 
     var body: some View {
-        let failed = line.state == .failed && reason != nil
         VStack(alignment: .leading, spacing: 4) {
             Button {
-                if failed { showReason.toggle() }
+                if canInspect { showInspect.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if isRunning {
@@ -432,48 +876,114 @@ private struct ToolLineRow: View {
                         .lineSpacing(4)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if failed {
+                    if let duration = ToolInspectPresentation.durationLabel(ms: line.durationMs), !showInspect {
+                        Text(duration)
+                            .font(CSFont.mono(10, .medium))
+                            .foregroundStyle(CSColor.textFaintAlt)
+                    }
+                    if canInspect {
                         CSIconView(
-                            icon: showReason ? .chevronDown : .chevronRight,
+                            icon: showInspect ? .chevronDown : .chevronRight,
                             size: 8,
                             weight: .semibold,
-                            color: CSColor.terracottaLight.opacity(0.75)
+                            color: rowColor.opacity(0.75)
                         )
                     }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!failed)
+            .disabled(!canInspect)
 
-            if failed, showReason, let reason {
-                Text(reason)
-                    .font(CSFont.mono(10.5, .medium))
-                    .foregroundStyle(CSColor.terracottaLight)
-                    .textSelection(.enabled)
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if canInspect, showInspect {
+                ToolInspectPanel(line: line)
                     .padding(.leading, 10)
             }
         }
     }
 }
 
+/// Expanded inspect surface for one tool call (no chain-of-thought — only
+/// operator-useful fields already present on the UI line).
+private struct ToolInspectPanel: View {
+    let line: ToolLine
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            inspectRow(label: "status", value: ToolInspectPresentation.statusLabel(for: line.state))
+            if let duration = ToolInspectPresentation.durationLabel(ms: line.durationMs) {
+                inspectRow(label: "duration", value: duration)
+            }
+            if let callID = line.callID, !callID.isEmpty {
+                inspectRow(label: "call id", value: callID)
+            }
+            if let reason = line.reason, !reason.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(line.state == .failed ? "error" : "result")
+                        .font(CSFont.mono(9.5, .semibold))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                        .textCase(.uppercase)
+                    Text(reason)
+                        .font(CSFont.mono(10.5, .medium))
+                        .foregroundStyle(line.state == .failed ? CSColor.terracottaLight : CSColor.textBodyAlt)
+                        .textSelection(.enabled)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("No result summary was stored for this call.")
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+            }
+            // Honest residual: full request/response bodies and artifact store
+            // links need bridge event fields beyond the current ToolLine contract.
+            HStack(spacing: 10) {
+                CopyMessageButton(text: line.technicalCopyText)
+                Text("request/response bodies not on this event")
+                    .font(CSFont.mono(9.5, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+                    .lineLimit(1)
+            }
+            .padding(.top, 2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.06), lineWidth: 1)
+        )
+    }
+
+    private func inspectRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(CSFont.mono(9.5, .semibold))
+                .foregroundStyle(CSColor.textFaintAlt)
+                .textCase(.uppercase)
+                .frame(width: 64, alignment: .leading)
+            Text(value)
+                .font(CSFont.mono(10.5, .medium))
+                .foregroundStyle(CSColor.textBodyAlt)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 private struct ToolTurn: View {
     let message: ChatMessage
-    @State private var expanded = true
+    let containerWidth: CGFloat
+    let mode: ChatWidthMode
+    @State private var expanded = false
 
-    /// Whole-card plain-text export: one line per tool, `verb detail` for a
-    /// successful line and `verb detail — reason` (full, untruncated) for a
-    /// failed one. Mirrors what the rows render, minus the styling.
+    /// Whole-card plain-text export: one technical block per tool line.
     private var copyText: String {
-        message.toolLines.map { line in
-            if let reason = line.reason, !reason.isEmpty {
-                return "\(line.verb) \(line.detail) — \(reason)"
-            }
-            return "\(line.verb) \(line.detail)"
-        }.joined(separator: "\n")
+        message.toolLines.map(\.technicalCopyText).joined(separator: "\n---\n")
     }
 
     var body: some View {
@@ -520,7 +1030,13 @@ private struct ToolTurn: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
         }
-        .frame(maxWidth: 560, alignment: .leading)
+        .frame(
+            maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
+                containerWidth: containerWidth,
+                mode: mode
+            ),
+            alignment: .leading
+        )
     }
 }
 
@@ -550,6 +1066,8 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
 
 private struct AssistantTurn: View {
     let message: ChatMessage
+    let containerWidth: CGFloat
+    let mode: ChatWidthMode
     let onToggleRenderMode: (UUID) -> Void
 
     var body: some View {
@@ -587,20 +1105,21 @@ private struct AssistantTurn: View {
                     if let secs = message.reasonedSeconds {
                         ReasonedChip(seconds: secs)
                     }
-                    // Raw mono is the default (operator decision C2b): the stream
-                    // and the settled turn render IDENTICALLY — no markdown re-parse
-                    // per delta, no visual "bam" on finalize. Rich is per-bubble
-                    // opt-in via the meta-row toggle.
+                    // Stream in the cheap raw view; settled messages render rich
+                    // by default. The per-bubble toggle remains available when
+                    // exact source text is more useful than presentation.
                     if message.wasStopped, message.text == "Stopped" {
                         Text("Stopped")
                             .font(CSFont.mono(11, .medium))
                             .foregroundStyle(CSColor.textFaintAlt)
-                    } else if !message.text.isEmpty || message.isStreaming {
+                    } else if message.isStreaming {
+                        RawText(raw: message.text, showsCaret: true)
+                    } else if !message.text.isEmpty {
                         switch message.renderMode {
                         case .raw:
-                            RawText(raw: message.text, showsCaret: message.isStreaming)
+                            RawText(raw: message.text)
                         case .rich:
-                            MarkdownText(raw: message.text, showsCaret: message.isStreaming)
+                            MarkdownText(raw: message.text)
                         }
                     }
                 }
@@ -623,14 +1142,20 @@ private struct AssistantTurn: View {
             ))
             .contextMenu { CopyButton(text: message.text) }
         }
-        .frame(maxWidth: 560, alignment: .leading)
+        .frame(
+            maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
+                containerWidth: containerWidth,
+                mode: mode
+            ),
+            alignment: .leading
+        )
     }
 }
 
 private struct ReasoningDisclosure: View {
     let text: String
     let isLive: Bool
-    @State private var expanded = true
+    @State private var expanded = false
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -651,7 +1176,7 @@ private struct ReasoningDisclosure: View {
                     weight: .semibold,
                     color: ChatPalette.thinking.opacity(0.75)
                 )
-                Text(isLive ? "thinking..." : "thinking")
+                Text(isLive ? "thinking..." : "reasoning summary")
                     .font(CSFont.mono(10.5, .semibold))
                     .foregroundStyle(ChatPalette.thinking)
                 Spacer(minLength: 0)
@@ -772,7 +1297,7 @@ private struct CopyMessageButton: View {
 private struct ReasonedChip: View {
     let seconds: Double
     var body: some View {
-        Text("reasoned · \(String(format: "%.1f", seconds))s")
+        Text("worked · \(String(format: "%.1f", seconds))s")
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.amber)
             .padding(.horizontal, 8)

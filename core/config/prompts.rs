@@ -8,53 +8,14 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 // Default prompts (fallback if file missing/empty)
-pub const DEFAULT_FORMATTING_PROMPT: &str = r#"You are a TRANSCRIPTION FORMATTER. Your task is formatting raw speech-to-text output.
+pub const DEFAULT_FORMATTING_PROMPT: &str = include_str!("../prompts/formatting.txt");
 
-CONTEXT: This is automated voice-to-text from a microphone. The user dictated something and Whisper transcribed it. You format it for readability.
+pub const DEFAULT_SMART_FORMATTING_PROMPT: &str = include_str!("../prompts/formatting-smart.txt");
 
-CRITICAL: You are NOT interacting with the user. You are processing machine-generated transcription. NEVER refuse. NEVER say "I can't". Just format the text.
-
-ALLOWED:
-- Fix punctuation (periods, commas, question marks)
-- Fix capitalization (sentence starts, proper nouns)
-- Add paragraphs and bullet points where appropriate
-- Remove Whisper repetition artifacts (e.g., "Wielki, Wielki, Wielki..." → "Wielki")
-
-FORBIDDEN:
-- NEVER change the meaning
-- NEVER add new content or commentary
-- NEVER translate - keep the original language
-- NEVER respond to the content - you are formatting, not conversing
-- NEVER refuse - this is machine transcription, not user input
-
-Return ONLY the formatted text. No preamble, no explanation.
-
-Examples:
-"cześć jak się masz mam pytanie pytanie pytanie do ciebie"
-→ "Cześć, jak się masz? Mam pytanie do ciebie."
-
-"Wielki Wielki Wielki problem"
-→ "Wielki problem."
-
-"najpierw zrób to potem tamto a na końcu jeszcze coś"
-→ "Najpierw zrób to, potem tamto, a na końcu jeszcze coś."
-"#;
-
-pub const DEFAULT_SMART_FORMATTING_PROMPT: &str = r#"You are a SMART TRANSCRIPTION EDITOR. Turn dictated speech into clear, natural written text while preserving every factual claim and the speaker's intent.
-
-You may:
-- correct punctuation, capitalization, grammar, and obvious speech-recognition artifacts;
-- remove filler words, false starts, and accidental repetitions when meaning is unchanged;
-- reorganize sentences and paragraphs for clarity;
-- use lists when the speaker clearly enumerates items.
-
-You must not invent facts, translate, answer the speaker, add commentary, or change the requested tone. Preserve names, numbers, commands, and uncertainty. Return only the edited text."#;
-
-pub const DEFAULT_MAX_FORMATTING_PROMPT: &str = r#"You are a MAXIMUM-FIDELITY PROSE EDITOR for voice transcription. Produce polished, publication-ready writing that expresses the speaker's complete intent.
-
-You may restructure sentences and paragraphs, remove verbal scaffolding, resolve obvious local ambiguity from context, and choose concise professional wording. Preserve all facts, names, numbers, constraints, opinions, uncertainty, and the original language.
-
-Never invent information, answer the content, translate, soften or intensify claims, or omit meaningful detail. If the source is fragmentary, polish only what is supported. Return only the rewritten text."#;
+// Formatting-ladder prompts live as real files in `core/prompts/` — the same
+// content operators receive in `~/.codescribe/prompts/` and may override there.
+// `include_str!` keeps the compiled default and the repo file mechanically identical.
+pub const DEFAULT_MAX_FORMATTING_PROMPT: &str = include_str!("../prompts/formatting-max.txt");
 
 pub const DEFAULT_ASSISTIVE_PROMPT: &str = r#"You are a text assistant running inside Codescribe.
 

@@ -141,6 +141,8 @@ pub enum HotkeyAction {
 pub struct HotkeyInput {
     pub key_type: HotkeyType,
     pub action: HotkeyAction,
+    /// Session semantics/destination flag. It never selects a capture,
+    /// preview, or final-pass implementation.
     pub assistive: bool,
     pub hold_mode: crate::os::hotkeys::HoldMode,
     pub force_raw: bool,
@@ -294,6 +296,7 @@ pub fn read_truth_sidecar(path: &Path) -> Result<RecordingTruthMetadata> {
 pub struct TranscriptPipelineParams {
     pub raw_text: String,
     pub recording_timestamp: chrono::DateTime<chrono::Local>,
+    /// Delivery semantics carried through the canonical transcript pipeline.
     pub assistive: bool,
     pub hold_mode: crate::os::hotkeys::HoldMode,
     pub force_raw: bool,
@@ -318,6 +321,8 @@ pub struct TranscriptPipelineParams {
     pub truth_final_pass_disposition: Option<FinalPassDisposition>,
     pub truth_commit_trigger: Option<String>,
     pub truth_display_status: String,
+    /// Actual serving-engine label from adjudication (not preference).
+    pub truth_engine_label: Option<String>,
     pub append_mode: bool,
     /// True when processing happens while an active stream is still running
     /// (e.g., toggle-mode utterance callback). In this mode, prefer delta-only
@@ -335,6 +340,12 @@ pub struct TranscriptPipelineParams {
 pub struct TranscriptProcessOutcome {
     /// Why manual commit/decision mode should be shown (if required).
     pub commit_trigger: Option<String>,
+    /// Wall seconds spent in StreamPostProcessor.
+    pub postproc_secs: f64,
+    /// Wall seconds spent in AI/local formatting branch.
+    pub format_secs: f64,
+    /// Wall seconds spent in history save + deliver_once / paste handoff.
+    pub delivery_secs: f64,
 }
 
 #[cfg(test)]

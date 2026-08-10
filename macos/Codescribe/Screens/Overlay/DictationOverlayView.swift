@@ -10,7 +10,7 @@ import SwiftUI
 //               formatted = editable finalized transcript
 //   action row  recording: Finish; finalized: Copy · Insert · Format · To Agent.
 //               All actions are neutral/grey; Close is the ONE red control.
-//   footer      ● local whisper (olive) · meta on the right
+//   footer      ● <engine chip from serving/preference> · meta on the right
 //
 // A transient toast (no-speech / error) floats over the bottom edge.
 struct DictationOverlayView: View {
@@ -61,6 +61,7 @@ struct DictationOverlayView: View {
                 footer
             }
         }
+        .csFocusPolicy()
         .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
         // Terminal corner clip (U22): GlassPanel paints its background from the
         // CONTENT column's size, not the window's. Whenever the column outgrows
@@ -124,6 +125,17 @@ struct DictationOverlayView: View {
                 StaticStatusPill(text: state.statusText, color: state.statusColor)
                     .padding(.leading, 6)
                     .accessibilityIdentifier("overlay-phase-status")
+            }
+            if let badge = state.confidenceBadgeText {
+                Text(badge)
+                    .csMono(9, .semibold)
+                    .foregroundStyle(CSColor.terracotta)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(CSColor.terracotta.opacity(0.12))
+                    .clipShape(Capsule())
+                    .accessibilityIdentifier("overlay-confidence-badge")
+                    .accessibilityLabel(badge)
             }
             Spacer(minLength: 0)
             if state.autoPasteControlAvailable {
@@ -259,6 +271,7 @@ struct DictationOverlayView: View {
             WaveformView(
                 active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
                 transcribing: state.transcribing || state.isFinalPass,
+                indicatorMode: state.indicatorMode,
                 meter: state.levelMeter
             )
             .padding(.top, 4)
@@ -576,8 +589,10 @@ struct DictationOverlayView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
-                Text("●").foregroundStyle(CSColor.olive)
-                Text("local whisper").foregroundStyle(CSColor.textFaintAlt)
+                Text("●").foregroundStyle(footerEngineDot)
+                // Product truth: never hardcode "local whisper". Chip = last serving
+                // engine when known, else preference (Apple live default).
+                Text(state.footerEngineLabel).foregroundStyle(CSColor.textFaintAlt)
             }
             Spacer(minLength: 0)
             Text(state.footerRight)
@@ -587,6 +602,13 @@ struct DictationOverlayView: View {
         .csMono(10, .medium)
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
+    }
+
+    private var footerEngineDot: Color {
+        let label = state.footerEngineLabel.lowercased()
+        if label.contains("apple") { return CSColor.oliveLight }
+        if label.contains("whisper") { return CSColor.olive }
+        return CSColor.amber
     }
 }
 
