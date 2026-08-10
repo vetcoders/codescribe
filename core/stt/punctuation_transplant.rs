@@ -3,11 +3,11 @@
 //! WHY THIS EXISTS (measured 2026-08-09, frozen parity fixture): Apple live
 //! commits ~1 period and 0 commas per ~1050 characters of Polish; Whisper over
 //! the same audio produces 9 periods and 25 commas (human reference: 6 / 32).
-//! Layered transcription carries the shape the user needs — but Smart mode's
-//! append-only doctrine rightly forbids rewriting committed words, so the
-//! shape never reached the delivery. This module resolves the standoff:
-//! **words stay Apple's, byte for byte; only punctuation and capitalization
-//! are adopted from the aligned Whisper transcript.**
+//! Layered transcription carries the shape the user needs, but the stop-path
+//! delivery used to ship Apple's committed words with Apple's shape deficit
+//! intact. This module repairs exactly that deficit: **words stay Apple's,
+//! byte for byte; only punctuation and capitalization are adopted from the
+//! aligned Whisper transcript.**
 //!
 //! INVARIANT (pinned by tests): stripping punctuation and case from the output
 //! yields exactly the committed input's word sequence. The transplant can
@@ -143,17 +143,25 @@ pub fn transplant_punctuation(committed: &str, punctuated: &str) -> Option<Trans
 
     let mut adopted_trailing: Vec<Option<&str>> = vec![None; committed_words.len()];
     let mut adopted_upper: Vec<bool> = vec![false; committed_words.len()];
+    let mut aligned_mask: Vec<bool> = vec![false; committed_words.len()];
     for (ci, pi) in &pairs {
         let token = &punctuated_tokens[*pi];
         if !token.trailing.is_empty() {
             adopted_trailing[*ci] = Some(token.trailing.as_str());
         }
         adopted_upper[*ci] = token.starts_uppercase;
+        aligned_mask[*ci] = true;
     }
+
+    /// Marks that end a sentence — after these a capital is legitimate.
+    const SENTENCE_TERMINALS: &[char] = &['.', '!', '?', '…'];
 
     let mut punctuation_added = 0usize;
     let mut capitalization_changes = 0usize;
     let mut out: Vec<String> = Vec::with_capacity(committed_words.len());
+    // Transcript start counts as a sentence start, so the first word's capital
+    // is always legitimate.
+    let mut prev_ends_sentence = true;
     for (idx, word) in committed_words.iter().enumerate() {
         // Strip the committed word's own trailing marks only when the shape
         // side supplies a replacement — never erase punctuation the live
@@ -166,13 +174,29 @@ pub fn transplant_punctuation(committed: &str, punctuated: &str) -> Option<Trans
             None => (*word, ""),
         };
         let mut rebuilt = stem.to_string();
-        // Capitalization is adopted, never revoked: an already-capitalized
-        // committed word (proper noun the user saw live) stays capitalized
-        // even where the shape side is lowercase.
         if adopted_upper[idx] && !rebuilt.chars().next().is_some_and(char::is_uppercase) {
             let mut chars = rebuilt.chars();
             if let Some(first) = chars.next() {
                 rebuilt = first.to_uppercase().chain(chars).collect();
+                capitalization_changes += 1;
+            }
+        } else if !adopted_upper[idx]
+            && aligned_mask[idx]
+            && !prev_ends_sentence
+            && rebuilt.chars().next().is_some_and(char::is_uppercase)
+            && !rebuilt.chars().nth(1).is_some_and(char::is_uppercase)
+        {
+            // Apple stamps a sentence-start capital wherever ITS pause boundary
+            // fell ("Dzień dobry, Mam na imię…" — operator dictation
+            // 2026-08-10). When the adopted shape says this position is
+            // mid-sentence and Whisper heard the same word lowercase, that
+            // capital is a boundary artifact, not a proper noun — Whisper
+            // capitalizes real names itself. Unaligned words (no shape
+            // evidence) and acronyms (second letter uppercase) keep their
+            // capital; so does anything after ., !, ?, ….
+            let mut chars = rebuilt.chars();
+            if let Some(first) = chars.next() {
+                rebuilt = first.to_lowercase().chain(chars).collect();
                 capitalization_changes += 1;
             }
         }
@@ -185,6 +209,10 @@ pub fn transplant_punctuation(committed: &str, punctuated: &str) -> Option<Trans
             }
             None => rebuilt.push_str(own_trailing),
         }
+        prev_ends_sentence = rebuilt
+            .chars()
+            .last()
+            .is_some_and(|c| SENTENCE_TERMINALS.contains(&c));
         out.push(rebuilt);
     }
 
@@ -255,10 +283,41 @@ mod tests {
         assert!(outcome.text.ends_with("piątek."));
     }
 
+    /// Apple's boundary-artifact capital drops mid-sentence when the aligned
+    /// shape is lowercase (operator dictation 2026-08-10: "Dzień dobry, Mam").
     #[test]
-    fn never_downgrades_committed_capitalization() {
-        let committed = "wyślij to do Moniki jeszcze dziś";
-        let punctuated = "wyślij to do moniki jeszcze dziś.";
+    fn lowercases_apple_boundary_capital_mid_sentence() {
+        let committed = "dzień dobry Mam na imię Maciej";
+        let punctuated = "Dzień dobry, mam na imię Maciej.";
+        let outcome = transplant_punctuation(committed, punctuated).unwrap();
+        assert_eq!(outcome.text, "Dzień dobry, mam na imię Maciej.");
+    }
+
+    /// A capital right after an adopted sentence terminal is legitimate and
+    /// survives even if the shape token happens to be lowercase.
+    #[test]
+    fn keeps_capital_after_sentence_terminal() {
+        let committed = "doszły bardzo pięknie Doszły";
+        let punctuated = "doszły bardzo pięknie. doszły.";
+        let outcome = transplant_punctuation(committed, punctuated).unwrap();
+        assert!(outcome.text.contains("pięknie. Doszły."));
+    }
+
+    /// Acronyms (second letter uppercase) are never downgraded.
+    #[test]
+    fn keeps_acronym_capitalization_mid_sentence() {
+        let committed = "to jest AI narzędzie do dyktowania";
+        let punctuated = "to jest ai narzędzie do dyktowania.";
+        let outcome = transplant_punctuation(committed, punctuated).unwrap();
+        assert!(outcome.text.contains("AI"));
+    }
+
+    /// Where the shape offers no aligned counterpart there is no evidence, so
+    /// the committed capital (possibly a name Whisper missed) stays.
+    #[test]
+    fn keeps_capital_where_shape_is_silent() {
+        let committed = "wyślij to do Moniki jeszcze dziś teraz";
+        let punctuated = "wyślij to do jeszcze dziś teraz.";
         let outcome = transplant_punctuation(committed, punctuated).unwrap();
         assert!(outcome.text.contains("Moniki"));
     }
