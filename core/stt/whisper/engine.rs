@@ -703,10 +703,20 @@ impl LocalWhisperEngine {
         // result still comes from the full recording. Trimming down to
         // `speech_samples` changed the behavior of the historical "raw file
         // transcription" path and regressed canonical transcripts.
-        let inference_started = std::time::Instant::now();
-        let raw = self.transcribe_long_with_language_segments(&samples, sample_rate, language)?;
-        super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
         let vad_config = crate::vad::VadConfig::default();
+        let silence_spans = silence_spans_from_vad_probabilities(
+            &stats.probabilities,
+            vad_config.threshold,
+            duration_secs,
+        );
+        let inference_started = std::time::Instant::now();
+        let raw = self.transcribe_long_with_language_segments_using_silences(
+            &samples,
+            sample_rate,
+            language,
+            &silence_spans,
+        )?;
+        super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
         let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
 
         let (raw_for_final_pass, tail_drop_count) = if raw.segments.is_empty() {
@@ -817,8 +827,7 @@ impl LocalWhisperEngine {
         self.transcribe_samples_16k_raw(&samples, language, debug_tokens)
     }
 
-    /// Transcribe arbitrarily long audio by sliding a 25 s window with 5 s of
-    /// overlap.
+    /// Transcribe arbitrarily long audio in VAD-aligned, overlapping windows.
     ///
     /// The overlap exists so a word split across a boundary is still heard
     /// whole; [`append_with_overlap_dedup`] then removes the duplicated region.
@@ -830,6 +839,35 @@ impl LocalWhisperEngine {
         audio: &[f32],
         sample_rate: u32,
         language: Option<&str>,
+    ) -> Result<RawTranscript> {
+        let (_, stats) = crate::vad::extract_speech(audio, sample_rate);
+        let silence_spans = silence_spans_from_vad_probabilities(
+            &stats.probabilities,
+            crate::vad::VadConfig::default().threshold,
+            if sample_rate == 0 {
+                0.0
+            } else {
+                audio.len() as f32 / sample_rate as f32
+            },
+        );
+        self.transcribe_long_with_language_segments_using_silences(
+            audio,
+            sample_rate,
+            language,
+            &silence_spans,
+        )
+    }
+
+    /// Decode long audio using silence spans already measured by the caller.
+    ///
+    /// File transcription passes its existing Silero result here so window
+    /// planning does not add a second VAD run to the stop-path budget.
+    fn transcribe_long_with_language_segments_using_silences(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        silence_spans: &[(f32, f32)],
     ) -> Result<RawTranscript> {
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         if samples.is_empty() {
@@ -850,22 +888,28 @@ impl LocalWhisperEngine {
             }
         };
 
-        let chunk_samples = 16_000usize * 25; // 25 seconds
-        let overlap = 16_000usize * 5; // 5 seconds overlap
-        ensure!(chunk_samples > overlap, "chunk_samples must be > overlap");
-        let step = chunk_samples - overlap;
+        let total_secs = samples.len() as f32 / 16_000.0;
+        let windows = plan_vad_aligned_windows(silence_spans, total_secs);
+        tracing::debug!(
+            window_count = windows.len(),
+            silence_span_count = silence_spans.len(),
+            "planned VAD-aligned long-file decode windows"
+        );
 
         let mut out = String::new();
         let mut all_segments = Vec::new();
-        let mut offset = 0usize;
         let mut logprob_sum = 0.0_f32;
         let mut logprob_count = 0_u32;
         let mut worst_compression = 0.0_f32;
         let mut any_quality_gate_dropped = false;
 
-        while offset < samples.len() {
-            let end = (offset + chunk_samples).min(samples.len());
-            let chunk = &samples[offset..end];
+        for (start_sec, end_sec) in windows {
+            let start = ((start_sec * 16_000.0).round() as usize).min(samples.len());
+            let end = ((end_sec * 16_000.0).round() as usize).min(samples.len());
+            if end <= start {
+                continue;
+            }
+            let chunk = &samples[start..end];
             let transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
             append_with_overlap_dedup(&mut out, &transcript.text);
 
@@ -883,15 +927,13 @@ impl LocalWhisperEngine {
             }
 
             if !transcript.segments.is_empty() {
-                let offset_sec = offset as f32 / 16_000.0;
+                let offset_sec = start as f32 / 16_000.0;
                 all_segments.extend(transcript.segments.into_iter().map(|mut s| {
                     s.start_ts += offset_sec;
                     s.end_ts += offset_sec;
                     s
                 }));
             }
-
-            offset = offset.saturating_add(step);
         }
 
         Ok(RawTranscript {
@@ -2376,12 +2418,9 @@ mod dedup_tests {
 
 // ─── stt-live-first-v2 TDD stubs (dispatch 2026-08-10) ──────────────────────
 //
-// The two functions below are CONTRACT STUBS: their signatures are the agreed
-// v2 API, their bodies deliberately reproduce today's measured-broken behavior
-// so the colocated RED tests compile and fail at runtime, not at build time.
-// Cut w1-a implements `plan_vad_aligned_windows`; cut w1-c implements
-// `merge_chunk_transcripts`. Ground truth for both: the operator's three-way
-// recording (tests/e2e_long_window_truth.rs).
+// The seam function below remains a contract stub for cut w1-c. Ground truth
+// for both cuts is the operator's three-way recording
+// (tests/e2e_long_window_truth.rs).
 
 /// Plan long-file decode windows aligned to VAD silence spans.
 ///
@@ -2391,25 +2430,101 @@ mod dedup_tests {
 /// so no audio is skipped. A fixed-step grid is only the fallback for audio
 /// with no usable silences (constant speech).
 ///
-/// STUB: ignores `silences` entirely and returns the legacy 25 s / 20 s grid —
-/// the exact shape that derailed window c6 (start at 120 s = mid-mumble) on
-/// the 2026-08-10 recording.
-// dead_code allows: contract stubs — unreachable until w1-a/w1-c wire them
-// into transcribe_long_with_language_segments; the allows leave with that wiring.
-#[allow(dead_code)]
 pub const VAD_WINDOW_MIN_SECS: f32 = 6.0;
-#[allow(dead_code)]
 pub const VAD_WINDOW_MAX_SECS: f32 = 28.0;
 
-#[allow(dead_code)]
-pub fn plan_vad_aligned_windows(_silences: &[(f32, f32)], total_secs: f32) -> Vec<(f32, f32)> {
+const TARGET_WINDOW_SECS: f32 = 25.0;
+const VAD_WINDOW_OVERLAP_SECS: f32 = 5.0;
+const VAD_BOUNDARY_TOLERANCE_SECS: f32 = 5.0;
+
+pub fn plan_vad_aligned_windows(silences: &[(f32, f32)], total_secs: f32) -> Vec<(f32, f32)> {
+    if !total_secs.is_finite() || total_secs <= 0.0 {
+        return Vec::new();
+    }
+
+    let usable_silences: Vec<(f32, f32)> = silences
+        .iter()
+        .filter_map(|&(start, end)| {
+            if !start.is_finite() || !end.is_finite() {
+                return None;
+            }
+            let start = start.clamp(0.0, total_secs);
+            let end = end.clamp(0.0, total_secs);
+            (end > start).then_some((start, end))
+        })
+        .collect();
+
     let mut windows = Vec::new();
     let mut start = 0.0_f32;
     while start < total_secs {
-        windows.push((start, (start + 25.0).min(total_secs)));
-        start += 20.0;
+        if total_secs - start <= VAD_WINDOW_MAX_SECS {
+            windows.push((start, total_secs));
+            break;
+        }
+
+        let target = start + TARGET_WINDOW_SECS;
+        let candidate_min = (start + VAD_WINDOW_MIN_SECS).max(target - VAD_BOUNDARY_TOLERANCE_SECS);
+        let candidate_max = (start + VAD_WINDOW_MAX_SECS)
+            .min(target + VAD_BOUNDARY_TOLERANCE_SECS)
+            .min(total_secs);
+
+        let boundary = usable_silences
+            .iter()
+            .filter_map(|&(silence_start, silence_end)| {
+                let lo = silence_start.max(candidate_min);
+                let hi = silence_end.min(candidate_max);
+                if hi < lo {
+                    return None;
+                }
+                let point = target.clamp(lo, hi);
+                Some((point, (point - target).abs()))
+            })
+            .min_by(|(_, a_distance), (_, b_distance)| a_distance.total_cmp(b_distance))
+            .map(|(point, _)| point)
+            .unwrap_or_else(|| (start + TARGET_WINDOW_SECS).min(total_secs));
+
+        let boundary = boundary.min(start + VAD_WINDOW_MAX_SECS).min(total_secs);
+        windows.push((start, boundary));
+
+        let next_start = (boundary - VAD_WINDOW_OVERLAP_SECS).max(0.0);
+        if next_start <= start {
+            break;
+        }
+        start = next_start;
     }
     windows
+}
+
+/// Convert the existing 500 ms Silero probability stream into contiguous
+/// silence spans for the window planner.
+fn silence_spans_from_vad_probabilities(
+    probabilities: &[f32],
+    threshold: f32,
+    total_secs: f32,
+) -> Vec<(f32, f32)> {
+    if probabilities.is_empty() || !threshold.is_finite() || total_secs <= 0.0 {
+        return Vec::new();
+    }
+
+    let window_sec = crate::vad::DISCRIMINATOR_WINDOW_MS as f32 / 1000.0;
+    let mut spans = Vec::new();
+    let mut index = 0usize;
+    while index < probabilities.len() {
+        if probabilities[index] >= threshold {
+            index += 1;
+            continue;
+        }
+        let run_start = index;
+        while index < probabilities.len() && probabilities[index] < threshold {
+            index += 1;
+        }
+        let start = run_start as f32 * window_sec;
+        let end = (index as f32 * window_sec).min(total_secs);
+        if end > start {
+            spans.push((start, end));
+        }
+    }
+    spans
 }
 
 /// Merge the next window's transcript onto the accumulated one, deduplicating
@@ -2477,6 +2592,26 @@ mod stt_live_first_v2_red {
                  No speech — measured on operator fixtures)"
             );
         }
+    }
+
+    /// Constant speech keeps the historical 25 s window / 20 s step exactly.
+    #[test]
+    fn constant_speech_falls_back_to_legacy_grid() {
+        let windows = plan_vad_aligned_windows(&[], 60.0);
+        assert_eq!(windows, vec![(0.0, 25.0), (20.0, 45.0), (40.0, 60.0)]);
+        assert!(
+            windows
+                .windows(2)
+                .all(|pair| pair[1].0 < pair[0].1 && pair[1].0 > pair[0].0),
+            "fallback windows must overlap while continuing to advance"
+        );
+    }
+
+    /// The planner consumes the existing Silero 500 ms probability timeline.
+    #[test]
+    fn vad_probabilities_coalesce_into_silence_spans() {
+        let spans = silence_spans_from_vad_probabilities(&[0.9, 0.2, 0.1, 0.8, 0.3, 0.7], 0.5, 3.0);
+        assert_eq!(spans, vec![(0.5, 1.5), (2.0, 2.5)]);
     }
 
     /// The seam judge drops next-window segments that re-describe the overlap
