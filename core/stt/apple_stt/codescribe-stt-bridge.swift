@@ -1372,8 +1372,7 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         defer { lock.unlock() }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var frozen: FrozenPhrase? = nil
-        // Detect SFSpeech phrase restart without isFinal: new partial neither
-        // extends nor is a prefix of the previous hypothesis → freeze prior.
+        // Detect SFSpeech phrase restart without isFinal → freeze prior.
         //
         // A RESTART collapses the hypothesis to a few words; a REVISION keeps
         // most of it and only rewords the middle. Measured on the parity
@@ -1381,19 +1380,48 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         // revision shrank 95 → 79 — and the old "shorter by 12+" rule froze
         // that revision as a phrase, sealing the same span twice (the residual
         // duplication at similarity 0.872).
+        //
+        // NAMED DROP MECHANISM (w1-b, 2026-08-10 three-way live):
+        // `shared_opener_restart_suppresses_freeze`. Consecutive Polish
+        // sentences share openers ("Zdanie" / "Zadanie"). The previous rule
+        // treated `prev.hasPrefix(t)` / substring containment as "extends",
+        // so a post-stressor collapse to the next sentence's short opener
+        // OVERWROTE the open hypothesis without freezing it — s6/s8/s10
+        // vanished from committed raw while native dictation kept them.
+        // Same-phrase rewind only suppresses freeze when the short text is a
+        // TRUE substantial prefix (>15 chars) of the prior hypothesis.
         if !partialText.isEmpty && !t.isEmpty {
             let prev = partialText
-            let extends = t.hasPrefix(prev) || prev.hasPrefix(t) || t.contains(prev) || prev.contains(t)
-            let restarted = (t.count * 3 < prev.count) || (t.count <= 15 && prev.count >= 25)
-            if restarted && !extends {
+            if Self.phraseRestartShouldFreezePrior(prev: prev, next: t) {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
                 frozen = FrozenPhrase(text: prev, segments: partialSegments)
+                let ts = ISO8601DateFormatter().string(from: Date())
+                fputs(
+                    "apple_lifecycle: freeze reason=shared_opener_restart_suppresses_freeze "
+                        + "ts=\(ts) prev_chars=\(prev.count) next_chars=\(t.count) "
+                        + "prev_head=\(String(prev.prefix(40))) next_head=\(String(t.prefix(40)))\n",
+                    stderr
+                )
             }
         }
         partialText = t
         partialSegments = segments
         return frozen
+    }
+
+    /// Pure freeze decision — kept in lockstep with
+    /// `phrase_restart_should_freeze_prior` in `apple_live_session.rs`.
+    fileprivate static func phraseRestartShouldFreezePrior(prev: String, next: String) -> Bool {
+        let prev = prev.trimmingCharacters(in: .whitespacesAndNewlines)
+        let next = next.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prev.isEmpty, !next.isEmpty else { return false }
+        let restarted = (next.count * 3 < prev.count) || (next.count <= 15 && prev.count >= 25)
+        guard restarted else { return false }
+        // Substantial true-prefix rewind of the SAME phrase — not a 1–2 word
+        // opener every "Zdanie N" sentence shares.
+        let samePhraseRewind = prev.hasPrefix(next) && next.count > 15
+        return !samePhraseRewind
     }
 
     /// Freeze whatever hypothesis is still open (stream ended mid-phrase).
