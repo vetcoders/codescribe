@@ -301,7 +301,7 @@ mod tests {
     /// Full spec form keeps branch names that contain slashes.
     #[test]
     fn test_parse_github_spec_full() {
-        let gh = parse_github_ref("Vetcoders/Codescribe@fix/multiple-fixes:core/lib.rs");
+        let gh = parse_github_ref("vetcoders/Codescribe@fix/multiple-fixes:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {
@@ -316,7 +316,7 @@ mod tests {
     /// Spec without `@ref` defaults the git ref to `main`.
     #[test]
     fn test_parse_github_spec_default_ref() {
-        let gh = parse_github_ref("Vetcoders/Codescribe:core/lib.rs");
+        let gh = parse_github_ref("vetcoders/Codescribe:core/lib.rs");
         assert_eq!(
             gh,
             Some(GitHubRef {

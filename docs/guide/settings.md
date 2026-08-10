@@ -144,4 +144,4 @@ Common overrides:
 - **New agent context**: Chat Overlay → **New thread**
 - **Reset prompts**: Settings → **AI & Prompts** → **Reset**
 
-_Created by vetcoders (c)2026_
+_Created by Vetcoders (c)2026_

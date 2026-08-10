@@ -1,4 +1,4 @@
-# The canonical vetcoders commit message format.
+# The canonical Vetcoders commit message format.
 
 # [<agent>/<runtime>] <type>(<scope>): <subject> // scoped and easily understood subject line
 

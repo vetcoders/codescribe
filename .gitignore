@@ -103,3 +103,4 @@ tests/assets/data_assets/*
 !/SECURITY.md
 /*.txt
 /.aiassistant
+/.atuin

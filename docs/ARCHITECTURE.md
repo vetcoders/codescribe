@@ -1,6 +1,6 @@
 # Codescribe Architecture
 
-> Created by vetcoders (c)2026
+> Created by Vetcoders (c)2026
 >
 > **2026-05-26:** transcription pipeline is now layered. See
 > [ADR — Layered Incremental Transcription Pipeline](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
@@ -324,4 +324,4 @@ model:
 
 ---
 
-**Made with ⌜ Codescribe ⌟ by vetcoders (c) 2024-2026**
+**Made with ⌜ Codescribe ⌟ by Vetcoders (c) 2024-2026**

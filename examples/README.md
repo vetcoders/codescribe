@@ -92,4 +92,4 @@ VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
 ---
 
-Created by vetcoders (c)2025
+Created by Vetcoders (c)2025
