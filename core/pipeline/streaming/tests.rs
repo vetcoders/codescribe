@@ -1032,21 +1032,27 @@ fn test_partial_telemetry_counters_accumulate() {
 #[tokio::test]
 async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let started = Arc::new(StdMutex::new(Vec::<u32>::new()));
+    let prompts = Arc::new(StdMutex::new(Vec::<Option<String>>::new()));
     let gate = Arc::new((StdMutex::new(false), Condvar::new()));
     let started_ref = Arc::clone(&started);
+    let prompts_ref = Arc::clone(&prompts);
     let gate_ref = Arc::clone(&gate);
 
     let infer = Arc::new(
         move |samples: Vec<f32>,
               _sample_rate: u32,
               _language: Option<String>,
-              _initial_prompt: Option<String>|
+              initial_prompt: Option<String>|
               -> Result<RawTranscript> {
             let id = samples.first().copied().unwrap_or_default() as u32;
             started_ref
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(id);
+            prompts_ref
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(initial_prompt);
             if id == 100 {
                 let (lock, cvar) = &*gate_ref;
                 let mut released = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1070,37 +1076,43 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
     let collector = Arc::new(CollectorEventSink::new());
     let event_sink: Arc<dyn EventSink> = collector.clone();
     let mut correction_in_flight: Option<SttTaskHandle> = None;
+    let mut rolling_window = RollingCorrectionWindow::default();
+    let mut correction_expected_window_id: Option<u64> = None;
     let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
     let mut partial_telemetry = PartialPassTelemetry::default();
 
-    let mut first_audio = vec![21.0];
-    let mut first_window = String::from("draft-a");
+    let mut first_audio = vec![21.0; 6];
+    rolling_window.observe_samples(first_audio.len());
+    let first_window = String::from("draft-a");
     assert!(schedule_partial_pass(
         &scheduler,
-        16_000,
+        1,
         Some("en".to_string()),
         &mut first_audio,
+        &mut rolling_window,
         &mut correction_in_flight,
+        &mut correction_expected_window_id,
         &mut correction_expected_boundary_rev,
         &mut correction_expected_text,
         &mut correction_suffix_snapshot,
         "suffix-a",
         7,
-        &mut first_window,
+        &first_window,
+        None,
         PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
         PartialPassTrigger::Timer,
         &mut partial_telemetry,
         &event_sink,
     ));
     assert!(
-        first_audio.is_empty(),
-        "correction audio buffer should be consumed on schedule"
+        first_audio.len() == 4,
+        "rolling correction should retain the four-second overlap"
     );
     assert!(
-        first_window.is_empty(),
-        "window text mirror should be taken in lockstep with the audio buffer"
+        first_window == "draft-a",
+        "window text mirror remains available for overlapping windows"
     );
     assert_eq!(
         correction_expected_boundary_rev,
@@ -1122,20 +1134,24 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         .expect("first correction handle should be tracked")
         .id();
 
-    let mut second_audio = vec![22.0];
-    let mut second_window = String::from("draft-b");
+    let mut second_audio = vec![22.0; 8];
+    rolling_window.observe_samples(4);
+    let second_window = String::from("draft-b");
     assert!(schedule_partial_pass(
         &scheduler,
-        16_000,
+        1,
         Some("en".to_string()),
         &mut second_audio,
+        &mut rolling_window,
         &mut correction_in_flight,
+        &mut correction_expected_window_id,
         &mut correction_expected_boundary_rev,
         &mut correction_expected_text,
         &mut correction_suffix_snapshot,
         "suffix-b",
         8,
-        &mut second_window,
+        &second_window,
+        Some("prior-window".to_string()),
         PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS,
         PartialPassTrigger::Speech,
         &mut partial_telemetry,
@@ -1206,6 +1222,11 @@ async fn test_schedule_partial_pass_coalesces_under_async_scheduler_pressure() {
         vec![100, 22],
         "superseded correction should not execute when scheduler is saturated"
     );
+    assert_eq!(
+        prompts.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        vec![None, Some("prior-window".to_string())],
+        "rolling_window must carry the previous window text as decode context"
+    );
     assert!(
         collector
             .events()
@@ -1256,6 +1277,8 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
     let collector = Arc::new(CollectorEventSink::new());
     let event_sink: Arc<dyn EventSink> = collector.clone();
     let mut correction_in_flight: Option<SttTaskHandle> = None;
+    let mut rolling_window = RollingCorrectionWindow::default();
+    let mut correction_expected_window_id: Option<u64> = None;
     let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
@@ -1275,29 +1298,33 @@ async fn test_schedule_partial_pass_repeated_coalescing_under_async_pressure() {
         let expected_rev = 21 + index as u64;
         let expected_text = format!("draft-{index}");
         let expected_suffix = format!("suffix-{index}");
-        let mut audio = vec![marker];
-        let mut window = expected_text.clone();
+        let mut audio = vec![marker; if index == 0 { 6 } else { 8 }];
+        rolling_window.observe_samples(if index == 0 { 6 } else { 4 });
+        let window = expected_text.clone();
 
         assert!(schedule_partial_pass(
             &scheduler,
-            16_000,
+            1,
             Some("en".to_string()),
             &mut audio,
+            &mut rolling_window,
             &mut correction_in_flight,
+            &mut correction_expected_window_id,
             &mut correction_expected_boundary_rev,
             &mut correction_expected_text,
             &mut correction_suffix_snapshot,
             &expected_suffix,
             expected_rev,
-            &mut window,
+            &window,
+            (index > 0).then(|| format!("prior-{index}")),
             PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS + index as u64,
             trigger,
             &mut partial_telemetry,
             &event_sink,
         ));
         assert!(
-            audio.is_empty(),
-            "schedule should consume correction audio buffer"
+            audio.len() == 4,
+            "schedule should retain only the rolling overlap"
         );
         assert_eq!(correction_expected_boundary_rev, Some(expected_rev));
         assert_eq!(
