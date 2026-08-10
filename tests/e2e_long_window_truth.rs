@@ -24,6 +24,7 @@
 use std::path::PathBuf;
 
 use codescribe::whisper::LocalWhisperEngine;
+use serial_test::serial;
 
 #[path = "support/e2e_stt_matrix.rs"]
 mod e2e_stt_matrix;
@@ -100,6 +101,13 @@ fn full_file_transcript() -> Option<String> {
     let transcript = engine
         .transcribe_long_with_language_segments(&samples, sample_rate, Some("pl"))
         .expect("long transcription");
+    println!("segments={}", transcript.segments.len());
+    for segment in &transcript.segments {
+        println!(
+            "segment [{:.2}, {:.2}] {:?}",
+            segment.start_ts, segment.end_ts, segment.text
+        );
+    }
     println!("--- full-file transcript ---\n{}\n---", transcript.text);
     Some(transcript.text)
 }
@@ -109,6 +117,7 @@ fn full_file_transcript() -> Option<String> {
 /// verbatim — measured 2026-08-10); the full-file window loop must not lose
 /// them. RED until VAD-aligned window boundaries land (cut w1-a).
 #[test]
+#[serial]
 fn tail_sentences_survive_full_file_decode() {
     let Some(text) = full_file_transcript() else {
         return;
@@ -128,6 +137,7 @@ fn tail_sentences_survive_full_file_decode() {
 /// window 1 and window 2 must not emit it twice. RED until the seam judge
 /// dedups by segment time instead of by text (cut w1-c).
 #[test]
+#[serial]
 fn head_is_not_duplicated_at_window_seams() {
     let Some(text) = full_file_transcript() else {
         return;
