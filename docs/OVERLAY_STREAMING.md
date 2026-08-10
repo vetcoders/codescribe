@@ -6,7 +6,7 @@
 > [Layered Incremental Transcription Pipeline (ADR)](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md).
 > The overlay is now a 5-layer incremental theatre — _NEVER rewrites from zero, always patches in place._
 >
-> Created by vetcoders (c)2026
+> Created by Vetcoders (c)2026
 
 ## Layered rendering model (ADR 2026-05-26)
 
@@ -405,4 +405,4 @@ Displayed text (String, visible in overlay/bubble)
 
 ---
 
-_Vibecrafted with AI Agents by vetcoders (c)2026_
+_Vibecrafted with AI Agents by Vetcoders (c)2026_

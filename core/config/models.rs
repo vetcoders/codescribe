@@ -669,7 +669,7 @@ mod tests {
         let _hf_cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
 
         let resolved =
-            resolve_runtime_whisper_model_path(Some("Vetcoders/custom-whisper")).unwrap();
+            resolve_runtime_whisper_model_path(Some("vetcoders/custom-whisper")).unwrap();
         assert_eq!(resolved, snapshot);
     }
 

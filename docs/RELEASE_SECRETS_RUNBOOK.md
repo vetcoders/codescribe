@@ -2,7 +2,7 @@
 
 The `Release DMG` GitHub Actions workflow fails closed until the signing,
 notarization, licensing, and Sparkle key inputs below are configured. Only a repository administrator with
-access to the VetCoders Apple Developer account should perform this procedure.
+access to the Vetcoders Apple Developer account should perform this procedure.
 
 Never paste secret values into issues, pull requests, Actions logs, shell
 history, or this document. The commands below read values from local variables
@@ -65,7 +65,7 @@ identity.
 ## 4. `APPLE_ID`
 
 Source: the email address of the Apple Account authorized to notarize apps for
-the VetCoders developer team.
+the Vetcoders developer team.
 
 ```bash
 gh secret set APPLE_ID --repo vetcoders/codescribe

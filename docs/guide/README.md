@@ -98,4 +98,4 @@ Codescribe lives in your menu bar. The icon color indicates status:
 
 ---
 
-_Created by vetcoders (c)2026_
+_Created by Vetcoders (c)2026_
