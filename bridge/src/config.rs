@@ -566,7 +566,9 @@ impl CodescribeConfig {
                 settings.whisper_model.clone(),
                 &env_file,
             ),
-            layered_transcription: effective_env_string(
+            // Promoted single-brain key: settings.json wins the read-back, so
+            // the Layered toggle reflects the user's write, not stale boot env.
+            layered_transcription: effective_settings_string(
                 "CODESCRIBE_LAYERED_TRANSCRIPTION",
                 settings.layered_transcription.clone(),
                 &env_file,

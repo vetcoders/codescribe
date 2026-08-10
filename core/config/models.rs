@@ -655,7 +655,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let hf_cache = temp_dir.path().join("hf-cache");
         let snapshot = hf_cache
-            .join("models--Vetcoders--custom-whisper")
+            .join("models--vetcoders--custom-whisper")
             .join("snapshots")
             .join("abc123");
 
