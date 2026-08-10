@@ -315,12 +315,32 @@ pub(crate) fn adjudicate_recording_truth(
             } else if let Some(stream) = streaming_text.as_ref() {
                 // Product: never full-replace live with Whisper. Merge live floor
                 // + Whisper gap-fill (85% Apple×Whisper thesis; Teacher AlignOp).
-                let merged = codescribe_core::quality::merge_live_whisper(stream, final_text);
+                // Known-terms catalog (Voice Lab canonical terms) lets Whisper win
+                // a disagreement region on code-switched entities Apple garbled
+                // ("delivered ≠ what I spoke", operator 2026-08-10). Load failure
+                // degrades to the legacy live-floor behavior, never blocks the stop.
+                let known_terms: Vec<String> =
+                    codescribe_core::quality::overlay_quality::custom_lexicon_entries()
+                        .map(|entries| {
+                            let mut terms: Vec<String> =
+                                entries.into_iter().map(|e| e.canonical).collect();
+                            terms.sort();
+                            terms.dedup();
+                            terms
+                        })
+                        .unwrap_or_default();
+                let merged = codescribe_core::quality::merge_live_whisper_with_terms(
+                    stream,
+                    final_text,
+                    &known_terms,
+                );
                 info!(
                     mode = ?merged.mode,
                     equal = merged.equal_tokens,
                     whisper_fill = merged.whisper_fill_tokens,
                     live_subs = merged.live_kept_substitutes,
+                    whisper_won_subs = merged.whisper_won_substitutes,
+                    known_terms = known_terms.len(),
                     live_chars = stream.chars().count(),
                     whisper_chars = final_text.chars().count(),
                     merged_chars = merged.text.chars().count(),
