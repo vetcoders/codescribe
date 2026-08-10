@@ -25,9 +25,9 @@ use crate::vad;
 
 use super::correction::{
     PARTIAL_PASS_TRIGGER_TIMER_MS, PartialPassTelemetry, PartialPassTriggerState,
-    apply_final_boundary_text, classify_partial_trigger, correction_baseline_text,
-    correction_is_stale, merge_corrected_window, postprocess_correction_with_snapshot,
-    schedule_partial_pass,
+    ROLLING_WINDOW_TARGET_SECS, RollingCorrectionWindow, apply_final_boundary_text,
+    classify_partial_trigger, correction_baseline_text, correction_is_stale,
+    merge_corrected_window, postprocess_correction_with_snapshot, schedule_partial_pass,
 };
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
 use super::quality_gate::{
@@ -47,7 +47,7 @@ use super::tuning::{inference_max_concurrency, interim_vad_accumulate_samples};
 /// which is all `strip_overlap` needs — at constant cost. Sized to comfortably
 /// exceed the partial-pass cadence so no spoken tail is ever dropped before a
 /// Refine consumes it.
-const CORRECTION_WINDOW_SEC: f32 = 18.0;
+const CORRECTION_WINDOW_SEC: f32 = ROLLING_WINDOW_TARGET_SECS;
 /// Maximum text retained for Refine's window baseline.
 ///
 /// Text has no exact timestamps here, so keep a conservative character tail
@@ -426,6 +426,7 @@ pub(crate) async fn vad_transcription_session(
 
     // Phase 2 correction state
     let mut correction_audio_buf: Vec<f32> = Vec::new();
+    let mut rolling_correction_window = RollingCorrectionWindow::default();
     let mut partial_trigger_state = PartialPassTriggerState::new(Instant::now());
     let mut suffix_snapshot = String::new();
 
@@ -479,9 +480,11 @@ pub(crate) async fn vad_transcription_session(
 
     // Phase 2 (buffered correction) — request tracked for stale guards.
     let mut correction_in_flight: Option<SttTaskHandle> = None;
+    let mut correction_expected_window_id: Option<u64> = None;
     let mut correction_expected_boundary_rev: Option<u64> = None;
     let mut correction_expected_text: Option<String> = None;
     let mut correction_suffix_snapshot: Option<String> = None;
+    let mut previous_window_prompt: Option<String> = None;
 
     loop {
         // ── Fill the Pipe ────────────────────────────────────────────────────
@@ -608,13 +611,16 @@ pub(crate) async fn vad_transcription_session(
                     output_sample_rate,
                     pipeline.language.clone(),
                     &mut correction_audio_buf,
+                    &mut rolling_correction_window,
                     &mut correction_in_flight,
+                    &mut correction_expected_window_id,
                     &mut correction_expected_boundary_rev,
                     &mut correction_expected_text,
                     &mut correction_suffix_snapshot,
                     &suffix_snapshot,
                     boundary_rev,
-                    &mut window_text,
+                    &window_text,
+                    previous_window_prompt.clone(),
                     partial_trigger_state.silero_speech_ms_since_partial,
                     trigger,
                     &mut partial_telemetry,
@@ -897,13 +903,16 @@ pub(crate) async fn vad_transcription_session(
                         output_sample_rate,
                         pipeline.language.clone(),
                         &mut correction_audio_buf,
+                        &mut rolling_correction_window,
                         &mut correction_in_flight,
+                        &mut correction_expected_window_id,
                         &mut correction_expected_boundary_rev,
                         &mut correction_expected_text,
                         &mut correction_suffix_snapshot,
                         &suffix_snapshot,
                         boundary_rev,
-                        &mut window_text,
+                        &window_text,
+                        previous_window_prompt.clone(),
                         partial_trigger_state.silero_speech_ms_since_partial,
                         trigger,
                         &mut partial_telemetry,
@@ -918,6 +927,7 @@ pub(crate) async fn vad_transcription_session(
             }, if correction_in_flight.is_some() => {
                 let expected_boundary_rev =
                     correction_expected_boundary_rev.take().unwrap_or(boundary_rev);
+                let expected_window_id = correction_expected_window_id.take().unwrap_or_default();
                 let expected_text = correction_expected_text.take().unwrap_or_default();
                 let suffix_snapshot = correction_suffix_snapshot.take().unwrap_or_default();
                 match result {
@@ -933,11 +943,14 @@ pub(crate) async fn vad_transcription_session(
                             debug!(
                                 expected_boundary_rev,
                                 boundary_rev,
+                                expected_window_id,
                                 expected_len = expected_text.chars().count(),
                                 current_len = window_text.chars().count(),
                                 "Suppressing stale correction (boundary advanced)"
                             );
                         } else {
+                            previous_window_prompt =
+                                (!raw.text.trim().is_empty()).then(|| raw.text.clone());
                             match postprocess_correction_with_snapshot(
                                 &mut pipeline,
                                 &raw.text,
@@ -1046,6 +1059,7 @@ pub(crate) async fn vad_transcription_session(
                 if correction_audio_buf.is_empty() {
                     suffix_snapshot = pipeline.last_suffix.clone();
                 }
+                rolling_correction_window.observe_samples(item.audio.len());
                 correction_audio_buf.extend_from_slice(&item.audio);
                 // Bound the Refine buffer to a trailing window so corrections
                 // re-decode the fresh suffix, not the whole utterance (P2.17).
@@ -1275,6 +1289,13 @@ pub(crate) async fn vad_transcription_session(
                                 utterance_segments.clear();
                             }
                             accumulated_text.clear();
+                            // A committed utterance is immutable to the rolling
+                            // Refine lane. Exact-ID tail patches above own any
+                            // later fill/replacement for this span.
+                            correction_audio_buf.clear();
+                            window_text.clear();
+                            previous_window_prompt = None;
+                            rolling_correction_window.seal_utterance();
                             utterance_vad_speech_samples = 0;
                             utterance_avg_logprob = None;
                             utterance_compression_ratio = None;
@@ -1305,13 +1326,16 @@ pub(crate) async fn vad_transcription_session(
                                 output_sample_rate,
                                 pipeline.language.clone(),
                                 &mut correction_audio_buf,
+                                &mut rolling_correction_window,
                                 &mut correction_in_flight,
+                                &mut correction_expected_window_id,
                                 &mut correction_expected_boundary_rev,
                                 &mut correction_expected_text,
                                 &mut correction_suffix_snapshot,
                                 &suffix_snapshot,
                                 boundary_rev,
-                                &mut window_text,
+                                &window_text,
+                                previous_window_prompt.clone(),
                                 partial_trigger_state.silero_speech_ms_since_partial,
                                 trigger,
                                 &mut partial_telemetry,

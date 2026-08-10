@@ -22,6 +22,146 @@ pub(crate) const PARTIAL_PASS_TRIGGER_SILERO_SPEECH_MS: u64 = 1_800;
 /// Wall-clock ms since last rearm before the timer watchdog fires a partial pass.
 pub(crate) const PARTIAL_PASS_TRIGGER_TIMER_MS: u64 = 3_000;
 
+/// Rolling live-Whisper window calibration from streaming-bridge-v2.
+pub(crate) const ROLLING_WINDOW_TARGET_SECS: f32 = 8.0;
+/// Fresh audio required between consecutive rolling windows.
+pub(crate) const ROLLING_WINDOW_STEP_SECS: f32 = 4.0;
+/// Shorter first windows are withheld because Whisper returns `No speech` on
+/// the operator fixtures below this floor.
+pub(crate) const ROLLING_WINDOW_MIN_SECS: f32 = 6.0;
+/// Audio retained after a submission so boundary words are decoded whole in
+/// both adjacent windows.
+pub(crate) const ROLLING_WINDOW_OVERLAP_SECS: f32 = 4.0;
+
+/// Monotonic scheduling state for the rolling Refine lane.
+///
+/// The PCM itself remains in the session-owned buffer. This state accounts for
+/// fresh samples since the last accepted request, issues stable window ids, and
+/// commits the overlap cut only after the scheduler accepts the request.
+#[derive(Debug, Default)]
+pub(crate) struct RollingCorrectionWindow {
+    next_window_id: u64,
+    fresh_samples: usize,
+    submitted_once: bool,
+}
+
+impl RollingCorrectionWindow {
+    pub(crate) fn observe_samples(&mut self, samples: usize) {
+        self.fresh_samples = self.fresh_samples.saturating_add(samples);
+    }
+
+    pub(crate) fn candidate(&self, audio: &[f32], sample_rate: u32) -> Option<(u64, Vec<f32>)> {
+        let rate = sample_rate as usize;
+        if rate == 0 {
+            return None;
+        }
+        let minimum = (ROLLING_WINDOW_MIN_SECS * sample_rate as f32) as usize;
+        let step = (ROLLING_WINDOW_STEP_SECS * sample_rate as f32) as usize;
+        let fresh_required = if self.submitted_once { step } else { minimum };
+        if audio.len() < minimum || self.fresh_samples < fresh_required {
+            return None;
+        }
+        let cap = (ROLLING_WINDOW_TARGET_SECS * sample_rate as f32) as usize;
+        let start = audio.len().saturating_sub(cap);
+        Some((
+            self.next_window_id.saturating_add(1),
+            audio[start..].to_vec(),
+        ))
+    }
+
+    pub(crate) fn commit(&mut self, audio: &mut Vec<f32>, sample_rate: u32) {
+        let overlap = (ROLLING_WINDOW_OVERLAP_SECS * sample_rate as f32) as usize;
+        let drain = audio.len().saturating_sub(overlap);
+        audio.drain(..drain);
+        self.next_window_id = self.next_window_id.saturating_add(1);
+        self.fresh_samples = 0;
+        self.submitted_once = true;
+    }
+
+    /// Close one utterance without reusing its overlap as authority for the
+    /// next committed span. Window ids stay monotonic across the session.
+    pub(crate) fn seal_utterance(&mut self) {
+        self.fresh_samples = 0;
+        self.submitted_once = false;
+    }
+}
+
+#[cfg(test)]
+mod rolling_window_tests {
+    use super::*;
+
+    #[test]
+    fn rolling_window_ids_are_monotonic_and_keep_the_overlap() {
+        const RATE: u32 = 10;
+        let mut state = RollingCorrectionWindow::default();
+        let mut audio = vec![1.0; 6 * RATE as usize];
+        state.observe_samples(audio.len());
+
+        let (first_id, first) = state.candidate(&audio, RATE).expect("first 6s window");
+        assert_eq!(first_id, 1);
+        assert_eq!(first.len(), 6 * RATE as usize);
+        state.commit(&mut audio, RATE);
+        assert_eq!(audio.len(), 4 * RATE as usize);
+
+        audio.extend(vec![2.0; 4 * RATE as usize]);
+        state.observe_samples(4 * RATE as usize);
+        let (second_id, second) = state.candidate(&audio, RATE).expect("next 8s window");
+        assert_eq!(second_id, 2);
+        assert_eq!(second.len(), 8 * RATE as usize);
+        assert_eq!(&second[..4 * RATE as usize], vec![1.0; 4 * RATE as usize]);
+    }
+
+    #[test]
+    fn rolling_window_decode_cost_is_bounded_through_150_seconds() {
+        const RATE: u32 = 10;
+        let mut state = RollingCorrectionWindow::default();
+        let mut audio = Vec::new();
+        let mut scheduled_at = Vec::new();
+        let mut scheduled_samples = Vec::new();
+
+        for second in 1..=150 {
+            audio.extend(vec![second as f32; RATE as usize]);
+            let cap = (ROLLING_WINDOW_TARGET_SECS * RATE as f32) as usize;
+            if audio.len() > cap {
+                audio.drain(..audio.len() - cap);
+            }
+            state.observe_samples(RATE as usize);
+            if let Some((_id, candidate)) = state.candidate(&audio, RATE) {
+                scheduled_at.push(second);
+                scheduled_samples.push(candidate.len());
+                state.commit(&mut audio, RATE);
+            }
+        }
+
+        assert!(!scheduled_samples.is_empty());
+        assert!(
+            scheduled_samples
+                .iter()
+                .all(|samples| *samples <= 8 * RATE as usize),
+            "every request must stay bounded by the 8s competence window"
+        );
+        let first_third = scheduled_at.iter().filter(|at| **at <= 50).count();
+        let final_third = scheduled_at.iter().filter(|at| **at > 100).count();
+        assert!(
+            final_third >= first_third,
+            "rolling coverage must not decay: first={first_third}, final={final_third}"
+        );
+    }
+
+    #[test]
+    fn rolling_window_coalesces_until_the_six_second_floor() {
+        const RATE: u32 = 10;
+        let mut state = RollingCorrectionWindow::default();
+        let mut audio = vec![0.0; 5 * RATE as usize];
+        state.observe_samples(audio.len());
+        assert!(state.candidate(&audio, RATE).is_none());
+
+        audio.extend(vec![0.0; RATE as usize]);
+        state.observe_samples(RATE as usize);
+        assert!(state.candidate(&audio, RATE).is_some());
+    }
+}
+
 /// Why a partial correction pass fired. Recorded per run so the Stats event can
 /// show which condition is actually driving corrections in a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,11 +475,10 @@ pub(crate) fn classify_partial_trigger(
 
 /// Submit the buffered correction window to the Refine lane.
 ///
-/// Audio and its text mirror are taken **in lockstep** — both are moved out of
-/// the caller's state in the same call — so `correction_expected_text` always
-/// describes exactly the audio being re-decoded. That pairing is what gives
-/// [`merge_corrected_window`] an anchor when the result returns; without it a
-/// correction has no safe way to splice back in and must be suppressed.
+/// Audio and its text mirror are snapshotted **in lockstep**. The PCM request is
+/// bounded to the rolling competence window while the text snapshot remains an
+/// anchor inside the current uncommitted span; committed spans are excluded by
+/// the boundary revision guard and utterance seal.
 ///
 /// An already-in-flight request is superseded rather than queued: only the
 /// freshest tail is worth correcting. Returns whether the submission was
@@ -355,27 +494,31 @@ pub(crate) fn schedule_partial_pass(
     output_sample_rate: u32,
     pipeline_language: Option<String>,
     correction_audio_buf: &mut Vec<f32>,
+    rolling_window: &mut RollingCorrectionWindow,
     correction_in_flight: &mut Option<SttTaskHandle>,
+    correction_expected_window_id: &mut Option<u64>,
     correction_expected_boundary_rev: &mut Option<u64>,
     correction_expected_text: &mut Option<String>,
     correction_suffix_snapshot: &mut Option<String>,
     suffix_snapshot: &str,
     boundary_rev: u64,
-    window_text: &mut String,
+    window_text: &str,
+    previous_window_prompt: Option<String>,
     speech_ms_since_partial: u64,
     trigger: PartialPassTrigger,
     partial_telemetry: &mut PartialPassTelemetry,
     event_sink: &Arc<dyn EventSink>,
 ) -> bool {
-    if correction_audio_buf.is_empty() {
+    let Some((window_id, audio)) =
+        rolling_window.candidate(correction_audio_buf, output_sample_rate)
+    else {
         return false;
-    }
-    let audio = std::mem::take(correction_audio_buf);
+    };
     // Take the text mirror in lockstep with the audio slice: expected_text
     // must describe exactly the audio submitted below, or the receive-side
     // merge (`merge_corrected_window`) has no anchor and the correction would
     // have to be suppressed.
-    let baseline_text = std::mem::take(window_text);
+    let baseline_text = window_text.to_string();
     let audio_duration_s = audio.len() as f32 / output_sample_rate as f32;
 
     if let Some(old) = correction_in_flight.take() {
@@ -389,6 +532,7 @@ pub(crate) fn schedule_partial_pass(
 
     debug!(
         expected_boundary_rev = boundary_rev,
+        window_id,
         baseline_len = baseline_text.chars().count(),
         audio_sec = audio_duration_s,
         silero_speech_sec = silero_speech_seconds(speech_ms_since_partial),
@@ -397,14 +541,18 @@ pub(crate) fn schedule_partial_pass(
         "BOUNDARY correction_scheduled"
     );
 
-    match stt_scheduler.submit(
+    match stt_scheduler.submit_for_utterance_with_prompt(
         SttLane::Refine,
         audio,
         output_sample_rate,
         pipeline_language,
+        window_id,
+        previous_window_prompt,
     ) {
         Ok(handle) => {
+            rolling_window.commit(correction_audio_buf, output_sample_rate);
             partial_telemetry.record_run(trigger);
+            *correction_expected_window_id = Some(window_id);
             *correction_expected_boundary_rev = Some(boundary_rev);
             *correction_expected_text = Some(baseline_text);
             *correction_suffix_snapshot = Some(suffix_snapshot.to_string());
