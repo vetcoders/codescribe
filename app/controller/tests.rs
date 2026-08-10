@@ -527,6 +527,89 @@ fn test_final_pass_stages_overhead_saturates_never_negative() {
     assert!(line.contains("cold_load=false"), "{line}");
 }
 
+/// w2-b residual stop path: delivered text is seals + residual partials, never
+/// a full-file re-decode, and the phase stays under the 1 s fence (baseline
+/// 8.458 s was fresh file inference whose output the guardrail discarded).
+#[test]
+fn stop_path_residual_compose_from_partials_under_one_second() {
+    use super::final_pass::{
+        compose_stop_path_residual_from_partials, residual_prefers_session_partials,
+    };
+
+    let seals = vec![
+        "Pierwsze zdanie o Codescribe.".to_string(),
+        "Drugie zdanie o Whisper.".to_string(),
+        "Trzecie o lexicon.".to_string(),
+    ];
+    let residual_partial = "ogon z live partiali bez re-decode pliku";
+
+    let started = std::time::Instant::now();
+    let outcome = compose_stop_path_residual_from_partials(&seals, residual_partial);
+    let phase = started.elapsed().as_secs_f64();
+
+    assert!(
+        phase < 1.0,
+        "residual final_pass phase must be < 1 s (measured {phase:.6}s; baseline 8.458s)"
+    );
+    assert!(
+        outcome.final_pass_phase_secs < 1.0,
+        "outcome reports phase < 1 s: {}",
+        outcome.final_pass_phase_secs
+    );
+    assert!(
+        !outcome.used_file_decode_fallback,
+        "healthy residual must not claim file-decode fallback"
+    );
+    assert!(
+        outcome.text.contains("Pierwsze zdanie"),
+        "sealed prefix must survive: {}",
+        outcome.text
+    );
+    assert!(
+        outcome.text.contains("ogon z live partiali"),
+        "residual partial must append: {}",
+        outcome.text
+    );
+    assert_eq!(
+        outcome.text,
+        append_tail_gap(&outcome.sealed_prefix, &outcome.residual_tail)
+    );
+    assert!(
+        residual_prefers_session_partials(true, true),
+        "alive live lane + partials → residual from partials"
+    );
+    assert!(
+        !residual_prefers_session_partials(false, true),
+        "dead live lane refuses partial residual (file safety net)"
+    );
+    eprintln!("stop_path_residual_controller_phase_secs={phase:.6} baseline=8.458");
+}
+
+/// Live-lane fence does not invent a new FinalPassAction variant — the matrix
+/// stays mode×completeness; residual is a *source* for TailGapFill.
+#[test]
+fn stop_path_residual_live_lane_fence_preserves_action_matrix() {
+    use super::final_pass::{FinalPassAction, final_pass_action, final_pass_action_with_live_lane};
+
+    let incomplete = StreamingCompleteness::Incomplete {
+        reason: "pending_tail",
+    };
+    assert_eq!(
+        final_pass_action_with_live_lane(FinalPassRoutingMode::Smart, incomplete, true),
+        FinalPassAction::TailGapFill
+    );
+    assert_eq!(
+        final_pass_action_with_live_lane(FinalPassRoutingMode::Smart, incomplete, false),
+        final_pass_action(FinalPassRoutingMode::Smart, incomplete)
+    );
+    let shape = StreamingCompleteness::CompleteShapeDeficient;
+    assert_eq!(
+        final_pass_action_with_live_lane(FinalPassRoutingMode::Smart, shape, false),
+        FinalPassAction::PunctuationRepass,
+        "dead live lane keeps PunctuationRepass as the file safety net"
+    );
+}
+
 /// Stop-path harness (automatic lane): execute the REAL production pipeline
 /// and read the delivery span from its outcome — no sleeps, no invented sums.
 /// If the delivery timer moves out of `process_transcript_text_pipeline`,
