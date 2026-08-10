@@ -61,9 +61,18 @@ const SHAPE_MIN_CHARS: usize = 320;
 /// chars/terminal, Whisper ≈ 141, Apple's wall ≈ 1052 — the floor sits far
 /// from natural prose so lists and long clauses do not trip it.
 const SHAPE_MAX_CHARS_PER_TERMINAL: usize = 400;
+/// A single terminal-free stretch longer than this marks the transcript
+/// deficient even when the average looks healthy. Measured 2026-08-10: the
+/// morning dictation averaged ~140 chars/terminal (live tail patches had
+/// seeded the head with sentences) yet carried a ~450-char run-on wall in the
+/// middle — averages hide local walls, and the skip decision quoted the
+/// average. Same magnitude as SHAPE_MIN_CHARS: a stretch long enough to be
+/// judged at all must contain at least one sentence end.
+const SHAPE_MAX_TERMINAL_FREE_RUN: usize = 320;
 
 /// True when a coverage-complete transcript is long enough to need sentences
-/// and carries (almost) none.
+/// and carries (almost) none — globally (chars per terminal) or locally (one
+/// run-on stretch with no terminal at all).
 pub(crate) fn transcript_shape_deficient(text: &str) -> bool {
     let text = text.trim();
     let chars = text.chars().count();
@@ -74,7 +83,20 @@ pub(crate) fn transcript_shape_deficient(text: &str) -> bool {
         .chars()
         .filter(|c| matches!(c, '.' | '!' | '?' | '…'))
         .count();
-    terminals == 0 || chars / terminals > SHAPE_MAX_CHARS_PER_TERMINAL
+    if terminals == 0 || chars / terminals > SHAPE_MAX_CHARS_PER_TERMINAL {
+        return true;
+    }
+    let mut run = 0usize;
+    let mut longest_run = 0usize;
+    for c in text.chars() {
+        if matches!(c, '.' | '!' | '?' | '…') {
+            run = 0;
+        } else {
+            run += 1;
+            longest_run = longest_run.max(run);
+        }
+    }
+    longest_run > SHAPE_MAX_TERMINAL_FREE_RUN
 }
 
 /// Recorder/adjudicator evidence for Smart final-pass skip.
