@@ -38,6 +38,7 @@
 #   DAILY_INPUT_DEVICE        preferred restore if saved default was BH
 #   DAILY_OUTPUT_DEVICE       preferred restore if saved default was BH
 #   FORCE_LEAVE_BH_DEFAULTS=1 skip forced un-hijack of BH-as-default (debug only)
+#   BLACKHOLE_LOCK_WAIT_SEC    max wait for another harness run (default 600)
 #
 # Exit: 0 pass · 1 mismatch/empty · 2 preconditions missing.
 
@@ -68,6 +69,9 @@ CAPTURE_TEST="${CAPTURE_TEST:-e2e_device_capture_dictation}"
 FIXTURE_REQUEST="${1:-02_kubernetes-wymaga-konfiguracji.wav}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cs-bh-e2e.XXXXXX")"
 DEFAULTS_FILE="$WORK/audio-defaults.env"
+BLACKHOLE_HARNESS_LOCK_DIR="${TMPDIR:-/tmp}/codescribe-blackhole-harness.lock"
+BLACKHOLE_HARNESS_LOCK_PID="$BLACKHOLE_HARNESS_LOCK_DIR/pid"
+BLACKHOLE_HARNESS_LOCK_OWNED=0
 
 restore_daily_audio() {
   # Always attempt restore — even mid-fail — so a harness crash cannot leave
@@ -94,6 +98,11 @@ restore_daily_audio() {
       esac
     fi
   fi
+  if [ "$BLACKHOLE_HARNESS_LOCK_OWNED" = "1" ] &&
+    [ "$(sed -n '1p' "$BLACKHOLE_HARNESS_LOCK_PID" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$BLACKHOLE_HARNESS_LOCK_PID"
+    rmdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null || true
+  fi
   rm -rf "$WORK"
 }
 
@@ -102,6 +111,57 @@ trap 'restore_daily_audio' EXIT
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$1" >&2; exit "${2:-1}"; }
 info() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWARN\033[0m %s\n' "$1" >&2; }
+
+# BlackHole is one physical bus. Two parity processes playing different
+# positions of the same fixture into it corrupt each other's capture: one run
+# can receive the other's middle as its head while the other loses its tail.
+# Serialize the whole snapshot -> loopback -> capture -> restore transaction.
+# The PID lease is reclaimed after a crashed owner; a missing PID is allowed a
+# short grace period because mkdir and publishing the PID are separate syscalls.
+acquire_blackhole_harness_lock() {
+  local wait_seconds="${BLACKHOLE_LOCK_WAIT_SEC:-600}"
+  local deadline owner missing_pid_observations=0 announced=0
+  case "$wait_seconds" in
+    ''|*[!0-9]*) fail "BLACKHOLE_LOCK_WAIT_SEC must be a non-negative integer" 2 ;;
+  esac
+  deadline=$(( $(date +%s) + wait_seconds ))
+
+  while ! mkdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null; do
+    owner="$(sed -n '1p' "$BLACKHOLE_HARNESS_LOCK_PID" 2>/dev/null || true)"
+    case "$owner" in
+      ''|*[!0-9]*)
+        missing_pid_observations=$((missing_pid_observations + 1))
+        if [ "$missing_pid_observations" -ge 3 ]; then
+          rm -f "$BLACKHOLE_HARNESS_LOCK_PID"
+          rmdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null || true
+          missing_pid_observations=0
+          continue
+        fi
+        ;;
+      *)
+        missing_pid_observations=0
+        if ! kill -0 "$owner" 2>/dev/null; then
+          rm -f "$BLACKHOLE_HARNESS_LOCK_PID"
+          rmdir "$BLACKHOLE_HARNESS_LOCK_DIR" 2>/dev/null || true
+          continue
+        fi
+        ;;
+    esac
+    if [ "$announced" = "0" ]; then
+      info "BlackHole harness busy (owner pid ${owner:-publishing}); waiting for exclusive capture"
+      announced=1
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] ||
+      fail "timed out waiting ${wait_seconds}s for exclusive BlackHole harness lock (owner pid ${owner:-unknown})" 2
+    sleep 1
+  done
+
+  printf '%s\n' "$$" >"$BLACKHOLE_HARNESS_LOCK_PID"
+  BLACKHOLE_HARNESS_LOCK_OWNED=1
+  if [ "$announced" = "1" ]; then
+    info "exclusive BlackHole capture acquired"
+  fi
+}
 
 # ── Preconditions ───────────────────────────────────────────────────────────
 # A missing corpus is a PRECONDITION failure (exit 2), not a parity verdict:
@@ -112,6 +172,8 @@ info "fixture: $FIXTURE"
 command -v swift >/dev/null 2>&1 || fail "swift not on PATH" 2
 [ -f ./scripts/audio-default-devices.swift ] ||
   fail "missing scripts/audio-default-devices.swift (daily/harness separation helper)" 2
+
+acquire_blackhole_harness_lock
 
 # Snapshot system defaults FIRST — restore runs on every EXIT.
 ./scripts/audio-default-devices.swift save "$DEFAULTS_FILE" ||
