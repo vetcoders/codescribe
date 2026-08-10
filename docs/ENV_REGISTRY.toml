@@ -390,7 +390,7 @@ category = "stt"
 description = "Use local Whisper model (vs cloud)"
 
 [vars.LOCAL_MODEL]
-default = "whisper-large-v3-turbo-mlx-q8"
+default = "whisper-large-v3-turbo"
 type = "string"
 reload = "restart"
 category = "stt"

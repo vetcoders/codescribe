@@ -10,7 +10,7 @@
 //!   cargo run --release --example demo_full_pipeline -- --assistive <audio_file>
 //!
 //! Requires:
-//!   - Model at ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8 (or set --model)
+//!   - Model at ~/.codescribe/models/whisper-large-v3-turbo (or set --model)
 //!   - LLM_ENDPOINT + LLM_MODEL (or LLM_FORMATTING_* overrides) for formatting
 
 use anyhow::Result;
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
         println!();
         println!("Options:");
         println!(
-            "  --model PATH     Model directory (default: ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8)"
+            "  --model PATH     Model directory (default: ~/.codescribe/models/whisper-large-v3-turbo)"
         );
         println!("  --assistive      Use assistive mode (kurier/enhancer) instead of formatting");
         println!("  --raw            Skip AI formatting, show raw transcription only");

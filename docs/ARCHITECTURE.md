@@ -312,9 +312,10 @@ embedding is disabled with `CODESCRIBE_NO_EMBED=1` or the build cannot embed the
 model:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
-2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
-3. `./models/whisper-large-v3-turbo-mlx-q8/` in repo
-4. Hugging Face cache snapshots for `LibraxisAI/whisper-large-v3-turbo-mlx-q8`
+2. `~/.codescribe/models/whisper-large-v3-turbo/` (fp16 default)
+3. Hugging Face cache snapshots for `mlx-community/whisper-large-v3-turbo`
+4. Legacy fallback: `whisper-large-v3-turbo-mlx-q8` dir or
+   `LibraxisAI/whisper-large-v3-turbo-mlx-q8` snapshots
 
 ## Related Documentation
 
