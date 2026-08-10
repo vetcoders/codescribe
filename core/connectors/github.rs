@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "Vetcoders".into(),
+                owner: "vetcoders".into(),
                 repo: "Codescribe".into(),
                 git_ref: "fix/multiple-fixes".into(),
                 path: "core/lib.rs".into(),
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(
             gh,
             Some(GitHubRef {
-                owner: "Vetcoders".into(),
+                owner: "vetcoders".into(),
                 repo: "Codescribe".into(),
                 git_ref: "main".into(),
                 path: "core/lib.rs".into(),

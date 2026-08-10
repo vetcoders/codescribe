@@ -6,13 +6,13 @@ Node stdlib only (node 18+), Ed25519 via `node:crypto`; the token contract is
 
 ## Deployment (ops VPS, same box as pensieve.vetcoders.io)
 
-| Piece | Location |
-| --- | --- |
-| Service code | `/srv/codescribe-license/server.mjs` |
-| systemd unit | `/etc/systemd/system/codescribe-license.service` |
+| Piece        | Location                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------------- |
+| Service code | `/srv/codescribe-license/server.mjs`                                                                          |
+| systemd unit | `/etc/systemd/system/codescribe-license.service`                                                              |
 | Signing seed | `/etc/codescribe/license-signer.env` — root:root **0600**, read by systemd before dropping to `User=libraxis` |
-| Caddy route | `codescribe.vetcoders.io` vhost: `handle /api/* → reverse_proxy 127.0.0.1:8787` |
-| Site root | `/srv/codescribe-landing` (Astro `site/dist/`) |
+| Caddy route  | `codescribe.vetcoders.io` vhost: `handle /api/* → reverse_proxy 127.0.0.1:8787`                               |
+| Site root    | `/srv/codescribe-landing` (Astro `site/dist/`)                                                                |
 
 Update flow after editing `server.mjs`:
 
