@@ -835,9 +835,10 @@ impl Config {
             Self::safe_set_env("FINAL_PASS_MODE", v);
             Self::safe_set_env("CODESCRIBE_FINAL_PASS_MODE", v);
         }
-        if Self::config_runtime_env_var("CODESCRIBE_LAYERED_TRANSCRIPTION").is_err()
-            && let Some(ref v) = settings.layered_transcription
-        {
+        // Promoted single-brain (2026-08-10): settings.json wins at boot, same
+        // as CODESCRIBE_STT_ENGINE — a leftover .env line must not lottery the
+        // Layered toggle back OFF.
+        if let Some(ref v) = settings.layered_transcription {
             Self::safe_set_env("CODESCRIBE_LAYERED_TRANSCRIPTION", v);
         }
         if Self::config_runtime_env_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED").is_err()
@@ -940,7 +941,10 @@ impl Config {
             // .env so boot cannot re-lottery via a stale CODESCRIBE_STT_ENGINE.
             if matches!(
                 key,
-                "CODESCRIBE_STT_ENGINE" | "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE"
+                "CODESCRIBE_STT_ENGINE"
+                    | "FINAL_PASS_MODE"
+                    | "CODESCRIBE_FINAL_PASS_MODE"
+                    | "CODESCRIBE_LAYERED_TRANSCRIPTION"
             ) {
                 Self::reconcile_stt_runtime_key(key, value);
             }
@@ -1037,6 +1041,10 @@ impl Config {
                             settings_ref.final_pass_mode = Some(normalized.clone());
                             Self::reconcile_stt_runtime_key(key, &normalized);
                         }
+                    }
+                    "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
+                        settings_ref.layered_transcription = Some((*value).to_string());
+                        Self::reconcile_stt_runtime_key(key, value);
                     }
                     // ── u64 ──
                     "HOLD_START_DELAY_MS" => {

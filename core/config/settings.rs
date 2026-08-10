@@ -598,8 +598,10 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_STT_ENGINE",
     "FINAL_PASS_MODE",
     "CODESCRIBE_FINAL_PASS_MODE",
-    // Still env-seedable when unset; not full dual-brain for STT engine:
-    // "CODESCRIBE_LAYERED_TRANSCRIPTION",
+    // Promoted 2026-08-10: the un-promoted toggle wrote .env only, the stale
+    // process env won the UI read-back, and the Layered switch snapped OFF.
+    "CODESCRIBE_LAYERED_TRANSCRIPTION",
+    // Still env-seedable when unset; not full dual-brain:
     // "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
 ];
 
@@ -1644,6 +1646,18 @@ mod tests {
         assert_eq!(reloaded.final_pass_mode.as_deref(), Some("off"));
         assert_eq!(reloaded.layered_transcription.as_deref(), Some("off"));
         assert_eq!(reloaded.stt_initial_prompt_enabled, Some(false));
+    }
+
+    /// Layered transcription is a promoted product setting (full single-brain,
+    /// same contract as `CODESCRIBE_STT_ENGINE`). Without promotion the toggle
+    /// write lands in `.env` only, the stale process env wins the UI read-back,
+    /// and the switch visibly snaps OFF (operator repro 2026-08-10).
+    #[test]
+    fn layered_transcription_is_promoted_single_brain_key() {
+        assert!(
+            is_promoted_key("CODESCRIBE_LAYERED_TRANSCRIPTION"),
+            "CODESCRIBE_LAYERED_TRANSCRIPTION must be a promoted settings.json key"
+        );
     }
 
     /// An empty `speech.engine: {}` must resolve to the product default, not to
