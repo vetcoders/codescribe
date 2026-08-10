@@ -24,15 +24,26 @@ private let notesLog = Logger(
 final class AgentSummonAction {
     private let store: AgentChatStore
     private let showAgent: @MainActor () -> Void
+    private let capture: @MainActor (ComposerCaptureCommand) -> Void
 
-    init(store: AgentChatStore, showAgent: @escaping @MainActor () -> Void) {
+    init(
+        store: AgentChatStore,
+        showAgent: @escaping @MainActor () -> Void,
+        capture: @escaping @MainActor (ComposerCaptureCommand) -> Void = { _ in }
+    ) {
         self.store = store
         self.showAgent = showAgent
+        self.capture = capture
     }
 
     func perform() {
         showAgent()
         store.requestComposerFocus()
+    }
+
+    func performCapture(_ command: ComposerCaptureCommand) {
+        perform()
+        capture(command)
     }
 }
 
@@ -40,15 +51,28 @@ final class AgentSummonAction {
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, @unchecked Sendable {
     private let summonAgent: @MainActor () -> Void
+    private let captureAgent: @MainActor (CsAgentCaptureCommand) -> Void
 
-    init(summonAgent: @escaping @MainActor () -> Void) {
+    init(
+        summonAgent: @escaping @MainActor () -> Void,
+        captureAgent: @escaping @MainActor (CsAgentCaptureCommand) -> Void = { _ in }
+    ) {
         self.summonAgent = summonAgent
+        self.captureAgent = captureAgent
     }
 
     func onShowAgent() {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 self.summonAgent()
+            }
+        }
+    }
+
+    func onAgentCapture(command: CsAgentCaptureCommand) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.captureAgent(command)
             }
         }
     }
@@ -68,7 +92,8 @@ struct CodescribeApp: App {
                 engine: RealSettingsEngine(),
                 agentStatus: RealAgentStatusEngine(),
                 mcpAdmin: RealMCPAdminEngine(),
-                hotkeys: RealHotkeysEngine()
+                hotkeys: RealHotkeysEngine(),
+                licenseService: LicenseService.shared
             ))
         }
         // Make the Settings window user-resizable: the content's `.frame` floor
@@ -84,6 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let notificationObject = Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe"
 
     private static let helpURL = URL(string: "https://vetcoders.github.io/codescribe/")!
+    private static let privacyURL = URL(string: "https://vetcoders.github.io/codescribe/privacy")!
+    private static let termsURL = URL(string: "https://vetcoders.github.io/codescribe/terms")!
 
     private let model = AppModel.shared
     private let trayStatus = TrayStatusStore()
@@ -99,9 +126,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // kill live voice-reply rendering. Held for the app's lifetime.
     private var voiceDeliveryListener: VoiceDeliveryListener?
     private var appActionListener: AgentAppActionListener?
-    private lazy var agentSummonAction = AgentSummonAction(store: model.chat) { [weak self] in
-        self?.showAgent()
-    }
+    private lazy var agentSummonAction = AgentSummonAction(
+        store: model.chat,
+        showAgent: { [weak self] in self?.showAgent() },
+        capture: { [weak self] command in
+            guard let self else { return }
+            // A stopped overlay may remain visible for post-capture actions. It
+            // has no authority in Agent mode and is closed before composer capture.
+            if !self.model.chat.dictationBlocked { self.model.overlay.hide() }
+            self.model.chat.handleAssistiveCapture(command)
+        }
+    )
     private var statusItem: NSStatusItem!
     private var hasUnreadAgentUpdate = false
     // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
@@ -112,6 +147,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // First-run onboarding wizard host. Presented at launch when the core gate
     // (`shouldShowOnboarding`) reports setup is due.
     private let onboarding = OnboardingWindowController(engine: RealOnboardingEngine())
+    // Sparkle update channel. Created in didFinishLaunching (after the
+    // duplicate-instance/test-host guard) so the XCTest host never starts a
+    // scheduled updater alongside the live app.
+    private var updater: UpdaterService?
 
     /// True when the process is the XCTest host, not a user launch. The unit-test
     /// runner reuses this app as its host: without this gate the duplicate-instance
@@ -165,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.overlay.prepareForRecordingStart()
             model.overlay.showForRecording()
         }
+        updater = UpdaterService()
         wireTrayActions()
         installStatusItem()
         installTextScaleMonitor()
@@ -223,21 +263,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             // Build provenance in the standard About panel (Pensieve-style):
             // version/build come from Info.plist keys stamped by scripts/build-app.sh;
-            // commit + built-at land in the credits block below them.
+            // commit + built-at land in the credits block below them. Privacy /
+            // Terms links open the public trust pages (MoR buyer requirement).
             let info = Bundle.main.infoDictionary ?? [:]
             let commit = info["CSBuildCommit"] as? String ?? "dev"
             let builtAt = info["CSBuiltAt"] as? String ?? "unknown"
-            let credits = NSAttributedString(
-                string: "Commit: \(commit)\nBuilt: \(builtAt)",
-                attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]
+            let mono: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+            let credits = NSMutableAttributedString(
+                string: "Commit: \(commit)\nBuilt: \(builtAt)\n\n",
+                attributes: mono
             )
+            let privacy = NSAttributedString(
+                string: "Privacy Policy",
+                attributes: mono.merging([.link: Self.privacyURL]) { _, new in new }
+            )
+            let terms = NSAttributedString(
+                string: "Terms of Use & EULA",
+                attributes: mono.merging([.link: Self.termsURL]) { _, new in new }
+            )
+            credits.append(privacy)
+            credits.append(NSAttributedString(string: "\n", attributes: mono))
+            credits.append(terms)
             NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
         }
         model.tray.onHelp = {
             NSWorkspace.shared.open(Self.helpURL)
+        }
+        model.tray.onCheckForUpdates = { [weak self] in
+            self?.updater?.checkForUpdates()
         }
         // Re-open the setup wizard on demand. Unlike `presentIfNeeded()` (launch
         // gate), `present()` always fronts the window — resume when onboarding is
@@ -590,10 +646,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerAppActions() {
         let action = agentSummonAction
-        let listener = AgentAppActionListener { [weak action] in
-            action?.perform()
-            appLogger.info("Agent summon command handled: window fronted and composer focus requested")
-        }
+        let listener = AgentAppActionListener(
+            summonAgent: { [weak action] in
+                action?.perform()
+                appLogger.info("Agent summon command handled: window fronted and composer focus requested")
+            },
+            captureAgent: { [weak action] command in
+                let mapped: ComposerCaptureCommand
+                switch command {
+                case .start: mapped = .startAssistive
+                case .stop: mapped = .stopAssistive
+                case .toggle: mapped = .toggleAssistive
+                }
+                action?.performCapture(mapped)
+                appLogger.info("Assistive hotkey handled by Agent composer microphone")
+            }
+        )
         appActionListener = listener
         hotkeys.setAppActionListener(listener: listener)
     }

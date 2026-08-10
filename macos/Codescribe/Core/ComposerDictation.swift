@@ -9,25 +9,24 @@ private let dictationLog = Logger(
 )
 
 /// Real composer dictation adapter: a thin driver over the `CodescribeDictation`
-/// UniFFI bridge (the SAME streaming recorder + Whisper the hotkey/tray dictation
-/// uses, exposed through an independent recorder handle). Click-to-start,
-/// click-to-stop; on stop the accumulated transcript is appended to the composer
-/// draft — never auto-sent. Streaming callbacks update a separate live preview
-/// in the composer; `stopRecording()` remains the only source that commits text
-/// into the editable draft.
+/// UniFFI bridge (the SAME streaming recorder + Whisper stack the overlay uses,
+/// on an independent recorder handle). Click-to-start / click-to-stop inserts
+/// into the draft without auto-send. Assistive hotkeys route here via
+/// `handle(_:)` and may auto-send on stop unless the user edits the preview
+/// (`resolveDictationDelivery` cancels auto-send for edited text).
 ///
-/// Deliberately a SEPARATE recorder from `CodescribeHotkeys`: the composer voice
-/// note is an independent product path and must not share the overlay/hotkey
-/// RecordingController. To avoid two recorders fighting over the microphone, a
-/// live hotkey session (surfaced via `store.dictationBlocked`) disables this mic.
+/// Process-wide capture ownership lives in the bridge (`CAPTURE_OWNER`
+/// none/overlay/agent via `setAgentCaptureActive`). Claim fails closed when the
+/// overlay owns the mic; overlay start fails closed while agent owns capture.
+/// `store.dictationBlocked` is an additional UI guard for a live overlay session.
 ///
-/// The final transcript is read from `stopRecording()`'s return value — the
-/// bridge's `CsEventSink` does not emit `onFinalTranscriptReady`, so no
-/// delivery-grade LocalFinalPass formatting is applied on this path; the returned
-/// text is the composed presentation-buffer transcript.
+/// Live partials stream into `dictationPreview`; `stopRecording()` is the only
+/// path that commits into the editable draft. When final text regresses against
+/// a longer live canvas, delivery keeps live and preserves the final alternative.
 @MainActor
 final class RealComposerDictation: ComposerDictating {
     private let dictation = CodescribeDictation()
+    private let hotkeys = CodescribeHotkeys()
     private weak var store: AgentChatStore?
     /// Strong ref so the foreign listener outlives the Rust-side `Arc` handoff.
     private var listener: ComposerDictationListener?
@@ -35,6 +34,8 @@ final class RealComposerDictation: ComposerDictating {
     private var modelReady = false
     /// Guards against re-entrant toggles while an async start/stop is in flight.
     private var transitioning = false
+    private var autoSendOnStop = false
+    private var pendingStopAfterStart = false
 
     init(store: AgentChatStore) {
         self.store = store
@@ -46,13 +47,34 @@ final class RealComposerDictation: ComposerDictating {
         case .recording:
             stop()
         case .idle, .failed:
-            start()
+            start(autoSend: false)
         case .preparing:
             break  // mid-transition — ignore until it settles
         }
     }
 
-    private func start() {
+    func handle(_ command: ComposerCaptureCommand) {
+        guard let store else { return }
+        if transitioning {
+            switch command {
+            case .stopAssistive, .toggleAssistive:
+                pendingStopAfterStart = true
+            case .startAssistive:
+                break
+            }
+            return
+        }
+        switch command {
+        case .startAssistive:
+            if store.dictationPhase != .recording { start(autoSend: true) }
+        case .stopAssistive:
+            if store.dictationPhase == .recording { stop() }
+        case .toggleAssistive:
+            if store.dictationPhase == .recording { stop() } else { start(autoSend: true) }
+        }
+    }
+
+    private func start(autoSend: Bool) {
         guard let store else { return }
         // Collision guard: a hotkey/tray/overlay dictation session owns the mic.
         if store.dictationBlocked {
@@ -60,11 +82,26 @@ final class RealComposerDictation: ComposerDictating {
             return
         }
         transitioning = true
-        store.clearDictationPreview()
+        autoSendOnStop = autoSend
+        store.beginDictationPreviewSession()
         store.setDictationPhase(.preparing)
+        guard hotkeys.setAgentCaptureActive(active: true) else {
+            transitioning = false
+            store.reportDictationFailure("Transcription overlay already owns the microphone")
+            return
+        }
         Task { @MainActor in
-            defer { transitioning = false }
+            defer {
+                transitioning = false
+                if pendingStopAfterStart {
+                    pendingStopAfterStart = false
+                    if store.dictationPhase == .recording {
+                        Task { @MainActor [weak self] in self?.stop() }
+                    }
+                }
+            }
             guard await Self.ensureMicPermission() else {
+                _ = hotkeys.setAgentCaptureActive(active: false)
                 store.reportDictationFailure(
                     "Microphone access is off — enable it in System Settings › Privacy & Security.")
                 return
@@ -97,6 +134,7 @@ final class RealComposerDictation: ComposerDictating {
                 store.setDictationPhase(.recording)
                 dictationLog.info("composer dictation: recording started")
             } catch {
+                _ = hotkeys.setAgentCaptureActive(active: false)
                 dictationLog.error("composer dictation start failed: \(error.localizedDescription, privacy: .public)")
                 store.clearDictationPreview()
                 store.reportDictationFailure("Couldn't start recording: \(error.localizedDescription)")
@@ -109,18 +147,51 @@ final class RealComposerDictation: ComposerDictating {
         transitioning = true
         store.setDictationPhase(.preparing)
         Task { @MainActor in
-            defer { transitioning = false }
+            defer {
+                transitioning = false
+                _ = hotkeys.setAgentCaptureActive(active: false)
+            }
             do {
                 let transcript = try await dictation.stopRecording()
-                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let resolution = store.resolveDictationDelivery(
+                    final: transcript,
+                    autoSend: autoSendOnStop
+                )
+                let trimmed = resolution.text
                 if trimmed.isEmpty {
                     dictationLog.info("composer dictation: stopped with empty transcript")
                     store.clearDictationPreview()
                     store.reportDictationFailure("No speech detected.")
                 } else {
-                    store.appendDictatedTranscript(trimmed)
                     store.setDictationPhase(.idle)
-                    dictationLog.info("composer dictation: inserted \(trimmed.count, privacy: .public) chars")
+                    var deliveredViaVoiceLane = false
+                    if resolution.autoSend {
+                        // Voice lane first: the controller attaches the
+                        // trigger-time selection context and the context bucket
+                        // (HOTKEYS_CONTRACT "captured in the trigger handler"),
+                        // and the turn streams as a core-owned voice turn — the
+                        // composer FIFO already skips threads with an active
+                        // voice turn. A plain `store.send()` here delivered the
+                        // spoken text alone (review P0-02).
+                        deliveredViaVoiceLane =
+                            (try? await hotkeys.sendAssistiveTranscript(text: trimmed)) ?? false
+                    }
+                    if deliveredViaVoiceLane {
+                        store.clearDictationPreview()
+                        dictationLog.info(
+                            "composer dictation: assistive turn delivered via voice lane")
+                    } else {
+                        store.appendDictatedTranscript(trimmed)
+                        if resolution.autoSend {
+                            store.send()
+                        }
+                        dictationLog.info(
+                            "composer dictation: inserted \(trimmed.count, privacy: .public) chars")
+                    }
+                    // Analytics must never delay transcript delivery or agent send.
+                    Task { @MainActor in
+                        _ = await ActivationPing.shared.recordFirstSuccessfulDictation()
+                    }
                 }
             } catch {
                 dictationLog.error("composer dictation stop failed: \(error.localizedDescription, privacy: .public)")
@@ -137,7 +208,7 @@ final class RealComposerDictation: ComposerDictating {
 
         transitioning = false
         listener = nil
-        store.dictationBlocked = false
+        _ = hotkeys.setAgentCaptureActive(active: false)
         store.reportDictationFailure("Dictation stopped: \(message)")
     }
 
@@ -197,7 +268,11 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     func onFinalTranscriptReady(text: String) {
         publishFinalPreview(text)
     }
-    func onVadActive(active: Bool) {}
+    func onVadActive(active: Bool) {
+        Task { @MainActor [weak store] in
+            store?.setDictationVadActive(active)
+        }
+    }
     func onAudioLevel(rms: Float) {}
     func onNoSpeech(reason: String) {
         dictationLog.info("composer dictation: no speech (\(reason, privacy: .public))")
@@ -219,7 +294,7 @@ final class ComposerDictationListener: CsTranscriptionListener, @unchecked Senda
     private func publishFinalPreview(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         Task { @MainActor [weak store] in
-            store?.updateDictationPreview(trimmed)
+            store?.noteDictationFinalPreview(trimmed)
         }
     }
 

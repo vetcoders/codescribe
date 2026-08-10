@@ -1,0 +1,128 @@
+---
+import Layout from '../layouts/Layout.astro';
+import LegalPage from '../components/LegalPage.astro';
+import { page } from '../lib/asset';
+---
+
+<Layout
+  title="Privacy Policy — codescribe"
+  description="How codescribe handles audio, transcripts, AI requests, and system permissions. Local by default; cloud only when you opt in."
+  path="privacy"
+>
+  <LegalPage title="Privacy Policy" eyebrow="Trust · Privacy">
+    <p>
+      Codescribe is designed with privacy as a core principle. Your audio is
+      processed locally by default. This page restates the product’s privacy
+      truth for buyers and users; the engineering source of record is
+      <code>docs/guide/privacy.md</code> in the repository.
+    </p>
+
+    <h2>Privacy summary</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Data</th>
+          <th>Where it goes</th>
+          <th>Your control</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Audio</strong></td>
+          <td>Your Mac only</td>
+          <td>Never leaves unless you enable cloud STT</td>
+        </tr>
+        <tr>
+          <td><strong>Transcripts</strong></td>
+          <td>Your Mac only</td>
+          <td>Stored under <code>~/.codescribe/transcriptions/</code></td>
+        </tr>
+        <tr>
+          <td><strong>AI requests</strong></td>
+          <td>Your chosen provider</td>
+          <td>Only if AI formatting / agent features are enabled</td>
+        </tr>
+        <tr>
+          <td><strong>Telemetry</strong></td>
+          <td>Nowhere</td>
+          <td>No tracking, no analytics, no phone-home</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>What stays local</h2>
+    <p>These stay on your machine and cannot be flipped “to the cloud” by us:</p>
+    <ul>
+      <li><strong>Whisper model</strong> — runtime-resolved local path/cache; local STT runs on-device.</li>
+      <li><strong>Audio recording</strong> — RAM only; deleted after transcription (unless you explicitly enable debug audio dumps).</li>
+      <li><strong>Transcripts</strong> — <code>~/.codescribe/transcriptions/</code>; you control retention.</li>
+      <li><strong>Configuration</strong> — settings plus optional <code>~/.codescribe/.env</code>.</li>
+      <li><strong>API keys</strong> — macOS Keychain (and/or restricted local config).</li>
+      <li><strong>Prompts</strong> — <code>~/.codescribe/prompts/</code>.</li>
+    </ul>
+    <p>
+      No network is required for recording audio, running Whisper transcription,
+      pasting text, storing transcripts, or hotkeys.
+      <strong>Codescribe works completely offline in Raw mode.</strong>
+    </p>
+
+    <h2>What can leave your Mac (opt-in only)</h2>
+    <h3>Optional AI formatting / agent calls</h3>
+    <p>
+      When you enable AI formatting or agent features, transcribed text (not audio)
+      is sent to the provider you configure over HTTPS. That may be OpenAI-compatible
+      Responses/chat endpoints, Anthropic, a self-hosted stack such as LibraxisAI,
+      or local Ollama. We do not send audio files, unrelated transcripts, or
+      system inventory as part of those requests.
+    </p>
+    <h3>Optional cloud STT</h3>
+    <p>
+      If you turn off local STT and configure a cloud STT endpoint, audio may be
+      sent after capture for a final transcript. Live preview still stays local
+      in the current product shape.
+    </p>
+    <p class="note">
+      Cloud is never required for core dictation. Maximum-privacy setups disable
+      AI formatting, force local STT, and leave LLM endpoints unset.
+    </p>
+
+    <h2>System permissions (TCC)</h2>
+    <p>macOS may ask for:</p>
+    <ul>
+      <li><strong>Microphone</strong> — record speech while you hold a hotkey or start a session.</li>
+      <li><strong>Accessibility</strong> — paste text and interact with the focused app when you ask it to.</li>
+      <li><strong>Input Monitoring</strong> — detect modifier/hotkey state (not a keylogger of content).</li>
+      <li><strong>Speech Recognition</strong> — when using Apple’s speech path for live letter-level transcript.</li>
+    </ul>
+    <p>
+      We do not request camera, location, contacts, or blanket file access outside
+      the app’s data directory (except optional full-disk flows you deliberately enable).
+    </p>
+
+    <h2>Tracking and analytics</h2>
+    <p>
+      <strong>No tracking, no analytics, no phone-home.</strong>
+      The product does not ship third-party analytics SDKs or silent telemetry
+      beacons. Network activity happens only when you configure and use a remote
+      provider (or download a release from GitHub).
+    </p>
+
+    <h2>Data retention and rights</h2>
+    <p>
+      Transcript history lives under <code>~/.codescribe/</code>. You can disable
+      history, delete files, or remove the whole directory. For EU users under GDPR-style
+      access/erasure/portability requests: your data is already on your Mac as plain
+      files you control. We do not operate a cloud account that holds your dictation
+      history by default.
+    </p>
+
+    <h2>Who we are</h2>
+    <p>
+      Codescribe is built by VetCoders / LibraxisAI.
+      Questions: <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
+      · <a href={page('support')}>Support</a>
+      · source at
+      <a href="https://github.com/vetcoders/codescribe" target="_blank" rel="noopener noreferrer">github.com/vetcoders/codescribe</a>.
+    </p>
+  </LegalPage>
+</Layout>

@@ -9,6 +9,8 @@ enum ComposerAccessibility {
 enum ComposerTextKeyDisposition: Equatable {
     case send
     case insertNewline
+    case previousHistory
+    case nextHistory
     case native
 
     /// Return and keypad-enter share the same contract. IME confirmation and
@@ -18,10 +20,44 @@ enum ComposerTextKeyDisposition: Equatable {
         modifiers: NSEvent.ModifierFlags,
         hasMarkedText: Bool
     ) -> ComposerTextKeyDisposition {
-        guard keyCode == 36 || keyCode == 76, !hasMarkedText else { return .native }
+        guard !hasMarkedText else { return .native }
         let flags = modifiers.intersection(.deviceIndependentFlagsMask)
         guard flags.isDisjoint(with: [.command, .control, .option]) else { return .native }
+        if keyCode == 126 { return flags.contains(.shift) ? .native : .previousHistory }
+        if keyCode == 125 { return flags.contains(.shift) ? .native : .nextHistory }
+        guard keyCode == 36 || keyCode == 76 else { return .native }
         return flags.contains(.shift) ? .insertNewline : .send
+    }
+}
+
+struct ComposerDraftHistoryState: Equatable {
+    private(set) var index: Int?
+    private(set) var scratch = ""
+
+    mutating func previous(history: [String], current: String) -> String? {
+        guard !history.isEmpty else { return nil }
+        if index == nil {
+            scratch = current
+            index = history.count - 1
+        } else {
+            index = max(0, (index ?? 0) - 1)
+        }
+        return history[index ?? 0]
+    }
+
+    mutating func next(history: [String]) -> String? {
+        guard let index else { return nil }
+        if index + 1 < history.count {
+            self.index = index + 1
+            return history[index + 1]
+        }
+        self.index = nil
+        return scratch
+    }
+
+    mutating func reset() {
+        index = nil
+        scratch = ""
     }
 }
 
@@ -97,6 +133,7 @@ struct ComposerTextView: NSViewRepresentable {
     @Binding var height: CGFloat
     let textScale: CGFloat
     @Binding var isFocused: Bool
+    let history: [String]
     let onSend: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -149,7 +186,7 @@ struct ComposerTextView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.parent = self
+        context.coordinator.updateParent(self)
         guard let textView = scrollView.documentView as? ComposerNativeTextView else { return }
 
         let font = ComposerTextLayout.composerFont(size: 13.5 * textScale)
@@ -181,8 +218,15 @@ struct ComposerTextView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerTextView
+        private var historyState = ComposerDraftHistoryState()
+        private var applyingHistory = false
 
         init(parent: ComposerTextView) {
+            self.parent = parent
+        }
+
+        func updateParent(_ parent: ComposerTextView) {
+            if self.parent.history != parent.history { historyState.reset() }
             self.parent = parent
         }
 
@@ -190,6 +234,7 @@ struct ComposerTextView: NSViewRepresentable {
             guard let textView = notification.object as? ComposerNativeTextView,
                   let scrollView = textView.enclosingScrollView else { return }
             if parent.text != textView.string { parent.text = textView.string }
+            if !applyingHistory { historyState.reset() }
             textView.needsDisplay = true
             refreshLayout(textView, in: scrollView)
         }
@@ -217,9 +262,40 @@ struct ComposerTextView: NSViewRepresentable {
             case .insertNewline:
                 textView.insertNewline(nil)
                 return true
+            case .previousHistory:
+                guard canNavigatePrevious(in: textView),
+                      let recalled = historyState.previous(history: parent.history, current: textView.string)
+                else { return false }
+                applyHistory(recalled, to: textView)
+                return true
+            case .nextHistory:
+                guard canNavigateNext(in: textView),
+                      let recalled = historyState.next(history: parent.history)
+                else { return false }
+                applyHistory(recalled, to: textView)
+                return true
             case .native:
                 return false
             }
+        }
+
+        private func canNavigatePrevious(in textView: NSTextView) -> Bool {
+            !textView.string.contains("\n") || textView.selectedRange().location == 0
+        }
+
+        private func canNavigateNext(in textView: NSTextView) -> Bool {
+            let selection = textView.selectedRange()
+            return !textView.string.contains("\n")
+                || selection.location + selection.length == (textView.string as NSString).length
+        }
+
+        private func applyHistory(_ text: String, to textView: NSTextView) {
+            applyingHistory = true
+            textView.string = text
+            textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            parent.text = text
+            textView.didChangeText()
+            applyingHistory = false
         }
 
         func refreshLayout(_ textView: NSTextView, in scrollView: NSScrollView) {

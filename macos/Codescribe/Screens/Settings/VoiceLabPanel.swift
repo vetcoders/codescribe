@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // Dictionary panel (internal VoiceLab name stays — the Rust/FFI quality
@@ -12,6 +13,34 @@ struct VoiceLabCorrectionRow: Identifiable, Equatable {
     let editedText: String
     let action: String
     let timestampMs: UInt64
+    let avgLogprob: Float?
+    let speechPct: Float?
+    let confidenceFlags: [String]
+
+    var isLowConfidence: Bool {
+        if let avgLogprob, avgLogprob <= -1.20 { return true }
+        return confidenceFlags.contains { flag in
+            let normalized = flag.lowercased()
+            return normalized.contains("low_logprob")
+                || normalized.contains("hallucination")
+                || normalized.contains("quality_gate")
+        }
+    }
+
+    var confidenceSummary: String {
+        var parts: [String] = []
+        if let avgLogprob {
+            parts.append(String(format: "Whisper logprob %.2f", avgLogprob))
+        }
+        if let speechPct {
+            let percent = speechPct <= 1 ? speechPct * 100 : speechPct
+            parts.append(String(format: "Silero/VAD speech %.0f%%", percent))
+        }
+        if !confidenceFlags.isEmpty {
+            parts.append(confidenceFlags.joined(separator: ", "))
+        }
+        return parts.isEmpty ? "No confidence telemetry was recorded" : parts.joined(separator: " · ")
+    }
 }
 
 struct VoiceLabEditorState: Equatable {
@@ -45,7 +74,10 @@ func qualityCorrectionRows(_ records: [CsQualityRecord]) -> [VoiceLabCorrectionR
             variant: record.variant,
             editedText: record.editedText,
             action: record.action,
-            timestampMs: record.timestampMs
+            timestampMs: record.timestampMs,
+            avgLogprob: record.avgLogprob,
+            speechPct: record.speechPct,
+            confidenceFlags: record.confidenceFlags
         )
     }
 }
@@ -59,6 +91,41 @@ func customLexiconRows(_ entries: [CsLexiconEntry]) -> [VoiceLabLexiconRow] {
             source: entry.source
         )
     }
+}
+
+/// Resolve the archived recording paired with an exact raw transcript. History
+/// stores `<stem>_raw.txt` beside `<stem>_raw.m4a`; exact text matching prevents
+/// a correction from ever playing a different dictation merely because it was
+/// recorded nearby in time.
+func archivedAudioURL(configDir: String, rawText: String) -> URL? {
+    let root = URL(fileURLWithPath: configDir, isDirectory: true)
+        .appendingPathComponent("transcriptions", isDirectory: true)
+    guard let enumerator = FileManager.default.enumerator(
+        at: root,
+        includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    ) else { return nil }
+
+    var matches: [(URL, Date)] = []
+    for case let transcriptURL as URL in enumerator {
+        guard transcriptURL.pathExtension == "txt",
+              let text = try? String(contentsOf: transcriptURL, encoding: .utf8),
+              text.trimmingCharacters(in: .whitespacesAndNewlines)
+                == rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        else { continue }
+        let date = (try? transcriptURL.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? .distantPast
+        matches.append((transcriptURL, date))
+    }
+
+    for (transcriptURL, _) in matches.sorted(by: { $0.1 > $1.1 }) {
+        let stem = transcriptURL.deletingPathExtension()
+        for ext in ["m4a", "wav", "flac"] {
+            let candidate = stem.appendingPathExtension(ext)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+    }
+    return nil
 }
 
 /// Honest Dictionary headline.
@@ -89,6 +156,8 @@ struct VoiceLabPanel: View {
     @State private var editor = VoiceLabEditorState()
     @State private var correctionIndex = 0
     @State private var lexiconIndex = 0
+    @State private var playbackSound: NSSound?
+    @State private var playbackMessage: String?
 
     private var corrections: [VoiceLabCorrectionRow] {
         qualityCorrectionRows(model.qualityRecords)
@@ -181,24 +250,93 @@ struct VoiceLabPanel: View {
             VStack(spacing: 8) {
                 let safeIndex = min(correctionIndex, corrections.count - 1)
                 let row = corrections[safeIndex]
-                VStack(alignment: .leading, spacing: 8) {
-                        Text("Heard: \(row.variant)")
-                            .font(CSFont.ui(12.5, .medium))
-                            .foregroundStyle(CSColor.textMutedAlt)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if editor.correctionID == row.id {
-                            HStack(spacing: 8) {
-                                TextField("Canonical correction", text: $editor.canonical)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit { saveEdit(row) }
-                                    .onExitCommand { editor.cancel() }
-                                    .accessibilityLabel("Canonical correction for \(row.variant)")
-                                Button("Save") { saveEdit(row) }
-                                    .disabled(
-                                        editor.canonical.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                            || model.voiceLabEditPending.contains(row.id)
+                VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            Text("ORIGINAL STT")
+                                .font(CSFont.mono(10.5, .semibold))
+                                .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.oliveLight)
+                            Text(row.isLowConfidence ? "LOW CONFIDENCE" : "CONFIDENCE DATA")
+                                .font(CSFont.mono(9.5, .semibold))
+                                .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.textFaintAlt)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule().fill(
+                                        (row.isLowConfidence ? CSColor.terracottaLight : CSColor.oliveLight)
+                                            .opacity(0.12)
                                     )
-                                Button("Cancel") { editor.cancel() }
+                                )
+                            Spacer(minLength: 0)
+                            Button {
+                                playOriginal(row)
+                            } label: {
+                                Label("Play original", systemImage: "play.fill")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityLabel("Play the original recording for this correction")
+                        }
+                        Text(row.rawText)
+                            .font(CSFont.ui(13, .medium))
+                            .foregroundStyle(CSColor.textHigh)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(11)
+                            .background(
+                                RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                    .fill(
+                                        (row.isLowConfidence ? CSColor.terracottaLight : CSColor.surfaceRaised(0.04))
+                                            .opacity(row.isLowConfidence ? 0.12 : 1)
+                                    )
+                            )
+                        Text(row.confidenceSummary)
+                            .font(CSFont.mono(10, .medium))
+                            .foregroundStyle(row.isLowConfidence ? CSColor.terracottaLight : CSColor.textFaintAlt)
+                            .textSelection(.enabled)
+                        if let playbackMessage {
+                            Text(playbackMessage)
+                                .font(CSFont.ui(10.5))
+                                .foregroundStyle(CSColor.textMutedAlt)
+                        }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("DELIVERED AFTER FORMATTING")
+                                .font(CSFont.mono(10, .semibold))
+                                .foregroundStyle(CSColor.textFaintAlt)
+                            Text(row.variant)
+                                .font(CSFont.ui(12.5, .medium))
+                                .foregroundStyle(CSColor.textMutedAlt)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if editor.correctionID == row.id {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("CORRECTED ORIGINAL")
+                                    .font(CSFont.mono(10, .semibold))
+                                    .foregroundStyle(CSColor.chromeAccent)
+                                TextEditor(text: $editor.canonical)
+                                    .font(CSFont.ui(13))
+                                    .scrollContentBackground(.hidden)
+                                    .frame(minHeight: 120, idealHeight: 180, maxHeight: 320)
+                                    .padding(8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                            .fill(CSColor.surfaceRaised(0.04))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                                            .strokeBorder(CSColor.chromeAccent.opacity(0.32), lineWidth: 1)
+                                    )
+                                    .onExitCommand { editor.cancel() }
+                                    .accessibilityLabel("Correct the original transcript")
+                                HStack {
+                                    Spacer()
+                                    Button("Cancel") { editor.cancel() }
+                                    Button("Save correction") { saveEdit(row) }
+                                        .disabled(
+                                            editor.canonical.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                                || model.voiceLabEditPending.contains(row.id)
+                                        )
+                                }
                             }
                         } else {
                             HStack(spacing: 7) {
@@ -268,6 +406,19 @@ struct VoiceLabPanel: View {
         if model.finalizeVoiceLabCorrection(id: row.id, canonical: editor.canonical) {
             editor.cancel()
         }
+    }
+
+    private func playOriginal(_ row: VoiceLabCorrectionRow) {
+        playbackSound?.stop()
+        guard let url = archivedAudioURL(configDir: model.configDir, rawText: row.rawText),
+              let sound = NSSound(contentsOf: url, byReference: true)
+        else {
+            playbackMessage = "Original audio is unavailable for this legacy correction."
+            return
+        }
+        playbackSound = sound
+        playbackMessage = "Playing \(url.lastPathComponent)"
+        sound.play()
     }
 
     @ViewBuilder

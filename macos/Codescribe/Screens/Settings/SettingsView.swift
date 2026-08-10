@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -23,6 +24,7 @@ struct SettingsView: View {
         .csFocusPolicy()
         .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
         .background(Self.windowGradient.ignoresSafeArea())
+        .background(SettingsWindowCapabilities())
         .preferredColorScheme(.dark)
         .onAppear {
             model.refresh()
@@ -59,6 +61,8 @@ struct SettingsView: View {
                     VoiceLabPanel(model: model)
                 case .audio:
                     AudioPanel(model: model)
+                case .license:
+                    LicensePanel(model: model)
                 case .creator:
                     CreatorPanel(model: model)
                 }
@@ -79,6 +83,43 @@ struct SettingsView: View {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+}
+
+/// SwiftUI's Settings scene can silently keep the content-sized AppKit style
+/// mask even when `.windowResizability` is present (notably after restoring an
+/// older saved frame). Enforce normal macOS window capabilities on the actual
+/// host window so Settings can resize, zoom and enter native full screen.
+private struct SettingsWindowCapabilities: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { configure(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { configure(nsView.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.styleMask.formUnion([.resizable, .miniaturizable, .fullSizeContentView])
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        let minimum = NSSize(width: 880, height: 620)
+        window.minSize = minimum
+        window.level = .normal
+        window.standardWindowButton(.zoomButton)?.isEnabled = true
+        window.standardWindowButton(.miniaturizeButton)?.isEnabled = true
+
+        var frame = window.frame
+        frame.size.width = max(frame.width, minimum.width)
+        frame.size.height = max(frame.height, minimum.height)
+        if let screen = window.screen ?? NSScreen.main {
+            frame = window.constrainFrameRect(frame, to: screen)
+        }
+        if frame != window.frame {
+            window.setFrame(frame, display: false)
+        }
+    }
 }
 
 // MARK: - Rail

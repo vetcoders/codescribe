@@ -9,24 +9,108 @@ import SwiftUI
 /// real streaming chat is a tracked core-change follow-up).
 struct AgentChatView: View {
     @StateObject var store: AgentChatStore
+    /// Rail state survives window close/reopen and app relaunch. The rail has
+    /// TWO states — expanded list and compact icon strip — and is never removed
+    /// from the split view, so no path can leave it unrecoverable and no path
+    /// leaves an empty band where the rail used to be.
+    @AppStorage("AgentChat.sidebarExpanded.v1") private var sidebarExpanded = true
+    @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     init(store: AgentChatStore) {
         _store = StateObject(wrappedValue: store)
     }
 
     var body: some View {
-        NavigationSplitView {
-            ThreadRail(store: store)
-                .navigationSplitViewColumnWidth(236)
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            ThreadRail(store: store, mode: sidebarMode)
+                // Column geometry is owned by the mode: expanded stays
+                // drag-resizable, compact pins the icon strip. The rail view
+                // itself carries no fixed width — a hardcoded 236 inside a
+                // resizable column left a dead band between rail and detail.
+                .navigationSplitViewColumnWidth(
+                    min: sidebarMode.minimumWidth,
+                    ideal: sidebarMode.idealWidth,
+                    max: sidebarMode.maximumWidth
+                )
                 .toolbar(removing: .sidebarToggle)
         } detail: {
-            ThreadDetail(store: store)
+            ThreadDetail(
+                store: store,
+                isSidebarExpanded: sidebarExpanded,
+                isPinned: $isPinned,
+                toggleSidebar: toggleSidebar
+            )
         }
         .navigationSplitViewStyle(.balanced)
         .csFocusPolicy()
         .background(CSColor.glassBase)
+        .background(AgentWindowCapabilities(isPinned: isPinned))
         .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
-        .task { store.startDemoStreamIfNeeded() }
+        .task {
+            // Point-in-time marker: correlate with the adjacent "thread index
+            // load" / "selected thread load" durations in the same log stream.
+            AgentPerf.logger.info("agent window shell rendered")
+            store.startDemoStreamIfNeeded()
+        }
+        // The rail column is always present; only its mode changes.
+        .onAppear { columnVisibility = .all }
+    }
+
+    private var sidebarMode: AgentSidebarMode {
+        sidebarExpanded ? .expanded : .compact
+    }
+
+    private func toggleSidebar() {
+        withAnimation {
+            columnVisibility = .all
+            sidebarExpanded = AgentSidebarMode.toggled(sidebarMode).isExpanded
+        }
+    }
+}
+
+/// The rail's two presentation states and the column geometry each owns. Pure,
+/// so the widths are unit-testable without rendering a split view.
+enum AgentSidebarMode: Equatable {
+    case expanded
+    case compact
+
+    /// Icon strip width: one hit target plus symmetric padding.
+    static let compactWidth: CGFloat = 56
+
+    var isExpanded: Bool { self == .expanded }
+    var minimumWidth: CGFloat { isExpanded ? 200 : Self.compactWidth }
+    var idealWidth: CGFloat { isExpanded ? 236 : Self.compactWidth }
+    var maximumWidth: CGFloat { isExpanded ? 360 : Self.compactWidth }
+
+    static func toggled(_ mode: AgentSidebarMode) -> AgentSidebarMode {
+        mode == .expanded ? .compact : .expanded
+    }
+}
+
+/// Applies the persisted pin to the one AppDelegate-owned Agent NSWindow.
+/// Updating level never orders or activates the window.
+enum AgentWindowLevelPolicy {
+    static func level(isPinned: Bool) -> NSWindow.Level {
+        isPinned ? .floating : .normal
+    }
+}
+
+private struct AgentWindowCapabilities: NSViewRepresentable {
+    let isPinned: Bool
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { configure(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { configure(nsView.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        window?.level = AgentWindowLevelPolicy.level(isPinned: isPinned)
     }
 }
 
@@ -34,6 +118,11 @@ struct AgentChatView: View {
 
 private struct ThreadDetail: View {
     @ObservedObject var store: AgentChatStore
+    /// Sidebar controls live in the DETAIL header so the toggle stays reachable
+    /// while the rail is in its compact icon state.
+    let isSidebarExpanded: Bool
+    @Binding var isPinned: Bool
+    let toggleSidebar: () -> Void
     @Environment(\.openSettings) private var openSettings
     @State private var isRenaming = false
     @State private var renameText = ""
@@ -52,6 +141,17 @@ private struct ThreadDetail: View {
                 }
             } else {
                 Spacer()
+            }
+            if let thread = store.currentThread {
+                ForEach(store.queuedTurns(in: thread.id)) { queued in
+                    QueuedTurnRow(
+                        turn: queued,
+                        save: { store.editQueuedTurn(queued.id, text: $0) },
+                        cancel: { store.cancelQueuedTurn(queued.id) }
+                    )
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 6)
+                }
             }
             ForEach(store.currentToolApprovals) { request in
                 ToolApprovalCard(
@@ -78,13 +178,36 @@ private struct ThreadDetail: View {
         }
     }
 
-    // Header: live status pill · width density · Settings · thread menu
+    // Header: sidebar toggle · live status pill · width density · Settings · thread menu
     private var header: some View {
         HStack(spacing: 12) {
+            Button(action: toggleSidebar) {
+                Image(systemName: "sidebar.leading")
+                    .font(.system(size: 14, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(isSidebarExpanded ? CSColor.textBody : CSColor.textFaint)
+            .keyboardShortcut("s", modifiers: [.command, .control])
+            .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
+            .accessibilityLabel("Toggle Sidebar")
+            .accessibilityValue(isSidebarExpanded ? "Expanded" : "Compact")
+
             StaticStatusPill(text: status.label, color: status.color)
             Spacer()
             HStack(spacing: 14) {
                 widthModeMenu
+
+                Button {
+                    isPinned.toggle()
+                } label: {
+                    Image(systemName: isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textFaint)
+                }
+                .buttonStyle(.plain)
+                .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
+                .accessibilityLabel(isPinned ? "Agent pinned, disable Always on Top" : "Agent unpinned, enable Always on Top")
+                .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
 
                 Button(action: { openSettings() }) {
                     CSIconView(icon: .settings, size: 16)
@@ -194,6 +317,87 @@ private struct ThreadDetail: View {
     }
 
     private var turnCount: Int { store.currentThread?.messages.count ?? 0 }
+}
+
+/// One accepted-but-not-yet-running message. Visible until the queue's single
+/// dispatch owner promotes it to the active turn; the ✕ cancels it before it
+/// is ever sent.
+private struct QueuedTurnRow: View {
+    let turn: AgentChatStore.QueuedTurn
+    let save: (String) -> Bool
+    let cancel: () -> Void
+    @State private var isEditing = false
+    @State private var editText = ""
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Queued")
+                .font(CSFont.mono(10, .semibold))
+                .foregroundStyle(CSColor.amber)
+            if isEditing {
+                TextField("Queued message", text: $editText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(CSFont.ui(12, .regular))
+                    .foregroundStyle(CSColor.textHigh)
+                    .lineLimit(1 ... 4)
+                    .onSubmit { commitEdit() }
+                    .onExitCommand { isEditing = false }
+            } else {
+                Text(turn.text.isEmpty ? "\(turn.attachments.count) attachment(s)" : turn.text)
+                    .font(CSFont.ui(12, .regular))
+                    .foregroundStyle(CSColor.textBody)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .textSelection(.enabled)
+                    .onTapGesture(count: 2) { beginEdit() }
+            }
+            Spacer()
+            if isEditing {
+                Button("Save") { commitEdit() }
+                    .buttonStyle(.plain)
+                    .font(CSFont.mono(10, .semibold))
+                    .foregroundStyle(CSColor.oliveLight)
+                Button("Cancel") { isEditing = false }
+                    .buttonStyle(.plain)
+                    .font(CSFont.mono(10, .medium))
+                    .foregroundStyle(CSColor.textFaintAlt)
+            } else {
+                Button(action: beginEdit) {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(CSColor.textFaintAlt)
+                }
+                .buttonStyle(.plain)
+                .help("Edit queued message")
+                .accessibilityLabel("Edit queued message")
+            }
+            Button(action: cancel) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(CSColor.textFaintAlt)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel queued message")
+            .accessibilityLabel("Cancel queued message")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(CSColor.surfaceRaised(0.04))
+        .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    }
+
+    private func beginEdit() {
+        editText = turn.text
+        isEditing = true
+    }
+
+    private func commitEdit() {
+        if save(editText) { isEditing = false }
+    }
 }
 
 private struct ToolApprovalCard: View {

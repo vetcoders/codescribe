@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import OSLog
 import SwiftUI
 
@@ -7,6 +8,13 @@ import SwiftUI
 private let attachLog = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
     category: "attachments"
+)
+
+/// Turn-queue diagnostics: accept / promote / cancel with queue depth and
+/// thread binding. Never logs message text or attachment contents.
+private let queueLog = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "turn-queue"
 )
 
 // MARK: - Runtime contract (read before extending this screen)
@@ -306,6 +314,7 @@ struct PendingAttachment: Identifiable, Hashable {
     let url: URL
     var name: String { url.lastPathComponent }
     var type: String { MessageAttachment.inferredType(name: name, url: url) }
+    var previewAttachment: MessageAttachment { MessageAttachment(name: name, url: url, type: type) }
 }
 
 /// An attachment carried by a *sent* chat message, surfaced as a chip in the You
@@ -488,6 +497,26 @@ enum ComposerDictationPhase: Equatable {
     case failed(String)
 }
 
+enum ComposerCaptureCommand {
+    case startAssistive
+    case stopAssistive
+    case toggleAssistive
+}
+
+enum DictationDeliverySource: Equatable {
+    case live
+    case final
+    case edited
+
+    var label: String {
+        switch self {
+        case .live: return "live chosen"
+        case .final: return "final chosen"
+        case .edited: return "edited text chosen"
+        }
+    }
+}
+
 /// UI-only seam over the composer dictation controller. The real adapter
 /// (`RealComposerDictation`, Core layer) wraps the `CodescribeDictation` bridge;
 /// kept bridge-free here so the view-model + #Preview stay standalone (nil = mic
@@ -496,6 +525,7 @@ enum ComposerDictationPhase: Equatable {
 protocol ComposerDictating: AnyObject {
     /// Start recording when idle, stop-and-insert when recording.
     func toggle()
+    func handle(_ command: ComposerCaptureCommand)
 }
 
 // MARK: - Store
@@ -509,6 +539,12 @@ final class AgentChatStore: ObservableObject {
     /// deliberately does not mutate the selected thread or staged attachments.
     @Published private(set) var composerFocusRequest: UInt64 = 0
     @Published private(set) var dictationPreview: String = ""
+    @Published private(set) var dictationLivePreview: String = ""
+    @Published private(set) var dictationFinalPreview: String?
+    @Published private(set) var dictationFinalChangedText = false
+    @Published private(set) var dictationVadActive = false
+    @Published private(set) var dictationPreviewUserEdited = false
+    @Published private(set) var dictationDeliverySource: DictationDeliverySource = .live
 
     /// Images staged in the composer for the next message. Cleared when the
     /// message is dispatched.
@@ -536,6 +572,10 @@ final class AgentChatStore: ObservableObject {
     /// Toggle the composer voice note (start ↔ stop-and-insert).
     func toggleDictation() { dictation?.toggle() }
 
+    func handleAssistiveCapture(_ command: ComposerCaptureCommand) {
+        dictation?.handle(command)
+    }
+
     func requestComposerFocus() {
         composerFocusRequest &+= 1
     }
@@ -546,13 +586,86 @@ final class AgentChatStore: ObservableObject {
 
     /// Latest live voice-note preview. This is a snapshot buffer from the STT
     /// listener, not a delta stream, and stays separate from `draft` until stop.
+    func beginDictationPreviewSession() {
+        dictationPreview = ""
+        dictationLivePreview = ""
+        dictationFinalPreview = nil
+        dictationFinalChangedText = false
+        dictationVadActive = false
+        dictationPreviewUserEdited = false
+        dictationDeliverySource = .live
+    }
+
+    /// Idempotent on purpose. Apple live polls partials every ~40 ms, so during a
+    /// pause the SAME text arrives ~25×/s. Publishing an unchanged value still
+    /// fires `objectWillChange`, rebuilding the whole Agent window body — and the
+    /// preview's `TextEditor` is NSTextView-backed, so each rebuild mutates the
+    /// AppKit subtree, invalidates the window's structural regions and re-runs the
+    /// deep `cursorUpdate:` walk (measured 2026-08-05: ~30% of main-thread samples
+    /// in `setCursorForMouseLocation:` → `NSCursor _reallySet`, visible as the
+    /// pointer flickering between I-beam and arrow, plus a PDF cursor-image reload
+    /// per frame). Writing only on real change removes the whole storm at the
+    /// source; see `plans/gtm-closure-260804/evidence/2026-08-05_cursor-storm-sample.txt`.
     func updateDictationPreview(_ text: String) {
-        dictationPreview = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if dictationLivePreview != trimmed { dictationLivePreview = trimmed }
+        guard !dictationPreviewUserEdited else { return }
+        if dictationPreview != trimmed { dictationPreview = trimmed }
+    }
+
+    func editDictationPreview(_ text: String) {
+        dictationPreview = text
+        dictationPreviewUserEdited = true
+        dictationDeliverySource = .edited
+    }
+
+    func noteDictationFinalPreview(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let final = trimmed.isEmpty ? nil : trimmed
+        let changed = !trimmed.isEmpty && trimmed != dictationLivePreview
+        if dictationFinalPreview != final { dictationFinalPreview = final }
+        if dictationFinalChangedText != changed { dictationFinalChangedText = changed }
+    }
+
+    /// Same idempotence contract as `updateDictationPreview`: the VAD callback
+    /// fires per audio chunk, and republishing an unchanged flag rebuilds the
+    /// window body for nothing.
+    func setDictationVadActive(_ active: Bool) {
+        guard dictationVadActive != active else { return }
+        dictationVadActive = active
+    }
+
+    /// Preserve both hypotheses and explicitly choose the delivery text. A
+    /// materially shorter final pass may fill gaps but must never erase a better
+    /// live canvas. User edits always win and cancel Assistive auto-send.
+    func resolveDictationDelivery(final text: String, autoSend: Bool) -> (text: String, autoSend: Bool) {
+        let final = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        dictationFinalPreview = final.isEmpty ? nil : final
+        dictationFinalChangedText = !final.isEmpty && final != dictationLivePreview
+
+        if dictationPreviewUserEdited {
+            dictationDeliverySource = .edited
+            return (dictationPreview.trimmingCharacters(in: .whitespacesAndNewlines), false)
+        }
+
+        let live = dictationLivePreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        let liveWords = live.split(whereSeparator: \Character.isWhitespace).count
+        let finalWords = final.split(whereSeparator: \Character.isWhitespace).count
+        let finalRegressed = !live.isEmpty && (final.isEmpty || finalWords * 100 < liveWords * 85)
+        let chosen = finalRegressed ? live : final
+        dictationDeliverySource = finalRegressed ? .live : .final
+        dictationPreview = chosen
+        return (chosen, autoSend)
     }
 
     func clearDictationPreview() {
-        guard !dictationPreview.isEmpty else { return }
         dictationPreview = ""
+        dictationLivePreview = ""
+        dictationFinalPreview = nil
+        dictationFinalChangedText = false
+        dictationVadActive = false
+        dictationPreviewUserEdited = false
+        dictationDeliverySource = .live
     }
 
     /// Surface a recoverable dictation failure with a self-clearing inline message
@@ -570,12 +683,11 @@ final class AgentChatStore: ObservableObject {
         }
     }
 
-    /// Append a finished voice-note transcript to the current draft with a natural
-    /// separator (no auto-send — the user decides when to dispatch).
+    /// Append the explicitly resolved voice transcript to the editable draft.
+    /// Preview provenance remains visible until the next capture starts.
     func appendDictatedTranscript(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        clearDictationPreview()
         if draft.isEmpty {
             draft = trimmed
         } else {
@@ -598,7 +710,9 @@ final class AgentChatStore: ObservableObject {
     /// Entries for one palette command, resolved on demand so a freshly saved
     /// model or a just-granted tool shows up without reopening the window.
     func paletteEntries(for command: ComposerPaletteCommand) -> [ComposerPaletteEntry] {
-        paletteSource?.entries(for: command) ?? []
+        let start = Date()
+        defer { AgentPerf.log("tool catalog load", since: start, detail: command.rawValue) }
+        return paletteSource?.entries(for: command) ?? []
     }
 
     /// Apply a palette pick. Failures surface as a system line in the thread —
@@ -677,18 +791,32 @@ final class AgentChatStore: ObservableObject {
     /// cut C): window activation + cross-surface `threadsDidChange`. Removed
     /// on deinit; empty when no threads provider is wired (preview/mock).
     private var externalThreadsObservers: [NSObjectProtocol] = []
+    private let licenseService: LicenseService?
+    private var licenseChangeSink: AnyCancellable?
 
+    /// `loadsThreadIndexEagerly: false` (production `AppModel` path) turns init
+    /// into a light shell: no disk I/O on the MainActor bootstrap — the real
+    /// thread index loads asynchronously off the main actor and merges in.
+    /// The default `true` preserves the synchronous contract tests and previews
+    /// rely on (threads visible immediately after init).
     init(engine: AgentChatEngine? = nil,
          threadsProvider: ChatThreadsProviding? = nil,
          threads: [ChatThread]? = nil,
-         voiceTurnCanceller: VoiceTurnCancelling? = nil) {
+         voiceTurnCanceller: VoiceTurnCancelling? = nil,
+         licenseService: LicenseService? = nil,
+         loadsThreadIndexEagerly: Bool = true) {
         self.engine = engine
         self.threadsProvider = threadsProvider
         self.voiceTurnCanceller = voiceTurnCanceller
+        self.licenseService = licenseService
 
         let seeded: [ChatThread]
+        var deferredIndexLoad = false
         if let threads {
             seeded = threads                                    // explicit (preview/mock)
+        } else if threadsProvider != nil, !loadsThreadIndexEagerly {
+            seeded = [ChatThread(title: "New thread", meta: "now")]  // shell; index merges async
+            deferredIndexLoad = true
         } else if let real = threadsProvider?.listThreads(), !real.isEmpty {
             seeded = real                                       // real persisted threads
         } else if threadsProvider != nil {
@@ -703,8 +831,49 @@ final class AgentChatStore: ObservableObject {
             self.pendingToolApprovals.removeAll { $0.id == request.id }
             self.pendingToolApprovals.append(request)
         }
-        if let first = seeded.first { loadMessagesIfNeeded(first.id) }
+        if !deferredIndexLoad, let first = seeded.first { loadMessagesIfNeeded(first.id) }
         beginObservingExternalThreadChanges()
+        if deferredIndexLoad {
+            scheduleInitialThreadIndexLoad()
+        } else if threadsProvider != nil {
+            restoreAcceptedTurnsFromDisk()
+        }
+        licenseChangeSink = licenseService?.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
+
+    /// Load the persisted thread index OFF the main actor, then merge it in on
+    /// the MainActor via the same `replaceThreads` path every other refresh
+    /// uses. A turn accepted before the index landed owns the rail (a freshly
+    /// minted thread is not on disk until its first stream completes and would
+    /// be dropped by a mid-turn replace), so the merge waits for idle.
+    private func scheduleInitialThreadIndexLoad() {
+        Task { @MainActor [weak self] in
+            guard let self, let provider = self.threadsProvider else { return }
+            let start = Date()
+            let loaded = await Task.detached(priority: .userInitiated) {
+                provider.listThreads()
+            }.value
+            AgentPerf.log("thread index load", since: start, detail: "\(loaded.count) threads")
+            var idleWaits = 0
+            while self.activeComposerTurn != nil || self.voiceTurnPhase != nil, idleWaits < 240 {
+                idleWaits += 1
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            if !loaded.isEmpty {
+                let mergeStart = Date()
+                self.replaceThreads(
+                    with: loaded,
+                    selectingBackendId: self.currentThread?.backendId,
+                    keepLocalDrafts: true
+                )
+                AgentPerf.log("thread index merge + selected thread load", since: mergeStart)
+            }
+            // Replay messages accepted before the last app death only after the
+            // index is in, so they re-bind to their persisted threads.
+            self.restoreAcceptedTurnsFromDisk()
+        }
     }
 
     deinit {
@@ -900,6 +1069,11 @@ final class AgentChatStore: ObservableObject {
         titleGenerationTasks[thread.id] = nil
         firstTurnTitleStates[thread.id] = nil
         customTitleThreadIDs.remove(thread.id)
+        // Deleting a thread deletes its queue — in memory and on disk.
+        queuedTurns.removeAll { $0.threadID == thread.id }
+        if let backendId = thread.backendId {
+            removeDurableAcceptedTurns(backendThreadID: backendId)
+        }
         // Cancel any in-flight reply for this thread so its post-stream refresh
         // can't re-list (and the caret/finalize can't mutate) a deleted thread.
         // Swift-task cancel first (so the awaiting send sees isCancelled and
@@ -930,6 +1104,8 @@ final class AgentChatStore: ObservableObject {
               let ti = threads.firstIndex(where: { $0.id == id }),
               let backendId = threads[ti].backendId,
               !threads[ti].messagesLoaded else { return }
+        let start = Date()
+        defer { AgentPerf.log("selected thread load", since: start, detail: backendId) }
         // Persisted user turns carry the wire skeleton (disk keeps the LLM
         // truth); rewrite them for display so restored threads render the
         // spoken instruction, exactly like a live turn.
@@ -972,29 +1148,162 @@ final class AgentChatStore: ObservableObject {
     }
 
     /// True when there is something to send: text, at least one staged image, or
-    /// both. Drives the send button's enabled state.
+    /// both. Drives the send button's enabled state. A turn already in flight no
+    /// longer blocks acceptance — `send()` queues instead of dropping.
     var canSend: Bool {
-        activeComposerTurn == nil
-            && !(voiceTurnThreadID == selectedThreadID && voiceTurnPhase != nil)
+        !isAgenticLocked
             && (!draft.trimmingCharacters(in: .whitespaces).isEmpty || !pendingAttachments.isEmpty)
     }
 
-    // MARK: Send (real single-shot FFI round-trip)
+    var isAgenticLocked: Bool { licenseService?.canUseAgentic == false }
+    var agenticBlockMessage: String? {
+        isAgenticLocked ? licenseService?.agenticBlockMessage : nil
+    }
+
+    // MARK: Turn queue (messages accepted while a turn is in flight)
+
+    /// A message the UI accepted. Durable from the moment of acceptance: it is
+    /// written to the sidecar in `accept` and removed only when its turn reaches
+    /// a terminal (success, provider error, or stop), so an app death in between
+    /// replays it on the next launch instead of losing it.
+    struct QueuedTurn: Identifiable, Equatable {
+        let id: UUID
+        let threadID: UUID
+        let backendThreadID: String
+        var text: String
+        let attachments: [PendingAttachment]
+        let enqueuedAt: Date
+    }
+
+    /// FIFO of accepted-but-not-yet-running messages, ordered by acceptance
+    /// across all threads; per-thread order is what the contract guarantees.
+    @Published private(set) var queuedTurns: [QueuedTurn] = []
+
+    func queuedTurns(in threadID: UUID) -> [QueuedTurn] {
+        queuedTurns.filter { $0.threadID == threadID }
+    }
+
+    /// Terminal-style composer history, oldest → newest. It includes already
+    /// dispatched user turns and accepted queued turns, so Up can recover the
+    /// exact message the operator just queued without cancelling it first.
+    func composerHistory(in threadID: UUID) -> [String] {
+        let sent = threads.first(where: { $0.id == threadID })?.messages
+            .filter { $0.role == .you }
+            .map(\.text) ?? []
+        let queued = queuedTurns(in: threadID).map(\.text)
+        return (sent + queued).reduce(into: [String]()) { result, text in
+            let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, result.last != text else { return }
+            result.append(text)
+        }
+    }
+
+    /// Cancel one still-queued (never dispatched) message.
+    func cancelQueuedTurn(_ id: UUID) {
+        guard queuedTurns.contains(where: { $0.id == id }) else { return }
+        queuedTurns.removeAll { $0.id == id }
+        removeDurableAcceptedTurn(id: id)
+    }
+
+    /// Edit an accepted turn while it is still queued. The same durable sidecar
+    /// is replaced immediately, so a crash/relaunch cannot resurrect the old
+    /// wording. Attachments and FIFO position stay unchanged.
+    @discardableResult
+    func editQueuedTurn(_ id: UUID, text: String) -> Bool {
+        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return false }
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !queuedTurns[index].attachments.isEmpty else { return false }
+        queuedTurns[index].text = text
+        persistDurableAcceptedTurn(queuedTurns[index])
+        return true
+    }
+
+    // MARK: Send (accept → queue → serialized dispatch)
 
     func send() {
-        guard activeComposerTurn == nil,
-              !(voiceTurnThreadID == selectedThreadID && voiceTurnPhase != nil) else { return }
+        guard !isAgenticLocked else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = pendingAttachments
-        let attachmentPaths = staged.map { $0.url.path }
         attachLog.info(
-            "send: building request attachmentPaths.count=\(attachmentPaths.count, privacy: .public) text.isEmpty=\(text.isEmpty, privacy: .public)"
+            "send: building request attachmentPaths.count=\(staged.count, privacy: .public) text.isEmpty=\(text.isEmpty, privacy: .public)"
         )
-        guard (!text.isEmpty || !attachmentPaths.isEmpty), let threadID = selectedThreadID else { return }
-        let backendId = ensureBackendId(threadID)
-        let userTurnIndex = currentUserTurnCount(in: threadID)
+        guard (!text.isEmpty || !staged.isEmpty), let threadID = selectedThreadID else { return }
         draft = ""
         pendingAttachments = []
+        accept(text: text, staged: staged, threadID: threadID)
+    }
+
+    /// Accept a message: persist it durably, enqueue it FIFO on its thread, and
+    /// let the single dispatch owner start it if the composer slot is idle.
+    private func accept(text: String, staged: [PendingAttachment], threadID: UUID) {
+        let backendId = ensureBackendId(threadID)
+        let turn = QueuedTurn(
+            id: UUID(),
+            threadID: threadID,
+            backendThreadID: backendId,
+            text: text,
+            attachments: staged,
+            enqueuedAt: Date()
+        )
+        persistDurableAcceptedTurn(turn)
+        queuedTurns.append(turn)
+        queueLog.info(
+            "accepted turn \(turn.id, privacy: .public) thread=\(backendId, privacy: .public) queued=\(self.queuedTurns.count, privacy: .public)"
+        )
+        dispatchNextQueuedTurnIfIdle()
+    }
+
+    /// The ONLY `queued → running` transition. MainActor-serialized, guarded by
+    /// the single composer slot, and `startTurn` claims that slot synchronously —
+    /// so exactly one owner can ever promote a queued message. Threads with an
+    /// active voice turn are skipped (the core owns that thread's stream); their
+    /// queued messages wait for the voice terminal.
+    private func dispatchNextQueuedTurnIfIdle() {
+        guard activeComposerTurn == nil else { return }
+        guard let index = queuedTurns.firstIndex(where: { turn in
+            !(voiceTurnThreadID == turn.threadID && voiceTurnPhase != nil)
+        }) else { return }
+        var turn = queuedTurns.remove(at: index)
+        // The local UUID can go stale while queued (a rail refresh re-mints
+        // rows); the DURABLE binding is the backend thread id. Re-bind instead
+        // of dropping — an explicitly deleted thread already purged its queue
+        // in `delete`, so anything still here must run.
+        if !threads.contains(where: { $0.id == turn.threadID }) {
+            let resolvedID: UUID
+            if let match = threads.first(where: { $0.backendId == turn.backendThreadID }) {
+                resolvedID = match.id
+            } else {
+                var thread = ChatThread(title: "Restored draft", meta: "now")
+                thread.backendId = turn.backendThreadID
+                thread.messagesLoaded = true
+                threads.insert(thread, at: 0)
+                resolvedID = thread.id
+            }
+            turn = QueuedTurn(
+                id: turn.id,
+                threadID: resolvedID,
+                backendThreadID: turn.backendThreadID,
+                text: turn.text,
+                attachments: turn.attachments,
+                enqueuedAt: turn.enqueuedAt
+            )
+        }
+        queueLog.info(
+            "promoting turn \(turn.id, privacy: .public) thread=\(turn.backendThreadID, privacy: .public) queued=\(self.queuedTurns.count, privacy: .public)"
+        )
+        startTurn(turn)
+    }
+
+    /// Run one accepted message as the active composer turn. The acceptance id
+    /// IS the turn id, so one element is traceable end-to-end (accept → queue →
+    /// running → terminal → durable-record removal).
+    private func startTurn(_ queued: QueuedTurn) {
+        let threadID = queued.threadID
+        let backendId = queued.backendThreadID
+        let text = queued.text
+        let staged = queued.attachments
+        let attachmentPaths = staged.map { $0.url.path }
+        let userTurnIndex = currentUserTurnCount(in: threadID)
 
         // Carry the staged attachments onto the You bubble so the sender sees a
         // chip (name + optional thumbnail) for what they attached.
@@ -1004,7 +1313,7 @@ final class AgentChatStore: ObservableObject {
         let assistant = ChatMessage(role: .assistant, timestamp: "now", text: "", isThinking: true)
         let assistantID = assistant.id
         append(assistant, to: threadID)
-        let turnID = UUID()
+        let turnID = queued.id
         activeComposerTurn = ActiveComposerTurn(
             id: turnID,
             threadID: threadID,
@@ -1021,6 +1330,11 @@ final class AgentChatStore: ObservableObject {
                 if !titleStreamSettled {
                     settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
                 }
+                // The turn reached a terminal (success, provider error, or a
+                // cancelled Swift task) — its outcome is visible in the UI, so
+                // the durable acceptance record is consumed. Only an app death
+                // BEFORE this point leaves the record behind for restart replay.
+                removeDurableAcceptedTurn(id: turnID)
                 releaseComposerTurn(turnID, in: threadID)
             }
             guard let engine else {
@@ -1588,6 +1902,9 @@ final class AgentChatStore: ObservableObject {
            activeComposerTurn?.phase != .cancelling {
             activeComposerTurn = nil
         }
+        // Terminal of any kind frees the composer slot; the queue continues.
+        // A provider error or cancel must never silently strand queued items.
+        dispatchNextQueuedTurnIfIdle()
     }
 
     private func settleStoppedComposerTurn(_ turn: ActiveComposerTurn) {
@@ -1605,6 +1922,8 @@ final class AgentChatStore: ObservableObject {
             inFlightSends[turn.threadID] = nil
         }
         activeComposerTurn = nil
+        // A user Stop consumed its own turn but not the queue: FIFO continues.
+        dispatchNextQueuedTurnIfIdle()
     }
 
     private func clearVoiceTurnState() {
@@ -1612,6 +1931,8 @@ final class AgentChatStore: ObservableObject {
         voiceAssistantID = nil
         voiceTurnStartedAt = nil
         voiceTurnPhase = nil
+        // The voice terminal frees its thread for queued composer messages.
+        dispatchNextQueuedTurnIfIdle()
     }
 
     // MARK: Mutation helpers
@@ -1643,6 +1964,113 @@ final class AgentChatStore: ObservableObject {
     }
 
     private static let attachmentMetadataDefaultsKey = "AgentChatStore.attachmentMetadata.v1"
+
+    // MARK: Durable accepted-turn sidecar (queue persistence)
+
+    /// Wire form of an accepted message. Keyed by the durable backend thread id
+    /// (the local UUID does not survive a restart); FIFO order restores from
+    /// `enqueuedAtEpoch`.
+    private struct DurableAcceptedTurn: Codable, Hashable {
+        let id: UUID
+        let backendThreadID: String
+        let text: String
+        let attachmentPaths: [String]
+        let enqueuedAtEpoch: TimeInterval
+    }
+
+    static let acceptedTurnsDefaultsKey = "AgentChatStore.acceptedTurns.v1"
+
+    private func persistDurableAcceptedTurn(_ turn: QueuedTurn) {
+        var stored = readDurableAcceptedTurns()
+        stored.removeAll { $0.id == turn.id }
+        stored.append(DurableAcceptedTurn(
+            id: turn.id,
+            backendThreadID: turn.backendThreadID,
+            text: turn.text,
+            attachmentPaths: turn.attachments.map { $0.url.path },
+            enqueuedAtEpoch: turn.enqueuedAt.timeIntervalSince1970
+        ))
+        writeDurableAcceptedTurns(stored)
+    }
+
+    private func removeDurableAcceptedTurn(id: UUID) {
+        var stored = readDurableAcceptedTurns()
+        let before = stored.count
+        stored.removeAll { $0.id == id }
+        guard stored.count != before else { return }
+        writeDurableAcceptedTurns(stored)
+    }
+
+    private func removeDurableAcceptedTurns(backendThreadID: String) {
+        var stored = readDurableAcceptedTurns()
+        let before = stored.count
+        stored.removeAll { $0.backendThreadID == backendThreadID }
+        guard stored.count != before else { return }
+        writeDurableAcceptedTurns(stored)
+    }
+
+    private func readDurableAcceptedTurns() -> [DurableAcceptedTurn] {
+        guard let data = UserDefaults.standard.data(forKey: Self.acceptedTurnsDefaultsKey) else {
+            return []
+        }
+        do {
+            return try JSONDecoder().decode([DurableAcceptedTurn].self, from: data)
+        } catch {
+            // Corrupt payload is not "empty queue" — quarantine so the next
+            // accept can rewrite a healthy sidecar, and leave an OSLog trail.
+            queueLog.error(
+                "durable accepted-turns decode failed; quarantining payload: \(error.localizedDescription, privacy: .public)"
+            )
+            UserDefaults.standard.removeObject(forKey: Self.acceptedTurnsDefaultsKey)
+            return []
+        }
+    }
+
+    private func writeDurableAcceptedTurns(_ turns: [DurableAcceptedTurn]) {
+        do {
+            let data = try JSONEncoder().encode(turns)
+            UserDefaults.standard.set(data, forKey: Self.acceptedTurnsDefaultsKey)
+        } catch {
+            // Flagship durable queue must never fail silently (PR-68 review).
+            queueLog.error(
+                "durable accepted-turns encode failed (count=\(turns.count, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    /// Re-enqueue messages that were accepted before the last app death but
+    /// never reached a terminal. Runs once the thread index is present (init on
+    /// the eager path, after the async index merge on the deferred path).
+    private func restoreAcceptedTurnsFromDisk() {
+        // Stored order IS acceptance order (append-only sidecar) — no sort, so
+        // two messages accepted in the same millisecond can never swap.
+        let persisted = readDurableAcceptedTurns()
+        guard !persisted.isEmpty else { return }
+        for item in persisted {
+            guard !queuedTurns.contains(where: { $0.id == item.id }) else { continue }
+            let threadID: UUID
+            if let existing = threads.first(where: { $0.backendId == item.backendThreadID }) {
+                threadID = existing.id
+            } else {
+                // Accepted for a thread that never reached disk (the app died
+                // before its first stream persisted) — re-mint a bound shell.
+                var thread = ChatThread(title: "Restored draft", meta: "now")
+                thread.backendId = item.backendThreadID
+                thread.messagesLoaded = true
+                threads.insert(thread, at: 0)
+                threadID = thread.id
+            }
+            queuedTurns.append(QueuedTurn(
+                id: item.id,
+                threadID: threadID,
+                backendThreadID: item.backendThreadID,
+                text: item.text,
+                attachments: item.attachmentPaths.map { PendingAttachment(url: URL(fileURLWithPath: $0)) },
+                enqueuedAt: Date(timeIntervalSince1970: item.enqueuedAtEpoch)
+            ))
+        }
+        dispatchNextQueuedTurnIfIdle()
+    }
 
     private func persistAttachmentMetadata(
         _ attachments: [MessageAttachment],
@@ -1695,16 +2123,29 @@ final class AgentChatStore: ObservableObject {
     }
 
     private func readAttachmentMetadataSidecar() -> [String: [PersistedAttachmentTurn]] {
-        guard let data = UserDefaults.standard.data(forKey: Self.attachmentMetadataDefaultsKey),
-              let decoded = try? JSONDecoder().decode([String: [PersistedAttachmentTurn]].self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: Self.attachmentMetadataDefaultsKey) else {
             return [:]
         }
-        return decoded
+        do {
+            return try JSONDecoder().decode([String: [PersistedAttachmentTurn]].self, from: data)
+        } catch {
+            attachLog.error(
+                "attachment metadata decode failed; quarantining payload: \(error.localizedDescription, privacy: .public)"
+            )
+            UserDefaults.standard.removeObject(forKey: Self.attachmentMetadataDefaultsKey)
+            return [:]
+        }
     }
 
     private func writeAttachmentMetadataSidecar(_ sidecar: [String: [PersistedAttachmentTurn]]) {
-        guard let data = try? JSONEncoder().encode(sidecar) else { return }
-        UserDefaults.standard.set(data, forKey: Self.attachmentMetadataDefaultsKey)
+        do {
+            let data = try JSONEncoder().encode(sidecar)
+            UserDefaults.standard.set(data, forKey: Self.attachmentMetadataDefaultsKey)
+        } catch {
+            attachLog.error(
+                "attachment metadata encode failed (threads=\(sidecar.count, privacy: .public)): \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     /// Surface a completed tool call as a `.tool` activity turn placed immediately

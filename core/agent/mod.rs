@@ -1,9 +1,11 @@
 pub mod assets;
+pub mod capabilities;
 pub mod event;
 pub mod permissions;
 pub mod provider;
 pub mod registry;
 pub mod run_monitor;
+pub mod secret_paths;
 pub mod session;
 pub mod thread_delivery;
 pub mod thread_export;
@@ -14,6 +16,11 @@ mod tool_output;
 pub mod types;
 
 pub use assets::AgentAssetStore;
+pub use capabilities::{
+    AgentCapabilityPreferences, CapabilityOp, CapabilityProvider, CapabilityResolution,
+    CapabilityStatus, CapabilityTier, ConnectorHealth, capability_matrix,
+    resolve as resolve_capability,
+};
 pub use event::{AgentEvent, AgentUiEvent};
 pub use permissions::{AgentPermissions, PermissionLevel, ToolCapability, tool_identity};
 pub use provider::{AgentProvider, StreamOptions};

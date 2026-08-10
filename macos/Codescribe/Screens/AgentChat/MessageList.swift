@@ -97,6 +97,52 @@ enum ChatLayoutPolicy {
         }
         return max(minimumReadable, min(usable, cap))
     }
+
+    /// Hard ceiling for any turn's laid-out width inside the scroll document.
+    /// Prevents a single long unbreakable token (or a mis-parsed wire dump)
+    /// from growing the ScrollView's content width past the viewport — the
+    /// class of bug that floats glyphs like `)"` outside the Agent window.
+    static func documentWidth(for containerWidth: CGFloat) -> CGFloat {
+        max(minimumReadable, containerWidth > 0 ? containerWidth : minimumReadable)
+    }
+}
+
+/// Render disposition for one bubble's text (bolączka #3 residual, hang report
+/// 2026-08-04): SwiftUI's shared `SelectionOverlay` livelocks the main thread
+/// over unbounded transcript text, so a bubble past `OversizedBubblePolicy
+/// .inlineUTF8Cap` must degrade to a head preview whose full text lives in a
+/// contained text view with its own selection — never under the list-wide
+/// `.textSelection(.enabled)`.
+enum BubbleTextDisposition: Equatable {
+    /// Full text inline, sharing the list selection surface.
+    case inline
+    /// Oversized: render only the first `headUTF8` bytes inline; full text
+    /// behind an explicit reveal in a selection-contained view.
+    case headPreview(headUTF8: Int)
+
+    /// Whether this bubble's text participates in the list-wide selection
+    /// overlay — the mechanism the 2026-08-04 hang livelocked on.
+    var sharesListSelectionOverlay: Bool {
+        switch self {
+        case .inline: return true
+        case .headPreview: return false
+        }
+    }
+}
+
+enum OversizedBubblePolicy {
+    /// UTF-8 length past which a bubble stops rendering inline. 64 KiB: four
+    /// times the agent tool-output spill limit, well below the 100k paste that
+    /// reproduced the livelock.
+    static let inlineUTF8Cap = 65_536
+    /// UTF-8 length of the head shown inline for an oversized bubble.
+    static let headPreviewUTF8 = 16_384
+
+    static func disposition(utf8Count: Int) -> BubbleTextDisposition {
+        utf8Count <= inlineUTF8Cap
+            ? .inline
+            : .headPreview(headUTF8: headPreviewUTF8)
+    }
 }
 
 /// Explicit state machine for the message viewport. Content growth is allowed
@@ -154,6 +200,11 @@ struct MessageList: View {
     /// during a stream pauses the follow; returning to the bottom resumes it, so the
     /// view stops fighting the user's manual scroll on a long streamed message.
     @State private var followState = StreamScrollFollowState()
+    /// Hang guard (2026-08-04 livelock): LazyVStack pays O(items) layout phases
+    /// per view-graph transaction, so an unbounded multi-hour thread eventually
+    /// outruns the run loop even with healthy per-item costs. Only the newest
+    /// window renders; "Show earlier" pages the history in on demand.
+    @State private var visibleTurnBudget = MessageList.turnWindow
     /// Operator width density — shared with the header picker via `@AppStorage`.
     @AppStorage(ChatLayoutPolicy.defaultsKey) private var widthModeRaw = ChatLayoutPolicy.defaultMode.rawValue
     private let scrollSpace = "chatMessageScroll"
@@ -161,13 +212,32 @@ struct MessageList: View {
 
     private var widthMode: ChatWidthMode { ChatWidthMode.resolve(widthModeRaw) }
 
+    /// Newest turns per page of the render window (`visibleTurnBudget` grows by
+    /// this step on every "Show earlier"). Sized so a normal working session
+    /// never sees the affordance while a 49-hour thread stays bounded.
+    static let turnWindow = 120
+
+    /// The rendered slice: newest `visibleTurnBudget` turns.
+    private var visibleMessages: ArraySlice<ChatMessage> {
+        messages.suffix(visibleTurnBudget)
+    }
+
+    private var hiddenTurnCount: Int {
+        max(0, messages.count - visibleTurnBudget)
+    }
+
     var body: some View {
         GeometryReader { viewport in
             let containerWidth = viewport.size.width
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(messages) { message in
+                        if hiddenTurnCount > 0 {
+                            ShowEarlierButton(hiddenCount: hiddenTurnCount) {
+                                visibleTurnBudget += Self.turnWindow
+                            }
+                        }
+                        ForEach(visibleMessages) { message in
                             turn(message, containerWidth: containerWidth, mode: widthMode)
                                 .frame(maxWidth: .infinity, alignment: alignment(message.role))
                                 .id(message.id)
@@ -176,7 +246,15 @@ struct MessageList: View {
                             .frame(height: 1)
                             .id(bottomAnchor)
                     }
+                    // Pin the document to the viewport width so a single
+                    // long-line bubble cannot widen the scroll content and
+                    // paint outside the Agent window chrome (R1 collapse).
+                    .frame(
+                        maxWidth: ChatLayoutPolicy.documentWidth(for: containerWidth),
+                        alignment: .topLeading
+                    )
                     .padding(ChatLayoutPolicy.listPadding)
+                    .clipped()
                     .background(
                         GeometryReader { content in
                             Color.clear.preference(
@@ -195,10 +273,13 @@ struct MessageList: View {
                 }
                 .coordinateSpace(name: scrollSpace)
                 .scrollContentBackground(.hidden)
-                // Let the user drag-select message text and Cmd+C it (SwiftUI Text is
-                // not selectable by default). Per-message "Copy" lives in the bubble
-                // context menu below.
-                .textSelection(.enabled)
+                // NO list-wide `.textSelection(.enabled)` here — the shared
+                // SelectionOverlay spanning the whole LazyVStack is the exact
+                // mechanism the 2026-08-04 livelock spun on (every view-graph
+                // flush re-walked the full transcript's selection geometry).
+                // Selection lives per body instead: MarkdownText root, RawText,
+                // tool rows, reasoning and context chips all enable it locally,
+                // so drag-select + Cmd+C keep working inside any bubble.
                 .onPreferenceChange(ChatBottomKey.self) { contentBottom in
                     let isAtLiveEdge = Self.followTailAfterScroll(
                         contentBottom: contentBottom,
@@ -215,6 +296,9 @@ struct MessageList: View {
                     }
                 }
                 .onChange(of: threadID) { _, _ in
+                    // A fresh thread starts back at the bounded window; an
+                    // expanded budget must not leak across conversations.
+                    visibleTurnBudget = Self.turnWindow
                     perform(followState.handle(.threadChanged), with: proxy)
                 }
                 .onAppear {
@@ -301,6 +385,41 @@ struct MessageList: View {
                 onToggleRenderMode: onToggleRenderMode
             )
         }
+    }
+}
+
+/// Top-of-list pager for the bounded render window: names how much history is
+/// folded away and loads one more window per click. Deliberately a plain row,
+/// not infinite scroll — paging must stay an explicit operator action so the
+/// hang guard cannot be defeated by an idle scroll position.
+private struct ShowEarlierButton: View {
+    let hiddenCount: Int
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                CSIconView(icon: .chevronRight, size: 8, weight: .semibold,
+                           color: CSColor.textFaintAlt)
+                Text("Show earlier · \(hiddenCount) turn\(hiddenCount == 1 ? "" : "s")")
+                    .font(CSFont.mono(10.5, .medium))
+                    .foregroundStyle(hovering ? CSColor.textBody : CSColor.textFaintAlt)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(CSColor.surfaceRaised(0.04))
+            .overlay(
+                RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous)
+                    .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: CSRadius.pill, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel("Show earlier messages")
+        .help("Render the previous \(MessageList.turnWindow) turns")
     }
 }
 
@@ -484,7 +603,16 @@ private struct YouTurn: View {
                     }
                 }
                 if !message.text.isEmpty {
-                    MarkdownText(raw: message.text, bodyColor: ChatPalette.nameActive)
+                    // Oversized paste (bolączka #3): fold above the display
+                    // budget so the list's selection overlay never carries the
+                    // whole payload. Copy above still exports the full text.
+                    if OversizedBubblePolicy.isOversized(message.text) {
+                        OversizedMessageBody(fullText: message.text) { head in
+                            MarkdownText(raw: head, bodyColor: ChatPalette.nameActive)
+                        }
+                    } else {
+                        MarkdownText(raw: message.text, bodyColor: ChatPalette.nameActive)
+                    }
                 }
                 if hasContext {
                     ContextChip(
@@ -520,6 +648,9 @@ private struct YouTurn: View {
                     Button("Copy full prompt") { chatCopy(wire) }
                 }
             }
+            // Clip the chrome so markdown/code/selection never paints past the
+            // rounded bubble into the window chrome (R1 `)"` fragment class).
+            .clipped()
         }
         .frame(
             maxWidth: ChatLayoutPolicy.youBubbleMaxWidth(
@@ -528,6 +659,7 @@ private struct YouTurn: View {
             ),
             alignment: .trailing
         )
+        .clipped()
     }
 }
 
@@ -568,20 +700,39 @@ private struct ContextChip: View {
                             .foregroundStyle(CSColor.textMuted)
                     }
                     if let selection {
-                        Text(selection)
-                            .font(CSFont.mono(10.5))
-                            .foregroundStyle(CSColor.textBodyAlt)
-                            .textSelection(.enabled)
-                            .lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(CSColor.surfaceRaised(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+                        // Huge pasted selections (legacy assistive wires) must
+                        // not expand the You bubble unboundedly — fold them
+                        // through the same oversized policy as message bodies.
+                        Group {
+                            if OversizedBubblePolicy.isOversized(selection) {
+                                OversizedMessageBody(fullText: selection) { head in
+                                    Text(head)
+                                        .font(CSFont.mono(10.5))
+                                        .foregroundStyle(CSColor.textBodyAlt)
+                                        .lineSpacing(3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            } else {
+                                Text(selection)
+                                    .font(CSFont.mono(10.5))
+                                    .foregroundStyle(CSColor.textBodyAlt)
+                                    .textSelection(.enabled)
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(8)
+                        .background(CSColor.surfaceRaised(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+                        .clipped()
                     }
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 }
 
@@ -642,8 +793,9 @@ private struct AttachmentChip: View {
 /// In-app attachment inspector: image zoom when bytes still load, honest
 /// fallback when the source path is gone (restored threads), plus Reveal in
 /// Finder / Copy path / Open with default app.
-private struct AttachmentPreviewSheet: View {
+struct AttachmentPreviewSheet: View {
     let attachment: MessageAttachment
+    var onRemove: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage?
     @State private var zoom: CGFloat = 1.0
@@ -735,6 +887,13 @@ private struct AttachmentPreviewSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
 
             HStack(spacing: 10) {
+                if let onRemove {
+                    Button("Remove", role: .destructive) {
+                        onRemove()
+                        dismiss()
+                    }
+                }
+
                 Button("Copy path") {
                     chatCopy(pathText)
                 }
@@ -1029,6 +1188,7 @@ private struct ToolTurn: View {
                     .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+            .clipped()
         }
         .frame(
             maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
@@ -1037,6 +1197,7 @@ private struct ToolTurn: View {
             ),
             alignment: .leading
         )
+        .clipped()
     }
 }
 
@@ -1113,13 +1274,33 @@ private struct AssistantTurn: View {
                             .font(CSFont.mono(11, .medium))
                             .foregroundStyle(CSColor.textFaintAlt)
                     } else if message.isStreaming {
-                        RawText(raw: message.text, showsCaret: true)
+                        // A runaway stream keeps only its live tail in the
+                        // SwiftUI text stack — bounds both the per-delta
+                        // re-layout and the shared selection overlay.
+                        if OversizedBubblePolicy.isOversized(message.text) {
+                            StreamWindowNote(fullText: message.text)
+                        }
+                        RawText(
+                            raw: OversizedBubblePolicy.streamingWindow(message.text),
+                            showsCaret: true
+                        )
                     } else if !message.text.isEmpty {
-                        switch message.renderMode {
-                        case .raw:
-                            RawText(raw: message.text)
-                        case .rich:
-                            MarkdownText(raw: message.text)
+                        if OversizedBubblePolicy.isOversized(message.text) {
+                            OversizedMessageBody(fullText: message.text) { head in
+                                switch message.renderMode {
+                                case .raw:
+                                    RawText(raw: head)
+                                case .rich:
+                                    MarkdownText(raw: head)
+                                }
+                            }
+                        } else {
+                            switch message.renderMode {
+                            case .raw:
+                                RawText(raw: message.text)
+                            case .rich:
+                                MarkdownText(raw: message.text)
+                            }
                         }
                     }
                 }
@@ -1141,6 +1322,7 @@ private struct AssistantTurn: View {
                 style: .continuous
             ))
             .contextMenu { CopyButton(text: message.text) }
+            .clipped()
         }
         .frame(
             maxWidth: ChatLayoutPolicy.leadingColumnMaxWidth(
@@ -1149,25 +1331,38 @@ private struct AssistantTurn: View {
             ),
             alignment: .leading
         )
+        .clipped()
     }
 }
 
 private struct ReasoningDisclosure: View {
     let text: String
     let isLive: Bool
-    @State private var expanded = false
+    @State private var expanded: Bool
+
+    init(text: String, isLive: Bool) {
+        self.text = text
+        self.isLive = isLive
+        // A live summary is status, not optional archaeology: show it as soon
+        // as the provider emits it. Settled turns remain compact and reopenable.
+        _expanded = State(initialValue: isLive)
+    }
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            Text(text)
-                .font(CSFont.mono(10.5, .medium))
-                .foregroundStyle(ChatPalette.thinking.opacity(0.86))
-                .textSelection(.enabled)
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 9)
+            // Reasoning shares the display budget: long chains fold like any
+            // other oversized body instead of feeding the selection overlay.
+            Group {
+                if OversizedBubblePolicy.isOversized(text) {
+                    OversizedMessageBody(fullText: text) { head in
+                        reasoningBody(head)
+                    }
+                } else {
+                    reasoningBody(text)
+                }
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 9)
         } label: {
             HStack(spacing: 7) {
                 CSIconView(
@@ -1186,12 +1381,25 @@ private struct ReasoningDisclosure: View {
             .contentShape(Rectangle())
         }
         .disclosureGroupStyle(FlatDisclosureStyle())
+        .onChange(of: isLive) { _, live in
+            if live { expanded = true }
+        }
         .background(CSColor.surfaceRaised(0.018))
         .overlay(
             RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
                 .strokeBorder(CSColor.hairline(0.055), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    }
+
+    private func reasoningBody(_ content: String) -> some View {
+        Text(content)
+            .font(CSFont.mono(10.5, .medium))
+            .foregroundStyle(ChatPalette.thinking.opacity(0.86))
+            .textSelection(.enabled)
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1204,11 +1412,14 @@ private struct RawText: View {
     @Environment(\.csTextScale) private var textScale
 
     var body: some View {
+        // Selection is per-body (the list-wide overlay was the livelock fuel);
+        // raw mode must stay copyable like the markdown render.
         let content = Text(raw)
             .font(CSFont.mono(13 * textScale))
             .foregroundStyle(CSColor.textBodyAlt)
             .lineSpacing(4)
             .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
         if showsCaret {
             HStack(alignment: .bottom, spacing: 2) {
                 content

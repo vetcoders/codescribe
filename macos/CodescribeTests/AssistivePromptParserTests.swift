@@ -156,10 +156,81 @@ final class AssistivePromptParserTests: XCTestCase {
         XCTAssertNil(AssistivePromptParser.parse(""))
     }
 
-    func testHeaderWithoutSelectionSectionIsNotParsed() {
-        // A truncated/foreign prompt that opens like the skeleton but never
-        // carries the mandatory ZAZNACZONY_TEKST section stays raw.
-        XCTAssertNil(AssistivePromptParser.parse("INSTRUKCJA_UŻYTKOWNIKA:\n<<<\ncoś\n>\n"))
+    func testHeaderWithoutSelectionSectionSalvagesInstruction() {
+        // Truncated wire (header + instruction, no selection section) used to
+        // stay raw and dump the skeleton into the You bubble — that collapsed
+        // the Agent window on June-era restores (R1). Salvage the spoken text.
+        let parts = AssistivePromptParser.parse("INSTRUKCJA_UŻYTKOWNIKA:\n<<<\ncoś\n>\n")
+        XCTAssertEqual(parts?.instruction, "coś")
+        XCTAssertNil(parts?.selectedText)
+        XCTAssertNil(parts?.frontmostApp)
+    }
+
+    // MARK: - June-era / gpt-5.5 tolerant seams (R1)
+
+    /// Operator screenshot class: instruction heredoc close (`>`) missing
+    /// between spoken text and ZAZNACZONY_TEKST, with a huge selection body.
+    private func juneEraWireMissingClose(
+        instruction: String,
+        selection: String,
+        app: String? = "Xcode"
+    ) -> String {
+        var out = "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\n\(instruction)\n\n"
+        out += "ZAZNACZONY_TEKST:\n<<<\n\(selection)\n>\n"
+        if let app {
+            out += "\nKONTEKST:\n- frontmost_app: \(app)\n"
+        }
+        return out
+    }
+
+    func testParsesJuneEraWireMissingHeredocClose() {
+        let selection = String(repeating: "long unbreakable_token_fragment)\" ", count: 200)
+        let raw = juneEraWireMissingClose(
+            instruction: "No wiesz co, spróbujesz jeszcze raz?",
+            selection: selection
+        )
+        let parts = AssistivePromptParser.parse(raw)
+        XCTAssertEqual(parts?.instruction, "No wiesz co, spróbujesz jeszcze raz?")
+        XCTAssertEqual(parts?.selectedText, selection.trimmingCharacters(in: .whitespacesAndNewlines))
+        XCTAssertEqual(parts?.frontmostApp, "Xcode")
+    }
+
+    func testPresentedJuneEraWireNeverShowsSkeletonInBubble() {
+        let selection = """
+        vibecrafted workflow claude --prompt "$(cat <<'PROMPT'
+        Masz do zrobienia audit...
+        PROMPT)"
+        """
+        let raw = juneEraWireMissingClose(
+            instruction: "Spróbujesz jeszcze raz?",
+            selection: selection
+        )
+        let presented = AssistivePromptParser.presented(
+            ChatMessage(role: .you, timestamp: "13:03", text: raw)
+        )
+        XCTAssertEqual(presented.text, "Spróbujesz jeszcze raz?")
+        XCTAssertEqual(presented.wireText, raw)
+        XCTAssertFalse(presented.text.contains("INSTRUKCJA_UŻYTKOWNIKA"))
+        XCTAssertFalse(presented.text.contains("ZAZNACZONY_TEKST"))
+        XCTAssertTrue(presented.contextSelection?.contains("vibecrafted") == true)
+        // Display text stays a short spoken instruction — not the wall of wire.
+        XCTAssertLessThan(presented.text.utf8.count, 200)
+    }
+
+    func testParsesEnglishWireMissingHeredocClose() {
+        let raw = "USER_INSTRUCTION:\n<<<\ntry again\n\nSELECTED_TEXT:\n<<<\npasted body\n>\n\nCONTEXT:\n- frontmost_app: Safari\n"
+        let parts = AssistivePromptParser.parse(raw)
+        XCTAssertEqual(parts?.instruction, "try again")
+        XCTAssertEqual(parts?.selectedText, "pasted body")
+        XCTAssertEqual(parts?.frontmostApp, "Safari")
+    }
+
+    func testOpenEndedSelectionStillSalvagesInstruction() {
+        // Selection heredoc never closed — still must not dump the skeleton.
+        let raw = "INSTRUKCJA_UŻYTKOWNIKA:\n<<<\nkontynuuj\n>\n\nZAZNACZONY_TEKST:\n<<<\nunclosed selection body without close"
+        let parts = AssistivePromptParser.parse(raw)
+        XCTAssertEqual(parts?.instruction, "kontynuuj")
+        XCTAssertEqual(parts?.selectedText, "unclosed selection body without close")
     }
 
     // MARK: - Message presentation (display/wire split)
@@ -239,6 +310,79 @@ final class AssistivePromptParserTests: XCTestCase {
         // The thread title comes from the spoken instruction, not the skeleton.
         XCTAssertEqual(thread?.title, "odpowiedz po polsku")
     }
+
+    /// V4: hydrating a June-era legacy session and then re-selecting a live
+    /// thread must not leave skeleton dump text in the live view.
+    @MainActor
+    func testSelectingLegacyThenLiveDoesNotPoisonLiveMessages() {
+        let legacyWire = juneEraWireMissingClose(
+            instruction: "Cześć. Kim jesteś?",
+            selection: String(repeating: "legacy_prompt_body)\" ", count: 400)
+        )
+        let liveYou = ChatMessage(role: .you, timestamp: "14:00", text: "live plain message")
+        let liveAssistant = ChatMessage(
+            role: .assistant, timestamp: "14:01", text: "live assistant reply"
+        )
+        let legacyYou = ChatMessage(role: .you, timestamp: "13:00", text: legacyWire)
+        let legacyAssistant = ChatMessage(
+            role: .assistant, timestamp: "13:01", text: "legacy assistant reply"
+        )
+
+        var liveThread = ChatThread(title: "live", meta: "now")
+        liveThread.backendId = "t_live"
+        var legacyThread = ChatThread(title: "legacy", meta: "Jun 15")
+        legacyThread.backendId = "t_legacy"
+
+        let provider = MultiThreadStubProvider(messagesByBackendId: [
+            "t_live": [liveYou, liveAssistant],
+            "t_legacy": [legacyYou, legacyAssistant],
+        ], threads: [liveThread, legacyThread])
+
+        let store = AgentChatStore(threadsProvider: provider)
+        // Prefer live first if the store auto-selects the first row.
+        let liveID = store.threads.first { $0.backendId == "t_live" }!.id
+        let legacyID = store.threads.first { $0.backendId == "t_legacy" }!.id
+
+        store.select(legacyID)
+        let legacyMessages = store.threads.first { $0.id == legacyID }?.messages ?? []
+        XCTAssertEqual(legacyMessages.first?.text, "Cześć. Kim jesteś?")
+        XCTAssertFalse(legacyMessages.first?.text.contains("INSTRUKCJA") == true)
+        XCTAssertNotNil(legacyMessages.first?.wireText)
+
+        store.select(liveID)
+        let liveMessages = store.threads.first { $0.id == liveID }?.messages ?? []
+        XCTAssertEqual(liveMessages.count, 2)
+        XCTAssertEqual(liveMessages.first?.text, "live plain message")
+        XCTAssertNil(liveMessages.first?.wireText)
+        XCTAssertEqual(liveMessages.last?.text, "live assistant reply")
+        // Live view must not pick up the legacy wire body.
+        XCTAssertFalse(liveMessages.contains { $0.text.contains("INSTRUKCJA") })
+        XCTAssertFalse(liveMessages.contains { $0.text.contains("legacy_prompt_body") })
+    }
+}
+
+/// Provider with per-backend message tables so select(legacy) → select(live)
+/// exercises the real lazy-load path without sharing one message array.
+private final class MultiThreadStubProvider: ChatThreadsProviding {
+    private let messagesByBackendId: [String: [ChatMessage]]
+    private let threads: [ChatThread]
+
+    init(messagesByBackendId: [String: [ChatMessage]], threads: [ChatThread]) {
+        self.messagesByBackendId = messagesByBackendId
+        self.threads = threads
+    }
+
+    func listThreads() -> [ChatThread] { threads }
+    func searchThreads(query: String) -> [ChatThread] { threads }
+    func loadMessages(backendId: String) -> [ChatMessage] {
+        messagesByBackendId[backendId] ?? []
+    }
+    func deleteThread(backendId: String) -> Bool { true }
+    func setThreadFavorite(backendId: String, isFavorite: Bool) -> Bool { true }
+    func renameThread(backendId: String, title: String) -> Bool { true }
+    func setGeneratedTitle(backendId: String, title: String) -> Bool { true }
+    func exportThreadMarkdown(backendId: String, assistantOnly: Bool) -> String? { nil }
+    func generateThreadId() -> String { "t_generated" }
 }
 
 /// Minimal threads provider: one persisted thread whose messages carry the wire

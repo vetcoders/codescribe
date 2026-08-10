@@ -17,7 +17,7 @@
 #   7. sign with a stable identifier so macOS TCC grants survive rebuilds
 #
 # Usage:
-#   scripts/build-app.sh [debug|release]
+#   scripts/build-app.sh [debug|local-release|release]
 #
 # Env toggles:
 #   SKIP_XCODEBUILD=1   stop after xcodegen (verifies stages 1-4 without Xcode)
@@ -29,9 +29,22 @@ cd "$REPO_ROOT"
 
 PROFILE="${1:-debug}"
 case "$PROFILE" in
-  debug)   CONFIG="Debug";   TARGET_DIR="target/debug" ;;
-  release) CONFIG="Release"; TARGET_DIR="target/release" ;;
-  *) echo "usage: $0 [debug|release]" >&2; exit 2 ;;
+  debug)
+    CONFIG="Debug"
+    TARGET_DIR="target/debug"
+    CARGO_PROFILE_ARGS=()
+    ;;
+  local-release)
+    CONFIG="Release"
+    TARGET_DIR="target/local-release"
+    CARGO_PROFILE_ARGS=(--profile local-release)
+    ;;
+  release)
+    CONFIG="Release"
+    TARGET_DIR="target/release"
+    CARGO_PROFILE_ARGS=(--release)
+    ;;
+  *) echo "usage: $0 [debug|local-release|release]" >&2; exit 2 ;;
 esac
 
 # ── Preflight: a clean checkout on a fresh Mac otherwise dies deep in the
@@ -83,10 +96,11 @@ STAMP_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "==> stamp (pre-build): v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
-if [ "$PROFILE" = "release" ]; then
-  cargo build -p codescribe-ffi --release
+if [ "$PROFILE" = "local-release" ]; then
+  CODESCRIBE_LOCAL_INSTALL=1 cargo build -p codescribe-ffi "${CARGO_PROFILE_ARGS[@]}"
 else
-  cargo build -p codescribe-ffi
+  env -u CODESCRIBE_LOCAL_INSTALL \
+    cargo build -p codescribe-ffi "${CARGO_PROFILE_ARGS[@]}"
 fi
 
 echo "==> [2/7] Rewriting dylib install_name to @rpath (relocatable bundle)"
@@ -96,17 +110,20 @@ echo "==> [3/7] Generating Swift bindings via uniffi-bindgen"
 mkdir -p "$BRIDGE_DIR"
 "$BINDGEN" generate --library "$DYLIB" --language swift --out-dir "$BRIDGE_DIR"
 # uniffi-bindgen emits trailing whitespace and often drops the final newline;
-# normalize so regeneration stays close to the committed form when tracked.
-find "$BRIDGE_DIR" -name '*.swift' -exec sed -i '' -E 's/[[:space:]]+$//' {} +
-# Ensure trailing newline (POSIX text files) after uniffi rewrite.
+# normalize Swift and C headers so regeneration stays identical when tracked.
+find "$BRIDGE_DIR" \( -name '*.swift' -o -name '*.h' \) \
+  -exec sed -i '' -E 's/[[:space:]]+$//' {} +
+# Collapse generator-added blank EOF lines to one POSIX newline so repeated
+# full builds do not dirty the tracked bridge files.
 python3 - <<'PY'
 from pathlib import Path
 root = Path("macos/Codescribe/Bridge")
 if root.is_dir():
-    for p in root.glob("*.swift"):
-        data = p.read_bytes()
-        if data and not data.endswith(b"\n"):
-            p.write_bytes(data + b"\n")
+    for pattern in ("*.swift", "*.h"):
+        for p in root.glob(pattern):
+            data = p.read_bytes()
+            if data:
+                p.write_bytes(data.rstrip(b"\n") + b"\n")
 PY
 
 echo "==> [4/7] Generating Xcode project (xcodegen)"
@@ -122,15 +139,20 @@ echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMI
 DERIVED="$REPO_ROOT/macos/build"
 # ONLY_ACTIVE_ARCH: cargo emits a single-arch libcodescribe_ffi.dylib, so a
 # universal (x86_64+arm64) Release link dies on missing Rust symbols.
+# LIBRARY_SEARCH_PATHS must follow the selected Cargo profile. Xcode's Debug /
+# Release configs cannot distinguish distribution `release` from the optimized
+# `local-release` Cargo profile because both intentionally use Release Swift.
 xcodebuild -project macos/Codescribe.xcodeproj \
   -scheme "$SCHEME" -configuration "$CONFIG" \
   -derivedDataPath "$DERIVED" \
   ONLY_ACTIVE_ARCH=YES \
+  LIBRARY_SEARCH_PATHS="$REPO_ROOT/$TARGET_DIR" \
   CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
   MARKETING_VERSION="$STAMP_VERSION" \
   CURRENT_PROJECT_VERSION="$STAMP_BUILD_NUM" \
   CS_BUILD_COMMIT="$STAMP_COMMIT" \
   CS_BUILT_AT="$STAMP_BUILT_AT" \
+  SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"

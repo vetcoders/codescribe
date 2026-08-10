@@ -22,21 +22,27 @@
 //! keep a 400ms floor even if settings lower the generic hold delay. This prevents
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
+mod assistive_delivery;
 mod context_bucket;
+mod final_pass;
 mod helpers;
+mod hotkey_policy;
+mod overlay_paste;
+mod quality_delivery;
 pub mod serving_status;
+mod truth;
 mod types;
 
 pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
     set_assistive_session, set_conversation_session,
 };
+pub use overlay_paste::{OverlayPasteDelivery, OverlayPasteResult};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 
 use crate::presentation::emitter::PresentationEmitter;
 use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -46,40 +52,85 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use chrono::{DateTime, Local};
-
 use crate::audio::streaming_recorder::StreamingRecorder;
+#[cfg(test)]
+use crate::config::DeferredInsertShortcut;
 use crate::config::models::ModelManager;
-use crate::config::{Config, DeferredInsertShortcut, UserSettings};
+use crate::config::{Config, UserSettings};
 use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
-    AssistiveContext, activate_app_by_name, build_assistive_input, capture_assistive_context,
+    AssistiveContext, activate_app_by_name, capture_assistive_context,
     capture_assistive_context_with_image_with_prior_frontmost, capture_frontmost_app_only,
     wait_for_frontmost_app,
 };
 use crate::os::shortcut_registry;
-use context_bucket::{ContextBucket, ContextMarker};
+use context_bucket::ContextBucket;
+#[cfg(test)]
+pub(crate) use context_bucket::ContextMarker;
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
-use codescribe_core::pipeline::contracts::{
-    FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
-};
+use codescribe_core::pipeline::contracts::FinalPassDisposition;
+#[cfg(test)]
+pub(crate) use codescribe_core::pipeline::contracts::TranscriptionConfidenceFlag;
 
+// AssistiveDelivery kept in the pub(crate) surface for crate consumers of the
+// type name; currently only AssistiveLane is named at call sites in this module.
+#[allow(unused_imports)]
+pub(crate) use assistive_delivery::{AssistiveDelivery, AssistiveLane};
+use assistive_delivery::{
+    assemble_assistive_delivery_lane, assemble_raw_paste_wire, capture_combo_context_with_image,
+};
+pub(crate) use final_pass::{
+    FinalPassRoutingMode, FinalPassStages, StopPathBudget, StreamingCompleteness,
+    StreamingCompletenessEvidence, assess_streaming_completeness, final_pass_routing_mode,
+    format_assistive_delivery_budget_line, format_final_pass_stages_line,
+    format_stop_path_budget_line, should_skip_full_final_repass,
+};
+#[cfg(test)]
+pub(crate) use final_pass::{
+    assess_streaming_completeness_fields, engine_label_from_verdict, stop_path_budget_covers_total,
+};
 #[cfg(test)]
 use helpers::SessionEngineStats;
 #[cfg(test)]
+pub(crate) use helpers::SessionTelemetrySnapshot;
+#[cfg(test)]
 use helpers::build_image_attachments_from_text;
 use helpers::{
-    CompletenessCommitSource, SessionTelemetrySnapshot, SharedSessionTelemetry,
-    new_session_telemetry, raw_save_enabled, reset_session_telemetry,
-    send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
+    CompletenessCommitSource, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
+    reset_session_telemetry, send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
 };
+use hotkey_policy::{
+    STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
+    should_block_hotkey_during_agent_send, should_use_toggle_adjudicated_stop,
+    toggle_final_pass_enabled,
+};
+#[cfg(test)]
+use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
+use overlay_paste::{
+    DeferredInsertRegistration, OVERLAY_PASTE_FOCUS_BUDGET, OverlayPasteDisposition,
+    deferred_insert_registration, overlay_paste_disposition,
+};
+#[cfg(test)]
+use quality_delivery::AutomaticDeliverySink;
+use quality_delivery::{
+    ActionQualityProbe, AutoPastePolicyContext, AutoPasteTrigger, AutomaticDeliveryOwner,
+    ClipboardDeliverySink, compose_final_status, evaluate_quality_commit_trigger,
+    maybe_wrap_transcript_for_delivery, maybe_wrap_transcript_for_delivery_with_quality,
+    recording_mode_label, resolve_auto_paste_policy, session_auto_format_enabled,
+    truth_recording_mode_label,
+};
+pub(crate) use truth::{
+    adjudicate_recording_truth, apply_ai_noop_signal, truth_display_status, truth_engine_label,
+};
+#[cfg(test)]
+pub(crate) use truth::{push_typed_flag, truth_review_trigger};
 use types::{
     RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
 };
@@ -89,149 +140,10 @@ const LIVE_PROFILE_TYPING_CPS: f32 = 90.0;
 const LIVE_PROFILE_EMIT_WORDS_MAX: u64 = 2;
 const LIVE_PROFILE_INTERIM_SEC: f32 = 1.2;
 const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
-const ASSISTIVE_HOLD_START_DELAY_FLOOR_MS: u64 = 400;
-const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(250);
 /// At most one level sample may wait behind the controller worker. The capture
 /// thread never constructs IPC events or timestamps and never accumulates a
 /// backlog when the bridge/UI is slower than CoreAudio.
 const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
-const AUTOMATIC_DELIVERY_HISTORY_CAPACITY: usize = 32;
-
-fn effective_hold_start_delay_ms(configured_ms: u64, assistive: bool) -> u64 {
-    if assistive {
-        configured_ms.max(ASSISTIVE_HOLD_START_DELAY_FLOOR_MS)
-    } else {
-        configured_ms
-    }
-}
-
-/// Combo capture with optional clipboard-image provider (W10-C).
-/// `image_provider` returns PNG bytes when the pasteboard holds an image.
-/// Tests pass `|| None` when only selection capture is under exercise.
-fn capture_combo_context_with_image(
-    bucket: &mut ContextBucket,
-    position: usize,
-    provider: impl FnOnce() -> AssistiveContext,
-    image_provider: impl FnOnce() -> Option<Vec<u8>>,
-) -> Result<(AssistiveContext, Option<ContextMarker>)> {
-    let mut context = provider();
-    let marker = match context.selected_text.take() {
-        Some(selected_text) => bucket.add_selection(position, selected_text)?,
-        None => None,
-    };
-    if let Some(png) = image_provider() {
-        let _ = bucket.add_image_png(&png)?;
-    }
-    Ok((context, marker))
-}
-
-/// Voice→agent prompt lane (W10-D).
-///
-/// - **VoiceChat**: clean assistive / armed hold without a selection transform.
-///   Wire is spoken text (+ context tags / image markers). No assistive skeleton,
-///   no `assistive.txt` persona.
-/// - **ActOnSelection**: armed with a selection targeting a transformation.
-///   Skeleton + `assistive.txt` persona remain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AssistiveLane {
-    VoiceChat,
-    ActOnSelection,
-}
-
-impl AssistiveLane {
-    pub(crate) fn use_assistive_persona(self) -> bool {
-        matches!(self, Self::ActOnSelection)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AssistiveDelivery {
-    pub wire: String,
-    pub lane: AssistiveLane,
-    pub raw_transcript: String,
-}
-
-fn decide_assistive_lane(context: &AssistiveContext, bucket: &ContextBucket) -> AssistiveLane {
-    // Selection may live on the context (legacy) or already be in the bucket
-    // (capture_combo_context_with takes selected_text into the bucket).
-    let has_inline_selection = context
-        .selected_text
-        .as_ref()
-        .is_some_and(|s| !s.trim().is_empty());
-    if has_inline_selection || bucket.has_selection_items() {
-        AssistiveLane::ActOnSelection
-    } else {
-        AssistiveLane::VoiceChat
-    }
-}
-
-fn assemble_assistive_delivery_lane(
-    transcript: &str,
-    context: &AssistiveContext,
-    bucket: &ContextBucket,
-) -> AssistiveDelivery {
-    let lane = decide_assistive_lane(context, bucket);
-    let raw_transcript = transcript.to_string();
-    let wire = match lane {
-        AssistiveLane::ActOnSelection => {
-            // Skeleton + selection/context fields; bucket tags append after.
-            // The bucket truth flows into the header so the skeleton never
-            // claims "no selection" while <selection_N> tags ride below.
-            bucket.append_to_message(&build_assistive_input(transcript, context, bucket.len()))
-        }
-        AssistiveLane::VoiceChat => {
-            // Spoken text only (+ optional context tags / image markers).
-            // No USER_INSTRUCTION skeleton.
-            bucket.append_to_message(transcript.trim())
-        }
-    };
-    AssistiveDelivery {
-        wire,
-        lane,
-        raw_transcript,
-    }
-}
-
-/// Raw/format paste lane (channel 2): the finalized transcript pasted into the
-/// frontmost app consumes the `ContextBucket` exactly like the assistive lanes
-/// do — selections ride along as `<codescribe_context>` tags (inline under the
-/// byte limit, `PATH:` for oversized spills). Images never enter the text
-/// paste: the vision marker block is an agent contract, so the paste lane
-/// skips it. An empty (or images-only) bucket leaves the transcript
-/// byte-for-byte untouched.
-fn assemble_raw_paste_wire(transcript: &str, bucket: &ContextBucket) -> String {
-    if !bucket.has_selection_items() {
-        return transcript.to_string();
-    }
-    strip_trailing_image_marker_block(&bucket.append_to_message(transcript))
-}
-
-/// Drop the trailing vision-marker block appended by
-/// `ContextBucket::append_to_message` when images share the bucket with
-/// selections. Only a suffix that structurally matches the block (marker
-/// header followed exclusively by `- <path>` lines) is stripped, so selection
-/// payloads keep arbitrary content intact.
-fn strip_trailing_image_marker_block(wire: &str) -> String {
-    let header = format!(
-        "\n\n---\n{}\n",
-        codescribe_core::attachment::IMAGE_PATHS_MARKER
-    );
-    if let Some(idx) = wire.rfind(&header) {
-        let tail = &wire[idx + header.len()..];
-        if !tail.is_empty() && tail.lines().all(|line| line.starts_with("- ")) {
-            return wire[..idx].to_string();
-        }
-    }
-    wire.to_string()
-}
-
-const TOGGLE_STOP_ADJUDICATE_TIMEOUT: Duration = Duration::from_secs(120);
-const STOP_TIMEOUT: Duration = TOGGLE_STOP_ADJUDICATE_TIMEOUT;
-
-#[cfg(test)]
-fn toggle_stop_adjudicate_timeout() -> Duration {
-    STOP_TIMEOUT
-}
 
 #[cfg(test)]
 static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
@@ -249,69 +161,6 @@ fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
 impl Drop for ProcessRecordingHangGuard {
     fn drop(&mut self) {
         PROCESS_RECORDING_TEST_HANG.store(false, Ordering::SeqCst);
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ActionQualityProbe {
-    raw_chars: usize,
-    final_chars: usize,
-    raw_final_diff_ratio: f32,
-    correction_ratio: f32,
-    drop_ratio: f32,
-}
-
-fn normalize_for_diff(s: &str) -> String {
-    let trimmed = s.trim_start();
-    // Lowercase first char only (preserving rest of original case)
-    let mut chars = trimmed.chars();
-    match chars.next() {
-        Some(c) => c.to_lowercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-impl ActionQualityProbe {
-    fn from_transcripts(
-        raw_text: &str,
-        final_text: &str,
-        post_stats: &crate::stream_postprocess::StreamPostProcessStats,
-    ) -> Self {
-        let raw_chars = raw_text.chars().count();
-        let final_chars = final_text.chars().count();
-
-        let (backspaces, inserted_chars) =
-            codescribe_core::pipeline::contracts::TranscriptDelta::from_diff(
-                &normalize_for_diff(raw_text),
-                &normalize_for_diff(final_text),
-            )
-            .map(|delta| {
-                let backspaces = delta
-                    .delta
-                    .chars()
-                    .filter(|c| *c == codescribe_core::pipeline::contracts::BACKSPACE)
-                    .count();
-                let inserted = delta.delta.chars().count().saturating_sub(backspaces);
-                (backspaces, inserted)
-            })
-            .unwrap_or((0, 0));
-
-        let span = raw_chars.max(final_chars).max(1);
-        let raw_final_diff_ratio = ((backspaces + inserted_chars) as f32 / span as f32).min(1.0);
-        let correction_ratio = (backspaces as f32 / raw_chars.max(1) as f32).min(1.0);
-        let drop_ratio = if post_stats.input_chunks == 0 {
-            0.0
-        } else {
-            post_stats.dropped_chunks as f32 / post_stats.input_chunks as f32
-        };
-
-        Self {
-            raw_chars,
-            final_chars,
-            raw_final_diff_ratio,
-            correction_ratio,
-            drop_ratio,
-        }
     }
 }
 
@@ -351,1140 +200,6 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
     overlay_enabled
 }
 
-fn non_empty_transcript(text: Option<String>) -> Option<String> {
-    text.filter(|text| !text.trim().is_empty())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AutoPasteTrigger {
-    Hold,
-    DoubleLeftOption,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AutoPastePolicyContext {
-    trigger: AutoPasteTrigger,
-    persisted_enabled: bool,
-    overlay_enabled: bool,
-    assistive: bool,
-    no_speech: bool,
-    empty_output: bool,
-    notes_save_only: bool,
-    live_stream_session: bool,
-    commit_required: bool,
-}
-
-fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
-    // Trigger and presentation state deliberately do not fork policy. Keeping
-    // the explicit matrix here makes that parity reviewable and testable.
-    let persisted_policy = match (context.trigger, context.overlay_enabled) {
-        (AutoPasteTrigger::Hold, true | false)
-        | (AutoPasteTrigger::DoubleLeftOption, true | false) => context.persisted_enabled,
-    };
-
-    persisted_policy
-        && !context.assistive
-        && !context.no_speech
-        && !context.empty_output
-        && !context.notes_save_only
-        && !context.live_stream_session
-        && !context.commit_required
-}
-
-trait AutomaticDeliverySink: Send + Sync {
-    fn paste(&self, text: &str) -> Result<()>;
-}
-
-struct ClipboardDeliverySink;
-
-impl AutomaticDeliverySink for ClipboardDeliverySink {
-    fn paste(&self, text: &str) -> Result<()> {
-        clipboard::paste_text(text).context("Failed to paste text")
-    }
-}
-
-/// Controller-owned, bounded exactly-once fence. A small ring retains recent
-/// recording timestamps so late duplicate callbacks remain fenced without
-/// process-global or unbounded growth. A failed sink call remains retryable.
-struct AutomaticDeliveryOwner {
-    delivered_timestamps: Mutex<VecDeque<DateTime<Local>>>,
-    sink: Arc<dyn AutomaticDeliverySink>,
-}
-
-impl AutomaticDeliveryOwner {
-    fn new(sink: Arc<dyn AutomaticDeliverySink>) -> Self {
-        Self {
-            delivered_timestamps: Mutex::new(VecDeque::with_capacity(
-                AUTOMATIC_DELIVERY_HISTORY_CAPACITY,
-            )),
-            sink,
-        }
-    }
-
-    async fn deliver_once(&self, timestamp: DateTime<Local>, text: &str) -> Result<bool> {
-        let mut delivered = self.delivered_timestamps.lock().await;
-        if delivered.contains(&timestamp) {
-            return Ok(false);
-        }
-
-        self.sink.paste(text)?;
-        if delivered.len() == AUTOMATIC_DELIVERY_HISTORY_CAPACITY {
-            delivered.pop_front();
-        }
-        delivered.push_back(timestamp);
-        Ok(true)
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct RecordingTruthVerdict {
-    raw_text: Option<String>,
-    transcript_source: Option<RecordingTranscriptSource>,
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<String>,
-    speech_pct: Option<f32>,
-    avg_logprob: Option<f32>,
-    /// Typed confidence flags (engine-owned + app-level provenance).
-    /// Stored as the core enum rather than `Vec<String>` so downstream
-    /// consumers do not need to re-parse tokens and new variants surface
-    /// as compile errors instead of silent misses.
-    confidence_flags: Vec<TranscriptionConfidenceFlag>,
-    /// VAD speech sparkline preserved from the core `VadVerdict` so it
-    /// can survive to `truth.json` on disk (previously dropped at the
-    /// app boundary — tracked as Kłamstwo 7).
-    sparkline: Option<String>,
-    /// Disposition of the explicit file-level final pass, when one ran.
-    /// None means no final pass was attempted for this verdict.
-    final_pass_disposition: Option<FinalPassDisposition>,
-    /// Actual serving engine label for sidecar/UI (`local_apple`, `local_whisper`, …).
-    /// Preference-derived labels are forbidden when a verdict is present.
-    engine_label: Option<String>,
-    commit_trigger: Option<String>,
-    display_status: String,
-}
-
-fn push_typed_flag(
-    flags: &mut Vec<TranscriptionConfidenceFlag>,
-    flag: TranscriptionConfidenceFlag,
-) {
-    if !flags.contains(&flag) {
-        flags.push(flag);
-    }
-}
-
-fn apply_ai_noop_signal(
-    assistive: bool,
-    is_ai_noop: bool,
-    confidence_flags: &mut Vec<TranscriptionConfidenceFlag>,
-    commit_trigger: &mut Option<String>,
-) {
-    if !is_ai_noop || assistive {
-        return;
-    }
-
-    push_typed_flag(
-        confidence_flags,
-        TranscriptionConfidenceFlag::AiNoopDetected,
-    );
-    *commit_trigger = Some("ai_noop".to_string());
-}
-
-fn truth_review_trigger(
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<&str>,
-    confidence_flags: &[TranscriptionConfidenceFlag],
-) -> Option<String> {
-    if no_speech_reason.is_some() {
-        return Some("no_reliable_speech".to_string());
-    }
-
-    // Priority order mirrors the original string-based trigger so display
-    // behaviour is unchanged by the type-safety refactor.
-    for priority_flag in [
-        TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-        TranscriptionConfidenceFlag::VeryLowSpeech,
-        TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
-        TranscriptionConfidenceFlag::CloudFallbackUsed,
-    ] {
-        if confidence_flags.contains(&priority_flag) {
-            return Some(priority_flag.to_string());
-        }
-    }
-
-    match fallback_class {
-        Some(RecordingFallbackClass::Acceptable) | None => None,
-        Some(RecordingFallbackClass::Degraded) => Some("degraded_fallback".to_string()),
-        Some(RecordingFallbackClass::Unsafe) => Some("unsafe_fallback".to_string()),
-    }
-}
-
-fn truth_display_status(
-    source: Option<RecordingTranscriptSource>,
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<&str>,
-    confidence_flags: &[TranscriptionConfidenceFlag],
-) -> String {
-    if no_speech_reason.is_some() {
-        return "No reliable speech detected".to_string();
-    }
-
-    if confidence_flags.contains(&TranscriptionConfidenceFlag::PossibleHallucinationLogprob) {
-        return "Possible hallucination".to_string();
-    }
-
-    if confidence_flags.contains(&TranscriptionConfidenceFlag::VeryLowSpeech) {
-        return "Very low speech".to_string();
-    }
-
-    match (source, fallback_class) {
-        (Some(RecordingTranscriptSource::StreamingFallback), _) => "Streaming fallback".to_string(),
-        (Some(source), Some(fallback_class)) => {
-            format!("{} ({})", source.label(), fallback_class.label())
-        }
-        (Some(source), None) => source.label().to_string(),
-        (None, Some(fallback_class)) => fallback_class.label().to_string(),
-        (None, None) => "Transcript ready".to_string(),
-    }
-}
-
-// allow(too_many_arguments): verdict aggregates independent recording-truth
-// signals collected at one call site; a params struct would only restate the
-// same names. Revisit if call sites multiply.
-#[allow(clippy::too_many_arguments)]
-fn build_truth_verdict(
-    raw_text: Option<String>,
-    transcript_source: Option<RecordingTranscriptSource>,
-    fallback_class: Option<RecordingFallbackClass>,
-    no_speech_reason: Option<String>,
-    speech_pct: Option<f32>,
-    avg_logprob: Option<f32>,
-    confidence_flags: Vec<TranscriptionConfidenceFlag>,
-    sparkline: Option<String>,
-    final_pass_disposition: Option<FinalPassDisposition>,
-    engine_label: Option<String>,
-) -> RecordingTruthVerdict {
-    let commit_trigger = truth_review_trigger(
-        fallback_class,
-        no_speech_reason.as_deref(),
-        &confidence_flags,
-    );
-    let display_status = truth_display_status(
-        transcript_source,
-        fallback_class,
-        no_speech_reason.as_deref(),
-        &confidence_flags,
-    );
-
-    RecordingTruthVerdict {
-        raw_text,
-        transcript_source,
-        fallback_class,
-        no_speech_reason,
-        speech_pct,
-        avg_logprob,
-        confidence_flags,
-        sparkline,
-        final_pass_disposition,
-        engine_label,
-        commit_trigger,
-        display_status,
-    }
-}
-
-fn adjudicate_recording_truth(
-    use_local_stt: bool,
-    local_final_pass_attempted: bool,
-    local_final_pass_verdict: Option<TranscriptionVerdict>,
-    streaming_text: String,
-    cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
-    session_telemetry: &SessionTelemetrySnapshot,
-) -> RecordingTruthVerdict {
-    let streaming_text = non_empty_transcript(Some(streaming_text));
-    let cloud_verdict = cloud_verdict.filter(|verdict| !verdict.text.trim().is_empty());
-    // When file-final collapses vs live assembly (Apple SFSpeech short file
-    // path), keep the stream as floor of truth and mark provenance.
-    let mut final_pass_length_regression = false;
-
-    if use_local_stt && let Some(verdict) = local_final_pass_verdict {
-        let speech_pct = verdict.vad.as_ref().map(|vad| vad.speech_pct);
-        let avg_logprob = verdict.raw.avg_logprob;
-        let fallback_class = if verdict.confidence_flags.iter().any(|flag| {
-            matches!(
-                flag,
-                TranscriptionConfidenceFlag::VeryLowSpeech
-                    | TranscriptionConfidenceFlag::PossibleHallucinationLogprob
-                    | TranscriptionConfidenceFlag::QualityGateDropped
-            )
-        }) {
-            Some(RecordingFallbackClass::Unsafe)
-        } else {
-            None
-        };
-
-        // Preserve the typed confidence flags as-is (no stringification).
-        let confidence_flags = verdict.confidence_flags.clone();
-        let no_speech_reason = verdict
-            .vad
-            .as_ref()
-            .and_then(|vad| vad.no_speech_reason.clone());
-        // Sparkline lives in the VAD sub-verdict. Only surface it when VAD
-        // actually produced one so empty strings don't pollute truth.json.
-        let sparkline = verdict.vad.as_ref().and_then(|vad| {
-            if vad.sparkline.is_empty() {
-                None
-            } else {
-                Some(vad.sparkline.clone())
-            }
-        });
-        // Final-pass disposition is only meaningful when the engine ran
-        // an explicit final pass (hold path). Toggle path leaves this None.
-        let final_pass_disposition = verdict.final_pass.as_ref().map(|fp| fp.disposition);
-        let engine_label = Some(engine_label_from_verdict(
-            &verdict.engine,
-            final_pass_disposition,
-        ));
-
-        let raw_text = if no_speech_reason.is_some() {
-            None
-        } else {
-            non_empty_transcript(Some(verdict.text))
-        };
-
-        // Explicit no-speech from final pass remains authoritative.
-        if no_speech_reason.is_some() {
-            return build_truth_verdict(
-                None,
-                Some(RecordingTranscriptSource::LocalFinalPass),
-                fallback_class,
-                no_speech_reason,
-                speech_pct,
-                avg_logprob,
-                confidence_flags,
-                sparkline,
-                final_pass_disposition,
-                engine_label,
-            );
-        }
-
-        if let Some(final_text) = raw_text.as_ref() {
-            let is_regression = streaming_text.as_ref().is_some_and(|stream| {
-                codescribe_core::pipeline::contracts::final_pass_is_length_regression(
-                    final_text, stream,
-                )
-            });
-            if is_regression {
-                final_pass_length_regression = true;
-                warn!(
-                    final_chars = final_text.chars().count(),
-                    stream_chars = streaming_text
-                        .as_ref()
-                        .map(|s| s.chars().count())
-                        .unwrap_or(0),
-                    "final-pass length regression vs live assembly — keeping stream as floor of truth"
-                );
-                // Fall through to streaming / cloud branches.
-            } else if let Some(stream) = streaming_text.as_ref() {
-                // Product: never full-replace live with Whisper. Merge live floor
-                // + Whisper gap-fill (85% Apple×Whisper thesis; Teacher AlignOp).
-                let merged = codescribe_core::quality::merge_live_whisper(stream, final_text);
-                info!(
-                    mode = ?merged.mode,
-                    equal = merged.equal_tokens,
-                    whisper_fill = merged.whisper_fill_tokens,
-                    live_subs = merged.live_kept_substitutes,
-                    live_chars = stream.chars().count(),
-                    whisper_chars = final_text.chars().count(),
-                    merged_chars = merged.text.chars().count(),
-                    "delivery merge: live floor + whisper fill (not full-replace)"
-                );
-                // Merged path still used a final pass; keep engine label from final
-                // but text is composite live×whisper.
-                let eng = engine_label
-                    .clone()
-                    .map(|e| format!("merged_live_whisper:{e}"))
-                    .or_else(|| Some("merged_live_whisper".to_string()));
-                return build_truth_verdict(
-                    Some(merged.text),
-                    Some(RecordingTranscriptSource::LocalFinalPass),
-                    fallback_class,
-                    None,
-                    speech_pct,
-                    avg_logprob,
-                    confidence_flags,
-                    sparkline,
-                    final_pass_disposition,
-                    eng,
-                );
-            } else {
-                return build_truth_verdict(
-                    Some(final_text.clone()),
-                    Some(RecordingTranscriptSource::LocalFinalPass),
-                    fallback_class,
-                    None,
-                    speech_pct,
-                    avg_logprob,
-                    confidence_flags,
-                    sparkline,
-                    final_pass_disposition,
-                    engine_label,
-                );
-            }
-        }
-        // Empty final text without no_speech → fall through to stream floor.
-    }
-
-    if let Some(reason) = &session_telemetry.no_speech_reason {
-        return build_truth_verdict(
-            None,
-            None,
-            None,
-            Some(reason.clone()),
-            None,
-            None,
-            Vec::new(),
-            None,
-            None,
-            None,
-        );
-    }
-
-    if use_local_stt {
-        let mut confidence_flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
-        if final_pass_length_regression {
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::FinalPassLengthRegression,
-            );
-        } else if local_final_pass_attempted {
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
-            );
-        }
-
-        if let Some(cloud_verdict) = cloud_verdict {
-            let mut fallback_flags = confidence_flags.clone();
-            for flag in &cloud_verdict.confidence_flags {
-                push_typed_flag(&mut fallback_flags, *flag);
-            }
-            push_typed_flag(
-                &mut fallback_flags,
-                TranscriptionConfidenceFlag::CloudFallbackUsed,
-            );
-            return build_truth_verdict(
-                Some(cloud_verdict.text),
-                Some(RecordingTranscriptSource::CloudFallback),
-                Some(RecordingFallbackClass::Degraded), // cloud fallback is no longer "Acceptable" (silent), it must be explicit
-                None,
-                None,
-                None,
-                fallback_flags,
-                None,
-                None,
-                Some("cloud_stt".to_string()),
-            );
-        }
-
-        if let Some(text) = streaming_text {
-            let mut fallback_flags = confidence_flags.clone();
-            push_typed_flag(
-                &mut fallback_flags,
-                TranscriptionConfidenceFlag::UnverifiedStream,
-            );
-            push_typed_flag(
-                &mut fallback_flags,
-                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
-            );
-            // Regression keep-stream is still live assembly truth, not "degraded
-            // because final missing" — label as streaming floor when we rejected
-            // a collapsing final pass.
-            let engine = if final_pass_length_regression {
-                Some("streaming_live_floor".to_string())
-            } else {
-                Some("streaming_whisper".to_string())
-            };
-            return build_truth_verdict(
-                Some(text),
-                Some(RecordingTranscriptSource::StreamingFallback),
-                Some(RecordingFallbackClass::Degraded), // streaming is always degraded as a final verdict
-                None,
-                None,
-                None,
-                fallback_flags,
-                None,
-                None,
-                engine,
-            );
-        }
-    } else {
-        if let Some(cloud_verdict) = cloud_verdict {
-            return build_truth_verdict(
-                Some(cloud_verdict.text),
-                Some(RecordingTranscriptSource::CloudPrimary),
-                None,
-                None,
-                None,
-                None,
-                cloud_verdict.confidence_flags,
-                None,
-                None,
-                Some("cloud_stt".to_string()),
-            );
-        }
-
-        if let Some(text) = streaming_text {
-            let mut confidence_flags: Vec<TranscriptionConfidenceFlag> = Vec::new();
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::CloudPrimaryMissing,
-            );
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::UnverifiedStream,
-            );
-            push_typed_flag(
-                &mut confidence_flags,
-                TranscriptionConfidenceFlag::StreamingPreviewUsedAsVerdict,
-            );
-            return build_truth_verdict(
-                Some(text),
-                Some(RecordingTranscriptSource::StreamingFallback),
-                Some(RecordingFallbackClass::Degraded),
-                None,
-                None,
-                None,
-                confidence_flags,
-                None,
-                None,
-                Some("streaming_whisper".to_string()),
-            );
-        }
-    }
-
-    build_truth_verdict(
-        None,
-        None,
-        None,
-        Some(
-            session_telemetry
-                .no_speech_reason
-                .clone()
-                .unwrap_or_else(|| "empty_transcript_without_no_speech_event".to_string()),
-        ),
-        None,
-        None,
-        Vec::new(),
-        None,
-        None,
-        None,
-    )
-}
-
-fn recording_mode_label(
-    assistive: bool,
-    hold_mode: HoldMode,
-    force_raw: bool,
-    force_ai: bool,
-) -> &'static str {
-    if assistive {
-        match hold_mode {
-            HoldMode::Chat => "chat",
-            HoldMode::Selection => "selection",
-            HoldMode::Raw => "assistive",
-        }
-    } else if force_raw {
-        "raw"
-    } else if force_ai {
-        "format"
-    } else {
-        "toggle"
-    }
-}
-
-fn truth_recording_mode_label(
-    assistive: bool,
-    hold_mode: HoldMode,
-    force_raw: bool,
-    force_ai: bool,
-) -> &'static str {
-    if assistive {
-        "assistive"
-    } else {
-        recording_mode_label(assistive, hold_mode, force_raw, force_ai)
-    }
-}
-
-fn session_auto_format_enabled(
-    config: &Config,
-    _assistive: bool,
-    force_raw: bool,
-    force_ai: bool,
-) -> bool {
-    force_ai || (!force_raw && config.ai_formatting_enabled)
-}
-
-fn maybe_wrap_transcript_for_delivery(text: &str, config: &Config, mode: &str) -> String {
-    maybe_wrap_transcript_for_delivery_with_quality(text, config, mode, None)
-}
-
-fn maybe_wrap_transcript_for_delivery_with_quality(
-    text: &str,
-    config: &Config,
-    mode: &str,
-    metadata: Option<&RecordingTruthMetadata>,
-) -> String {
-    if !config.transcript_tagging_enabled {
-        return text.to_string();
-    }
-
-    let confidence_flags = metadata
-        .map(|metadata| {
-            metadata
-                .confidence_flags
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    codescribe_core::transcript_tagging::wrap_transcript_with_quality(
-        text,
-        &config.transcript_tag_template,
-        mode,
-        config.whisper_language.as_str(),
-        metadata.and_then(|metadata| metadata.avg_logprob),
-        &confidence_flags,
-    )
-}
-
-/// Outcome of the overlay Insert action's delivery attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayPasteDelivery {
-    /// Synthetic Cmd+V was posted at the restored target's caret.
-    Pasted,
-    /// Focus never left Codescribe; tagged text was copied instead of pasted.
-    CopiedToClipboard,
-    /// Synthetic event posting is not trusted; tagged text was copied instead.
-    AccessibilityPermissionNeeded,
-    /// Tagged text is armed in process memory for the global Paste Here command.
-    DeferredInsertArmed,
-    /// Nothing to deliver (empty transcript).
-    Noop,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayPasteResult {
-    pub delivery: OverlayPasteDelivery,
-    pub target_app_name: Option<String>,
-    pub frontmost_app_name: Option<String>,
-    pub deferred_insert_shortcut: Option<String>,
-    pub deferred_insert_failure: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DeferredInsertRegistration {
-    Available { shortcut_label: String },
-    Unavailable { reason: String },
-}
-
-fn deferred_insert_registration(
-    shortcut: DeferredInsertShortcut,
-    manager_active: bool,
-    collision: Option<&str>,
-) -> DeferredInsertRegistration {
-    if !shortcut.is_enabled() {
-        return DeferredInsertRegistration::Unavailable {
-            reason: "Paste Here shortcut is disabled".to_string(),
-        };
-    }
-    if !manager_active {
-        return DeferredInsertRegistration::Unavailable {
-            reason: "Paste Here hotkey registration failed".to_string(),
-        };
-    }
-    if let Some(reason) = collision {
-        return DeferredInsertRegistration::Unavailable {
-            reason: reason.to_string(),
-        };
-    }
-    DeferredInsertRegistration::Available {
-        shortcut_label: shortcut.label().to_string(),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OverlayPasteDisposition {
-    Paste,
-    CopyTargetUnavailable,
-    CopyFrontmostUnavailable,
-    CopyTargetMismatch,
-    CopyAccessibilityDenied,
-}
-
-fn overlay_paste_disposition(
-    target_app: Option<&str>,
-    frontmost_app: Option<&str>,
-    can_post_events: bool,
-) -> OverlayPasteDisposition {
-    let Some(target) = target_app.map(str::trim).filter(|name| !name.is_empty()) else {
-        return OverlayPasteDisposition::CopyTargetUnavailable;
-    };
-    let Some(frontmost) = frontmost_app.map(str::trim).filter(|name| !name.is_empty()) else {
-        return OverlayPasteDisposition::CopyFrontmostUnavailable;
-    };
-    if frontmost.eq_ignore_ascii_case("codescribe") {
-        return OverlayPasteDisposition::CopyTargetMismatch;
-    }
-    if !frontmost.eq_ignore_ascii_case(target) {
-        return OverlayPasteDisposition::CopyTargetMismatch;
-    }
-    if !can_post_events {
-        return OverlayPasteDisposition::CopyAccessibilityDenied;
-    }
-    OverlayPasteDisposition::Paste
-}
-
-fn toggle_final_pass_enabled() -> bool {
-    std::env::var("CODESCRIBE_TOGGLE_FINAL_PASS")
-        .ok()
-        .map(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "no" | "off"
-            )
-        })
-        .unwrap_or(true)
-}
-
-fn should_use_toggle_adjudicated_stop(
-    current_state: State,
-    assistive: bool,
-    toggle_final_pass: bool,
-) -> bool {
-    current_state == State::RecToggle && !assistive && toggle_final_pass
-}
-
-fn should_apply_incoming_mode_flags(current_state: State, event: &HotkeyInput) -> bool {
-    matches!(event.action, HotkeyAction::Down | HotkeyAction::Press)
-        && !(event.key_type == HotkeyType::Toggle && current_state == State::RecToggle)
-}
-
-fn is_hotkey_start_event(event: &HotkeyInput) -> bool {
-    matches!(
-        (event.key_type, event.action),
-        (HotkeyType::Hold, HotkeyAction::Down)
-            | (HotkeyType::Toggle, HotkeyAction::Press)
-            | (HotkeyType::Conversation, HotkeyAction::Press)
-    )
-}
-
-/// An assistive *start* hotkey — FN+Shift hold-down, an assistive toggle press,
-/// or any start event flagged `assistive` (Chat / Selection / assistive toggle).
-/// These are the "Talk Anytime" inputs the user fires to add a new voice intent
-/// while Emil/the agent is still answering.
-fn is_assistive_start_event(event: &HotkeyInput) -> bool {
-    is_hotkey_start_event(event) && event.assistive
-}
-
-/// Block a *new* hotkey start while a previously-dispatched agent turn is still
-/// streaming. This fires only at `State::Idle` — the controller has already
-/// returned the mic/transcription pipeline; the agent is answering in the
-/// background (a detached `tokio::spawn`, see `send_assistive_with_agent_runtime`).
-///
-/// Exception — **Assistive Talk Anytime**: assistive start events are allowed
-/// through so the user can record a *new* voice intent while the agent answers.
-/// The resulting utterance is captured into the existing pending-follow-up
-/// buffer (`should_capture_pending_followup` → `get_or_create_pending_followup_index`),
-/// not dropped — the living intent grows instead of being ignored. Non-assistive
-/// (raw) dictation starts stay blocked: barging a raw transcript into a live
-/// agent turn is never wanted, and blocking preserves the single-pipeline
-/// guarantee for the dictation path.
-///
-/// `agent_send_in_flight` is passed in (rather than read from the global) so the
-/// decision is a pure function and unit-testable without touching shared state.
-fn should_block_hotkey_during_agent_send(
-    current_state: State,
-    event: &HotkeyInput,
-    agent_send_in_flight: bool,
-) -> bool {
-    current_state == State::Idle
-        && agent_send_in_flight
-        && is_hotkey_start_event(event)
-        && !is_assistive_start_event(event)
-}
-
-fn transcript_output_category(output_kind: crate::state::history::TranscriptKind) -> &'static str {
-    match output_kind {
-        crate::state::history::TranscriptKind::Raw => "Transcript",
-        crate::state::history::TranscriptKind::Cloud => "Cloud transcript",
-        crate::state::history::TranscriptKind::FormattedTranscript => "Formatted transcript",
-        crate::state::history::TranscriptKind::AssistantInterpretation => {
-            "Assistant interpretation"
-        }
-        crate::state::history::TranscriptKind::FormattingFailed => {
-            "Formatting failed, raw preserved"
-        }
-        crate::state::history::TranscriptKind::Failed => "Failed transcript",
-    }
-}
-
-fn compose_final_status(
-    display_status: &str,
-    output_kind: crate::state::history::TranscriptKind,
-) -> String {
-    if display_status.trim().is_empty() {
-        return transcript_output_category(output_kind).to_string();
-    }
-
-    match output_kind {
-        crate::state::history::TranscriptKind::Failed => display_status.to_string(),
-        _ => format!(
-            "{} • {}",
-            display_status,
-            transcript_output_category(output_kind)
-        ),
-    }
-}
-
-/// Canonical stop-path final-pass routing (Settings → Final pass / `FINAL_PASS_MODE`).
-/// Distinct from `pipeline::contracts::FinalPassMode` (lexicon cleanup request).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FinalPassRoutingMode {
-    /// Always re-run full local STT on the saved WAV.
-    Always,
-    /// Skip full re-pass only when streaming completeness is adjudicated.
-    Smart,
-    /// Streaming (post-processed) is final; keep repetition guardrail only.
-    Off,
-}
-
-impl FinalPassRoutingMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Always => "always",
-            Self::Smart => "smart",
-            Self::Off => "off",
-        }
-    }
-
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "always" | "on" | "1" | "true" | "yes" => Some(Self::Always),
-            "smart" | "auto" => Some(Self::Smart),
-            "off" | "0" | "false" | "no" => Some(Self::Off),
-            _ => None,
-        }
-    }
-}
-
-/// Resolve final-pass routing from env/settings. Default: Smart.
-///
-/// Precedence:
-/// 1. `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` (`always|smart|off`)
-/// 2. Legacy `CODESCRIBE_LOCAL_STT_FINAL_PASS` falsey → Off, truthy → Always
-/// 3. Smart
-pub(crate) fn final_pass_routing_mode() -> FinalPassRoutingMode {
-    for key in ["FINAL_PASS_MODE", "CODESCRIBE_FINAL_PASS_MODE"] {
-        if let Ok(raw) = std::env::var(key)
-            && let Some(mode) = FinalPassRoutingMode::parse(&raw)
-        {
-            return mode;
-        }
-    }
-    if let Ok(raw) = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS") {
-        let v = raw.trim().to_ascii_lowercase();
-        if matches!(v.as_str(), "" | "0" | "false" | "no" | "off") {
-            return FinalPassRoutingMode::Off;
-        }
-        if matches!(v.as_str(), "1" | "true" | "yes" | "on") {
-            return FinalPassRoutingMode::Always;
-        }
-    }
-    FinalPassRoutingMode::Smart
-}
-
-/// Typed streaming-completeness decision for Smart skip (never "non-empty ⇒ complete").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StreamingCompleteness {
-    Complete,
-    Incomplete { reason: &'static str },
-}
-
-/// Recorder/adjudicator evidence for Smart final-pass skip.
-///
-/// Punctuation is never the authority: Completeness requires an adjudicated
-/// commit source, coverage, and a cleared pending tail.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StreamingCompletenessEvidence {
-    pub streaming_text: String,
-    pub no_speech_reason: Option<String>,
-    pub pending_tail: bool,
-    pub partial_stale_or_dropped: bool,
-    pub commit_source: Option<CompletenessCommitSource>,
-    pub committed_chars: usize,
-    pub total_utterances: u64,
-}
-
-impl StreamingCompletenessEvidence {
-    /// Build evidence from the live session snapshot + streaming splice text.
-    pub(crate) fn from_session(streaming_text: &str, session: &SessionTelemetrySnapshot) -> Self {
-        let partial_stale_or_dropped = session
-            .stats
-            .as_ref()
-            .is_some_and(|s| s.partial_stale_count > 0 || s.partial_dropped_count > 0);
-        let total_utterances = session
-            .stats
-            .as_ref()
-            .map(|s| s.total_utterances)
-            .unwrap_or(0);
-        Self {
-            streaming_text: streaming_text.to_string(),
-            no_speech_reason: session.no_speech_reason.clone(),
-            pending_tail: session.pending_tail,
-            partial_stale_or_dropped,
-            commit_source: session.last_commit_source,
-            committed_chars: session.committed_chars,
-            total_utterances,
-        }
-    }
-
-    /// Coverage is present when the adjudicator sealed at least one utterance
-    /// (commit source + committed chars or engine utterance count).
-    pub(crate) fn has_coverage(&self) -> bool {
-        self.committed_chars > 0 || self.total_utterances > 0
-    }
-}
-
-/// Assess whether streaming holds an adjudicator-confirmed complete transcript.
-///
-/// Incomplete when: empty, no-speech, pending tail, partial stale/drop, missing
-/// commit source, or zero coverage. A punctuated prefix with a pending tail is
-/// always Incomplete — punctuation alone never authorizes Complete.
-pub(crate) fn assess_streaming_completeness(
-    evidence: &StreamingCompletenessEvidence,
-) -> StreamingCompleteness {
-    if evidence.no_speech_reason.is_some() {
-        return StreamingCompleteness::Incomplete {
-            reason: "no_speech",
-        };
-    }
-    let text = evidence.streaming_text.trim();
-    if text.is_empty() {
-        return StreamingCompleteness::Incomplete { reason: "empty" };
-    }
-    if evidence.pending_tail {
-        return StreamingCompleteness::Incomplete {
-            reason: "pending_tail",
-        };
-    }
-    if evidence.partial_stale_or_dropped {
-        return StreamingCompleteness::Incomplete {
-            reason: "partial_pending",
-        };
-    }
-    if evidence.commit_source.is_none() {
-        return StreamingCompleteness::Incomplete {
-            reason: "no_commit_source",
-        };
-    }
-    if !evidence.has_coverage() {
-        return StreamingCompleteness::Incomplete {
-            reason: "no_coverage",
-        };
-    }
-    StreamingCompleteness::Complete
-}
-
-/// Convenience for tests that build evidence by field rather than from a session.
-#[cfg(test)]
-pub(crate) fn assess_streaming_completeness_fields(
-    streaming_text: &str,
-    no_speech_reason: Option<&str>,
-    pending_tail: bool,
-    partial_stale_or_dropped: bool,
-    commit_source: Option<CompletenessCommitSource>,
-    committed_chars: usize,
-    total_utterances: u64,
-) -> StreamingCompleteness {
-    assess_streaming_completeness(&StreamingCompletenessEvidence {
-        streaming_text: streaming_text.to_string(),
-        no_speech_reason: no_speech_reason.map(str::to_string),
-        pending_tail,
-        partial_stale_or_dropped,
-        commit_source,
-        committed_chars,
-        total_utterances,
-    })
-}
-
-/// Label from the actual engine verdict (not preference). Apple→Whisper fallback
-/// reports Whisper. When final-pass was **Skipped**, label the **live** lane that
-/// served (not a hardcode `streaming_whisper` — that laundered Apple live into a
-/// Whisper label; report 2026-07-25 / footer-chip doctrine).
-pub(crate) fn engine_label_from_verdict(
-    engine: &codescribe_core::pipeline::contracts::TranscriptionEngineVerdict,
-    final_pass_disposition: Option<FinalPassDisposition>,
-) -> String {
-    use codescribe_core::pipeline::contracts::TranscriptionEngine;
-    if matches!(final_pass_disposition, Some(FinalPassDisposition::Skipped)) {
-        return match engine.engine {
-            TranscriptionEngine::Apple => "live_apple".to_string(),
-            TranscriptionEngine::Whisper => "streaming_whisper".to_string(),
-        };
-    }
-    match engine.engine {
-        TranscriptionEngine::Apple => "local_apple".to_string(),
-        // Fallback-vs-primary provenance travels in verdict mode/disposition;
-        // the label states the engine that actually served.
-        TranscriptionEngine::Whisper => "local_whisper".to_string(),
-    }
-}
-
-fn truth_engine_label(
-    source: Option<RecordingTranscriptSource>,
-    actual_engine_label: Option<&str>,
-) -> Option<String> {
-    if let Some(label) = actual_engine_label {
-        return Some(label.to_string());
-    }
-    source.map(|source| match source {
-        // Preference-derived labels only when no verdict engine is available.
-        RecordingTranscriptSource::LocalFinalPass
-        | RecordingTranscriptSource::ToggleSessionAdjudicated => "local_whisper".to_string(),
-        RecordingTranscriptSource::CloudPrimary | RecordingTranscriptSource::CloudFallback => {
-            "cloud_stt".to_string()
-        }
-        RecordingTranscriptSource::Streaming | RecordingTranscriptSource::StreamingFallback => {
-            "streaming_whisper".to_string()
-        }
-    })
-}
-
-/// Named stop-path phase timings (rec_stop → final_pass → postproc → format → delivery).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct StopPathBudget {
-    pub total_secs: f64,
-    pub rec_stop_secs: f64,
-    pub final_pass_secs: f64,
-    pub postproc_secs: f64,
-    pub format_secs: f64,
-    /// Actual deliver_once / history+paste handoff span (not phase-4 cleanup).
-    pub delivery_secs: f64,
-}
-
-impl StopPathBudget {
-    pub(crate) fn named_sum_secs(self) -> f64 {
-        self.rec_stop_secs
-            + self.final_pass_secs
-            + self.postproc_secs
-            + self.format_secs
-            + self.delivery_secs
-    }
-
-    /// Wall time not attributed to a named phase (adjudication overhead, cleanup, …).
-    pub(crate) fn unclassified_remainder_secs(self) -> f64 {
-        (self.total_secs - self.named_sum_secs()).max(0.0)
-    }
-}
-
-/// Single INFO summary line for stop-path wall time (W11-B budget receipt).
-pub(crate) fn format_stop_path_budget_line(budget: StopPathBudget) -> String {
-    format!(
-        "stop_path_budget: total={total:.3}s phases={{rec_stop={rec:.3}s,final_pass={fp:.3}s,postproc={pp:.3}s,format={fmt:.3}s,delivery={del:.3}s}} remainder={rem:.3}s",
-        total = budget.total_secs,
-        rec = budget.rec_stop_secs,
-        fp = budget.final_pass_secs,
-        pp = budget.postproc_secs,
-        fmt = budget.format_secs,
-        del = budget.delivery_secs,
-        rem = budget.unclassified_remainder_secs(),
-    )
-}
-
-/// Phase sum + remainder must cover total within tolerance (timing noise).
-#[cfg(test)]
-pub(crate) fn stop_path_budget_covers_total(budget: StopPathBudget, tolerance_secs: f64) -> bool {
-    let covered = budget.named_sum_secs() + budget.unclassified_remainder_secs();
-    (covered - budget.total_secs).abs() <= tolerance_secs
-}
-
-/// Correlated assistive-delivery receipt. Receipt boundary (audit F1): the
-/// `stop_path_budget` closes when the stop pipeline returns; assistive overlay
-/// submission is user-triggered *after* that, so its real send gets its own
-/// wall-clock line instead of being folded into a budget that already ended.
-pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &str) -> String {
-    format!("assistive_delivery_budget: total={total_secs:.3}s outcome={outcome}")
-}
-
-/// Per-stage split of the stop-path final pass (A2 latency truth).
-///
-/// `queue_ms` = spawn_blocking queue wait + engine mutex wait. The first three
-/// stages plus `engine_overhead_ms` (audio load + VAD + silero + lexicon,
-/// computed as remainder) cover `final_pass_total_ms` exactly; postprocess and
-/// delivery are the downstream pipeline stages of the same stop.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub(crate) struct FinalPassStages {
-    pub queue_ms: u64,
-    pub model_load_ms: u64,
-    pub cold_load: bool,
-    pub inference_ms: u64,
-    pub postprocess_ms: u64,
-    pub delivery_ms: u64,
-    pub final_pass_total_ms: u64,
-}
-
-impl FinalPassStages {
-    /// Final-pass wall time not attributed to queue/load/inference: audio file
-    /// load, VAD, silero tail filter, lexicon final pass.
-    pub(crate) fn engine_overhead_ms(self) -> u64 {
-        self.final_pass_total_ms
-            .saturating_sub(self.queue_ms + self.model_load_ms + self.inference_ms)
-    }
-}
-
-/// Single INFO line carrying the final-pass stage split for one stop.
-pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
-    format!(
-        "final_pass_stages queue_ms={queue} model_load_ms={load} cold_load={cold} inference_ms={inf} engine_overhead_ms={overhead} postprocess_ms={pp} delivery_ms={del} final_pass_total_ms={total}",
-        queue = stages.queue_ms,
-        load = stages.model_load_ms,
-        cold = stages.cold_load,
-        inf = stages.inference_ms,
-        overhead = stages.engine_overhead_ms(),
-        pp = stages.postprocess_ms,
-        del = stages.delivery_ms,
-        total = stages.final_pass_total_ms,
-    )
-}
-
-/// Skip full local STT re-pass according to routing mode + completeness.
-///
-/// File final is always **Whisper** (Apple is live-only). Apple live
-/// systematically under-gens (report 2026-07-25: 234c / ~417s with Off). So:
-/// - **Always**: never skip.
-/// - **Smart**: skip only when live was **not** Apple and assembly is complete.
-/// - **Off**: skip unless live was Apple — then force Whisper safety-pass
-///   (Off+Apple without fill is silent data-loss; operator 2026-07-25).
-///
-/// `prefer_apple` = live lane was Apple (not "prefer SFSpeechURL file final").
-pub(crate) fn should_skip_full_final_repass(
-    mode: FinalPassRoutingMode,
-    completeness: StreamingCompleteness,
-    prefer_apple: bool,
-) -> bool {
-    if prefer_apple {
-        // Apple live is a thin floor; Whisper fill is mandatory for product truth.
-        return false;
-    }
-    match mode {
-        FinalPassRoutingMode::Always => false,
-        FinalPassRoutingMode::Off => true,
-        FinalPassRoutingMode::Smart => {
-            matches!(completeness, StreamingCompleteness::Complete)
-        }
-    }
-}
-
 fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
     match types::write_truth_sidecar(path, metadata) {
         Ok(sidecar_path) => debug!("Truth sidecar saved: {}", sidecar_path.display()),
@@ -1495,12 +210,6 @@ fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthM
         ),
     }
 }
-
-const QUALITY_GATE_MIN_CHARS: usize = 24;
-const SHORT_AI_QUALITY_GATE_MIN_CHARS: usize = 10;
-const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
-const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
-const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
 
 struct AtomicFlagGuard {
     flag: Arc<AtomicBool>,
@@ -1556,39 +265,6 @@ fn should_allow_full_user_bubble_rewrite(
 
 fn should_apply_transcription_action_contract(assistive: bool, live_stream_session: bool) -> bool {
     !assistive && !live_stream_session
-}
-
-fn evaluate_quality_commit_trigger(
-    force_raw: bool,
-    quality_probe: &ActionQualityProbe,
-    output_kind: crate::state::history::TranscriptKind,
-) -> Option<&'static str> {
-    let short_ai_formatted = output_kind
-        == crate::state::history::TranscriptKind::FormattedTranscript
-        && quality_probe.raw_chars.max(quality_probe.final_chars)
-            >= SHORT_AI_QUALITY_GATE_MIN_CHARS;
-    if force_raw {
-        return None;
-    }
-    if output_kind == crate::state::history::TranscriptKind::FormattingFailed {
-        return Some("ai_failed_fallback");
-    }
-    if quality_probe.raw_chars < QUALITY_GATE_MIN_CHARS
-        && quality_probe.final_chars < QUALITY_GATE_MIN_CHARS
-        && !short_ai_formatted
-    {
-        return None;
-    }
-    if quality_probe.drop_ratio >= QUALITY_GATE_DROP_RATIO {
-        return Some("high_drop_ratio");
-    }
-    if quality_probe.raw_final_diff_ratio >= QUALITY_GATE_DIFF_RATIO {
-        return Some("high_rewrite_ratio");
-    }
-    if quality_probe.correction_ratio >= QUALITY_GATE_CORRECTION_RATIO {
-        return Some("high_correction_ratio");
-    }
-    None
 }
 
 /// Recording controller managing state machine and lifecycle
@@ -1927,6 +603,23 @@ impl RecordingController {
         }
     }
 
+    /// Capture the assistive trigger context (selection + frontmost app) for a
+    /// session whose microphone is owned by the Agent composer. The controller
+    /// start paths (`schedule_hold_start` / `start_toggle_recording`) never run
+    /// on that route, so without this arm the HOTKEYS_CONTRACT line "Selection
+    /// is captured in the trigger handler, never at send time" had no executor
+    /// on the primary assistive path and auto-send delivered the spoken text
+    /// alone (review P0-02). The bridge calls this exactly when a NEW agent
+    /// capture is about to start (capture owner still none).
+    pub async fn arm_assistive_trigger_context(&self) {
+        let context = tokio::task::spawn_blocking(capture_assistive_context)
+            .await
+            .unwrap_or_default();
+        *self.pre_overlay_frontmost_app.write().await = context.frontmost_app.clone();
+        *self.assistive_context.write().await = Some(context.clone());
+        *self.pending_assistive_context.write().await = Some(context);
+    }
+
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
@@ -1969,15 +662,28 @@ impl RecordingController {
             );
             return Ok(false);
         }
-        let Some(context) = self.pending_assistive_context.write().await.take() else {
-            info!(
-                "{}",
-                format_assistive_delivery_budget_line(
-                    delivery_started.elapsed().as_secs_f64(),
-                    "no_pending_context",
-                )
-            );
-            return Ok(false);
+        // Dictation/formatting sessions never run the assistive pipeline branch
+        // that arms `pending_assistive_context`, so the overlay's explicit
+        // "To Agent" used to fail closed behind a live button (review P0-03).
+        // The session trigger context (frontmost app, captured at every session
+        // start) is truthful for an explicit send; taking it keeps delivery
+        // one-shot either way.
+        let pending = self.pending_assistive_context.write().await.take();
+        let context = match pending {
+            Some(context) => context,
+            None => match self.assistive_context.write().await.take() {
+                Some(context) => context,
+                None => {
+                    info!(
+                        "{}",
+                        format_assistive_delivery_budget_line(
+                            delivery_started.elapsed().as_secs_f64(),
+                            "no_pending_context",
+                        )
+                    );
+                    return Ok(false);
+                }
+            },
         };
         let config = self.config.read().await.clone();
         let delivery = {
@@ -3271,6 +1977,28 @@ impl RecordingController {
             );
             let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
+            // Apple live must-have: refuse start before audio when Speech is not
+            // ready (empty mid-take death is not an acceptable product mode).
+            // Runs BEFORE the recorder lock and on the blocking pool: the probe
+            // spawns a bridge child and can block on the Speech TCC dialog for
+            // as long as the user takes — holding the recorder mutex (or a
+            // runtime worker) for that window froze stop/tray/second-hotkey.
+            if !cfg!(test) {
+                let preflight =
+                    tokio::task::spawn_blocking(codescribe_core::stt::preflight_apple_live_ready)
+                        .await
+                        .unwrap_or_else(|join| {
+                            Err(anyhow::anyhow!("Apple STT preflight task panicked: {join}"))
+                        });
+                if let Err(e) = preflight {
+                    error!("Hold-start aborted (Apple STT preflight): {e:#}");
+                    *session_id.write().await = None;
+                    set_assistive_session(false);
+                    crate::os::hold_badge::hide_hold_badge();
+                    return;
+                }
+            }
+
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is derived from hardcoded VAD defaults (single source of truth).
             let mut rec_guard = recorder.lock().await;
@@ -3290,18 +2018,6 @@ impl RecordingController {
                 drop(rec_guard);
                 *session_id.write().await = None;
                 set_assistive_session(false);
-                return;
-            }
-            // Apple live must-have: refuse start before audio when Speech is not ready
-            // (empty mid-take death is not an acceptable product mode).
-            if !cfg!(test)
-                && let Err(e) = codescribe_core::stt::preflight_apple_live_ready()
-            {
-                error!("Hold-start aborted (Apple STT preflight): {e}");
-                drop(rec_guard);
-                *session_id.write().await = None;
-                set_assistive_session(false);
-                crate::os::hold_badge::hide_hold_badge();
                 return;
             }
             // Hold-to-talk: the key-down is the source of truth. Don't auto-stop mid-hold.
@@ -3463,6 +2179,26 @@ impl RecordingController {
         let sound_volume = config.sound_volume;
         let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
 
+        // Apple live must-have preflight, BEFORE the recorder lock and on the
+        // blocking pool: the probe spawns a bridge child and can block on the
+        // Speech TCC dialog indefinitely — holding the recorder mutex (or a
+        // runtime worker) for that window froze every other recorder surface.
+        if !cfg!(test) {
+            let preflight =
+                tokio::task::spawn_blocking(codescribe_core::stt::preflight_apple_live_ready)
+                    .await
+                    .unwrap_or_else(|join| {
+                        Err(anyhow::anyhow!("Apple STT preflight task panicked: {join}"))
+                    });
+            if let Err(e) = preflight {
+                // Must log the actual cause — silent "resetting flags" made padaka undiagnosable.
+                error!("Toggle-start aborted (Apple STT preflight): {e:#}");
+                self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
+                    .await;
+                return Err(e);
+            }
+        }
+
         // Start the recorder
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = match Self::recorder_from_guard_mut(&mut recorder_guard, "Toggle-start") {
@@ -3481,17 +2217,6 @@ impl RecordingController {
                 .await;
             return Err(e);
         }
-        if !cfg!(test)
-            && let Err(e) = codescribe_core::stt::preflight_apple_live_ready()
-        {
-            // Must log the actual cause — silent "resetting flags" made padaka undiagnosable.
-            error!("Toggle-start aborted (Apple STT preflight): {e:#}");
-            drop(recorder_guard);
-            self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
-                .await;
-            return Err(e);
-        }
-
         // Toggle mode: continuous recording; silence only triggers per-utterance send.
         recorder.recorder.config.auto_silence = false;
         recorder.recorder.set_on_vad_stop(|| {});
@@ -3900,23 +2625,11 @@ impl RecordingController {
 
         let routing_mode = final_pass_routing_mode();
         let prefer_apple = codescribe_core::stt::active_engine_is_apple();
-        // Off + Apple live is silent data-loss (report 2026-07-25: 234c raw on
-        // 417s). Force Whisper safety-pass; log so operator sees the override.
-        let force_apple_whisper_safety =
-            prefer_apple && matches!(routing_mode, FinalPassRoutingMode::Off);
-        if force_apple_whisper_safety {
-            warn!(
-                "FINAL_PASS_MODE=off with Apple live — forcing Whisper safety-pass \
-                 (Off+Apple without fill is silent data-loss)"
-            );
-        }
-        let run_local_final_pass = use_local_stt
-            && (!matches!(routing_mode, FinalPassRoutingMode::Off) || force_apple_whisper_safety);
-        let effective_routing = if force_apple_whisper_safety {
-            FinalPassRoutingMode::Always
-        } else {
-            routing_mode
-        };
+        // Honest mode: Off never runs a full file re-pass (Apple or not).
+        // Smart/Always decide via should_skip_full_final_repass — no silent rewrite.
+        let run_local_final_pass =
+            use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off);
+        let effective_routing = routing_mode;
         let mut final_pass_secs = 0.0;
         let mut final_pass_stages = FinalPassStages::default();
 
@@ -4060,9 +2773,10 @@ impl RecordingController {
                 warn!("Final-pass local STT skipped: no audio file available");
             }
         } else if use_local_stt && !streaming_text.trim().is_empty() {
-            // Off (non-Apple live): streaming is final; still emit a skipped
-            // LocalFinalPass so adjudication/provenance stay honest.
-            // Apple+Off is handled above via force_apple_whisper_safety.
+            // Off (any live engine): streaming is final; still emit a skipped
+            // LocalFinalPass so adjudication/provenance stay honest. Dictionary
+            // still runs in process_transcript_text_pipeline — mode only gates
+            // the full WAV re-pass, never lexicon application.
             local_final_pass_attempted = true;
             info!(
                 "final_pass_skipped mode=off reason=routing_off chars={} live_engine={}",
@@ -4410,10 +3124,10 @@ impl RecordingController {
         // sessions still land in the decision overlay below, but they must not erase
         // the Settings formatting default by force-routing the transcript to RAW.
 
-        // ALWAYS-ON: Final post-processing pass (lexicon + cleanup + semantic gate)
-        // This ensures ALL output paths receive clean text regardless of mode.
-        // Contract: every chunk/transcript passes through StreamPostProcessor before
-        // reaching overlay, clipboard, augmentation, or dataset.
+        // ALWAYS-ON dictionary: lexicon + cleanup + semantic gate.
+        // Independent of FINAL_PASS_MODE (Always/Smart/Off) — mode only routes the
+        // optional full WAV re-pass / layered tail-patch. Every delivery path still
+        // runs StreamPostProcessor before overlay, clipboard, augmentation, or dataset.
         let postproc_started = std::time::Instant::now();
         let (clean_text, postprocess_stats) = {
             let mut finalizer = StreamPostProcessor::new();

@@ -70,6 +70,38 @@ final class ChatLayoutPolicyTests: XCTestCase {
         XCTAssertEqual(ChatLayoutPolicy.defaultsKey, "codescribe.chatWidthMode")
     }
 
+    // MARK: - R1 window-collapse clamps
+
+    func testDocumentWidthNeverExceedsContainer() {
+        XCTAssertEqual(ChatLayoutPolicy.documentWidth(for: 800), 800)
+        XCTAssertEqual(ChatLayoutPolicy.documentWidth(for: 320), 320)
+        // Zero / unknown geometry falls back to the readable minimum so a
+        // first-layout pass never hands children an unbounded width.
+        XCTAssertEqual(ChatLayoutPolicy.documentWidth(for: 0), ChatLayoutPolicy.minimumReadable)
+    }
+
+    func testYouAndLeadingCapsStayInsideDocument() {
+        let container: CGFloat = 900
+        let document = ChatLayoutPolicy.documentWidth(for: container)
+        let you = ChatLayoutPolicy.youBubbleMaxWidth(containerWidth: container, mode: .wide)
+        let leading = ChatLayoutPolicy.leadingColumnMaxWidth(containerWidth: container, mode: .wide)
+        XCTAssertLessThanOrEqual(you, document)
+        XCTAssertLessThanOrEqual(leading, document)
+        XCTAssertLessThanOrEqual(you, ChatLayoutPolicy.contentWidth(for: container))
+        XCTAssertLessThanOrEqual(leading, ChatLayoutPolicy.contentWidth(for: container))
+    }
+
+    func testOversizedSelectionDispositionMatchesBubblePolicy() {
+        // Context-chip selections share the same cap as bubble bodies so a
+        // 100k pasted selection cannot expand the You turn unboundedly.
+        let huge = String(repeating: "token)\" ", count: 20_000)
+        XCTAssertTrue(OversizedBubblePolicy.isOversized(huge))
+        XCTAssertFalse(
+            OversizedBubblePolicy.disposition(utf8Count: huge.utf8.count)
+                .sharesListSelectionOverlay
+        )
+    }
+
     func testAttachmentMissingPathDoesNotClaimLocalFile() {
         let missing = MessageAttachment(name: "scan.png", url: nil, type: "image/png")
         XCTAssertNil(missing.url)

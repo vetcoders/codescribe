@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "core", "bridge"]
 
 [workspace.package]
-version = "0.13.2"
+version = "0.13.3"
 edition = "2024"
 authors = ["Vetcoders <hello@vetcoders.io>"]
 
@@ -18,7 +18,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.13.2"
+version = "0.13.3"
 edition = "2024"
 description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"
 authors = ["Vetcoders <hello@vetcoders.io>"]
@@ -144,6 +144,14 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Optimized source-install profile. This deliberately has a distinct Cargo
+# profile name so core/build.rs can keep production `release` artifacts
+# fail-closed on the operator-owned license key while local app builds use the
+# checked-in development verifier. Never use this profile for a distributed
+# artifact; scripts/build-dmg.sh and CI use the literal `release` profile.
+[profile.local-release]
+inherits = "release"
 
 # Diagnostic / crash-reproduction profile.
 # Inherits the optimized release build but keeps full debug info (no strip) so

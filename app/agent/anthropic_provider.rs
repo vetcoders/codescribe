@@ -44,8 +44,13 @@ use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Anthropic requires `max_tokens` on every request; used only when the caller
-/// (assistive lane) leaves `options.max_tokens` unset.
-const DEFAULT_MAX_TOKENS: u32 = 8192;
+/// leaves `options.max_tokens` unset. Doctrine (operator, 2026-08-05): the
+/// agent's output is never capped — bloat protection lives on the tool-INPUT
+/// side (`tools::output_guard`). This is therefore the model-family output
+/// ceiling (128K for opus-4-8/sonnet-4-6, streaming — and we always stream),
+/// not a budget. With adaptive thinking on the wire, thinking tokens count
+/// against this same limit, which made the old 8192 doubly throttling.
+const DEFAULT_MAX_TOKENS: u32 = 128_000;
 
 const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
@@ -140,8 +145,16 @@ impl AgentProvider for AnthropicProvider {
             .unwrap_or(self.default_max_tokens);
 
         let system = build_system(options.system_prompt.as_deref(), messages);
-        let body = build_request_body(&model, system, messages, tools, max_tokens, temperature)
-            .context("Failed to build Anthropic Messages request")?;
+        let body = build_request_body(
+            &model,
+            system,
+            messages,
+            tools,
+            max_tokens,
+            temperature,
+            policy.adaptive_thinking,
+        )
+        .context("Failed to build Anthropic Messages request")?;
 
         info!(
             "Anthropic agent request (model={}, messages={}, tools={}, max_tokens={}, temperature={}, timeout={}s)",
@@ -251,11 +264,20 @@ fn build_request_body(
     tools: &[ToolDefinition],
     max_tokens: u32,
     temperature: Option<f32>,
+    adaptive_thinking: bool,
 ) -> Result<Value> {
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), json!(model));
     body.insert("max_tokens".to_string(), json!(max_tokens));
     body.insert("stream".to_string(), json!(true));
+    // Reasoning summaries are OPT-IN on Anthropic: without a \`thinking\` block the
+    // API never emits \`thinking_delta\`, so \`handle_chunk\`'s ReasoningDelta arm was
+    // unreachable and the chat only ever showed the opaque "thinking…" placeholder
+    // (OpenAI got summaries via \`reasoning_summary_request\`). Adaptive form only —
+    // a manual \`budget_tokens\` is a hard 400 on Opus (BudgetTokensPolicy::Hard400).
+    if adaptive_thinking {
+        body.insert("thinking".to_string(), json!({ "type": "adaptive" }));
+    }
     if let Some(system) = system.filter(|value| !value.trim().is_empty()) {
         body.insert("system".to_string(), json!(system));
     }
@@ -907,6 +929,7 @@ mod tests {
             &[],
             4096,
             None,
+            false,
         )
         .expect("request body should build");
 
@@ -928,8 +951,16 @@ mod tests {
 
         let opus = capability_policy(ProviderKind::AnthropicMessages, "claude-opus-4-8");
         let opus_temp = opus.sanitize_temperature(Some(0.7));
-        let opus_body =
-            build_request_body("claude-opus-4-8", None, &messages, &[], 1024, opus_temp).unwrap();
+        let opus_body = build_request_body(
+            "claude-opus-4-8",
+            None,
+            &messages,
+            &[],
+            1024,
+            opus_temp,
+            false,
+        )
+        .unwrap();
         assert!(
             opus_body.get("temperature").is_none(),
             "Opus-4.8 rejects sampling params; temperature must be omitted"
@@ -937,15 +968,46 @@ mod tests {
 
         let sonnet = capability_policy(ProviderKind::AnthropicMessages, "claude-sonnet-4-6");
         let sonnet_temp = sonnet.sanitize_temperature(Some(0.3));
-        let sonnet_body =
-            build_request_body("claude-sonnet-4-6", None, &messages, &[], 1024, sonnet_temp)
-                .unwrap();
+        let sonnet_body = build_request_body(
+            "claude-sonnet-4-6",
+            None,
+            &messages,
+            &[],
+            1024,
+            sonnet_temp,
+            false,
+        )
+        .unwrap();
         let sent = sonnet_body["temperature"]
             .as_f64()
             .expect("Sonnet keeps temperature as a number");
         assert!(
             (sent - 0.3).abs() < 1e-6,
             "Sonnet-4.6 tolerates temperature; expected ~0.3, got {sent}"
+        );
+    }
+
+    #[test]
+    fn adaptive_thinking_true_puts_the_thinking_block_on_the_wire() {
+        let messages = vec![text_message(Role::User, "hi")];
+
+        // The true path is the only branch that changes what reaches the API:
+        // it must emit exactly the adaptive form (a manual budget_tokens would
+        // be a hard 400 on Opus — BudgetTokensPolicy::Hard400).
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, true)
+            .expect("request body should build");
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(
+            body["thinking"].get("budget_tokens").is_none(),
+            "adaptive thinking must never carry a manual budget_tokens"
+        );
+
+        // And the false path must leave the wire untouched — no empty stub.
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, false)
+            .expect("request body should build");
+        assert!(
+            body.get("thinking").is_none(),
+            "thinking must be omitted entirely when adaptive_thinking is off"
         );
     }
 
@@ -1078,7 +1140,7 @@ mod tests {
             ],
         )];
 
-        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None)
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, false)
             .expect("request body should build");
 
         assert_eq!(body["messages"][0]["role"], "user");
@@ -1160,7 +1222,7 @@ mod tests {
             ],
         )];
 
-        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None)
+        let body = build_request_body("claude-opus-4-8", None, &messages, &[], 4096, None, false)
             .expect("request body should build");
 
         let content = body["messages"][0]["content"]

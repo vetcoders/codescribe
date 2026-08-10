@@ -2311,9 +2311,9 @@ mod settings_snapshot_tests {
         let _process_roots = EnvGuard::remove("AGENT_WORKSPACE_ROOTS");
         let expected = vec![
             "~/Git".to_string(),
-            "/Volumes/vc-workspace/vetcoders".to_string(),
-            "/Volumes/vc-workspace/Loctree".to_string(),
-            "/Volumes/vc-workspace/libraxisai".to_string(),
+            "/Users/op/workspace/projects".to_string(),
+            "/Users/op/workspace/tools".to_string(),
+            "/Users/op/workspace/libs".to_string(),
         ];
 
         CodescribeConfig::new()

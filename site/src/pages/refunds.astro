@@ -1,0 +1,74 @@
+---
+import Layout from '../layouts/Layout.astro';
+import LegalPage from '../components/LegalPage.astro';
+import { page } from '../lib/asset';
+---
+
+<Layout
+  title="Refund Policy — codescribe"
+  description="14-day refund policy for codescribe purchases, including EU consumer distance-selling rights."
+  path="refunds"
+>
+  <LegalPage title="Refund Policy" eyebrow="Trust · Refunds">
+    <p class="note">
+      [?] Draft aligned with common Merchant of Record (MoR) and EU distance-selling
+      practice. Final wording must match the MoR checkout terms you sign with
+      (for example Paddle / Lemon Squeezy / Stripe). If MoR terms and this page
+      differ, the MoR checkout terms control for that purchase.
+    </p>
+
+    <h2>14-day no-questions refund (consumers)</h2>
+    <p>
+      If you buy a personal codescribe license as a consumer and you are not
+      satisfied, you may request a full refund within <strong>14 days</strong>
+      of purchase. For EU/EEA/UK consumers buying online (distance selling),
+      this aligns with the statutory cooling-off period where it applies.
+    </p>
+    <ul>
+      <li>No product review quiz is required for a timely first refund request.</li>
+      <li>Request by emailing
+        <a href="mailto:hello@vetcoders.io?subject=codescribe%20refund">hello@vetcoders.io</a>
+        with your order email and order ID / receipt from checkout.
+      </li>
+      <li>We aim to confirm and process refunds within <strong>2 business days</strong>
+        of a complete request; card settlement may take longer depending on your bank.
+      </li>
+    </ul>
+
+    <h2>How to request</h2>
+    <ol>
+      <li>Email <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a> with subject line “codescribe refund”.</li>
+      <li>Include the email used at checkout and the order or invoice ID.</li>
+      <li>If the MoR portal offers a self-serve cancel/refund, you may use that instead — same 14-day window.</li>
+    </ol>
+
+    <h2>Business / VAT invoices</h2>
+    <p>
+      Purchases invoiced to a business (B2B) may follow the MoR’s business
+      refund rules rather than the consumer cooling-off period. Contact us and
+      we will apply the correct path for your receipt type.
+    </p>
+
+    <h2>After 14 days</h2>
+    <p>
+      Outside the 14-day window we may still offer goodwill refunds for
+      clear technical failure (for example the app cannot launch on a supported
+      Apple Silicon Mac after reasonable troubleshooting). Those are case-by-case,
+      not guaranteed.
+    </p>
+
+    <h2>Chargebacks</h2>
+    <p>
+      Please contact us before filing a chargeback so we can reverse the charge
+      cleanly. Chargebacks opened while a refund is already in progress can
+      delay resolution.
+    </p>
+
+    <h2>Related</h2>
+    <p>
+      <a href={page('terms')}>Terms of Use &amp; EULA</a>
+      · <a href={page('support')}>Support</a>
+      · <a href={page('privacy')}>Privacy Policy</a>
+    </p>
+  </LegalPage>
+</Layout>

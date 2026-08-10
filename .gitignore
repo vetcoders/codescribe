@@ -84,6 +84,12 @@ docs/runtime-diagnosis.md
 site/.astro/
 *.sha256
 
+# Private STT fixtures (real operator speech + verbatim transcripts) live in
+# ~/.codescribe/data_assets — NEVER in the repo. Burned twice (deprivatize
+# 2026-07, regression in #68). Only the contract README stays tracked.
+tests/assets/data_assets/*
+!tests/assets/data_assets/README.md
+
 # Root-level stray notes: ignore new root .md/.txt, keep the canonical doc set.
 # Negations must come AFTER the wildcard (last match wins).
 /*.md

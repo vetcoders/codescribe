@@ -79,13 +79,46 @@ enum AssistivePromptParser {
         contextPrefix: "\nKONTEKST:\n- frontmost_app: "
     )
 
+    /// Alternate selection-section openers seen in older gpt-5.5 / June-era
+    /// wires where the instruction heredoc close (`>`) was dropped, doubled,
+    /// or written with a single newline. Exact canonical markers stay first;
+    /// these are a second pass so salvage never rewrites a plain composer
+    /// message that merely mentions "SELECTED_TEXT".
+    private static let englishHeredocAlts = [
+        "\n>\nSELECTED_TEXT:\n<<<\n",
+        "\n\nSELECTED_TEXT:\n<<<\n",
+        "\nSELECTED_TEXT:\n<<<\n",
+    ]
+    private static let legacyHeredocAlts = [
+        "\n>\nZAZNACZONY_TEKST:\n<<<\n",
+        "\n\nZAZNACZONY_TEKST:\n<<<\n",
+        "\nZAZNACZONY_TEKST:\n<<<\n",
+    ]
+    private static let englishAbsentAlts = [
+        "\n>\nSELECTED_TEXT: no selection available.\n",
+        "\n\nSELECTED_TEXT: no selection available.\n",
+        "\nSELECTED_TEXT: no selection available.\n",
+    ]
+    private static let legacyAbsentAlts = [
+        "\n>\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n",
+        "\n\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n",
+        "\nZAZNACZONY_TEKST: brak dostępnego zaznaczenia.\n",
+    ]
+
     private static let heredocClose = "\n>\n"
 
     /// Parse a wire prompt into its parts. Returns `nil` when `wire` is not an
     /// assistive skeleton (the caller then renders the text as-is).
     static func parse(_ wire: String) -> Parts? {
         for markers in [english, legacyPolish] where wire.hasPrefix(markers.header) {
-            return parse(wire: wire, markers: markers)
+            if let parts = parse(wire: wire, markers: markers) {
+                return parts
+            }
+            // Canonical markers failed — try the tolerant second pass used by
+            // June-era / gpt-5.5 wires that still open with the same header.
+            if let parts = parseTolerant(wire: wire, markers: markers) {
+                return parts
+            }
         }
         return nil
     }
@@ -116,6 +149,54 @@ enum AssistivePromptParser {
         }
     }
 
+    /// Second-pass parse for wires that open with a known header but use a
+    /// non-canonical seam between the instruction and the selection section.
+    private static func parseTolerant(wire: String, markers: Markers) -> Parts? {
+        let body = String(wire.dropFirst(markers.header.count))
+        let isEnglish = markers.header.hasPrefix("USER_INSTRUCTION")
+        let heredocAlts = isEnglish ? englishHeredocAlts : legacyHeredocAlts
+        let absentAlts = isEnglish ? englishAbsentAlts : legacyAbsentAlts
+
+        let heredocRange = heredocAlts.compactMap { body.range(of: $0) }
+            .min { $0.lowerBound < $1.lowerBound }
+        let missingRange = (absentAlts.compactMap { body.range(of: $0) }
+            + [carriedRange(in: body, markers: markers)].compactMap { $0 })
+            .min { $0.lowerBound < $1.lowerBound }
+
+        switch (heredocRange, missingRange) {
+        case let (.some(heredoc), .some(missing)):
+            return heredoc.lowerBound < missing.lowerBound
+                ? parseWithSelection(body: body, marker: heredoc, markers: markers)
+                : parseWithoutSelection(body: body, marker: missing, markers: markers)
+        case let (.some(heredoc), nil):
+            return parseWithSelection(body: body, marker: heredoc, markers: markers)
+        case let (nil, .some(missing)):
+            return parseWithoutSelection(body: body, marker: missing, markers: markers)
+        case (nil, nil):
+            // Header matched but no selection section — still salvage the
+            // spoken instruction so the bubble never renders the raw skeleton.
+            return salvageInstructionOnly(body: body, markers: markers)
+        }
+    }
+
+    /// Last-resort salvage: header is known, but the body is truncated or uses
+    /// an unknown selection dialect. Prefer a short spoken instruction over a
+    /// full-wire dump that collapses the Agent window layout.
+    private static func salvageInstructionOnly(body: String, markers: Markers) -> Parts? {
+        var instruction = body
+        // Strip a trailing unclosed heredoc close if present.
+        if instruction.hasSuffix(heredocClose) {
+            instruction = String(instruction.dropLast(heredocClose.count))
+        } else if instruction.hasSuffix("\n>") {
+            instruction = String(instruction.dropLast(2))
+        }
+        instruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instruction.isEmpty else { return nil }
+        // Refuse salvage when the body still looks like pure composer text that
+        // never opened a heredoc — callers only reach here after a known header.
+        return Parts(instruction: instruction, selectedText: nil, frontmostApp: nil)
+    }
+
     /// Rewrite a wire-skeleton user message for display: `text` becomes the
     /// spoken instruction, the full skeleton moves to `wireText`, and the
     /// selection/app land in the context fields. Non-skeleton messages (and
@@ -139,21 +220,72 @@ enum AssistivePromptParser {
     private static func parseWithSelection(
         body: String, marker: Range<String.Index>, markers: Markers
     ) -> Parts? {
-        let instruction = String(body[..<marker.lowerBound])
+        // Instruction may still carry a trailing heredoc close when the
+        // selection marker was matched via a tolerant alt that did not
+        // consume the `>` line — strip it so the bubble shows speech only.
+        let cleanedInstruction = stripTrailingHeredocClose(String(body[..<marker.lowerBound]))
         let rest = String(body[marker.upperBound...])
 
         // The selection heredoc closes right before the (optional) CONTEXT
         // section or the end of the prompt. Search from the back so a selection
         // that itself contains `\n>\n` stays intact.
-        let contextSeam = heredocClose + markers.contextPrefix
-        if let seam = rest.range(of: contextSeam, options: .backwards) {
-            let selected = String(rest[..<seam.lowerBound])
-            let app = trimmedContextValue(String(rest[seam.upperBound...]))
-            return Parts(instruction: instruction, selectedText: selected, frontmostApp: app)
+        let contextSeams = [
+            heredocClose + markers.contextPrefix,
+            "\n>" + markers.contextPrefix,
+            markers.contextPrefix,
+        ]
+        for seamToken in contextSeams {
+            if let seam = rest.range(of: seamToken, options: .backwards) {
+                let selected = String(rest[..<seam.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let app = trimmedContextValue(String(rest[seam.upperBound...]))
+                return Parts(
+                    instruction: cleanedInstruction,
+                    selectedText: selected.isEmpty ? nil : selected,
+                    frontmostApp: app
+                )
+            }
         }
-        guard rest.hasSuffix(heredocClose) else { return nil }
-        let selected = String(rest.dropLast(heredocClose.count))
-        return Parts(instruction: instruction, selectedText: selected, frontmostApp: nil)
+        if rest.hasSuffix(heredocClose) {
+            let selected = String(rest.dropLast(heredocClose.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return Parts(
+                instruction: cleanedInstruction,
+                selectedText: selected.isEmpty ? nil : selected,
+                frontmostApp: nil
+            )
+        }
+        if rest.hasSuffix("\n>") {
+            let selected = String(rest.dropLast(2))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return Parts(
+                instruction: cleanedInstruction,
+                selectedText: selected.isEmpty ? nil : selected,
+                frontmostApp: nil
+            )
+        }
+        // Selection present but never closed — still show the spoken instruction
+        // and keep the open selection payload behind the context chip rather than
+        // dumping the whole wire into the bubble (R1 layout collapse).
+        let selected = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedInstruction.isEmpty || !selected.isEmpty else { return nil }
+        return Parts(
+            instruction: cleanedInstruction,
+            selectedText: selected.isEmpty ? nil : selected,
+            frontmostApp: nil
+        )
+    }
+
+    private static func stripTrailingHeredocClose(_ text: String) -> String {
+        var result = text
+        if result.hasSuffix(heredocClose) {
+            result = String(result.dropLast(heredocClose.count))
+        } else if result.hasSuffix("\n>") {
+            result = String(result.dropLast(2))
+        } else if result.hasSuffix(">") {
+            result = String(result.dropLast())
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// `SELECTED_TEXT: no selection available.\n[\nCONTEXT…]` (or the
@@ -161,14 +293,36 @@ enum AssistivePromptParser {
     private static func parseWithoutSelection(
         body: String, marker: Range<String.Index>, markers: Markers
     ) -> Parts? {
-        let instruction = String(body[..<marker.lowerBound])
+        let instruction = stripTrailingHeredocClose(String(body[..<marker.lowerBound]))
         let rest = String(body[marker.upperBound...])
         if rest.isEmpty {
             return Parts(instruction: instruction, selectedText: nil, frontmostApp: nil)
         }
-        guard rest.hasPrefix(markers.contextPrefix) else { return nil }
-        let app = trimmedContextValue(String(rest.dropFirst(markers.contextPrefix.count)))
-        return Parts(instruction: instruction, selectedText: nil, frontmostApp: app)
+        // Tolerant context prefix: exact, or bare "CONTEXT:" / "KONTEKST:" block.
+        if rest.hasPrefix(markers.contextPrefix) {
+            let app = trimmedContextValue(String(rest.dropFirst(markers.contextPrefix.count)))
+            return Parts(instruction: instruction, selectedText: nil, frontmostApp: app)
+        }
+        let bareContext = markers.contextPrefix.hasPrefix("\nCONTEXT")
+            ? "\nCONTEXT:\n"
+            : "\nKONTEKST:\n"
+        if let range = rest.range(of: bareContext) {
+            let after = String(rest[range.upperBound...])
+            // Prefer frontmost_app line when present.
+            if let appLine = after.split(separator: "\n", omittingEmptySubsequences: false)
+                .map(String.init)
+                .first(where: { $0.hasPrefix("- frontmost_app:") })
+            {
+                let app = trimmedContextValue(
+                    String(appLine.dropFirst("- frontmost_app:".count))
+                )
+                return Parts(instruction: instruction, selectedText: nil, frontmostApp: app)
+            }
+            return Parts(instruction: instruction, selectedText: nil, frontmostApp: nil)
+        }
+        // Unknown trailer after a known absent-selection marker: still salvage
+        // the spoken instruction so restore never dumps the skeleton.
+        return Parts(instruction: instruction, selectedText: nil, frontmostApp: nil)
     }
 
     /// Range of the prefix-matched carried-line variant, extended through the

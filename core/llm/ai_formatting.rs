@@ -29,9 +29,13 @@ use tracing::{debug, info, trace, warn};
 
 use crate::config::{Config, FormattingPolicy};
 
+use super::account_auth;
 use super::lane_truth;
+use super::lane_truth::AssistiveLaneSnapshot;
 use super::provider::{LlmMode, ProviderKind, capability_policy};
-use super::responses_streaming_manager::{ResponsesStreamingManager, StreamCallbacks};
+use super::responses_streaming_manager::{
+    AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
+};
 
 /// HTTP client for AI providers
 static AI_CLIENT: OnceLock<Client> = OnceLock::new();
@@ -1692,18 +1696,16 @@ async fn call_llm_endpoint(
     assistive: bool,
 ) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
-    let (endpoint, model, api_key) = if assistive {
+    let (endpoint, model, api_key, bearer_only) = if assistive {
         let lane = lane_truth::assistive_snapshot(&Config::load());
-        let account = lane.provider.api_key_env_key();
-        let api_key = lane
-            .api_key
-            .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
-        (lane.endpoint, lane.model, api_key)
+        let (api_key, bearer_only) = resolve_assistive_auth(&lane).await?;
+        (lane.endpoint, lane.model, api_key, bearer_only)
     } else {
         (
             get_formatting_endpoint()?,
             get_formatting_model()?,
             get_formatting_api_key()?,
+            false,
         )
     };
 
@@ -1751,16 +1753,17 @@ async fn call_llm_endpoint(
         stream: false,
     };
 
-    // Dual-header authentication (both Bearer and x-api-key for compatibility)
-    let response = get_client()
+    // API keys use dual-header (Bearer + x-api-key). OAuth access tokens are
+    // Bearer-only — OpenAI rejects account tokens posted as x-api-key.
+    let mut request_builder = get_client()
         .post(&endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
-        .header("x-api-key", &api_key)
         .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Request failed")?;
+        .json(&request);
+    if !bearer_only {
+        request_builder = request_builder.header("x-api-key", &api_key);
+    }
+    let response = request_builder.send().await.context("Request failed")?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1787,6 +1790,23 @@ async fn call_llm_endpoint(
     Ok(output)
 }
 
+/// Resolve assistive-lane auth: signed-in ChatGPT OAuth wins over a stored API key.
+/// Returns `(secret, bearer_only)` — OAuth tokens must not also go out as `x-api-key`.
+async fn resolve_assistive_auth(lane: &AssistiveLaneSnapshot) -> Result<(String, bool)> {
+    if lane.account_auth {
+        let token = account_auth::access_token(ProviderKind::OpenAiResponses)
+            .await
+            .map_err(|error| anyhow::anyhow!("ChatGPT account authentication failed: {error}"))?;
+        return Ok((token, true));
+    }
+    let account = lane.provider.api_key_env_key();
+    let api_key = lane
+        .api_key
+        .clone()
+        .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
+    Ok((api_key, false))
+}
+
 /// Call LLM endpoint with SSE streaming (Responses API)
 ///
 /// Uses mode-aware config: LLM_{FORMATTING,ASSISTIVE}_{ENDPOINT,MODEL,API_KEY}
@@ -1797,18 +1817,21 @@ async fn call_llm_endpoint_streaming(
     stream_context: StreamRequestContext,
 ) -> Result<ProviderOutput> {
     // Mode-aware config: formatting vs assistive use different providers
-    let (endpoint, model, api_key) = if assistive {
+    let (endpoint, model, api_key, auth_header_mode) = if assistive {
         let lane = lane_truth::assistive_snapshot(&Config::load());
-        let account = lane.provider.api_key_env_key();
-        let api_key = lane
-            .api_key
-            .with_context(|| format!("LLM API key (assistive) is required. Set {account}."))?;
-        (lane.endpoint, lane.model, api_key)
+        let (api_key, bearer_only) = resolve_assistive_auth(&lane).await?;
+        let mode = if bearer_only {
+            AuthHeaderMode::BearerOnly
+        } else {
+            AuthHeaderMode::BearerAndApiKey
+        };
+        (lane.endpoint, lane.model, api_key, mode)
     } else {
         (
             get_formatting_endpoint()?,
             get_formatting_model()?,
             get_formatting_api_key()?,
+            AuthHeaderMode::BearerAndApiKey,
         )
     };
 
@@ -1868,7 +1891,8 @@ async fn call_llm_endpoint_streaming(
         callbacks,
         initial_response_timeout,
         inter_chunk_timeout,
-    );
+    )
+    .with_auth_header_mode(auth_header_mode);
     let streamed = manager.stream(&request).await?;
     let output = ProviderOutput {
         assistant_text: streamed.assistant_text,

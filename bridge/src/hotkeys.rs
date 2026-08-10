@@ -4,7 +4,7 @@
 //! `CGEventTap` listener used by the legacy daemon and dispatches emitted
 //! `HotkeyEvent`s into the existing `RecordingController` state machine.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
@@ -38,6 +38,97 @@ type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>
 #[uniffi::export(with_foreign)]
 pub trait CsAppActionListener: Send + Sync {
     fn on_show_agent(&self);
+    fn on_agent_capture(&self, command: CsAgentCaptureCommand);
+}
+
+/// UI commands for the Agent-owned composer microphone. Assistive hotkeys are
+/// translated here, before the legacy RecordingController can prepare/show its
+/// overlay, so there is exactly one Assistive capture owner.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsAgentCaptureCommand {
+    Start,
+    Stop,
+    Toggle,
+}
+
+const CAPTURE_OWNER_NONE: u8 = 0;
+const CAPTURE_OWNER_OVERLAY: u8 = 1;
+const CAPTURE_OWNER_AGENT: u8 = 2;
+static CAPTURE_OWNER: AtomicU8 = AtomicU8::new(CAPTURE_OWNER_NONE);
+
+fn claim_agent_capture() -> bool {
+    match CAPTURE_OWNER.compare_exchange(
+        CAPTURE_OWNER_NONE,
+        CAPTURE_OWNER_AGENT,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) | Err(CAPTURE_OWNER_AGENT) => true,
+        Err(_) => false,
+    }
+}
+
+fn release_agent_capture() {
+    let _ = CAPTURE_OWNER.compare_exchange(
+        CAPTURE_OWNER_AGENT,
+        CAPTURE_OWNER_NONE,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+fn event_can_start_overlay(event: &HotkeyEvent) -> bool {
+    matches!(
+        event,
+        HotkeyEvent::ToggleNormal
+            | HotkeyEvent::ToggleRaw
+            | HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            }
+    )
+}
+
+fn agent_capture_command(event: &HotkeyEvent) -> Option<CsAgentCaptureCommand> {
+    match event {
+        HotkeyEvent::ToggleAssistive => Some(CsAgentCaptureCommand::Toggle),
+        HotkeyEvent::Hold {
+            action: HoldAction::Down,
+            mode: HoldMode::Chat | HoldMode::Selection,
+        }
+        | HotkeyEvent::HoldUpdate {
+            mode: HoldMode::Chat | HoldMode::Selection,
+        } => Some(CsAgentCaptureCommand::Start),
+        HotkeyEvent::Hold {
+            action: HoldAction::Up,
+            mode: HoldMode::Chat | HoldMode::Selection,
+        } => Some(CsAgentCaptureCommand::Stop),
+        _ => None,
+    }
+}
+
+/// A Shift upgrade can arrive after raw hold capture already started. Ownership
+/// cannot migrate mid-recording: keep the existing overlay session raw and make
+/// sure its eventual key-up still reaches the controller that owns the mic.
+fn overlay_owned_assistive_hold_fallback(event: &HotkeyEvent) -> Option<HotkeyEvent> {
+    if CAPTURE_OWNER.load(Ordering::Acquire) != CAPTURE_OWNER_OVERLAY {
+        return None;
+    }
+    match event {
+        HotkeyEvent::HoldUpdate {
+            mode: HoldMode::Chat | HoldMode::Selection,
+        } => Some(HotkeyEvent::HoldUpdate {
+            mode: HoldMode::Raw,
+        }),
+        HotkeyEvent::Hold {
+            action: HoldAction::Up,
+            mode: HoldMode::Chat | HoldMode::Selection,
+        } => Some(HotkeyEvent::Hold {
+            action: HoldAction::Up,
+            mode: HoldMode::Raw,
+        }),
+        _ => None,
+    }
 }
 
 fn shared_controller() -> SharedController {
@@ -63,15 +154,48 @@ fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
         .map(Arc::clone)
 }
 
-fn route_hotkey_event<F, G>(
+fn route_hotkey_event<F, G, H>(
     event: HotkeyEvent,
     app_action_listener: Option<Arc<dyn CsAppActionListener>>,
     dispatch_recording: F,
     dispatch_deferred_insert: G,
+    arm_assistive_trigger: H,
 ) where
     F: FnOnce(HotkeyEvent),
     G: FnOnce(),
+    H: FnOnce(),
 {
+    if let Some(fallback) = overlay_owned_assistive_hold_fallback(&event) {
+        if matches!(event, HotkeyEvent::HoldUpdate { .. }) {
+            notifications::notify(
+                "Codescribe",
+                "Finish Dictation before starting Agent voice input",
+            );
+        }
+        dispatch_recording(fallback);
+        return;
+    }
+    if let Some(command) = agent_capture_command(&event) {
+        tracing::info!(
+            ?command,
+            "Assistive command: dispatching Agent-owned capture"
+        );
+        // HOTKEYS_CONTRACT: "Selection is captured in the trigger handler,
+        // never at send time." A capture owner of NONE means this command is
+        // about to START a new agent capture — arm the trigger context now,
+        // before the composer mic takes over. Stop/toggle-stop commands find
+        // the owner already AGENT and must not re-capture at send time.
+        if CAPTURE_OWNER.load(Ordering::Acquire) == CAPTURE_OWNER_NONE {
+            arm_assistive_trigger();
+        }
+        if let Some(listener) = app_action_listener {
+            listener.on_agent_capture(command);
+        } else {
+            tracing::warn!("Assistive command rejected: Agent action listener unavailable");
+            notifications::notify("Codescribe", "Agent microphone is unavailable");
+        }
+        return;
+    }
     match event {
         HotkeyEvent::ShowAgent => {
             tracing::info!("Agent summon command: dispatching UI-only app action");
@@ -173,6 +297,17 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
                 // ever arrive, so end the forwarder task.
                 Err(RecvError::Closed) => break,
             };
+            if matches!(
+                &event.payload,
+                IpcEventPayload::StateChange { to, .. } if to == "idle"
+            ) {
+                let _ = CAPTURE_OWNER.compare_exchange(
+                    CAPTURE_OWNER_OVERLAY,
+                    CAPTURE_OWNER_NONE,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
             let listener = listener_store
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
@@ -419,29 +554,40 @@ impl CodescribeHotkeys {
         std::thread::spawn(move || {
             for event in rx {
                 let spawn_handle = handle.clone();
+                let arm_handle = handle.clone();
                 let controller_handle = handle.clone();
+                let arm_controller_handle = handle.clone();
                 let controller_store = Arc::clone(&controller_store);
+                let arm_controller_store = Arc::clone(&controller_store);
                 route_hotkey_event(
                     event,
                     current_app_action_listener(),
                     move |recording_event| {
                         spawn_handle.spawn(async move {
-                            optimistically_show_overlay(&recording_event).await;
                             let controller =
                                 ensure_controller(&controller_store, controller_handle);
-                            let dispatch = dispatch_recording_hotkey_event(
+                            let dispatch = dispatch_recording_with_capture_gate(
                                 recording_event,
                                 Arc::clone(&controller),
                             )
                             .await;
-                            compensate_orphaned_preparing(&controller).await;
                             if let Err(error) = dispatch {
-                                tray_status::update_tray_status(TrayStatus::Error);
+                                if CAPTURE_OWNER.load(Ordering::Acquire) != CAPTURE_OWNER_AGENT {
+                                    tray_status::update_tray_status(TrayStatus::Error);
+                                }
+                                notifications::notify("Codescribe", &error.to_string());
                                 eprintln!("Hotkey event error: {error}");
                             }
                         });
                     },
                     deliver_deferred_insert_and_notify,
+                    move || {
+                        arm_handle.spawn(async move {
+                            let controller =
+                                ensure_controller(&arm_controller_store, arm_controller_handle);
+                            controller.arm_assistive_trigger_context().await;
+                        });
+                    },
                 );
             }
         });
@@ -504,12 +650,45 @@ impl CodescribeHotkeys {
 
     /// Start the same toggle recording flow used by the default hotkey.
     pub async fn start_recording(&self) -> Result<(), CsError> {
+        if CAPTURE_OWNER.load(Ordering::Acquire) == CAPTURE_OWNER_AGENT {
+            return Err(CsError::Recording {
+                msg: "Agent voice input already owns the microphone".to_string(),
+            });
+        }
         start_recording_with_event(HotkeyEvent::ToggleNormal).await
     }
 
     /// Start the same toggle flow in the assistive lane for UI-initiated recording.
     pub async fn start_assistive_recording(&self) -> Result<(), CsError> {
-        start_recording_with_event(HotkeyEvent::ToggleAssistive).await
+        let Some(listener) = current_app_action_listener() else {
+            return Err(CsError::Recording {
+                msg: "Agent action listener unavailable".to_string(),
+            });
+        };
+        listener.on_agent_capture(CsAgentCaptureCommand::Toggle);
+        Ok(())
+    }
+
+    /// Atomically claim/release the one process-wide capture owner. Returns
+    /// false when the legacy overlay already owns the microphone.
+    pub fn set_agent_capture_active(&self, active: bool) -> bool {
+        let owns_capture = if active {
+            claim_agent_capture()
+        } else {
+            release_agent_capture();
+            true
+        };
+        if active && !owns_capture {
+            tracing::warn!("Agent capture rejected: transcription overlay owns the microphone");
+            return false;
+        }
+        if active {
+            tray_status::set_tray_indicator_mode(BadgeMode::Assistive);
+            tray_status::update_tray_status(TrayStatus::Listening);
+        } else if tray_status::current_tray_status() == TrayStatus::Listening {
+            tray_status::update_tray_status(TrayStatus::Idle);
+        }
+        true
     }
 
     /// Stop the active legacy-controller recording flow, if one is live.
@@ -727,13 +906,50 @@ impl From<codescribe::controller::OverlayPasteResult> for CsPasteResult {
 }
 
 async fn start_recording_with_event(event: HotkeyEvent) -> Result<(), CsError> {
-    optimistically_show_overlay(&event).await;
     let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+    dispatch_recording_with_capture_gate(event, controller)
+        .await
+        .map_err(|error| CsError::Recording {
+            msg: error.to_string(),
+        })
+}
+
+async fn dispatch_recording_with_capture_gate(
+    event: HotkeyEvent,
+    controller: Arc<RecordingController>,
+) -> anyhow::Result<()> {
+    let state_before = controller.current_state().await;
+    let starts_overlay = state_before == State::Idle && event_can_start_overlay(&event);
+    if starts_overlay {
+        CAPTURE_OWNER
+            .compare_exchange(
+                CAPTURE_OWNER_NONE,
+                CAPTURE_OWNER_OVERLAY,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|owner| {
+                anyhow::anyhow!(match owner {
+                    CAPTURE_OWNER_AGENT => "Agent voice input already owns the microphone",
+                    _ => "Another transcription capture is already starting",
+                })
+            })?;
+    } else if CAPTURE_OWNER.load(Ordering::Acquire) == CAPTURE_OWNER_AGENT {
+        anyhow::bail!("Agent voice input already owns the microphone");
+    }
+
+    optimistically_show_overlay(&event).await;
     let dispatch = dispatch_recording_hotkey_event(event, Arc::clone(&controller)).await;
     compensate_orphaned_preparing(&controller).await;
-    dispatch.map_err(|error| CsError::Recording {
-        msg: error.to_string(),
-    })
+    if controller.current_state().await == State::Idle {
+        let _ = CAPTURE_OWNER.compare_exchange(
+            CAPTURE_OWNER_OVERLAY,
+            CAPTURE_OWNER_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+    dispatch
 }
 
 async fn dispatch_recording_hotkey_event(
@@ -888,22 +1104,87 @@ mod app_action_tests {
 
     struct CountingAppActionListener {
         show_agent_calls: AtomicUsize,
+        capture_calls: AtomicUsize,
     }
 
     impl CsAppActionListener for CountingAppActionListener {
         fn on_show_agent(&self) {
             self.show_agent_calls.fetch_add(1, Ordering::SeqCst);
         }
+
+        fn on_agent_capture(&self, _command: CsAgentCaptureCommand) {
+            self.capture_calls.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     #[test]
+    #[serial_test::serial]
+    fn capture_owner_is_atomic_and_mutually_exclusive() {
+        CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
+        assert!(claim_agent_capture());
+        assert_eq!(CAPTURE_OWNER.load(Ordering::SeqCst), CAPTURE_OWNER_AGENT);
+        assert!(
+            CAPTURE_OWNER
+                .compare_exchange(
+                    CAPTURE_OWNER_NONE,
+                    CAPTURE_OWNER_OVERLAY,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+        );
+        release_agent_capture();
+        assert_eq!(CAPTURE_OWNER.load(Ordering::SeqCst), CAPTURE_OWNER_NONE);
+    }
+
+    #[test]
+    fn assistive_hold_maps_to_agent_start_and_stop() {
+        assert_eq!(
+            agent_capture_command(&HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Chat,
+            }),
+            Some(CsAgentCaptureCommand::Start)
+        );
+        assert_eq!(
+            agent_capture_command(&HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Selection,
+            }),
+            Some(CsAgentCaptureCommand::Stop)
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn overlay_owned_assistive_release_still_stops_the_overlay_owner() {
+        CAPTURE_OWNER.store(CAPTURE_OWNER_OVERLAY, Ordering::SeqCst);
+        assert_eq!(
+            overlay_owned_assistive_hold_fallback(&HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Chat,
+            }),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            })
+        );
+        CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn show_agent_routes_without_recording_or_preparing_payload() {
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+        CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
         let listener = Arc::new(CountingAppActionListener {
             show_agent_calls: AtomicUsize::new(0),
+            capture_calls: AtomicUsize::new(0),
         });
         let recording_calls = Arc::new(AtomicUsize::new(0));
+        let arm_calls = Arc::new(AtomicUsize::new(0));
         let recording_calls_for_route = Arc::clone(&recording_calls);
+        let arm_calls_for_route = Arc::clone(&arm_calls);
 
         route_hotkey_event(
             HotkeyEvent::ShowAgent,
@@ -912,13 +1193,19 @@ mod app_action_tests {
                 recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
             || panic!("show agent must not dispatch deferred insert"),
+            move || {
+                arm_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
         );
 
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 0);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
         assert!(!PREPARING_PENDING.load(Ordering::SeqCst));
 
         let recording_calls_for_route = Arc::clone(&recording_calls);
+        let arm_calls_for_route = Arc::clone(&arm_calls);
         route_hotkey_event(
             HotkeyEvent::ToggleNormal,
             Some(listener.clone()),
@@ -926,9 +1213,31 @@ mod app_action_tests {
                 recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
             || panic!("recording command must not dispatch deferred insert"),
+            move || {
+                arm_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
         );
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
+
+        let recording_calls_for_route = Arc::clone(&recording_calls);
+        let arm_calls_for_route = Arc::clone(&arm_calls);
+        route_hotkey_event(
+            HotkeyEvent::ToggleAssistive,
+            Some(listener.clone()),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+            || panic!("assistive command must not dispatch deferred insert"),
+            move || {
+                arm_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
+        // Capture owner was NONE → a new agent capture starts → trigger armed.
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 1);
 
         let deferred_calls = Arc::new(AtomicUsize::new(0));
         let deferred_calls_for_route = Arc::clone(&deferred_calls);
@@ -939,9 +1248,34 @@ mod app_action_tests {
             move || {
                 deferred_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
+            || panic!("deferred insert must not arm assistive trigger"),
         );
         assert_eq!(deferred_calls.load(Ordering::SeqCst), 1);
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn assistive_stop_does_not_recapture_at_send_time() {
+        // Owner already AGENT → this command stops an active capture; the
+        // contract forbids capturing selection at send time.
+        CAPTURE_OWNER.store(CAPTURE_OWNER_AGENT, Ordering::SeqCst);
+        let listener = Arc::new(CountingAppActionListener {
+            show_agent_calls: AtomicUsize::new(0),
+            capture_calls: AtomicUsize::new(0),
+        });
+        route_hotkey_event(
+            HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Chat,
+            },
+            Some(listener.clone()),
+            |_| panic!("assistive stop must not enter recording dispatch"),
+            || panic!("assistive stop must not dispatch deferred insert"),
+            || panic!("assistive stop must not re-arm the trigger context"),
+        );
+        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 1);
+        CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
     }
 }
 

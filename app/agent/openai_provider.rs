@@ -94,8 +94,10 @@ impl OpenAiProvider {
             .context("Failed to create OpenAI agent HTTP client")?;
 
         info!(
-            "OpenAI agent provider configured (model={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
+            "OpenAI agent provider configured (model={}, account_auth={}, has_api_key={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
             default_model,
+            use_account_auth,
+            !api_key.is_empty(),
             initial_response_timeout.as_secs(),
             inter_chunk_timeout.as_secs(),
             use_previous_response_id
@@ -160,6 +162,7 @@ impl AgentProvider for OpenAiProvider {
         );
 
         let request = OpenAiResponsesRequest {
+            reasoning: reasoning_summary_request(&model),
             model,
             input: build_request_input_items(messages, previous_response_id.as_deref())?,
             previous_response_id,
@@ -252,6 +255,30 @@ impl AgentProvider for OpenAiProvider {
     fn name(&self) -> &str {
         "openai-responses"
     }
+
+    async fn response_chain_id(&self) -> Option<String> {
+        self.previous_response_id.lock().await.clone()
+    }
+
+    async fn restore_response_chain(&self, id: Option<String>) {
+        let mut lock = self.previous_response_id.lock().await;
+        if *lock != id {
+            info!(
+                "Agent provider chain restored after user stop (provider=openai-responses, previous_response_id={})",
+                if id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .is_some()
+                {
+                    "present"
+                } else {
+                    "absent"
+                }
+            );
+            *lock = id;
+        }
+    }
 }
 
 impl OpenAiProvider {
@@ -342,6 +369,12 @@ async fn forward_events_and_track_chain(
 #[derive(Debug, Serialize)]
 struct OpenAiResponsesRequest {
     model: String,
+    /// Ask reasoning-capable Responses models for the safe public summary
+    /// stream. Without this field the API may reason internally but emits no
+    /// `response.reasoning_summary_text.*` events, leaving the macOS bubble on
+    /// an opaque "thinking…" placeholder for the whole tool turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenAiReasoningRequest>,
     input: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
@@ -354,6 +387,20 @@ struct OpenAiResponsesRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefinition>,
     stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiReasoningRequest {
+    summary: &'static str,
+}
+
+fn reasoning_summary_request(model: &str) -> Option<OpenAiReasoningRequest> {
+    let model = model.trim().to_ascii_lowercase();
+    let supports_reasoning = model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4");
+    supports_reasoning.then_some(OpenAiReasoningRequest { summary: "auto" })
 }
 
 #[derive(Debug, Serialize)]
@@ -631,7 +678,7 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 mod tests {
     use super::{
         OpenAiProvider, build_request_input_items, format_tool_output,
-        forward_events_and_track_chain, request_messages, to_data_uri,
+        forward_events_and_track_chain, reasoning_summary_request, request_messages, to_data_uri,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -642,6 +689,16 @@ mod tests {
     use reqwest::Client;
     use serde_json::json;
     use tokio::sync::{Mutex, mpsc};
+
+    #[test]
+    fn requests_public_reasoning_summaries_only_for_reasoning_models() {
+        let gpt5 = serde_json::to_value(reasoning_summary_request("gpt-5.6").unwrap())
+            .expect("serialize reasoning request");
+        assert_eq!(gpt5, json!({ "summary": "auto" }));
+        assert!(reasoning_summary_request("o3-mini").is_some());
+        assert!(reasoning_summary_request("gpt-4o-mini").is_none());
+        assert!(reasoning_summary_request("llama3.3").is_none());
+    }
 
     #[test]
     fn request_messages_replays_full_history_without_previous_response_id() {
@@ -923,7 +980,7 @@ mod tests {
             "data: [DONE]",
             "",
         ]
-        .join("\n");
+            .join("\n");
         let mock = server
             .mock("POST", "/v1/responses")
             .with_status(200)
@@ -1002,6 +1059,41 @@ mod tests {
         assert!(
             stored_chain.lock().await.is_none(),
             "reset_chain=true must clear stored previous_response_id"
+        );
+    }
+
+    /// Operator 2026-08-05: user Stop reinstates the pre-turn chain id instead
+    /// of wiping previous_response_id so a queued follow-up keeps continuity.
+    #[tokio::test]
+    async fn restore_response_chain_reinstates_pre_turn_id_after_user_stop() {
+        let stored_chain = Arc::new(Mutex::new(Some("resp_pre_turn".to_string())));
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint: "http://unused.invalid/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-5.5".to_string(),
+            use_previous_response_id: true,
+            previous_response_id: Arc::clone(&stored_chain),
+            initial_response_timeout: Duration::from_secs(1),
+            inter_chunk_timeout: Duration::from_secs(1),
+            use_account_auth: false,
+        };
+
+        // Mid-turn advance (tool round) or dirty cancel would move the live id.
+        *stored_chain.lock().await = Some("resp_mid_turn_cancelled".to_string());
+        assert_eq!(
+            provider.response_chain_id().await.as_deref(),
+            Some("resp_mid_turn_cancelled")
+        );
+
+        provider
+            .restore_response_chain(Some("resp_pre_turn".to_string()))
+            .await;
+
+        assert_eq!(
+            stored_chain.lock().await.as_deref(),
+            Some("resp_pre_turn"),
+            "user Stop must reinstate the pre-turn previous_response_id"
         );
     }
 
@@ -1253,7 +1345,7 @@ mod tests {
             "data: [DONE]",
             "",
         ]
-        .join("\n");
+            .join("\n");
         let mock = server
             .mock("POST", "/v1/responses")
             .with_status(200)

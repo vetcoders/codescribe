@@ -30,6 +30,16 @@ enum CSFocusPolicy {
             if current is NSTextField || current is NSTextView {
                 return true
             }
+            // SwiftUI's TextEditor is hosted in an NSScrollView. Depending on
+            // which internal layer receives the click, hitTest can return the
+            // clip/document host instead of the NSTextView itself. Treat a
+            // scroll view backed by a text view as text input too, otherwise the
+            // pointer focus monitor clears first responder immediately and the
+            // editor looks read-only.
+            if let scrollView = current as? NSScrollView,
+               scrollView.documentView is NSTextView {
+                return true
+            }
             candidate = current.superview
         }
         return false

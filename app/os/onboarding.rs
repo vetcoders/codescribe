@@ -38,6 +38,15 @@ fn onboarding_progress_path() -> PathBuf {
 /// clamped without depending on the (excised) AppKit step table.
 const TOTAL_ONBOARDING_STEPS: usize = 13;
 
+/// Version tag for the persisted resume marker. A bare integer (no tag) is the
+/// legacy 12-step layout from before the Speech Recognition step existed; it is
+/// remapped on read so mid-onboarding users resume on the same screen after an
+/// update instead of a shifted one.
+const ONBOARDING_PROGRESS_VERSION_PREFIX: &str = "v2:";
+
+/// Index where the Speech Recognition permission step was inserted (v1 → v2).
+const SPEECH_STEP_INSERT_INDEX: usize = 6;
+
 /// Persist the wizard's current step so a relaunch resumes where the user left
 /// off. Writer half of the `onboarding_progress` marker; the SwiftUI wizard is
 /// now the reader via [`load_onboarding_progress`].
@@ -46,7 +55,10 @@ pub fn save_onboarding_progress(step_index: usize) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let _ = fs::write(path, step_index.to_string());
+    let _ = fs::write(
+        path,
+        format!("{ONBOARDING_PROGRESS_VERSION_PREFIX}{step_index}"),
+    );
 }
 
 /// Resume step persisted by [`save_onboarding_progress`], clamped to the last
@@ -55,9 +67,25 @@ pub fn load_onboarding_progress() -> usize {
     let raw = fs::read_to_string(onboarding_progress_path()).ok();
     let step = raw
         .as_deref()
-        .and_then(|s| s.trim().parse::<usize>().ok())
+        .map(str::trim)
+        .and_then(parse_onboarding_progress)
         .unwrap_or(0);
     step.min(TOTAL_ONBOARDING_STEPS.saturating_sub(1))
+}
+
+/// Parse a persisted marker in either format. `v2:<n>` is the current 13-step
+/// layout verbatim; a bare integer is the pre-Speech 12-step layout, so indices
+/// at or past the insertion point shift up by one.
+fn parse_onboarding_progress(raw: &str) -> Option<usize> {
+    if let Some(current) = raw.strip_prefix(ONBOARDING_PROGRESS_VERSION_PREFIX) {
+        return current.trim().parse::<usize>().ok();
+    }
+    let legacy = raw.parse::<usize>().ok()?;
+    Some(if legacy >= SPEECH_STEP_INSERT_INDEX {
+        legacy + 1
+    } else {
+        legacy
+    })
 }
 
 /// Mark first-run onboarding complete: clear the resume marker and write the
@@ -364,6 +392,27 @@ mod tests {
         };
         assert_eq!(all_missing(false, true), None);
         assert_eq!(all_missing(true, false), None);
+    }
+
+    /// Legacy bare-integer markers come from the 12-step layout without the
+    /// Speech Recognition step: indices at or past the insertion point must
+    /// shift by one so the user resumes on the same *screen*, not the same raw
+    /// number (e.g. legacy 8 = ApiKey → 9 = ApiKey in the 13-step flow).
+    #[test]
+    fn legacy_progress_markers_remap_across_the_speech_step_insertion() {
+        // Before the insertion point: unchanged.
+        assert_eq!(parse_onboarding_progress("0"), Some(0));
+        assert_eq!(parse_onboarding_progress("5"), Some(5));
+        // At/after the insertion point: shifted by one.
+        assert_eq!(parse_onboarding_progress("6"), Some(7));
+        assert_eq!(parse_onboarding_progress("8"), Some(9));
+        assert_eq!(parse_onboarding_progress("11"), Some(12));
+        // Current format passes through verbatim.
+        assert_eq!(parse_onboarding_progress("v2:6"), Some(6));
+        assert_eq!(parse_onboarding_progress("v2:12"), Some(12));
+        // Garbage is unparsable in both formats.
+        assert_eq!(parse_onboarding_progress("v2:x"), None);
+        assert_eq!(parse_onboarding_progress("not-a-number"), None);
     }
 
     #[test]

@@ -16,7 +16,14 @@ use super::{
     ToolResultContent,
 };
 
-const DEFAULT_MAX_ITERATIONS: usize = 25;
+/// Loop guard for one agent turn, counted in provider round-trips (each round
+/// may carry many tool calls). This is NOT a work limit: the old value of 25
+/// silently capped legitimate long multi-tool turns. 200 rounds is far beyond
+/// any real turn while still stopping a genuinely stuck model↔tool loop.
+/// Owner: agent session. Configurable via `CODESCRIBE_AGENT_MAX_TURN_ITERATIONS`.
+/// Hitting the guard is an explicit `loop_guard` error — never a fake success.
+const DEFAULT_MAX_ITERATIONS: usize = 200;
+const MAX_ITERATIONS_ENV: &str = "CODESCRIBE_AGENT_MAX_TURN_ITERATIONS";
 const AGENT_STREAM_START_RETRY_MAX_ATTEMPTS: usize = 2;
 const AGENT_STREAM_START_RETRY_DELAY: Duration = Duration::from_millis(250);
 const TOOL_APPROVAL_TIMEOUT: Duration = Duration::from_secs(90);
@@ -63,7 +70,7 @@ impl AgentSession {
             provider,
             tools,
             thread_id: None,
-            max_iterations: DEFAULT_MAX_ITERATIONS,
+            max_iterations: configured_max_iterations(),
             ui_tx,
             tool_output_store: ToolOutputStore::new(),
             approval_handler: None,
@@ -109,6 +116,37 @@ impl AgentSession {
         }
         self.messages = messages;
         self.thread_id = None;
+    }
+
+    /// Snapshot the provider-owned Responses chain id for a later user-Stop restore.
+    pub async fn snapshot_response_chain(&self) -> Option<String> {
+        self.provider.response_chain_id().await
+    }
+
+    /// Roll a cancelled turn back to the pre-turn history **and** reinstate the
+    /// chain ids that belonged to that history.
+    ///
+    /// Operator contract (2026-08-05): Stop aborts only the active stream.
+    /// `previous_response_id` / session thread id are cleared only on a new
+    /// thread or an explicit reset — never as a side effect of Stop. Mid-turn
+    /// chain advances (tool rounds) are discarded with the unfinished turn.
+    pub async fn restore_after_user_stop(
+        &mut self,
+        mut messages_before_turn: Vec<Message>,
+        session_thread_before: Option<String>,
+        provider_chain_before: Option<String>,
+    ) {
+        if let Err(error) = self
+            .tool_output_store
+            .spill_messages(&mut messages_before_turn)
+        {
+            warn!(%error, "Failed to normalize rehydrated tool-output history after user stop");
+        }
+        self.messages = messages_before_turn;
+        self.thread_id = session_thread_before;
+        self.provider
+            .restore_response_chain(provider_chain_before)
+            .await;
     }
 
     #[cfg(test)]
@@ -568,12 +606,27 @@ impl AgentSession {
             }
         }
 
+        // Explicit `loop_guard` termination: the turn was stopped by the
+        // runaway-loop guard, not completed. Surfacing this as an error keeps
+        // the UI honest (failed bubble naming the guard), and the message names
+        // the env knob so a legitimately long turn can be unblocked.
         let message = format!(
-            "Agent loop exceeded max iterations ({})",
+            "Agent turn stopped by loop_guard: exceeded max iterations ({}). \
+             Set {MAX_ITERATIONS_ENV} to raise the guard for legitimately long turns.",
             self.max_iterations
         );
         Err(anyhow::anyhow!(message))
     }
+}
+
+/// Resolve the per-turn loop-guard budget: `CODESCRIBE_AGENT_MAX_TURN_ITERATIONS`
+/// when set to a positive integer, else [`DEFAULT_MAX_ITERATIONS`].
+fn configured_max_iterations() -> usize {
+    std::env::var(MAX_ITERATIONS_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_ITERATIONS)
 }
 
 async fn send_ui_event(tx: &Sender<AgentUiEvent>, event: AgentUiEvent) {
@@ -999,6 +1052,39 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn restore_after_user_stop_keeps_pre_turn_thread_id() {
+        let (ui_tx, _ui_rx) = mpsc::channel(4);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        session.restore_messages(vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("prior".to_string())],
+        )]);
+        session.thread_id = Some("resp_prior".to_string());
+
+        // Simulate mid-turn growth that Stop must discard.
+        session.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text("aborted turn".to_string())],
+        ));
+        session.thread_id = Some("resp_mid_turn".to_string());
+
+        let before = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("prior".to_string())],
+        )];
+        session
+            .restore_after_user_stop(before, Some("resp_prior".to_string()), None)
+            .await;
+
+        assert_eq!(session.messages().len(), 1);
+        assert_eq!(session.thread_id(), Some("resp_prior"));
+    }
+
     #[test]
     fn restore_messages_seeds_history_and_clears_provider_thread_id() {
         let (ui_tx, _ui_rx) = mpsc::channel(4);
@@ -1096,10 +1182,82 @@ mod tests {
 
         let error = result.expect_err("session should stop at max iteration limit");
         assert!(
-            error.to_string().contains("max iterations"),
-            "expected max iteration error, got: {}",
+            error.to_string().contains("loop_guard"),
+            "expected explicit loop_guard termination, got: {}",
             error
         );
+    }
+
+    /// Regression for the arbitrary 25-iteration ceiling: a legitimate long
+    /// multi-tool turn (30 provider rounds — above the old cap) must run to
+    /// completion under the default loop-guard budget, not die mid-work.
+    #[tokio::test]
+    async fn long_multi_tool_turn_outlives_old_arbitrary_limit() {
+        const ROUNDS_ABOVE_OLD_LIMIT: usize = 30;
+
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(
+                ToolDefinition {
+                    name: "step_tool".to_string(),
+                    description: "One step of a long turn".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_input| {
+                    Box::pin(async { vec![ToolResultContent::Text("step done".to_string())] })
+                }),
+            )
+            .expect("tool registration should succeed");
+
+        let mut scripts: Vec<Vec<AgentEvent>> = (0..ROUNDS_ABOVE_OLD_LIMIT)
+            .map(|round| {
+                vec![
+                    AgentEvent::ToolCallReady {
+                        id: format!("call_step_{round}"),
+                        name: "step_tool".to_string(),
+                        arguments: json!({"round": round}),
+                    },
+                    AgentEvent::ResponseDone {
+                        response_id: Some(format!("resp_step_{round}")),
+                        clean: true,
+                    },
+                ]
+            })
+            .collect();
+        scripts.push(vec![
+            AgentEvent::TextDone("All steps finished".to_string()),
+            AgentEvent::ResponseDone {
+                response_id: Some("resp_final".to_string()),
+                clean: true,
+            },
+        ]);
+
+        let (ui_tx, mut ui_rx) = mpsc::channel(2048);
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(scripts)),
+            Arc::new(registry),
+            ui_tx,
+        );
+        // Drain UI events concurrently so the bounded channel never stalls the loop.
+        let drain = tokio::spawn(async move { while ui_rx.recv().await.is_some() {} });
+
+        let result = session
+            .send(
+                "run a long job".to_string(),
+                Vec::new(),
+                &StreamOptions {
+                    model: "gpt-test".to_string(),
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                    reset_chain: false,
+                },
+            )
+            .await;
+
+        result.expect("a 30-round turn must complete under the default loop guard");
+        drop(session);
+        drain.await.expect("ui drain task should finish");
     }
 
     #[tokio::test]

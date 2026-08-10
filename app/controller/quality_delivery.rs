@@ -1,0 +1,321 @@
+//! Auto-paste policy, quality-commit probes, automatic delivery fence, and
+//! transcript wrapping for delivery / truth status composition.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use chrono::{DateTime, Local};
+use tokio::sync::Mutex;
+
+use crate::config::Config;
+use crate::os::clipboard;
+use crate::os::hotkeys::HoldMode;
+
+use super::types::RecordingTruthMetadata;
+
+const AUTOMATIC_DELIVERY_HISTORY_CAPACITY: usize = 32;
+
+const QUALITY_GATE_MIN_CHARS: usize = 24;
+const SHORT_AI_QUALITY_GATE_MIN_CHARS: usize = 10;
+const QUALITY_GATE_DROP_RATIO: f32 = 0.35;
+const QUALITY_GATE_DIFF_RATIO: f32 = 0.62;
+const QUALITY_GATE_CORRECTION_RATIO: f32 = 0.40;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ActionQualityProbe {
+    // pub(crate): controller impl + controller::tests (child) both read these.
+    pub(crate) raw_chars: usize,
+    pub(crate) final_chars: usize,
+    pub(crate) raw_final_diff_ratio: f32,
+    pub(crate) correction_ratio: f32,
+    pub(crate) drop_ratio: f32,
+}
+
+fn normalize_for_diff(s: &str) -> String {
+    let trimmed = s.trim_start();
+    // Lowercase first char only (preserving rest of original case)
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+impl ActionQualityProbe {
+    pub(super) fn from_transcripts(
+        raw_text: &str,
+        final_text: &str,
+        post_stats: &crate::stream_postprocess::StreamPostProcessStats,
+    ) -> Self {
+        let raw_chars = raw_text.chars().count();
+        let final_chars = final_text.chars().count();
+
+        let (backspaces, inserted_chars) =
+            codescribe_core::pipeline::contracts::TranscriptDelta::from_diff(
+                &normalize_for_diff(raw_text),
+                &normalize_for_diff(final_text),
+            )
+            .map(|delta| {
+                let backspaces = delta
+                    .delta
+                    .chars()
+                    .filter(|c| *c == codescribe_core::pipeline::contracts::BACKSPACE)
+                    .count();
+                let inserted = delta.delta.chars().count().saturating_sub(backspaces);
+                (backspaces, inserted)
+            })
+            .unwrap_or((0, 0));
+
+        let span = raw_chars.max(final_chars).max(1);
+        let raw_final_diff_ratio = ((backspaces + inserted_chars) as f32 / span as f32).min(1.0);
+        let correction_ratio = (backspaces as f32 / raw_chars.max(1) as f32).min(1.0);
+        let drop_ratio = if post_stats.input_chunks == 0 {
+            0.0
+        } else {
+            post_stats.dropped_chunks as f32 / post_stats.input_chunks as f32
+        };
+
+        Self {
+            raw_chars,
+            final_chars,
+            raw_final_diff_ratio,
+            correction_ratio,
+            drop_ratio,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AutoPasteTrigger {
+    Hold,
+    DoubleLeftOption,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AutoPastePolicyContext {
+    pub trigger: AutoPasteTrigger,
+    pub persisted_enabled: bool,
+    pub overlay_enabled: bool,
+    pub assistive: bool,
+    pub no_speech: bool,
+    pub empty_output: bool,
+    pub notes_save_only: bool,
+    pub live_stream_session: bool,
+    pub commit_required: bool,
+}
+
+pub(super) fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
+    // Trigger and presentation state deliberately do not fork policy. Keeping
+    // the explicit matrix here makes that parity reviewable and testable.
+    let persisted_policy = match (context.trigger, context.overlay_enabled) {
+        (AutoPasteTrigger::Hold, true | false)
+        | (AutoPasteTrigger::DoubleLeftOption, true | false) => context.persisted_enabled,
+    };
+
+    persisted_policy
+        && !context.assistive
+        && !context.no_speech
+        && !context.empty_output
+        && !context.notes_save_only
+        && !context.live_stream_session
+        && !context.commit_required
+}
+
+pub(super) trait AutomaticDeliverySink: Send + Sync {
+    fn paste(&self, text: &str) -> Result<()>;
+}
+
+pub(super) struct ClipboardDeliverySink;
+
+impl AutomaticDeliverySink for ClipboardDeliverySink {
+    fn paste(&self, text: &str) -> Result<()> {
+        clipboard::paste_text(text).context("Failed to paste text")
+    }
+}
+
+/// Controller-owned, bounded exactly-once fence. A small ring retains recent
+/// recording timestamps so late duplicate callbacks remain fenced without
+/// process-global or unbounded growth. A failed sink call remains retryable.
+pub(super) struct AutomaticDeliveryOwner {
+    delivered_timestamps: Mutex<VecDeque<DateTime<Local>>>,
+    sink: Arc<dyn AutomaticDeliverySink>,
+}
+
+impl AutomaticDeliveryOwner {
+    pub(super) fn new(sink: Arc<dyn AutomaticDeliverySink>) -> Self {
+        Self {
+            delivered_timestamps: Mutex::new(VecDeque::with_capacity(
+                AUTOMATIC_DELIVERY_HISTORY_CAPACITY,
+            )),
+            sink,
+        }
+    }
+
+    pub(super) async fn deliver_once(
+        &self,
+        timestamp: DateTime<Local>,
+        text: &str,
+    ) -> Result<bool> {
+        let mut delivered = self.delivered_timestamps.lock().await;
+        if delivered.contains(&timestamp) {
+            return Ok(false);
+        }
+
+        self.sink.paste(text)?;
+        if delivered.len() == AUTOMATIC_DELIVERY_HISTORY_CAPACITY {
+            delivered.pop_front();
+        }
+        delivered.push_back(timestamp);
+        Ok(true)
+    }
+}
+
+pub(super) fn recording_mode_label(
+    assistive: bool,
+    hold_mode: HoldMode,
+    force_raw: bool,
+    force_ai: bool,
+) -> &'static str {
+    if assistive {
+        match hold_mode {
+            HoldMode::Chat => "chat",
+            HoldMode::Selection => "selection",
+            HoldMode::Raw => "assistive",
+        }
+    } else if force_raw {
+        "raw"
+    } else if force_ai {
+        "format"
+    } else {
+        "toggle"
+    }
+}
+
+pub(super) fn truth_recording_mode_label(
+    assistive: bool,
+    hold_mode: HoldMode,
+    force_raw: bool,
+    force_ai: bool,
+) -> &'static str {
+    if assistive {
+        "assistive"
+    } else {
+        recording_mode_label(assistive, hold_mode, force_raw, force_ai)
+    }
+}
+
+pub(super) fn session_auto_format_enabled(
+    config: &Config,
+    _assistive: bool,
+    force_raw: bool,
+    force_ai: bool,
+) -> bool {
+    force_ai || (!force_raw && config.ai_formatting_enabled)
+}
+
+pub(super) fn maybe_wrap_transcript_for_delivery(
+    text: &str,
+    config: &Config,
+    mode: &str,
+) -> String {
+    maybe_wrap_transcript_for_delivery_with_quality(text, config, mode, None)
+}
+
+pub(super) fn maybe_wrap_transcript_for_delivery_with_quality(
+    text: &str,
+    config: &Config,
+    mode: &str,
+    metadata: Option<&RecordingTruthMetadata>,
+) -> String {
+    if !config.transcript_tagging_enabled {
+        return text.to_string();
+    }
+
+    let confidence_flags = metadata
+        .map(|metadata| {
+            metadata
+                .confidence_flags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    codescribe_core::transcript_tagging::wrap_transcript_with_quality(
+        text,
+        &config.transcript_tag_template,
+        mode,
+        config.whisper_language.as_str(),
+        metadata.and_then(|metadata| metadata.avg_logprob),
+        &confidence_flags,
+    )
+}
+
+pub(super) fn transcript_output_category(
+    output_kind: crate::state::history::TranscriptKind,
+) -> &'static str {
+    match output_kind {
+        crate::state::history::TranscriptKind::Raw => "Transcript",
+        crate::state::history::TranscriptKind::Cloud => "Cloud transcript",
+        crate::state::history::TranscriptKind::FormattedTranscript => "Formatted transcript",
+        crate::state::history::TranscriptKind::AssistantInterpretation => {
+            "Assistant interpretation"
+        }
+        crate::state::history::TranscriptKind::FormattingFailed => {
+            "Formatting failed, raw preserved"
+        }
+        crate::state::history::TranscriptKind::Failed => "Failed transcript",
+    }
+}
+
+pub(super) fn compose_final_status(
+    display_status: &str,
+    output_kind: crate::state::history::TranscriptKind,
+) -> String {
+    if display_status.trim().is_empty() {
+        return transcript_output_category(output_kind).to_string();
+    }
+
+    match output_kind {
+        crate::state::history::TranscriptKind::Failed => display_status.to_string(),
+        _ => format!(
+            "{} • {}",
+            display_status,
+            transcript_output_category(output_kind)
+        ),
+    }
+}
+
+pub(super) fn evaluate_quality_commit_trigger(
+    force_raw: bool,
+    quality_probe: &ActionQualityProbe,
+    output_kind: crate::state::history::TranscriptKind,
+) -> Option<&'static str> {
+    let short_ai_formatted = output_kind
+        == crate::state::history::TranscriptKind::FormattedTranscript
+        && quality_probe.raw_chars.max(quality_probe.final_chars)
+            >= SHORT_AI_QUALITY_GATE_MIN_CHARS;
+    if force_raw {
+        return None;
+    }
+    if output_kind == crate::state::history::TranscriptKind::FormattingFailed {
+        return Some("ai_failed_fallback");
+    }
+    if quality_probe.raw_chars < QUALITY_GATE_MIN_CHARS
+        && quality_probe.final_chars < QUALITY_GATE_MIN_CHARS
+        && !short_ai_formatted
+    {
+        return None;
+    }
+    if quality_probe.drop_ratio >= QUALITY_GATE_DROP_RATIO {
+        return Some("high_drop_ratio");
+    }
+    if quality_probe.raw_final_diff_ratio >= QUALITY_GATE_DIFF_RATIO {
+        return Some("high_rewrite_ratio");
+    }
+    if quality_probe.correction_ratio >= QUALITY_GATE_CORRECTION_RATIO {
+        return Some("high_correction_ratio");
+    }
+    None
+}

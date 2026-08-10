@@ -27,7 +27,7 @@
 ```bash
 git clone https://github.com/vetcoders/codescribe.git
 cd codescribe
-make app PROFILE=release   # Build Codescribe.app
+make app PROFILE=local-release   # Build an optimized local Codescribe.app
 make install-app      # Build + copy app to /Applications
 ```
 

@@ -267,11 +267,21 @@ they simply show Layer 0 output.
 Four phases. Each ships as an independent machete cut behind a feature flag
 (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}`), defaulting to OFF until phase 4 lands.
 
+> **Orthogonality (operator 2026-08-05):** `FINAL_PASS_MODE` / Smart is **stop-path
+> full re-pass routing only**. It does not enable this flag. Live gap-fill is Layer 1
+> behind `CODESCRIBE_LAYERED_TRANSCRIPTION`. Smart + layered can compose; neither
+> silently rewrites the other. Off final-pass never forces Whisper at stop.
+
 **Phase 1 — Layer 0 + Layer 1 (Apple primary + Whisper tail patch).**
 
 - Wire Apple as default engine when available; Whisper-as-primary remains the fallback.
 - New `core/stt/tail_patcher/` module + `EngineEvent::ReplaceRange { source: TailPatch }`.
 - Overlay gains `ReplaceRange` render path (visible "cursor walks back, patch lands").
+- **Wiring status (2026-08-05):** Layer 1 is live on the **VAD/scheduler** session path
+  (`vad_transcription_session`) when phase ≥ 1. Apple **progressive** live
+  (`apple_stream_transcription_session`) does not yet attach tail-patch audio —
+  enabling phase1 on default Apple progressive logs a warn and is a no-op for Layer 1
+  until that branch is wired (escape hatch: `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`).
 - Acceptance test: operator's bench audio reproduces — Layer 0 shows Polish live; Layer 1 fills
   "Bytów to New York" + "framework Vibecrafted" + "Hugging Face" within ~1 s of utterance end.
 

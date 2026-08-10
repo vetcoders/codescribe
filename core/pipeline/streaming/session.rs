@@ -168,6 +168,11 @@ pub(crate) fn enqueue_pending_utterance(
     }
 }
 
+/// Layer 1 (Whisper tail-patch) gate.
+///
+/// Driven solely by `CODESCRIBE_LAYERED_TRANSCRIPTION` ([`layered_phase`]).
+/// **Orthogonal to** `FINAL_PASS_MODE` / Smart: Smart never enables this, and
+/// enabling layered never changes stop-path full re-pass routing.
 fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
 }
@@ -272,6 +277,11 @@ fn emit_session_finalised(
 /// takes the system-dictation path: one long-lived SFSpeech stream whose
 /// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
 /// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
+///
+/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired only
+/// on the VAD/scheduler path below. Apple progressive live does not yet run
+/// Whisper gap-fill mid-hold; Smart final-pass still only skips/allows the
+/// stop-path full re-pass (orthogonal toggle).
 pub(crate) async fn transcription_session(
     chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
@@ -280,6 +290,17 @@ pub(crate) async fn transcription_session(
     // Apple progressive stream branch — must run before the VAD/scheduler path
     // consumes the receiver.
     if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
+        if let Some(phase) = layered_phase() {
+            // Honesty: Settings may flip layered ON while Apple progressive is
+            // the daily driver — Layer 1 is not attached on this branch yet.
+            warn!(
+                phase,
+                "CODESCRIBE_LAYERED_TRANSCRIPTION=phase{phase} is set, but Apple progressive \
+                 live does not run Layer 1 tail-patch yet; gap-fill requires the VAD path \
+                 (CODESCRIBE_APPLE_STT_LIVE_MODE=wav or non-Apple engine). \
+                 FINAL_PASS_MODE/Smart is independent and still routes stop re-pass only."
+            );
+        }
         super::apple_live_session::apple_stream_transcription_session(
             chunk_receiver,
             event_sink,
@@ -319,8 +340,15 @@ pub(crate) async fn vad_transcription_session(
     };
     let output_sample_rate = session.output_sample_rate();
     let stt_scheduler = SttScheduler::new();
+    // Layer 1 only — not FINAL_PASS_MODE. Smart does not flip this on.
     let tail_patch_enabled = tail_patch_enabled();
     let tail_patch_config = TailPatchConfig::from_env();
+    if tail_patch_enabled {
+        info!(
+            phase = layered_phase().unwrap_or(0),
+            "Layered transcription Layer 1 (Whisper tail-patch) enabled on VAD session path"
+        );
+    }
 
     let mut pipeline = TranscriptionPipeline::new(language);
     let mut preview_rev: u64 = 0;
@@ -420,6 +448,7 @@ pub(crate) async fn vad_transcription_session(
             };
             let PendingUtteranceWorkItem {
                 audio,
+                gate_audio_samples,
                 inference_audio,
                 is_final,
                 scheduler_utterance_id: work_utterance_id,
@@ -427,14 +456,15 @@ pub(crate) async fn vad_transcription_session(
                 speech_vad_samples,
             } = item;
 
-            if should_drop_short_utterance(audio.len(), output_sample_rate, max_speech_prob) {
+            if should_drop_short_utterance(gate_audio_samples, output_sample_rate, max_speech_prob)
+            {
                 pipeline.hallucination_drops = pipeline.hallucination_drops.saturating_add(1);
                 event_sink.on_event(&EngineEvent::Drop {
                     kind: DropKind::Hallucination,
                     text: String::new(),
                     reason: format!(
                         "Short utterance dropped: {:.3}s with low VAD prob {:.2}",
-                        audio.len() as f32 / output_sample_rate as f32,
+                        gate_audio_samples as f32 / output_sample_rate as f32,
                         max_speech_prob
                     ),
                 });
@@ -445,12 +475,12 @@ pub(crate) async fn vad_transcription_session(
             // Interim chunks with insufficient speech are pure silence — skip
             // Whisper inference entirely to prevent hallucinations.
             if should_drop_silence_chunk(
-                audio.len(),
+                gate_audio_samples,
                 output_sample_rate,
                 speech_vad_samples,
                 is_final,
             ) {
-                let audio_16k = (audio.len() as f64 * f64::from(vad::VAD_SAMPLE_RATE)
+                let audio_16k = (gate_audio_samples as f64 * f64::from(vad::VAD_SAMPLE_RATE)
                     / f64::from(output_sample_rate)) as u64;
                 let ratio = if audio_16k > 0 {
                     speech_vad_samples as f32 / audio_16k as f32
@@ -459,7 +489,7 @@ pub(crate) async fn vad_transcription_session(
                 };
                 debug!(
                     "Silence gate: dropping {:.3}s chunk (speech_ratio={:.1}%, vad_samples={}, threshold={:.0}%)",
-                    audio.len() as f32 / output_sample_rate as f32,
+                    gate_audio_samples as f32 / output_sample_rate as f32,
                     ratio * 100.0,
                     speech_vad_samples,
                     MIN_SPEECH_RATIO_FOR_INFERENCE * 100.0,
@@ -472,7 +502,7 @@ pub(crate) async fn vad_transcription_session(
                         "Silence chunk dropped: speech_ratio={:.1}% < {:.0}% in {:.3}s",
                         ratio * 100.0,
                         MIN_SPEECH_RATIO_FOR_INFERENCE * 100.0,
-                        audio.len() as f32 / output_sample_rate as f32,
+                        gate_audio_samples as f32 / output_sample_rate as f32,
                     ),
                 });
                 continue;
@@ -619,6 +649,7 @@ pub(crate) async fn vad_transcription_session(
                                             &mut pending_utterances,
                                             PendingUtteranceWorkItem {
                                                 audio: buf,
+                                                gate_audio_samples: buf_len,
                                                 inference_audio: speech,
                                                 is_final: false,
                                                 scheduler_utterance_id,
@@ -643,7 +674,13 @@ pub(crate) async fn vad_transcription_session(
                                     // Flush any accumulated interim audio + this final chunk
                                     // into a single Commit-lane request (extract_speech in prefilter).
                                     let full = std::mem::take(&mut current_utterance_audio);
-                                    interim_vad_buf.clear();
+                                    // Accounting tail: sub-threshold interim residue + this
+                                    // final chunk — the only samples no interim work item has
+                                    // delivered yet. Carrying `full` as the item audio would
+                                    // double-count duration/VAD stats and re-feed the Refine
+                                    // buffer with audio it already holds.
+                                    let mut tail = std::mem::take(&mut interim_vad_buf);
+                                    tail.extend_from_slice(&u);
                                     interim_vad_speech_samples = 0;
                                     speech_activity_observed = true;
 
@@ -656,11 +693,14 @@ pub(crate) async fn vad_transcription_session(
                                     }
 
                                     // Gates (short-utterance duration) must measure the *full*
-                                    // sealed segment, not only the trailing silence-pad slice `u`.
+                                    // sealed segment, not only the trailing silence-pad slice
+                                    // `u` — hence gate_audio_samples, while `audio` stays the
+                                    // not-yet-accounted tail.
                                     let outcome = enqueue_pending_utterance(
                                         &mut pending_utterances,
                                         PendingUtteranceWorkItem {
-                                            audio: full.clone(),
+                                            audio: tail,
+                                            gate_audio_samples: full.len(),
                                             inference_audio: full,
                                             is_final: true,
                                             scheduler_utterance_id,
@@ -713,24 +753,27 @@ pub(crate) async fn vad_transcription_session(
                     }
                     None => {
                         audio_closed = true;
-                        // Flush any remaining interim VAD buffer into final audio.
-                        interim_vad_buf.clear();
+                        // Sub-threshold interim residue was never enqueued; it still
+                        // belongs to this utterance's accounting tail (its samples also
+                        // sit in current_utterance_audio, which feeds the Commit lane).
+                        let mut flush_tail = std::mem::take(&mut interim_vad_buf);
                         interim_vad_speech_samples = 0;
 
                         if let Some(event) = session.flush() {
                             let speech_vad_samples = session.take_event_speech_vad_samples();
                             let max_speech_prob = session.segment_speech_prob();
                             // On flush, always treat as final (Commit lane with extract_speech).
-                            let (utterance, inference_audio) = match event {
+                            let (had_flush_audio, inference_audio) = match event {
                                 SpeechEvent::Utterance(u) | SpeechEvent::UtteranceFinal(u) => {
                                     current_utterance_audio.extend_from_slice(&u);
                                     let full = std::mem::take(&mut current_utterance_audio);
-                                    (u, full)
+                                    flush_tail.extend_from_slice(&u);
+                                    (!u.is_empty(), full)
                                 }
-                                _ => (Vec::new(), Vec::new()),
+                                _ => (false, Vec::new()),
                             };
 
-                            if !utterance.is_empty() {
+                            if had_flush_audio {
                                 speech_activity_observed = true;
                                 if !vad_started {
                                     event_sink.on_event(&EngineEvent::VadStart {
@@ -742,7 +785,11 @@ pub(crate) async fn vad_transcription_session(
                                 let outcome = enqueue_pending_utterance(
                                     &mut pending_utterances,
                                     PendingUtteranceWorkItem {
-                                        audio: utterance,
+                                        // Same contract as the toggle-final: accounting
+                                        // tail in `audio`, full sealed segment behind the
+                                        // gates and the Commit-lane inference.
+                                        audio: flush_tail,
+                                        gate_audio_samples: inference_audio.len(),
                                         inference_audio,
                                         is_final: true,
                                         scheduler_utterance_id,
@@ -1374,7 +1421,15 @@ pub(crate) async fn vad_transcription_session(
 
 #[derive(Debug)]
 pub(crate) struct PendingUtteranceWorkItem {
+    /// Accounting/correction audio: ONLY samples the consumer has not yet seen
+    /// via earlier work items of the same utterance. The consumer sums
+    /// `audio.len()` into utterance duration and appends it to the Refine
+    /// buffer, so carrying already-enqueued samples here double-counts both.
     pub(crate) audio: Vec<f32>,
+    /// Full-segment length the drop gates measure. Distinct from `audio`:
+    /// a final boundary must be gated on the whole sealed segment, while its
+    /// `audio` carries only the not-yet-accounted tail.
+    pub(crate) gate_audio_samples: usize,
     pub(crate) inference_audio: Vec<f32>,
     pub(crate) is_final: bool,
     pub(crate) scheduler_utterance_id: u64,

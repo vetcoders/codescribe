@@ -87,7 +87,7 @@ BUILD_ENV=(env)
 # All `-u` (unset) flags MUST precede any name=value assignments: BSD/macOS
 # `env` stops parsing options at the first assignment (unlike GNU env), so an
 # interleaved `-u` would be treated as the utility name (env: -u: No such file).
-BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS)
+BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS -u CODESCRIBE_LOCAL_INSTALL)
 if [[ "$NO_EMBED" -eq 1 ]]; then
   BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER CODESCRIBE_NO_EMBED=1)
 elif [[ "$EMBED_WHISPER" -eq 1 ]]; then

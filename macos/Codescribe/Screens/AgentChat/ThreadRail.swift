@@ -1,15 +1,121 @@
 import SwiftUI
 
-/// Left rail: wordmark, search field, THREADS list (active = system accent),
-/// and a dashed "+ New thread" footer.
+/// Left rail, two states. `.expanded`: wordmark, search field, THREADS list,
+/// and a dashed "+ New thread" footer. `.compact`: a narrow icon strip that
+/// keeps thread switching and "+ New thread" one click away — the rail is never
+/// removed from the split view, so the window can't show an empty band.
 struct ThreadRail: View {
     @ObservedObject var store: AgentChatStore
+    var mode: AgentSidebarMode = .expanded
     @State private var search: String = ""
     @State private var deleteCandidate: ChatThread?
     @State private var editingThreadID: UUID?
     @State private var renameDraft: String = ""
 
     var body: some View {
+        Group {
+            if mode.isExpanded {
+                expandedRail
+            } else {
+                compactRail
+            }
+        }
+        .background(Color.white.opacity(0.015))
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(CSColor.hairline(0.06)).frame(width: 1)
+        }
+        .onChange(of: search) { _, newValue in
+            store.searchThreads(newValue)
+        }
+        .confirmationDialog(
+            "Delete this thread?",
+            isPresented: Binding(
+                get: { deleteCandidate != nil },
+                set: { if !$0 { deleteCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Thread", role: .destructive) {
+                if let deleteCandidate {
+                    store.delete(deleteCandidate)
+                    self.deleteCandidate = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                deleteCandidate = nil
+            }
+        } message: {
+            Text("This removes the persisted conversation from the thread store.")
+        }
+    }
+
+    /// Narrow icon strip: brand dot, one dot per recent thread (active tinted),
+    /// and a "+" footer. No fixed frame — the column width owns the geometry.
+    private var compactRail: some View {
+        VStack(spacing: 0) {
+            ModeDot(color: CSColor.terracotta, size: 9)
+                .padding(.top, 18)
+                .padding(.bottom, 14)
+
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(filteredThreads) { thread in
+                        Button {
+                            store.select(thread.id)
+                        } label: {
+                            Circle()
+                                .fill(
+                                    thread.id == store.selectedThreadID
+                                        ? CSColor.chromeAccent
+                                        : CSColor.textFaintAlt.opacity(0.5)
+                                )
+                                .frame(width: 7, height: 7)
+                                .frame(width: 28, height: 28)
+                                .background(
+                                    thread.id == store.selectedThreadID
+                                        ? CSColor.chromeAccent.opacity(0.12)
+                                        : .clear
+                                )
+                                .clipShape(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(ThreadRowTitle.displayTitle(for: thread))
+                        .accessibilityLabel(ThreadRowTitle.displayTitle(for: thread))
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .scrollContentBackground(.hidden)
+
+            Button(action: { store.newThread() }) {
+                Text("+")
+                    .font(CSFont.ui(15, .semibold))
+                    .foregroundStyle(CSColor.textMuted)
+                    .frame(width: 30, height: 30)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                            .strokeBorder(
+                                CSColor.hairline(0.14),
+                                style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                            )
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("New thread")
+            .accessibilityLabel("New thread")
+            .padding(.vertical, 12)
+            .overlay(alignment: .top) {
+                Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var expandedRail: some View {
         VStack(spacing: 0) {
             // Wordmark header
             HStack(spacing: 9) {
@@ -117,34 +223,7 @@ struct ThreadRail: View {
                 Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
             }
         }
-        .frame(width: 236)
-        .background(Color.white.opacity(0.015))
-        .overlay(alignment: .trailing) {
-            Rectangle().fill(CSColor.hairline(0.06)).frame(width: 1)
-        }
-        .onChange(of: search) { _, newValue in
-            store.searchThreads(newValue)
-        }
-        .confirmationDialog(
-            "Delete this thread?",
-            isPresented: Binding(
-                get: { deleteCandidate != nil },
-                set: { if !$0 { deleteCandidate = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete Thread", role: .destructive) {
-                if let deleteCandidate {
-                    store.delete(deleteCandidate)
-                    self.deleteCandidate = nil
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                deleteCandidate = nil
-            }
-        } message: {
-            Text("This removes the persisted conversation from the thread store.")
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var filteredThreads: [ChatThread] {

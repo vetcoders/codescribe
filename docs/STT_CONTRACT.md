@@ -7,7 +7,7 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only. The
 > stop-time file final-pass below remains the accepted interim, but it is a stepping stone, not
 > the destination. Lexicon substitution is the FINAL automated layer, after Whisper.
-> Planning report: `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0724/plans/stt-apple-must-have/00_PLANNING_REPORT.md`
+> Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
 
@@ -107,6 +107,15 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 `CODESCRIBE_STT_ENGINE` and `FINAL_PASS_MODE` are **promoted** settings. UI write updates `settings.json`, process env, and `.env` together. No silent dual brain.
 
 Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPTION`, `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
+
+**Final pass vs layered (orthogonal):**
+
+| Setting | Env | Default | Role |
+| --- | --- | --- | --- |
+| Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: full WAV re-pass routing (`always` / skip-if-complete / `off`) |
+| Layered | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off` | During-hold Layer 1 Whisper tail-patch when phase ≥ 1 (VAD path today) |
+
+Smart does **not** turn layered on. Off final-pass does **not** force Whisper at stop. Layered phase tokens (`phase1`…) are not final-pass tokens (`smart`/`always`/`off`).
 
 ---
 

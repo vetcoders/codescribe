@@ -71,8 +71,14 @@ pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Non-secret environment variables (PATH, project paths, …).
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Secret environment variables stored as Keychain account references.
+    /// Keys are env var names; values are Keychain account names (never secret
+    /// material). Resolved at spawn via [`crate::mcp::resolve_server_env`].
+    #[serde(default)]
+    pub env_refs: HashMap<String, String>,
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -561,12 +567,20 @@ impl StdioConnection {
         response_timeout: Duration,
         initialize_timeout: Duration,
     ) -> Result<Self> {
-        let effective_path = effective_mcp_path(config.env.get("PATH").map(String::as_str));
+        let resolved_env =
+            crate::mcp::secret_migration::resolve_server_env(&config.env, &config.env_refs)
+                .with_context(|| {
+                    format!(
+                        "Failed to resolve Keychain env_refs for MCP server '{}'",
+                        config.command
+                    )
+                })?;
+        let effective_path = effective_mcp_path(resolved_env.get("PATH").map(String::as_str));
         let resolved_command = resolve_command(&config.command, &effective_path);
         let mut command = Command::new(&resolved_command);
         command
             .args(&config.args)
-            .envs(&config.env)
+            .envs(&resolved_env)
             .env("PATH", &effective_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -955,6 +969,7 @@ mod tests {
             command: "python3".to_string(),
             args,
             env: Default::default(),
+            env_refs: Default::default(),
             enabled: Some(true),
             timeout_seconds: Some(5),
             url: None,
@@ -1034,6 +1049,7 @@ mod tests {
             command: String::new(),
             args: vec![],
             env: Default::default(),
+            env_refs: Default::default(),
             enabled: Some(true),
             timeout_seconds: Some(2),
             url: Some(format!("{}/mcp", server.url())),
@@ -1058,6 +1074,7 @@ mod tests {
             command: String::new(),
             args: vec![],
             env: Default::default(),
+            env_refs: Default::default(),
             enabled: Some(true),
             timeout_seconds: Some(2),
             url: Some("http://mcp.example.invalid/mcp".to_string()),
@@ -1144,6 +1161,7 @@ mod tests {
             command: String::new(),
             args: vec![],
             env: Default::default(),
+            env_refs: Default::default(),
             enabled: Some(true),
             timeout_seconds: Some(2),
             url: Some(endpoint),
@@ -1227,6 +1245,7 @@ mod tests {
             command: "codescribe-not-a-real-mcp-binary-xyz".to_string(),
             args: vec![],
             env: Default::default(),
+            env_refs: Default::default(),
             enabled: Some(true),
             timeout_seconds: Some(2),
             url: None,

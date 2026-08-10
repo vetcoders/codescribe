@@ -24,26 +24,33 @@ env:
 jobs:
   format:
     name: Format Check
-    runs-on: [self-hosted, macOS]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: rustfmt
+      # Self-hosted runners carry a Homebrew rustup (RUSTUP_HOME=~/.rustup) and a
+      # runner-local CARGO_HOME (see runner .env) that holds NO rustc/cargo proxies,
+      # so any action that exposes "$CARGO_HOME/bin" on PATH resolves nothing.
+      # Put the actual toolchain bin dir on PATH instead.
+      - name: Ensure stable toolchain on PATH
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+          dirname "$(rustup which --toolchain stable rustc)" >> "$GITHUB_PATH"
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
   quality:
     name: Clippy + Tests
-    runs-on: [self-hosted, macOS]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          components: clippy
+      # Same PATH contract as the format job — Homebrew rustup, proxy-less CARGO_HOME.
+      - name: Ensure stable toolchain on PATH
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --no-self-update
+          dirname "$(rustup which --toolchain stable rustc)" >> "$GITHUB_PATH"
 
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings

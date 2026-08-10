@@ -33,7 +33,10 @@ final class VoiceLabTests: XCTestCase {
                     variant: "uni agentka",
                     editedText: "Junie",
                     action: "copy",
-                    timestampMs: 42
+                    timestampMs: 42,
+                    avgLogprob: nil,
+                    speechPct: nil,
+                    confidenceFlags: []
                 ),
             ]
         )
@@ -82,7 +85,10 @@ final class VoiceLabTests: XCTestCase {
             variant: "uni agentka",
             editedText: "Junie",
             action: "copy",
-            timestampMs: 42
+            timestampMs: 42,
+            avgLogprob: -1.4,
+            speechPct: 0.72,
+            confidenceFlags: ["low_logprob"]
         )
         var editor = VoiceLabEditorState()
 
@@ -93,6 +99,46 @@ final class VoiceLabTests: XCTestCase {
         editor.cancel()
         XCTAssertNil(editor.correctionID)
         XCTAssertEqual(editor.canonical, "")
+    }
+
+    func testCorrectionConfidenceUsesWhisperAndSileroTruth() {
+        let row = VoiceLabCorrectionRow(
+            id: "correction-low",
+            revision: 1,
+            rawText: "raw whisper output",
+            variant: "formatted output",
+            editedText: "corrected output",
+            action: "edit",
+            timestampMs: 42,
+            avgLogprob: -1.4,
+            speechPct: 0.72,
+            confidenceFlags: ["silero_dropped_tail_hallucinations"]
+        )
+
+        XCTAssertTrue(row.isLowConfidence)
+        XCTAssertTrue(row.confidenceSummary.contains("Whisper logprob -1.40"))
+        XCTAssertTrue(row.confidenceSummary.contains("Silero/VAD speech 72%"))
+        XCTAssertTrue(row.confidenceSummary.contains("silero_dropped_tail_hallucinations"))
+    }
+
+    func testArchivedAudioLookupRequiresExactRawTranscript() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let day = root.appendingPathComponent("transcriptions/2026-08-04", isDirectory: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let transcript = day.appendingPathComponent("083000_real-words_raw.txt")
+        let audio = day.appendingPathComponent("083000_real-words_raw.m4a")
+        try "raw whisper words".write(to: transcript, atomically: true, encoding: .utf8)
+        try Data([0, 1, 2]).write(to: audio)
+
+        XCTAssertEqual(
+            archivedAudioURL(configDir: root.path, rawText: "raw whisper words")?
+                .resolvingSymlinksInPath().path,
+            audio.resolvingSymlinksInPath().path
+        )
+        XCTAssertNil(archivedAudioURL(configDir: root.path, rawText: "formatted words"))
     }
 
     func testSuccessfulVoiceLabEditRefreshesResolvedProjection() {

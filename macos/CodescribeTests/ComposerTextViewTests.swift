@@ -86,6 +86,28 @@ final class ComposerTextViewTests: XCTestCase {
         )
     }
 
+    func testArrowKeysNavigateTerminalStyleHistory() {
+        XCTAssertEqual(
+            ComposerTextKeyDisposition.resolve(keyCode: 126, modifiers: [], hasMarkedText: false),
+            .previousHistory
+        )
+        XCTAssertEqual(
+            ComposerTextKeyDisposition.resolve(keyCode: 125, modifiers: [], hasMarkedText: false),
+            .nextHistory
+        )
+
+        var state = ComposerDraftHistoryState()
+        let history = ["first", "second", "third"]
+        XCTAssertEqual(state.previous(history: history, current: "unfinished draft"), "third")
+        XCTAssertEqual(state.previous(history: history, current: "ignored"), "second")
+        XCTAssertEqual(state.previous(history: history, current: "ignored"), "first")
+        XCTAssertEqual(state.previous(history: history, current: "ignored"), "first")
+        XCTAssertEqual(state.next(history: history), "second")
+        XCTAssertEqual(state.next(history: history), "third")
+        XCTAssertEqual(state.next(history: history), "unfinished draft")
+        XCTAssertNil(state.next(history: history))
+    }
+
     func testTextSurfaceHasStableAccessibilityIdentifier() {
         XCTAssertEqual(ComposerAccessibility.textViewIdentifier, "agent-composer-text")
     }

@@ -486,7 +486,7 @@ default = "off"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Layered transcription gate: off or phase1..phase4"
+description = "Layered incremental transcription phase gate: off (default) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on the VAD/scheduler session path only (not yet on Apple progressive live). phase1 = Apple Layer 0 + Whisper ReplaceRange patches when that path is active."
 
 [vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
 default = "1"
@@ -682,7 +682,7 @@ default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Stop-path final re-pass routing: always | smart (default) | off. Always = full WAV STT every stop; smart = skip when streaming completeness is adjudicated; off = streaming is final (repetition guardrail still runs). Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
+description = "Stop-path full re-pass routing only: always | smart (default) | off. Always = full WAV Whisper re-pass every stop; smart = skip full re-pass when streaming completeness is adjudicated Complete (incomplete may still re-pass); off = never full re-pass (does not force Whisper at stop). Does NOT enable CODESCRIBE_LAYERED_TRANSCRIPTION — live gap-fill via Layer 1 tail-patch is a separate opt-in. Live engine never rewrites the mode. Dictionary/lexicon always applies in postprocess regardless of mode. Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
 
 [vars.CODESCRIBE_FINAL_PASS_MODE]
 default = "smart"
@@ -1235,6 +1235,13 @@ type = "bool"
 reload = "rebuild"
 category = "build"
 description = "Embed TTS model in binary"
+
+[vars.CODESCRIBE_LOCAL_INSTALL]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Build-script marker for optimized local app installs; permits only the checked-in development license verifier and is explicitly removed by distribution builds"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Debug / Test

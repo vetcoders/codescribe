@@ -4,7 +4,7 @@
 
 **Read and append:** [`AGENT_BUS.md`](./AGENT_BUS.md)
 Cross-agent signals live there (operator away, stalls cancelled, peer wake-ups).
-At session start: `head -80 AGENT_BUS.md`. If you need another agent: write a SIGNAL block + optionally `vibecrafted justdo <agent> -f AGENT_BUS.md`.
+At session start: `head -80 AGENT_BUS.md`. If you need another agent: write a SIGNAL block — the operator's orchestration tooling handles peer wake-ups.
 
 
 Canonical per-repo instructions for every agent (Claude, Codex, Gemini, Junie,

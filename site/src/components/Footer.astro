@@ -1,6 +1,7 @@
 ---
-import { asset } from '../lib/asset';
+import { asset, page } from '../lib/asset';
 // Footer (WEBSITE_SPEC §3). Brand line corrected to "Vetcoders" (capital V only).
+// Trust links (Privacy / Terms / Refunds / Support) are MoR + buyer requirements.
 ---
 
 <footer class="footer" data-screen-label="Footer">
@@ -10,8 +11,11 @@ import { asset } from '../lib/asset';
       <span class="wordmark">codescribe</span>
     </div>
     <nav class="links" aria-label="Footer">
+      <a href={page('privacy')}>privacy</a>
+      <a href={page('terms')}>terms</a>
+      <a href={page('refunds')}>refunds</a>
+      <a href={page('support')}>support</a>
       <a href="https://github.com/vetcoders/codescribe" target="_blank" rel="noopener noreferrer">github ↗</a>
-      <a href="https://github.com/vetcoders/codescribe#readme" target="_blank" rel="noopener noreferrer">docs</a>
       <a href="https://github.com/vetcoders/codescribe/releases" target="_blank" rel="noopener noreferrer">releases</a>
     </nav>
     <div class="legal">Vetcoders · Libraxis AI · FSL-1.1-ALv2</div>
@@ -44,7 +48,8 @@ import { asset } from '../lib/asset';
   }
   .links {
     display: flex;
-    gap: 24px;
+    flex-wrap: wrap;
+    gap: 18px 24px;
     font: 500 12px var(--font-mono);
     color: var(--muted-3);
   }

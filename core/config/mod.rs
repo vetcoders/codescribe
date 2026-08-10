@@ -22,6 +22,7 @@ pub mod keychain;
 mod loader;
 pub mod migrate;
 pub mod models;
+pub mod portable;
 pub mod prompts;
 pub mod settings;
 mod types;
@@ -37,6 +38,10 @@ pub use types::{
     ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
+pub use portable::{
+    ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
+    write_portable_export,
+};
 pub use settings::{FormattingPolicy, UserSettings};
 pub use types::Language;
 

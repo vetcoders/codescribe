@@ -101,8 +101,9 @@ struct AgentRuntime {
     session: AgentSession,
     ui_rx: mpsc::Receiver<AgentUiEvent>,
     thread_store_id: String,
-    /// Cancellation restores local history immediately; the next request must
-    /// also clear any provider-owned response chain before replaying that history.
+    /// Soft-degrade / retry flag: next send clears the provider chain and
+    /// full-replays local history. User Stop does **not** set this — Stop
+    /// restores the pre-turn chain snapshot instead (operator 2026-08-05).
     reset_chain_on_next_send: bool,
 }
 
@@ -838,12 +839,12 @@ where
         // `runtime.thread_store_id` does not overlap the mutable field borrows.
         let thread_store_id = runtime.thread_store_id.clone();
         let messages_before_turn = runtime.session.messages().to_vec();
+        // Snapshot chain before any mid-turn advance so user Stop can reinstate
+        // continuity for a queued follow-up instead of wiping previous_response_id.
+        let session_thread_before = runtime.session.thread_id().map(str::to_owned);
+        let provider_chain_before = runtime.session.snapshot_response_chain().await;
         let mut cancellation = register_agent_delivery_turn(&thread_store_id);
-        let (session, ui_rx, reset_chain_on_next_send) = (
-            &mut runtime.session,
-            &mut runtime.ui_rx,
-            &mut runtime.reset_chain_on_next_send,
-        );
+        let (session, ui_rx) = (&mut runtime.session, &mut runtime.ui_rx);
         let (user_text, image_attachments, dropped_images) =
             build_image_attachments_from_text(&text);
         // Open the turn on the SwiftUI chat before streaming: the listener inserts
@@ -907,12 +908,16 @@ where
 
         match completion {
             SendCompletion::Cancelled => {
-                // Dropping `send_future` at this branch aborts provider polling or
-                // an in-flight tool at its current await. Restore the exact local
-                // history snapshot, reset the provider chain on the next turn,
-                // discard queued late UI events, then emit one keyed terminal.
-                session.restore_messages(messages_before_turn);
-                *reset_chain_on_next_send = true;
+                // Dropping `send_future` aborts provider polling / in-flight tools.
+                // Restore pre-turn history AND chain (do not force full-reset):
+                // Stop only cancels the stream; a queued next message keeps continuity.
+                session
+                    .restore_after_user_stop(
+                        messages_before_turn,
+                        session_thread_before,
+                        provider_chain_before,
+                    )
+                    .await;
                 while ui_rx.try_recv().is_ok() {}
                 let _ = cancellation.finish();
                 crate::agent_delivery::publish_agent_delivery_event(
@@ -928,8 +933,13 @@ where
                 // ready but before this branch ran, cancellation still owns the
                 // terminal and queued Done/tool events must not leak through.
                 if cancellation.finish() {
-                    session.restore_messages(messages_before_turn);
-                    *reset_chain_on_next_send = true;
+                    session
+                        .restore_after_user_stop(
+                            messages_before_turn,
+                            session_thread_before,
+                            provider_chain_before,
+                        )
+                        .await;
                     while ui_rx.try_recv().is_ok() {}
                     crate::agent_delivery::publish_agent_delivery_event(
                         AgentDeliveryEvent::Cancelled {
@@ -2211,7 +2221,10 @@ mod tests {
             .as_ref()
             .expect("runtime should survive cancel");
         assert_eq!(cancelled_runtime.session.messages().len(), 1);
-        assert!(cancelled_runtime.reset_chain_on_next_send);
+        assert!(
+            !cancelled_runtime.reset_chain_on_next_send,
+            "user Stop must preserve the pre-turn response chain for the next send"
+        );
         assert!(
             !cancel_agent_delivery_turn(thread_id),
             "cancelled turn must clean its registry token"
@@ -2268,8 +2281,8 @@ mod tests {
             *reset_chain_flags
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()),
-            vec![false, true],
-            "the recovery turn must clear provider-owned chain state before replay"
+            vec![false, false],
+            "the recovery turn after user Stop keeps the pre-turn chain (no forced full-reset)"
         );
     }
 

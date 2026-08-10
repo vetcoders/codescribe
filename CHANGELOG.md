@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-08-04
+
+> The agent-stability and STT-truth-layer wave: one dictation pipeline with an
+> editable transcript as the source of truth, a hardened agent substrate
+> (native tools, workspace-roots sandbox, permission gateway), licensing (CSK1),
+> Sparkle 2 signed updates, consent-gated analytics, and a fail-closed release
+> lane. Rolls up PR #65 (operator feedback wave 9) and PR #68.
+
+### Added
+
+- **Unified dictation pipeline** (#65) — hold-to-dictate and toggle modes share
+  one capture-to-editable-transcript path; any user edit to the transcript
+  cancels assistive auto-send, and delivery goes through a deferred-insert slot
+  with an exact-target paste guard and a visible clipboard fallback instead of
+  writing the clipboard immediately.
+- **Native agent substrate** — `read_file`/`list_directory`/`search_files`/
+  `write_file`/`apply_patch`/`move_path` as native tools bounded by persisted
+  workspace roots (canonicalized, symlink-aware, fail-closed on empty roots),
+  so the agent works without the IntelliJ connector; oversized tool output
+  spills to disk instead of flooding the thread.
+- **Agent chat surface** — durable FIFO turn queue with shell-first lazy
+  bootstrap, recoverable sidebar with queued-message rows, queued messages are
+  editable and recallable, reasoning summaries are exposed, rich-formatted text
+  is selectable, and the arbitrary 25-iteration agent loop cap became an
+  explicit loop guard.
+- **Licensing (CSK1)** — Ed25519 offline-tolerant license validation in core,
+  Keychain-backed storage with a Settings UI, a soft gate on the paid Agentic
+  lane (Basic stays free), and a fail-closed production key contract at build
+  time.
+- **Sparkle 2 signed updates** — in-app updates with a signed-appcast pipeline;
+  release automation injects the Sparkle key and publishes a single-variant
+  appcast.
+- **Consented funnel analytics** (default **off**) — a single activation ping
+  gated on explicit opt-in; the endpoint ships empty.
+- **Settings capability matrix** — one surface listing every agent tool with
+  origin, risk class, and the effective allow/ask/deny resolution from the
+  permission gateway.
+- **Site trust pages** — privacy/security/imprint pages with footer and in-app
+  links.
+
+### Changed
+
+- **Assistive capture ownership** — assistive capture and agent-window controls
+  unified under one owner; the capture contract is documented in `AGENTS.md`.
+- **Hold dictation is always raw** (#65) — the detector-level force-AI chord on
+  hold (Ctrl+Option) was removed with the unified pipeline: a plain hold now
+  pastes the raw transcript regardless of the Auto-Format toggle. AI formatting
+  lives in toggle sessions, the double-Option force chord, and the assistive
+  lanes. Previously this change shipped undocumented, so Ctrl+Option hold users
+  saw an unexplained drop in delivered-text formatting.
+- **Release lane is fail-closed** — DMG payload verification gate in the
+  release workflow (a DMG missing its model payload aborts the release),
+  single version truth across Cargo/site/appcast, 404-proof Pages deploys, and
+  a secrets runbook.
+
 ### Fixed
 
 - **Overlay Insert no longer pastes back into Codescribe itself** — the overlay
@@ -20,6 +75,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paste target never took focus back (activation failure / Automation TCC
   denial) instead of pasting blind, and the bridge now reports the honest
   delivery outcome (`Pasted` / `CopiedToClipboard`) to the UI.
+- **Dictionary corrections read raw STT truth again** — the corrections view
+  compares against the raw transcript instead of post-formatting output, so the
+  lexicon learns from what the engine actually heard.
+- **Unbound-key sentinel no longer reads as Fn** (#66) — an unset hotkey could
+  match the Fn detector and trigger recording.
+- **Legacy sessions render without window collapse** — old thread payloads
+  hydrate into the chat window instead of collapsing it.
+- **Oversized bubbles leave the selection overlay** — very large messages no
+  longer trap the text-selection layer.
+- **CI compiles again on self-hosted runners** — the Rust workflow put the
+  actual rustup toolchain bin on `PATH` instead of a proxy-less `CARGO_HOME`,
+  so Clippy + Tests prove the workspace for real.
+
+### Security
+
+- **Secret-path approval escalation** — a read-level Allow (default or
+  operator rule) no longer silently covers credential-bearing paths: `.env*`,
+  `mcp.json` (and backups), `tool_grants.json`, key material (`.pem`, `.p12`,
+  `id_rsa*`, keychain DBs) and `~/.ssh`/`~/.aws`-style directories now always
+  raise an approval card showing the exact path.
+- **`mcp.json` written `0o600`** — the Settings MCP store now creates its
+  atomic-write temp file owner-only before any byte lands (parity with the
+  secret-migration writer), and a mutation tightens a pre-existing
+  world-readable config.
+- **Terminal policy fail-closed** — shell control/expansion operators blocked,
+  interpreters and command launchers denylisted, relative and `~` argv path
+  tokens sanitized and root-checked (review P1-05).
 
 ## [0.13.0] - 2026-07-19
 

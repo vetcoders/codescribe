@@ -266,6 +266,27 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.statusText, "recording · ambient")
     }
 
+    func testSuccessfulDictationSignalFiresOnceAndNeverForNoSpeech() {
+        let successful = OverlayState()
+        var successfulSignals = 0
+        successful.onSuccessfulDictation = { successfulSignals += 1 }
+        successful.handleRecordingPreparing()
+        successful.handleRecordingStarted()
+        successful.applyFinal(utteranceId: 1, "activation without payload")
+        successful.finishControllerRecording()
+        successful.finishControllerRecording()
+        XCTAssertEqual(successfulSignals, 1)
+
+        let silent = OverlayState()
+        var silentSignals = 0
+        silent.onSuccessfulDictation = { silentSignals += 1 }
+        silent.handleRecordingPreparing()
+        silent.handleRecordingStarted()
+        silent.applyNoSpeech(reason: "no_speech_detected")
+        silent.finishControllerRecording()
+        XCTAssertEqual(silentSignals, 0)
+    }
+
     func testAudioLevelLifecycleDropsLateSamplesAndResets() {
         let state = OverlayState()
 
@@ -325,8 +346,12 @@ final class OverlayStateTests: XCTestCase {
         state.handleRecordingPreparing()
         state.handleRecordingStarted()
 
-        XCTAssertEqual(state.metaText, "listening · canvas open")
+        XCTAssertEqual(state.metaText, "live preview · waiting")
         XCTAssertTrue(state.liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        XCTAssertTrue(
+            state.footerRight.contains("waiting"),
+            "empty canvas footer must not claim vad-gated preview: \(state.footerRight)"
+        )
 
         state.applyPreview("apple partial")
         XCTAssertEqual(state.metaText, "live preview · raw")
@@ -974,7 +999,7 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertTrue(controller.state.autoPasteControlAvailable)
     }
 
-    func testAgentModesAlwaysOrderOverlayFrontWhenToggleIsOn() {
+    func testAgentModesNeverConstructOrOrderOverlayFront() {
         for mode in ["Chat", "Selection"] {
             var frontCount = 0
             let controller = OverlayController(
@@ -988,12 +1013,12 @@ final class OverlayStateTests: XCTestCase {
             )
 
             controller.showForRecording()
-            XCTAssertEqual(frontCount, 1, "\(mode) shares the canonical overlay path")
+            XCTAssertEqual(frontCount, 0, "\(mode) is owned by the Agent composer")
             XCTAssertFalse(controller.state.autoPasteControlAvailable)
         }
     }
 
-    func testMidHoldAssistiveUpgradeKeepsOverlayVisibleAndFlipsSemantics() {
+    func testMidHoldAssistiveUpgradeClosesOverlayAndFlipsSemantics() {
         var frontCount = 0
         var outCount = 0
         let controller = OverlayController(
@@ -1011,7 +1036,7 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(outCount, 0)
 
         controller.handleIndicatorModeChange(.assistive)
-        XCTAssertEqual(outCount, 0)
+        XCTAssertEqual(outCount, 1)
         XCTAssertEqual(controller.state.indicatorMode, .assistive)
         XCTAssertFalse(controller.state.autoPasteControlAvailable)
     }

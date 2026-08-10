@@ -27,6 +27,12 @@ Current source version: `0.12.2`
   - `Codescribe_0.12.2.dmg` with embedded Silero + embedder and runtime Whisper cache/download.
   - `Codescribe_0.12.2_full.dmg` with embedded Silero + embedder + Whisper.
 - [ ] Both DMGs are Developer ID signed, notarized, stapled, and pass Gatekeeper on a machine outside the developer environment.
+- [ ] **Payload gate (fail-closed):** every release DMG passes
+      `make verify-dmg DMG=<path> VARIANT=slim|full VERSION=<X.Y.Z>`
+      (`scripts/verify-dmg-payload.sh`). This refuses incomplete payloads that
+      still codesign/notarize (regression class: 0.13.2 missing MiniLM, ≈89 MB
+      DMG / ≈30 MB dylib). `release-standard` and `release-full` run this gate
+      automatically at the end of the build.
 - [ ] Landing page primary CTA does not promise a DMG until a current notarized DMG exists.
 - [ ] README install section names source install as the guaranteed path until the current DMG is verified.
 
@@ -41,7 +47,13 @@ Current source version: `0.12.2`
    - onboarding opens cleanly,
    - microphone/accessibility/input-monitoring prompts are understandable,
    - the app's About window (menu-bar tray) reports `0.12.2`.
-6. Only then switch the landing CTA from source install to release DMG.
+6. Run the fail-closed payload gate on both downloaded artifacts before
+   promoting them:
+   - `make verify-dmg DMG=Codescribe_<ver>.dmg VARIANT=slim VERSION=<ver>`
+   - `make verify-dmg DMG=Codescribe_<ver>_full.dmg VARIANT=full VERSION=<ver>`
+     Refuse any DMG that fails (size floors catch missing MiniLM/Whisper even
+     when the signature is valid).
+7. Only then switch the landing CTA from source install to release DMG.
 
 ## Current Known External Gaps
 

@@ -222,6 +222,8 @@ final class OverlayState: ObservableObject {
     var onRecordingPreparing: (() -> Void)?
     var onRecordingStarted: (() -> Void)?
     var onRecordingStopped: (() -> Void)?
+    /// Content-free success seam. No transcript crosses this callback.
+    var onSuccessfulDictation: (() -> Void)?
 
     /// Strong ref so the Rust-side callback (held via the UniFFI handle map) and
     /// our hop-to-main bridge stay alive for the lifetime of the overlay.
@@ -364,13 +366,12 @@ final class OverlayState: ObservableObject {
         switch mode {
         case .listening:
             if transcribing { return "finalizing · transcript" }
-            // Honesty (operator 2026-07-27): never claim "live preview" while the
-            // canvas is still empty. Apple may be shy (letter-level confidence) or
-            // Previews may not have drained yet — badge must not assert streaming
-            // text the user cannot see. Claim live preview only once interim or
-            // committed text is on the canvas.
+            // Honesty (operator 2026-07-27 / mission B): never claim streaming
+            // text the user cannot see. Apple may be shy (letter-level confidence)
+            // or Previews may not have drained yet. Empty canvas = waiting cadence,
+            // not "live preview · raw". Engine chip still reports Apple when live.
             let canvas = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if canvas.isEmpty { return "listening · canvas open" }
+            if canvas.isEmpty { return "live preview · waiting" }
             return "live preview · raw"
         case .formatted: return "final · transcript"
         case .noSpeech: return "no speech · nothing captured"
@@ -384,7 +385,10 @@ final class OverlayState: ObservableObject {
         if mode == .error { return "error" }
         if mode == .listening && transcribing { return "transcribing" }
         if mode == .listening && warmingUp { return "warming up" }
-        if mode == .listening && audioReady && liveText.isEmpty { return "audio live" }
+        if mode == .listening && liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Empty canvas: do not imply a visible preview stream.
+            return audioReady ? "audio live · waiting" : "waiting for audio"
+        }
         return mode == .listening ? "vad-gated preview" : "editable"
     }
 
@@ -1089,7 +1093,12 @@ final class OverlayState: ObservableObject {
 
     private func deliverAgentTranscript() {
         let text = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard agentSessionArmed, !agentDeliveryStarted, !text.isEmpty, let engine else { return }
+        // No `agentSessionArmed` here: the explicit Send button is live for
+        // every terminal overlay (dictation and formatting included), and the
+        // controller falls back to the session trigger context when no
+        // assistive context was armed (review P0-03). Auto-send remains gated
+        // on the armed latch by its caller.
+        guard !agentDeliveryStarted, !text.isEmpty, let engine else { return }
         agentDeliveryStarted = true
         cancelAutoHide()
         Task { @MainActor [weak self] in
@@ -1436,7 +1445,12 @@ final class OverlayState: ObservableObject {
         // onAppear poll, so a hotkey stop left it stuck. Gate on the finalize transition
         // so redundant re-finalizes (finishControllerRecording + applySessionFinalised)
         // don't re-fire and churn @Published tray state.
-        if !wasFinalized { onRecordingStopped?() }
+        if !wasFinalized {
+            if !resolvedBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                onSuccessfulDictation?()
+            }
+            onRecordingStopped?()
+        }
 
         // Every terminal outcome gets the same activity-anchored lifetime.
         restartAutoHideCountdown()

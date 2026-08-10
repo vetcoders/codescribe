@@ -10,7 +10,7 @@
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
         demo demo-raw demo-assistive check semgrep fix clean help \
-        dmg dmg-signed release-standard release-full release-dmgs notarize download-model download-e5 download-embedder ensure-models \
+        dmg dmg-signed release-standard release-full release-dmgs notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks
 
 SHELL := /bin/bash
@@ -34,7 +34,9 @@ CODESCRIBE_CODESIGN_IDENTITY ?= $(if $(CODESCRIBE_AUTO_CODESIGN_IDENTITY),$(CODE
 CODESCRIBE_DIST_CODESIGN_IDENTITY ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(strip $(CODESCRIBE_DEVELOPER_ID_IDENTITY)),$(CODESCRIBE_CODESIGN_IDENTITY))
 CODESCRIBE_APP_NAME ?= Codescribe
 CODESCRIBE_DISPLAY_NAME ?= Codescribe
-# SwiftUI app build profile for `make app` / `make app-bindings` (debug|release)
+# SwiftUI app build profile for `make app` / `make app-bindings`
+# (debug|local-release|release). `release` is distribution-only and requires
+# the operator-owned production license verification key.
 PROFILE ?= debug
 CODESCRIBE_BUNDLE_ID ?= com.vetcoders.codescribe
 CODESCRIBE_MIN_MACOS ?=
@@ -133,11 +135,12 @@ config:
 
 
 install-app:
-	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, release) via scripts/build-app.sh ..."
-	@$(MAKE) --no-print-directory app PROFILE=release
+	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
+	@echo "Local install uses the development license verifier; CODESCRIBE_LICENSE_PUBLIC_KEY_HEX is reserved for distribution builds."
+	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX $(MAKE) --no-print-directory app PROFILE=local-release
 	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
 	if [ ! -d "$$APP_SRC" ]; then \
-		echo "Build product missing: $$APP_SRC — 'make app PROFILE=release' did not produce the app."; \
+		echo "Build product missing: $$APP_SRC — 'make app PROFILE=local-release' did not produce the app."; \
 		exit 1; \
 	fi; \
 	echo "Installing to /Applications ..."; \
@@ -609,6 +612,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-full' 'Sign+notarize fat _full DMG (Whisper embedded, optional)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-dmgs' 'Build slim + fat notarized DMGs'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'notarize' 'Notarize DMG with Apple'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-dmg' 'Fail-closed payload gate (DMG=… VARIANT=slim|full VERSION=X.Y.Z)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-model' 'Download Whisper model from HF'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-e5' 'Download E5 embedder model from HF'
 	@printf '%s\n' '  make download-embedder Download MiniLM embedder from HF'
@@ -661,15 +665,42 @@ dmg-signed:
 # Daily signed+notarized public artifact (same as make dmg-signed + notarize).
 # Does NOT download/embed Whisper. Apple STT works out of the box; Whisper is
 # opt-in via Settings → Dictation download (or make download-model).
+# Ends with the fail-closed payload gate (signed ≠ complete; see 0.13.2 MiniLM miss).
 release-standard:
 	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize
+	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
+	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
+	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}.dmg 2>/dev/null | head -1); \
+	if [ -z "$$DMG" ]; then \
+		echo "ERROR: no slim DMG for HEAD $$HEAD_SHA / version $$VERSION after build"; \
+		exit 1; \
+	fi; \
+	./scripts/verify-dmg-payload.sh "$$DMG" --variant slim --version "$$VERSION"
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
+# Ends with the fail-closed payload gate (full = Silero + MiniLM + Whisper).
 release-full: ensure-models
 	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
+	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
+	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
+	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}_full.dmg 2>/dev/null | head -1); \
+	if [ -z "$$DMG" ]; then \
+		echo "ERROR: no full DMG for HEAD $$HEAD_SHA / version $$VERSION after build"; \
+		exit 1; \
+	fi; \
+	./scripts/verify-dmg-payload.sh "$$DMG" --variant full --version "$$VERSION"
 
 # Both public variants: slim first, then fat _full.
 release-dmgs: release-standard release-full
+
+# Fail-closed payload gate (manual / CI). Usage:
+#   make verify-dmg DMG=path VARIANT=slim|full VERSION=X.Y.Z [SKIP_NOTARY=1]
+verify-dmg:
+	@if [ -z "$(DMG)" ] || [ -z "$(VARIANT)" ] || [ -z "$(VERSION)" ]; then \
+		echo "Usage: make verify-dmg DMG=path VARIANT=slim|full VERSION=X.Y.Z [SKIP_NOTARY=1]"; \
+		exit 2; \
+	fi
+	@./scripts/verify-dmg-payload.sh "$(DMG)" --variant "$(VARIANT)" --version "$(VERSION)" $(if $(filter 1,$(SKIP_NOTARY)),--skip-notary,)
 
 notarize:
 	@if ls Codescribe_*.dmg 1> /dev/null 2>&1; then \

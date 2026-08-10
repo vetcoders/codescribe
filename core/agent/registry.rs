@@ -303,7 +303,7 @@ impl ToolRegistry {
         let Some(tool) = self.tools.get(name) else {
             return ToolDecision::Deny(format!("Tool '{name}' is not registered"));
         };
-        let preview = match &tool.validator {
+        let mut preview = match &tool.validator {
             Some(validate) => match validate(input) {
                 Ok(preview) => preview,
                 Err(error) => return ToolDecision::Deny(error.to_string()),
@@ -360,6 +360,28 @@ impl ToolRegistry {
                 ) => PermissionLevel::Ask,
                 (false, ToolRisk::Destructive) => PermissionLevel::Deny,
             }
+        };
+
+        // Secret-path escalation (review S-P0-01): an Allow — whether the
+        // read-only migration default or a durable operator rule — never
+        // silently covers a credential-bearing path (.env, mcp.json env
+        // blocks, key material). Escalate to Ask so the operator sees the
+        // exact path on the approval card; no rule lifts this back to silent.
+        let level = if level == PermissionLevel::Allow
+            && let Some(secret) = super::secret_paths::find_secret_path(input)
+        {
+            let note = format!("Touches secret-bearing path: {secret}");
+            preview.summary = if preview.summary.is_empty() {
+                note
+            } else {
+                format!("{} — {}", preview.summary, note)
+            };
+            if !preview.paths.contains(&secret) {
+                preview.paths.push(secret);
+            }
+            PermissionLevel::Ask
+        } else {
+            level
         };
 
         match level {
@@ -510,6 +532,70 @@ mod tests {
                 None,
             )
             .expect("register external tool");
+    }
+
+    #[test]
+    fn allowed_read_tool_escalates_to_ask_on_secret_path() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register_native(
+                ToolDefinition {
+                    name: "read_file".to_string(),
+                    description: "read a file".to_string(),
+                    input_schema: json!({"type": "object"}),
+                },
+                Box::new(|_| Box::pin(async { Vec::new() })),
+                ToolRisk::ReadOnly,
+            )
+            .expect("register read_file");
+
+        // Ordinary workspace read keeps the read-only Allow default.
+        assert!(matches!(
+            registry.decide(
+                "read_file",
+                &json!({ "path": "/ws/project/src/main.rs" }),
+                "call",
+                "session",
+                "thread",
+            ),
+            ToolDecision::Allow
+        ));
+
+        // Secret-bearing path escalates to an approval card with the path on it.
+        match registry.decide(
+            "read_file",
+            &json!({ "path": "/Users/op/.codescribe/.env" }),
+            "call",
+            "session",
+            "thread",
+        ) {
+            ToolDecision::RequireApproval(request) => {
+                assert!(request.summary.contains("/Users/op/.codescribe/.env"));
+                assert!(
+                    request
+                        .paths
+                        .contains(&"/Users/op/.codescribe/.env".to_string())
+                );
+            }
+            other => panic!("expected approval card, got {other:?}"),
+        }
+
+        // Even an explicit durable Allow for the tool cannot lift it back.
+        let mut policy = AgentPermissions::default();
+        policy
+            .tools
+            .insert("native:read_file".to_string(), PermissionLevel::Allow);
+        registry.set_policy(policy);
+        assert!(matches!(
+            registry.decide(
+                "read_file",
+                &json!({ "path": "/Users/op/.codescribe/mcp.json" }),
+                "call",
+                "session",
+                "thread",
+            ),
+            ToolDecision::RequireApproval(_)
+        ));
     }
 
     #[test]

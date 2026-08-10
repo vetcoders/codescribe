@@ -24,19 +24,29 @@ const preloadFonts = [sg700, sg600, sg500, sg400, jb500];
 interface Props {
   title?: string;
   description?: string;
+  /** Optional path under base for canonical (e.g. "privacy" → /codescribe/privacy/). */
+  path?: string;
 }
 
 const {
   title = 'codescribe — a macOS voice control layer for text, code & AI agents',
   description = 'codescribe is a macOS-native voice control layer for text, code and AI agents. Not voice typing — voice to intent to action. Dictate, format, ask, remember, and dispatch work from one always-available overlay.',
+  path,
 } = Astro.props;
 
 // Absolute URLs for canonical / social cards. SITE = https://vetcoders.github.io,
 // BASE_URL = /codescribe/ → canonical https://vetcoders.github.io/codescribe/
 const site = import.meta.env.SITE ?? 'https://vetcoders.github.io';
 const base = import.meta.env.BASE_URL; // "/codescribe/"
-const canonical = new URL(base, site).href;
+const baseUrl = new URL(base, site);
+const pathClean = path ? path.replace(/^\//, '').replace(/\/$/, '') + '/' : '';
+const canonical = pathClean ? new URL(pathClean, baseUrl).href : baseUrl.href;
 const ogImage = new URL(base.replace(/\/$/, '') + '/og.png', site).href;
+// B3 has not been approved: no default domain means no analytics request in any
+// normal build. A consented deployment opts in explicitly at build time.
+const plausibleDomain = import.meta.env.PUBLIC_PLAUSIBLE_DOMAIN?.trim();
+const plausibleScriptSrc =
+  import.meta.env.PUBLIC_PLAUSIBLE_SCRIPT_SRC?.trim() || 'https://plausible.io/js/script.js';
 ---
 
 <!doctype html>
@@ -52,6 +62,9 @@ const ogImage = new URL(base.replace(/\/$/, '') + '/og.png', site).href;
     ))}
     <meta name="theme-color" content="#090a0d" />
     <link rel="icon" type="image/png" href={base.replace(/\/$/, '') + '/icon.png'} />
+    {plausibleDomain && (
+      <script is:inline defer data-domain={plausibleDomain} src={plausibleScriptSrc}></script>
+    )}
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />

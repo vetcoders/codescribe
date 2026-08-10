@@ -226,6 +226,12 @@ pub struct UserSettings {
     /// (read-only → allow, side-effectful → ask) applied at resolve time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_permissions: Option<crate::agent::permissions::AgentPermissions>,
+
+    // ── Agent capability preferences (provider-neutral broker) ──
+    /// Schema-backed capability preferences under `agent.capabilities`.
+    /// Not a copied list of every connector tool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_capabilities: Option<crate::agent::capabilities::AgentCapabilityPreferences>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -255,6 +261,9 @@ struct AgentV2 {
     /// Tool permission policy: global + per-server + per-tool allow/ask/deny.
     #[serde(skip_serializing_if = "Option::is_none")]
     permissions: Option<crate::agent::permissions::AgentPermissions>,
+    /// Provider-neutral capability preferences (not a connector tool dump).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<crate::agent::capabilities::AgentCapabilityPreferences>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -618,9 +627,16 @@ impl UserSettings {
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
                 anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
             }),
-            agent: self.agent_permissions.clone().map(|permissions| AgentV2 {
-                permissions: Some(permissions),
-            }),
+            agent: match (
+                self.agent_permissions.clone(),
+                self.agent_capabilities.clone(),
+            ) {
+                (None, None) => None,
+                (permissions, capabilities) => Some(AgentV2 {
+                    permissions,
+                    capabilities,
+                }),
+            },
         }
     }
 
@@ -826,6 +842,7 @@ impl UserSettings {
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.initial_prompt_enabled),
             agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
+            agent_capabilities: v2.agent.as_ref().and_then(|a| a.capabilities.clone()),
         }
     }
 

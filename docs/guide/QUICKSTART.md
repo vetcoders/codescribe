@@ -14,7 +14,7 @@ git clone https://github.com/vetcoders/codescribe.git
 cd codescribe
 
 # Build and install the SwiftUI app
-make app PROFILE=release
+make app PROFILE=local-release
 make install-app       # Build + copy Codescribe.app to /Applications
 ```
 

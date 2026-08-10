@@ -31,6 +31,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
         working-directory: site
+      - name: Verify release asset exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          SITE_VERSION="$(sed -n 's/^const SITE_VERSION = "\([^"]*\)";$/\1/p' site/src/components/Install.astro)"
+          if [[ -z "$SITE_VERSION" ]]; then
+            echo "Could not read SITE_VERSION from site/src/components/Install.astro" >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error --location --head \
+            "https://github.com/vetcoders/codescribe/releases/download/v${SITE_VERSION}/Codescribe.dmg" \
+            --output /dev/null
       - name: Build
         run: npm run build
         working-directory: site

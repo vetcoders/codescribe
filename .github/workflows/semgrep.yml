@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
 
 concurrency:
   group: semgrep-${{ github.ref }}
@@ -13,7 +14,7 @@ concurrency:
 jobs:
   semgrep:
     name: Security Scan
-    runs-on: self-hosted
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

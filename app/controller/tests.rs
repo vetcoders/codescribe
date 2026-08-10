@@ -550,6 +550,11 @@ async fn test_stop_path_harness_executes_production_pipeline_delivery_span() {
 /// emitted `assistive_delivery_budget` receipt measured it. Moving the timer
 /// off the real send makes the captured total shrink below the adapter cost.
 #[tokio::test]
+// Serialized with the fallback test below: each builds its own controller, and
+// a controller constructed on a parallel thread leaks its init tracing events
+// into this test's captured buffer (observed on CI: the budget receipt line
+// vanished behind a foreign audio-recorder line).
+#[serial_test::serial(assistive_delivery)]
 async fn test_assistive_delivery_budget_times_real_send_adapter() {
     #[derive(Clone, Default)]
     struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
@@ -632,6 +637,48 @@ async fn test_assistive_delivery_budget_times_real_send_adapter() {
     );
 }
 
+/// review P0-03: the overlay "To Agent" button is live for dictation and
+/// formatting sessions, whose pipeline never arms `pending_assistive_context`.
+/// Delivery must fall back to the session trigger context (frontmost app,
+/// captured at every session start) instead of failing closed — and stay
+/// one-shot through the fallback.
+#[tokio::test]
+#[serial_test::serial(assistive_delivery)]
+async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
+    let controller = RecordingController::new();
+    *controller.pending_assistive_context.write().await = None;
+    *controller.assistive_context.write().await = Some(AssistiveContext {
+        frontmost_app: Some("alacritty".to_string()),
+        selected_text: None,
+    });
+
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent_flag = std::sync::Arc::clone(&sent);
+    let delivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "dictated transcript sent explicitly".to_string(),
+            move |_wire, _language, _max_tokens, _persona| {
+                Box::pin(async move {
+                    sent_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            },
+        )
+        .await
+        .expect("fallback delivery");
+    assert!(delivered, "session context present → delivery must run");
+    assert!(sent.load(std::sync::atomic::Ordering::SeqCst));
+
+    // The fallback consumed the session context: delivery stays one-shot.
+    let redelivered = controller
+        .deliver_pending_assistive_transcript_with(
+            "dictated transcript sent explicitly".to_string(),
+            |_wire, _language, _max_tokens, _persona| Box::pin(async {}),
+        )
+        .await
+        .expect("second delivery attempt");
+    assert!(!redelivered, "fallback context is one-shot too");
+}
+
 #[test]
 fn test_should_skip_full_final_repass_on_complete_streaming() {
     // Completeness requires adjudicator commit source + coverage, not punctuation.
@@ -655,12 +702,12 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         "Always never skips"
     );
     assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
-        "Off+Apple must NOT skip — Whisper safety-pass (report 2026-07-25 silent data-loss)"
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+        "Off is off even with Apple live — no silent Always rewrite"
     );
     assert!(
         should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
-        "Off+non-Apple still skips"
+        "Off+non-Apple skips"
     );
 
     let empty = assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0);
@@ -697,8 +744,160 @@ fn test_should_skip_full_final_repass_on_complete_streaming() {
         1,
     );
     assert!(
-        !should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
-        "Smart+Apple must NOT skip Whisper fill (Apple live under-gens; adjudicator complete ≠ body complete)"
+        should_skip_full_final_repass(FinalPassRoutingMode::Smart, apple_complete, true),
+        "Smart+Apple complete skips full re-pass — tail-patch/layered owns live gap-fill; live engine must not rewrite mode"
+    );
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, apple_complete, true),
+        "Off+Apple complete still skips (Off means Off)"
+    );
+    assert!(
+        !should_skip_full_final_repass(FinalPassRoutingMode::Always, apple_complete, true),
+        "Always+Apple still runs full re-pass"
+    );
+
+    // prefer_apple must not force a full re-pass when Smart completeness is Complete
+    // (layered/tail-patch owns live gap-fill — operator 2026-08-05).
+    assert_eq!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, true),
+        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, false),
+        "prefer_apple must not change Smart+Complete skip decision"
+    );
+}
+
+/// Off is Off — full file re-pass is always skipped, independent of completeness
+/// and of prefer_apple (no silent Always rewrite from the live engine).
+#[test]
+fn test_should_skip_full_final_repass_off_is_always_off() {
+    let complete = StreamingCompleteness::Complete;
+    let incomplete = StreamingCompleteness::Incomplete { reason: "empty" };
+    for prefer_apple in [false, true] {
+        assert!(
+            should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, prefer_apple),
+            "Off+Complete prefer_apple={prefer_apple} must skip"
+        );
+        assert!(
+            should_skip_full_final_repass(FinalPassRoutingMode::Off, incomplete, prefer_apple),
+            "Off+Incomplete prefer_apple={prefer_apple} must skip"
+        );
+    }
+}
+
+/// Always is Always — full Whisper file re-pass never skips.
+#[test]
+fn test_should_skip_full_final_repass_always_never_skips() {
+    let complete = StreamingCompleteness::Complete;
+    let incomplete = StreamingCompleteness::Incomplete {
+        reason: "pending_tail",
+    };
+    for prefer_apple in [false, true] {
+        assert!(
+            !should_skip_full_final_repass(FinalPassRoutingMode::Always, complete, prefer_apple),
+            "Always+Complete prefer_apple={prefer_apple} must NOT skip"
+        );
+        assert!(
+            !should_skip_full_final_repass(FinalPassRoutingMode::Always, incomplete, prefer_apple),
+            "Always+Incomplete prefer_apple={prefer_apple} must NOT skip"
+        );
+    }
+}
+
+/// Smart skips only when streaming completeness is Complete; incomplete must re-pass.
+/// prefer_apple does not rewrite Smart into Always when Complete.
+#[test]
+fn test_should_skip_full_final_repass_smart_incomplete_still_runs_repass() {
+    let incomplete_cases = [
+        assess_streaming_completeness_fields("  ", None, false, false, None, 0, 0),
+        assess_streaming_completeness_fields(
+            "Trwa jeszcze",
+            None,
+            true, // pending_tail
+            false,
+            Some(CompletenessCommitSource::UtteranceFinal),
+            12,
+            1,
+        ),
+        assess_streaming_completeness_fields(
+            "To jest zdanie z kropką.",
+            None,
+            false,
+            false,
+            None, // no commit source — punctuation alone is not authority
+            0,
+            0,
+        ),
+    ];
+    for completeness in incomplete_cases {
+        assert!(
+            matches!(completeness, StreamingCompleteness::Incomplete { .. }),
+            "fixture must be Incomplete, got {completeness:?}"
+        );
+        for prefer_apple in [false, true] {
+            assert!(
+                !should_skip_full_final_repass(
+                    FinalPassRoutingMode::Smart,
+                    completeness,
+                    prefer_apple
+                ),
+                "Smart+Incomplete prefer_apple={prefer_apple} must run full re-pass, got skip for {completeness:?}"
+            );
+        }
+    }
+
+    let complete = assess_streaming_completeness_fields(
+        "To jest kompletny streaming transcript.",
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        40,
+        1,
+    );
+    assert_eq!(complete, StreamingCompleteness::Complete);
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, true),
+        "Smart+Complete+prefer_apple still skips — live engine must not force re-pass"
+    );
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Smart, complete, false),
+        "Smart+Complete+non-Apple skips"
+    );
+}
+
+/// Dictionary / lexicon is independent of FINAL_PASS_MODE.
+/// Off skips Whisper full re-pass, but StreamPostProcessor / apply_lexicon still rewrite.
+#[test]
+fn test_dictionary_always_applies_when_final_pass_mode_off() {
+    // Simulate stop-path Off: skip full re-pass, keep streaming text as the transcript base.
+    let streaming_with_typo = "Uzywam doker do kontenerow.";
+    let complete = StreamingCompleteness::Complete;
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, true),
+        "Off skip path: no Whisper final pass required for dictionary"
+    );
+    assert!(
+        should_skip_full_final_repass(FinalPassRoutingMode::Off, complete, false),
+        "Off skip path independent of prefer_apple"
+    );
+
+    // Post-process always runs after the skip decision (controller stop path).
+    let via_apply = crate::stream_postprocess::apply_lexicon(streaming_with_typo);
+    assert!(
+        via_apply.contains("Docker"),
+        "apply_lexicon must rewrite 'doker' -> 'Docker' under Off path: {via_apply}"
+    );
+
+    let mut processor = crate::stream_postprocess::StreamPostProcessor::new();
+    let via_processor = processor
+        .process_utterance(streaming_with_typo)
+        .expect("StreamPostProcessor must emit output for non-empty streaming text");
+    assert!(
+        via_processor.contains("Docker"),
+        "StreamPostProcessor must rewrite lexicon term without Whisper final pass: {via_processor}"
+    );
+    assert!(
+        processor.stats().lexicon_rewrites >= 1,
+        "lexicon_rewrites counter must tick when a known typo is corrected"
     );
 }
 
@@ -832,6 +1031,40 @@ fn test_final_pass_routing_mode_defaults_smart_and_honors_env() {
         std::env::remove_var("FINAL_PASS_MODE");
         std::env::remove_var("CODESCRIBE_FINAL_PASS_MODE");
     }
+}
+
+/// Settings / env string parse: `on` (and aliases) map to Always; smart/auto; off aliases.
+#[test]
+fn test_final_pass_routing_mode_parse_on_maps_to_always() {
+    for raw in ["on", "ON", "1", "true", "yes", "always", " Always "] {
+        assert_eq!(
+            FinalPassRoutingMode::parse(raw),
+            Some(FinalPassRoutingMode::Always),
+            "parse({raw:?}) must be Always"
+        );
+    }
+    for raw in ["smart", "SMART", "auto", "Auto"] {
+        assert_eq!(
+            FinalPassRoutingMode::parse(raw),
+            Some(FinalPassRoutingMode::Smart),
+            "parse({raw:?}) must be Smart"
+        );
+    }
+    for raw in ["off", "OFF", "0", "false", "no"] {
+        assert_eq!(
+            FinalPassRoutingMode::parse(raw),
+            Some(FinalPassRoutingMode::Off),
+            "parse({raw:?}) must be Off"
+        );
+    }
+    assert_eq!(
+        FinalPassRoutingMode::parse("bogus"),
+        None,
+        "unknown tokens must not silently coerce"
+    );
+    assert_eq!(FinalPassRoutingMode::Always.as_str(), "always");
+    assert_eq!(FinalPassRoutingMode::Smart.as_str(), "smart");
+    assert_eq!(FinalPassRoutingMode::Off.as_str(), "off");
 }
 
 #[test]

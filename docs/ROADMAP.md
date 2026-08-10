@@ -156,8 +156,8 @@ Dual-channel dictation (bucket→paste, wire truth EN, rail live refresh,
 title strip), archiwum bucketów (nic nie ginie — `context/archive/`),
 licznik selections, bezstratne unpadded markery, publish na
 error/cancel, serializacja env-race, slug DMG z datą+SHA, Max prompt =
-thought-expansion ghostwriter. Szczegóły:
-`~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0721/plans/dual-channel-dictation/DRIVER.md`.
+thought-expansion ghostwriter. Szczegóły: wewnętrzny plan
+`dual-channel-dictation` (operator artifact store, 2026-07-21).
 
 ---
 

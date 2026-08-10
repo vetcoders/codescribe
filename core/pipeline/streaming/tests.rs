@@ -26,6 +26,7 @@ fn pending_item(is_final: bool) -> PendingUtteranceWorkItem {
 fn pending_item_with_marker(is_final: bool, marker: f32) -> PendingUtteranceWorkItem {
     PendingUtteranceWorkItem {
         audio: vec![marker; 32],
+        gate_audio_samples: 32,
         inference_audio: vec![marker; 32],
         is_final,
         scheduler_utterance_id: if is_final { 1 } else { 0 },

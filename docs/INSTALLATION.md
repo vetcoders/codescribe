@@ -7,8 +7,8 @@ This document describes the installation methods, configuration paths, and how t
 ### Method 1: App Bundle From Source (Recommended for Development)
 
 ```bash
-# Build the SwiftUI app bundle
-make app PROFILE=release
+# Build an optimized local SwiftUI app bundle
+make app PROFILE=local-release
 
 # Build and copy to /Applications/Codescribe.app
 make install-app
@@ -36,6 +36,12 @@ make install
 - only falls back to `adhoc` when no usable signing identity exists
 
 This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
+
+Local source installs use Cargo's optimized `local-release` profile and the
+checked-in development license verifier. Production DMGs use the distinct
+`release` profile, which fails closed unless `CODESCRIBE_LICENSE_PUBLIC_KEY_HEX`
+is the real 32-byte Ed25519 public key paired with the production signer. A UUID
+is not a license public key.
 
 ### Method 3: DMG Distribution (For End Users)
 
@@ -218,7 +224,7 @@ Grant in **System Settings > Privacy & Security**:
 ### Empty Tray Icon
 
 - Check that `assets/icon.png` exists and is valid PNG
-- Rebuild with `make app PROFILE=release`
+- Rebuild with `make app PROFILE=local-release`
 
 ### Config Not Loading
 

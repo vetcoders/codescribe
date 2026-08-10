@@ -6,10 +6,9 @@ use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, To
 use codescribe_core::util::safe_path::safe_open_bounded;
 use serde_json::{Value, json};
 
-use super::{path_policy, workspace};
+use super::{output_guard, path_policy, workspace};
 
 const MAX_FILE_SIZE_BYTES: u64 = 512 * 1024;
-const MAX_TEXT_CHARS: usize = 40_000;
 
 pub fn register(registry: &mut ToolRegistry) {
     registry
@@ -24,9 +23,9 @@ pub fn register(registry: &mut ToolRegistry) {
 fn read_file_definition() -> ToolDefinition {
     ToolDefinition {
         name: "read_file".to_string(),
-        description:
-            "Read the text content of a file. Only works for UTF-8 text files under 40K characters."
-                .to_string(),
+        description: "Read the text content of a UTF-8 file. Long files are returned as the \
+             first ~25K characters plus a pointer to the source path for reading the rest."
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -89,9 +88,9 @@ fn read_file_from_input_with_roots(input: &Value, roots: &[PathBuf]) -> Result<S
     let mut content = String::from_utf8(bytes)
         .with_context(|| format!("Failed to read UTF-8 text from {}", path.display()))?;
 
-    if content.chars().count() > MAX_TEXT_CHARS {
-        content = content.chars().take(MAX_TEXT_CHARS).collect();
-    }
+    // Never a silent cut: an oversized file comes back truncated WITH a pointer
+    // to the on-disk source, so the agent knows the text continues and where.
+    content = output_guard::truncate_with_source(&content, &path);
 
     Ok(content)
 }

@@ -1478,17 +1478,28 @@ mod tests {
     #[test]
     #[serial]
     fn lane_truth_keychain_only_secret_sets_probe_core_readiness() {
+        // Hermetic vs operator machine: Settings may select OpenAI or Anthropic.
+        // Readiness must honor the *active* assistive provider's key account —
+        // not hardcode LLM_ASSISTIVE_API_KEY (fails when provider is Anthropic
+        // and key_env_key is LLM_ANTHROPIC_API_KEY; followup 2026-08-05).
         let _provider = EnvGuard::remove("LLM_ASSISTIVE_PROVIDER");
-        let _key = EnvGuard::remove("LLM_ASSISTIVE_API_KEY");
+        let _assistive_key = EnvGuard::remove("LLM_ASSISTIVE_API_KEY");
+        let _anthropic_key = EnvGuard::remove("LLM_ANTHROPIC_API_KEY");
+
+        let key_account = codescribe_core::llm::lane_truth::provider(
+            codescribe_core::llm::provider::LlmMode::Assistive,
+        )
+        .api_key_env_key()
+        .to_string();
 
         let core = probe_core_readiness_with_secret(|account| {
-            (account == "LLM_ASSISTIVE_API_KEY").then(|| "keychain-only".to_string())
+            (account == key_account.as_str()).then(|| "keychain-only".to_string())
         });
 
-        assert_eq!(core.key_env_key, "LLM_ASSISTIVE_API_KEY");
+        assert_eq!(core.key_env_key, key_account);
         assert!(
             core.key_set,
-            "a Keychain-only secret must satisfy readiness"
+            "Keychain-only secret for active assistive account {key_account} must satisfy readiness"
         );
     }
 
@@ -1611,7 +1622,7 @@ mod tests {
         let core = CoreReadiness {
             configured_workspace_roots: vec![
                 "~/Git".to_string(),
-                "/Volumes/vc-workspace/vetcoders".to_string(),
+                "/Users/op/workspace/projects".to_string(),
             ],
             tool_workspace_roots: vec!["~/Git".to_string()],
             ..core_ready()

@@ -254,12 +254,16 @@ pub struct AssistiveLaneSnapshot {
     pub endpoint: String,
     pub model: String,
     pub api_key: Option<String>,
-    /// True when the lane must authenticate with the stored ChatGPT account
-    /// tokens instead of an API key: OpenAI provider, official (key-requiring)
-    /// endpoint, no API key anywhere, but "Sign in with ChatGPT" tokens are
-    /// stored. An explicit API key always wins; account tokens never ride to a
-    /// non-official endpoint. The send path asks `account_auth` for a fresh
-    /// bearer per request (auto-refresh), never a frozen token from here.
+    /// True when the lane authenticates with stored ChatGPT OAuth tokens
+    /// instead of an API key: OpenAI provider, official (key-requiring)
+    /// endpoint, and "Sign in with ChatGPT" tokens are present.
+    ///
+    /// Preference (operator 2026-08-05): a **signed-in OAuth account wins over
+    /// a stored API key** at startup. The key may still be reported as present
+    /// for Settings/probe truth, but the agent send path uses account tokens.
+    /// Account tokens never ride to a non-official endpoint. The send path asks
+    /// `account_auth` for a fresh bearer per request (auto-refresh), never a
+    /// frozen token from here.
     pub account_auth: bool,
 }
 
@@ -281,8 +285,9 @@ fn assistive_snapshot_with(
         ProviderKind::AnthropicMessages => anthropic_messages_endpoint(),
     };
     let api_key = secret_with_keychain(key_account, &load_key);
+    // Prefer signed-in ChatGPT OAuth over any stored API key on the official
+    // OpenAI host. API key remains the fallback when no account tokens exist.
     let account_auth = provider == ProviderKind::OpenAiResponses
-        && api_key.is_none()
         && endpoint_requires_api_key(&endpoint)
         && secret_with_keychain(account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT, &load_key).is_some();
     AssistiveLaneSnapshot {
@@ -700,7 +705,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn explicit_api_key_wins_over_stored_account_tokens() {
+    fn signed_in_chatgpt_account_wins_over_stored_api_key() {
         let _env = lane_env_guards();
 
         let snapshot =
@@ -714,11 +719,14 @@ mod tests {
                 }
             });
 
+        // Key may still be reported present (Settings/probe), but auth is OAuth.
         assert_eq!(snapshot.api_key.as_deref(), Some("kc-secret"));
         assert!(
-            !snapshot.account_auth,
-            "explicit API key must win over account tokens"
+            snapshot.account_auth,
+            "signed-in ChatGPT OAuth must win over a stored API key at startup"
         );
+        let ready = availability_of(snapshot).expect("OAuth + key both make the lane available");
+        assert!(ready.account_auth);
     }
 
     #[test]

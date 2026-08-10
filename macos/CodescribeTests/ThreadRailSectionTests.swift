@@ -68,14 +68,6 @@ final class ThreadRailSectionTests: XCTestCase {
         if let configured = ProcessInfo.processInfo.environment["CODESCRIBE_W2_RECEIPT_PATH"] {
             return configured
         }
-        let canonicalArtifact = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                ".vibecrafted/artifacts/vetcoders/codescribe/2026_0719/reports/e2e/W2-A-evidence/delivery-receipt.json"
-            )
-            .path
-        if FileManager.default.fileExists(atPath: canonicalArtifact) {
-            return canonicalArtifact
-        }
         return URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()  // CodescribeTests
             .deletingLastPathComponent()  // macos

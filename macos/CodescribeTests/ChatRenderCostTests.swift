@@ -216,4 +216,46 @@ final class ChatRenderCostTests: XCTestCase {
             MDBlock.parse(text).count
         }
     }
+
+    // MARK: Oversized bubble disposition (bolączka #3 residual)
+
+    // Hang report 2026-08-04 (Codescribe 0.13.2/549): main thread livelocked
+    // for 2285 s in SwiftUI's shared SelectionOverlay + LazyLayout over an
+    // unbounded transcript, 22.48 GB footprint. U5 removed the per-tick parse
+    // cost, but any bubble past a size cap must additionally stop rendering
+    // inline under the list-wide `.textSelection(.enabled)` overlay.
+
+    func testBubbleAtInlineCapRendersInline() {
+        XCTAssertEqual(
+            OversizedBubblePolicy.disposition(utf8Count: OversizedBubblePolicy.inlineUTF8Cap),
+            .inline
+        )
+    }
+
+    func testBubblePastInlineCapDegradesToHeadPreview() {
+        XCTAssertEqual(
+            OversizedBubblePolicy.disposition(utf8Count: OversizedBubblePolicy.inlineUTF8Cap + 1),
+            .headPreview(headUTF8: OversizedBubblePolicy.headPreviewUTF8)
+        )
+    }
+
+    func testHundredKPasteDegradesToHeadPreview() {
+        // The exact ingress from the hang: a 100k paste becomes one You bubble.
+        let paste = pastedProse(chars: 100_000)
+        XCTAssertEqual(
+            OversizedBubblePolicy.disposition(utf8Count: paste.utf8.count),
+            .headPreview(headUTF8: OversizedBubblePolicy.headPreviewUTF8)
+        )
+    }
+
+    func testOversizedBubbleLeavesTheListSelectionOverlay() {
+        // The livelock mechanism is the shared selection overlay itself, so an
+        // oversized bubble must not join it — its full text belongs in a
+        // contained text view with its own selection.
+        let paste = pastedProse(chars: 100_000)
+        XCTAssertFalse(
+            OversizedBubblePolicy.disposition(utf8Count: paste.utf8.count)
+                .sharesListSelectionOverlay
+        )
+    }
 }

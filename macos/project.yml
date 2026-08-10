@@ -17,6 +17,14 @@ packages:
   HighlightSwift:
     url: https://github.com/appstefan/HighlightSwift
     from: 1.1.0
+  # Sparkle 2 — MIT, the standard signed-update channel for apps distributed
+  # outside the App Store. Pinned exact: the framework ships prebuilt tools
+  # (generate_appcast, sign_update) whose output format must stay in lockstep
+  # with the embedded framework. App is NOT sandboxed, so Sparkle's XPC
+  # services and SUEnableInstallerLauncherService are not required.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.5
 targets:
   Codescribe:
     type: application
@@ -27,6 +35,8 @@ targets:
         product: PhosphorSwift
       - package: HighlightSwift
         product: HighlightSwift
+      - package: Sparkle
+        product: Sparkle
     info:
       path: Codescribe/Info.plist
       properties:
@@ -39,6 +49,15 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CSBuildCommit: $(CS_BUILD_COMMIT)
         CSBuiltAt: $(CS_BUILT_AT)
+        # Sparkle 2 update channel. Feed lives in site/public (deployed via
+        # GitHub Pages); enclosures point at GitHub Releases DMGs. The EdDSA
+        # public key is injected at build time (scripts/build-app.sh reads
+        # SPARKLE_ED_PUBLIC_KEY from the environment) — the private key never
+        # enters the repo. An empty key means Sparkle logs an error and rejects
+        # every update instead of accepting unsigned feeds (fail-closed).
+        SUFeedURL: https://vetcoders.github.io/codescribe/appcast.xml
+        SUPublicEDKey: $(SPARKLE_ED_PUBLIC_KEY)
+        SUEnableAutomaticChecks: true
         LSUIElement: true
         NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
         NSSpeechRecognitionUsageDescription: "Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
@@ -54,6 +73,10 @@ targets:
         CURRENT_PROJECT_VERSION: "0"
         CS_BUILD_COMMIT: dev
         CS_BUILT_AT: unknown
+        # Sparkle EdDSA public key — empty for bare Xcode/dev builds (updates
+        # then fail signature verification, which is the safe default). The
+        # release pipeline overrides this via scripts/build-app.sh.
+        SPARKLE_ED_PUBLIC_KEY: ""
         # Stable dev identity → own TCC/keychain slot across rebuilds.
         PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual

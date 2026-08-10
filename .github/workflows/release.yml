@@ -16,7 +16,13 @@ permissions:
 jobs:
   dmg:
     name: Build, notarize, and publish DMG
-    runs-on: macos-14
+    runs-on: macos-latest
+    # Deployment gate: `workflow_dispatch` can otherwise be fired by anyone with
+    # write access against any tag. Protection rules (required reviewers,
+    # deployment branches/tags) live on the `release` environment in repo
+    # settings — configure them there; this line is what makes them apply.
+    environment:
+      name: release
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -33,7 +39,7 @@ jobs:
         # xcodebuild ships with the macOS runner image.)
         run: brew install xcodegen
 
-      - name: Validate signing secrets
+      - name: Validate release keys and signing secrets
         env:
           CODESIGN_CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
           CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
@@ -41,6 +47,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          CODESCRIBE_LICENSE_PUBLIC_KEY_HEX: ${{ vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX }}
+          SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           test -n "$CODESIGN_CERTIFICATE_BASE64" || { echo "Missing CODESIGN_CERTIFICATE_BASE64"; exit 1; }
           test -n "$CODESIGN_CERTIFICATE_PASSWORD" || { echo "Missing CODESIGN_CERTIFICATE_PASSWORD"; exit 1; }
@@ -48,6 +57,9 @@ jobs:
           test -n "$APPLE_ID" || { echo "Missing APPLE_ID"; exit 1; }
           test -n "$APPLE_TEAM_ID" || { echo "Missing APPLE_TEAM_ID"; exit 1; }
           test -n "$APPLE_APP_SPECIFIC_PASSWORD" || { echo "Missing APPLE_APP_SPECIFIC_PASSWORD"; exit 1; }
+          [[ "$CODESCRIBE_LICENSE_PUBLIC_KEY_HEX" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Missing or invalid CODESCRIBE_LICENSE_PUBLIC_KEY_HEX repository variable"; exit 1; }
+          test -n "$SPARKLE_ED_PUBLIC_KEY" || { echo "Missing SPARKLE_ED_PUBLIC_KEY repository variable"; exit 1; }
+          test -n "$SPARKLE_ED_PRIVATE_KEY" || { echo "Missing SPARKLE_ED_PRIVATE_KEY secret"; exit 1; }
 
       - name: Import Developer ID certificate
         env:
@@ -61,9 +73,18 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" -P "$CODESIGN_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed s/\"//g)
+          existing_keychains=()
+          while IFS= read -r keychain; do
+            keychain="${keychain//\"/}"
+            [[ -n "$keychain" ]] && existing_keychains+=("$keychain")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "${existing_keychains[@]}"
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          # The identity now lives in the keychain; the raw PKCS12 has no
+          # further use. Overwrite-then-unlink so the private key material
+          # never survives on the runner disk (`rm -P` = 3-pass overwrite).
+          rm -P "$CERT_PATH"
 
       - name: Configure Apple notarization profile
         env:
@@ -76,24 +97,83 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD"
 
+      - name: Prepare release models
+        # release-dmgs builds slim before full, while ensure-models is otherwise
+        # only a dependency of release-full. Warm both public-model caches first
+        # so the slim artifact cannot silently compile without MiniLM.
+        run: make ensure-models
+
       - name: Build signed and notarized DMG artifacts
         env:
           CODESCRIBE_CODESIGN_IDENTITY: ${{ secrets.CODESCRIBE_CODESIGN_IDENTITY }}
           CODESCRIBE_BUNDLE_ID: ${{ vars.CODESCRIBE_BUNDLE_ID || 'com.vetcoders.codescribe' }}
+          CODESCRIBE_LICENSE_PUBLIC_KEY_HEX: ${{ vars.CODESCRIBE_LICENSE_PUBLIC_KEY_HEX }}
           NOTARY_PROFILE: CodescribeNotary
+          SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
         run: make release-dmgs
 
-      - name: Alias newest DMG as stable Codescribe.dmg
+      - name: Verify DMG payloads
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+          SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
+        run: |
+          test -x scripts/verify-dmg-payload.sh || {
+            echo "Missing executable payload verifier: scripts/verify-dmg-payload.sh"
+            exit 1
+          }
+
+          VERSION="${RELEASE_TAG#v}"
+          test -n "$VERSION" && test "$VERSION" != "$RELEASE_TAG" || {
+            echo "Release tag must have the form vX.Y.Z (got: $RELEASE_TAG)"
+            exit 1
+          }
+
+          shopt -s nullglob
+          dmgs=(Codescribe_*.dmg)
+          ((${#dmgs[@]} > 0)) || {
+            echo "No Codescribe_*.dmg artifacts produced"
+            exit 1
+          }
+
+          for dmg in "${dmgs[@]}"; do
+            variant=slim
+            [[ "$dmg" == *_full.dmg ]] && variant=full
+            echo "Verifying $dmg as $variant for version $VERSION"
+            scripts/verify-dmg-payload.sh \
+              "$dmg" \
+              --variant "$variant" \
+              --version "$VERSION"
+          done
+
+      - name: Alias slim DMG as stable Codescribe.dmg
         # The website pins two asset URLs that must survive the provenance slug
         # (Codescribe_<ver>-<date>-<sha>.dmg): releases/latest/download/Codescribe.dmg
         # and releases/download/v<ver>/Codescribe.dmg. Publish the slug artifact
         # for provenance AND a stable-named copy for the funnel, each with its
         # SHA-256 (bare filename inside, so `shasum -c` works from the download dir).
         run: |
-          DMG=$(ls -t Codescribe_*.dmg | head -1)
-          test -n "$DMG" || { echo "No Codescribe_*.dmg produced"; exit 1; }
+          shopt -s nullglob
+          DMG=""
+          for candidate in Codescribe_*.dmg; do
+            [[ "$candidate" == *_full.dmg ]] && continue
+            DMG="$candidate"
+            break
+          done
+          test -n "$DMG" || { echo "No slim Codescribe_*.dmg produced"; exit 1; }
           cp "$DMG" Codescribe.dmg
           shasum -a 256 Codescribe.dmg > Codescribe.dmg.sha256
+
+      - name: Generate signed Sparkle appcast
+        # The appcast is attached to the release as provenance; publishing it to
+        # the live feed (site/public/appcast.xml → Pages) stays an operator PR.
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          SPARKLE_ED_PUBLIC_KEY: ${{ vars.SPARKLE_ED_PUBLIC_KEY }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          scripts/generate-appcast.sh . \
+            -o appcast.xml \
+            --download-url-prefix "https://github.com/vetcoders/codescribe/releases/download/${RELEASE_TAG}/"
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -104,4 +184,15 @@ jobs:
             Codescribe_*.dmg.sha256
             Codescribe.dmg
             Codescribe.dmg.sha256
+            appcast.xml
           generate_release_notes: true
+
+      - name: Remove signing keychain
+        # Runs on every outcome: a failed build must not leave the imported
+        # Developer ID identity resident on the runner.
+        if: always()
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi
