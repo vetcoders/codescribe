@@ -1,49 +1,57 @@
 ---
-import Layout from '../layouts/Layout.astro';
-import LegalPage from '../components/LegalPage.astro';
-import { page } from '../lib/asset';
+import Layout from "../layouts/Layout.astro";
+import LegalPage from "../components/LegalPage.astro";
+import { page } from "../lib/asset";
 ---
 
 <Layout
-  title="Terms of Use &amp; EULA — codescribe"
+  title="Terms of Use & EULA — codescribe"
   description="Terms for using the codescribe macOS binary. Source remains FSL-1.1-ALv2; this page covers binary distribution."
   path="terms"
 >
-  <LegalPage title="Terms of Use &amp; EULA" eyebrow="Trust · Terms">
+  <LegalPage title="Terms of Use & EULA" eyebrow="Trust · Terms">
     <p class="note">
-      This is a plain-language draft for Merchant of Record readiness.
-      It is not a substitute for legal review. Source code remains under
-      FSL-1.1-ALv2; this page covers use of the distributed macOS app binary.
+      This is a plain-language draft for Merchant of Record readiness. It is not
+      a substitute for legal review. Source code remains under FSL-1.1-ALv2;
+      this page covers use of the distributed macOS app binary.
     </p>
 
     <h2>1. Agreement</h2>
     <p>
       By downloading, installing, or using the codescribe application (“App”),
-      you agree to these Terms. If you do not agree, do not use the App.
-      The App is provided by VetCoders / LibraxisAI (“we”, “us”).
+      you agree to these Terms. If you do not agree, do not use the App. The App
+      is provided by Vetcoders / LibraxisAI (“we”, “us”).
     </p>
 
     <h2>2. License to the binary</h2>
     <p>
-      We grant you a personal, non-exclusive, non-transferable license to install
-      and use the App on Apple Silicon Macs you own or control, for your own
-      work, subject to these Terms and any purchase or evaluation terms shown at
-      checkout.
+      We grant you a personal, non-exclusive, non-transferable license to
+      install and use the App on Apple Silicon Macs you own or control, for your
+      own work, subject to these Terms and any purchase or evaluation terms
+      shown at checkout.
     </p>
     <ul>
-      <li>You may not reverse engineer the App except where applicable law forbids that restriction.</li>
-      <li>You may not rent, lease, or sublicense the binary as a competing hosted product.</li>
-      <li>You may not remove copyright, trademark, or license notices from the App.</li>
+      <li>
+        You may not reverse engineer the App except where applicable law forbids
+        that restriction.
+      </li>
+      <li>
+        You may not rent, lease, or sublicense the binary as a competing hosted
+        product.
+      </li>
+      <li>
+        You may not remove copyright, trademark, or license notices from the
+        App.
+      </li>
     </ul>
 
     <h2>3. Source code is separate</h2>
     <p>
       The open/source-available repository is licensed under
-      <strong>FSL-1.1-ALv2</strong> (Functional Source License 1.1, Apache-2.0
-      future license). That license governs the source tree. These Terms govern
-      the prebuilt binary and paid distribution channel. Building from source
-      does not remove your obligation to respect third-party model/API terms you
-      configure yourself.
+      <strong>FSL-1.1-ALv2</strong> (Functional Source License 1.1, Apache-2.0 future
+      license). That license governs the source tree. These Terms govern the prebuilt
+      binary and paid distribution channel. Building from source does not remove your
+      obligation to respect third-party model/API terms you configure yourself.
     </p>
 
     <h2>4. Local-first product; your providers</h2>
@@ -52,7 +60,7 @@ import { page } from '../lib/asset';
       send text or audio to providers you enable (for example AI formatting,
       agent tools, or cloud STT). Those providers have their own terms and
       privacy policies. You are responsible for keys, usage limits, and content
-      you send them. See the <a href={page('privacy')}>Privacy Policy</a>.
+      you send them. See the <a href={page("privacy")}>Privacy Policy</a>.
     </p>
 
     <h2>5. Acceptable use</h2>
@@ -86,8 +94,8 @@ import { page } from '../lib/asset';
 
     <h2>8. Updates and changes</h2>
     <p>
-      We may release updates that change features or requirements (for example
-      a newer macOS). We may update these Terms; the “Last updated” date at the
+      We may release updates that change features or requirements (for example a
+      newer macOS). We may update these Terms; the “Last updated” date at the
       top of this page will change. Continued use after material changes means
       you accept the revised Terms, except where mandatory law requires a
       different process.
@@ -103,8 +111,8 @@ import { page } from '../lib/asset';
     <h2>10. Contact</h2>
     <p>
       <a href="mailto:hello@vetcoders.io">hello@vetcoders.io</a>
-      · <a href={page('support')}>Support</a>
-      · <a href={page('refunds')}>Refund Policy</a>
+      · <a href={page("support")}>Support</a>
+      · <a href={page("refunds")}>Refund Policy</a>
     </p>
   </LegalPage>
 </Layout>
