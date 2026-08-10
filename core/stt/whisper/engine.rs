@@ -323,6 +323,90 @@ fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
     generated_tokens == 0
 }
 
+/// Apply Whisper's timestamp-token constraints to one decoder step.
+///
+/// This mirrors OpenAI Whisper's `ApplyTimestampRules`: the first generated
+/// token is a timestamp, timestamps are monotonic and paired around text, and
+/// aggregate timestamp probability can outrank the best text token. Merely
+/// omitting `<|notimestamps|>` from the prompt is insufficient — without these
+/// masks the model can emit text-only output and the seam judge has no clock.
+fn apply_timestamp_rules(
+    logits: &mut [f32],
+    sampled_tokens: &[u32],
+    eot_token: u32,
+    no_timestamps_token: Option<u32>,
+    range: &timestamps::TimestampRange,
+) {
+    let timestamp_begin = range.begin as usize;
+    let timestamp_end = (range.end_inclusive as usize).min(logits.len().saturating_sub(1));
+    if timestamp_begin >= logits.len() || timestamp_begin > timestamp_end {
+        return;
+    }
+
+    if let Some(token) = no_timestamps_token
+        && let Some(logit) = logits.get_mut(token as usize)
+    {
+        *logit = f32::NEG_INFINITY;
+    }
+
+    let last_was_timestamp = sampled_tokens
+        .last()
+        .is_some_and(|token| range.is_timestamp(*token));
+    let penultimate_was_timestamp =
+        sampled_tokens.len() < 2 || range.is_timestamp(sampled_tokens[sampled_tokens.len() - 2]);
+
+    if last_was_timestamp {
+        if penultimate_was_timestamp {
+            logits[timestamp_begin..=timestamp_end].fill(f32::NEG_INFINITY);
+        } else {
+            let eot_index = (eot_token as usize).min(logits.len());
+            logits[..eot_index].fill(f32::NEG_INFINITY);
+        }
+    }
+
+    if let Some(last_timestamp) = sampled_tokens
+        .iter()
+        .rev()
+        .find(|token| range.is_timestamp(**token))
+    {
+        let first_allowed = if last_was_timestamp && !penultimate_was_timestamp {
+            *last_timestamp
+        } else {
+            last_timestamp.saturating_add(1)
+        } as usize;
+        let forbid_end = first_allowed.min(timestamp_end.saturating_add(1));
+        if timestamp_begin < forbid_end {
+            logits[timestamp_begin..forbid_end].fill(f32::NEG_INFINITY);
+        }
+    }
+
+    if sampled_tokens.is_empty() {
+        logits[..timestamp_begin].fill(f32::NEG_INFINITY);
+    }
+
+    let timestamp_max = logits[timestamp_begin..=timestamp_end]
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let timestamp_logsumexp = if timestamp_max.is_finite() {
+        timestamp_max
+            + logits[timestamp_begin..=timestamp_end]
+                .iter()
+                .map(|logit| (*logit - timestamp_max).exp())
+                .sum::<f32>()
+                .ln()
+    } else {
+        f32::NEG_INFINITY
+    };
+    let max_text_logit = logits[..timestamp_begin]
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    if timestamp_logsumexp > max_text_logit {
+        logits[..timestamp_begin].fill(f32::NEG_INFINITY);
+    }
+}
+
 /// A loaded Whisper model plus everything one transcription needs: tokenizer,
 /// device, mel filters, timestamp range and decoding parameters.
 ///
@@ -830,7 +914,9 @@ impl LocalWhisperEngine {
     /// Transcribe arbitrarily long audio in VAD-aligned, overlapping windows.
     ///
     /// The overlap exists so a word split across a boundary is still heard
-    /// whole; [`append_with_overlap_dedup`] then removes the duplicated region.
+    /// whole; [`merge_chunk_transcripts`] then removes the duplicated region by
+    /// segment time, falling back to [`append_with_overlap_dedup`] only when a
+    /// decoder does not provide segments.
     /// Segment timestamps are rebased onto the full recording, `avg_logprob` is
     /// averaged across chunks, and `compression_ratio` reports the **worst**
     /// chunk — one hallucinating window must not be hidden by good neighbours.
@@ -896,8 +982,8 @@ impl LocalWhisperEngine {
             "planned VAD-aligned long-file decode windows"
         );
 
-        let mut out = String::new();
-        let mut all_segments = Vec::new();
+        let mut merged = RawTranscript::default();
+        let mut covered_until_secs = 0.0_f32;
         let mut logprob_sum = 0.0_f32;
         let mut logprob_count = 0_u32;
         let mut worst_compression = 0.0_f32;
@@ -910,8 +996,7 @@ impl LocalWhisperEngine {
                 continue;
             }
             let chunk = &samples[start..end];
-            let transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
-            append_with_overlap_dedup(&mut out, &transcript.text);
+            let mut transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
 
             if let Some(lp) = transcript.avg_logprob {
                 logprob_sum += lp;
@@ -928,17 +1013,20 @@ impl LocalWhisperEngine {
 
             if !transcript.segments.is_empty() {
                 let offset_sec = start as f32 / 16_000.0;
-                all_segments.extend(transcript.segments.into_iter().map(|mut s| {
-                    s.start_ts += offset_sec;
-                    s.end_ts += offset_sec;
-                    s
-                }));
+                transcript.segments.iter_mut().for_each(|segment| {
+                    segment.start_ts += offset_sec;
+                    segment.end_ts += offset_sec;
+                });
             }
+
+            let overlap_end_secs = covered_until_secs.max(start_sec);
+            merge_chunk_transcripts(&mut merged, transcript, overlap_end_secs);
+            covered_until_secs = covered_until_secs.max(end_sec);
         }
 
         Ok(RawTranscript {
-            text: dedup_repetitions(out.trim()),
-            segments: all_segments,
+            text: dedup_repetitions(merged.text.trim()),
+            segments: merged.segments,
             avg_logprob: if logprob_count > 0 {
                 Some(logprob_sum / logprob_count as f32)
             } else {
@@ -1198,6 +1286,7 @@ impl LocalWhisperEngine {
             .token_to_id("<|endoftext|>")
             .ok_or_else(|| anyhow!("Tokenizer missing <|endoftext|>"))?;
         let nospeech_token = self.tokenizer.token_to_id("<|nospeech|>");
+        let no_timestamps_token = self.tokenizer.token_to_id("<|notimestamps|>");
         let start_of_previous_token = self.tokenizer.token_to_id(WHISPER_START_OF_PREVIOUS_TOKEN);
 
         // Initial tokens: <|startoftranscript|> <|lang|>? <|transcribe|> <|notimestamps|>
@@ -1324,6 +1413,16 @@ impl LocalWhisperEngine {
                 if idx < logits_vec.len() {
                     logits_vec[idx] = f32::NEG_INFINITY;
                 }
+            }
+
+            if timestamps_enabled && let Some(range) = self.ts_range.as_ref() {
+                apply_timestamp_rules(
+                    &mut logits_vec,
+                    &all_tokens,
+                    eot_token,
+                    no_timestamps_token,
+                    range,
+                );
             }
 
             // Avoid terminating immediately when nothing has been emitted yet
@@ -2535,22 +2634,66 @@ fn silence_spans_from_vad_probabilities(
 /// divergent text — that is WHY text-based dedup misses them) and must be
 /// dropped; segments past the overlap are appended verbatim.
 ///
-/// STUB: appends everything — the exact behavior that emitted "Zdanie
-/// pierwsze" twice at the w1/w2 seam of the 2026-08-10 recording.
-#[allow(dead_code)]
 pub fn merge_chunk_transcripts(
     out: &mut crate::pipeline::contracts::RawTranscript,
     next: crate::pipeline::contracts::RawTranscript,
-    _overlap_end_secs: f32,
+    overlap_end_secs: f32,
 ) {
-    append_with_overlap_dedup(&mut out.text, &next.text);
-    out.segments.extend(next.segments);
+    if next.segments.is_empty() {
+        append_with_overlap_dedup(&mut out.text, &next.text);
+        // Segment truth is no longer complete. Clear it so every later chunk
+        // remains on the text fallback instead of rebuilding the transcript
+        // from a partial segment set and dropping this chunk.
+        out.segments.clear();
+        return;
+    }
+
+    if !out.text.trim().is_empty() && out.segments.is_empty() {
+        append_with_overlap_dedup(&mut out.text, &next.text);
+        return;
+    }
+
+    out.segments.extend(
+        next.segments
+            .into_iter()
+            .filter(|segment| segment.end_ts > overlap_end_secs),
+    );
+    out.text = out
+        .segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
 }
 
 #[cfg(test)]
 mod stt_live_first_v2_red {
     use super::*;
     use crate::pipeline::contracts::{RawTranscript, TranscriptSegment};
+
+    /// Timestamp mode must actively force a clock token; omitting the
+    /// `<|notimestamps|>` prompt token alone produced `segments=0` in the real
+    /// file route.
+    #[test]
+    fn timestamp_rules_force_an_initial_timestamp_then_text() {
+        let range = timestamps::TimestampRange {
+            begin: 5,
+            end_inclusive: 7,
+        };
+        let mut initial_logits = vec![1.0; 8];
+        apply_timestamp_rules(&mut initial_logits, &[], 3, Some(4), &range);
+        assert!(initial_logits[..5].iter().all(|value| value.is_infinite()));
+        assert!(initial_logits[5..].iter().all(|value| value.is_finite()));
+
+        let mut after_timestamp = vec![1.0; 8];
+        apply_timestamp_rules(&mut after_timestamp, &[5], 3, Some(4), &range);
+        assert!(after_timestamp[..3].iter().all(|value| value.is_finite()));
+        assert!(
+            after_timestamp[5..].iter().all(|value| value.is_infinite()),
+            "a single opening timestamp must be followed by text"
+        );
+    }
 
     /// Silences at 22–23 s and 41–42.5 s: every internal boundary must land in
     /// one of them, not on the bare 20 s/40 s grid. RED until w1-a.
@@ -2661,5 +2804,128 @@ mod stt_live_first_v2_red {
             2,
             "one segment per real utterance — overlap segment dropped"
         );
+    }
+
+    /// A segment crossing the time seam contains new audio and must survive as
+    /// one whole segment; only spans ending inside the overlap are discarded.
+    #[test]
+    fn seam_merge_keeps_a_boundary_straddler_once() {
+        let mut out = RawTranscript {
+            text: "trusted earlier middle".into(),
+            segments: vec![TranscriptSegment {
+                text: "trusted earlier middle".into(),
+                start_ts: 2.0,
+                end_ts: 10.0,
+            }],
+            ..Default::default()
+        };
+        let next = RawTranscript {
+            text: "divergent head boundary bridge clean tail".into(),
+            segments: vec![
+                TranscriptSegment {
+                    text: "divergent head".into(),
+                    start_ts: 8.0,
+                    end_ts: 9.8,
+                },
+                TranscriptSegment {
+                    text: "boundary bridge".into(),
+                    start_ts: 9.8,
+                    end_ts: 11.0,
+                },
+                TranscriptSegment {
+                    text: "clean tail".into(),
+                    start_ts: 11.0,
+                    end_ts: 13.0,
+                },
+            ],
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, next, 10.0);
+
+        assert_eq!(out.segments.len(), 3);
+        assert_eq!(
+            out.text,
+            "trusted earlier middle boundary bridge clean tail"
+        );
+        assert_eq!(out.text.matches("boundary bridge").count(), 1);
+        assert!(!out.text.contains("  "));
+    }
+
+    /// Timestamp-less decoders retain the established text overlap fallback.
+    #[test]
+    fn seam_merge_uses_text_fallback_without_segments() {
+        let mut out = RawTranscript {
+            text: "one two three".into(),
+            ..Default::default()
+        };
+        let next = RawTranscript {
+            text: "two three four".into(),
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, next, 3.0);
+
+        assert_eq!(out.text, "one two three four");
+        assert!(out.segments.is_empty());
+    }
+
+    /// Once an earlier chunk lacked timestamps, keep one text-only source of
+    /// truth instead of entering a mixed state that can drop the old prefix on
+    /// a later segment-aware merge.
+    #[test]
+    fn seam_merge_keeps_mixed_sequences_on_the_text_fallback() {
+        let mut out = RawTranscript {
+            text: "one two three".into(),
+            ..Default::default()
+        };
+        let next = RawTranscript {
+            text: "two three four".into(),
+            segments: vec![TranscriptSegment {
+                text: "four".into(),
+                start_ts: 3.0,
+                end_ts: 4.0,
+            }],
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, next, 3.0);
+
+        assert_eq!(out.text, "one two three four");
+        assert!(out.segments.is_empty());
+    }
+
+    /// A timestamp-less middle chunk invalidates the accumulated segment map;
+    /// a later timestamped chunk must not rebuild text without that middle.
+    #[test]
+    fn seam_merge_stays_text_only_after_a_middle_chunk_loses_segments() {
+        let mut out = RawTranscript {
+            text: "one two".into(),
+            segments: vec![TranscriptSegment {
+                text: "one two".into(),
+                start_ts: 0.0,
+                end_ts: 2.0,
+            }],
+            ..Default::default()
+        };
+        let middle = RawTranscript {
+            text: "two three".into(),
+            ..Default::default()
+        };
+        let tail = RawTranscript {
+            text: "three four".into(),
+            segments: vec![TranscriptSegment {
+                text: "four".into(),
+                start_ts: 3.0,
+                end_ts: 4.0,
+            }],
+            ..Default::default()
+        };
+
+        merge_chunk_transcripts(&mut out, middle, 2.0);
+        merge_chunk_transcripts(&mut out, tail, 3.0);
+
+        assert_eq!(out.text, "one two three four");
+        assert!(out.segments.is_empty());
     }
 }
