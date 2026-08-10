@@ -96,11 +96,12 @@ use assistive_delivery::{
     assemble_assistive_delivery_lane, assemble_raw_paste_wire, capture_combo_context_with_image,
 };
 pub(crate) use final_pass::{
-    FinalPassAction, FinalPassRoutingMode, FinalPassStages, StopPathBudget, StreamingCompleteness,
-    StreamingCompletenessEvidence, append_tail_gap, assess_streaming_completeness,
-    compose_stop_path_residual_from_partials, final_pass_action_with_live_lane,
-    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
-    format_stop_path_budget_line, residual_prefers_session_partials,
+    FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
+    StreamingCompleteness, StreamingCompletenessEvidence, append_tail_gap,
+    assess_streaming_completeness, compose_stop_path_residual_from_partials,
+    final_pass_action_with_live_lane, final_pass_routing_mode,
+    format_assistive_delivery_budget_line, format_final_pass_stages_line,
+    format_stop_path_budget_line, smart_tail_gap_source,
 };
 #[cfg(test)]
 pub(crate) use final_pass::{
@@ -2821,6 +2822,8 @@ impl RecordingController {
                 || !streaming_text.trim().is_empty();
             let action =
                 final_pass_action_with_live_lane(effective_routing, completeness, live_lane_alive);
+            let smart_tail_source =
+                smart_tail_gap_source(live_lane_alive, &streaming_text, audio_path.is_some());
 
             if matches!(action, FinalPassAction::SkipStreamingFinal) {
                 local_final_pass_attempted = true;
@@ -2877,6 +2880,57 @@ impl RecordingController {
                     ),
                 );
             } else if matches!(action, FinalPassAction::TailGapFill)
+                && matches!(smart_tail_source, SmartTailGapSource::SessionResidual)
+            {
+                // The streaming task has already waited for progressive seals
+                // and its residual tail. A normal recording also has a WAV;
+                // source selection must therefore happen before path matching.
+                local_final_pass_attempted = true;
+                let committed_text = streaming_text.trim().to_string();
+                let residual = compose_stop_path_residual_from_partials(
+                    std::slice::from_ref(&committed_text),
+                    "",
+                );
+                final_pass_secs = residual.final_pass_phase_secs;
+                final_pass_stages.final_pass_total_ms = (final_pass_secs * 1000.0).round() as u64;
+                final_pass_stages.residual_ms = final_pass_stages.final_pass_total_ms;
+                info!(
+                    "final_pass_residual_from_partials mode=smart phase_secs={:.6} chars={} seal_source=live_session (no file re-decode)",
+                    residual.final_pass_phase_secs,
+                    residual.text.chars().count(),
+                );
+                let text = residual.text;
+                let raw = codescribe_core::pipeline::contracts::RawTranscript {
+                    text: text.clone(),
+                    ..Default::default()
+                };
+                let skip_engine = if prefer_apple {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+                    )
+                } else {
+                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
+                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
+                    )
+                };
+                local_final_pass_verdict = Some(
+                    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+                        text,
+                        raw,
+                        None,
+                        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+                        skip_engine,
+                        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+                            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+                            disposition: FinalPassDisposition::Unchanged,
+                            reason: Some("residual_from_session_partials".to_string()),
+                            lexicon_rewrites: 0,
+                            repetition_cleanups: 0,
+                        }),
+                    ),
+                );
+            } else if matches!(action, FinalPassAction::TailGapFill)
+                && matches!(smart_tail_source, SmartTailGapSource::FileDecodeFallback)
                 && let Some(path) = &audio_path
             {
                 // Smart + incomplete streaming: transcribe ONLY the uncommitted
@@ -2986,6 +3040,7 @@ impl RecordingController {
                                     postprocess_ms: 0,
                                     delivery_ms: 0,
                                     final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                                    ..Default::default()
                                 };
                                 let appended = tail.text.trim().to_string();
                                 let text = append_tail_gap(&committed_text, &appended);
@@ -3032,6 +3087,7 @@ impl RecordingController {
                                     postprocess_ms: 0,
                                     delivery_ms: 0,
                                     final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                                    ..Default::default()
                                 };
                                 warn!("Final-pass tail gap-fill failed: {}", e);
                             }
@@ -3044,57 +3100,6 @@ impl RecordingController {
                         }
                     }
                 }
-            } else if matches!(action, FinalPassAction::TailGapFill)
-                && residual_prefers_session_partials(live_lane_alive, true)
-                && audio_path.is_none()
-            {
-                // w2-b residual: live lane up, no WAV on disk — compose seals +
-                // residual from the streaming canvas without inventing a file
-                // re-decode. (Audio TailGapFill arm above remains the safety net
-                // when a path exists.)
-                local_final_pass_attempted = true;
-                let committed_text = streaming_text.trim().to_string();
-                let residual = compose_stop_path_residual_from_partials(
-                    std::slice::from_ref(&committed_text),
-                    "",
-                );
-                final_pass_secs = residual.final_pass_phase_secs;
-                final_pass_stages.final_pass_total_ms = (final_pass_secs * 1000.0).round() as u64;
-                info!(
-                    "final_pass_residual_from_partials mode=smart phase_secs={:.6} chars={} (no file re-decode)",
-                    residual.final_pass_phase_secs,
-                    residual.text.chars().count(),
-                );
-                let text = residual.text;
-                let raw = codescribe_core::pipeline::contracts::RawTranscript {
-                    text: text.clone(),
-                    ..Default::default()
-                };
-                let skip_engine = if prefer_apple {
-                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
-                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
-                    )
-                } else {
-                    codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::whisper(
-                        codescribe_core::pipeline::contracts::TranscriptionEngineMode::EmbeddedDefault,
-                    )
-                };
-                local_final_pass_verdict = Some(
-                    codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
-                        text,
-                        raw,
-                        None,
-                        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
-                        skip_engine,
-                        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
-                            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
-                            disposition: FinalPassDisposition::Unchanged,
-                            reason: Some("residual_from_session_partials".to_string()),
-                            lexicon_rewrites: 0,
-                            repetition_cleanups: 0,
-                        }),
-                    ),
-                );
             } else if matches!(action, FinalPassAction::PunctuationRepass)
                 && let Some(path) = &audio_path
             {
@@ -3137,6 +3142,7 @@ impl RecordingController {
                             postprocess_ms: 0,
                             delivery_ms: 0,
                             final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
                         };
                         let transplant =
                             codescribe_core::stt::punctuation_transplant::transplant_punctuation(
@@ -3206,6 +3212,7 @@ impl RecordingController {
                             postprocess_ms: 0,
                             delivery_ms: 0,
                             final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
                         };
                         warn!(
                             "Final-pass punctuation transplant failed (committed text ships untouched): {}",
@@ -3262,6 +3269,7 @@ impl RecordingController {
                             postprocess_ms: 0,
                             delivery_ms: 0,
                             final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
                         };
                         info!(
                             "Final-pass verdict captured ({} chars, engine={} mode={} speech_pct={:?}, avg_logprob={:?}, elapsed={:?})",
@@ -3284,6 +3292,7 @@ impl RecordingController {
                             postprocess_ms: 0,
                             delivery_ms: 0,
                             final_pass_total_ms: (final_pass_secs * 1000.0).round() as u64,
+                            ..Default::default()
                         };
                         warn!("Final-pass transcription failed: {}", e);
                     }

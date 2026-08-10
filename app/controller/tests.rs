@@ -476,6 +476,8 @@ fn test_stop_path_budget_line_format() {
 #[test]
 fn test_final_pass_stages_line_format_and_coverage() {
     let stages = FinalPassStages {
+        seal_ms: 0,
+        residual_ms: 0,
         queue_ms: 12,
         model_load_ms: 21_000,
         cold_load: true,
@@ -513,6 +515,8 @@ fn test_final_pass_stages_overhead_saturates_never_negative() {
     // Rounding jitter can make sub-stage sums exceed the wall total by a few
     // ms; the remainder must clamp to 0 instead of underflowing.
     let stages = FinalPassStages {
+        seal_ms: 0,
+        residual_ms: 0,
         queue_ms: 10,
         model_load_ms: 0,
         cold_load: false,

@@ -306,6 +306,11 @@ pub(crate) fn format_assistive_delivery_budget_line(total_secs: f64, outcome: &s
 /// delivery are the downstream pipeline stages of the same stop.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct FinalPassStages {
+    /// Stop-time progressive seal work. Healthy live sessions do this before
+    /// controller stop, so the expected value here is zero.
+    pub seal_ms: u64,
+    /// Pure seals + session-partial residual composition at stop.
+    pub residual_ms: u64,
     pub queue_ms: u64,
     pub model_load_ms: u64,
     pub cold_load: bool,
@@ -319,15 +324,22 @@ impl FinalPassStages {
     /// Final-pass wall time not attributed to queue/load/inference: audio file
     /// load, VAD, silero tail filter, lexicon final pass.
     pub(crate) fn engine_overhead_ms(self) -> u64 {
-        self.final_pass_total_ms
-            .saturating_sub(self.queue_ms + self.model_load_ms + self.inference_ms)
+        self.final_pass_total_ms.saturating_sub(
+            self.seal_ms
+                + self.residual_ms
+                + self.queue_ms
+                + self.model_load_ms
+                + self.inference_ms,
+        )
     }
 }
 
 /// Single INFO line carrying the final-pass stage split for one stop.
 pub(crate) fn format_final_pass_stages_line(stages: FinalPassStages) -> String {
     format!(
-        "final_pass_stages queue_ms={queue} model_load_ms={load} cold_load={cold} inference_ms={inf} engine_overhead_ms={overhead} postprocess_ms={pp} delivery_ms={del} final_pass_total_ms={total}",
+        "final_pass_stages seal_ms={seal} residual_ms={residual} queue_ms={queue} model_load_ms={load} cold_load={cold} inference_ms={inf} engine_overhead_ms={overhead} postprocess_ms={pp} delivery_ms={del} final_pass_total_ms={total}",
+        seal = stages.seal_ms,
+        residual = stages.residual_ms,
         queue = stages.queue_ms,
         load = stages.model_load_ms,
         cold = stages.cold_load,
@@ -455,6 +467,34 @@ pub(crate) fn residual_prefers_session_partials(
     )
 }
 
+/// Concrete source selected for Smart-mode incomplete-tail completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SmartTailGapSource {
+    /// The live session already produced progressive seals/residual text.
+    SessionResidual,
+    /// Bootstrap or dead-lane recovery may decode the retained WAV.
+    FileDecodeFallback,
+    /// No usable live text and no file safety net.
+    Unavailable,
+}
+
+/// Select the Smart tail source before branching on the existence of a WAV.
+/// This ordering is the contract: a normal recorder always has a WAV, so
+/// checking the path first would make the live residual permanently dead.
+pub(crate) fn smart_tail_gap_source(
+    live_lane_alive: bool,
+    live_session_text: &str,
+    has_audio_path: bool,
+) -> SmartTailGapSource {
+    if residual_prefers_session_partials(live_lane_alive, !live_session_text.trim().is_empty()) {
+        SmartTailGapSource::SessionResidual
+    } else if has_audio_path {
+        SmartTailGapSource::FileDecodeFallback
+    } else {
+        SmartTailGapSource::Unavailable
+    }
+}
+
 /// Smart + incomplete residual routing with the live-lane fence.
 ///
 /// When the live lane died, PunctuationRepass (shape) or TailGapFill (audio
@@ -477,4 +517,20 @@ pub(crate) fn final_pass_action_with_live_lane(
         return base;
     }
     base
+}
+
+#[cfg(test)]
+mod stop_path_integration_tests {
+    use super::*;
+
+    /// Smart stop must consume the live session residual even when a WAV path
+    /// exists. File decode is reserved for bootstrap/dead-lane recovery.
+    #[test]
+    fn smart_live_session_residual_preempts_wav_decode() {
+        let source = smart_tail_gap_source(true, "Pierwsze. Otwarty ogon", true);
+        assert_eq!(source, SmartTailGapSource::SessionResidual);
+
+        let bootstrap = smart_tail_gap_source(false, "", true);
+        assert_eq!(bootstrap, SmartTailGapSource::FileDecodeFallback);
+    }
 }

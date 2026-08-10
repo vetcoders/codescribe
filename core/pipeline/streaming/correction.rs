@@ -9,6 +9,10 @@ use tracing::{debug, error};
 
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
+use crate::stt::whisper::{
+    VadWindowPlanConfig, merge_chunk_transcripts, plan_vad_aligned_windows_with_config,
+    silence_spans_from_vad_probabilities,
+};
 
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
 use super::quality_gate::silero_vad_samples_to_ms;
@@ -32,6 +36,30 @@ pub(crate) const ROLLING_WINDOW_MIN_SECS: f32 = 6.0;
 /// Audio retained after a submission so boundary words are decoded whole in
 /// both adjacent windows.
 pub(crate) const ROLLING_WINDOW_OVERLAP_SECS: f32 = 4.0;
+/// Look-ahead retained so the planner can observe the silence around the
+/// target boundary before committing it.
+pub(crate) const ROLLING_WINDOW_LOOKAHEAD_SECS: f32 = 2.0;
+
+const ROLLING_WINDOW_PLAN: VadWindowPlanConfig = VadWindowPlanConfig {
+    min_secs: ROLLING_WINDOW_MIN_SECS,
+    target_secs: ROLLING_WINDOW_TARGET_SECS,
+    // Slightly below target+lookahead so a full 10 s buffer enters the
+    // planner instead of being treated as a single short terminal window.
+    max_secs: ROLLING_WINDOW_TARGET_SECS + ROLLING_WINDOW_LOOKAHEAD_SECS - 0.01,
+    overlap_secs: ROLLING_WINDOW_OVERLAP_SECS,
+    boundary_tolerance_secs: ROLLING_WINDOW_LOOKAHEAD_SECS,
+};
+
+/// One VAD-planned live decode request plus the commit cursor it owns.
+#[derive(Debug, Clone)]
+pub(crate) struct RollingWindowCandidate {
+    pub(crate) id: u64,
+    pub(crate) audio: Vec<f32>,
+    pub(crate) start_secs: f32,
+    pub(crate) end_secs: f32,
+    commit_through_samples: usize,
+    overlap_end_secs: f32,
+}
 
 /// Monotonic scheduling state for the rolling Refine lane.
 ///
@@ -43,6 +71,10 @@ pub(crate) struct RollingCorrectionWindow {
     next_window_id: u64,
     fresh_samples: usize,
     submitted_once: bool,
+    buffer_start_secs: f32,
+    covered_through_secs: f32,
+    pending_merge: Option<RollingWindowCandidate>,
+    merged_context: crate::pipeline::contracts::RawTranscript,
 }
 
 impl RollingCorrectionWindow {
@@ -50,32 +82,97 @@ impl RollingCorrectionWindow {
         self.fresh_samples = self.fresh_samples.saturating_add(samples);
     }
 
-    pub(crate) fn candidate(&self, audio: &[f32], sample_rate: u32) -> Option<(u64, Vec<f32>)> {
+    pub(crate) fn candidate(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+    ) -> Option<RollingWindowCandidate> {
+        if sample_rate == 0 {
+            return None;
+        }
+        let total_secs = audio.len() as f32 / sample_rate as f32;
+        let (_, stats) = crate::vad::extract_speech(audio, sample_rate);
+        let silences = silence_spans_from_vad_probabilities(
+            &stats.probabilities,
+            crate::vad::VadConfig::default().threshold,
+            total_secs,
+        );
+        self.candidate_with_silences(audio, sample_rate, &silences)
+    }
+
+    pub(crate) fn candidate_with_silences(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        silences: &[(f32, f32)],
+    ) -> Option<RollingWindowCandidate> {
         let rate = sample_rate as usize;
         if rate == 0 {
             return None;
         }
-        let minimum = (ROLLING_WINDOW_MIN_SECS * sample_rate as f32) as usize;
+        let minimum = ((ROLLING_WINDOW_TARGET_SECS + ROLLING_WINDOW_LOOKAHEAD_SECS)
+            * sample_rate as f32) as usize;
         let step = (ROLLING_WINDOW_STEP_SECS * sample_rate as f32) as usize;
         let fresh_required = if self.submitted_once { step } else { minimum };
         if audio.len() < minimum || self.fresh_samples < fresh_required {
             return None;
         }
-        let cap = (ROLLING_WINDOW_TARGET_SECS * sample_rate as f32) as usize;
-        let start = audio.len().saturating_sub(cap);
-        Some((
-            self.next_window_id.saturating_add(1),
-            audio[start..].to_vec(),
-        ))
+        let total_secs = audio.len() as f32 / sample_rate as f32;
+        let (start_secs, end_secs) =
+            plan_vad_aligned_windows_with_config(silences, total_secs, ROLLING_WINDOW_PLAN)
+                .into_iter()
+                .next()?;
+        let start = ((start_secs * sample_rate as f32).round() as usize).min(audio.len());
+        let end = ((end_secs * sample_rate as f32).round() as usize).min(audio.len());
+        if end <= start {
+            return None;
+        }
+        let absolute_start = self.buffer_start_secs + start_secs;
+        let absolute_end = self.buffer_start_secs + end_secs;
+        Some(RollingWindowCandidate {
+            id: self.next_window_id.saturating_add(1),
+            audio: audio[start..end].to_vec(),
+            start_secs: absolute_start,
+            end_secs: absolute_end,
+            commit_through_samples: end,
+            overlap_end_secs: self.covered_through_secs.max(absolute_start),
+        })
     }
 
-    pub(crate) fn commit(&mut self, audio: &mut Vec<f32>, sample_rate: u32) {
+    pub(crate) fn commit(
+        &mut self,
+        audio: &mut Vec<f32>,
+        sample_rate: u32,
+        candidate: &RollingWindowCandidate,
+    ) {
         let overlap = (ROLLING_WINDOW_OVERLAP_SECS * sample_rate as f32) as usize;
-        let drain = audio.len().saturating_sub(overlap);
+        let drain = candidate.commit_through_samples.saturating_sub(overlap);
         audio.drain(..drain);
+        self.buffer_start_secs += drain as f32 / sample_rate.max(1) as f32;
         self.next_window_id = self.next_window_id.saturating_add(1);
         self.fresh_samples = 0;
         self.submitted_once = true;
+        self.pending_merge = Some(candidate.clone());
+    }
+
+    /// Feed the existing time-seam judge and return context for the next live
+    /// window. Segment clocks are rebased to session time before merging.
+    pub(crate) fn merge_context(
+        &mut self,
+        mut transcript: crate::pipeline::contracts::RawTranscript,
+    ) -> Option<String> {
+        let candidate = self.pending_merge.take()?;
+        transcript.segments.iter_mut().for_each(|segment| {
+            segment.start_ts += candidate.start_secs;
+            segment.end_ts += candidate.start_secs;
+        });
+        merge_chunk_transcripts(
+            &mut self.merged_context,
+            transcript,
+            candidate.overlap_end_secs,
+        );
+        self.covered_through_secs = self.covered_through_secs.max(candidate.end_secs);
+        (!self.merged_context.text.trim().is_empty()).then(|| self.merged_context.text.clone())
     }
 
     /// Close one utterance without reusing its overlap as authority for the
@@ -83,6 +180,10 @@ impl RollingCorrectionWindow {
     pub(crate) fn seal_utterance(&mut self) {
         self.fresh_samples = 0;
         self.submitted_once = false;
+        self.buffer_start_secs = 0.0;
+        self.covered_through_secs = 0.0;
+        self.pending_merge = None;
+        self.merged_context = crate::pipeline::contracts::RawTranscript::default();
     }
 }
 
@@ -97,18 +198,23 @@ mod rolling_window_tests {
         let mut audio = vec![1.0; 6 * RATE as usize];
         state.observe_samples(audio.len());
 
-        let (first_id, first) = state.candidate(&audio, RATE).expect("first 6s window");
-        assert_eq!(first_id, 1);
-        assert_eq!(first.len(), 6 * RATE as usize);
-        state.commit(&mut audio, RATE);
-        assert_eq!(audio.len(), 4 * RATE as usize);
+        audio.extend(vec![1.0; 4 * RATE as usize]);
+        state.observe_samples(4 * RATE as usize);
+        let first = state.candidate(&audio, RATE).expect("first planned window");
+        assert_eq!(first.id, 1);
+        assert!(first.audio.len() <= 10 * RATE as usize);
+        state.commit(&mut audio, RATE, &first);
+        assert!(audio.len() >= 4 * RATE as usize);
 
         audio.extend(vec![2.0; 4 * RATE as usize]);
         state.observe_samples(4 * RATE as usize);
-        let (second_id, second) = state.candidate(&audio, RATE).expect("next 8s window");
-        assert_eq!(second_id, 2);
-        assert_eq!(second.len(), 8 * RATE as usize);
-        assert_eq!(&second[..4 * RATE as usize], vec![1.0; 4 * RATE as usize]);
+        while audio.len() < 10 * RATE as usize {
+            audio.extend(vec![2.0; RATE as usize]);
+            state.observe_samples(RATE as usize);
+        }
+        let second = state.candidate(&audio, RATE).expect("next planned window");
+        assert_eq!(second.id, 2);
+        assert!(second.audio.len() <= 10 * RATE as usize);
     }
 
     #[test]
@@ -121,15 +227,16 @@ mod rolling_window_tests {
 
         for second in 1..=150 {
             audio.extend(vec![second as f32; RATE as usize]);
-            let cap = (ROLLING_WINDOW_TARGET_SECS * RATE as f32) as usize;
+            let cap = ((ROLLING_WINDOW_TARGET_SECS + ROLLING_WINDOW_LOOKAHEAD_SECS) * RATE as f32)
+                as usize;
             if audio.len() > cap {
                 audio.drain(..audio.len() - cap);
             }
             state.observe_samples(RATE as usize);
-            if let Some((_id, candidate)) = state.candidate(&audio, RATE) {
+            if let Some(candidate) = state.candidate(&audio, RATE) {
                 scheduled_at.push(second);
-                scheduled_samples.push(candidate.len());
-                state.commit(&mut audio, RATE);
+                scheduled_samples.push(candidate.audio.len());
+                state.commit(&mut audio, RATE, &candidate);
             }
         }
 
@@ -158,7 +265,93 @@ mod rolling_window_tests {
 
         audio.extend(vec![0.0; RATE as usize]);
         state.observe_samples(RATE as usize);
+        audio.extend(vec![0.0; 4 * RATE as usize]);
+        state.observe_samples(4 * RATE as usize);
         assert!(state.candidate(&audio, RATE).is_some());
+    }
+
+    /// The live bridge takes its boundary from the shared VAD planner, not a
+    /// fixed trailing slice. The chosen end lands inside the supplied silence
+    /// around the 8-second target.
+    #[test]
+    fn rolling_window_boundary_is_vad_planned() {
+        const RATE: u32 = 100;
+        let mut state = RollingCorrectionWindow::default();
+        let audio = vec![0.25; 10 * RATE as usize];
+        state.observe_samples(audio.len());
+        let silences = [(7.8, 8.2)];
+
+        let candidate = state
+            .candidate_with_silences(&audio, RATE, &silences)
+            .expect("VAD-planned rolling window");
+
+        assert!((7.8..=8.2).contains(&candidate.end_secs));
+        assert_eq!(
+            candidate.audio.len(),
+            (candidate.end_secs * RATE as f32).round() as usize
+        );
+    }
+
+    /// The live context carry uses the shared time-seam judge: overlap
+    /// segments from the later window are discarded by timestamp while fresh
+    /// segments survive into the prompt for the next request.
+    #[test]
+    fn rolling_window_context_uses_time_seam_merger() {
+        use crate::pipeline::contracts::{RawTranscript, TranscriptSegment};
+
+        const RATE: u32 = 100;
+        let mut state = RollingCorrectionWindow::default();
+        let mut audio = vec![0.25; 10 * RATE as usize];
+        state.observe_samples(audio.len());
+        let first = state
+            .candidate_with_silences(&audio, RATE, &[(7.8, 8.2)])
+            .expect("first window");
+        state.commit(&mut audio, RATE, &first);
+        let first_context = state
+            .merge_context(RawTranscript {
+                text: "head edge".into(),
+                segments: vec![
+                    TranscriptSegment {
+                        text: "head".into(),
+                        start_ts: 0.0,
+                        end_ts: 4.0,
+                    },
+                    TranscriptSegment {
+                        text: "edge".into(),
+                        start_ts: 7.0,
+                        end_ts: 8.0,
+                    },
+                ],
+                ..Default::default()
+            })
+            .expect("first context");
+        assert_eq!(first_context, "head edge");
+
+        audio.extend(vec![0.5; 4 * RATE as usize]);
+        state.observe_samples(4 * RATE as usize);
+        let second = state
+            .candidate_with_silences(&audio, RATE, &[(7.8, 8.2)])
+            .expect("second window");
+        state.commit(&mut audio, RATE, &second);
+        let merged = state
+            .merge_context(RawTranscript {
+                text: "duplicate fresh".into(),
+                segments: vec![
+                    TranscriptSegment {
+                        text: "duplicate".into(),
+                        start_ts: 0.0,
+                        end_ts: 3.0,
+                    },
+                    TranscriptSegment {
+                        text: "fresh".into(),
+                        start_ts: 4.5,
+                        end_ts: 6.0,
+                    },
+                ],
+                ..Default::default()
+            })
+            .expect("merged context");
+        assert_eq!(merged, "head edge fresh");
     }
 }
 
@@ -509,11 +702,11 @@ pub(crate) fn schedule_partial_pass(
     partial_telemetry: &mut PartialPassTelemetry,
     event_sink: &Arc<dyn EventSink>,
 ) -> bool {
-    let Some((window_id, audio)) =
-        rolling_window.candidate(correction_audio_buf, output_sample_rate)
-    else {
+    let Some(candidate) = rolling_window.candidate(correction_audio_buf, output_sample_rate) else {
         return false;
     };
+    let window_id = candidate.id;
+    let audio = candidate.audio.clone();
     // Take the text mirror in lockstep with the audio slice: expected_text
     // must describe exactly the audio submitted below, or the receive-side
     // merge (`merge_corrected_window`) has no anchor and the correction would
@@ -550,7 +743,7 @@ pub(crate) fn schedule_partial_pass(
         previous_window_prompt,
     ) {
         Ok(handle) => {
-            rolling_window.commit(correction_audio_buf, output_sample_rate);
+            rolling_window.commit(correction_audio_buf, output_sample_rate, &candidate);
             partial_telemetry.record_run(trigger);
             *correction_expected_window_id = Some(window_id);
             *correction_expected_boundary_rev = Some(boundary_rev);
