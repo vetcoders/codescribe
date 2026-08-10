@@ -2373,3 +2373,158 @@ mod dedup_tests {
         );
     }
 }
+
+// ─── stt-live-first-v2 TDD stubs (dispatch 2026-08-10) ──────────────────────
+//
+// The two functions below are CONTRACT STUBS: their signatures are the agreed
+// v2 API, their bodies deliberately reproduce today's measured-broken behavior
+// so the colocated RED tests compile and fail at runtime, not at build time.
+// Cut w1-a implements `plan_vad_aligned_windows`; cut w1-c implements
+// `merge_chunk_transcripts`. Ground truth for both: the operator's three-way
+// recording (tests/e2e_long_window_truth.rs).
+
+/// Plan long-file decode windows aligned to VAD silence spans.
+///
+/// Contract (w1-a): boundaries between consecutive windows land INSIDE a
+/// silence span whenever one exists near the target step; windows stay within
+/// [`VAD_WINDOW_MIN_SECS`, `VAD_WINDOW_MAX_SECS`]; consecutive windows overlap
+/// so no audio is skipped. A fixed-step grid is only the fallback for audio
+/// with no usable silences (constant speech).
+///
+/// STUB: ignores `silences` entirely and returns the legacy 25 s / 20 s grid —
+/// the exact shape that derailed window c6 (start at 120 s = mid-mumble) on
+/// the 2026-08-10 recording.
+// dead_code allows: contract stubs — unreachable until w1-a/w1-c wire them
+// into transcribe_long_with_language_segments; the allows leave with that wiring.
+#[allow(dead_code)]
+pub const VAD_WINDOW_MIN_SECS: f32 = 6.0;
+#[allow(dead_code)]
+pub const VAD_WINDOW_MAX_SECS: f32 = 28.0;
+
+#[allow(dead_code)]
+pub fn plan_vad_aligned_windows(_silences: &[(f32, f32)], total_secs: f32) -> Vec<(f32, f32)> {
+    let mut windows = Vec::new();
+    let mut start = 0.0_f32;
+    while start < total_secs {
+        windows.push((start, (start + 25.0).min(total_secs)));
+        start += 20.0;
+    }
+    windows
+}
+
+/// Merge the next window's transcript onto the accumulated one, deduplicating
+/// the overlap REGION by segment time instead of by text.
+///
+/// Contract (w1-c): segments of `next` that end before `overlap_end_secs`
+/// re-describe audio the previous window already decoded (usually with
+/// divergent text — that is WHY text-based dedup misses them) and must be
+/// dropped; segments past the overlap are appended verbatim.
+///
+/// STUB: appends everything — the exact behavior that emitted "Zdanie
+/// pierwsze" twice at the w1/w2 seam of the 2026-08-10 recording.
+#[allow(dead_code)]
+pub fn merge_chunk_transcripts(
+    out: &mut crate::pipeline::contracts::RawTranscript,
+    next: crate::pipeline::contracts::RawTranscript,
+    _overlap_end_secs: f32,
+) {
+    append_with_overlap_dedup(&mut out.text, &next.text);
+    out.segments.extend(next.segments);
+}
+
+#[cfg(test)]
+mod stt_live_first_v2_red {
+    use super::*;
+    use crate::pipeline::contracts::{RawTranscript, TranscriptSegment};
+
+    /// Silences at 22–23 s and 41–42.5 s: every internal boundary must land in
+    /// one of them, not on the bare 20 s/40 s grid. RED until w1-a.
+    #[test]
+    fn window_boundaries_land_inside_silence_spans() {
+        let silences = [(22.0_f32, 23.0_f32), (41.0, 42.5)];
+        let windows = plan_vad_aligned_windows(&silences, 60.0);
+        assert!(windows.len() >= 2, "60 s must yield multiple windows");
+        for pair in windows.windows(2) {
+            let boundary = pair[0].1; // end of the earlier window
+            if boundary >= 60.0 {
+                continue;
+            }
+            assert!(
+                silences
+                    .iter()
+                    .any(|(s, e)| boundary >= *s && boundary <= *e),
+                "boundary {boundary}s falls outside every silence span — mid-speech window \
+                 starts derail the decoder (measured: window c6 @120s, 2026-08-10)"
+            );
+        }
+    }
+
+    /// Windows must respect the decode-competence floor and ceiling.
+    #[test]
+    fn windows_stay_within_competence_bounds() {
+        let silences = [(7.0_f32, 7.4), (14.0, 14.5), (21.0, 21.5), (28.0, 28.5)];
+        let windows = plan_vad_aligned_windows(&silences, 30.0);
+        for (start, end) in &windows {
+            let len = end - start;
+            let is_tail = (*end - 30.0).abs() < f32::EPSILON;
+            assert!(
+                len <= VAD_WINDOW_MAX_SECS,
+                "window {start}-{end} exceeds {VAD_WINDOW_MAX_SECS}s"
+            );
+            assert!(
+                is_tail || len >= VAD_WINDOW_MIN_SECS,
+                "non-tail window {start}-{end} under {VAD_WINDOW_MIN_SECS}s (clips <6s decode as \
+                 No speech — measured on operator fixtures)"
+            );
+        }
+    }
+
+    /// The seam judge drops next-window segments that re-describe the overlap
+    /// with divergent text. RED until w1-c.
+    #[test]
+    fn seam_merge_drops_overlap_redecode_by_time() {
+        let mut out = RawTranscript {
+            text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
+            segments: vec![TranscriptSegment {
+                text: "mówię teraz spokojnie prostymi słowami bez żadnych pułapek".into(),
+                start_ts: 15.0,
+                end_ts: 24.0,
+            }],
+            ..Default::default()
+        };
+        // Next window starts at 20 s; its decode of the 20–25 s overlap came out
+        // DIFFERENT ("Zdanie pierwsze.") — text dedup can never match it.
+        let next = RawTranscript {
+            text: "Zdanie pierwsze. Zdanie drugie. Whisper, Codescribe i Loctree".into(),
+            segments: vec![
+                TranscriptSegment {
+                    text: "Zdanie pierwsze.".into(),
+                    start_ts: 20.5,
+                    end_ts: 24.0,
+                },
+                TranscriptSegment {
+                    text: "Zdanie drugie. Whisper, Codescribe i Loctree".into(),
+                    start_ts: 25.5,
+                    end_ts: 33.0,
+                },
+            ],
+            ..Default::default()
+        };
+        merge_chunk_transcripts(&mut out, next, 25.0);
+        assert!(
+            !out.text.contains("Zdanie pierwsze"),
+            "overlap re-decode leaked into the merged text: {}",
+            out.text
+        );
+        assert!(
+            out.text.contains("Zdanie drugie"),
+            "post-overlap content must be appended: {}",
+            out.text
+        );
+        assert_eq!(
+            out.segments.len(),
+            2,
+            "one segment per real utterance — overlap segment dropped"
+        );
+    }
+}
