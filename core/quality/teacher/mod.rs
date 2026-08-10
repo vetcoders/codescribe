@@ -23,7 +23,7 @@ mod report;
 mod tokenize;
 
 pub use align::{AlignOp, align_words};
-pub use merge::{MergeMode, MergedDelivery, merge_live_whisper};
+pub use merge::{MergeMode, MergedDelivery, merge_live_whisper, merge_live_whisper_with_terms};
 pub use report::{
     AttentionKind, AttentionSpan, LexiconHint, TeacherInput, TeacherReport, report_to_html, teach,
 };
