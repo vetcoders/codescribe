@@ -11,10 +11,21 @@ use std::path::{Path, PathBuf};
 use crate::hf_cache;
 
 /// Default Whisper model name used for runtime fallback lookup.
-pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
 /// Hugging Face repo backing [`DEFAULT_MODEL`], used for cache lookup and for
-/// the Settings → Dictation download.
-pub const DEFAULT_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
+/// the Settings → Dictation download. fp16 weights: no q8→F32 dequantization
+/// on load, at the cost of a larger download than the q8 repo.
+pub const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
+/// Previous default (q8). Kept as a resolution fallback so installs that
+/// already carry it keep transcribing without a re-download.
+pub const LEGACY_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+/// Repo behind [`LEGACY_MODEL`]. Also the companion source for
+/// [`COMPANION_MODEL_FILES`], which [`DEFAULT_WHISPER_REPO`] does not ship.
+pub const LEGACY_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
+/// Files the mlx-community repo does not ship. Both are quantization-independent
+/// (same tokenizer and mel filterbank across q8/fp16), so composing them from
+/// the legacy repo yields a correct model directory.
+const COMPANION_MODEL_FILES: [&str; 2] = ["tokenizer.json", "mel_filters.npz"];
 
 /// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
@@ -76,6 +87,14 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     if trimmed == DEFAULT_MODEL {
         return hf_cache::find_snapshot_with_any(
             DEFAULT_WHISPER_REPO,
+            &REQUIRED_MODEL_FILES,
+            &REQUIRED_MODEL_WEIGHTS,
+        );
+    }
+
+    if trimmed == LEGACY_MODEL {
+        return hf_cache::find_snapshot_with_any(
+            LEGACY_WHISPER_REPO,
             &REQUIRED_MODEL_FILES,
             &REQUIRED_MODEL_WEIGHTS,
         );
@@ -235,8 +254,10 @@ impl ModelManager {
 /// 1. Explicit `CODESCRIBE_MODEL_PATH`
 /// 2. Configured local model path / models-dir alias
 /// 3. Configured Hugging Face repo snapshot
-/// 4. Default models-dir alias (`whisper-large-v3-turbo-mlx-q8`)
-/// 5. Default Hugging Face snapshot (`LibraxisAI/whisper-large-v3-turbo-mlx-q8`)
+/// 4. Default models-dir alias (`whisper-large-v3-turbo`)
+/// 5. Default Hugging Face snapshot (`mlx-community/whisper-large-v3-turbo`)
+/// 6. Legacy models-dir alias (`whisper-large-v3-turbo-mlx-q8`)
+/// 7. Legacy Hugging Face snapshot (`LibraxisAI/whisper-large-v3-turbo-mlx-q8`)
 pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Result<PathBuf> {
     if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
         let candidate = PathBuf::from(path.trim());
@@ -267,6 +288,15 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
     }
 
     if let Some(snapshot) = hf_snapshot_for_model(DEFAULT_MODEL) {
+        return Ok(snapshot);
+    }
+
+    let legacy_local = manager.get_model_path(LEGACY_MODEL);
+    if is_complete_whisper_model_dir(&legacy_local) {
+        return Ok(canonicalize_or_self(legacy_local));
+    }
+
+    if let Some(snapshot) = hf_snapshot_for_model(LEGACY_MODEL) {
         return Ok(snapshot);
     }
 
@@ -309,7 +339,7 @@ pub fn whisper_model_status() -> WhisperModelStatus {
         path,
         model_id: DEFAULT_MODEL.to_string(),
         repo: DEFAULT_WHISPER_REPO.to_string(),
-        size_hint: "~900 MB".to_string(),
+        size_hint: "~1.6 GB".to_string(),
     }
 }
 
@@ -328,15 +358,25 @@ where
         return Ok(canonicalize_or_self(dest));
     }
 
-    // Prefer an already-complete HF cache snapshot: hardlink/copy into user models dir
-    // when possible so Settings "Download" is a no-op if hf cache is warm.
-    if let Some(snapshot) = hf_snapshot_for_model(DEFAULT_MODEL) {
-        if snapshot != dest {
-            copy_complete_model_dir(&snapshot, &dest)?;
-        }
-        if is_complete_whisper_model_dir(&dest) {
-            return Ok(canonicalize_or_self(dest));
-        }
+    // Compose from warm local sources first, so Settings "Download" is a no-op
+    // when the pieces are already on disk. The primary repo ships only
+    // config.json + weights; tokenizer.json and mel_filters.npz come from the
+    // legacy q8 sources. config.json and weights must stay paired to the
+    // primary repo — legacy weights under the new alias would mislabel q8 as
+    // fp16, so legacy sources only ever contribute the companion files.
+    if let Some(snapshot) = hf_cache::find_snapshot(DEFAULT_WHISPER_REPO, &["config.json"])
+        && snapshot != dest
+    {
+        copy_model_files(&snapshot, &dest, &["config.json"])?;
+        copy_model_files(&snapshot, &dest, &REQUIRED_MODEL_WEIGHTS)?;
+    }
+    let legacy_local = manager.get_model_path(LEGACY_MODEL);
+    copy_model_files(&legacy_local, &dest, &COMPANION_MODEL_FILES)?;
+    if let Some(snapshot) = hf_snapshot_for_model(LEGACY_MODEL) {
+        copy_model_files(&snapshot, &dest, &COMPANION_MODEL_FILES)?;
+    }
+    if is_complete_whisper_model_dir(&dest) {
+        return Ok(canonicalize_or_self(dest));
     }
 
     fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
@@ -347,25 +387,48 @@ where
         .build()
         .context("build HTTP client for Whisper download")?;
 
-    // Small files first so a failed auth fails fast before multi-hundred-MB weights.
-    for name in REQUIRED_MODEL_FILES {
-        download_hf_file(
+    // Small files first so a failed auth fails fast before multi-GB weights.
+    // config.json describes the primary weights, so it has no fallback source;
+    // the companion files fall back to the legacy repo when the primary 404s.
+    download_hf_file(
+        &client,
+        DEFAULT_WHISPER_REPO,
+        "config.json",
+        &dest.join("config.json"),
+        &mut on_progress,
+    )?;
+    for name in COMPANION_MODEL_FILES {
+        let target = dest.join(name);
+        if let Err(err) = download_hf_file(
             &client,
             DEFAULT_WHISPER_REPO,
             name,
-            &dest.join(name),
+            &target,
             &mut on_progress,
-        )?;
+        ) {
+            tracing::warn!(
+                error = %err,
+                file = name,
+                "primary repo does not ship this file; falling back to legacy repo"
+            );
+            download_hf_file(
+                &client,
+                LEGACY_WHISPER_REPO,
+                name,
+                &target,
+                &mut on_progress,
+            )?;
+        }
     }
 
-    let weights_dest = dest.join("model.safetensors");
-    let weights_alt = dest.join("weights.safetensors");
+    let weights_dest = dest.join("weights.safetensors");
+    let weights_alt = dest.join("model.safetensors");
     if !weights_dest.exists() && !weights_alt.exists() {
-        // Prefer model.safetensors; fall back to weights.safetensors if 404.
+        // mlx-community ships weights.safetensors; fall back to model.safetensors if 404.
         match download_hf_file(
             &client,
             DEFAULT_WHISPER_REPO,
-            "model.safetensors",
+            "weights.safetensors",
             &weights_dest,
             &mut on_progress,
         ) {
@@ -373,12 +436,12 @@ where
             Err(err) => {
                 tracing::warn!(
                     error = %err,
-                    "model.safetensors missing; trying weights.safetensors"
+                    "weights.safetensors missing; trying model.safetensors"
                 );
                 download_hf_file(
                     &client,
                     DEFAULT_WHISPER_REPO,
-                    "weights.safetensors",
+                    "model.safetensors",
                     &weights_alt,
                     &mut on_progress,
                 )?;
@@ -396,27 +459,22 @@ where
     Ok(canonicalize_or_self(dest))
 }
 
-/// Copy a warm Hugging Face cache snapshot into the user models directory.
+/// Copy selected model files from a local source into the user models directory.
 ///
-/// Lets Settings → Download complete without network traffic when the cache is
-/// already populated. Existing destination files are left alone, so an
-/// interrupted copy resumes rather than restarting.
-fn copy_complete_model_dir(src: &Path, dest: &Path) -> Result<()> {
-    fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
-    for name in REQUIRED_MODEL_FILES {
-        let from = src.join(name);
-        let to = dest.join(name);
-        if from.exists() && !to.exists() {
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from the REQUIRED_MODEL_FILES compile-time constant, and the only caller passes the HF cache snapshot dir and `ModelManager::get_model_path(DEFAULT_MODEL)`. No caller-supplied path component reaches here.
-            fs::copy(&from, &to)
-                .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
-        }
+/// Lets Settings → Download complete without network traffic when the pieces are
+/// already on disk (warm HF cache, legacy q8 install). A missing source is a
+/// clean no-op and existing destination files are left alone, so an interrupted
+/// composition resumes rather than restarting.
+fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
+    if !src.is_dir() {
+        return Ok(());
     }
-    for name in REQUIRED_MODEL_WEIGHTS {
+    fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
+    for name in names {
         let from = src.join(name);
         let to = dest.join(name);
         if from.exists() && !to.exists() {
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Same as above: `name` is a REQUIRED_MODEL_WEIGHTS constant, both dirs are derived from DEFAULT_MODEL.
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from the REQUIRED_MODEL_* / COMPANION_MODEL_FILES compile-time constants, and callers pass HF cache snapshot dirs or ModelManager::get_model_path outputs. No caller-supplied path component reaches here.
             fs::copy(&from, &to)
                 .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
         }
@@ -761,7 +819,7 @@ mod tests {
         let status = whisper_model_status();
         assert_eq!(status.model_id, DEFAULT_MODEL);
         assert_eq!(status.repo, DEFAULT_WHISPER_REPO);
-        assert!(status.size_hint.contains("MB"));
+        assert!(status.size_hint.contains("GB"));
         // embedded flag must match cfg(embed_model) payload; we only assert type wiring.
         let _ = status.available;
         let _ = status.embedded;
