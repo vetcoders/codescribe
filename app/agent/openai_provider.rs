@@ -494,7 +494,6 @@ fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<OpenAiToolDefinition> {
         .collect()
 }
 
-/// Build the `input` array: select the messages to send, then encode them.
 /// Instructions for a Responses request: sent on the FIRST turn of a chain
 /// only. `previous_response_id` preserves them server-side, and endpoints
 /// reject the pair with HTTP 400 ("instructions and previous_response_id
@@ -510,6 +509,7 @@ fn chained_instructions(
     }
 }
 
+/// Build the `input` array: select the messages to send, then encode them.
 fn build_request_input_items(
     messages: &[Message],
     previous_response_id: Option<&str>,

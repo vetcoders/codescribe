@@ -495,30 +495,6 @@ pub(crate) fn smart_tail_gap_source(
     }
 }
 
-/// Smart + incomplete residual routing with the live-lane fence.
-///
-/// When the live lane died, PunctuationRepass (shape) or TailGapFill (audio
-/// cut) remain available as the safety net. When the live lane is up and
-/// partials exist, the caller must use
-/// [`compose_stop_path_residual_from_partials`] and treat the action as a
-/// soft skip of Whisper (still reported under the residual phase).
-pub(crate) fn final_pass_action_with_live_lane(
-    mode: FinalPassRoutingMode,
-    completeness: StreamingCompleteness,
-    live_lane_alive: bool,
-) -> FinalPassAction {
-    let base = final_pass_action(mode, completeness);
-    // Dead live lane + Smart shape deficiency keeps PunctuationRepass.
-    // Dead live lane + incomplete keeps TailGapFill (audio safety net).
-    // Alive lane does not change the typed action — residual partials are
-    // a *source* for TailGapFill / Skip, not a new enum variant, so existing
-    // matrix tests stay green.
-    if !live_lane_alive {
-        return base;
-    }
-    base
-}
-
 #[cfg(test)]
 mod stop_path_integration_tests {
     use super::*;
