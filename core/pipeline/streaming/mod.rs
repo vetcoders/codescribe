@@ -37,6 +37,7 @@ pub(crate) mod tuning;
 #[cfg(test)]
 mod tests;
 
+pub use apple_live_session::APPLE_FINAL_OVERLAP_WARNING_CODE;
 pub use emitter::{BufferedEmitter, emitter_tick_loop};
 pub use live_assembly::{LiveAssembly, assemble_live_from_events};
 #[cfg(any(test, feature = "offline_eval"))]

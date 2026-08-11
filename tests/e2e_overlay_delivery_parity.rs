@@ -1165,6 +1165,11 @@ async fn e2e_production_overlay_corpus_replay() {
     let mut sum_wer = 0.0_f64;
     let mut sum_cer = 0.0_f64;
     let mut sum_similarity = 0.0_f64;
+    let mut sum_token_ratio = 0.0_f64;
+    let mut total_finals = 0usize;
+    let mut total_unique_final_ids = 0usize;
+    let mut total_repeated_final_ids = 0usize;
+    let mut total_overlapping_final_windows = 0usize;
 
     for (index, clip) in clips.iter().enumerate() {
         // SAFETY: this ignored corpus test is the only selected test in its
@@ -1226,6 +1231,11 @@ async fn e2e_production_overlay_corpus_replay() {
         sum_wer += f64::from(wer);
         sum_cer += f64::from(cer);
         sum_similarity += f64::from(teacher.similarity);
+        sum_token_ratio += token_ratio;
+        total_finals += replay.boundary_evidence.final_count;
+        total_unique_final_ids += replay.boundary_evidence.unique_final_id_count;
+        total_repeated_final_ids += replay.boundary_evidence.repeated_final_id_count;
+        total_overlapping_final_windows += replay.boundary_evidence.overlapping_final_window_count;
         rows.push(serde_json::json!({
             "recording_id": format!("recording-{:03}", index + 1),
             "audio_seconds": audio_seconds,
@@ -1237,6 +1247,10 @@ async fn e2e_production_overlay_corpus_replay() {
             "events": replay.events.len(),
             "previews": previews,
             "sealed_finals": sealed,
+            "final_count": replay.boundary_evidence.final_count,
+            "unique_final_id_count": replay.boundary_evidence.unique_final_id_count,
+            "repeated_final_id_count": replay.boundary_evidence.repeated_final_id_count,
+            "overlapping_final_window_count": replay.boundary_evidence.overlapping_final_window_count,
             "tail_patches": tail_patches,
             "live_chars": replay.live_text.chars().count(),
             "adjudicated_chars": replay.adjudicated_text.chars().count(),
@@ -1279,6 +1293,10 @@ async fn e2e_production_overlay_corpus_replay() {
             "stt_engine": requested_stt_engine.as_deref().unwrap_or("auto"),
             "layered_transcription": requested_layered.as_deref().unwrap_or("unset"),
             "local_final_pass": requested_local_final.as_deref().unwrap_or("unset"),
+            "capture_pacing_ms": 100,
+            "event_reducer": "presentation_emitter_transcript_reducer",
+            "stop_adjudication": "production",
+            "delivery_postprocess": "production",
         },
         "coverage": {
             "truth_paired_recordings": count,
@@ -1288,8 +1306,13 @@ async fn e2e_production_overlay_corpus_replay() {
             "mean_teacher_similarity": sum_similarity / count as f64,
             "mean_wer": sum_wer / count as f64,
             "mean_cer": sum_cer / count as f64,
+            "mean_token_ratio": sum_token_ratio / count as f64,
             "head_present_count": rows.iter().filter(|row| row["head_present"] == true).count(),
             "tail_present_count": rows.iter().filter(|row| row["tail_present"] == true).count(),
+            "final_count": total_finals,
+            "unique_final_id_count": total_unique_final_ids,
+            "repeated_final_id_count": total_repeated_final_ids,
+            "overlapping_final_window_count": total_overlapping_final_windows,
             "wall_seconds": started.elapsed().as_secs_f64(),
         },
         "recordings": rows,
@@ -1307,10 +1330,9 @@ async fn e2e_production_overlay_corpus_replay() {
     )
     .expect("write redacted production corpus report");
     eprintln!(
-        "production corpus complete: lane={} recordings={} artifact={}",
+        "production corpus complete: lane={} recordings={} redacted_artifact_written=true",
         lane.as_token(),
-        count,
-        output_path.display()
+        count
     );
 }
 

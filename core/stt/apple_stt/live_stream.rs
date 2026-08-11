@@ -31,6 +31,7 @@ pub enum LiveStreamEvent {
     Ready,
     Partial {
         text: String,
+        segments: Vec<TranscriptSegment>,
     },
     /// Phrase-level seal (`isFinal` mid-stream). Text is utterance-local.
     PhraseFinal {
@@ -333,7 +334,27 @@ pub(crate) fn parse_stream_stdout_line(line: &str) -> Option<LiveStreamEvent> {
             "ready" => Some(LiveStreamEvent::Ready),
             "partial" => {
                 let text = parsed.text.unwrap_or_default().trim().to_string();
-                Some(LiveStreamEvent::Partial { text })
+                let segments = parsed
+                    .segments
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|s| {
+                        let text = s.text.trim().to_string();
+                        if text.is_empty()
+                            || !s.start_ts.is_finite()
+                            || !s.end_ts.is_finite()
+                            || s.end_ts < s.start_ts
+                        {
+                            return None;
+                        }
+                        Some(TranscriptSegment {
+                            text,
+                            start_ts: s.start_ts,
+                            end_ts: s.end_ts,
+                        })
+                    })
+                    .collect();
+                Some(LiveStreamEvent::Partial { text, segments })
             }
             "final" => {
                 let text = parsed.text.unwrap_or_default().trim().to_string();
@@ -403,10 +424,18 @@ mod tests {
     /// Partial, phrase-final, and summary JSON lines map to the typed event enum.
     #[test]
     fn parse_partial_and_final_and_summary() {
-        let partial =
-            parse_stream_stdout_line(r#"{"event":"partial","text":"cześć"}"#).expect("partial");
+        let partial = parse_stream_stdout_line(
+            r#"{"event":"partial","text":"cześć","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4,"confidence":0.9}]}"#,
+        )
+        .expect("partial");
         match partial {
-            LiveStreamEvent::Partial { text } => assert_eq!(text, "cześć"),
+            LiveStreamEvent::Partial { text, segments } => {
+                assert_eq!(text, "cześć");
+                assert_eq!(segments.len(), 1);
+                assert_eq!(segments[0].text, "cześć");
+                assert_eq!(segments[0].start_ts, 0.0);
+                assert_eq!(segments[0].end_ts, 0.4);
+            }
             other => panic!("expected Partial, got {other:?}"),
         }
 

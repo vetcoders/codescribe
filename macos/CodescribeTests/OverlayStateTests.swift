@@ -372,6 +372,32 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.liveText, "first utterance second utterance")
     }
 
+    func testTranscriptReducerContractVectorsMatchProductionReplay() {
+        let cumulative = OverlayState()
+        cumulative.handleRecordingPreparing()
+        cumulative.handleRecordingStarted()
+        cumulative.applyPreview("alpha")
+        cumulative.applyPreview("alpha beta")
+        cumulative.applyFinal(utteranceId: 1, "alpha beta")
+        XCTAssertEqual(cumulative.committedUtterances, ["alpha beta"])
+        XCTAssertEqual(cumulative.liveText, "alpha beta")
+
+        let revised = OverlayState()
+        revised.handleRecordingPreparing()
+        revised.handleRecordingStarted()
+        revised.applyFinal(utteranceId: 7, "draft final")
+        revised.applyFinal(utteranceId: 7, "revised final")
+        XCTAssertEqual(revised.committedUtterances, ["revised final"])
+
+        let repeated = OverlayState()
+        repeated.handleRecordingPreparing()
+        repeated.handleRecordingStarted()
+        repeated.applyFinal(utteranceId: 1, "tak tak")
+        repeated.applyFinal(utteranceId: 2, "tak tak")
+        XCTAssertEqual(repeated.committedUtterances, ["tak tak", "tak tak"])
+        XCTAssertEqual(repeated.liveText, "tak tak tak tak")
+    }
+
     /// Product honesty: badge must not say "live preview · raw" while the body
     /// is only the empty-canvas placeholder ("listening…"). Claim live preview
     /// only after `applyPreview` / `applyFinal` put text on the canvas.

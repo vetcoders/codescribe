@@ -67,6 +67,11 @@ use super::stream_log::append_to_stream_log;
 /// backpressure shape: Whisper falling behind costs patches, never audio.
 const TAIL_PATCH_QUEUE_CAP: usize = 8;
 
+/// Content-free marker emitted when an Apple final callback contained segment
+/// time already committed by an earlier callback. The overlapping portion is
+/// removed before a new utterance id can be allocated.
+pub const APPLE_FINAL_OVERLAP_WARNING_CODE: &str = "apple_final_window_overlap_normalized";
+
 /// One sealed utterance handed from the worker thread to the async Layer 1 lane.
 struct TailPatchRequest {
     utterance_id: u64,
@@ -506,6 +511,7 @@ struct AppleSealState {
     preview_rev: u64,
     utterance_id: u64,
     open_partial: String,
+    open_partial_segments: Vec<TranscriptSegment>,
     sealed_count: u64,
     filtered_empty_drops: u64,
     /// Bounded PCM retention, so a sealed boundary can be resolved back to the
@@ -514,6 +520,10 @@ struct AppleSealState {
     /// Session time of the previous seal — the lower bound of the next
     /// utterance's audio window.
     last_sealed_end: f32,
+    /// End of the last Apple segment admitted to committed canvas. Unlike the
+    /// PCM retention cursor, this advances even when Layer 1 audio lookup is
+    /// unavailable: Apple segment time is the authority for text disjointness.
+    last_apple_segment_end: f32,
     /// Seals whose audio window could not be resolved (F3 falsification).
     unresolved_windows: u64,
     /// Seals where Layer 1 recovered speech it could not place on the canvas
@@ -543,10 +553,12 @@ impl AppleSealState {
             preview_rev: 0,
             utterance_id: 0,
             open_partial: String::new(),
+            open_partial_segments: Vec::new(),
             sealed_count: 0,
             filtered_empty_drops: 0,
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             last_sealed_end: 0.0,
+            last_apple_segment_end: 0.0,
             unresolved_windows: 0,
             under_commit_escalations: 0,
             tail_patch: None,
@@ -693,19 +705,81 @@ fn seal_utterance_final(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     raw: &str,
-    start_ts: f32,
-    end_ts: f32,
     segments: Vec<TranscriptSegment>,
 ) -> bool {
-    let raw_text = raw.trim().to_string();
+    const BOUNDARY_EPSILON_SECS: f32 = 0.002;
+
+    let callback_text = raw.trim().to_string();
+    let original_segment_count = segments.len();
+    let mut disjoint = Vec::with_capacity(original_segment_count);
+    let mut cursor = state.last_apple_segment_end;
+    let mut overlap_normalized = false;
+
+    for mut segment in segments {
+        let text = segment.text.trim();
+        if text.is_empty()
+            || !segment.start_ts.is_finite()
+            || !segment.end_ts.is_finite()
+            || segment.end_ts <= segment.start_ts
+        {
+            continue;
+        }
+        if segment.end_ts <= cursor + BOUNDARY_EPSILON_SECS
+            || segment.start_ts < cursor - BOUNDARY_EPSILON_SECS
+        {
+            overlap_normalized = true;
+            continue;
+        }
+        if segment.start_ts < cursor {
+            segment.start_ts = cursor;
+        }
+        segment.text = text.to_string();
+        cursor = segment.end_ts;
+        disjoint.push(segment);
+    }
+
+    if overlap_normalized {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: APPLE_FINAL_OVERLAP_WARNING_CODE.to_string(),
+            message: "Apple final overlap removed at segment boundary".to_string(),
+        });
+    }
+
+    if disjoint.is_empty() {
+        if !callback_text.is_empty() {
+            state.open_partial = callback_text.clone();
+            state.preview_rev = state.preview_rev.saturating_add(1);
+            let _ = ev_tx.send(EngineEvent::Preview {
+                rev: state.preview_rev,
+                text: callback_text,
+            });
+        }
+        return false;
+    }
+
+    let start_ts = disjoint.first().map_or(0.0, |segment| segment.start_ts);
+    let end_ts = disjoint.last().map_or(start_ts, |segment| segment.end_ts);
+    let raw_text = if !overlap_normalized && disjoint.len() == original_segment_count {
+        callback_text
+    } else {
+        disjoint
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     if raw_text.is_empty() {
         return false;
     }
 
+    // Consume the Apple boundary even if cleanup filters the text. A later
+    // cumulative callback must not resurrect audio the product already judged.
+    state.last_apple_segment_end = end_ts;
+
     let Some(corrected) = state.postprocessor.process_utterance(&raw_text) else {
         state.filtered_empty_drops = state.filtered_empty_drops.saturating_add(1);
         warn!(
-            raw_text = %raw_text,
+            raw_chars = raw_text.chars().count(),
             "Apple seal dropped: empty after lexicon/cleanup"
         );
         let _ = ev_tx.send(EngineEvent::Drop {
@@ -728,7 +802,7 @@ fn seal_utterance_final(
             raw_text,
             start_ts,
             end_ts,
-            segments,
+            segments: disjoint,
         },
     );
 
@@ -827,7 +901,8 @@ fn apple_stream_worker(
     // not be the one route that commits uncorrected text.
     let open = state.open_partial.trim().to_string();
     if !open.is_empty() {
-        seal_utterance_final(&mut state, &ev_tx, &open, 0.0, audio_secs, Vec::new());
+        let segments = std::mem::take(&mut state.open_partial_segments);
+        seal_utterance_final(&mut state, &ev_tx, &open, segments);
     }
 
     // Every accepted Layer 1 request must close (success, no-change, or
@@ -939,7 +1014,7 @@ fn emit_stream_events(
                     "apple_lifecycle: recognizer end"
                 );
             }
-            LiveStreamEvent::Partial { text } => {
+            LiveStreamEvent::Partial { text, segments } => {
                 // Safety net for the named drop mechanism: if the bridge
                 // missed a freeze (shared opener collapse), seal the open
                 // partial here before the rewrite lands.
@@ -954,13 +1029,15 @@ fn emit_stream_events(
                         reason,
                         "apple_lifecycle: freeze open partial before restart partial"
                     );
-                    seal_utterance_final(state, ev_tx, &frozen, 0.0, audio_secs, Vec::new());
+                    let frozen_segments = std::mem::take(&mut state.open_partial_segments);
+                    seal_utterance_final(state, ev_tx, &frozen, frozen_segments);
                     state.open_partial.clear();
                 }
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
                 state.open_partial = text.clone();
+                state.open_partial_segments = segments;
                 state.progressive.note_session_partial(&text, audio_secs);
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
@@ -974,14 +1051,11 @@ fn emit_stream_events(
                     audio_secs,
                     sealed_before = state.sealed_count,
                     text_chars = text.len(),
-                    text_head = %text.chars().take(40).collect::<String>(),
                     "apple_lifecycle: phrase final received"
                 );
                 state.open_partial.clear();
-                let start_ts = segments.first().map(|s| s.start_ts).unwrap_or(0.0);
-                let end_ts = segments.last().map(|s| s.end_ts).unwrap_or(audio_secs);
-                let committed =
-                    seal_utterance_final(state, ev_tx, &text, start_ts, end_ts, segments);
+                state.open_partial_segments.clear();
+                let committed = seal_utterance_final(state, ev_tx, &text, segments);
                 info!(
                     audio_secs,
                     committed,
@@ -1011,12 +1085,14 @@ fn emit_stream_events(
                 }
                 // No phrase finals → seal the full summary once (partials-only engine).
                 if state.utterance_id == 0 {
-                    if seal_utterance_final(state, ev_tx, &text, 0.0, audio_secs, segments) {
+                    if seal_utterance_final(state, ev_tx, &text, segments) {
                         state.open_partial.clear();
+                        state.open_partial_segments.clear();
                     }
                 } else {
                     // Phrase seals already emitted; don't double-seal open partial.
                     state.open_partial.clear();
+                    state.open_partial_segments.clear();
                 }
             }
         }
@@ -1052,6 +1128,7 @@ mod tests {
             vec![
                 LiveStreamEvent::Partial {
                     text: "uruchom doker".into(),
+                    segments: vec![segment("uruchom doker", 0.5, 2.0)],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "uruchom doker".into(),
@@ -1112,6 +1189,7 @@ mod tests {
             vec![
                 LiveStreamEvent::Partial {
                     text: "raz dwa trzy cztery piec".into(),
+                    segments: vec![segment("raz dwa trzy cztery piec", 0.5, 2.0)],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "raz dwa trzy cztery piec".into(),
@@ -1188,14 +1266,15 @@ mod tests {
             vec![
                 LiveStreamEvent::Partial {
                     text: "hello".into(),
+                    segments: vec![segment("hello", 0.0, 0.5)],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "hello world".into(),
-                    segments: vec![],
+                    segments: vec![segment("hello world", 0.0, 1.0)],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "second".into(),
-                    segments: vec![],
+                    segments: vec![segment("second", 1.0, 2.0)],
                 },
             ],
             &tx,
@@ -1277,6 +1356,125 @@ mod tests {
         // Audio before the last boundary is committed canvas and released.
         assert!(state.audio.window(0.0, 1.0).is_none());
         assert!(state.audio.window(2.5, 4.0).is_some());
+    }
+
+    #[test]
+    fn cumulative_apple_final_commits_only_segments_after_last_boundary() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 4.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta".into(),
+                    segments: vec![segment("alpha", 0.0, 1.0), segment("beta", 1.0, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta gamma".into(),
+                    segments: vec![
+                        segment("alpha", 0.0, 1.0),
+                        segment("beta", 1.0, 2.0),
+                        segment("gamma", 2.0, 3.0),
+                    ],
+                },
+            ],
+            &tx,
+            &mut state,
+            4.0,
+        );
+
+        let mut finals = Vec::new();
+        let mut overlap_warnings = 0;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                EngineEvent::UtteranceFinal {
+                    raw_text,
+                    start_ts,
+                    end_ts,
+                    ..
+                } => finals.push((raw_text, start_ts, end_ts)),
+                EngineEvent::Warning { code, .. } if code == APPLE_FINAL_OVERLAP_WARNING_CODE => {
+                    overlap_warnings += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            finals,
+            vec![("alpha beta".into(), 0.0, 2.0), ("gamma".into(), 2.0, 3.0)]
+        );
+        assert_eq!(overlap_warnings, 1);
+    }
+
+    #[test]
+    fn cumulative_final_without_a_new_segment_remains_preview() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 3.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta".into(),
+                    segments: vec![segment("alpha", 0.0, 1.0), segment("beta", 1.0, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta revised".into(),
+                    segments: vec![segment("alpha beta revised", 0.0, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            3.0,
+        );
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::UtteranceFinal { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::Preview { text, .. } if text == "alpha beta revised"
+        )));
+        assert_eq!(
+            state.utterance_id, 1,
+            "preview-only callback gets no fresh ID"
+        );
+        assert_eq!(state.last_apple_segment_end, 2.0);
+    }
+
+    #[test]
+    fn legitimate_repeated_words_survive_disjoint_apple_windows() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 3.0);
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "tak".into(),
+                    segments: vec![segment("tak", 0.0, 1.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "tak".into(),
+                    segments: vec![segment("tak", 1.0, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        let raw_finals = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal { raw_text, .. } => Some(raw_text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(raw_finals, vec!["tak", "tak"]);
     }
 
     /// Falsification arm: an `end_ts` that does not describe this session's PCM
@@ -1368,7 +1566,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::PhraseFinal {
                 text: "uruchom doker teraz".into(),
-                segments: vec![],
+                segments: vec![segment("uruchom doker teraz", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1398,6 +1596,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::Partial {
                 text: "uruchom doker".into(),
+                segments: vec![segment("uruchom doker", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1422,7 +1621,7 @@ mod tests {
                 // Trailing-":D" burst: a known ASR artifact that cleanup strips
                 // to nothing.
                 text: ":D".into(),
-                segments: vec![],
+                segments: vec![segment(":D", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1452,7 +1651,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::Summary {
                 text: "zbuduj obraz doker".into(),
-                segments: vec![],
+                segments: vec![segment("zbuduj obraz doker", 0.0, 2.0)],
                 ok: true,
                 error: None,
             }],
@@ -1478,7 +1677,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::PhraseFinal {
                 text: "uruchom doker teraz".into(),
-                segments: vec![],
+                segments: vec![segment("uruchom doker teraz", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1896,27 +2095,39 @@ mod tests {
             vec![
                 LiveStreamEvent::Partial {
                     text: s5.to_string(),
+                    segments: vec![segment(s5, 0.0, 5.0)],
                 },
                 // Stressor phrase seals cleanly (isFinal or prior freeze).
                 LiveStreamEvent::PhraseFinal {
                     text: s5.to_string(),
-                    segments: vec![],
+                    segments: vec![segment(s5, 0.0, 5.0)],
                 },
                 // Post-stressor sentence builds as open partial…
                 LiveStreamEvent::Partial {
                     text: s6.to_string(),
+                    segments: vec![segment(s6, 5.0, 10.0)],
                 },
                 // …then SFSpeech restarts onto the next opener without isFinal.
                 // Old rule overwrote s6; new rule freezes it first.
                 LiveStreamEvent::Partial {
                     text: "Zdanie".to_string(),
+                    segments: vec![segment("Zdanie", 10.0, 10.5)],
                 },
                 LiveStreamEvent::Partial {
                     text: "Zdanie siódme Overlap cztery angielskie terminy w polskim".to_string(),
+                    segments: vec![segment(
+                        "Zdanie siódme Overlap cztery angielskie terminy w polskim",
+                        10.0,
+                        15.0,
+                    )],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "Zdanie siódme Overlap cztery angielskie terminy w polskim".to_string(),
-                    segments: vec![],
+                    segments: vec![segment(
+                        "Zdanie siódme Overlap cztery angielskie terminy w polskim",
+                        10.0,
+                        15.0,
+                    )],
                 },
             ],
             &tx,
