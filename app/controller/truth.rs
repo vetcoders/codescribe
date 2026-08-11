@@ -18,6 +18,85 @@ fn non_empty_transcript(text: Option<String>) -> Option<String> {
     text.filter(|text| !text.trim().is_empty())
 }
 
+/// The typed Layer 1 producer whose result is being reconciled with the live
+/// Apple/stream floor. This is deliberately independent of transport vendor.
+#[derive(Debug, Clone, Copy)]
+enum Layer1AdjudicationSource {
+    LocalWhisper,
+    CloudPrimary,
+    CloudFallback,
+}
+
+impl Layer1AdjudicationSource {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::LocalWhisper => "local_whisper",
+            Self::CloudPrimary => "cloud_primary",
+            Self::CloudFallback => "cloud_fallback",
+        }
+    }
+}
+
+const fn layer1_decision_reason(mode: codescribe_core::quality::Layer1MergeMode) -> &'static str {
+    match mode {
+        codescribe_core::quality::Layer1MergeMode::Empty => "empty",
+        codescribe_core::quality::Layer1MergeMode::LiveOnly => "live_only",
+        codescribe_core::quality::Layer1MergeMode::ProviderOnly => "provider_only",
+        codescribe_core::quality::Layer1MergeMode::LiveFloorGapFill => "live_floor_gap_fill",
+    }
+}
+
+const fn cloud_layer1_engine_label(
+    mode: codescribe_core::quality::Layer1MergeMode,
+) -> &'static str {
+    match mode {
+        codescribe_core::quality::Layer1MergeMode::ProviderOnly => "cloud_stt",
+        _ => "merged_live_layer1:cloud_stt",
+    }
+}
+
+/// Reconcile one Layer 1 result against the immutable live floor and emit only
+/// content-free operational telemetry. Cloud sources never receive local
+/// known-term evidence, so they can fill aligned gaps/tails but cannot win a
+/// substitution over a committed live token.
+fn merge_layer1_with_live_floor(
+    live: Option<&str>,
+    provider_text: &str,
+    source: Layer1AdjudicationSource,
+    known_terms: &[String],
+) -> codescribe_core::quality::Layer1MergedDelivery {
+    let live = live.unwrap_or_default();
+    let merged = match source {
+        Layer1AdjudicationSource::LocalWhisper => {
+            codescribe_core::quality::merge_live_whisper_with_terms(
+                live,
+                provider_text,
+                known_terms,
+            )
+            .into()
+        }
+        Layer1AdjudicationSource::CloudPrimary | Layer1AdjudicationSource::CloudFallback => {
+            codescribe_core::quality::merge_live_layer1(live, provider_text)
+        }
+    };
+
+    info!(
+        source = source.label(),
+        live_chars = live.chars().count(),
+        provider_chars = provider_text.chars().count(),
+        merged_chars = merged.text.chars().count(),
+        decision_reason = layer1_decision_reason(merged.mode),
+        equal = merged.equal_tokens,
+        provider_fill = merged.provider_fill_tokens,
+        live_subs = merged.live_kept_substitutes,
+        provider_won_subs = merged.provider_won_substitutes,
+        known_terms = known_terms.len(),
+        "Layer 1 adjudication completed"
+    );
+
+    merged
+}
+
 /// The adjudicated outcome of one recording: what to deliver, and how much to
 /// trust it.
 ///
@@ -205,11 +284,10 @@ pub(crate) fn build_truth_verdict(
 
 /// Decide what a finished recording actually delivers, and label its provenance.
 ///
-/// The live transcript is the floor of truth. When a local final pass produced
-/// text, it is **merged** into the live assembly (live kept, Whisper filling the
-/// gaps) rather than replacing it — full-replace would delete correct live
-/// tokens and is a doctrine violation. See
-/// [`codescribe_core::quality::merge_live_whisper`].
+/// The live transcript is the floor of truth. A Layer 1 result is **merged**
+/// into the live assembly (committed live kept, provider filling gaps/tail)
+/// rather than replacing it — full-replace would delete correct live tokens
+/// and is a doctrine violation. See [`codescribe_core::quality::merge_live_layer1`].
 ///
 /// Resolution order:
 /// 1. Local final pass — an explicit no-speech verdict is authoritative and
@@ -217,8 +295,8 @@ pub(crate) fn build_truth_verdict(
 /// 2. A final pass that came back *shorter* than the live assembly is rejected
 ///    as a length regression, keeping the stream and flagging provenance.
 /// 3. Session-level no-speech telemetry.
-/// 4. Cloud verdict, then the streaming floor — both always marked degraded,
-///    because neither was verified by a final pass.
+/// 4. Cloud verdict merged against the streaming floor, then the streaming
+///    floor alone. Cloud fallback remains explicitly degraded.
 /// 5. Nothing usable: an empty verdict carrying the reason.
 pub(crate) fn adjudicate_recording_truth(
     use_local_stt: bool,
@@ -329,22 +407,11 @@ pub(crate) fn adjudicate_recording_truth(
                             terms
                         })
                         .unwrap_or_default();
-                let merged = codescribe_core::quality::merge_live_whisper_with_terms(
-                    stream,
+                let merged = merge_layer1_with_live_floor(
+                    Some(stream),
                     final_text,
+                    Layer1AdjudicationSource::LocalWhisper,
                     &known_terms,
-                );
-                info!(
-                    mode = ?merged.mode,
-                    equal = merged.equal_tokens,
-                    whisper_fill = merged.whisper_fill_tokens,
-                    live_subs = merged.live_kept_substitutes,
-                    whisper_won_subs = merged.whisper_won_substitutes,
-                    known_terms = known_terms.len(),
-                    live_chars = stream.chars().count(),
-                    whisper_chars = final_text.chars().count(),
-                    merged_chars = merged.text.chars().count(),
-                    "delivery merge: live floor + whisper fill (not full-replace)"
                 );
                 // Merged path still used a final pass; keep engine label from final
                 // but text is composite live×whisper.
@@ -412,6 +479,13 @@ pub(crate) fn adjudicate_recording_truth(
         }
 
         if let Some(cloud_verdict) = cloud_verdict {
+            let merged = merge_layer1_with_live_floor(
+                streaming_text.as_deref(),
+                &cloud_verdict.text,
+                Layer1AdjudicationSource::CloudFallback,
+                &[],
+            );
+            let engine_label = cloud_layer1_engine_label(merged.mode);
             let mut fallback_flags = confidence_flags.clone();
             for flag in &cloud_verdict.confidence_flags {
                 push_typed_flag(&mut fallback_flags, *flag);
@@ -421,7 +495,7 @@ pub(crate) fn adjudicate_recording_truth(
                 TranscriptionConfidenceFlag::CloudFallbackUsed,
             );
             return build_truth_verdict(
-                Some(cloud_verdict.text),
+                Some(merged.text),
                 Some(RecordingTranscriptSource::CloudFallback),
                 Some(RecordingFallbackClass::Degraded), // cloud fallback is no longer "Acceptable" (silent), it must be explicit
                 None,
@@ -430,7 +504,7 @@ pub(crate) fn adjudicate_recording_truth(
                 fallback_flags,
                 None,
                 None,
-                Some("cloud_stt".to_string()),
+                Some(engine_label.to_string()),
             );
         }
 
@@ -467,8 +541,15 @@ pub(crate) fn adjudicate_recording_truth(
         }
     } else {
         if let Some(cloud_verdict) = cloud_verdict {
+            let merged = merge_layer1_with_live_floor(
+                streaming_text.as_deref(),
+                &cloud_verdict.text,
+                Layer1AdjudicationSource::CloudPrimary,
+                &[],
+            );
+            let engine_label = cloud_layer1_engine_label(merged.mode);
             return build_truth_verdict(
-                Some(cloud_verdict.text),
+                Some(merged.text),
                 Some(RecordingTranscriptSource::CloudPrimary),
                 None,
                 None,
@@ -477,7 +558,7 @@ pub(crate) fn adjudicate_recording_truth(
                 cloud_verdict.confidence_flags,
                 None,
                 None,
-                Some("cloud_stt".to_string()),
+                Some(engine_label.to_string()),
             );
         }
 
