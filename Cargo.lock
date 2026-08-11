@@ -833,6 +833,7 @@ dependencies = [
  "directories",
  "serde_json",
  "serial_test",
+ "tempfile",
  "tokio",
  "tracing",
  "uniffi",

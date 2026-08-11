@@ -1602,17 +1602,24 @@ mod tests {
     #[test]
     fn fleet_red_retention_missed_collapse_40_to_20() {
         let vectors = include_str!("../../../tests/fixtures/phrase_restart_vectors.tsv");
-        let mut saw_named_case = false;
+        let required_ids = [
+            "measured_restart_47_to_12",
+            "measured_revision_95_to_79",
+            "missed_collapse_40_to_20",
+            "shared_opener_sentence_restart",
+            "shared_opener_spoken_variant",
+        ];
+        let mut seen_ids = std::collections::BTreeSet::new();
 
         for line in vectors.lines().filter(|line| !line.starts_with('#')) {
             let fields: Vec<_> = line.split('\t').collect();
             assert_eq!(fields.len(), 4, "malformed phrase restart vector: {line}");
+            seen_ids.insert(fields[0]);
             let expected = fields[1]
                 .parse::<bool>()
                 .expect("expected_freeze must be true or false");
             let actual = phrase_restart_should_freeze_prior(fields[2], fields[3]);
             if fields[0] == "missed_collapse_40_to_20" {
-                saw_named_case = true;
                 assert_eq!(fields[2].chars().count(), 40);
                 assert_eq!(fields[3].chars().count(), 20);
             }
@@ -1626,7 +1633,12 @@ mod tests {
             );
         }
 
-        assert!(saw_named_case, "required 40→20 collapse vector missing");
+        for required_id in required_ids {
+            assert!(
+                seen_ids.contains(required_id),
+                "required phrase restart vector missing: {required_id}"
+            );
+        }
     }
 
     /// Measured three-way pattern: after a long open partial, SFSpeech collapses

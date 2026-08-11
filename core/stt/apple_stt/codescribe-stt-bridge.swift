@@ -1478,7 +1478,14 @@ private func runPhraseRestartVectorSelfTest() -> Int32 {
 
     do {
         let contents = try String(contentsOf: fixture, encoding: .utf8)
-        var sawNamedCase = false
+        let requiredIDs: Set<String> = [
+            "measured_restart_47_to_12",
+            "measured_revision_95_to_79",
+            "missed_collapse_40_to_20",
+            "shared_opener_sentence_restart",
+            "shared_opener_spoken_variant",
+        ]
+        var seenIDs: Set<String> = []
         for line in contents.split(separator: "\n").map(String.init)
             where !line.hasPrefix("#")
         {
@@ -1487,8 +1494,8 @@ private func runPhraseRestartVectorSelfTest() -> Int32 {
                 fputs("phrase_restart_self_test malformed_vector=\(line)\n", stderr)
                 return 2
             }
+            seenIDs.insert(fields[0])
             if fields[0] == "missed_collapse_40_to_20" {
-                sawNamedCase = true
                 guard fields[2].count == 40, fields[3].count == 20 else {
                     fputs("phrase_restart_self_test invalid_40_to_20_lengths\n", stderr)
                     return 2
@@ -1508,8 +1515,9 @@ private func runPhraseRestartVectorSelfTest() -> Int32 {
                 return 1
             }
         }
-        guard sawNamedCase else {
-            fputs("phrase_restart_self_test missing=missed_collapse_40_to_20\n", stderr)
+        let missingIDs = requiredIDs.subtracting(seenIDs).sorted()
+        guard missingIDs.isEmpty else {
+            fputs("phrase_restart_self_test missing=\(missingIDs.joined(separator: ","))\n", stderr)
             return 2
         }
         fputs("phrase_restart_self_test PASS\n", stderr)
