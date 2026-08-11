@@ -12,12 +12,15 @@
 //! seconds) before releasing the sink. Dropping the sink early truncates the
 //! tail of the delivered text.
 
+use crate::asr_session::bootstrap::{GatewaySessionAvailability, layer1_decision_for_recording};
 use crate::asr_session::recorder::Layer1Decision;
 use crate::audio::recorder::{Recorder, RecorderConfig};
+use crate::config::UserSettings;
 use crate::pipeline::contracts::EventSink;
 use crate::pipeline::streaming::{SessionConfig, stream_log_path, transcription_session};
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -48,6 +51,8 @@ pub struct StreamingRecorder {
     /// block (linear, 0..~1). Runs on the CoreAudio callback thread — keep it
     /// cheap and non-blocking (a broadcast send, an atomic store).
     level_callback: Option<Arc<dyn Fn(f32) + Send + Sync>>,
+    /// Single-use Layer 1 decision consumed when the next session starts.
+    layer1_decision: StdMutex<Layer1Decision>,
 }
 
 impl StreamingRecorder {
@@ -69,6 +74,7 @@ impl StreamingRecorder {
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
             level_callback: None,
+            layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
         })
     }
 
@@ -90,7 +96,22 @@ impl StreamingRecorder {
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
             level_callback: None,
+            layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
         })
+    }
+
+    /// Join live settings truth with one minted gateway session for the next
+    /// recording. Missing/invalid/offline gateway state safely disarms Layer 1.
+    pub fn configure_layer1(
+        &mut self,
+        settings: &UserSettings,
+        gateway: GatewaySessionAvailability,
+    ) {
+        *self
+            .layer1_decision
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            layer1_decision_for_recording(settings, gateway);
     }
 
     /// Store a per-utterance text callback.
@@ -187,6 +208,11 @@ impl StreamingRecorder {
         let log_path = stream_log_path();
         let utterance_silence_sec = self.utterance_silence_sec;
 
+        let layer1 = std::mem::take(
+            self.layer1_decision
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         self.transcription_handle = Some(tokio::spawn(async move {
             transcription_session(
                 rx,
@@ -196,11 +222,7 @@ impl StreamingRecorder {
                     language,
                     stream_log_path: log_path,
                     utterance_silence_sec,
-                    // C1: the recorder consumes an injected, already-authorized
-                    // Layer 1 decision. Until the consent/settings owner exists
-                    // this is always Disarmed — the stock Apple + lexicon
-                    // product, never a hidden model load.
-                    layer1: Layer1Decision::Disarmed,
+                    layer1,
                 },
             )
             .await;

@@ -18,6 +18,8 @@
 //! - [`fake`] — a deterministic in-memory provider for tests and later cuts.
 //! - [`cloud`] — the dedicated live gateway session, bounded PCM transport,
 //!   and Codescribe-owned stream-global event sequencing.
+//! - [`bootstrap`] — the recording-start join between persisted mode/consent
+//!   truth and a validated, short-lived gateway session.
 //! - [`recorder`] — the per-recording lane the live session drives: injected
 //!   [`recorder::Layer1Decision`], bounded non-blocking PCM fan-out, volatile
 //!   partial draft, and typed degrade paths that always land on canvas +
@@ -28,10 +30,10 @@
 //!
 //! ## What deliberately does NOT live here
 //!
-//! No recorder wiring, settings surface, gateway session mint, vendor protocol,
-//! or local model. The live socket consumes only a normalized gateway contract;
-//! the mode/consent *records* live in `crate::config::cloud_asr` (the settings
-//! brain) — this module only enforces them at construction time.
+//! No settings UI, gateway session-mint client, vendor protocol, or local
+//! model. The live socket consumes only a normalized gateway contract; the
+//! mode/consent *records* live in `crate::config::cloud_asr` (the settings
+//! brain), while [`bootstrap`] joins that truth to the recorder.
 //!
 //! The existing whole-file `client::transcribe_cloud` / `transcribe_websocket`
 //! API is **outside** this contract. It uploads one completed recording and is
@@ -48,6 +50,8 @@
 //! - Errors carry a typed kind and nothing else, so no transcript fragment,
 //!   audio, or credential can ride an error into a log line.
 
+/// Recording-start mode/consent/gateway integration for the real recorder path.
+pub mod bootstrap;
 /// Dedicated provider-neutral live cloud gateway transport and session adapter.
 pub mod cloud;
 /// Audio-egress consent gate in front of Layer 1 session construction (C2).
@@ -66,6 +70,7 @@ pub mod recorder;
 #[cfg(test)]
 mod tests;
 
+pub use bootstrap::{GatewaySessionAvailability, layer1_decision_for_recording};
 pub use cloud::{
     CloudGatewayTransport, CloudSessionLimits, CloudSessionTelemetry, GatewayConnection,
     GatewayErrorCode, GatewayEvent, GatewayPcmFrame, GatewaySessionConfig, GatewayTransportPoll,

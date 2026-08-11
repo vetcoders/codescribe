@@ -11,9 +11,10 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::{Duration, Instant};
 
 use codescribe::os::tray_status::{self, TrayStatus};
+use codescribe_core::asr_session::GatewaySessionAvailability;
 use codescribe_core::audio::load_audio_file;
 use codescribe_core::audio::streaming_recorder::StreamingRecorder;
-use codescribe_core::config::FinalPassRoutingMode;
+use codescribe_core::config::{FinalPassRoutingMode, UserSettings};
 use codescribe_core::pipeline::contracts::{
     AnnotationKind, EngineEvent, EventSink, FileTranscriptionOptions, LayerSource, LayerSummary,
 };
@@ -869,6 +870,10 @@ impl CodescribeDictation {
         let mut recorder =
             StreamingRecorder::new().map_err(|e| CsError::Recording { msg: e.to_string() })?;
         recorder.set_event_sink(Some(sink));
+        recorder.configure_layer1(
+            &UserSettings::load(),
+            GatewaySessionAvailability::Unavailable,
+        );
 
         // Manual voice-note: the composer's Stop click is the source of truth,
         // exactly like the hotkey hold's key-up (see `RecordingController`

@@ -6,7 +6,7 @@
 //!
 //! - **Injected authority.** The lane never constructs a provider. It receives
 //!   a [`Layer1Decision`] — an already-authorized, typed decision made by the
-//!   consent/settings owner (a later cut). [`Layer1Decision::Disarmed`] is the
+//!   consent/settings owner. [`Layer1Decision::Disarmed`] is the
 //!   stock product: canvas plus lexicon, no error, no fallback loading.
 //! - **Bounded, non-blocking fan-out.** [`RecorderLayer1Lane::offer_pcm`]
 //!   returns immediately on every call. A refiner that cannot keep up costs

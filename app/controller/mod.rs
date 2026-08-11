@@ -75,6 +75,7 @@ use crate::os::selection::{
     wait_for_frontmost_app,
 };
 use crate::os::shortcut_registry;
+use codescribe_core::asr_session::GatewaySessionAvailability;
 use context_bucket::ContextBucket;
 #[cfg(test)]
 pub(crate) use context_bucket::ContextMarker;
@@ -2181,6 +2182,10 @@ impl RecordingController {
                 event_broadcast.clone(),
                 Arc::clone(&session_telemetry),
             );
+            rec.configure_layer1(
+                &UserSettings::load(),
+                GatewaySessionAvailability::Unavailable,
+            );
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
                 // Audio-first cold start: do not preflight Whisper here. The
@@ -2375,6 +2380,10 @@ impl RecordingController {
             is_assistive,
             self.event_broadcast.clone(),
             Arc::clone(&self.session_telemetry),
+        );
+        recorder.configure_layer1(
+            &UserSettings::load(),
+            GatewaySessionAvailability::Unavailable,
         );
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
