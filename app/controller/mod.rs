@@ -33,6 +33,8 @@ mod helpers;
 mod hotkey_policy;
 /// Overlay paste dispositions and deferred-insert registration.
 mod overlay_paste;
+/// Production-owned, content-private PCM replay of the overlay engine cone.
+pub mod production_replay;
 /// Quality-gated auto-paste / clipboard delivery decisions.
 mod quality_delivery;
 /// Public serving-status surface for tray/UI consumers.
@@ -50,7 +52,6 @@ pub use overlay_paste::{OverlayPasteDelivery, OverlayPasteResult};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 
 use crate::presentation::emitter::PresentationEmitter;
-use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -144,7 +145,8 @@ use quality_delivery::{
     truth_recording_mode_label,
 };
 pub(crate) use truth::{
-    adjudicate_recording_truth, apply_ai_noop_signal, truth_display_status, truth_engine_label,
+    adjudicate_recording_truth, apply_ai_noop_signal, postprocess_transcript_for_delivery,
+    truth_display_status, truth_engine_label,
 };
 #[cfg(test)]
 pub(crate) use truth::{push_typed_flag, truth_review_trigger};
@@ -3738,14 +3740,9 @@ impl RecordingController {
         // optional full WAV re-pass / layered tail-patch. Every delivery path still
         // runs StreamPostProcessor before overlay, clipboard, augmentation, or dataset.
         let postproc_started = std::time::Instant::now();
-        let (clean_text, postprocess_stats) = {
-            let mut finalizer = StreamPostProcessor::new();
-            let clean_text = finalizer
-                .process(&raw_text)
-                .unwrap_or_else(|| raw_text.clone());
-            let stats = finalizer.stats();
-            (clean_text, stats)
-        };
+        let postprocessed = postprocess_transcript_for_delivery(&raw_text);
+        let clean_text = postprocessed.text;
+        let postprocess_stats = postprocessed.stats;
         let postproc_secs = postproc_started.elapsed().as_secs_f64();
         info!(
             "Post-processed transcript ({} chars, delta={}, drops={}/{}, gate_drops={}, lexicon_rewrites={})",

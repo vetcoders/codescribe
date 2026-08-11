@@ -1789,6 +1789,49 @@ pub async fn collect_buffered_engine_events(
     Ok(collector.events())
 }
 
+/// Run buffered PCM through an explicitly supplied production session config.
+///
+/// Unlike [`collect_buffered_engine_events`], this seam never invents or
+/// hard-codes a Layer 1 decision. The recording owner must supply the complete
+/// [`SessionConfig`], which makes this suitable for production-owned replay
+/// witnesses while preserving the exact `transcription_session` implementation
+/// used by live capture.
+pub async fn collect_buffered_engine_events_with_config(
+    samples: &[f32],
+    config: SessionConfig,
+) -> Result<Vec<EngineEvent>> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let chunk_size = ((config.sample_rate as f32) * 0.1).round().max(1.0) as usize;
+    let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
+    let collector = Arc::new(SessionEventCollector::new());
+    let event_sink: Arc<dyn EventSink> = collector.clone();
+    let session = tokio::spawn(transcription_session(rx, event_sink, config));
+
+    for chunk in samples.chunks(chunk_size) {
+        if tx.send(chunk.to_vec()).await.is_err() {
+            return Err(anyhow!("Transcription session dropped channel"));
+        }
+        // `transcription_session` consumes a live capture stream. Preserve
+        // that temporal contract for replay: flooding an entire recording in
+        // one scheduler tick advances `audio_secs` ahead of Apple's result
+        // timestamps and turns otherwise valid phrase windows into unresolved
+        // seals. A 100 ms packet therefore occupies 100 ms of wall time, just
+        // like the production callback cadence this seam replaces at its only
+        // unavoidable boundary.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    drop(tx);
+
+    session
+        .await
+        .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
+
+    Ok(collector.events())
+}
+
 #[cfg(test)]
 /// Unit tests for semantic-gate counters, tail-patch emit, and correction windows.
 mod session_tests {

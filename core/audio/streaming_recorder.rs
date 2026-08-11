@@ -16,8 +16,11 @@ use crate::asr_session::bootstrap::{GatewaySessionAvailability, layer1_decision_
 use crate::asr_session::recorder::Layer1Decision;
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::UserSettings;
-use crate::pipeline::contracts::EventSink;
-use crate::pipeline::streaming::{SessionConfig, stream_log_path, transcription_session};
+use crate::pipeline::contracts::{EngineEvent, EventSink};
+use crate::pipeline::streaming::{
+    SessionConfig, collect_buffered_engine_events_with_config, stream_log_path,
+    transcription_session,
+};
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -30,6 +33,68 @@ use tracing::{debug, info, warn};
 // the user's first words. The STT session drains this backlog once the model is ready.
 /// Channel depth for cold Whisper load: first words queue instead of drop.
 const AUDIO_BACKLOG_CHUNKS: usize = 2048;
+
+/// Content-free witness returned by the production PCM replay seam.
+#[derive(Debug)]
+pub struct ProductionSessionReplay {
+    /// Ordered event stream emitted by the same session implementation as live capture.
+    pub events: Vec<EngineEvent>,
+    /// Whether recording-start policy armed a Layer 1 provider before the
+    /// single-use decision was consumed by the session.
+    pub layer1_armed: bool,
+}
+
+/// Resolve the production Layer 1 decision for one recording.
+///
+/// Both the microphone owner and the replay seam call this symbol. Keeping the
+/// settings/consent/gateway decision here prevents an evaluation harness from
+/// silently substituting `Layer1Decision::Disarmed`.
+pub fn production_layer1_decision(
+    settings: &UserSettings,
+    gateway: GatewaySessionAvailability,
+) -> Layer1Decision {
+    layer1_decision_for_recording(settings, gateway)
+}
+
+/// Build the exact engine session configuration consumed by live capture.
+fn recording_session_config(
+    sample_rate: u32,
+    language: Option<String>,
+    stream_log_path: Option<std::path::PathBuf>,
+    utterance_silence_sec: Option<f32>,
+    layer1: Layer1Decision,
+) -> SessionConfig {
+    SessionConfig {
+        sample_rate,
+        language,
+        stream_log_path,
+        utterance_silence_sec,
+        layer1,
+    }
+}
+
+/// Replay fixture PCM through the production recording-session cone.
+///
+/// The only differing boundary is PCM ingress: 100 ms in-memory chunks replace
+/// CoreAudio callback blocks. Decision construction, `SessionConfig`, session
+/// semantics, Layer 1 fan-out, VAD, Apple/Whisper events, and shutdown drainage
+/// all remain owned by the same production symbols as microphone capture.
+pub async fn replay_production_session(
+    samples: &[f32],
+    sample_rate: u32,
+    language: Option<String>,
+    settings: &UserSettings,
+    gateway: GatewaySessionAvailability,
+) -> Result<ProductionSessionReplay> {
+    let layer1 = production_layer1_decision(settings, gateway);
+    let layer1_armed = layer1.is_armed();
+    let config = recording_session_config(sample_rate, language, None, None, layer1);
+    let events = collect_buffered_engine_events_with_config(samples, config).await?;
+    Ok(ProductionSessionReplay {
+        events,
+        layer1_armed,
+    })
+}
 
 /// A recording session that transcribes while it captures.
 ///
@@ -111,7 +176,7 @@ impl StreamingRecorder {
             .layer1_decision
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            layer1_decision_for_recording(settings, gateway);
+            production_layer1_decision(settings, gateway);
     }
 
     /// Store a per-utterance text callback.
@@ -217,13 +282,13 @@ impl StreamingRecorder {
             transcription_session(
                 rx,
                 event_sink,
-                SessionConfig {
-                    sample_rate: actual_sample_rate,
+                recording_session_config(
+                    actual_sample_rate,
                     language,
-                    stream_log_path: log_path,
+                    log_path,
                     utterance_silence_sec,
                     layer1,
-                },
+                ),
             )
             .await;
         }));
@@ -368,6 +433,27 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tokio::time::Duration;
+
+    /// The replay seam must consume the same recording-start decision as the
+    /// microphone path; a test-only `Disarmed` shortcut would make corpus
+    /// quality evidence adjacent to production again.
+    #[test]
+    fn replay_production_session_cannot_hardcode_disarmed_layer1() {
+        let source = include_str!("streaming_recorder.rs");
+        let replay_body = source
+            .split("pub async fn replay_production_session")
+            .nth(1)
+            .and_then(|tail| tail.split("impl StreamingRecorder").next())
+            .expect("production replay body remains present");
+        assert!(
+            replay_body.contains("production_layer1_decision(settings, gateway)"),
+            "replay must resolve the same production Layer 1 policy as microphone capture"
+        );
+        assert!(
+            !replay_body.contains("Layer1Decision::Disarmed"),
+            "replay must not silently hard-code a disarmed Layer 1 lane"
+        );
+    }
 
     /// Empty/silence/full-scale blocks map to the 0 / 0 / ~1 energy ladder meters use.
     #[test]

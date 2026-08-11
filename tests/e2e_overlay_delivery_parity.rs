@@ -349,6 +349,64 @@ fn human_reference_for_wav(wav: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// Every WAV with a truth sibling, sorted for stable content-free recording IDs.
+fn truth_paired_corpus() -> Vec<PathBuf> {
+    let mut clips = std::fs::read_dir(data_assets_dir())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("wav"))
+        .filter(|path| human_reference_for_wav(path).is_some())
+        .collect::<Vec<_>>();
+    clips.sort();
+    clips
+}
+
+fn edit_distance<T: Eq>(reference: &[T], hypothesis: &[T]) -> usize {
+    let mut previous: Vec<usize> = (0..=hypothesis.len()).collect();
+    let mut current = vec![0; hypothesis.len() + 1];
+    for (i, expected) in reference.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, actual) in hypothesis.iter().enumerate() {
+            current[j + 1] = if expected == actual {
+                previous[j]
+            } else {
+                1 + previous[j].min(previous[j + 1]).min(current[j])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[hypothesis.len()]
+}
+
+fn normalized_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn word_error_rate(reference: &str, hypothesis: &str) -> f32 {
+    let reference = normalized_words(reference);
+    let hypothesis = normalized_words(hypothesis);
+    edit_distance(&reference, &hypothesis) as f32 / reference.len().max(1) as f32
+}
+
+fn character_error_rate(reference: &str, hypothesis: &str) -> f32 {
+    let reference = reference
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect::<Vec<_>>();
+    let hypothesis = hypothesis
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect::<Vec<_>>();
+    edit_distance(&reference, &hypothesis) as f32 / reference.len().max(1) as f32
+}
+
 // ── Always-on contract tests (no STT / no model) ────────────────────────────
 
 #[test]
@@ -1057,6 +1115,203 @@ fn apple_reference_for_wav(wav: &Path) -> Option<String> {
         .parent()?
         .join(format!("{stem}_apple_live_reference.txt"));
     std::fs::read_to_string(path).ok()
+}
+
+/// Private-corpus quality proof through the production-owned replay cone.
+///
+/// Output is JSON containing counts and metrics only. Transcript bodies and
+/// source filenames never leave process memory.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "private truth-paired corpus; set CODESCRIBE_PRODUCTION_CORPUS_OUT"]
+async fn e2e_production_overlay_corpus_replay() {
+    init_e2e_tracing();
+    // Capture operator intent before `UserSettings::load` or a production
+    // final-pass loader can re-seed process env from persisted settings. Each
+    // recording restores these pins so one corpus run cannot silently blend
+    // live lanes after the preceding recording's stop path.
+    let requested_stt_engine = std::env::var("CODESCRIBE_STT_ENGINE").ok();
+    let requested_layered = std::env::var("CODESCRIBE_LAYERED_TRANSCRIPTION").ok();
+    let requested_local_final = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS").ok();
+    let output_path = std::env::var("CODESCRIBE_PRODUCTION_CORPUS_OUT")
+        .map(PathBuf::from)
+        .expect("production corpus replay requires CODESCRIBE_PRODUCTION_CORPUS_OUT");
+    let lane = match std::env::var("CODESCRIBE_PRODUCTION_REPLAY_LANE")
+        .unwrap_or_else(|_| "apple_lexicon".to_string())
+        .as_str()
+    {
+        "apple_lexicon" => {
+            codescribe::controller::production_replay::ProductionReplayLane::AppleLexicon
+        }
+        "local_final_pass" => {
+            codescribe::controller::production_replay::ProductionReplayLane::LocalFinalPass
+        }
+        other => panic!("unknown production replay lane {other}"),
+    };
+    let commit = std::env::var("CODESCRIBE_PRODUCTION_CORPUS_COMMIT")
+        .expect("production corpus replay requires exact commit provenance");
+    let clips = truth_paired_corpus();
+    assert!(
+        !clips.is_empty(),
+        "private corpus has no truth-paired WAV files"
+    );
+
+    let settings = codescribe_core::config::UserSettings::load();
+    let resolved = settings.resolved_asr_mode();
+    let language = std::env::var("CODESCRIBE_E2E_LANG")
+        .ok()
+        .or_else(|| Some("pl".to_string()));
+    let started = std::time::Instant::now();
+    let mut rows = Vec::with_capacity(clips.len());
+    let mut sum_wer = 0.0_f64;
+    let mut sum_cer = 0.0_f64;
+    let mut sum_similarity = 0.0_f64;
+
+    for (index, clip) in clips.iter().enumerate() {
+        // SAFETY: this ignored corpus test is the only selected test in its
+        // process. The pins are restored before the production session starts,
+        // before any session worker reads them.
+        unsafe {
+            if let Some(value) = requested_stt_engine.as_deref() {
+                std::env::set_var("CODESCRIBE_STT_ENGINE", value);
+            }
+            if let Some(value) = requested_layered.as_deref() {
+                std::env::set_var("CODESCRIBE_LAYERED_TRANSCRIPTION", value);
+            }
+            if let Some(value) = requested_local_final.as_deref() {
+                std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", value);
+            }
+        }
+        let truth = human_reference_for_wav(clip).expect("paired truth disappeared");
+        let (samples, sample_rate) = audio::load_audio_file(clip)
+            .unwrap_or_else(|error| panic!("load corpus recording {}: {error}", index + 1));
+        let audio_seconds = samples.len() as f64 / f64::from(sample_rate);
+        let run_started = std::time::Instant::now();
+        let replay = codescribe::controller::production_replay::replay_overlay_recording(
+            clip,
+            language.clone(),
+            &settings,
+            codescribe_core::asr_session::GatewaySessionAvailability::Unavailable,
+            lane,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("production replay recording {}: {error:#}", index + 1));
+
+        let teacher = teacher_score(&truth, &replay.delivered_text);
+        let wer = word_error_rate(&truth, &replay.delivered_text);
+        let cer = character_error_rate(&truth, &replay.delivered_text);
+        let truth_tokens = normalized_words(&truth);
+        let delivered_tokens = normalized_words(&replay.delivered_text);
+        let head = truth_tokens
+            .iter()
+            .take(8)
+            .any(|token| delivered_tokens.contains(token));
+        let tail = truth_tokens
+            .iter()
+            .rev()
+            .take(8)
+            .any(|token| delivered_tokens.contains(token));
+        let token_ratio = delivered_tokens.len() as f64 / truth_tokens.len().max(1) as f64;
+        let sealed = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::UtteranceFinal { .. }))
+            .count();
+        let previews = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::Preview { .. }))
+            .count();
+        let tail_patches = measured_tail_patch_count(&replay.events);
+
+        sum_wer += f64::from(wer);
+        sum_cer += f64::from(cer);
+        sum_similarity += f64::from(teacher.similarity);
+        rows.push(serde_json::json!({
+            "recording_id": format!("recording-{:03}", index + 1),
+            "audio_seconds": audio_seconds,
+            "sample_rate_hz": sample_rate,
+            "lane": replay.lane.as_token(),
+            "layer1_armed": replay.layer1_armed,
+            "transcript_source": replay.transcript_source,
+            "engine_label": replay.engine_label,
+            "events": replay.events.len(),
+            "previews": previews,
+            "sealed_finals": sealed,
+            "tail_patches": tail_patches,
+            "live_chars": replay.live_text.chars().count(),
+            "adjudicated_chars": replay.adjudicated_text.chars().count(),
+            "delivered_chars": replay.delivered_text.chars().count(),
+            "truth_tokens": truth_tokens.len(),
+            "delivered_tokens": delivered_tokens.len(),
+            "token_ratio": token_ratio,
+            "teacher_similarity": teacher.similarity,
+            "wer": wer,
+            "cer": cer,
+            "head_present": head,
+            "tail_present": tail,
+            "lexicon_rewrites": replay.postprocess_stats.lexicon_rewrites,
+            "gate_drops": replay.postprocess_stats.gate_drops,
+            "wall_seconds": run_started.elapsed().as_secs_f64(),
+        }));
+        eprintln!(
+            "production corpus recording-{:03}: lane={} similarity={:.3} wer={:.3} cer={:.3} head={} tail={} ratio={:.3}",
+            index + 1,
+            lane.as_token(),
+            teacher.similarity,
+            wer,
+            cer,
+            head,
+            tail,
+            token_ratio
+        );
+    }
+
+    let count = rows.len();
+    let report = serde_json::json!({
+        "schema": "codescribe.production-overlay-corpus.v1",
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "commit": commit,
+        "configuration": {
+            "replay_lane": lane.as_token(),
+            "resolved_asr_mode": resolved.mode.as_str(),
+            "gateway": "unavailable",
+            "language": language,
+            "stt_engine": requested_stt_engine.as_deref().unwrap_or("auto"),
+            "layered_transcription": requested_layered.as_deref().unwrap_or("unset"),
+            "local_final_pass": requested_local_final.as_deref().unwrap_or("unset"),
+        },
+        "coverage": {
+            "truth_paired_recordings": count,
+            "completed_recordings": count,
+        },
+        "aggregate": {
+            "mean_teacher_similarity": sum_similarity / count as f64,
+            "mean_wer": sum_wer / count as f64,
+            "mean_cer": sum_cer / count as f64,
+            "head_present_count": rows.iter().filter(|row| row["head_present"] == true).count(),
+            "tail_present_count": rows.iter().filter(|row| row["tail_present"] == true).count(),
+            "wall_seconds": started.elapsed().as_secs_f64(),
+        },
+        "recordings": rows,
+        "privacy": {
+            "transcript_bodies_written": false,
+            "source_filenames_written": false,
+        },
+    });
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).expect("create production corpus artifact directory");
+    }
+    std::fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&report).expect("serialize redacted corpus report"),
+    )
+    .expect("write redacted production corpus report");
+    eprintln!(
+        "production corpus complete: lane={} recordings={} artifact={}",
+        lane.as_token(),
+        count,
+        output_path.display()
+    );
 }
 
 /// The Apple reference is a **ruler, not the truth**: it is one engine's output

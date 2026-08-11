@@ -8,10 +8,36 @@ use tracing::{info, warn};
 use codescribe_core::pipeline::contracts::{
     FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
 };
+use codescribe_core::pipeline::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 
 use super::final_pass::engine_label_from_verdict;
 use super::helpers::SessionTelemetrySnapshot;
 use super::types::{RecordingFallbackClass, RecordingTranscriptSource};
+
+/// Unconditional final text layer immediately before formatting and delivery.
+#[derive(Debug, Clone)]
+pub struct DeliveryTextPostprocess {
+    /// Text after production lexicon, artifact cleanup, and semantic gate.
+    pub text: String,
+    /// Content-free counters proving which final layer ran.
+    pub stats: StreamPostProcessStats,
+}
+
+/// Apply the production-owned lexicon/text layer used by every delivery.
+///
+/// This is deliberately a shared symbol rather than test-side logic: the real
+/// overlay pipeline and private-corpus replay both cross it before treating a
+/// transcript as deliverable.
+pub fn postprocess_transcript_for_delivery(raw_text: &str) -> DeliveryTextPostprocess {
+    let mut finalizer = StreamPostProcessor::new();
+    let text = finalizer
+        .process(raw_text)
+        .unwrap_or_else(|| raw_text.to_string());
+    DeliveryTextPostprocess {
+        text,
+        stats: finalizer.stats(),
+    }
+}
 
 /// Collapse a whitespace-only transcript to `None` — blank is not a transcript.
 fn non_empty_transcript(text: Option<String>) -> Option<String> {
