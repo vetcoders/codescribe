@@ -17,7 +17,11 @@
 SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
 EDITOR ?= $(shell command -v code || command -v nvim || command -v vim || echo nano)
-ENV_LOAD := set -a; [ -f $$HOME/.codescribe/.env ] && source $$HOME/.codescribe/.env; set +a
+# Operator tests may source the daily dotenv for real-API credentials, but the
+# harness owns its data directory. Preserve that process-wide isolation across
+# the source so an operator CODESCRIBE_DATA_DIR cannot redirect tests back into
+# a persistent or production tree.
+ENV_LOAD := CODESCRIBE_TEST_DATA_DIR_GUARD=$$CODESCRIBE_DATA_DIR; set -a; [ -f $$HOME/.codescribe/.env ] && source $$HOME/.codescribe/.env; set +a; export CODESCRIBE_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR_GUARD"; unset CODESCRIBE_TEST_DATA_DIR_GUARD
 # macOS: TCC tracks a stable code identity, not just bundle path. Prefer a stable
 # Apple-issued signing identity automatically, and only fall back to ad-hoc when
 # there is genuinely nothing usable in the keychain.
@@ -333,7 +337,40 @@ TEST_SSE_CARGO_JOBS ?= 2
 TEST_SSE_PROFILE ?= debug
 TEST_SSE_PROFILE_ARGS := $(if $(filter release,$(TEST_SSE_PROFILE)),--release,)
 
+define TEST_DATA_DIR_SETUP
+CODESCRIBE_TEST_TMP_ROOT="$${TMPDIR:-/tmp}"; \
+CODESCRIBE_TEST_TMP_ROOT="$${CODESCRIBE_TEST_TMP_ROOT%/}"; \
+if [[ -z "$$CODESCRIBE_TEST_TMP_ROOT" ]]; then CODESCRIBE_TEST_TMP_ROOT=/tmp; fi; \
+CODESCRIBE_TEST_DATA_DIR="$$(mktemp -d "$$CODESCRIBE_TEST_TMP_ROOT/codescribe-test-data.XXXXXX")" || { \
+  echo "test-data-dir: mktemp failed under $$CODESCRIBE_TEST_TMP_ROOT" >&2; \
+  exit 1; \
+}; \
+export CODESCRIBE_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR"; \
+cleanup_codescribe_test_data_dir() { \
+  isolated_log="$$CODESCRIBE_TEST_DATA_DIR/logs/codescribe.log"; \
+  if [[ -f "$$isolated_log" ]]; then \
+    isolated_bytes="$$(wc -c < "$$isolated_log" | tr -d ' ')"; \
+    echo "test-data-dir: isolated-log=$$isolated_log bytes=$$isolated_bytes"; \
+  else \
+    echo "test-data-dir: isolated-log=none root=$$CODESCRIBE_TEST_DATA_DIR"; \
+  fi; \
+  case "$$CODESCRIBE_TEST_DATA_DIR" in \
+    "$$CODESCRIBE_TEST_TMP_ROOT"/codescribe-test-data.*) \
+      rm -rf -- "$$CODESCRIBE_TEST_DATA_DIR"; \
+      echo "test-data-dir: cleaned=$$CODESCRIBE_TEST_DATA_DIR"; \
+      ;; \
+    *) \
+      echo "test-data-dir: refusing unsafe cleanup: $$CODESCRIBE_TEST_DATA_DIR" >&2; \
+      return 1; \
+      ;; \
+  esac; \
+}; \
+trap cleanup_codescribe_test_data_dir EXIT; \
+echo "test-data-dir: created=$$CODESCRIBE_TEST_DATA_DIR"
+endef
+
 define TEST_SETUP
+$(TEST_DATA_DIR_SETUP); \
 LOG=$(TEST_LOG); \
 export CODESCRIBE_DISABLE_KEYCHAIN=1; \
 echo "" >> "$$LOG"; \
@@ -740,6 +777,7 @@ SWIFT_TEST_MAX_SECONDS ?= 30
 .PHONY: test-swift
 test-swift:
 	@set -o pipefail; \
+	$(TEST_DATA_DIR_SETUP); \
 	if [ ! -f target/$(PROFILE)/libcodescribe_ffi.dylib ]; then \
 	  echo "test-swift: target/$(PROFILE)/libcodescribe_ffi.dylib is missing." >&2; \
 	  echo "test-swift: run 'make app-bindings' (or 'make app') first." >&2; \
@@ -939,6 +977,7 @@ check:
 # was written to remove. Any line added below must stay in the `-e` chain.
 verify:
 	@set -eo pipefail; \
+	$(TEST_DATA_DIR_SETUP); \
 	echo "=== Verify (hermetic: workspace tests) ==="; \
 	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
 	  cargo test --workspace --all-targets; \
