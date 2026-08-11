@@ -97,4 +97,6 @@ pub use provider::{AsrSessionProvider, CanvasEngine, LayerSelection, RefinerMode
 pub use recorder::{
     FanOutVerdict, LAYER1_DEGRADED_WARNING_CODE, Layer1Decision, Layer1DegradeReason,
     Layer1LaneState, Layer1LaneTelemetry, Layer1SessionOutcome, RecorderLayer1Lane,
+    RecorderLifecycleEvent, RecorderLifecycleEvents, RecorderLifecycleHandle,
+    apply_recorder_lifecycle_event, recorder_lifecycle_channel,
 };

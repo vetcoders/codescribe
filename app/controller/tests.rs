@@ -437,6 +437,50 @@ fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
     );
 }
 
+/// Apple live with Layer 1 off and local final pass Off is served by Apple;
+/// the skipped verdict is provenance only and must never impersonate Whisper.
+#[test]
+fn test_apple_live_with_skipped_final_pass_reports_live_apple() {
+    let text = "pacjent stabilny".to_string();
+    let skipped = codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+        text.clone(),
+        codescribe_core::pipeline::contracts::RawTranscript {
+            text: text.clone(),
+            ..Default::default()
+        },
+        None,
+        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+            codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+        ),
+        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+            disposition: FinalPassDisposition::Skipped,
+            reason: Some("routing_off".to_string()),
+            lexicon_rewrites: 0,
+            repetition_cleanups: 0,
+        }),
+    );
+
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(skipped),
+        text.clone(),
+        None,
+        Some("live_apple"),
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some(text.as_str()));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::Streaming)
+    );
+    assert_eq!(verdict.engine_label.as_deref(), Some("live_apple"));
+    assert!(!verdict.engine_label.unwrap().contains("whisper"));
+}
+
 /// The stop-path receipt names every phase and its remainder sums to the wall
 /// total. Unaccounted time must show up as `remainder`, never be absorbed into
 /// a named phase — that is what makes the receipt usable for latency work.
@@ -3495,6 +3539,7 @@ fn test_adjudicate_recording_truth_blocks_local_no_speech() {
         Some(make_final_pass_verdict("", 0.0, None, true)),
         "preview text".to_string(),
         None,
+        None,
         &session,
     );
 
@@ -3522,6 +3567,7 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
         None,
         "streaming fallback".to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3565,6 +3611,7 @@ fn cloud_fallback_preserves_live_floor_and_adds_provider_tail() {
         None,
         "live_token shared_token".to_string(),
         Some(make_cloud_verdict("provider_token shared_token tail_token")),
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3601,6 +3648,7 @@ fn fleet_red_cloud_final_preserves_live_floor() {
         None,
         live_floor.to_string(),
         Some(divergent_cloud_final),
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
     let delivered = verdict
@@ -3627,6 +3675,7 @@ fn test_adjudicate_recording_truth_merges_live_floor_with_whisper_final() {
         Some(make_final_pass_verdict(whisper, 82.0, Some(-0.22), false)),
         live.to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3668,6 +3717,7 @@ fn test_recon_final_pass_rejected_on_catastrophic_length_regression() {
         )),
         live.to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3704,6 +3754,7 @@ fn test_recon_comparable_final_pass_merges_not_full_replace() {
         Some(make_final_pass_verdict(whisper, 82.0, Some(-0.24), false)),
         live.to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3730,6 +3781,7 @@ fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallb
         None,
         "toggle transcript".to_string(),
         None,
+        Some("streaming_whisper"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3782,6 +3834,7 @@ fn test_adjudicate_recording_truth_cold_whisper_empty_live_recovers_via_final_pa
         // Empty live preview: cold Whisper meant no live transcript at all.
         String::new(),
         None,
+        Some("streaming_whisper"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3839,6 +3892,7 @@ fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
         None,
         "preview text".to_string(),
         Some(make_cloud_verdict("cloud primary")),
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3864,6 +3918,7 @@ fn test_adjudicate_recording_truth_marks_low_logprob_as_unsafe() {
         )),
         "preview text".to_string(),
         None,
+        Some("streaming_whisper"),
         &SessionTelemetrySnapshot::default(),
     );
 

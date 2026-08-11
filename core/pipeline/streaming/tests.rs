@@ -1403,6 +1403,7 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
             stream_log_path: None,
             utterance_silence_sec: None,
             layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     )
     .await;
@@ -1638,6 +1639,7 @@ async fn bench_stt_scheduler_latency_probe_from_env() -> Result<()> {
                 stream_log_path: None,
                 utterance_silence_sec: None,
                 layer1: Layer1Decision::Disarmed,
+                lifecycle_events: None,
             },
         ));
 
@@ -1718,6 +1720,7 @@ async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() 
             stream_log_path: None,
             utterance_silence_sec: None,
             layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     )
     .await;

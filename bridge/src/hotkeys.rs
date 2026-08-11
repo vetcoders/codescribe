@@ -791,6 +791,18 @@ impl CodescribeHotkeys {
             })
     }
 
+    /// Forward a macOS sleep/wake boundary to the active recorder, if any.
+    ///
+    /// Querying this surface never constructs the shared controller. The host
+    /// notification callback can therefore remain a cheap no-op while idle and
+    /// cannot surprise-load a model or start a provider.
+    pub async fn note_sleep_wake(&self) -> bool {
+        let Some(controller) = current_controller(&shared_controller()) else {
+            return false;
+        };
+        controller.note_sleep_wake().await
+    }
+
     /// True while the shared controller is in an active recording/conversation state.
     pub async fn is_recording(&self) -> bool {
         let Some(controller) = current_controller(&shared_controller()) else {
@@ -2147,6 +2159,19 @@ mod preparing_compensation_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    /// A host lifecycle notification while idle must not construct the shared
+    /// controller (and therefore cannot prewarm or load an engine).
+    #[tokio::test]
+    #[serial]
+    async fn sleep_wake_without_active_controller_is_a_noop() {
+        let _guard = TEST_LOCK.lock().await;
+        teardown();
+
+        let hotkeys = CodescribeHotkeys::new();
+        assert!(!hotkeys.note_sleep_wake().await);
+        assert!(current_controller(&shared_controller()).is_none());
     }
 
     /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.

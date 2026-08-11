@@ -591,6 +591,19 @@ impl RecordingController {
         *self.state.read().await
     }
 
+    /// Forward one host sleep/wake boundary to the active recording session.
+    ///
+    /// This never creates a recorder or starts an engine. When capture is not
+    /// active it is a normal no-op; otherwise the per-recording lifecycle
+    /// channel wakes the session loop and degrades Layer 1 fail-closed.
+    pub async fn note_sleep_wake(&self) -> bool {
+        self.recorder
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(StreamingRecorder::note_sleep_wake)
+    }
+
     /// Subscribe to the controller's IPC event stream. Each subscriber gets its
     /// own receiver; a slow consumer lags rather than stalling the producer.
     pub fn subscribe_events(&self) -> broadcast::Receiver<IpcEvent> {
@@ -2813,6 +2826,11 @@ impl RecordingController {
 
         let routing_mode = final_pass_routing_mode();
         let prefer_apple = codescribe_core::stt::active_engine_is_apple();
+        let streaming_engine_label = if prefer_apple {
+            "live_apple"
+        } else {
+            "streaming_whisper"
+        };
         // Honest mode: Off never runs a full file re-pass (Apple or not).
         // Smart/Always decide via final_pass_action — no silent rewrite.
         let run_local_final_pass =
@@ -3432,12 +3450,17 @@ impl RecordingController {
             local_final_pass_verdict,
             streaming_text,
             cloud_verdict_opt.clone(),
+            Some(streaming_engine_label),
             &session_telemetry,
         );
         if transcript_source_override.is_some()
+            && truth_verdict.raw_text.is_some()
             && matches!(
                 truth_verdict.transcript_source,
-                Some(RecordingTranscriptSource::LocalFinalPass)
+                Some(
+                    RecordingTranscriptSource::LocalFinalPass
+                        | RecordingTranscriptSource::Streaming
+                )
             )
         {
             truth_verdict.transcript_source = transcript_source_override;

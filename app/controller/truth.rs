@@ -330,6 +330,7 @@ pub(crate) fn adjudicate_recording_truth(
     local_final_pass_verdict: Option<TranscriptionVerdict>,
     streaming_text: String,
     cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
+    streaming_engine_label: Option<&str>,
     session_telemetry: &SessionTelemetrySnapshot,
 ) -> RecordingTruthVerdict {
     let streaming_text = non_empty_transcript(Some(streaming_text));
@@ -382,6 +383,24 @@ pub(crate) fn adjudicate_recording_truth(
         } else {
             non_empty_transcript(Some(verdict.text))
         };
+
+        // `Off` produces a typed skipped verdict solely to carry the live
+        // engine identity. No final-pass engine served text, so do not route
+        // the unchanged live floor through the Whisper merge/provenance path.
+        if matches!(final_pass_disposition, Some(FinalPassDisposition::Skipped)) {
+            return build_truth_verdict(
+                streaming_text.or(raw_text),
+                Some(RecordingTranscriptSource::Streaming),
+                None,
+                None,
+                speech_pct,
+                avg_logprob,
+                confidence_flags,
+                sparkline,
+                final_pass_disposition,
+                engine_label,
+            );
+        }
 
         // Explicit no-speech from final pass remains authoritative.
         if no_speech_reason.is_some() {
@@ -547,11 +566,11 @@ pub(crate) fn adjudicate_recording_truth(
             // Regression keep-stream is still live assembly truth, not "degraded
             // because final missing" — label as streaming floor when we rejected
             // a collapsing final pass.
-            let engine = if final_pass_length_regression {
-                Some("streaming_live_floor".to_string())
-            } else {
-                Some("streaming_whisper".to_string())
-            };
+            let engine = Some(
+                streaming_engine_label
+                    .unwrap_or("streaming_unknown")
+                    .to_string(),
+            );
             return build_truth_verdict(
                 Some(text),
                 Some(RecordingTranscriptSource::StreamingFallback),
@@ -612,7 +631,11 @@ pub(crate) fn adjudicate_recording_truth(
                 confidence_flags,
                 None,
                 None,
-                Some("streaming_whisper".to_string()),
+                Some(
+                    streaming_engine_label
+                        .unwrap_or("streaming_unknown")
+                        .to_string(),
+                ),
             );
         }
     }
@@ -655,7 +678,7 @@ pub(crate) fn truth_engine_label(
             "cloud_stt".to_string()
         }
         RecordingTranscriptSource::Streaming | RecordingTranscriptSource::StreamingFallback => {
-            "streaming_whisper".to_string()
+            "streaming_unknown".to_string()
         }
     })
 }

@@ -169,6 +169,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Local key monitor for ⌘+ / ⌘- / ⌘0 text scaling, routed to the key window's
     // surface (overlay panel vs agent window). Held so it can be removed on quit.
     private var textScaleMonitor: Any?
+    // NSWorkspace sleep/wake bridge. The observer itself only coalesces one
+    // next-tick callback; the async Rust hop happens outside AppKit's callout.
+    private var sleepWakeObserver: SystemSleepWakeObserver?
     private let popover = NSPopover()
     private var shouldExitForDuplicate = false
     // First-run onboarding wizard host. Presented at launch when the core gate
@@ -237,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installTextScaleMonitor()
         registerAppActions()
         startHotkeys()
+        installSystemSleepWakeObserver()
         registerVoiceDelivery()
         prewarmRecordingController()
         // Speech Recognition TCC must be requested from THIS process
@@ -486,8 +490,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // purely to stop something that was never running.
         guard !Self.isRunningTests else { return }
         hotkeys.stop()
+        sleepWakeObserver?.invalidate()
+        sleepWakeObserver = nil
         if let textScaleMonitor { NSEvent.removeMonitor(textScaleMonitor) }
         DistributedNotificationCenter.default().removeObserver(self)
+    }
+
+    /// Bind the active recorder to the real host power lifecycle.
+    ///
+    /// The observer is object-scoped and coalesced. This closure runs on the
+    /// following main-queue tick and only launches the non-creating bridge
+    /// query; the provider transition happens in the Rust session loop.
+    private func installSystemSleepWakeObserver() {
+        let observer = SystemSleepWakeObserver { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                let reachedActiveRecorder = await self.hotkeys.noteSleepWake()
+                appLogger.info(
+                    "Host sleep/wake boundary forwarded to active recorder: \(reachedActiveRecorder, privacy: .public)"
+                )
+            }
+        }
+        sleepWakeObserver = observer
+        observer.start()
     }
 
     // MARK: - Text scaling (⌘+ / ⌘- / ⌘0)

@@ -41,6 +41,7 @@ use tracing::{info, warn};
 
 use crate::asr_session::recorder::{
     LAYER1_DEGRADED_WARNING_CODE, Layer1DegradeReason, RecorderLayer1Lane,
+    apply_recorder_lifecycle_event,
 };
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
@@ -240,6 +241,7 @@ pub(crate) async fn apple_stream_transcription_session(
         stream_log_path,
         utterance_silence_sec,
         layer1,
+        mut lifecycle_events,
     } = config;
     // SFSpeech owns phrase boundaries in progressive mode, so the VAD-path
     // silence knob cannot apply. Say so instead of silently differing from
@@ -357,6 +359,22 @@ pub(crate) async fn apple_stream_transcription_session(
                         let _ = pcm_tx.send(None);
                         audio_eof = true;
                     }
+                }
+            }
+            lifecycle = async {
+                match lifecycle_events.as_mut() {
+                    Some(events) => events.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match lifecycle {
+                    Some(event) => {
+                        apply_recorder_lifecycle_event(&mut layer1_lane, event);
+                        if let Some(reason) = layer1_lane.take_degrade_notice() {
+                            emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+                        }
+                    }
+                    None => lifecycle_events = None,
                 }
             }
             // Admit one sealed utterance into Layer 1 at a time. The Whisper

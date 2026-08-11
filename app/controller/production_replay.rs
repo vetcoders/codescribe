@@ -128,6 +128,7 @@ fn finish_replay_delivery(
     live_text: String,
     local_final_pass_attempted: bool,
     local_final_pass_verdict: Option<TranscriptionVerdict>,
+    streaming_engine_label: &str,
 ) -> Result<ReplayDelivery> {
     let verdict = adjudicate_recording_truth(
         true,
@@ -135,6 +136,7 @@ fn finish_replay_delivery(
         local_final_pass_verdict,
         live_text,
         None,
+        Some(streaming_engine_label),
         &SessionTelemetrySnapshot::default(),
     );
     let adjudicated_text = verdict
@@ -185,7 +187,12 @@ pub async fn replay_overlay_recording(
             ),
         ),
     };
-    let delivery = finish_replay_delivery(live_text.clone(), attempted, final_verdict)?;
+    let delivery = finish_replay_delivery(
+        live_text.clone(),
+        attempted,
+        final_verdict,
+        &session.streaming_engine_label,
+    )?;
 
     let boundary_evidence = boundary_evidence(&session.events);
     Ok(ProductionOverlayReplay {
@@ -229,9 +236,13 @@ mod tests {
 
     #[test]
     fn replay_stop_boundary_cannot_bypass_adjudication_or_lexicon() {
-        let delivery =
-            finish_replay_delivery("Uzywam doker do kontenerow.".to_string(), false, None)
-                .expect("live floor should remain deliverable");
+        let delivery = finish_replay_delivery(
+            "Uzywam doker do kontenerow.".to_string(),
+            false,
+            None,
+            "live_apple",
+        )
+        .expect("live floor should remain deliverable");
         assert_eq!(
             delivery.transcript_source.as_deref(),
             Some("Streaming fallback"),
@@ -242,6 +253,20 @@ mod tests {
             "the replay must cross the unconditional production lexicon layer"
         );
         assert!(delivery.postprocess_stats.lexicon_rewrites >= 1);
+        assert_eq!(delivery.engine_label.as_deref(), Some("live_apple"));
+    }
+
+    /// The exact field consumed by the production replay JSON must name the
+    /// live Apple canvas when Layer 1 and local final pass are both disarmed.
+    #[test]
+    fn apple_only_replay_json_surface_never_reports_streaming_whisper() {
+        let delivery =
+            finish_replay_delivery("pacjent stabilny".to_string(), false, None, "live_apple")
+                .expect("Apple live floor should remain deliverable");
+
+        let row = serde_json::json!({ "engine_label": delivery.engine_label });
+        assert_eq!(row["engine_label"], "live_apple");
+        assert_ne!(row["engine_label"], "streaming_whisper");
     }
 
     #[test]

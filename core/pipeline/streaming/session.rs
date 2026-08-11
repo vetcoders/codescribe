@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::asr_session::recorder::Layer1Decision;
+use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
@@ -129,6 +129,9 @@ pub struct SessionConfig {
     /// persistence belong to the settings owner. [`Layer1Decision::Disarmed`]
     /// is the stock product: canvas + lexicon, complete, never an error.
     pub layer1: Layer1Decision,
+    /// Per-recording host lifecycle boundaries. Present only for a live
+    /// recorder; buffered/offline helpers have no system observer owner.
+    pub lifecycle_events: Option<RecorderLifecycleEvents>,
 }
 
 /// What happened to one enqueue attempt.
@@ -445,6 +448,7 @@ pub(crate) async fn vad_transcription_session(
         stream_log_path,
         utterance_silence_sec,
         layer1,
+        lifecycle_events: _,
     } = config;
 
     // C1 wires the live Layer 1 lane on the Apple progressive path only. On
@@ -1724,6 +1728,7 @@ pub async fn transcribe_buffered_samples(
             // Offline replay harness: Layer 1 arming is a live-recording
             // decision owned elsewhere.
             layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     ));
 
@@ -1772,6 +1777,7 @@ pub async fn collect_buffered_engine_events(
             // Offline replay harness: Layer 1 arming is a live-recording
             // decision owned elsewhere.
             layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     ));
 

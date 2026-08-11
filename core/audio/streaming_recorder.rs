@@ -13,7 +13,9 @@
 //! tail of the delivered text.
 
 use crate::asr_session::bootstrap::{GatewaySessionAvailability, layer1_decision_for_recording};
-use crate::asr_session::recorder::Layer1Decision;
+use crate::asr_session::recorder::{
+    Layer1Decision, RecorderLifecycleEvents, RecorderLifecycleHandle, recorder_lifecycle_channel,
+};
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::UserSettings;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
@@ -42,6 +44,8 @@ pub struct ProductionSessionReplay {
     /// Whether recording-start policy armed a Layer 1 provider before the
     /// single-use decision was consumed by the session.
     pub layer1_armed: bool,
+    /// Engine that actually owned the live canvas for this replay session.
+    pub streaming_engine_label: String,
 }
 
 /// Resolve the production Layer 1 decision for one recording.
@@ -63,6 +67,7 @@ fn recording_session_config(
     stream_log_path: Option<std::path::PathBuf>,
     utterance_silence_sec: Option<f32>,
     layer1: Layer1Decision,
+    lifecycle_events: Option<RecorderLifecycleEvents>,
 ) -> SessionConfig {
     SessionConfig {
         sample_rate,
@@ -70,6 +75,7 @@ fn recording_session_config(
         stream_log_path,
         utterance_silence_sec,
         layer1,
+        lifecycle_events,
     }
 }
 
@@ -88,11 +94,18 @@ pub async fn replay_production_session(
 ) -> Result<ProductionSessionReplay> {
     let layer1 = production_layer1_decision(settings, gateway);
     let layer1_armed = layer1.is_armed();
-    let config = recording_session_config(sample_rate, language, None, None, layer1);
+    let streaming_engine_label = if crate::stt::active_engine_is_apple() {
+        "live_apple"
+    } else {
+        "streaming_whisper"
+    }
+    .to_string();
+    let config = recording_session_config(sample_rate, language, None, None, layer1, None);
     let events = collect_buffered_engine_events_with_config(samples, config).await?;
     Ok(ProductionSessionReplay {
         events,
         layer1_armed,
+        streaming_engine_label,
     })
 }
 
@@ -118,6 +131,8 @@ pub struct StreamingRecorder {
     level_callback: Option<Arc<dyn Fn(f32) + Send + Sync>>,
     /// Single-use Layer 1 decision consumed when the next session starts.
     layer1_decision: StdMutex<Layer1Decision>,
+    /// O(1) host lifecycle signal for the currently active session.
+    lifecycle_handle: Option<RecorderLifecycleHandle>,
 }
 
 impl StreamingRecorder {
@@ -140,6 +155,7 @@ impl StreamingRecorder {
             event_sink: None,
             level_callback: None,
             layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
+            lifecycle_handle: None,
         })
     }
 
@@ -162,6 +178,7 @@ impl StreamingRecorder {
             event_sink: None,
             level_callback: None,
             layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
+            lifecycle_handle: None,
         })
     }
 
@@ -223,6 +240,18 @@ impl StreamingRecorder {
         self.recorder.is_active()
     }
 
+    /// Notify the active transcription task that the host crossed sleep/wake.
+    ///
+    /// No active capture is a normal no-op. This method only enqueues a typed
+    /// boundary; the session loop owns the fail-closed Layer 1 transition.
+    pub fn note_sleep_wake(&self) -> bool {
+        self.recorder.is_active()
+            && self
+                .lifecycle_handle
+                .as_ref()
+                .is_some_and(RecorderLifecycleHandle::note_sleep_wake)
+    }
+
     /// Start recording with the new event-based pipeline.
     ///
     /// Uses `transcription_session` which emits `EngineEvent`s to the configured
@@ -278,6 +307,8 @@ impl StreamingRecorder {
                 .get_mut()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        let (lifecycle_handle, lifecycle_events) = recorder_lifecycle_channel();
+        self.lifecycle_handle = Some(lifecycle_handle);
         self.transcription_handle = Some(tokio::spawn(async move {
             transcription_session(
                 rx,
@@ -288,6 +319,7 @@ impl StreamingRecorder {
                     log_path,
                     utterance_silence_sec,
                     layer1,
+                    Some(lifecycle_events),
                 ),
             )
             .await;
@@ -316,6 +348,7 @@ impl StreamingRecorder {
 
         // 1. Stop recording (drops callback and sender)
         let audio_path = self.recorder.stop().await?;
+        self.lifecycle_handle = None;
 
         // 2. Wait for worker to finish processing remaining chunks
         if let Some(handle) = self.transcription_handle.take() {
@@ -372,6 +405,7 @@ impl StreamingRecorder {
 
         // 1. Stop recording (discard WAV path)
         let _ = self.recorder.stop().await?;
+        self.lifecycle_handle = None;
 
         // 2. Wait for worker to finish processing remaining chunks
         if let Some(handle) = self.transcription_handle.take() {

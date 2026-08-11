@@ -65,6 +65,55 @@ pub const STOP_DRAIN_MAX_POLLS: u32 = 32;
 /// or provider payload content.
 pub const LAYER1_DEGRADED_WARNING_CODE: &str = "layer1_lane_degraded";
 
+/// Host lifecycle boundary delivered to the active recording session.
+///
+/// This channel is deliberately per recording. A sleep/wake notification must
+/// never create a recorder, retry a provider, or affect a later session that
+/// did not cross the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecorderLifecycleEvent {
+    /// The host is about to sleep or has just resumed.
+    SleepWake,
+}
+
+/// O(1) sender retained by the recording owner while one session is active.
+#[derive(Debug, Clone)]
+pub struct RecorderLifecycleHandle {
+    sender: tokio::sync::mpsc::UnboundedSender<RecorderLifecycleEvent>,
+}
+
+impl RecorderLifecycleHandle {
+    /// Notify the active session of a sleep/wake boundary.
+    ///
+    /// Returns false only when the session has already gone away. Sending does
+    /// no model, disk, network, formatting, or transcript work.
+    pub fn note_sleep_wake(&self) -> bool {
+        self.sender.send(RecorderLifecycleEvent::SleepWake).is_ok()
+    }
+}
+
+/// Receive side owned exclusively by the live transcription task.
+#[derive(Debug)]
+pub struct RecorderLifecycleEvents {
+    receiver: tokio::sync::mpsc::UnboundedReceiver<RecorderLifecycleEvent>,
+}
+
+impl RecorderLifecycleEvents {
+    /// Wait for the next host lifecycle boundary.
+    pub async fn recv(&mut self) -> Option<RecorderLifecycleEvent> {
+        self.receiver.recv().await
+    }
+}
+
+/// Create the per-recording lifecycle adapter shared by recorder and session.
+pub fn recorder_lifecycle_channel() -> (RecorderLifecycleHandle, RecorderLifecycleEvents) {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    (
+        RecorderLifecycleHandle { sender },
+        RecorderLifecycleEvents { receiver },
+    )
+}
+
 /// The injected, already-authorized Layer 1 decision a recording starts with.
 ///
 /// Construction and consent are deliberately *not* this module's business: the
@@ -536,6 +585,20 @@ impl RecorderLayer1Lane {
     }
 }
 
+/// Apply one host lifecycle boundary to the active Layer 1 lane.
+///
+/// Kept as the single adapter used by the production session loop and its
+/// deterministic channel-level regression. The transition itself remains
+/// owned by [`RecorderLayer1Lane::note_sleep_wake`].
+pub fn apply_recorder_lifecycle_event(
+    lane: &mut RecorderLayer1Lane,
+    event: RecorderLifecycleEvent,
+) {
+    match event {
+        RecorderLifecycleEvent::SleepWake => lane.note_sleep_wake(),
+    }
+}
+
 /// Whether one typed error kind ends the session for this recording.
 ///
 /// `RateLimited` and `Overflow` describe pressure that the bounded fan-out
@@ -827,6 +890,35 @@ mod tests {
             Layer1LaneState::Degraded(Layer1DegradeReason::SleepWake)
         );
         assert_eq!(lane.draft_len(), 0, "volatile draft dies with the lane");
+    }
+
+    /// The production lifecycle adapter, not a direct lane call, reaches the
+    /// active transition and preserves the fail-closed semantics.
+    #[tokio::test]
+    async fn recorder_lifecycle_adapter_reaches_active_lane_transition() {
+        let (handle, mut events) = recorder_lifecycle_channel();
+        let mut lane = RecorderLayer1Lane::open(armed(vec![partial(1, 1, "pacjent")]), &input());
+        lane.offer_pcm(&[0.1; 320]);
+        lane.poll();
+        assert_eq!(lane.draft_len(), 1);
+
+        assert!(handle.note_sleep_wake(), "active adapter accepts boundary");
+        let event = events
+            .recv()
+            .await
+            .expect("active session receives boundary");
+        apply_recorder_lifecycle_event(&mut lane, event);
+
+        assert_eq!(
+            lane.state(),
+            Layer1LaneState::Degraded(Layer1DegradeReason::SleepWake)
+        );
+        assert_eq!(lane.draft_len(), 0, "adapter clears volatile draft");
+        assert_eq!(
+            lane.take_degrade_notice(),
+            Some(Layer1DegradeReason::SleepWake),
+            "the session will emit one content-free degrade warning"
+        );
     }
 
     /// Stop drains the provider's tail (the fake flushes its remaining script
