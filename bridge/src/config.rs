@@ -51,6 +51,10 @@ pub struct CsSettings {
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
     pub toggle_silence_sec: f32,
+    /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
+    /// from the canonical merged config snapshot. `"disabled"` is the
+    /// product default when no persisted choice exists.
+    pub deferred_insert_shortcut: String,
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
@@ -479,6 +483,7 @@ impl CodescribeConfig {
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
             toggle_silence_sec: config.toggle_silence_sec,
+            deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,
             transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
@@ -2591,6 +2596,36 @@ mod settings_snapshot_tests {
                 None => std::env::remove_var("LLM_MODEL"),
             }
         }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    /// The picker receives its selected chord through `CsSettings`, not a
+    /// second Swift-only store. A fresh bridge must therefore reconstruct the
+    /// promoted settings.json choice and expose its canonical wire id.
+    #[test]
+    #[serial]
+    fn load_settings_exports_persisted_deferred_insert_shortcut() {
+        let root = scratch("deferred_insert_shortcut");
+        std::fs::create_dir_all(&root).expect("create deferred-insert scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _process_shortcut = EnvGuard::remove("CODESCRIBE_DEFERRED_INSERT_SHORTCUT");
+
+        CodescribeConfig::new()
+            .update_config(
+                "CODESCRIBE_DEFERRED_INSERT_SHORTCUT".to_string(),
+                "command_shift_v".to_string(),
+            )
+            .expect("persist deferred-insert chord through the bridge");
+
+        let fresh = CodescribeConfig::new().load_settings();
+        assert_eq!(fresh.deferred_insert_shortcut, "command_shift_v");
+        assert_eq!(
+            UserSettings::load().deferred_insert_shortcut.as_deref(),
+            Some("command_shift_v"),
+            "the promoted picker choice belongs in settings.json"
+        );
+
         let _ = remove_path_without_following_symlinks(&root);
     }
 

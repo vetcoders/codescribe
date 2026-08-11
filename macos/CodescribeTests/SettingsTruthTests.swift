@@ -940,17 +940,25 @@ final class SettingsTruthTests: XCTestCase {
         }
     }
 
-    /// The picker's view-model state starts at the product default (Disabled —
-    /// the chord is opt-in) and tracks every selection, so the segmented
-    /// control reflects what was just persisted rather than snapping back.
-    func testDeferredInsertPickerStateTracksSelection() {
-        let model = SettingsViewModel(engine: MockSettingsEngine())
+    /// A passive Settings load must restore the canonical persisted chord and
+    /// never route it back through `update_config`. That prevents reopening
+    /// Shortcuts from overwriting a non-default choice with the UI default.
+    func testDeferredInsertPickerRestoresPersistedSelectionWithoutWriteBack() {
+        var persisted = CsSettings.sample
+        persisted.deferredInsertShortcut = "command_shift_v"
+        var writes: [(String, String)] = []
+        let engine = MockSettingsEngine(
+            settingsLoader: { persisted },
+            updateConfigObserver: { writes.append(($0, $1)) }
+        )
 
-        XCTAssertEqual(model.deferredInsertShortcut, .disabled)
-        model.setDeferredInsertShortcut(.commandShiftV)
+        let model = SettingsViewModel(engine: engine)
         XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
-        model.setDeferredInsertShortcut(.disabled)
-        XCTAssertEqual(model.deferredInsertShortcut, .disabled)
+        XCTAssertTrue(writes.isEmpty, "construction must only read persisted truth")
+
+        model.refresh()
+        XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
+        XCTAssertTrue(writes.isEmpty, "passive refresh must not write the picker value back")
     }
 
     /// Active STT consumes last serving verdict; Apple→Whisper fallback must not

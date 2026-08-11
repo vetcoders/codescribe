@@ -164,6 +164,13 @@ enum DeferredInsertShortcutOption: String, CaseIterable, Identifiable, Equatable
     /// lockstep with `DeferredInsertShortcut::wire_id()`.
     var wireId: String { rawValue }
 
+    /// Reads the canonical bridge value defensively. The core always emits one
+    /// of these four ids, while an unknown legacy/corrupt value renders as the
+    /// safe opt-in default instead of causing a passive write.
+    init(wireId: String) {
+        self = Self(rawValue: wireId) ?? .disabled
+    }
+
     /// Chord rendered with macOS modifier glyphs (matches the Rust `label()`).
     var visibleName: String {
         switch self {
@@ -992,11 +999,16 @@ final class SettingsViewModel: ObservableObject {
         self.laneTruthProvider = laneTruthProvider
         self.servingStatusProvider = servingStatusProvider
 
-        // Keep construction side-effect free. SwiftUI may instantiate the
-        // Settings scene at app launch; live config/keychain reads happen in
-        // `refresh()` when the Settings window actually appears.
+        // Reading the settings snapshot is passive: it does not write config
+        // or touch Keychain. Seed the picker from that same canonical snapshot
+        // so reopening Shortcuts reflects the persisted chord before a user
+        // changes anything.
         self.permissions = permissionProbe.snapshot()
-        self.settings = .sample
+        let initialSettings = engine?.loadSettings() ?? .sample
+        self.settings = initialSettings
+        self.deferredInsertShortcut = DeferredInsertShortcutOption(
+            wireId: initialSettings.deferredInsertShortcut
+        )
         self.keyStatus = .sampleAllSet
         self.providers = CsProviderOption.sampleProviders
         self.configDir = ""
@@ -1037,7 +1049,7 @@ final class SettingsViewModel: ObservableObject {
         // restart. Idempotent bridge call — a no-op once the tap is already armed.
         hotkeys?.rearmAfterPermissionGrant()
         if let engine {
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
             configDir = engine.configDir()
@@ -1634,7 +1646,7 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.resetAudioInputDevice()
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
             refreshAudioInput()
         } catch {
             lastError = String(describing: error)
@@ -1940,7 +1952,7 @@ final class SettingsViewModel: ObservableObject {
     /// Reload badge fields from the engine after a peer surface (tray) wrote them.
     func reloadHoldBadgeFromDisk() {
         guard let engine else { return }
-        settings = engine.loadSettings()
+        applyLoadedSettings(engine.loadSettings())
         objectWillChange.send()
     }
 
@@ -1957,9 +1969,7 @@ final class SettingsViewModel: ObservableObject {
         persist("HOLD_ARM_MODIFIER", normalized)
     }
 
-    /// Deferred-insert chord as last written through this surface. The bridge
-    /// settings snapshot (`CsSettings`) does not carry the key yet, so until
-    /// the first write the picker shows the product default (Disabled).
+    /// Deferred-insert chord from the canonical persisted settings snapshot.
     @Published private(set) var deferredInsertShortcut: DeferredInsertShortcutOption = .disabled
 
     /// Persists `CODESCRIBE_DEFERRED_INSERT_SHORTCUT` through the config
@@ -1993,7 +2003,7 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.updateConfig(key: key, value: value)
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
         } catch {
             lastError = String(describing: error)
         }
@@ -2003,10 +2013,20 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.updateConfigMany(entries: entries)
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
         } catch {
             lastError = String(describing: error)
         }
+    }
+
+    /// Applies an already-read bridge snapshot without writing it back. Keep
+    /// this as the only read path so passive reloads cannot reset the picker to
+    /// a UI default while persisted truth says otherwise.
+    private func applyLoadedSettings(_ loaded: CsSettings) {
+        settings = loaded
+        deferredInsertShortcut = DeferredInsertShortcutOption(
+            wireId: loaded.deferredInsertShortcut
+        )
     }
 
     // MARK: - Keys (Keychain-backed; secrets never read back)
