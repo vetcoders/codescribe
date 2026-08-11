@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
+use crate::asr_session::recorder::Layer1Decision;
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
@@ -122,6 +123,12 @@ pub struct SessionConfig {
     pub stream_log_path: Option<std::path::PathBuf>,
     /// VAD silence threshold for utterance boundary (None = use default).
     pub utterance_silence_sec: Option<f32>,
+    /// Injected, already-authorized Layer 1 refiner decision (C1).
+    ///
+    /// The pipeline only consumes this — construction, consent, and mode
+    /// persistence belong to the settings owner. [`Layer1Decision::Disarmed`]
+    /// is the stock product: canvas + lexicon, complete, never an error.
+    pub layer1: Layer1Decision,
 }
 
 /// What happened to one enqueue attempt.
@@ -437,7 +444,20 @@ pub(crate) async fn vad_transcription_session(
         language,
         stream_log_path,
         utterance_silence_sec,
+        layer1,
     } = config;
+
+    // C1 wires the live Layer 1 lane on the Apple progressive path only. On
+    // this canvas an armed decision is disarmed explicitly: a refiner that
+    // cannot run is a missing improvement, never an error, and never a reason
+    // to load anything heavier.
+    if layer1.is_armed() {
+        warn!(
+            "Layer 1 live lane is not wired on the VAD/scheduler path; \
+             proceeding canvas + lexicon"
+        );
+    }
+    drop(layer1);
 
     info!("Transcription session started (event-based pipeline)");
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -1701,6 +1721,9 @@ pub async fn transcribe_buffered_samples(
             language,
             stream_log_path: None,
             utterance_silence_sec: None,
+            // Offline replay harness: Layer 1 arming is a live-recording
+            // decision owned elsewhere.
+            layer1: Layer1Decision::Disarmed,
         },
     ));
 
@@ -1746,6 +1769,9 @@ pub async fn collect_buffered_engine_events(
             language,
             stream_log_path: None,
             utterance_silence_sec: None,
+            // Offline replay harness: Layer 1 arming is a live-recording
+            // decision owned elsewhere.
+            layer1: Layer1Decision::Disarmed,
         },
     ));
 

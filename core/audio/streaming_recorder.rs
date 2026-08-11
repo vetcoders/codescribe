@@ -12,6 +12,7 @@
 //! seconds) before releasing the sink. Dropping the sink early truncates the
 //! tail of the delivered text.
 
+use crate::asr_session::recorder::Layer1Decision;
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::pipeline::contracts::EventSink;
 use crate::pipeline::streaming::{SessionConfig, stream_log_path, transcription_session};
@@ -195,6 +196,11 @@ impl StreamingRecorder {
                     language,
                     stream_log_path: log_path,
                     utterance_silence_sec,
+                    // C1: the recorder consumes an injected, already-authorized
+                    // Layer 1 decision. Until the consent/settings owner exists
+                    // this is always Disarmed — the stock Apple + lexicon
+                    // product, never a hidden model load.
+                    layer1: Layer1Decision::Disarmed,
                 },
             )
             .await;
