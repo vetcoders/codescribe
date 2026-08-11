@@ -425,11 +425,11 @@ category = "stt"
 description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
 
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
-default = "2700"
+default = "300"
 type = "u64"
 reload = "hot"
 category = "stt"
-description = "Unload idle Whisper weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 disables unload (weights stay resident)."
+description = "Unload idle Whisper weights after this many seconds (default 300 = 5 min). Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 is the explicit keep-warm override (weights stay resident). INFO-only residency events expose the effective TTL plus load/unload/reclaim counts and durations without audio or transcript content."
 
 [vars.CANDLE_METAL_COMPUTE_PER_BUFFER]
 default = "50"
