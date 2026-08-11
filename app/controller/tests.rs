@@ -1211,6 +1211,369 @@ fn density_floor_routes_long_starved_shape_deficient_to_recovery() {
     );
 }
 
+/// W-Cb: the Layer 1 under-commit escalation must reach the stop-path verdict.
+///
+/// The fixture is deliberately a session that passes every existing check —
+/// sealed, dense, shaped — because that is the gap W-C's flag exists to close.
+/// Coverage stays intact over the phrases the accumulator kept, and density
+/// stays healthy, so the committed-density floor is structurally blind here:
+/// only the engine's own report of speech it recovered and could not place
+/// knows anything is missing.
+#[test]
+fn residual_required_forces_tail_gap_fill_when_structure_and_density_both_pass() {
+    use super::final_pass::{
+        DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON, committed_density_starved,
+    };
+
+    let dense_canvas = format!("{}.", "x".repeat(299));
+    let committed_chars = 300;
+    let structural = assess_streaming_completeness_fields(
+        &dense_canvas,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars,
+        1,
+    );
+    assert_eq!(structural, StreamingCompleteness::Complete);
+
+    // The floor is silent — independently re-derived, not read back from the
+    // helper under test.
+    assert!(
+        !(23.0_f32 > 10.0 && committed_chars as f32 / 23.0_f32 < 4.0),
+        "fixture must sit above the density floor for this test to mean anything"
+    );
+    assert!(!committed_density_starved(23.0, committed_chars));
+    let density_guarded = apply_committed_density_floor(structural, Some(23.0), committed_chars);
+    assert_eq!(density_guarded, StreamingCompleteness::Complete);
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, density_guarded),
+        FinalPassAction::SkipStreamingFinal,
+        "without the escalation this session skips — that is the W-C behaviour being closed"
+    );
+
+    // With the escalation the same session must enter the existing ladder.
+    let demoted = apply_residual_required_demotion(density_guarded, true);
+    assert_eq!(
+        demoted,
+        StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON
+        }
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::TailGapFill,
+        "an unplaceable Layer 1 residual must route to tail gap fill, never a skip"
+    );
+    assert_eq!(
+        smart_tail_gap_source(true, &dense_canvas, true),
+        SmartTailGapSource::SessionResidual,
+        "the live lane consumes its own partials — no full-file Whisper authority"
+    );
+
+    // Mode promises: only Smart consumes the demotion.
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, demoted),
+        FinalPassAction::SkipStreamingFinal,
+        "Off means Off even when Layer 1 escalates"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, demoted),
+        FinalPassAction::FullFileRepass,
+        "Always keeps its full-file re-pass promise"
+    );
+
+    // A false flag is a strict no-op on every verdict shape, so a session that
+    // never escalated behaves bit-for-bit as it did before this cut.
+    for verdict in [
+        StreamingCompleteness::Complete,
+        StreamingCompleteness::CompleteShapeDeficient,
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        },
+    ] {
+        assert_eq!(
+            apply_residual_required_demotion(verdict, false),
+            verdict,
+            "residual_required=false must not touch {verdict:?}"
+        );
+        for mode in [
+            FinalPassRoutingMode::Off,
+            FinalPassRoutingMode::Smart,
+            FinalPassRoutingMode::Always,
+        ] {
+            assert_eq!(
+                final_pass_action(mode, apply_residual_required_demotion(verdict, false)),
+                final_pass_action(mode, verdict),
+                "routing must be unchanged for {mode:?} / {verdict:?} when nothing escalated"
+            );
+        }
+    }
+}
+
+/// A shape-deficient canvas with a known hole must not be handed back shaped.
+///
+/// `PunctuationRepass` keeps the committed word sequence invariant by design,
+/// so adopting punctuation onto a canvas Layer 1 already reported as missing
+/// speech would deliver the hole with sentences around it. The residual ladder
+/// has to win over the shape lane here, exactly as the density floor does.
+#[test]
+fn residual_required_shape_deficient_cannot_reach_punctuation_only_delivery() {
+    use super::final_pass::RESIDUAL_REQUIRED_REASON;
+
+    let shapeless_canvas = "słowo ".repeat(60);
+    let committed_chars = shapeless_canvas.chars().count();
+    let structural = assess_streaming_completeness_fields(
+        &shapeless_canvas,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars,
+        1,
+    );
+    assert_eq!(structural, StreamingCompleteness::CompleteShapeDeficient);
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, structural),
+        FinalPassAction::PunctuationRepass,
+        "baseline: without the escalation this is the punctuation lane"
+    );
+
+    let demoted = apply_residual_required_demotion(structural, true);
+    assert_eq!(
+        demoted,
+        StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON
+        }
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::TailGapFill,
+        "a shape-deficient canvas with an unplaceable residual must recover, not just get punctuation"
+    );
+    assert_ne!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::PunctuationRepass
+    );
+    assert_ne!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::SkipStreamingFinal
+    );
+}
+
+/// Composition with the sibling guard: an already-Incomplete verdict keeps its
+/// own, richer diagnosis. `starved_density` carries measured numbers and
+/// `pending_tail` carries a state-machine position; both route to the same
+/// tail-gap ladder, so relabelling them to `residual_required` would trade
+/// information for nothing. Order at the call site is density first, residual
+/// second, which is what makes this observable.
+#[test]
+fn residual_required_preserves_an_existing_incomplete_diagnosis() {
+    use super::final_pass::{DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON};
+
+    let eaten_and_escalated = apply_residual_required_demotion(
+        apply_committed_density_floor(
+            assess_streaming_completeness_fields(
+                &"x".repeat(220),
+                None,
+                false,
+                false,
+                Some(CompletenessCommitSource::UtteranceFinal),
+                220,
+                1,
+            ),
+            Some(104.0),
+            220,
+        ),
+        true,
+    );
+    assert_eq!(
+        eaten_and_escalated,
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON
+        },
+        "the measured density diagnosis outranks the flag; both route the same way"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, eaten_and_escalated),
+        FinalPassAction::TailGapFill
+    );
+
+    for reason in ["pending_tail", "no_speech", "empty", "partial_pending"] {
+        let existing = StreamingCompleteness::Incomplete { reason };
+        assert_eq!(
+            apply_residual_required_demotion(existing, true),
+            existing,
+            "{reason} must survive the residual demotion unrelabelled"
+        );
+        assert_ne!(
+            apply_residual_required_demotion(existing, true),
+            StreamingCompleteness::Incomplete {
+                reason: RESIDUAL_REQUIRED_REASON
+            }
+        );
+    }
+}
+
+/// End-to-end data flow, engine event → delivered stop-path action, with no
+/// hand-built snapshot in the middle. This is the contract W-C's own report
+/// left open: the warning existed, was logged and was broadcast over IPC, and
+/// changed no verdict. Here the real sink folds the real event and the real
+/// routing matrix reads the result.
+#[test]
+fn under_commit_warning_event_reaches_the_stop_path_action() {
+    use super::helpers::{
+        SessionTelemetrySink, UNDER_COMMIT_WARNING_CODE, new_session_telemetry,
+        snapshot_session_telemetry,
+    };
+    use codescribe_core::pipeline::contracts::EventSink;
+
+    let route = |warning_code: Option<&str>| {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(std::sync::Arc::clone(&shared));
+        sink.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "x".repeat(300),
+            raw_text: "x".repeat(300),
+            start_ts: 0.0,
+            end_ts: 23.0,
+            segments: vec![],
+            vad_speech_pct: Some(80.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: vec![],
+        });
+        if let Some(code) = warning_code {
+            sink.on_event(&EngineEvent::Warning {
+                code: code.to_string(),
+                message: "committed_tokens=3 retranscribed_tokens=12".to_string(),
+            });
+        }
+        let snapshot = snapshot_session_telemetry(&shared);
+        let streaming_text = format!("{}.", "x".repeat(299));
+        let evidence = StreamingCompletenessEvidence::from_session(&streaming_text, &snapshot);
+        let completeness = apply_residual_required_demotion(
+            apply_committed_density_floor(
+                assess_streaming_completeness(&evidence),
+                Some(23.0),
+                evidence.committed_chars,
+            ),
+            snapshot.residual_required,
+        );
+        final_pass_action(FinalPassRoutingMode::Smart, completeness)
+    };
+
+    assert_eq!(
+        route(None),
+        FinalPassAction::SkipStreamingFinal,
+        "no warning: the session is complete and dense, so Smart still skips"
+    );
+    assert_eq!(
+        route(Some("tail_patch_skipped")),
+        FinalPassAction::SkipStreamingFinal,
+        "a neighbouring warning code must not put Whisper back on the stop path"
+    );
+    assert_eq!(
+        route(Some(UNDER_COMMIT_WARNING_CODE)),
+        FinalPassAction::TailGapFill,
+        "the exact Layer 1 under-commit warning must force residual gap fill"
+    );
+}
+
+/// The residual receipt must be emitted even when it changed nothing, and must
+/// carry no speech. Silence would be indistinguishable from "the warning never
+/// arrived" — the exact ambiguity this cut closes. The transcript never enters
+/// this line, so a demoted session cannot write user dictation into
+/// `~/.codescribe/logs/codescribe.log`.
+#[test]
+fn residual_required_line_states_the_outcome_and_carries_no_transcript() {
+    use super::final_pass::{DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON};
+
+    let secret = "Tajne zdanie pacjenta o wyniku badania";
+    let demoted = format_residual_required_line(
+        StreamingCompleteness::Complete,
+        StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON,
+        },
+    );
+    assert!(demoted.contains("final_pass_residual_guard"), "{demoted}");
+    assert!(
+        demoted.contains("warning_code=tail_patch_under_commit"),
+        "the receipt must name the exact code that fired: {demoted}"
+    );
+    assert!(
+        demoted.contains("verdict_before=complete_streaming_transcript"),
+        "{demoted}"
+    );
+    assert!(
+        demoted.contains("verdict_after=residual_required"),
+        "{demoted}"
+    );
+    assert!(demoted.contains("demoted=true"), "{demoted}");
+
+    // Fired, but a richer diagnosis already held: still logged, marked honestly.
+    let preserved = format_residual_required_line(
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        },
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        },
+    );
+    assert!(
+        preserved.contains("verdict_before=starved_density"),
+        "{preserved}"
+    );
+    assert!(
+        preserved.contains("verdict_after=starved_density"),
+        "{preserved}"
+    );
+    assert!(
+        preserved.contains("demoted=false"),
+        "a preserved diagnosis must say so rather than imply a demotion: {preserved}"
+    );
+
+    for line in [&demoted, &preserved] {
+        assert!(
+            !line.contains(secret) && !line.contains("słowo") && !line.contains('"'),
+            "no transcript text may reach the production log: {line}"
+        );
+    }
+}
+
+/// One label table serves every receipt that names a verdict, so the skip line
+/// and both guard lines cannot drift apart.
+#[test]
+fn completeness_labels_are_stable_across_receipts() {
+    use super::final_pass::{DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON};
+
+    assert_eq!(
+        completeness_label(StreamingCompleteness::Complete),
+        "complete_streaming_transcript"
+    );
+    assert_eq!(
+        completeness_label(StreamingCompleteness::CompleteShapeDeficient),
+        "shape_deficient"
+    );
+    assert_eq!(
+        completeness_label(StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON
+        }),
+        "starved_density"
+    );
+    assert_eq!(
+        completeness_label(StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON
+        }),
+        "residual_required"
+    );
+}
+
 /// The override receipt must carry the numbers that justify it and none of the
 /// speech that triggered it. Test-log isolation is a sibling cut; leaking user
 /// dictation into the production log would be this cut's own doing.
@@ -1605,6 +1968,7 @@ fn test_completeness_evidence_from_session_wires_pending_tail() {
         last_commit_source: Some(CompletenessCommitSource::UtteranceFinal),
         committed_chars: 12,
         committed_through_secs: None,
+        residual_required: false,
     };
     let evidence =
         StreamingCompletenessEvidence::from_session("To jest kompletne zdanie.", &session);

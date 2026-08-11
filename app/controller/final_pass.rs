@@ -313,6 +313,22 @@ pub(crate) fn apply_committed_density_floor(
     completeness
 }
 
+/// Stable telemetry label for a completeness verdict.
+///
+/// One table for every receipt that names a verdict (the density override, the
+/// residual-required override, and the `final_pass_skipped` line at the call
+/// site) so a label cannot drift between logs that describe the same decision.
+/// `CompleteShapeDeficient` is unreachable through the Smart skip mapping — it
+/// routes to `PunctuationRepass` — but stays named here for any future mode
+/// that skips on it.
+pub(crate) fn completeness_label(completeness: StreamingCompleteness) -> &'static str {
+    match completeness {
+        StreamingCompleteness::Complete => "complete_streaming_transcript",
+        StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
+        StreamingCompleteness::Incomplete { reason } => reason,
+    }
+}
+
 /// Single INFO line for a density-overridden structural verdict.
 ///
 /// Carries both verdict labels and the numbers behind the override — never the
@@ -325,17 +341,93 @@ pub(crate) fn format_density_override_line(
     audio_secs: f32,
     committed_chars: usize,
 ) -> String {
-    let overridden = match overridden {
-        StreamingCompleteness::Complete => "complete_streaming_transcript",
-        StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
-        StreamingCompleteness::Incomplete { reason } => reason,
-    };
+    let overridden = completeness_label(overridden);
     format!(
         "final_pass_density_guard overridden_verdict={overridden} new_verdict={reason} audio_secs={audio_secs:.3} committed_chars={committed_chars} density_chars_per_sec={density:.2} floor_chars_per_sec={floor:.1} min_audio_secs={min_secs:.1} route=tail_gap_fill",
         reason = DENSITY_STARVED_REASON,
         density = committed_density_chars_per_sec(audio_secs, committed_chars).unwrap_or(f32::NAN),
         floor = DENSITY_MIN_CHARS_PER_SEC,
         min_secs = DENSITY_MIN_AUDIO_SECS,
+    )
+}
+
+// ── Layer 1 residual-required demotion over the structural verdict ──────────
+//
+// The committed-density floor above asks "was what the accumulator kept
+// plausibly a whole minute of speech". This one carries a stricter fact: Layer
+// 1 re-transcribed the sealed window, found MORE speech than the canvas holds,
+// and could not place part of it on a demonstrably safe anchor (W-C, commit
+// `6d7eaa7f`). That is not an inference from a ratio — it is the engine
+// reporting a hole it measured and refused to paper over by rewriting committed
+// text. Density can miss it entirely: a session may commit a healthy 13 chars/s
+// and still have lost a phrase to a hypothesis collapse, which is exactly the
+// case the floor was never able to see.
+
+/// Telemetry label replacing a structurally complete verdict when Layer 1
+/// escalated an unplaceable under-commit residual. Stable string — it is a
+/// log/receipt contract, mirroring [`DENSITY_STARVED_REASON`].
+pub(crate) const RESIDUAL_REQUIRED_REASON: &str = "residual_required";
+
+/// Demote a structurally complete verdict when Layer 1 reported speech it
+/// recovered but could not place.
+///
+/// Pure and total, so the contract is testable without a session: the only
+/// input beyond the verdict is the monotonic
+/// [`SessionTelemetrySnapshot::residual_required`] flag. Deliberately NOT
+/// folded into [`apply_committed_density_floor`] — that helper's whole meaning
+/// is chars-per-second, and passing an unrelated boolean through it would make
+/// both contracts unreadable and untestable in isolation.
+///
+/// Consequence, carried by the existing typed matrix with no new variant and no
+/// second controller: `Smart` + `Incomplete{residual_required}` →
+/// [`FinalPassAction::TailGapFill`], the same residual / tail-gap ladder
+/// [`smart_tail_gap_source`] already feeds. `SkipStreamingFinal` and
+/// `PunctuationRepass` both become unreachable for this session under Smart —
+/// punctuation-only delivery would hand back the canvas with the hole still in
+/// it, shaped.
+///
+/// An already-`Incomplete` verdict keeps its OWN reason. `starved_density` and
+/// `pending_tail` are strictly more informative diagnoses (they carry measured
+/// numbers or a state machine position) and they route identically, so
+/// relabelling them would trade information for nothing.
+///
+/// Mode promises are untouched: routing ignores completeness for `Off` and
+/// `Always`, so this demotion changes Smart alone.
+pub(crate) fn apply_residual_required_demotion(
+    completeness: StreamingCompleteness,
+    residual_required: bool,
+) -> StreamingCompleteness {
+    if !residual_required {
+        return completeness;
+    }
+    match completeness {
+        StreamingCompleteness::Complete | StreamingCompleteness::CompleteShapeDeficient => {
+            StreamingCompleteness::Incomplete {
+                reason: RESIDUAL_REQUIRED_REASON,
+            }
+        }
+        already_diagnosed @ StreamingCompleteness::Incomplete { .. } => already_diagnosed,
+    }
+}
+
+/// Single INFO line emitted whenever Layer 1 raised the residual escalation,
+/// including when the verdict was already Incomplete and nothing changed.
+///
+/// Silence would be indistinguishable from "the warning never arrived", which
+/// is the failure mode this whole cut exists to close: under W-C the signal
+/// reached the log and the IPC wire and changed no verdict, and nothing in the
+/// receipts said so. Carries verdict labels and the warning code only — never
+/// transcript text, and never a character count that could reconstruct one.
+pub(crate) fn format_residual_required_line(
+    before: StreamingCompleteness,
+    after: StreamingCompleteness,
+) -> String {
+    format!(
+        "final_pass_residual_guard warning_code={code} verdict_before={before} verdict_after={after} demoted={demoted}",
+        code = super::helpers::UNDER_COMMIT_WARNING_CODE,
+        before = completeness_label(before),
+        after = completeness_label(after),
+        demoted = before != after,
     )
 }
 
