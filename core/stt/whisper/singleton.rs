@@ -75,6 +75,15 @@ static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
 
+/// Test-only witness for callers that would initialize the heavyweight local
+/// engine. It lets routing tests exercise the real selected-engine seam without
+/// loading a model or inferring from source text.
+#[cfg(test)]
+static TEST_INIT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+static TEST_LOAD_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Access the engine slot, creating it (unloaded) on first use.
 fn slot() -> &'static Mutex<WhisperSlot> {
     SLOT.get_or_init(|| {
@@ -148,6 +157,9 @@ pub fn get_model_path() -> Result<&'static PathBuf> {
 
 /// Build a fresh engine, embedded-first with a runtime-path fallback.
 fn load_engine() -> Result<LocalWhisperEngine> {
+    #[cfg(test)]
+    TEST_LOAD_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
     // 1. Primary shipped path: embedded Whisper payload.
     if let Some(embedded) = super::embedded::get_embedded_data() {
         let engine = LocalWhisperEngine::from_embedded(&embedded)
@@ -294,7 +306,25 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
 /// deliberate fallback for no-embed builds and local recovery. Idempotent: a
 /// no-op if the engine is already loaded.
 pub fn init() -> Result<()> {
+    #[cfg(test)]
+    TEST_INIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     with_engine(|_| Ok(()))
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_init_calls() {
+    TEST_INIT_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    TEST_LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn test_init_calls() -> usize {
+    TEST_INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn test_load_calls() -> usize {
+    TEST_LOAD_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Check if the engine is currently loaded.
@@ -463,17 +493,36 @@ mod tests {
         assert!(prompt.contains("Loctree"));
     }
 
-    /// `0` disables idle unload; explicit secs win; default is 2700s weight unload.
+    /// RED: normal default is five minutes rather than the current 45 minutes.
     #[test]
-    fn idle_unload_disabled_when_zero() {
-        // SAFETY: single-threaded test mutating a process env var it owns.
-        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };
-        assert!(idle_unload_after().is_none());
-        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "120") };
-        assert_eq!(idle_unload_after(), Some(Duration::from_secs(120)));
+    #[serial]
+    fn fleet_red_whisper_default_ttl_is_300() {
+        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
-        // Default is 45 min weight-only unload (Metal device stays process-cached).
-        assert_eq!(idle_unload_after(), Some(Duration::from_secs(2700)));
+        assert_eq!(
+            idle_unload_after(),
+            Some(Duration::from_secs(300)),
+            "normal Whisper residency must default to 300 seconds"
+        );
+    }
+
+    /// Supporting GREEN guard: runtime overrides remain effective, including
+    /// explicit zero as the power-user keep-warm setting.
+    #[test]
+    #[serial]
+    fn fleet_red_whisper_effective_ttl_overrides_include_zero_keep_warm() {
+        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+
+        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "17") };
+        assert_eq!(idle_unload_after(), Some(Duration::from_secs(17)));
+
+        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };
+        assert_eq!(
+            idle_unload_after(),
+            None,
+            "explicit zero is the power-user keep-warm override"
+        );
     }
 
     /// LOCAL_MODEL precedence: process env > UserSettings > env file on disk.
