@@ -3556,6 +3556,37 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
     assert_eq!(verdict.display_status, "Streaming fallback");
 }
 
+/// RED: Layer 1 cloud output is a bounded refiner, never authority that can
+/// erase or rewrite already committed Apple canvas text.
+#[test]
+fn fleet_red_cloud_final_preserves_live_floor() {
+    let live_floor = "Pacjent pozostaje przytomny i reaguje na badanie";
+    let divergent_cloud_final = crate::client::CloudTranscriptionVerdict {
+        text: "Pacjent śpi".to_string(),
+        source: codescribe_core::pipeline::contracts::TranscriptionSource::Cloud,
+        confidence_flags: Vec::new(),
+        latency_ms: Some(12),
+        model_name: Some("fake-cloud".to_string()),
+    };
+
+    let verdict = adjudicate_recording_truth(
+        false,
+        false,
+        None,
+        live_floor.to_string(),
+        Some(divergent_cloud_final),
+        &SessionTelemetrySnapshot::default(),
+    );
+    let delivered = verdict
+        .raw_text
+        .expect("cloud final must produce a verdict");
+
+    assert!(
+        delivered.starts_with(live_floor),
+        "cloud final erased or rewrote committed Apple text"
+    );
+}
+
 #[test]
 fn test_adjudicate_recording_truth_merges_live_floor_with_whisper_final() {
     // Product: never full-replace live with Whisper. Merge keeps live tokens
