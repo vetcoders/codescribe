@@ -58,7 +58,7 @@ pub enum RefinerMode {
 impl RefinerMode {
     /// Whether this mode sends captured audio off the machine.
     ///
-    /// The consent gate is a separate cut; this is the classifier it will ask.
+    /// This is the classifier the consent gate ([`super::consent`]) asks.
     pub fn sends_audio_off_device(&self) -> bool {
         matches!(self, Self::CloudSession)
     }

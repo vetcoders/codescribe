@@ -17,6 +17,8 @@
 //!
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
+/// Layer 1 ASR product mode, audio-egress consent, and gateway mint config.
+pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
 /// Stop-path final-pass routing mode shared by controller and bridge lanes.
@@ -50,6 +52,10 @@ pub use types::{
     ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
+pub use cloud_asr::{
+    AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
+    ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
+};
 pub use final_pass::{FinalPassRoutingMode, final_pass_routing_mode};
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,

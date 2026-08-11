@@ -247,6 +247,30 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_initial_prompt_enabled: Option<bool>,
 
+    // ── Layer 1 ASR product mode + audio-egress consent (C2) ──
+    /// Layer 1 product mode (`cloud` | `local_power` | `apple_only`).
+    /// `None` means "not yet chosen": the resolver derives the mode from the
+    /// legacy `use_local_stt` choice (upgrades) or lands on Apple-only (fresh).
+    /// Writes are validated through [`crate::config::cloud_asr::AsrProductMode`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asr_mode: Option<String>,
+    /// Audio-egress consent record (`granted` | `denied`). `None` means never
+    /// asked; anything non-canonical reads as unanswered (fail closed). Cloud
+    /// mode without a granted record resolves to Apple-only — see
+    /// [`UserSettings::resolved_asr_mode`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_consent: Option<String>,
+    /// RFC 3339 timestamp of the last explicit consent answer. Informational
+    /// provenance only — never an input to the resolver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_consent_at: Option<String>,
+    /// Libraxis gateway session-mint endpoint. Endpoint only, never a vendor
+    /// key: writes are validated through
+    /// [`crate::config::cloud_asr::GatewaySessionMint`], which refuses
+    /// user-info and query material. `None` means "not configured".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asr_gateway_url: Option<String>,
+
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
     /// project name to an absolute path. The Settings UI sends the
@@ -414,6 +438,12 @@ struct SpeechEngineV2 {
     layered_transcription: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
+    // C2: Layer 1 product mode (cloud | local_power | apple_only) and the
+    // gateway session-mint endpoint it uses when cloud is armed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asr_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_session_url: Option<String>,
 }
 
 /// LLM post-processing of the transcript: whether it runs, how aggressively,
@@ -550,6 +580,12 @@ struct SystemV2 {
     // xAI account-login OAuth client id (non-secret app identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     xai_oauth_client_id: Option<String>,
+    // C2: audio-egress consent record — install-level privacy state, kept in
+    // `system` so engine-section rewrites can never touch it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud_audio_egress_consent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud_audio_egress_consent_at: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -631,6 +667,11 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     // Promoted 2026-08-10: the un-promoted toggle wrote .env only, the stale
     // process env won the UI read-back, and the Layered switch snapped OFF.
     "CODESCRIBE_LAYERED_TRANSCRIPTION",
+    // C2: Layer 1 product mode, audio-egress consent, gateway mint endpoint.
+    // settings.json is the single brain — no .env dual-write for these.
+    "CODESCRIBE_ASR_MODE",
+    "CODESCRIBE_CLOUD_CONSENT",
+    "CODESCRIBE_ASR_GATEWAY_URL",
     // Still env-seedable when unset; not full dual-brain:
     // "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
 ];
@@ -681,6 +722,8 @@ impl UserSettings {
                     final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
+                    asr_mode: self.asr_mode.clone(),
+                    gateway_session_url: self.asr_gateway_url.clone(),
                 }),
                 formatting: Some(FormattingV2 {
                     enabled: self.ai_formatting_enabled,
@@ -738,6 +781,8 @@ impl UserSettings {
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
                 anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
                 xai_oauth_client_id: self.xai_oauth_client_id.clone(),
+                cloud_audio_egress_consent: self.cloud_consent.clone(),
+                cloud_audio_egress_consent_at: self.cloud_consent_at.clone(),
             }),
             agent: match (
                 self.agent_permissions.clone(),
@@ -980,6 +1025,24 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.initial_prompt_enabled),
+            asr_mode: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.asr_mode.clone()),
+            asr_gateway_url: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.gateway_session_url.clone()),
+            cloud_consent: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.cloud_audio_egress_consent.clone()),
+            cloud_consent_at: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.cloud_audio_egress_consent_at.clone()),
             agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
             agent_capabilities: v2.agent.as_ref().and_then(|a| a.capabilities.clone()),
         }
@@ -1298,6 +1361,55 @@ impl UserSettings {
             "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
                 self.layered_transcription = Some(value.to_owned())
             }
+            "CODESCRIBE_ASR_MODE" => {
+                // Empty clears back to derivation (legacy choice or Apple-only).
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.asr_mode = None;
+                } else {
+                    match trimmed.parse::<crate::config::cloud_asr::AsrProductMode>() {
+                        Ok(mode) => self.asr_mode = Some(mode.as_str().to_string()),
+                        Err(error) => {
+                            warn!("Rejected ASR mode write: {error}");
+                            return;
+                        }
+                    }
+                }
+            }
+            "CODESCRIBE_CLOUD_CONSENT" => {
+                // Explicit answers only; empty clears the record back to
+                // "never asked". Every answer stamps its provenance timestamp.
+                let normalized = value.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "" => {
+                        self.cloud_consent = None;
+                        self.cloud_consent_at = None;
+                    }
+                    crate::config::cloud_asr::CONSENT_WIRE_GRANTED
+                    | crate::config::cloud_asr::CONSENT_WIRE_DENIED => {
+                        self.cloud_consent = Some(normalized);
+                        self.cloud_consent_at = Some(chrono::Utc::now().to_rfc3339());
+                    }
+                    _ => {
+                        warn!("Rejected cloud consent write (expected granted|denied): {value}");
+                        return;
+                    }
+                }
+            }
+            "CODESCRIBE_ASR_GATEWAY_URL" => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.asr_gateway_url = None;
+                } else {
+                    match crate::config::cloud_asr::GatewaySessionMint::new(trimmed) {
+                        Ok(mint) => self.asr_gateway_url = Some(mint.url().to_string()),
+                        Err(error) => {
+                            warn!("Rejected ASR gateway URL write: {error}");
+                            return;
+                        }
+                    }
+                }
+            }
             "CODESCRIBE_QUBE_DONOR" => {
                 let normalized = value.trim().to_ascii_lowercase();
                 match normalized.as_str() {
@@ -1325,6 +1437,20 @@ impl UserSettings {
             }
         }
         self.save_if_changed(&before, "set_string", key);
+    }
+
+    /// Resolve the effective Layer 1 product mode from this settings snapshot.
+    ///
+    /// The one sanctioned read path: combines the persisted `asr_mode`, the
+    /// consent record, and the legacy `use_local_stt` choice through
+    /// [`crate::config::cloud_asr::resolve_asr_product_mode`]. Callers must not
+    /// re-derive policy from the raw fields.
+    pub fn resolved_asr_mode(&self) -> crate::config::cloud_asr::ResolvedAsrMode {
+        crate::config::cloud_asr::resolve_asr_product_mode(
+            self.asr_mode.as_deref(),
+            self.cloud_consent.as_deref(),
+            self.use_local_stt,
+        )
     }
 
     /// Sets a boolean-valued setting by its .env key name and saves.
@@ -2091,5 +2217,132 @@ mod tests {
             loaded.mode_binding_for(WorkMode::Assistive),
             ShortcutBinding::DoubleRightOption
         );
+    }
+
+    // ── C2: Layer 1 ASR mode + audio-egress consent ──
+
+    /// The three C2 keys are promoted: writes route to settings.json, never
+    /// to `.env`, and never to the Keychain.
+    #[test]
+    fn c2_keys_are_promoted() {
+        assert!(is_promoted_key("CODESCRIBE_ASR_MODE"));
+        assert!(is_promoted_key("CODESCRIBE_CLOUD_CONSENT"));
+        assert!(is_promoted_key("CODESCRIBE_ASR_GATEWAY_URL"));
+    }
+
+    /// Mode, consent (with timestamp), and gateway URL survive the full disk
+    /// round-trip through the V2 schema — no ghosting.
+    #[test]
+    #[serial]
+    fn c2_fields_round_trip_through_v2_schema() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("CODESCRIBE_ASR_MODE", "cloud");
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "granted");
+        settings.set_string(
+            "CODESCRIBE_ASR_GATEWAY_URL",
+            "https://gateway.libraxis.cloud/v1/asr/sessions",
+        );
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.asr_mode.as_deref(), Some("cloud"));
+        assert_eq!(loaded.cloud_consent.as_deref(), Some("granted"));
+        assert!(
+            loaded.cloud_consent_at.is_some(),
+            "explicit consent answer must stamp its provenance timestamp"
+        );
+        assert_eq!(
+            loaded.asr_gateway_url.as_deref(),
+            Some("https://gateway.libraxis.cloud/v1/asr/sessions")
+        );
+
+        // On-disk placement: mode + gateway in speech.engine, consent in system.
+        let raw: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings"),
+        )
+        .expect("parse settings");
+        assert_eq!(
+            raw.pointer("/speech/engine/asr_mode")
+                .and_then(|v| v.as_str()),
+            Some("cloud")
+        );
+        assert_eq!(
+            raw.pointer("/system/cloud_audio_egress_consent")
+                .and_then(|v| v.as_str()),
+            Some("granted")
+        );
+    }
+
+    /// Invalid mode, consent, and gateway values are rejected without touching
+    /// the persisted state — a tampered write cannot arm egress.
+    #[test]
+    #[serial]
+    fn c2_setters_reject_invalid_values() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+
+        settings.set_string("CODESCRIBE_ASR_MODE", "whisper_cloud");
+        assert_eq!(settings.asr_mode, None, "unknown mode must be rejected");
+
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "yes");
+        assert_eq!(
+            settings.cloud_consent, None,
+            "non-canonical consent must be rejected"
+        );
+        assert_eq!(settings.cloud_consent_at, None);
+
+        settings.set_string(
+            "CODESCRIBE_ASR_GATEWAY_URL",
+            "https://user:sk-key@gateway.libraxis.cloud/mint",
+        );
+        assert_eq!(
+            settings.asr_gateway_url, None,
+            "credential-bearing URL must be rejected"
+        );
+
+        // Empty clears an existing consent record back to "never asked".
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "denied");
+        assert_eq!(settings.cloud_consent.as_deref(), Some("denied"));
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "");
+        assert_eq!(settings.cloud_consent, None);
+        assert_eq!(settings.cloud_consent_at, None);
+    }
+
+    /// Resolution truth on the settings snapshot: fresh installs land on
+    /// Apple-only, upgrades preserve the prior local/cloud choice, and cloud
+    /// without a granted record refuses egress without reaching for weights.
+    #[test]
+    fn c2_resolved_asr_mode_covers_fresh_upgrade_and_consent_paths() {
+        use crate::config::cloud_asr::{AsrProductMode, ModeDerivation};
+
+        let fresh = UserSettings::default();
+        let resolved = fresh.resolved_asr_mode();
+        assert_eq!(resolved.mode, AsrProductMode::AppleOnly);
+        assert_eq!(resolved.derivation, ModeDerivation::FreshDefault);
+
+        let legacy_local = UserSettings {
+            use_local_stt: Some(true),
+            ..UserSettings::default()
+        };
+        assert_eq!(
+            legacy_local.resolved_asr_mode().mode,
+            AsrProductMode::LocalPower
+        );
+
+        let legacy_cloud = UserSettings {
+            use_local_stt: Some(false),
+            ..UserSettings::default()
+        };
+        let resolved = legacy_cloud.resolved_asr_mode();
+        assert_eq!(resolved.mode, AsrProductMode::Cloud);
+        assert_eq!(resolved.derivation, ModeDerivation::LegacyCloudChoice);
+
+        let cloud_no_consent = UserSettings {
+            asr_mode: Some("cloud".to_string()),
+            ..UserSettings::default()
+        };
+        let resolved = cloud_no_consent.resolved_asr_mode();
+        assert_eq!(resolved.mode, AsrProductMode::AppleOnly);
+        assert_eq!(resolved.derivation, ModeDerivation::ConsentMissingFallback);
     }
 }

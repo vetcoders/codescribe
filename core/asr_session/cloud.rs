@@ -24,6 +24,7 @@ use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
+use super::consent::CloudEgressAuthorization;
 use super::events::{
     AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,
     TranscriptEvent, UsageEvent,
@@ -728,6 +729,7 @@ impl SeenEventIds {
 
 /// Live cloud implementation of [`AsrSessionProvider`].
 pub struct LiveCloudAsrSession<T: CloudGatewayTransport> {
+    _authorization: CloudEgressAuthorization,
     transport: T,
     limits: CloudSessionLimits,
     state: SessionState,
@@ -743,10 +745,15 @@ pub struct LiveCloudAsrSession<T: CloudGatewayTransport> {
 }
 
 impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
-    /// Build a live session over an injected normalized transport.
-    pub fn new(transport: T, limits: CloudSessionLimits) -> Result<Self, AsrErrorKind> {
+    /// Build an explicitly authorized live session over an injected normalized transport.
+    pub fn new(
+        transport: T,
+        limits: CloudSessionLimits,
+        authorization: CloudEgressAuthorization,
+    ) -> Result<Self, AsrErrorKind> {
         limits.validate()?;
         Ok(Self {
+            _authorization: authorization,
             transport,
             limits,
             state: SessionState::Idle,
@@ -1076,6 +1083,8 @@ fn samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asr_session::consent::authorize_cloud_egress;
+    use crate::config::cloud_asr::{AudioEgressConsent, ConsentSource};
 
     #[derive(Debug, Default)]
     struct FakeGatewayTransport {
@@ -1165,6 +1174,13 @@ mod tests {
         }
     }
 
+    fn authorization() -> CloudEgressAuthorization {
+        authorize_cloud_egress(&AudioEgressConsent::Granted(
+            ConsentSource::ExplicitSettings,
+        ))
+        .expect("explicit test consent")
+    }
+
     fn partial(event_id: &str, utterance_id: u64, revision: u64, text: &str) -> GatewayEvent {
         GatewayEvent::Partial {
             event_id: event_id.to_string(),
@@ -1191,8 +1207,9 @@ mod tests {
 
     #[test]
     fn normalized_start_and_bounded_pcm_frames_are_sent() {
-        let mut session = LiveCloudAsrSession::new(FakeGatewayTransport::default(), limits())
-            .expect("valid limits");
+        let mut session =
+            LiveCloudAsrSession::new(FakeGatewayTransport::default(), limits(), authorization())
+                .expect("valid limits");
         session.open(&input()).expect("open");
         session
             .push_audio(&[-1.0, -0.5, 0.5, 1.0])
@@ -1286,9 +1303,12 @@ mod tests {
             }),
             GatewayTransportPoll::Pending,
         ];
-        let mut session =
-            LiveCloudAsrSession::new(FakeGatewayTransport::scripted(script), limits())
-                .expect("session");
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits(),
+            authorization(),
+        )
+        .expect("session");
         session.open(&input()).expect("open");
 
         let events = session.drain();
@@ -1316,9 +1336,12 @@ mod tests {
             GatewayTransportPoll::Event(partial("delayed", 1, 1, "pozniej")),
             GatewayTransportPoll::Pending,
         ];
-        let mut session =
-            LiveCloudAsrSession::new(FakeGatewayTransport::scripted(script), limits())
-                .expect("session");
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits(),
+            authorization(),
+        )
+        .expect("session");
         session.open(&input()).expect("open");
         assert!(session.drain().is_empty());
         assert_eq!(session.drain().len(), 1);
@@ -1327,9 +1350,12 @@ mod tests {
     #[test]
     fn disconnect_is_a_typed_transport_event() {
         let script = [GatewayTransportPoll::Fault(AsrErrorKind::Transport)];
-        let mut session =
-            LiveCloudAsrSession::new(FakeGatewayTransport::scripted(script), limits())
-                .expect("session");
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits(),
+            authorization(),
+        )
+        .expect("session");
         session.open(&input()).expect("open");
         let events = session.drain();
         assert!(matches!(
@@ -1359,9 +1385,12 @@ mod tests {
             }),
             GatewayTransportPoll::Pending,
         ];
-        let mut session =
-            LiveCloudAsrSession::new(FakeGatewayTransport::scripted(script), limits())
-                .expect("session");
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits(),
+            authorization(),
+        )
+        .expect("session");
         session.open(&input()).expect("open");
         let events = session.drain();
         assert!(matches!(
@@ -1384,9 +1413,12 @@ mod tests {
 
     #[test]
     fn bounded_send_reports_backpressure_without_advancing_frame_sequence() {
-        let mut session =
-            LiveCloudAsrSession::new(FakeGatewayTransport::with_send_capacity(1), limits())
-                .expect("session");
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::with_send_capacity(1),
+            limits(),
+            authorization(),
+        )
+        .expect("session");
         session.open(&input()).expect("open");
         session.push_audio(&[0.0; 4]).expect("first frame");
         assert_eq!(session.push_audio(&[0.0; 4]), Err(AsrErrorKind::Overflow));
@@ -1409,9 +1441,12 @@ mod tests {
                 session_id: session_id().to_string(),
             }),
         ];
-        let mut session =
-            LiveCloudAsrSession::new(FakeGatewayTransport::scripted(script), limits())
-                .expect("session");
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::scripted(script),
+            limits(),
+            authorization(),
+        )
+        .expect("session");
         session.open(&input()).expect("open");
         session.close().expect("bounded close");
         let events = session.drain();
@@ -1424,8 +1459,12 @@ mod tests {
     fn close_timeout_aborts_and_emits_one_typed_fault() {
         let mut short_limits = limits();
         short_limits.close_timeout = Duration::from_millis(1);
-        let mut session = LiveCloudAsrSession::new(FakeGatewayTransport::default(), short_limits)
-            .expect("session");
+        let mut session = LiveCloudAsrSession::new(
+            FakeGatewayTransport::default(),
+            short_limits,
+            authorization(),
+        )
+        .expect("session");
         session.open(&input()).expect("open");
         assert_eq!(session.close(), Err(AsrErrorKind::Transport));
         assert!(session.transport().aborted);
