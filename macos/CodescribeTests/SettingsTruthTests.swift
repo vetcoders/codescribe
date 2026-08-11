@@ -916,6 +916,30 @@ final class SettingsTruthTests: XCTestCase {
         XCTAssertEqual(calls, 1)
     }
 
+    /// RED contract for the missing promoted deferred-insert picker. The test
+    /// names the intended Settings view-model seam directly; until the picker
+    /// exists the Swift target must fail at that missing API, not pass through
+    /// a test-only surrogate.
+    func testDeferredInsertPickerRoundTrips() {
+        var writes: [(String, String)] = []
+        let model = SettingsViewModel(
+            engine: MockSettingsEngine { key, value in writes.append((key, value)) }
+        )
+        _ = ShortcutsPanel(model: model)
+
+        let cases: [(DeferredInsertShortcutOption, String)] = [
+            (.disabled, "disabled"),
+            (.commandOptionV, "command_option_v"),
+            (.commandShiftV, "command_shift_v"),
+            (.commandControlV, "command_control_v"),
+        ]
+        for (option, wireValue) in cases {
+            model.setDeferredInsertShortcut(option)
+            XCTAssertEqual(writes.last?.0, "CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
+            XCTAssertEqual(writes.last?.1, wireValue)
+        }
+    }
+
     /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
     /// display configured Apple preference.
     func testActiveSTTUsesServingVerdictNotConfiguredEngine() {

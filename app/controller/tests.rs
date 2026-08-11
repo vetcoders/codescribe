@@ -957,6 +957,42 @@ fn test_final_pass_action_on_complete_streaming_evidence() {
     );
 }
 
+/// RED contract for the measured eaten take. Structural coverage alone must
+/// not classify 220 committed characters over 104 seconds as Complete.
+/// Healthy density and short notes pin the two non-regression boundaries.
+#[test]
+fn fleet_red_density_guard_eaten_session() {
+    let verdict = |text: &str, committed_chars: usize| {
+        assess_streaming_completeness_fields(
+            text,
+            None,
+            false,
+            false,
+            Some(CompletenessCommitSource::UtteranceFinal),
+            committed_chars,
+            1,
+        )
+    };
+    let density_guarded = |audio_secs: f32, committed_chars: usize, completeness| {
+        let starving = audio_secs > 10.0 && committed_chars as f32 / audio_secs < 4.0;
+        starving && matches!(completeness, StreamingCompleteness::Complete)
+    };
+
+    let healthy = verdict(&format!("{}.", "x".repeat(299)), 300);
+    assert_eq!(healthy, StreamingCompleteness::Complete);
+    assert!(!density_guarded(23.0, 300, healthy));
+
+    let short = verdict("krótka notatka", 14);
+    assert_eq!(short, StreamingCompleteness::Complete);
+    assert!(!density_guarded(9.9, 14, short));
+
+    let eaten = verdict(&format!("{}.", "x".repeat(219)), 220);
+    assert!(
+        !density_guarded(104.0, 220, eaten),
+        "104 s / 220 chars must not remain Complete: {eaten:?}"
+    );
+}
+
 /// The live engine (Apple vs Whisper) is not an input to routing at all — the
 /// dishonest Apple→Always override (2026-07-25) is now structurally impossible,
 /// because `final_pass_action` takes only (mode, completeness). This test pins the

@@ -31,3 +31,4 @@ cpal = "0.17"
 [dev-dependencies]
 async-trait = "0.1"
 serial_test = "3"
+tempfile = "3"

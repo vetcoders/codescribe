@@ -525,6 +525,33 @@ mod tests {
         assert_eq!(apply_all(committed, &outcome), committed);
     }
 
+    /// RED: once Whisper recovers substantially more non-trivial text than
+    /// Layer 0 committed, a bounded-diff rejection must escalate rather than
+    /// silently returning the same `Skipped` outcome as ordinary divergence.
+    #[test]
+    fn fleet_red_under_commit_escalates() {
+        let cfg = TailPatchConfig::default();
+        let committed = "pierwsza krótka fraza";
+        let retranscribed = "pierwsza krótka fraza oraz cały odzyskany dalszy fragment wypowiedzi z wieloma słowami";
+        let under_commit = compute_tail_patch(committed, retranscribed, 41, &cfg);
+
+        let normal = compute_tail_patch("ala ma kota", "ala ma psa", 42, &cfg);
+        assert!(matches!(normal, TailPatchOutcome::Patches(_)));
+
+        let empty = compute_tail_patch("ala ma kota", "", 43, &cfg);
+        assert_eq!(
+            empty,
+            TailPatchOutcome::Skipped {
+                reason: "empty_retranscription".to_string()
+            }
+        );
+
+        assert!(
+            !matches!(under_commit, TailPatchOutcome::Skipped { .. }),
+            "committed/retranscribed below 0.6 must escalate, got {under_commit:?}"
+        );
+    }
+
     /// Multiple substitutions emit descending-by-start for offset-stable apply.
     #[test]
     fn multiple_edits_apply_offset_stable() {
