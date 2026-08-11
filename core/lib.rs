@@ -38,6 +38,9 @@
 /// Agent runtime: threads, sessions, capabilities, permissions, tool grants,
 /// and durable run monitoring.
 pub mod agent;
+/// Neutral Layer 1 ASR session contract: typed events, monotonic ingest, the
+/// provider seam, and a deterministic fake. No transport, no model.
+pub mod asr_session;
 /// Attachment model and on-disk store used by agent chat and LLM context.
 pub mod attachment;
 /// Audio capture, loading, resampling, and playback primitives.
