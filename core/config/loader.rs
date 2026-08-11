@@ -652,6 +652,32 @@ impl Config {
             self.transcription_overlay_enabled = v;
             Self::safe_set_env("TRANSCRIPTION_OVERLAY_ENABLED", if v { "1" } else { "0" });
         }
+        if Self::config_runtime_env_var("HOLD_INDICATOR").is_err()
+            && let Some(v) = settings.hold_indicator
+        {
+            self.hold_indicator = v;
+        }
+        if Self::config_runtime_env_var("HOLD_BADGE_SIZE").is_err()
+            && let Some(v) = settings.hold_badge_size
+        {
+            self.hold_badge_size = v.min(u32::MAX as u64) as u32;
+        }
+        if Self::config_runtime_env_var("RESTORE_CLIPBOARD").is_err()
+            && let Some(v) = settings.restore_clipboard
+        {
+            self.restore_clipboard = v;
+        }
+        if Self::config_runtime_env_var("RESTORE_CLIPBOARD_DELAY_MS").is_err()
+            && let Some(v) = settings.restore_clipboard_delay_ms
+        {
+            self.restore_clipboard_delay_ms = v;
+        }
+        if Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT").is_err()
+            && let Some(raw) = settings.deferred_insert_shortcut.as_deref()
+            && let Ok(shortcut) = raw.parse::<DeferredInsertShortcut>()
+        {
+            self.deferred_insert_shortcut = shortcut;
+        }
         if Self::config_runtime_env_var("TRAY_START_ASSISTIVE").is_err()
             && let Some(v) = settings.tray_start_assistive
         {
@@ -898,7 +924,9 @@ impl Config {
                 | "DOUBLE_TAP_INTERVAL_MS"
                 | "CODESCRIBE_BUFFER_DELAY_MS"
                 | "CODESCRIBE_EMIT_WORDS_MAX"
-                | "BACKEND_MAX_UPLOAD_MB" => {
+                | "BACKEND_MAX_UPLOAD_MB"
+                | "HOLD_BADGE_SIZE"
+                | "RESTORE_CLIPBOARD_DELAY_MS" => {
                     if let Ok(v) = value.parse::<u64>() {
                         settings.set_u64(key, v);
                     }
@@ -926,7 +954,9 @@ impl Config {
                 | "START_AT_LOGIN"
                 | "QUBE_DAEMON_AUTOSTART"
                 | "AGENT_ENTER_SENDS"
-                | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
+                | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
+                | "HOLD_INDICATOR"
+                | "RESTORE_CLIPBOARD" => {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
@@ -962,7 +992,13 @@ impl Config {
             HashMap::new()
         };
         env_vars.insert(key.to_string(), value.to_string());
-        Self::write_env_file(&env_path, &env_vars)?;
+        Self::write_env_file(&env_path, &env_vars).inspect_err(|error| {
+            // A power-user key that cannot persist is a dead UI control, and the
+            // Swift callers swallow the error — this line is the only witness
+            // (2026-08-10: an immutable .env killed the Pointer Indicator row
+            // with zero log output).
+            tracing::warn!(key, %error, "save_to_env: .env write failed; value NOT persisted");
+        })?;
         Ok(())
     }
 
@@ -1072,6 +1108,22 @@ impl Config {
                             settings_ref.backend_max_upload_mb = Some(v);
                         }
                     }
+                    "HOLD_BADGE_SIZE" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.hold_badge_size = Some(v);
+                        }
+                    }
+                    "RESTORE_CLIPBOARD_DELAY_MS" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            settings_ref.restore_clipboard_delay_ms = Some(v);
+                        }
+                    }
+                    "CODESCRIBE_DEFERRED_INSERT_SHORTCUT" => {
+                        if let Ok(shortcut) = value.parse::<DeferredInsertShortcut>() {
+                            settings_ref.deferred_insert_shortcut =
+                                Some(shortcut.wire_id().to_string());
+                        }
+                    }
                     // ── f32 ──
                     "TOGGLE_SILENCE_SEC" => {
                         if let Ok(v) = value.parse::<f32>() {
@@ -1109,7 +1161,9 @@ impl Config {
                     | "START_AT_LOGIN"
                     | "QUBE_DAEMON_AUTOSTART"
                     | "AGENT_ENTER_SENDS"
-                    | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
+                    | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
+                    | "HOLD_INDICATOR"
+                    | "RESTORE_CLIPBOARD" => {
                         let bv = matches!(*value, "1" | "true" | "yes" | "on");
                         match *key {
                             "AI_FORMATTING_ENABLED" => {
@@ -1137,6 +1191,8 @@ impl Config {
                             "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED" => {
                                 settings_ref.stt_initial_prompt_enabled = Some(bv)
                             }
+                            "HOLD_INDICATOR" => settings_ref.hold_indicator = Some(bv),
+                            "RESTORE_CLIPBOARD" => settings_ref.restore_clipboard = Some(bv),
                             _ => {}
                         }
                     }
@@ -1166,7 +1222,11 @@ impl Config {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            Self::write_env_file(&path, &vars)?;
+            Self::write_env_file(&path, &vars).inspect_err(|error| {
+                // Same witness as the single-key path: Swift callers swallow
+                // the error, so an unwritable .env must at least leave a trace.
+                tracing::warn!(%error, "save_to_env_many: .env write failed; batch NOT persisted");
+            })?;
         }
 
         Ok(())
@@ -1665,19 +1725,15 @@ mod tests {
         }
     }
 
-    /// Badge/indicator keys stay env-managed; settings.json bytes must not change.
+    /// Badge/indicator keys are promoted (2026-08-11): tray writes land in
+    /// settings.json — never `.env`, whose immutability killed the Pointer
+    /// Indicator row — and reload live without process-env shadowing.
     #[test]
     #[serial]
-    fn hold_indicator_ui_writes_existing_env_keys_without_settings_json_drift() {
+    fn hold_indicator_ui_writes_are_promoted_to_settings_json() {
         let _tmp = setup_isolated_data_dir();
         let _indicator = TestEnvGuard::unset("HOLD_INDICATOR");
         let _size = TestEnvGuard::unset("HOLD_BADGE_SIZE");
-        let settings = UserSettings {
-            show_dock_icon: Some(true),
-            ..UserSettings::default()
-        };
-        settings.save().expect("seed settings json");
-        let settings_before = fs::read(UserSettings::settings_path()).expect("read settings json");
         let config = Config::default();
 
         config
@@ -1686,53 +1742,81 @@ mod tests {
         config
             .save_to_env("HOLD_INDICATOR", "0")
             .expect("disable indicator");
-        let disabled = Config::parse_env_file(&Config::env_path()).expect("read env");
-        assert_eq!(
-            disabled.get("HOLD_INDICATOR").map(String::as_str),
-            Some("0")
-        );
-        assert_eq!(
-            disabled.get("HOLD_BADGE_SIZE").map(String::as_str),
-            Some("8"),
-            "Off must preserve the stored badge size"
-        );
+        let stored = UserSettings::load();
+        assert_eq!(stored.hold_indicator, Some(false));
+        assert_eq!(stored.hold_badge_size, Some(8));
         let disabled_config = Config::load_without_keychain();
         assert!(!disabled_config.hold_indicator);
         assert_eq!(disabled_config.hold_badge_size, 8);
 
-        for size in [4, 8, 12] {
-            let size = size.to_string();
+        for size in [4u64, 8, 12] {
+            let size_str = size.to_string();
             config
-                .save_to_env_many(&[("HOLD_INDICATOR", "1"), ("HOLD_BADGE_SIZE", &size)])
+                .save_to_env_many(&[("HOLD_INDICATOR", "1"), ("HOLD_BADGE_SIZE", &size_str)])
                 .expect("save enabled badge size");
-            let persisted = Config::parse_env_file(&Config::env_path()).expect("read env");
-            assert_eq!(
-                persisted.get("HOLD_INDICATOR").map(String::as_str),
-                Some("1")
-            );
-            assert_eq!(
-                persisted.get("HOLD_BADGE_SIZE").map(String::as_str),
-                Some(size.as_str())
-            );
-            // Test builds intentionally allow repeated process-env bootstrap,
-            // unlike production's one-shot tracked bootstrap. Remove the prior
-            // injected snapshot so this reload exercises the newly persisted
-            // values instead of the test-only stale process copy.
-            // SAFETY: this test is serial and the guards above restore both keys.
-            unsafe {
-                std::env::remove_var("HOLD_INDICATOR");
-                std::env::remove_var("HOLD_BADGE_SIZE");
-            }
+            let stored = UserSettings::load();
+            assert_eq!(stored.hold_indicator, Some(true));
+            assert_eq!(stored.hold_badge_size, Some(size));
             let live = Config::load_without_keychain();
             assert!(live.hold_indicator);
-            assert_eq!(live.hold_badge_size.to_string(), size);
+            assert_eq!(u64::from(live.hold_badge_size), size);
         }
 
-        let settings_after = fs::read(UserSettings::settings_path()).expect("read settings json");
+        // The promoted keys must leave `.env` alone entirely.
+        let env_path = Config::env_path();
+        if env_path.exists() {
+            let env = Config::parse_env_file(&env_path).expect("parse optional env");
+            assert!(!env.contains_key("HOLD_INDICATOR"));
+            assert!(!env.contains_key("HOLD_BADGE_SIZE"));
+        }
+    }
+
+    /// Deferred-insert + clipboard-restore keys are promoted: valid writes land
+    /// in settings.json and reload live; invalid chords are rejected without
+    /// touching disk.
+    #[test]
+    #[serial]
+    fn deferred_insert_and_restore_clipboard_writes_are_promoted() {
+        let _tmp = setup_isolated_data_dir();
+        let _shortcut = TestEnvGuard::unset("CODESCRIBE_DEFERRED_INSERT_SHORTCUT");
+        let _restore = TestEnvGuard::unset("RESTORE_CLIPBOARD");
+        let _delay = TestEnvGuard::unset("RESTORE_CLIPBOARD_DELAY_MS");
+        let config = Config::default();
+
+        config
+            .save_to_env("CODESCRIBE_DEFERRED_INSERT_SHORTCUT", "cmd_alt_v")
+            .expect("save shortcut alias");
         assert_eq!(
-            settings_before, settings_after,
-            "settings.json must not gain badge keys"
+            UserSettings::load().deferred_insert_shortcut.as_deref(),
+            Some("command_option_v"),
+            "aliases must persist as the canonical wire id"
         );
+        assert_eq!(
+            Config::load_without_keychain().deferred_insert_shortcut,
+            DeferredInsertShortcut::CommandOptionV
+        );
+
+        config
+            .save_to_env("CODESCRIBE_DEFERRED_INSERT_SHORTCUT", "not_a_chord")
+            .expect("invalid chord is a non-fatal no-op");
+        assert_eq!(
+            UserSettings::load().deferred_insert_shortcut.as_deref(),
+            Some("command_option_v"),
+            "invalid chord must not clobber the stored one"
+        );
+
+        config
+            .save_to_env_many(&[
+                ("RESTORE_CLIPBOARD", "0"),
+                ("RESTORE_CLIPBOARD_DELAY_MS", "450"),
+            ])
+            .expect("save clipboard restore batch");
+        let stored = UserSettings::load();
+        assert_eq!(stored.restore_clipboard, Some(false));
+        assert_eq!(stored.restore_clipboard_delay_ms, Some(450));
+        let live = Config::load_without_keychain();
+        assert!(!live.restore_clipboard);
+        assert_eq!(live.restore_clipboard_delay_ms, 450);
     }
 
     /// AUTO_PASTE single/batch writes reload live without shadowing process env.

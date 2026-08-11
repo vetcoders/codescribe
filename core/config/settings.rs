@@ -161,6 +161,19 @@ pub struct UserSettings {
     pub transcription_overlay_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
+    // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
+    // writers died silently once the file became unwritable (uchg lock) and
+    // the 2026-08-08 wipe erased the user's values outright.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_indicator: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_badge_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_clipboard: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_clipboard_delay_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred_insert_shortcut: Option<String>,
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,6 +333,12 @@ struct InteractionV2 {
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
     auto_paste_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deferred_insert_shortcut: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_clipboard: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_clipboard_delay_ms: Option<u64>,
 }
 
 /// Timing of the tap-based triggers: how fast a double tap must be, and how
@@ -482,6 +501,10 @@ struct UiV2 {
     transcription_overlay_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold_indicator: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold_badge_size: Option<u64>,
 }
 
 /// `features` section: optional surfaces the user can switch off entirely,
@@ -558,6 +581,13 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "SHOW_DOCK_ICON",
     "TRANSCRIPTION_OVERLAY_ENABLED",
     "TRAY_START_ASSISTIVE",
+    // Pointer indicator + delivery (promoted 2026-08-11: .env writes died
+    // silently under the uchg lock, killing the tray Pointer Indicator row)
+    "HOLD_INDICATOR",
+    "HOLD_BADGE_SIZE",
+    "RESTORE_CLIPBOARD",
+    "RESTORE_CLIPBOARD_DELAY_MS",
+    "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
     // LLM endpoints
     "LLM_ENDPOINT",
     "LLM_MODEL",
@@ -633,6 +663,9 @@ impl UserSettings {
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
                 auto_paste_enabled: self.auto_paste_enabled,
+                deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
+                restore_clipboard: self.restore_clipboard,
+                restore_clipboard_delay_ms: self.restore_clipboard_delay_ms,
             }),
             speech: Some(SpeechV2 {
                 language: self.whisper_language.clone(),
@@ -688,6 +721,8 @@ impl UserSettings {
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
                 tray_start_assistive: self.tray_start_assistive,
+                hold_indicator: self.hold_indicator,
+                hold_badge_size: self.hold_badge_size,
             }),
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
@@ -817,6 +852,20 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|ui| ui.transcription_overlay_enabled),
             tray_start_assistive: v2.ui.as_ref().and_then(|ui| ui.tray_start_assistive),
+            hold_indicator: v2.ui.as_ref().and_then(|ui| ui.hold_indicator),
+            hold_badge_size: v2.ui.as_ref().and_then(|ui| ui.hold_badge_size),
+            deferred_insert_shortcut: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.deferred_insert_shortcut.clone()),
+            restore_clipboard: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.restore_clipboard),
+            restore_clipboard_delay_ms: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.restore_clipboard_delay_ms),
             llm_formatting_endpoint: v2
                 .speech
                 .as_ref()
@@ -1210,6 +1259,17 @@ impl UserSettings {
                     return;
                 }
             },
+            "CODESCRIBE_DEFERRED_INSERT_SHORTCUT" => {
+                match value.parse::<crate::config::DeferredInsertShortcut>() {
+                    Ok(shortcut) => {
+                        self.deferred_insert_shortcut = Some(shortcut.wire_id().to_string())
+                    }
+                    Err(error) => {
+                        warn!("Rejected deferred-insert shortcut write: {error}");
+                        return;
+                    }
+                }
+            }
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
             "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
@@ -1278,6 +1338,8 @@ impl UserSettings {
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
             "TRANSCRIPTION_OVERLAY_ENABLED" => self.transcription_overlay_enabled = Some(value),
             "TRAY_START_ASSISTIVE" => self.tray_start_assistive = Some(value),
+            "HOLD_INDICATOR" => self.hold_indicator = Some(value),
+            "RESTORE_CLIPBOARD" => self.restore_clipboard = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
@@ -1306,6 +1368,8 @@ impl UserSettings {
             "CODESCRIBE_BUFFER_DELAY_MS" => self.buffer_delay_ms = Some(value),
             "CODESCRIBE_EMIT_WORDS_MAX" => self.emit_words_max = Some(value),
             "BACKEND_MAX_UPLOAD_MB" => self.backend_max_upload_mb = Some(value),
+            "HOLD_BADGE_SIZE" => self.hold_badge_size = Some(value),
+            "RESTORE_CLIPBOARD_DELAY_MS" => self.restore_clipboard_delay_ms = Some(value),
             other => {
                 warn!("Unknown u64 setting key: {other}");
                 return;
