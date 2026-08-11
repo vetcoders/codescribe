@@ -778,22 +778,33 @@ fn apple_stream_worker(
 /// collapse onto a short shared opener overwrote the prior utterance without
 /// sealing it.
 ///
-/// Freeze on collapse unless `next` is a **true substantial prefix** of `prev`
-/// (`len > 15`) — a same-phrase rewind, not a 1–2 word opener every sentence
-/// shares. Kept in lockstep with `SfSpeechPhraseAccumulator` in
-/// `codescribe-stt-bridge.swift`.
+/// Freeze whenever `next` does not retain `prev` in full. The old restart
+/// thresholds classify telemetry only; revision and same-phrase rewind are
+/// retained too because this call site otherwise overwrites the only copy.
+/// Kept in lockstep with `SfSpeechPhraseAccumulator` in the Swift bridge.
 pub(crate) fn phrase_restart_should_freeze_prior(prev: &str, next: &str) -> bool {
+    phrase_retention_reason(prev, next).is_some()
+}
+
+/// Telemetry classification for a retention decision. Text safety depends
+/// only on forward containment, never on the restart/revision classifier.
+fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
     let prev = prev.trim();
     let next = next.trim();
-    if prev.is_empty() || next.is_empty() {
-        return false;
+    if prev.is_empty() || next.contains(prev) {
+        return None;
     }
-    let restarted = (next.len() * 3 < prev.len()) || (next.len() <= 15 && prev.len() >= 25);
-    if !restarted {
-        return false;
+    if next.is_empty() {
+        return Some("empty_collapse_retained");
     }
-    let same_phrase_rewind = prev.starts_with(next) && next.len() > 15;
-    !same_phrase_rewind
+    let prev_chars = prev.chars().count();
+    let next_chars = next.chars().count();
+    let restarted = (next_chars * 3 < prev_chars) || (next_chars <= 15 && prev_chars >= 25);
+    Some(if restarted {
+        "restart_retained"
+    } else {
+        "revision_retained"
+    })
 }
 
 /// Map one poll's worth of bridge events onto `EngineEvent`s, sealing where the
@@ -839,14 +850,14 @@ fn emit_stream_events(
                 // missed a freeze (shared opener collapse), seal the open
                 // partial here before the rewrite lands.
                 if phrase_restart_should_freeze_prior(&state.open_partial, &text) {
+                    let reason = phrase_retention_reason(&state.open_partial, &text)
+                        .expect("freeze decision must carry a telemetry reason");
                     let frozen = state.open_partial.clone();
                     info!(
                         audio_secs,
-                        prev_chars = frozen.len(),
-                        next_chars = text.len(),
-                        prev_head = %frozen.chars().take(40).collect::<String>(),
-                        next_head = %text.chars().take(40).collect::<String>(),
-                        reason = "shared_opener_restart_suppresses_freeze",
+                        prev_chars = frozen.chars().count(),
+                        next_chars = text.chars().count(),
+                        reason,
                         "apple_lifecycle: freeze open partial before restart partial"
                     );
                     seal_utterance_final(state, ev_tx, &frozen, 0.0, audio_secs, Vec::new());
@@ -1661,31 +1672,38 @@ mod tests {
         );
     }
 
-    /// Mid-phrase revision keeps most of the text without being a prefix
-    /// collapse — must NOT freeze (would double-seal the same span).
+    /// Revisions and rewinds must retain the prior text; only a forward
+    /// extension that contains the full prior hypothesis may replace it.
     #[test]
-    fn utterance_drop_revision_mid_reword_does_not_freeze() {
-        // 95 → 79 char mid-reword: not a restart collapse by the measured rule.
+    fn utterance_drop_revision_and_rewind_retain_prior() {
+        // 95 → 79 char mid-reword is classified as a revision, but still
+        // freezes because otherwise its removed span has no retained copy.
         let prev = format!("{}MIDDLE{}", "x".repeat(50), "y".repeat(39));
         let next = format!("{}REVISE{}", "x".repeat(50), "y".repeat(23));
         assert_eq!(prev.len(), 95);
         assert_eq!(next.len(), 79);
         assert!(
-            !phrase_restart_should_freeze_prior(&prev, &next),
-            "revision must not freeze (residual duplication bar)"
+            phrase_restart_should_freeze_prior(&prev, &next),
+            "revision must retain the prior hypothesis"
         );
-        // Growth is never a restart.
+        // Forward growth contains the complete prior hypothesis.
         assert!(!phrase_restart_should_freeze_prior(
             "Zdanie",
             "Zdanie szóste spokojnie"
         ));
-        // Same-phrase rewind to a substantial true prefix stays open.
+        // Same-phrase rewind is not safe unless the prior copy is retained.
         let long = "Hello world this is a long phrase that continues for a while more text here";
         let rewind: String = long.chars().take(40).collect();
         assert!(
-            !phrase_restart_should_freeze_prior(long, &rewind),
-            "substantial true-prefix rewind is same-phrase, not a freeze"
+            phrase_restart_should_freeze_prior(long, &rewind),
+            "substantial true-prefix rewind must retain its removed suffix"
         );
+        assert!(phrase_restart_should_freeze_prior(long, ""));
+        assert!(!phrase_restart_should_freeze_prior("", "new phrase"));
+        assert!(!phrase_restart_should_freeze_prior(
+            "middle retained",
+            "new prefix middle retained and suffix"
+        ));
     }
 
     /// End-to-end at the adjudication layer: a partial sequence that used to
