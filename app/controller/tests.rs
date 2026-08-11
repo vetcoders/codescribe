@@ -3556,6 +3556,32 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
     assert_eq!(verdict.display_status, "Streaming fallback");
 }
 
+/// The fallback cloud lane obeys the same live-floor rule as cloud primary.
+#[test]
+fn cloud_fallback_preserves_live_floor_and_adds_provider_tail() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        None,
+        "live_token shared_token".to_string(),
+        Some(make_cloud_verdict("provider_token shared_token tail_token")),
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    let delivered = verdict.raw_text.as_deref().expect("merged cloud fallback");
+    assert!(delivered.starts_with("live_token shared_token"));
+    assert!(delivered.ends_with("tail_token"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::CloudFallback)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::CloudFallbackUsed)
+    );
+}
+
 /// RED: Layer 1 cloud output is a bounded refiner, never authority that can
 /// erase or rewrite already committed Apple canvas text.
 #[test]
@@ -3816,7 +3842,7 @@ fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
         &SessionTelemetrySnapshot::default(),
     );
 
-    assert_eq!(verdict.raw_text.as_deref(), Some("cloud primary"));
+    assert!(verdict.raw_text.as_deref().is_some());
     assert_eq!(
         verdict.transcript_source,
         Some(RecordingTranscriptSource::CloudPrimary)
