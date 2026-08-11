@@ -97,15 +97,20 @@ use assistive_delivery::{
 };
 pub(crate) use final_pass::{
     FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
-    StreamingCompleteness, StreamingCompletenessEvidence, append_tail_gap,
-    apply_committed_density_floor, assess_streaming_completeness,
+    StreamingCompletenessEvidence, append_tail_gap, apply_committed_density_floor,
+    apply_residual_required_demotion, assess_streaming_completeness, completeness_label,
     compose_stop_path_residual_from_partials, final_pass_action, final_pass_routing_mode,
     format_assistive_delivery_budget_line, format_density_override_line,
-    format_final_pass_stages_line, format_stop_path_budget_line, smart_tail_gap_source,
+    format_final_pass_stages_line, format_residual_required_line, format_stop_path_budget_line,
+    smart_tail_gap_source,
 };
+// The stop path routes on completeness values without ever naming the type:
+// every verdict label now comes from `completeness_label`, so the only sites
+// that spell `StreamingCompleteness` out are the controller tests.
 #[cfg(test)]
 pub(crate) use final_pass::{
-    assess_streaming_completeness_fields, engine_label_from_verdict, stop_path_budget_covers_total,
+    StreamingCompleteness, assess_streaming_completeness_fields, engine_label_from_verdict,
+    stop_path_budget_covers_total,
 };
 #[cfg(test)]
 use helpers::SessionEngineStats;
@@ -2822,12 +2827,12 @@ impl RecordingController {
             let audio_secs = audio_path.as_ref().and_then(|path| {
                 codescribe_core::audio::recorder::wav_duration_secs(path.as_path())
             });
-            let completeness = apply_committed_density_floor(
+            let density_guarded = apply_committed_density_floor(
                 structural_completeness,
                 audio_secs,
                 completeness_evidence.committed_chars,
             );
-            if completeness != structural_completeness {
+            if density_guarded != structural_completeness {
                 info!(
                     "{}",
                     format_density_override_line(
@@ -2843,6 +2848,23 @@ impl RecordingController {
                     "final_pass_density_guard silent reason=audio_duration_unknown committed_chars={} has_audio_path={}",
                     completeness_evidence.committed_chars,
                     audio_path.is_some(),
+                );
+            }
+            // W-Cb Layer 1 under-commit consumer. W-C already classifies an
+            // under-commit retranscription, appends what it can place on safe
+            // zero-width anchors, and escalates the unplaceable remainder as
+            // `EngineEvent::Warning { code: tail_patch_under_commit }`. Until
+            // now that warning reached the log and the IPC wire and changed no
+            // verdict. Applied AFTER the density floor on purpose: when both
+            // fire, `starved_density` carries measured numbers this one does
+            // not, and both route to the same tail-gap ladder — so the richer
+            // diagnosis is the one worth keeping in the receipts.
+            let completeness =
+                apply_residual_required_demotion(density_guarded, session_snap.residual_required);
+            if session_snap.residual_required {
+                info!(
+                    "{}",
+                    format_residual_required_line(density_guarded, completeness)
                 );
             }
             // Typed routing: Always → full file re-pass; Smart+Complete / Off →
@@ -2861,13 +2883,9 @@ impl RecordingController {
 
             if matches!(action, FinalPassAction::SkipStreamingFinal) {
                 local_final_pass_attempted = true;
-                let reason = match completeness {
-                    StreamingCompleteness::Complete => "complete_streaming_transcript",
-                    // Unreachable through the Smart mapping (shape routes to
-                    // PunctuationRepass), reachable if a future mode skips on it.
-                    StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
-                    StreamingCompleteness::Incomplete { reason } => reason,
-                };
+                // One label table for every receipt naming a verdict, so the
+                // skip line and the guard lines cannot drift apart.
+                let reason = completeness_label(completeness);
                 let commit_src = completeness_evidence
                     .commit_source
                     .map(CompletenessCommitSource::as_str)
