@@ -1082,6 +1082,14 @@ impl Config {
                         settings_ref.layered_transcription = Some((*value).to_string());
                         Self::reconcile_stt_runtime_key(key, value);
                     }
+                    // C2: same validated writes as the single-key set_string
+                    // path — a batch write must not bypass mode/consent/URL
+                    // validation or silently drop these keys.
+                    "CODESCRIBE_ASR_MODE"
+                    | "CODESCRIBE_CLOUD_CONSENT"
+                    | "CODESCRIBE_ASR_GATEWAY_URL" => {
+                        settings_ref.set_string(key, value);
+                    }
                     // ── u64 ──
                     "HOLD_START_DELAY_MS" => {
                         if let Ok(v) = value.parse::<u64>() {

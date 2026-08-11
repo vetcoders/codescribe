@@ -488,6 +488,27 @@ reload = "restart"
 category = "stt"
 description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
 
+[vars.CODESCRIBE_ASR_MODE]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Layer 1 ASR product mode: cloud, local_power, or apple_only (empty = derive from legacy use_local_stt, else apple_only). Promoted: settings.json is the source of truth; cloud additionally requires CODESCRIBE_CLOUD_CONSENT=granted"
+
+[vars.CODESCRIBE_CLOUD_CONSENT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Explicit audio-egress consent record: granted or denied (empty = never asked; anything else reads as unanswered). Without granted, cloud mode resolves to apple_only and never loads local weights. Promoted: settings.json is the source of truth"
+
+[vars.CODESCRIBE_ASR_GATEWAY_URL]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Libraxis gateway session-mint endpoint (https; loopback http for dev). Endpoint only — URLs with user-info or query material are refused; vendor keys never live in config. Promoted: settings.json is the source of truth"
+
 [vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
 default = "phase1"
 type = "string"

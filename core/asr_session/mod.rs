@@ -18,11 +18,16 @@
 //! - [`fake`] — a deterministic in-memory provider for tests and later cuts.
 //! - [`cloud`] — the dedicated live gateway session, bounded PCM transport,
 //!   and Codescribe-owned stream-global event sequencing.
+//! - [`consent`] — the audio-egress gate: a cloud session is constructible
+//!   only through an explicit-consent authorization witness, and every
+//!   refusal degrades to canvas + lexicon, never a local model.
 //!
 //! ## What deliberately does NOT live here
 //!
 //! No recorder wiring, settings surface, gateway session mint, vendor protocol,
-//! or local model. The live socket consumes only a normalized gateway contract.
+//! or local model. The live socket consumes only a normalized gateway contract;
+//! the mode/consent *records* live in `crate::config::cloud_asr` (the settings
+//! brain) — this module only enforces them at construction time.
 //!
 //! The existing whole-file `client::transcribe_cloud` / `transcribe_websocket`
 //! API is **outside** this contract. It uploads one completed recording and is
@@ -41,6 +46,8 @@
 
 /// Dedicated provider-neutral live cloud gateway transport and session adapter.
 pub mod cloud;
+/// Audio-egress consent gate in front of Layer 1 session construction (C2).
+pub mod consent;
 /// Typed Layer 1 session events, identity, bounded ranges, errors, and usage.
 pub mod events;
 /// Deterministic in-memory provider used by tests and follow-on transport cuts.
@@ -57,6 +64,9 @@ pub use cloud::{
     CloudGatewayTransport, CloudSessionLimits, CloudSessionTelemetry, GatewayConnection,
     GatewayErrorCode, GatewayEvent, GatewayPcmFrame, GatewaySessionConfig, GatewayTransportPoll,
     GatewayWebSocketTransport, LiveCloudAsrSession,
+};
+pub use consent::{
+    CloudEgressAuthorization, CloudSessionError, authorize_cloud_egress, refiner_for,
 };
 pub use events::{
     AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,

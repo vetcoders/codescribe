@@ -15,14 +15,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingContract {
     BoundedAppleOnlyDegradation,
-    ExplicitAudioEgressConsent,
     KillableLocalHelper,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CloudSessionError {
-    ConsentRequired,
-    Missing(MissingContract),
 }
 
 fn missing<T>(contract: MissingContract) -> Result<T, MissingContract> {
@@ -140,16 +133,48 @@ fn fleet_red_cloud_backpressure_degrades_to_apple_only() {
     );
 }
 
+/// PROMOTED (C2, `c2-cloud-mode-consent`): this probe no longer stops at a
+/// `MissingContract` boundary. The seam it named exists — the consent gate in
+/// `asr_session::consent` plus the mode/consent resolver in
+/// `config::cloud_asr` — and the same rejection now comes from the production
+/// factory. The depth (wire parsing, upgrade preservation, settings
+/// round-trip, gateway mint validation) lives in those modules' tests; what
+/// stays here is the fleet-level witness that cloud session construction
+/// without explicit audio-egress consent is refused with a typed error, and
+/// that the refusal never reaches for local weights.
 #[test]
 fn fleet_red_cloud_requires_explicit_consent() {
-    let session_without_consent: Result<(), CloudSessionError> = Err(CloudSessionError::Missing(
-        MissingContract::ExplicitAudioEgressConsent,
-    ));
+    use crate::asr_session::consent::{CloudSessionError, authorize_cloud_egress, refiner_for};
+    use crate::asr_session::provider::RefinerMode;
+    use crate::config::cloud_asr::{
+        AsrProductMode, AudioEgressConsent, ModeDerivation, resolve_asr_product_mode,
+    };
+
+    // Session construction without explicit consent: typed rejection.
+    for withheld in [AudioEgressConsent::Unanswered, AudioEgressConsent::Denied] {
+        assert_eq!(
+            authorize_cloud_egress(&withheld).err(),
+            Some(CloudSessionError::ConsentRequired),
+            "session construction without explicit audio-egress consent must be rejected by the production factory"
+        );
+    }
+
+    // A fresh install that persisted `cloud` but never answered the consent
+    // question resolves to Apple-only and arms no Layer 1 provider — and in
+    // particular never the local helper.
+    let unconsented = resolve_asr_product_mode(Some("cloud"), None, None);
+    assert_eq!(unconsented.mode, AsrProductMode::AppleOnly);
     assert_eq!(
-        session_without_consent,
-        Err(CloudSessionError::ConsentRequired),
-        "session construction without explicit audio-egress consent must be rejected by the production factory"
+        unconsented.derivation,
+        ModeDerivation::ConsentMissingFallback
     );
+    assert_eq!(refiner_for(&unconsented), RefinerMode::Off);
+
+    // With the explicit grant recorded, the same request is authorized and
+    // arms the cloud session.
+    let consented = resolve_asr_product_mode(Some("cloud"), Some("granted"), None);
+    assert!(authorize_cloud_egress(&consented.consent).is_ok());
+    assert_eq!(refiner_for(&consented), RefinerMode::CloudSession);
 }
 
 #[test]
