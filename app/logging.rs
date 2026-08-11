@@ -11,8 +11,9 @@
 //! Swift constructs first wins and the rest are no-ops.
 
 use std::env;
-use std::path::PathBuf;
 use std::sync::Once;
+
+use codescribe_core::config::Config;
 
 /// Once guard so tracing/logging subscribers install exactly once per process.
 static INIT: Once = Once::new();
@@ -45,8 +46,7 @@ fn init_tracing() {
         },
     };
 
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let log_dir = PathBuf::from(home).join(".codescribe").join("logs");
+    let log_dir = Config::config_dir().join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("codescribe.log");
 
