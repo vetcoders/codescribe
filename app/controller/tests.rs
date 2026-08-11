@@ -1130,11 +1130,9 @@ fn density_floor_stays_silent_on_boundaries_and_unmeasurable_audio() {
         }
     );
 
-    // Scope pin, not an endorsement: a starved-AND-shapeless session keeps its
-    // shape verdict and routes to PunctuationRepass. That path still invokes
-    // Whisper, so it is not the measured `complete_streaming_transcript` skip
-    // this cut fixes — escalating it is a follow-on decision (W-B report).
-    let shapeless_and_starved = assess_streaming_completeness_fields(
+    // A healthy, dense shape-deficient transcript keeps the punctuation lane:
+    // density only diagnoses missing speech, never sentence shape by itself.
+    let shapeless_and_dense = assess_streaming_completeness_fields(
         &"słowo ".repeat(60),
         None,
         false,
@@ -1144,13 +1142,72 @@ fn density_floor_stays_silent_on_boundaries_and_unmeasurable_audio() {
         1,
     );
     assert_eq!(
-        shapeless_and_starved,
+        shapeless_and_dense,
         StreamingCompleteness::CompleteShapeDeficient
     );
-    assert!(committed_density_starved(104.0, 360));
+    assert!(!committed_density_starved(23.0, 360));
     assert_eq!(
-        apply_committed_density_floor(shapeless_and_starved, Some(104.0), 360),
+        apply_committed_density_floor(shapeless_and_dense, Some(23.0), 360),
         StreamingCompleteness::CompleteShapeDeficient
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, shapeless_and_dense),
+        FinalPassAction::PunctuationRepass
+    );
+}
+
+/// A long shape-deficient canvas is still eaten dictation when its committed
+/// density is implausible. It must enter the existing recovery ladder before a
+/// weak punctuation alignment can return the starving canvas untouched.
+#[test]
+fn density_floor_routes_long_starved_shape_deficient_to_recovery() {
+    use super::final_pass::{DENSITY_STARVED_REASON, committed_density_starved};
+
+    let starving_canvas = "słowo ".repeat(60);
+    let committed_chars = starving_canvas.chars().count();
+    assert_eq!(
+        committed_chars, 360,
+        "fixture must stay above SHAPE_MIN_CHARS"
+    );
+
+    let structural = assess_streaming_completeness_fields(
+        &starving_canvas,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars,
+        1,
+    );
+    assert_eq!(structural, StreamingCompleteness::CompleteShapeDeficient);
+    assert!(committed_density_starved(104.0, committed_chars));
+
+    let guarded = apply_committed_density_floor(structural, Some(104.0), committed_chars);
+    assert_eq!(
+        guarded,
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON
+        },
+        "104-second shape-deficient starvation must not reach punctuation-only delivery"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, guarded),
+        FinalPassAction::TailGapFill,
+        "Smart must attempt the existing residual/tail-gap recovery ladder"
+    );
+    assert_eq!(
+        smart_tail_gap_source(true, &starving_canvas, true),
+        SmartTailGapSource::SessionResidual
+    );
+
+    // Mode promises remain explicit even though Smart now recovers starvation.
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, guarded),
+        FinalPassAction::SkipStreamingFinal
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, guarded),
+        FinalPassAction::FullFileRepass
     );
 }
 
@@ -1159,7 +1216,7 @@ fn density_floor_stays_silent_on_boundaries_and_unmeasurable_audio() {
 /// dictation into the production log would be this cut's own doing.
 #[test]
 fn density_override_line_carries_numbers_and_no_transcript() {
-    let line = format_density_override_line(104.0, 220);
+    let line = format_density_override_line(StreamingCompleteness::Complete, 104.0, 220);
 
     assert!(line.contains("final_pass_density_guard"), "{line}");
     assert!(
@@ -1176,6 +1233,13 @@ fn density_override_line_carries_numbers_and_no_transcript() {
     assert!(line.contains("floor_chars_per_sec=4.0"), "{line}");
     assert!(line.contains("min_audio_secs=10.0"), "{line}");
     assert!(line.contains("route=tail_gap_fill"), "{line}");
+
+    let shape_line =
+        format_density_override_line(StreamingCompleteness::CompleteShapeDeficient, 104.0, 360);
+    assert!(
+        shape_line.contains("overridden_verdict=shape_deficient"),
+        "shape starvation must identify the verdict it overrode: {shape_line}"
+    );
 }
 
 /// The live engine (Apple vs Whisper) is not an input to routing at all — the

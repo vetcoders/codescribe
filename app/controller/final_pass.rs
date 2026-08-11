@@ -5,10 +5,11 @@
 //!   mode in which a full-file re-pass is permitted.
 //! - **Smart**: Whisper may final-pass **individual utterances only** — never the
 //!   whole file. When streaming completeness is adjudicated Complete, nothing runs
-//!   at stop. When complete-but-shapeless (long wall of words, no sentence
-//!   terminals — the shape row, operator 2026-08-09), Whisper transcribes the
-//!   file but only its punctuation/capitalization is adopted onto the committed
-//!   words (`punctuation_transplant`; word sequence invariant at THIS stage
+//!   at stop. When coverage-complete, plausibly dense, but shapeless (long wall
+//!   of words, no sentence terminals — the shape row, operator 2026-08-09),
+//!   Whisper transcribes the file but only its punctuation/capitalization is
+//!   adopted onto the committed words (`punctuation_transplant`; word sequence
+//!   invariant at THIS stage
 //!   because shape is the deficit here — live word corrections belong to the
 //!   Layer 1 tail patch, which is a core element, on by default). When
 //!   incomplete, only the uncommitted audio tail (from the last committed
@@ -277,18 +278,17 @@ pub(crate) fn committed_density_starved(audio_secs: f32, committed_chars: usize)
 
 /// Apply the committed-density floor to a structural completeness verdict.
 ///
-/// Only `Complete` is demoted, and only into the existing `Incomplete` arm, so
-/// [`final_pass_action`] carries the consequence with no new variant and no
-/// second controller: `Smart` + `Incomplete{starved_density}` → `TailGapFill`,
-/// which is the residual / tail-gap path the live session text already feeds
-/// through [`smart_tail_gap_source`]. `Off` still skips and `Always` still
-/// re-passes, because routing ignores completeness for both — the floor changes
-/// Smart alone.
-///
-/// `CompleteShapeDeficient` passes through on purpose. It routes to
-/// `PunctuationRepass`, which is not the `complete_streaming_transcript` skip
-/// this cut is pinned to; a starved-and-shapeless session is a real remaining
-/// hole, reported as the next step rather than decided silently here.
+/// Every structurally complete verdict (`Complete` or
+/// `CompleteShapeDeficient`) is eligible for demotion into the existing
+/// `Incomplete` arm. [`final_pass_action`] carries the consequence with no new
+/// variant and no second controller: `Smart` +
+/// `Incomplete{starved_density}` → `TailGapFill`, which is the residual /
+/// tail-gap path the live session text already feeds through
+/// [`smart_tail_gap_source`]. This ordering matters: sentence shape cannot
+/// excuse implausibly sparse coverage, because a weak punctuation alignment
+/// may otherwise return the starving canvas untouched. `Off` still skips and
+/// `Always` still re-passes, because routing ignores completeness for both —
+/// the floor changes Smart alone.
 ///
 /// `audio_secs = None` leaves the verdict untouched: an unknown denominator is
 /// not evidence of starvation. The call site logs that silence so the absence
@@ -301,8 +301,10 @@ pub(crate) fn apply_committed_density_floor(
     let Some(audio_secs) = audio_secs else {
         return completeness;
     };
-    if matches!(completeness, StreamingCompleteness::Complete)
-        && committed_density_starved(audio_secs, committed_chars)
+    if matches!(
+        completeness,
+        StreamingCompleteness::Complete | StreamingCompleteness::CompleteShapeDeficient
+    ) && committed_density_starved(audio_secs, committed_chars)
     {
         return StreamingCompleteness::Incomplete {
             reason: DENSITY_STARVED_REASON,
@@ -311,16 +313,25 @@ pub(crate) fn apply_committed_density_floor(
     completeness
 }
 
-/// Single INFO line for a density-overridden skip verdict.
+/// Single INFO line for a density-overridden structural verdict.
 ///
 /// Carries both verdict labels and the numbers behind the override — never the
 /// transcript. The guard fires precisely when the committed text is short
 /// enough to fit comfortably in a log line, which is exactly when writing user
 /// speech into `~/.codescribe/logs/codescribe.log` would be easiest to justify
 /// and still wrong.
-pub(crate) fn format_density_override_line(audio_secs: f32, committed_chars: usize) -> String {
+pub(crate) fn format_density_override_line(
+    overridden: StreamingCompleteness,
+    audio_secs: f32,
+    committed_chars: usize,
+) -> String {
+    let overridden = match overridden {
+        StreamingCompleteness::Complete => "complete_streaming_transcript",
+        StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
+        StreamingCompleteness::Incomplete { reason } => reason,
+    };
     format!(
-        "final_pass_density_guard overridden_verdict=complete_streaming_transcript new_verdict={reason} audio_secs={audio_secs:.3} committed_chars={committed_chars} density_chars_per_sec={density:.2} floor_chars_per_sec={floor:.1} min_audio_secs={min_secs:.1} route=tail_gap_fill",
+        "final_pass_density_guard overridden_verdict={overridden} new_verdict={reason} audio_secs={audio_secs:.3} committed_chars={committed_chars} density_chars_per_sec={density:.2} floor_chars_per_sec={floor:.1} min_audio_secs={min_secs:.1} route=tail_gap_fill",
         reason = DENSITY_STARVED_REASON,
         density = committed_density_chars_per_sec(audio_secs, committed_chars).unwrap_or(f32::NAN),
         floor = DENSITY_MIN_CHARS_PER_SEC,

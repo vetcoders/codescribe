@@ -2817,8 +2817,8 @@ impl RecordingController {
             // recorded WAV — complete on both measured eaten takes — referees
             // the verdict. The session's own `committed_through_secs` is exactly
             // the quantity that bug corrupts, so it cannot referee itself; a
-            // header read is the whole cost, and only on a stop that was about
-            // to skip Whisper entirely.
+            // header read is the whole cost, paid before the existing typed
+            // routing matrix chooses skip, punctuation, or recovery.
             let audio_secs = audio_path.as_ref().and_then(|path| {
                 codescribe_core::audio::recorder::wav_duration_secs(path.as_path())
             });
@@ -2831,6 +2831,7 @@ impl RecordingController {
                 info!(
                     "{}",
                     format_density_override_line(
+                        structural_completeness,
                         audio_secs.unwrap_or(f32::NAN),
                         completeness_evidence.committed_chars,
                     )
