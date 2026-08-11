@@ -940,6 +940,27 @@ final class SettingsTruthTests: XCTestCase {
         }
     }
 
+    /// A passive Settings load must restore the canonical persisted chord and
+    /// never route it back through `update_config`. That prevents reopening
+    /// Shortcuts from overwriting a non-default choice with the UI default.
+    func testDeferredInsertPickerRestoresPersistedSelectionWithoutWriteBack() {
+        var persisted = CsSettings.sample
+        persisted.deferredInsertShortcut = "command_shift_v"
+        var writes: [(String, String)] = []
+        let engine = MockSettingsEngine(
+            settingsLoader: { persisted },
+            updateConfigObserver: { writes.append(($0, $1)) }
+        )
+
+        let model = SettingsViewModel(engine: engine)
+        XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
+        XCTAssertTrue(writes.isEmpty, "construction must only read persisted truth")
+
+        model.refresh()
+        XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
+        XCTAssertTrue(writes.isEmpty, "passive refresh must not write the picker value back")
+    }
+
     /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
     /// display configured Apple preference.
     func testActiveSTTUsesServingVerdictNotConfiguredEngine() {

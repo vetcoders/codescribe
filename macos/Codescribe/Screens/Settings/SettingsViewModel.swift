@@ -147,6 +147,41 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
     }
 }
 
+/// Deferred-insert delivery chord (`CODESCRIBE_DEFERRED_INSERT_SHORTCUT`).
+/// Mirrors core `DeferredInsertShortcut` (core/config/types.rs) — the same
+/// closed set, the same wire ids, the same modifier-glyph labels. Disabled is
+/// the product default: the CGEventTap is listen-only, so a host app bound to
+/// the same chord would see BOTH actions fire (types.rs, review P1-04).
+enum DeferredInsertShortcutOption: String, CaseIterable, Identifiable, Equatable {
+    case disabled = "disabled"
+    case commandOptionV = "command_option_v"
+    case commandShiftV = "command_shift_v"
+    case commandControlV = "command_control_v"
+
+    var id: String { rawValue }
+
+    /// Canonical wire identifier persisted through `update_config` — must stay
+    /// lockstep with `DeferredInsertShortcut::wire_id()`.
+    var wireId: String { rawValue }
+
+    /// Reads the canonical bridge value defensively. The core always emits one
+    /// of these four ids, while an unknown legacy/corrupt value renders as the
+    /// safe opt-in default instead of causing a passive write.
+    init(wireId: String) {
+        self = Self(rawValue: wireId) ?? .disabled
+    }
+
+    /// Chord rendered with macOS modifier glyphs (matches the Rust `label()`).
+    var visibleName: String {
+        switch self {
+        case .disabled: return "Disabled"
+        case .commandOptionV: return "⌘⌥V"
+        case .commandShiftV: return "⌘⇧V"
+        case .commandControlV: return "⌘⌃V"
+        }
+    }
+}
+
 /// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
 /// map exhaustively, so routing stays testable without rendering.
 enum SettingsPanelDestination: Equatable {
@@ -964,11 +999,16 @@ final class SettingsViewModel: ObservableObject {
         self.laneTruthProvider = laneTruthProvider
         self.servingStatusProvider = servingStatusProvider
 
-        // Keep construction side-effect free. SwiftUI may instantiate the
-        // Settings scene at app launch; live config/keychain reads happen in
-        // `refresh()` when the Settings window actually appears.
+        // Reading the settings snapshot is passive: it does not write config
+        // or touch Keychain. Seed the picker from that same canonical snapshot
+        // so reopening Shortcuts reflects the persisted chord before a user
+        // changes anything.
         self.permissions = permissionProbe.snapshot()
-        self.settings = .sample
+        let initialSettings = engine?.loadSettings() ?? .sample
+        self.settings = initialSettings
+        self.deferredInsertShortcut = DeferredInsertShortcutOption(
+            wireId: initialSettings.deferredInsertShortcut
+        )
         self.keyStatus = .sampleAllSet
         self.providers = CsProviderOption.sampleProviders
         self.configDir = ""
@@ -1009,7 +1049,7 @@ final class SettingsViewModel: ObservableObject {
         // restart. Idempotent bridge call — a no-op once the tap is already armed.
         hotkeys?.rearmAfterPermissionGrant()
         if let engine {
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
             keyStatus = engine.keyStatus()
             providers = engine.availableProviders()
             configDir = engine.configDir()
@@ -1606,7 +1646,7 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.resetAudioInputDevice()
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
             refreshAudioInput()
         } catch {
             lastError = String(describing: error)
@@ -1912,7 +1952,7 @@ final class SettingsViewModel: ObservableObject {
     /// Reload badge fields from the engine after a peer surface (tray) wrote them.
     func reloadHoldBadgeFromDisk() {
         guard let engine else { return }
-        settings = engine.loadSettings()
+        applyLoadedSettings(engine.loadSettings())
         objectWillChange.send()
     }
 
@@ -1927,6 +1967,19 @@ final class SettingsViewModel: ObservableObject {
             ? "cmd" : "shift"
         settings.holdArmModifier = normalized
         persist("HOLD_ARM_MODIFIER", normalized)
+    }
+
+    /// Deferred-insert chord from the canonical persisted settings snapshot.
+    @Published private(set) var deferredInsertShortcut: DeferredInsertShortcutOption = .disabled
+
+    /// Persists `CODESCRIBE_DEFERRED_INSERT_SHORTCUT` through the config
+    /// router (auto-tiered → settings.json since the 2d3e2e27 promotion; the
+    /// running detector live-reloads on write). Optimistic like every other
+    /// setter here: the selection sticks and a failed write surfaces in
+    /// `lastError`.
+    func setDeferredInsertShortcut(_ option: DeferredInsertShortcutOption) {
+        deferredInsertShortcut = option
+        persist("CODESCRIBE_DEFERRED_INSERT_SHORTCUT", option.wireId)
     }
 
     // MARK: - Agent workspace roots (list_projects tool)
@@ -1950,7 +2003,7 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.updateConfig(key: key, value: value)
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
         } catch {
             lastError = String(describing: error)
         }
@@ -1960,10 +2013,20 @@ final class SettingsViewModel: ObservableObject {
         guard let engine else { return }
         do {
             try engine.updateConfigMany(entries: entries)
-            settings = engine.loadSettings()
+            applyLoadedSettings(engine.loadSettings())
         } catch {
             lastError = String(describing: error)
         }
+    }
+
+    /// Applies an already-read bridge snapshot without writing it back. Keep
+    /// this as the only read path so passive reloads cannot reset the picker to
+    /// a UI default while persisted truth says otherwise.
+    private func applyLoadedSettings(_ loaded: CsSettings) {
+        settings = loaded
+        deferredInsertShortcut = DeferredInsertShortcutOption(
+            wireId: loaded.deferredInsertShortcut
+        )
     }
 
     // MARK: - Keys (Keychain-backed; secrets never read back)
