@@ -112,6 +112,14 @@ a report, plan, handoff, verifier result, or delivery proof. Durable evidence go
 plane. Heartbeats, locks, process metadata, transcripts, and other live supervision state go to
 the control-plane runtime and may be collected or removed according to its lifecycle.
 
+Every linked checkout owns its own ignored `target/` directory. Rust commands in a worker set
+`CARGO_TARGET_DIR=$PWD/target` (or use the equivalent checkout-local default) and must never point
+at the main checkout, another cut, or a shared fleet target. Sharing Cargo artifacts across
+concurrent worktrees can execute a binary compiled from another cut even when the current source
+tree differs. Integrators alone use the main checkout target, and integrator gates run with one
+writer. Cold compilation is part of trustworthy parallel isolation, not a reason to share target
+state.
+
 Do not create a repository-local `./.vibecrafted` as a competing fourth plane. Existing ignored
 repo-local scratch is legacy-only and is not authoritative. Concurrent writers must never
 overwrite the same artifact: assign one writer per manifest/report, namespace outputs by run or
