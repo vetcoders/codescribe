@@ -940,6 +940,19 @@ final class SettingsTruthTests: XCTestCase {
         }
     }
 
+    /// The picker's view-model state starts at the product default (Disabled —
+    /// the chord is opt-in) and tracks every selection, so the segmented
+    /// control reflects what was just persisted rather than snapping back.
+    func testDeferredInsertPickerStateTracksSelection() {
+        let model = SettingsViewModel(engine: MockSettingsEngine())
+
+        XCTAssertEqual(model.deferredInsertShortcut, .disabled)
+        model.setDeferredInsertShortcut(.commandShiftV)
+        XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
+        model.setDeferredInsertShortcut(.disabled)
+        XCTAssertEqual(model.deferredInsertShortcut, .disabled)
+    }
+
     /// Active STT consumes last serving verdict; Apple→Whisper fallback must not
     /// display configured Apple preference.
     func testActiveSTTUsesServingVerdictNotConfiguredEngine() {

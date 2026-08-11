@@ -26,6 +26,7 @@ struct ShortcutsPanel: View {
             }
 
             bindingRows.padding(.top, 20)
+            deferredInsertSection.padding(.top, 12)
             badgeLegend.padding(.top, 12)
 
             if !model.bindingConflicts.isEmpty {
@@ -263,6 +264,58 @@ struct ShortcutsPanel: View {
         Binding(
             get: { model.holdBadgeOption },
             set: { model.setHoldBadgeOption($0) }
+        )
+    }
+
+    // MARK: Deferred insert chord
+
+    /// Command chord delivering an armed transcript at the caret. A closed
+    /// four-option set mirroring core `DeferredInsertShortcut`; writes go
+    /// through the same `update_config` brain as every other setting. Off by
+    /// default — the tap is listen-only, so a host app bound to the same chord
+    /// would also react (core/config/types.rs).
+    private var deferredInsertSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsSectionLabel("Deferred insert")
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Insert armed transcript")
+                        .font(CSFont.ui(12.5, .semibold))
+                        .foregroundStyle(CSColor.textBody)
+                    Text("Global chord pastes the armed transcript at the caret. Apps bound to the same chord will also react.")
+                        .font(CSFont.ui(10.5, .medium))
+                        .foregroundStyle(CSColor.textMutedAlt)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Picker("Deferred insert shortcut", selection: deferredInsertBinding) {
+                    ForEach(DeferredInsertShortcutOption.allCases) { option in
+                        Text(option.visibleName).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 260)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(CSColor.surfaceRaised(0.025))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
+        )
+    }
+
+    private var deferredInsertBinding: Binding<DeferredInsertShortcutOption> {
+        Binding(
+            get: { model.deferredInsertShortcut },
+            set: { model.setDeferredInsertShortcut($0) }
         )
     }
 

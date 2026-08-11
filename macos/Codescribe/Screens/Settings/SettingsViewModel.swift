@@ -147,6 +147,34 @@ enum HoldBadgeOption: CaseIterable, Identifiable, Equatable {
     }
 }
 
+/// Deferred-insert delivery chord (`CODESCRIBE_DEFERRED_INSERT_SHORTCUT`).
+/// Mirrors core `DeferredInsertShortcut` (core/config/types.rs) — the same
+/// closed set, the same wire ids, the same modifier-glyph labels. Disabled is
+/// the product default: the CGEventTap is listen-only, so a host app bound to
+/// the same chord would see BOTH actions fire (types.rs, review P1-04).
+enum DeferredInsertShortcutOption: String, CaseIterable, Identifiable, Equatable {
+    case disabled = "disabled"
+    case commandOptionV = "command_option_v"
+    case commandShiftV = "command_shift_v"
+    case commandControlV = "command_control_v"
+
+    var id: String { rawValue }
+
+    /// Canonical wire identifier persisted through `update_config` — must stay
+    /// lockstep with `DeferredInsertShortcut::wire_id()`.
+    var wireId: String { rawValue }
+
+    /// Chord rendered with macOS modifier glyphs (matches the Rust `label()`).
+    var visibleName: String {
+        switch self {
+        case .disabled: return "Disabled"
+        case .commandOptionV: return "⌘⌥V"
+        case .commandShiftV: return "⌘⇧V"
+        case .commandControlV: return "⌘⌃V"
+        }
+    }
+}
+
 /// Panel a rail section routes to. `SettingsView`'s detail switch consumes this
 /// map exhaustively, so routing stays testable without rendering.
 enum SettingsPanelDestination: Equatable {
@@ -1927,6 +1955,21 @@ final class SettingsViewModel: ObservableObject {
             ? "cmd" : "shift"
         settings.holdArmModifier = normalized
         persist("HOLD_ARM_MODIFIER", normalized)
+    }
+
+    /// Deferred-insert chord as last written through this surface. The bridge
+    /// settings snapshot (`CsSettings`) does not carry the key yet, so until
+    /// the first write the picker shows the product default (Disabled).
+    @Published private(set) var deferredInsertShortcut: DeferredInsertShortcutOption = .disabled
+
+    /// Persists `CODESCRIBE_DEFERRED_INSERT_SHORTCUT` through the config
+    /// router (auto-tiered → settings.json since the 2d3e2e27 promotion; the
+    /// running detector live-reloads on write). Optimistic like every other
+    /// setter here: the selection sticks and a failed write surfaces in
+    /// `lastError`.
+    func setDeferredInsertShortcut(_ option: DeferredInsertShortcutOption) {
+        deferredInsertShortcut = option
+        persist("CODESCRIBE_DEFERRED_INSERT_SHORTCUT", option.wireId)
     }
 
     // MARK: - Agent workspace roots (list_projects tool)
