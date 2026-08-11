@@ -962,15 +962,26 @@ fn test_final_pass_action_on_complete_streaming_evidence() {
 /// Healthy density and short notes pin the two non-regression boundaries.
 #[test]
 fn fleet_red_density_guard_eaten_session() {
-    let verdict = |text: &str, committed_chars: usize| {
-        assess_streaming_completeness_fields(
-            text,
-            None,
-            false,
-            false,
-            Some(CompletenessCommitSource::UtteranceFinal),
+    // The floor is production logic now, so the verdict under test is the one
+    // the stop path actually routes on: structural completeness with the
+    // committed-density floor applied over it. `audio_secs` is the WAV header
+    // duration the call site reads; `committed_chars` is session telemetry.
+    // `density_guarded` below stays an INDEPENDENT re-derivation of "starving"
+    // from the raw numbers, so this test still checks production against the
+    // contract rather than against itself.
+    let verdict = |audio_secs: f32, text: &str, committed_chars: usize| {
+        apply_committed_density_floor(
+            assess_streaming_completeness_fields(
+                text,
+                None,
+                false,
+                false,
+                Some(CompletenessCommitSource::UtteranceFinal),
+                committed_chars,
+                1,
+            ),
+            Some(audio_secs),
             committed_chars,
-            1,
         )
     };
     let density_guarded = |audio_secs: f32, committed_chars: usize, completeness| {
@@ -978,18 +989,256 @@ fn fleet_red_density_guard_eaten_session() {
         starving && matches!(completeness, StreamingCompleteness::Complete)
     };
 
-    let healthy = verdict(&format!("{}.", "x".repeat(299)), 300);
+    let healthy = verdict(23.0, &format!("{}.", "x".repeat(299)), 300);
     assert_eq!(healthy, StreamingCompleteness::Complete);
     assert!(!density_guarded(23.0, 300, healthy));
 
-    let short = verdict("krótka notatka", 14);
+    let short = verdict(9.9, "krótka notatka", 14);
     assert_eq!(short, StreamingCompleteness::Complete);
     assert!(!density_guarded(9.9, 14, short));
 
-    let eaten = verdict(&format!("{}.", "x".repeat(219)), 220);
+    let eaten = verdict(104.0, &format!("{}.", "x".repeat(219)), 220);
     assert!(
         !density_guarded(104.0, 220, eaten),
         "104 s / 220 chars must not remain Complete: {eaten:?}"
+    );
+}
+
+/// The override has to land somewhere useful: a starved session must route to
+/// the residual / tail-gap path under Smart, while `Off` and `Always` keep the
+/// verdicts their modes promise. Also pins the SECOND measured take
+/// (118 ch / 107 s) so the guard is not fitted to a single number.
+#[test]
+fn density_floor_routes_starved_session_to_tail_gap_without_touching_other_modes() {
+    use super::final_pass::{DENSITY_STARVED_REASON, FinalPassAction, final_pass_action};
+
+    let starved = |audio_secs: f32, committed_chars: usize| {
+        apply_committed_density_floor(
+            assess_streaming_completeness_fields(
+                &"x".repeat(committed_chars),
+                None,
+                false,
+                false,
+                Some(CompletenessCommitSource::UtteranceFinal),
+                committed_chars,
+                1,
+            ),
+            Some(audio_secs),
+            committed_chars,
+        )
+    };
+
+    // Both measured eaten takes, not just the one the RED contract quotes.
+    for (audio_secs, committed_chars) in [(104.0_f32, 220_usize), (107.0, 118)] {
+        let verdict = starved(audio_secs, committed_chars);
+        assert_eq!(
+            verdict,
+            StreamingCompleteness::Incomplete {
+                reason: DENSITY_STARVED_REASON
+            },
+            "{committed_chars} ch / {audio_secs} s must be demoted, not Complete"
+        );
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Smart, verdict),
+            FinalPassAction::TailGapFill,
+            "a starved session routes to the tail-gap path, never a full-file re-pass"
+        );
+        // Off means Off and Always means Always — the floor changes Smart only.
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Off, verdict),
+            FinalPassAction::SkipStreamingFinal
+        );
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Always, verdict),
+            FinalPassAction::FullFileRepass
+        );
+    }
+
+    // "Existing residual/tail-gap path" concretely: a live lane with committed
+    // text consumes its own partials rather than re-decoding the WAV.
+    assert_eq!(
+        smart_tail_gap_source(true, &"x".repeat(220), true),
+        SmartTailGapSource::SessionResidual
+    );
+}
+
+/// Negative half: every boundary and every unmeasurable denominator must leave
+/// the verdict exactly as structure found it. A guard that fires on `10.0 s`,
+/// on `4.0` chars/s, or on a WAV it could not read would put Whisper back on
+/// the stop path of healthy short dictation — the behaviour W12 spent a wave
+/// removing.
+#[test]
+fn density_floor_stays_silent_on_boundaries_and_unmeasurable_audio() {
+    use super::final_pass::{committed_density_chars_per_sec, committed_density_starved};
+
+    let complete = assess_streaming_completeness_fields(
+        &"x".repeat(220),
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        220,
+        1,
+    );
+    assert_eq!(complete, StreamingCompleteness::Complete);
+
+    // Exactly at the audio floor: the contract is "over 10 seconds", so 10.0 s
+    // is silent no matter how starved the density looks.
+    assert!(!committed_density_starved(10.0, 10));
+    assert_eq!(
+        apply_committed_density_floor(complete, Some(10.0), 10),
+        complete
+    );
+    // Just past it, the same density does fire.
+    assert!(committed_density_starved(10.01, 10));
+
+    // Exactly at the density floor: "below 4.0" excludes 4.0 itself.
+    assert!(!committed_density_starved(50.0, 200));
+    assert!(committed_density_starved(50.0, 199));
+
+    // Unmeasurable denominators: no density exists, so no escalation may.
+    for audio_secs in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+        assert_eq!(
+            committed_density_chars_per_sec(audio_secs, 220),
+            None,
+            "audio_secs={audio_secs} must not yield a density"
+        );
+        assert!(!committed_density_starved(audio_secs, 220));
+        assert_eq!(
+            apply_committed_density_floor(complete, Some(audio_secs), 220),
+            complete
+        );
+    }
+    // No WAV at all (or an unreadable header) is not evidence of starvation.
+    assert_eq!(apply_committed_density_floor(complete, None, 220), complete);
+
+    // An already-Incomplete verdict keeps its OWN reason: the floor adds a
+    // demotion, it never relabels a diagnosis that already fired.
+    let pending = assess_streaming_completeness_fields(
+        "Trwa jeszcze",
+        None,
+        true,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        12,
+        1,
+    );
+    assert_eq!(
+        apply_committed_density_floor(pending, Some(104.0), 12),
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail"
+        }
+    );
+
+    // A healthy, dense shape-deficient transcript keeps the punctuation lane:
+    // density only diagnoses missing speech, never sentence shape by itself.
+    let shapeless_and_dense = assess_streaming_completeness_fields(
+        &"słowo ".repeat(60),
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        360,
+        1,
+    );
+    assert_eq!(
+        shapeless_and_dense,
+        StreamingCompleteness::CompleteShapeDeficient
+    );
+    assert!(!committed_density_starved(23.0, 360));
+    assert_eq!(
+        apply_committed_density_floor(shapeless_and_dense, Some(23.0), 360),
+        StreamingCompleteness::CompleteShapeDeficient
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, shapeless_and_dense),
+        FinalPassAction::PunctuationRepass
+    );
+}
+
+/// A long shape-deficient canvas is still eaten dictation when its committed
+/// density is implausible. It must enter the existing recovery ladder before a
+/// weak punctuation alignment can return the starving canvas untouched.
+#[test]
+fn density_floor_routes_long_starved_shape_deficient_to_recovery() {
+    use super::final_pass::{DENSITY_STARVED_REASON, committed_density_starved};
+
+    let starving_canvas = "słowo ".repeat(60);
+    let committed_chars = starving_canvas.chars().count();
+    assert_eq!(
+        committed_chars, 360,
+        "fixture must stay above SHAPE_MIN_CHARS"
+    );
+
+    let structural = assess_streaming_completeness_fields(
+        &starving_canvas,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars,
+        1,
+    );
+    assert_eq!(structural, StreamingCompleteness::CompleteShapeDeficient);
+    assert!(committed_density_starved(104.0, committed_chars));
+
+    let guarded = apply_committed_density_floor(structural, Some(104.0), committed_chars);
+    assert_eq!(
+        guarded,
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON
+        },
+        "104-second shape-deficient starvation must not reach punctuation-only delivery"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, guarded),
+        FinalPassAction::TailGapFill,
+        "Smart must attempt the existing residual/tail-gap recovery ladder"
+    );
+    assert_eq!(
+        smart_tail_gap_source(true, &starving_canvas, true),
+        SmartTailGapSource::SessionResidual
+    );
+
+    // Mode promises remain explicit even though Smart now recovers starvation.
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, guarded),
+        FinalPassAction::SkipStreamingFinal
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, guarded),
+        FinalPassAction::FullFileRepass
+    );
+}
+
+/// The override receipt must carry the numbers that justify it and none of the
+/// speech that triggered it. Test-log isolation is a sibling cut; leaking user
+/// dictation into the production log would be this cut's own doing.
+#[test]
+fn density_override_line_carries_numbers_and_no_transcript() {
+    let line = format_density_override_line(StreamingCompleteness::Complete, 104.0, 220);
+
+    assert!(line.contains("final_pass_density_guard"), "{line}");
+    assert!(
+        line.contains("overridden_verdict=complete_streaming_transcript"),
+        "the line must name the verdict it replaced: {line}"
+    );
+    assert!(line.contains("new_verdict=starved_density"), "{line}");
+    assert!(line.contains("audio_secs=104.000"), "{line}");
+    assert!(line.contains("committed_chars=220"), "{line}");
+    assert!(
+        line.contains("density_chars_per_sec=2.12"),
+        "the measured density must be legible, not implied: {line}"
+    );
+    assert!(line.contains("floor_chars_per_sec=4.0"), "{line}");
+    assert!(line.contains("min_audio_secs=10.0"), "{line}");
+    assert!(line.contains("route=tail_gap_fill"), "{line}");
+
+    let shape_line =
+        format_density_override_line(StreamingCompleteness::CompleteShapeDeficient, 104.0, 360);
+    assert!(
+        shape_line.contains("overridden_verdict=shape_deficient"),
+        "shape starvation must identify the verdict it overrode: {shape_line}"
     );
 }
 
