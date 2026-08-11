@@ -104,6 +104,10 @@ private func dictationTranscriberEnabled() -> Bool {
     }
 }
 
+if CommandLine.arguments.contains("--phrase-restart-self-test") {
+    exit(runPhraseRestartVectorSelfTest())
+}
+
 respawnSelfResponsibleIfRequested()
 
 Task {
@@ -1457,6 +1461,62 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
             segments: normalizeSegments(segs),
             backend: .sfSpeechRecognizer
         )
+    }
+}
+
+/// Test-only command path over the same accumulator decision used in live
+/// streaming. It intentionally reads the exact TSV compiled into the Rust
+/// mirror test, so fixture drift cannot make the two languages look aligned.
+private func runPhraseRestartVectorSelfTest() -> Int32 {
+    let source = URL(fileURLWithPath: #filePath)
+    let root = source
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let fixture = root.appendingPathComponent("tests/fixtures/phrase_restart_vectors.tsv")
+
+    do {
+        let contents = try String(contentsOf: fixture, encoding: .utf8)
+        var sawNamedCase = false
+        for line in contents.split(separator: "\n").map(String.init)
+            where !line.hasPrefix("#")
+        {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 4, let expected = Bool(fields[1]) else {
+                fputs("phrase_restart_self_test malformed_vector=\(line)\n", stderr)
+                return 2
+            }
+            if fields[0] == "missed_collapse_40_to_20" {
+                sawNamedCase = true
+                guard fields[2].count == 40, fields[3].count == 20 else {
+                    fputs("phrase_restart_self_test invalid_40_to_20_lengths\n", stderr)
+                    return 2
+                }
+            }
+            let actual = SfSpeechPhraseAccumulator.phraseRestartShouldFreezePrior(
+                prev: fields[2],
+                next: fields[3]
+            )
+            guard actual == expected else {
+                fputs(
+                    "phrase_restart_self_test FAIL id=\(fields[0]) expected=\(expected) "
+                        + "actual=\(actual) prev_chars=\(fields[2].count) "
+                        + "next_chars=\(fields[3].count)\n",
+                    stderr
+                )
+                return 1
+            }
+        }
+        guard sawNamedCase else {
+            fputs("phrase_restart_self_test missing=missed_collapse_40_to_20\n", stderr)
+            return 2
+        }
+        fputs("phrase_restart_self_test PASS\n", stderr)
+        return 0
+    } catch {
+        fputs("phrase_restart_self_test fixture_error=\(error)\n", stderr)
+        return 2
     }
 }
 

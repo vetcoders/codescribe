@@ -1596,6 +1596,39 @@ mod tests {
 
     // ── w1-b utterance_drop: shared_opener_restart_suppresses_freeze ────────
 
+    /// One checked-in vector source is consumed by this Rust mirror and the
+    /// Swift bridge self-test. The measured 40→20 non-prefix collapse is the
+    /// RED discriminator: threshold-only restart detection currently loses it.
+    #[test]
+    fn fleet_red_retention_missed_collapse_40_to_20() {
+        let vectors = include_str!("../../../tests/fixtures/phrase_restart_vectors.tsv");
+        let mut saw_named_case = false;
+
+        for line in vectors.lines().filter(|line| !line.starts_with('#')) {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4, "malformed phrase restart vector: {line}");
+            let expected = fields[1]
+                .parse::<bool>()
+                .expect("expected_freeze must be true or false");
+            let actual = phrase_restart_should_freeze_prior(fields[2], fields[3]);
+            if fields[0] == "missed_collapse_40_to_20" {
+                saw_named_case = true;
+                assert_eq!(fields[2].chars().count(), 40);
+                assert_eq!(fields[3].chars().count(), 20);
+            }
+            assert_eq!(
+                actual,
+                expected,
+                "phrase restart vector {} diverged: prev_chars={} next_chars={}",
+                fields[0],
+                fields[2].chars().count(),
+                fields[3].chars().count()
+            );
+        }
+
+        assert!(saw_named_case, "required 40→20 collapse vector missing");
+    }
+
     /// Measured three-way pattern: after a long open partial, SFSpeech collapses
     /// onto the next sentence's shared opener (`Zdanie`). That collapse MUST
     /// freeze the prior utterance — the old rule did not, and s6/s8/s10 vanished.

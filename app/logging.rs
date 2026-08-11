@@ -45,10 +45,11 @@ fn init_tracing() {
         },
     };
 
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let log_dir = PathBuf::from(home).join(".codescribe").join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join("codescribe.log");
+    let log_path = resolved_log_path();
+    let log_dir = log_path
+        .parent()
+        .expect("codescribe log path always has a parent");
+    let _ = std::fs::create_dir_all(log_dir);
 
     let stderr_layer = fmt::layer()
         .with_ansi(true)
@@ -83,6 +84,16 @@ fn init_tracing() {
             .with(stderr_layer)
             .try_init();
     }
+}
+
+/// Resolve the file sink independently from subscriber installation so tests
+/// can prove they never target the operator's production log.
+fn resolved_log_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".codescribe")
+        .join("logs")
+        .join("codescribe.log")
 }
 
 /// Install a global panic hook that logs every panic through `tracing` before
@@ -123,4 +134,22 @@ fn install_panic_hook() {
             "PANIC: {message}\nbacktrace:\n{backtrace}"
         );
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fleet_red_test_logging_isolated() {
+        let production = PathBuf::from(env::var("HOME").expect("HOME must be set"))
+            .join(".codescribe")
+            .join("logs")
+            .join("codescribe.log");
+        assert_ne!(
+            resolved_log_path(),
+            production,
+            "test logger initialization must resolve inside test-local data, never production"
+        );
+    }
 }
