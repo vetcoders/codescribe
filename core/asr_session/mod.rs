@@ -3,7 +3,7 @@
 //! Layer 0 (the Apple live canvas) draws instantly and owns committed text.
 //! Layer 1 is a *refiner*: it may fill gaps and patch tails, and it may never
 //! rewrite what the canvas already committed. This module is the seam that
-//! Layer 1 providers plug into — typed, transport-free, and vendor-neutral.
+//! Layer 1 providers plug into — typed and vendor-neutral.
 //!
 //! ## What lives here
 //!
@@ -16,12 +16,13 @@
 //! - [`provider`] — [`AsrSessionProvider`] plus the selection types that keep
 //!   Layer 0 canvas choice and Layer 1 refiner mode on two separate axes.
 //! - [`fake`] — a deterministic in-memory provider for tests and later cuts.
+//! - [`cloud`] — the dedicated live gateway session, bounded PCM transport,
+//!   and Codescribe-owned stream-global event sequencing.
 //!
 //! ## What deliberately does NOT live here
 //!
-//! No sockets, no HTTP, no recorder wiring, no settings surface, no gateway
-//! session mint, no local model. A provider implementation is a follow-on cut;
-//! this module only fixes the shape it must satisfy.
+//! No recorder wiring, settings surface, gateway session mint, vendor protocol,
+//! or local model. The live socket consumes only a normalized gateway contract.
 //!
 //! The existing whole-file `client::transcribe_cloud` / `transcribe_websocket`
 //! API is **outside** this contract. It uploads one completed recording and is
@@ -38,6 +39,8 @@
 //! - Errors carry a typed kind and nothing else, so no transcript fragment,
 //!   audio, or credential can ride an error into a log line.
 
+/// Dedicated provider-neutral live cloud gateway transport and session adapter.
+pub mod cloud;
 /// Typed Layer 1 session events, identity, bounded ranges, errors, and usage.
 pub mod events;
 /// Deterministic in-memory provider used by tests and follow-on transport cuts.
@@ -50,6 +53,11 @@ pub mod provider;
 #[cfg(test)]
 mod tests;
 
+pub use cloud::{
+    CloudGatewayTransport, CloudSessionLimits, CloudSessionTelemetry, GatewayConnection,
+    GatewayErrorCode, GatewayEvent, GatewayPcmFrame, GatewaySessionConfig, GatewayTransportPoll,
+    GatewayWebSocketTransport, LiveCloudAsrSession,
+};
 pub use events::{
     AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,
     TranscriptEvent, UsageEvent,

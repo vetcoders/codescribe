@@ -6,8 +6,9 @@
 //!   and resumes the wrong stream is caught here rather than downstream.
 //! - **utterance** — which speech unit inside the session. Sealing is
 //!   per-utterance, so a late partial cannot reopen committed text.
-//! - **sequence** — the provider's monotonic stream counter, the only ordering
-//!   authority. Arrival order is not ordering: a reconnect replays.
+//! - **sequence** — Codescribe's stream-global monotonic counter, assigned by
+//!   the session adapter after provider duplicates and stale per-utterance
+//!   revisions are removed. A provider's sequence scope is never trusted.
 //!
 //! Partial versus final is a **variant**, not a boolean flag, so a caller
 //! cannot forget to check it — the compiler makes the finality decision
@@ -59,7 +60,7 @@ pub struct EventIdentity {
     session_id: SessionId,
     /// Which utterance inside the session.
     utterance_id: u64,
-    /// Provider-side monotonic stream counter; the ordering authority.
+    /// Codescribe-owned stream-global monotonic counter; the ordering authority.
     sequence_id: u64,
 }
 
@@ -164,6 +165,8 @@ pub enum AsrErrorKind {
     Auth,
     /// Provider asked us to slow down.
     RateLimited,
+    /// The gateway reports that the account has no remaining quota.
+    Quota,
     /// Our side could not keep up and dropped bounded work.
     Overflow,
     /// Provider does not support what the session asked for (locale, mode).
@@ -182,7 +185,9 @@ impl AsrErrorKind {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Transport | Self::RateLimited | Self::Overflow => true,
-            Self::Auth | Self::Unsupported | Self::Protocol | Self::Cancelled => false,
+            Self::Auth | Self::Quota | Self::Unsupported | Self::Protocol | Self::Cancelled => {
+                false
+            }
         }
     }
 
@@ -192,6 +197,7 @@ impl AsrErrorKind {
             Self::Transport => "transport",
             Self::Auth => "auth",
             Self::RateLimited => "rate_limited",
+            Self::Quota => "quota",
             Self::Overflow => "overflow",
             Self::Unsupported => "unsupported",
             Self::Protocol => "protocol",
