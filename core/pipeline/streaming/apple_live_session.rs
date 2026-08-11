@@ -39,6 +39,10 @@ use futures_util::stream::FuturesOrdered;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::asr_session::recorder::{
+    LAYER1_DEGRADED_WARNING_CODE, Layer1DegradeReason, RecorderLayer1Lane,
+};
+use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
@@ -208,6 +212,17 @@ fn deliver_event(
     event_sink.on_event(event);
 }
 
+/// Surface one Layer 1 lane degrade as a counts-only warning event.
+///
+/// The message is the typed reason token and nothing else — no transcript,
+/// audio, provider payload, or endpoint detail can ride this event into a log.
+fn emit_layer1_degrade_warning(event_sink: &dyn EventSink, reason: Layer1DegradeReason) {
+    event_sink.on_event(&EngineEvent::Warning {
+        code: LAYER1_DEGRADED_WARNING_CODE.to_string(),
+        message: reason.as_token().to_string(),
+    });
+}
+
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
@@ -219,6 +234,7 @@ pub(crate) async fn apple_stream_transcription_session(
         language,
         stream_log_path,
         utterance_silence_sec,
+        layer1,
     } = config;
     // SFSpeech owns phrase boundaries in progressive mode, so the VAD-path
     // silence knob cannot apply. Say so instead of silently differing from
@@ -237,6 +253,22 @@ pub(crate) async fn apple_stream_transcription_session(
         "Apple progressive live session started (stream multi-seal)"
     );
     let session_id = uuid::Uuid::new_v4().to_string();
+
+    // C1: open the injected Layer 1 lane at recording start. `Disarmed` is the
+    // stock product (canvas + lexicon); an armed provider only ever arrives
+    // here already authorized — construction and consent live with the
+    // settings owner, not in this pipeline. Every lane failure from here on
+    // degrades back to exactly the disarmed behavior.
+    let lane_input = Layer1SessionInput {
+        session_id: Layer1SessionId::new(session_id.clone())
+            .expect("uuid session ids are never blank"),
+        locale: language.clone(),
+        sample_rate,
+    };
+    let mut layer1_lane = RecorderLayer1Lane::open(layer1, &lane_input);
+    if let Some(reason) = layer1_lane.take_degrade_notice() {
+        emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+    }
 
     // PCM → worker (None = EOF). Unbounded so the async select loop never
     // blocks on a full sync_channel while live Preview events wait to drain
@@ -302,6 +334,13 @@ pub(crate) async fn apple_stream_transcription_session(
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
                     Some(chunk) => {
+                        // C1 fan-out: offer the frame to the Layer 1 lane
+                        // before forwarding to the Apple worker. The offer
+                        // returns immediately, always — a refiner that cannot
+                        // keep up costs refinement frames, never capture, and
+                        // sustained overflow degrades the lane instead of
+                        // exerting backpressure here.
+                        layer1_lane.offer_pcm(&chunk);
                         if pcm_tx.send(Some(chunk)).is_err() {
                             warn!("Apple live stream worker dropped PCM channel");
                             audio_eof = true;
@@ -334,6 +373,14 @@ pub(crate) async fn apple_stream_transcription_session(
                 let completion = tail_patch_lane.finish_for_worker(id, end, result);
                 let _ = tp_done_tx.send(completion);
             }
+        }
+        // C1: drain whatever the Layer 1 provider has ready. Partials stay
+        // volatile draft inside the lane (never canvas); finals pass the
+        // ingest doctrine. Non-blocking, so live Preview drainage above is
+        // never delayed by the refiner.
+        layer1_lane.poll();
+        if let Some(reason) = layer1_lane.take_degrade_notice() {
+            emit_layer1_degrade_warning(event_sink.as_ref(), reason);
         }
     }
 
@@ -379,6 +426,34 @@ pub(crate) async fn apple_stream_transcription_session(
         info!(
             settled_at_stop,
             "Layer 1 tail-patch backlog settled after capture stopped"
+        );
+    }
+
+    // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
+    // happened inside (clean close, disconnect, incomplete drain), the method
+    // returns and the recording finishes on Apple + lexicon. The outcome's
+    // finals are doctrine-vetted gap-fill candidates: their one road to
+    // delivered text is `Layer1SessionOutcome::adjudicate_against_live_floor`
+    // (the T0 `merge_live_layer1` seam), owned by the stop-path truth
+    // adjudicator once the settings cut arms real providers.
+    let layer1_outcome = layer1_lane.stop();
+    if let Some(reason) = layer1_lane.take_degrade_notice() {
+        emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+    }
+    let layer1_counts = layer1_outcome.telemetry();
+    if layer1_counts.frames_offered > 0 || layer1_counts.finals_accepted > 0 {
+        info!(
+            frames_forwarded = layer1_counts.frames_forwarded,
+            overflow_frame_drops = layer1_counts.overflow_frame_drops,
+            partials_applied = layer1_counts.partials_applied,
+            finals_accepted = layer1_counts.finals_accepted,
+            events_rejected = layer1_counts.events_rejected,
+            provider_errors = layer1_counts.provider_errors,
+            degrade_reason = layer1_outcome
+                .degrade_reason()
+                .map(|reason| reason.as_token())
+                .unwrap_or("none"),
+            "Layer 1 live lane closed"
         );
     }
 

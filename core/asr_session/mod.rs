@@ -18,6 +18,10 @@
 //! - [`fake`] — a deterministic in-memory provider for tests and later cuts.
 //! - [`cloud`] — the dedicated live gateway session, bounded PCM transport,
 //!   and Codescribe-owned stream-global event sequencing.
+//! - [`recorder`] — the per-recording lane the live session drives: injected
+//!   [`recorder::Layer1Decision`], bounded non-blocking PCM fan-out, volatile
+//!   partial draft, and typed degrade paths that always land on canvas +
+//!   lexicon.
 //!
 //! ## What deliberately does NOT live here
 //!
@@ -49,6 +53,8 @@ pub mod fake;
 pub mod ingest;
 /// Provider trait plus the canvas/refiner selection split.
 pub mod provider;
+/// Recorder-side Layer 1 lane: injected decision, bounded fan-out, degrade paths.
+pub mod recorder;
 
 #[cfg(test)]
 mod tests;
@@ -65,3 +71,7 @@ pub use events::{
 pub use fake::FakeAsrSessionProvider;
 pub use ingest::{IngestVerdict, SessionIngest};
 pub use provider::{AsrSessionProvider, CanvasEngine, LayerSelection, RefinerMode, SessionInput};
+pub use recorder::{
+    FanOutVerdict, LAYER1_DEGRADED_WARNING_CODE, Layer1Decision, Layer1DegradeReason,
+    Layer1LaneState, Layer1LaneTelemetry, Layer1SessionOutcome, RecorderLayer1Lane,
+};
