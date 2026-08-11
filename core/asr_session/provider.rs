@@ -13,11 +13,10 @@
 //! that decision rather than restating it, so this module can never become a
 //! second, disagreeing source of truth about the canvas.
 //!
-//! ## What the trait does not promise
-//!
-//! No transport, no retry policy, no bounded-drain policy, no consent gate, no
-//! model. Those are follow-on cuts. What is fixed here is the shape: a session
-//! opens once, is fed audio, emits typed events, and closes.
+//! The trait stays independent of transport and consent policy. The cloud
+//! implementation in [`super::cloud`] supplies a normalized gateway transport
+//! and bounded drain policy; recorder wiring and the consent gate remain
+//! separate owners.
 
 use super::events::{AsrErrorKind, AsrSessionEvent, SessionId};
 

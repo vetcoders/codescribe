@@ -2,8 +2,9 @@
 //!
 //! A live provider is not a well-behaved iterator. It reconnects and replays,
 //! it re-sends a final it is not sure we received, and a slow frame can arrive
-//! after the frame that supersedes it. Arrival order is therefore not ordering
-//! — the provider's monotonic `sequence_id` is.
+//! after the frame that supersedes it. Arrival order is therefore not ordering.
+//! The provider adapter removes replays and stale provider revisions, then
+//! assigns the Codescribe-owned stream-global `sequence_id` consumed here.
 //!
 //! [`SessionIngest`] is the one place that decision is made, so no downstream
 //! consumer has to re-derive it and none of them can disagree. It holds no

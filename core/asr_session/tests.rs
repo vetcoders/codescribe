@@ -270,6 +270,7 @@ fn errors_are_typed_with_no_free_form_payload() {
         (AsrErrorKind::Transport, "transport", true),
         (AsrErrorKind::Auth, "auth", false),
         (AsrErrorKind::RateLimited, "rate_limited", true),
+        (AsrErrorKind::Quota, "quota", false),
         (AsrErrorKind::Overflow, "overflow", true),
         (AsrErrorKind::Unsupported, "unsupported", false),
         (AsrErrorKind::Protocol, "protocol", false),
