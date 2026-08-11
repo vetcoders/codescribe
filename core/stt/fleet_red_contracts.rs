@@ -1,10 +1,8 @@
-//! Precommitted RED witnesses for Layer 1 surfaces that do not exist yet.
+//! Precommitted fleet witnesses for the idle-ASR architecture wave.
 //!
-//! These probes deliberately stop at a typed `MissingContract` boundary. They
-//! contain no provider, process, network, model, sleep, audio, or runtime code.
-//! Follow-on cuts replace each probe with the production seam named by the test;
-//! until then every failure identifies exactly which architectural contract is
-//! absent instead of collapsing into a generic compile error.
+//! The wave began with typed `MissingContract` placeholders. Follow-on cuts
+//! replace each probe with the production seam named by the test, so every
+//! promoted witness measures the architecture instead of merely deleting RED.
 //!
 //! Promotion is what "done" looks like here: a probe stops being a placeholder
 //! when it runs against the module it named. `TypedMonotonicEvents` was
@@ -13,15 +11,6 @@
 //! `c1-live-recorder-orchestration` cut and now measures
 //! `crate::asr_session::recorder`. Deleting a `missing(...)` call without a
 //! seam behind it would be the opposite of that.
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MissingContract {
-    KillableLocalHelper,
-}
-
-fn missing<T>(contract: MissingContract) -> Result<T, MissingContract> {
-    Err(contract)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BackpressureOutcome {
@@ -199,7 +188,7 @@ fn fleet_red_cloud_backpressure_degrades_to_apple_only() {
     assert!(overflow_outcome.finals().is_empty());
     assert!(disconnect_outcome.finals().is_empty());
 
-    let outcome: Result<BackpressureOutcome, MissingContract> = Ok(BackpressureOutcome {
+    let outcome: Result<BackpressureOutcome, ()> = Ok(BackpressureOutcome {
         capture_continued,
         apple_only,
         overflow_degraded,
@@ -339,8 +328,106 @@ fn fleet_red_cloud_requires_explicit_consent() {
 }
 
 #[test]
+#[serial_test::serial]
 fn fleet_red_local_helper_exit_reclaims_process() {
-    let outcome: Result<HelperExitOutcome, _> = missing(MissingContract::KillableLocalHelper);
+    use std::process::{Child, Command, Stdio};
+
+    use crate::asr_session::{
+        AsrErrorKind, AsrSessionEvent, AsrSessionProvider, LocalHelperAsrSession, LocalHelperExit,
+        LocalHelperLauncher, LocalHelperLifecycle, LocalHelperProcess, SessionId, SessionInput,
+    };
+
+    struct FakeHelperProcess {
+        child: Child,
+    }
+
+    impl LocalHelperProcess for FakeHelperProcess {
+        fn pid(&self) -> u32 {
+            self.child.id()
+        }
+
+        fn start(&mut self, _input: &SessionInput) -> Result<(), AsrErrorKind> {
+            match self.child.try_wait() {
+                Ok(None) => Ok(()),
+                Ok(Some(_)) | Err(_) => Err(AsrErrorKind::Transport),
+            }
+        }
+
+        fn push_audio(&mut self, _samples: &[f32]) -> Result<(), AsrErrorKind> {
+            match self.child.try_wait() {
+                Ok(None) => Ok(()),
+                Ok(Some(_)) | Err(_) => Err(AsrErrorKind::Transport),
+            }
+        }
+
+        fn drain(&mut self) -> Vec<AsrSessionEvent> {
+            Vec::new()
+        }
+
+        fn request_shutdown(&mut self) -> Result<(), AsrErrorKind> {
+            self.child.kill().map_err(|_| AsrErrorKind::Transport)
+        }
+
+        fn wait_for_exit(&mut self) -> Result<LocalHelperExit, AsrErrorKind> {
+            self.child.wait().map_err(|_| AsrErrorKind::Transport)?;
+            Ok(LocalHelperExit {
+                pid: self.child.id(),
+                exited: true,
+            })
+        }
+
+        fn kill_and_wait(&mut self) -> Result<LocalHelperExit, AsrErrorKind> {
+            let _ = self.child.kill();
+            self.wait_for_exit()
+        }
+    }
+
+    struct FakeHelperLauncher;
+
+    impl LocalHelperLauncher for FakeHelperLauncher {
+        fn spawn(&mut self) -> Result<Box<dyn LocalHelperProcess>, AsrErrorKind> {
+            let child = Command::new("/bin/sleep")
+                .arg("60")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| AsrErrorKind::Transport)?;
+            Ok(Box::new(FakeHelperProcess { child }))
+        }
+    }
+
+    let whisper_probe = || {
+        crate::stt::whisper::singleton::test_init_calls()
+            + crate::stt::whisper::singleton::test_load_calls()
+    };
+    let whisper_before = whisper_probe();
+    let input = SessionInput {
+        session_id: SessionId::new("fleet-red-l0").expect("session id"),
+        locale: Some("pl-PL".to_string()),
+        sample_rate: 16_000,
+    };
+    let mut helper = LocalHelperAsrSession::new(Box::new(FakeHelperLauncher));
+    helper.open(&input).expect("fake helper opens");
+    let child_pid_observed = helper.child_pid().is_some_and(|pid| pid > 0);
+    helper.close().expect("fake helper exits and is reaped");
+    let child_exited = helper.last_exit().is_some_and(|proof| proof.exited);
+    assert_eq!(
+        helper.transitions(),
+        [
+            LocalHelperLifecycle::Stopped,
+            LocalHelperLifecycle::Starting,
+            LocalHelperLifecycle::Ready,
+            LocalHelperLifecycle::Cooling,
+            LocalHelperLifecycle::Stopped,
+        ]
+    );
+
+    let outcome: Result<HelperExitOutcome, AsrErrorKind> = Ok(HelperExitOutcome {
+        child_pid_observed,
+        child_exited,
+        gui_model_fallback_loaded: whisper_probe() != whisper_before,
+    });
     assert_eq!(
         outcome,
         Ok(HelperExitOutcome {

@@ -18,6 +18,8 @@
 //! - [`fake`] — a deterministic in-memory provider for tests and later cuts.
 //! - [`cloud`] — the dedicated live gateway session, bounded PCM transport,
 //!   and Codescribe-owned stream-global event sequencing.
+//! - [`local_helper`] — the provider-compatible, injected child-process
+//!   boundary whose confirmed exit is the local-weight reclaim authority.
 //! - [`bootstrap`] — the recording-start join between persisted mode/consent
 //!   truth and a validated, short-lived gateway session.
 //! - [`recorder`] — the per-recording lane the live session drives: injected
@@ -62,6 +64,8 @@ pub mod events;
 pub mod fake;
 /// Ordering state machine: monotonic sequencing and idempotent duplicate finals.
 pub mod ingest;
+/// Killable local-helper lifecycle and injected process boundary (L0).
+pub mod local_helper;
 /// Provider trait plus the canvas/refiner selection split.
 pub mod provider;
 /// Recorder-side Layer 1 lane: injected decision, bounded fan-out, degrade paths.
@@ -85,6 +89,10 @@ pub use events::{
 };
 pub use fake::FakeAsrSessionProvider;
 pub use ingest::{IngestVerdict, SessionIngest};
+pub use local_helper::{
+    LocalHelperAsrSession, LocalHelperExit, LocalHelperLauncher, LocalHelperLifecycle,
+    LocalHelperProcess,
+};
 pub use provider::{AsrSessionProvider, CanvasEngine, LayerSelection, RefinerMode, SessionInput};
 pub use recorder::{
     FanOutVerdict, LAYER1_DEGRADED_WARNING_CODE, Layer1Decision, Layer1DegradeReason,
