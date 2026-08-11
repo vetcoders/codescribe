@@ -213,6 +213,121 @@ pub(crate) fn assess_streaming_completeness_fields(
     })
 }
 
+// ── Committed-density floor over the structural verdict ─────────────────────
+//
+// Structural completeness answers "did the adjudicator seal everything it
+// saw". It cannot answer "was what it saw plausibly a whole minute of speech",
+// because every input it reads has already passed through the live
+// accumulator — so when the accumulator eats a phrase, coverage stays intact
+// over the survivors and reports Complete. Measured 2026-08-10/11: two Polish
+// takes delivered 220 chars over a COMPLETE 104 s WAV and 118 chars over a
+// complete 107 s WAV. Both were labelled `complete_streaming_transcript` and
+// skipped while 85–90% of the speech was gone. This floor is the second
+// opinion that skip decision never had.
+
+/// Below this audio length committed density is not judged at all.
+///
+/// A short note is legitimately sparse — "kup mleko i chleb" over nine seconds
+/// is a real dictation, not a starving one — and escalating those would put a
+/// Whisper pass on the stop path of every quick capture.
+const DENSITY_MIN_AUDIO_SECS: f32 = 10.0;
+
+/// Committed characters per audio second below which a coverage-complete
+/// verdict describes starvation rather than completeness.
+///
+/// Grounded in the measured pair — 2.1 chars/s (220 ch / 104 s) and 1.1 chars/s
+/// (118 ch / 107 s) — against a healthy take at ~13 chars/s. Conversational
+/// Polish runs roughly 12–15 chars/s, so this floor sits far below anything a
+/// real dictation produces. Deliberately loose: a false escalation costs one
+/// tail-gap pass, a false skip loses speech permanently, and the doctrine
+/// resolves that asymmetry in favour of keeping speech.
+const DENSITY_MIN_CHARS_PER_SEC: f32 = 4.0;
+
+/// Telemetry label replacing `complete_streaming_transcript` when the floor
+/// overrides the verdict. Stable string — it is a log/receipt contract.
+pub(crate) const DENSITY_STARVED_REASON: &str = "starved_density";
+
+/// Committed characters per second of recorded audio.
+///
+/// `None` when the denominator is unusable (non-finite, zero, negative). A
+/// missing audio length must never become a synthetic density: `0.0` would read
+/// as maximal starvation and escalate every session that reached this code.
+pub(crate) fn committed_density_chars_per_sec(
+    audio_secs: f32,
+    committed_chars: usize,
+) -> Option<f32> {
+    if !audio_secs.is_finite() || audio_secs <= 0.0 {
+        return None;
+    }
+    Some(committed_chars as f32 / audio_secs)
+}
+
+/// True when a session long enough to judge committed too few characters to be
+/// believable.
+///
+/// NaN-safe through [`committed_density_chars_per_sec`]: an unmeasurable
+/// duration yields `None` and reports "not starved" rather than escalating on
+/// evidence it does not have.
+pub(crate) fn committed_density_starved(audio_secs: f32, committed_chars: usize) -> bool {
+    let Some(density) = committed_density_chars_per_sec(audio_secs, committed_chars) else {
+        return false;
+    };
+    audio_secs > DENSITY_MIN_AUDIO_SECS && density < DENSITY_MIN_CHARS_PER_SEC
+}
+
+/// Apply the committed-density floor to a structural completeness verdict.
+///
+/// Only `Complete` is demoted, and only into the existing `Incomplete` arm, so
+/// [`final_pass_action`] carries the consequence with no new variant and no
+/// second controller: `Smart` + `Incomplete{starved_density}` → `TailGapFill`,
+/// which is the residual / tail-gap path the live session text already feeds
+/// through [`smart_tail_gap_source`]. `Off` still skips and `Always` still
+/// re-passes, because routing ignores completeness for both — the floor changes
+/// Smart alone.
+///
+/// `CompleteShapeDeficient` passes through on purpose. It routes to
+/// `PunctuationRepass`, which is not the `complete_streaming_transcript` skip
+/// this cut is pinned to; a starved-and-shapeless session is a real remaining
+/// hole, reported as the next step rather than decided silently here.
+///
+/// `audio_secs = None` leaves the verdict untouched: an unknown denominator is
+/// not evidence of starvation. The call site logs that silence so the absence
+/// shows up in the receipts instead of having to be inferred from them.
+pub(crate) fn apply_committed_density_floor(
+    completeness: StreamingCompleteness,
+    audio_secs: Option<f32>,
+    committed_chars: usize,
+) -> StreamingCompleteness {
+    let Some(audio_secs) = audio_secs else {
+        return completeness;
+    };
+    if matches!(completeness, StreamingCompleteness::Complete)
+        && committed_density_starved(audio_secs, committed_chars)
+    {
+        return StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        };
+    }
+    completeness
+}
+
+/// Single INFO line for a density-overridden skip verdict.
+///
+/// Carries both verdict labels and the numbers behind the override — never the
+/// transcript. The guard fires precisely when the committed text is short
+/// enough to fit comfortably in a log line, which is exactly when writing user
+/// speech into `~/.codescribe/logs/codescribe.log` would be easiest to justify
+/// and still wrong.
+pub(crate) fn format_density_override_line(audio_secs: f32, committed_chars: usize) -> String {
+    format!(
+        "final_pass_density_guard overridden_verdict=complete_streaming_transcript new_verdict={reason} audio_secs={audio_secs:.3} committed_chars={committed_chars} density_chars_per_sec={density:.2} floor_chars_per_sec={floor:.1} min_audio_secs={min_secs:.1} route=tail_gap_fill",
+        reason = DENSITY_STARVED_REASON,
+        density = committed_density_chars_per_sec(audio_secs, committed_chars).unwrap_or(f32::NAN),
+        floor = DENSITY_MIN_CHARS_PER_SEC,
+        min_secs = DENSITY_MIN_AUDIO_SECS,
+    )
+}
+
 /// Label from the actual engine verdict (not preference). Apple→Whisper fallback
 /// reports Whisper. When final-pass was **Skipped**, label the **live** lane that
 /// served (not a hardcode `streaming_whisper` — that laundered Apple live into a

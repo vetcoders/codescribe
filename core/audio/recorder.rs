@@ -62,7 +62,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
 use hound::{WavSpec, WavWriter};
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -1056,12 +1056,58 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
     Ok(())
 }
 
+/// Recorded length of a WAV file in seconds, read from its header.
+///
+/// Header-only: `hound` parses the `fmt `/`data` chunk sizes and reports the
+/// frame count without decoding a single sample, so this is cheap enough to sit
+/// on a latency-sensitive stop path. `duration()` counts frames per channel,
+/// which is what "seconds of audio" means for both the mono capture path here
+/// and any multi-channel file that reaches it.
+///
+/// Returns `None` on an unreadable or truncated header and on a zero sample
+/// rate. Failure is never reported as `0.0`: a caller measuring speech density
+/// must be able to tell "I could not measure this audio" apart from "this audio
+/// is empty", because the two demand opposite decisions.
+pub fn wav_duration_secs(path: &Path) -> Option<f32> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let sample_rate = reader.spec().sample_rate;
+    if sample_rate == 0 {
+        return None;
+    }
+    Some(reader.duration() as f32 / sample_rate as f32)
+}
+
 /// Recorder defaults, auto-silence gating, streaming buffer cap, and downmix.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
+
+    /// The stop-path density guard divides by this number, so it must come from
+    /// the header exactly — and a file the probe cannot parse must report `None`
+    /// rather than a plausible `0.0`, which would read as total starvation.
+    #[test]
+    fn wav_duration_secs_reads_header_and_refuses_unreadable_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("take.wav");
+        let rate = 16_000u32;
+        // 2.5 s of mono silence: duration must be frames/rate, not file size.
+        let samples = vec![0i16; rate as usize * 5 / 2];
+        write_wav_file(&path, &samples, rate, 1).expect("write wav");
+
+        let secs = wav_duration_secs(&path).expect("written header must be readable");
+        assert!((secs - 2.5).abs() < 1e-3, "expected 2.5 s, got {secs}");
+
+        let garbage = dir.path().join("not-a-wav.bin");
+        std::fs::write(&garbage, b"definitely not RIFF").expect("write garbage");
+        assert_eq!(
+            wav_duration_secs(&garbage),
+            None,
+            "an unparseable header must not report a duration"
+        );
+        assert_eq!(wav_duration_secs(&dir.path().join("missing.wav")), None);
+    }
 
     /// Operator decision B (2026-08-10): the RAM ring caps at
     /// STREAMING_BUFFER_CAP_SECONDS, so a phone-call take longer than 5 min

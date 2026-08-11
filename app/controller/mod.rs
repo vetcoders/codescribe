@@ -98,9 +98,10 @@ use assistive_delivery::{
 pub(crate) use final_pass::{
     FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
     StreamingCompleteness, StreamingCompletenessEvidence, append_tail_gap,
-    assess_streaming_completeness, compose_stop_path_residual_from_partials, final_pass_action,
-    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
-    format_stop_path_budget_line, smart_tail_gap_source,
+    apply_committed_density_floor, assess_streaming_completeness,
+    compose_stop_path_residual_from_partials, final_pass_action, final_pass_routing_mode,
+    format_assistive_delivery_budget_line, format_density_override_line,
+    format_final_pass_stages_line, format_stop_path_budget_line, smart_tail_gap_source,
 };
 #[cfg(test)]
 pub(crate) use final_pass::{
@@ -2810,7 +2811,39 @@ impl RecordingController {
             // commit_source come from session telemetry, never hardcoded.
             let completeness_evidence =
                 StreamingCompletenessEvidence::from_session(&streaming_text, &session_snap);
-            let completeness = assess_streaming_completeness(&completeness_evidence);
+            let structural_completeness = assess_streaming_completeness(&completeness_evidence);
+            // W-B committed-density floor. Structural coverage cannot notice
+            // that the live accumulator ate the speech it was covering, so the
+            // recorded WAV — complete on both measured eaten takes — referees
+            // the verdict. The session's own `committed_through_secs` is exactly
+            // the quantity that bug corrupts, so it cannot referee itself; a
+            // header read is the whole cost, and only on a stop that was about
+            // to skip Whisper entirely.
+            let audio_secs = audio_path.as_ref().and_then(|path| {
+                codescribe_core::audio::recorder::wav_duration_secs(path.as_path())
+            });
+            let completeness = apply_committed_density_floor(
+                structural_completeness,
+                audio_secs,
+                completeness_evidence.committed_chars,
+            );
+            if completeness != structural_completeness {
+                info!(
+                    "{}",
+                    format_density_override_line(
+                        audio_secs.unwrap_or(f32::NAN),
+                        completeness_evidence.committed_chars,
+                    )
+                );
+            } else if audio_secs.is_none() {
+                // A guard that could not measure must say so: silence here is
+                // otherwise indistinguishable from a session that passed.
+                info!(
+                    "final_pass_density_guard silent reason=audio_duration_unknown committed_chars={} has_audio_path={}",
+                    completeness_evidence.committed_chars,
+                    audio_path.is_some(),
+                );
+            }
             // Typed routing: Always → full file re-pass; Smart+Complete / Off →
             // skip; Smart+Incomplete → tail-gap append (committed text immutable).
             // Live-lane fence (w2-b): keeps the action matrix; residual partials
