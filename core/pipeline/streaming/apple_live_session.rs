@@ -49,7 +49,8 @@ use super::progressive_seal::{ProgressiveSealMachine, seal_span_text};
 #[cfg(test)]
 use super::session::emit_tail_patch_result;
 use super::session::{
-    SessionConfig, compute_tail_patch_job, emit_session_finalised, tail_patch_enabled,
+    SessionConfig, UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job, emit_session_finalised,
+    tail_patch_enabled,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -157,14 +158,16 @@ impl AppleTailPatchLane {
     ) -> TailPatchCompletion {
         match result {
             Ok((utterance_id, outcome)) => {
-                if let TailPatchOutcome::Patches(events) = &outcome {
-                    self.replacements = self.replacements.saturating_add(
-                        events
-                            .iter()
-                            .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
-                            .count() as u64,
-                    );
-                }
+                // `events()` covers both bearing arms: ordinary patches and the
+                // gap-appends an under-commit recovered. Counting only `Patches`
+                // here would drop recovered speech from the session summary.
+                self.replacements = self.replacements.saturating_add(
+                    outcome
+                        .events()
+                        .iter()
+                        .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
+                        .count() as u64,
+                );
                 TailPatchCompletion {
                     utterance_id,
                     covered_through_secs: req_end_secs,
@@ -385,6 +388,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 sealed = outcome.sealed,
                 filtered_empty_drops = outcome.filtered_empty_drops,
                 unresolved_windows = outcome.unresolved_windows,
+                under_commit_escalations = outcome.under_commit_escalations,
                 "Apple progressive live session finished"
             );
         }
@@ -437,6 +441,9 @@ struct AppleSealState {
     last_sealed_end: f32,
     /// Seals whose audio window could not be resolved (F3 falsification).
     unresolved_windows: u64,
+    /// Seals where Layer 1 recovered speech it could not place on the canvas
+    /// (W-C). A non-zero count means the stop path is owed a residual gap fill.
+    under_commit_escalations: u64,
     /// Layer 1 hand-off, present only when layered transcription is armed.
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     /// Seals whose tail-patch request found the queue full (F1 backpressure).
@@ -466,6 +473,7 @@ impl AppleSealState {
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             last_sealed_end: 0.0,
             unresolved_windows: 0,
+            under_commit_escalations: 0,
             tail_patch: None,
             tail_patch_backpressure_drops: 0,
             sealed_prefix: String::new(),
@@ -531,10 +539,18 @@ impl AppleSealState {
                 quality_gate_dropped: false,
                 confidence_flags: Vec::new(),
             });
-            if let Some(TailPatchOutcome::Patches(events)) =
-                self.tail_patch_outcomes.remove(&sealed.id)
-            {
-                for event in events {
+            if let Some(outcome) = self.tail_patch_outcomes.remove(&sealed.id) {
+                // Escalate before the appends so the starved-canvas signal is
+                // never lost if a later send fails; both ride the same channel
+                // as the final, so ordering after `UtteranceFinal` holds.
+                if outcome.residual_required() {
+                    self.under_commit_escalations = self.under_commit_escalations.saturating_add(1);
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: UNDER_COMMIT_WARNING_CODE.to_string(),
+                        message: format!("residual gap fill required for utterance {}", sealed.id),
+                    });
+                }
+                for event in outcome.into_events() {
                     let _ = ev_tx.send(event);
                 }
             }
@@ -547,6 +563,8 @@ struct AppleStreamOutcome {
     sealed: u64,
     filtered_empty_drops: u64,
     unresolved_windows: u64,
+    /// How many seals escalated an unplaceable Layer 1 under-commit (W-C).
+    under_commit_escalations: u64,
 }
 
 /// Resolve a sealed utterance back to its audio span, then release what can
@@ -759,6 +777,7 @@ fn apple_stream_worker(
         sealed: state.sealed_count,
         filtered_empty_drops: state.filtered_empty_drops,
         unresolved_windows: state.unresolved_windows,
+        under_commit_escalations: state.under_commit_escalations,
     })
 }
 
@@ -1002,6 +1021,87 @@ mod tests {
             "double-closed span must seal live"
         );
         assert_eq!(state.progressive.sealed_spans().len(), 1);
+    }
+
+    /// W-C: an under-commit's gap-appends reach the canvas through the same
+    /// seal gate as ordinary patches — strictly after `UtteranceFinal` — and an
+    /// unplaceable remainder rides out as the residual escalation.
+    #[test]
+    fn apple_seal_emits_under_commit_gap_appends_and_escalation() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tp_tx, _tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 10.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "raz dwa trzy cztery piec".into(),
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "raz dwa trzy cztery piec".into(),
+                    segments: vec![segment("raz dwa trzy cztery piec", 0.5, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        while rx.try_recv().is_ok() {}
+
+        // Whisper recovered a tail that only partly has a safe anchor.
+        let outcome = compute_tail_patch(
+            "raz dwa trzy cztery piec szesc",
+            "raz dwa trzy alfa beta gamma cztery piec siedem osiem dziewiec dziesiec",
+            1,
+            &TailPatchConfig::default(),
+        );
+        assert!(
+            outcome.residual_required(),
+            "fixture must carry an unplaceable remainder"
+        );
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                utterance_id: 1,
+                covered_through_secs: 2.0,
+                outcome,
+            },
+            5.0,
+        );
+
+        let mut after = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            after.push(event);
+        }
+        let final_at = after
+            .iter()
+            .position(|e| matches!(e, EngineEvent::UtteranceFinal { .. }))
+            .expect("span must seal");
+        let patch_at = after
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    EngineEvent::ReplaceRange {
+                        source: LayerSource::TailPatch,
+                        ..
+                    }
+                )
+            })
+            .expect("recovered gap must reach the canvas, not be discarded");
+        assert!(
+            final_at < patch_at,
+            "a gap-append must never overtake the final it addresses"
+        );
+        assert!(
+            after.iter().any(|e| matches!(
+                e,
+                EngineEvent::Warning { code, .. } if code == UNDER_COMMIT_WARNING_CODE
+            )),
+            "unplaceable recovered speech must escalate outward"
+        );
+        assert_eq!(state.under_commit_escalations, 1);
     }
 
     /// Partial → Preview; each phrase final → UtteranceFinal with rising ids.
