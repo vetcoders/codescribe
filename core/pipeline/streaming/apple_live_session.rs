@@ -855,6 +855,41 @@ fn seal_utterance_final(
                 break;
             }
         }
+        // Diagnostic for the collapse-to-one-word failure mode.
+        //
+        // `contains` is all-or-nothing: one revised word anywhere inside the
+        // prefix invalidates every longer probe at once, so the loop falls all
+        // the way to `take=1`, where a single common word trivially matches
+        // somewhere in the canvas. Session 2026-08-12 shows the signature —
+        // 30 of 42 rescues matched exactly one word, on phrases up to 223
+        // characters, and the delivered take carried 72% of its words inside a
+        // repeated 6-gram. Distinguishing "genuinely novel" from "restated with
+        // one word revised" needs the first divergent word, which the counter
+        // alone cannot show. Logged only when a long callback collapses to a
+        // near-empty match, so healthy takes stay quiet.
+        if known_prefix_words <= 1 && words.len() > 4 {
+            let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+            let probe_words: Vec<String> = words
+                .iter()
+                .map(|word| normalize_for_containment(&seal_span_text(word, "", true)))
+                .collect();
+            let diverged_at = canvas_words
+                .windows(probe_words.len().min(canvas_words.len()).max(1))
+                .filter_map(|window| {
+                    window
+                        .iter()
+                        .zip(probe_words.iter())
+                        .position(|(canvas_word, probe)| canvas_word != probe)
+                })
+                .max();
+            info!(
+                known_prefix_words,
+                callback_words = words.len(),
+                canvas_words = canvas_words.len(),
+                best_aligned_words = diverged_at.unwrap_or(0),
+                "apple_lifecycle: prefix match collapsed — canvas holds a longer aligned run than the substring probe found"
+            );
+        }
         let novel_text = words[known_prefix_words..].join(" ");
         if novel_text.is_empty() {
             // Fully re-heard text: safe to keep as in-flight preview.
