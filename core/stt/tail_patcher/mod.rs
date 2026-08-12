@@ -121,12 +121,33 @@ pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHA
 /// re-segmented compounds) on the normal path.
 pub const UNDER_COMMIT_RATIO: f64 = 0.6;
 
-/// Minimum re-transcribed token count before under-commit is even considered.
+/// Minimum re-transcribed token count before under-commit is even considered,
+/// for canvases of ≥3 tokens.
 ///
 /// A two-word Whisper burst against a one-word canvas satisfies any ratio while
 /// carrying no recoverable speech; requiring a real sentence keeps the
 /// escalation attached to material worth recovering.
+///
+/// The floor SCALES DOWN for short canvases (see
+/// [`under_commit_min_retranscribed`]): session a5623d55 (2026-08-12) lost the
+/// utterance head three times in one minute because its live windows held only
+/// 1-2 committed tokens and Whisper's 5-token recovery could never reach an
+/// absolute 6. Coverage, not length, is the garbage discriminator.
 pub const UNDER_COMMIT_MIN_RETRANSCRIBED_TOKENS: usize = 6;
+
+/// Hard floor of the scaled minimum: even a one-token canvas needs at least
+/// this many recovered tokens before escalation is considered.
+pub const UNDER_COMMIT_MIN_SHORT_WINDOW_TOKENS: usize = 4;
+
+/// Effective minimum re-transcribed token count for a given canvas size:
+/// `min(6, max(4, 2 × committed))` — never stricter than the absolute
+/// constant, looser only where the canvas itself is one or two tokens.
+pub fn under_commit_min_retranscribed(committed_tokens: usize) -> usize {
+    (committed_tokens * 2).clamp(
+        UNDER_COMMIT_MIN_SHORT_WINDOW_TOKENS,
+        UNDER_COMMIT_MIN_RETRANSCRIBED_TOKENS,
+    )
+}
 
 /// Fraction of committed tokens that must be found inside the re-transcription
 /// before its anchors may be trusted.
@@ -429,7 +450,7 @@ fn classify_under_commit(
 ) -> Option<UnderCommit> {
     let committed_tokens = c_tokens.len();
     let retranscribed_tokens = r_tokens.len();
-    if retranscribed_tokens < UNDER_COMMIT_MIN_RETRANSCRIBED_TOKENS {
+    if retranscribed_tokens < under_commit_min_retranscribed(committed_tokens) {
         return None;
     }
     let commit_ratio = committed_tokens as f64 / retranscribed_tokens as f64;
@@ -895,6 +916,47 @@ mod tests {
         let applied = apply_all(committed, &outcome);
         assert!(applied.starts_with(committed));
         assert_eq!(applied, retranscribed);
+    }
+
+    /// Session a5623d55 (2026-08-12): the first live windows are SHORT — the
+    /// canvas held 2 tokens, Whisper recovered 5 (the eaten utterance head).
+    /// An absolute 6-token floor threw that recovery away three times in one
+    /// minute. Short-window under-commits must escalate too; the coverage
+    /// gate, not a length floor, is the garbage discriminator.
+    #[test]
+    fn short_window_under_commit_escalates_instead_of_skipping() {
+        let cfg = TailPatchConfig::default();
+        let committed = "zmienili zobacz";
+        let retranscribed = "coś się tutaj zmienili zobacz";
+        let outcome = compute_tail_patch(committed, retranscribed, 1, &cfg);
+
+        let TailPatchOutcome::UnderCommit(under) = &outcome else {
+            panic!("short-window head recovery must escalate, got {outcome:?}");
+        };
+        assert_eq!(under.committed_tokens, 2);
+        assert_eq!(under.retranscribed_tokens, 5);
+        // The head sits before the first match: a prepend, canvas untouched.
+        let applied = apply_all(committed, &outcome);
+        assert!(
+            applied.ends_with(committed),
+            "canvas must survive: {applied:?}"
+        );
+        assert!(
+            applied.contains("coś się tutaj"),
+            "recovered head must land: {applied:?}"
+        );
+    }
+
+    /// The floor still exists for genuinely tiny bursts: a two-word decode
+    /// against a one-word canvas carries nothing worth escalating.
+    #[test]
+    fn tiny_burst_still_skips() {
+        let cfg = TailPatchConfig::default();
+        let outcome = compute_tail_patch("tak", "no tak", 1, &cfg);
+        assert!(
+            matches!(outcome, TailPatchOutcome::Skipped { .. }),
+            "two-word burst must not escalate: {outcome:?}"
+        );
     }
 
     /// Recovered speech that would have to overwrite a committed span is never
