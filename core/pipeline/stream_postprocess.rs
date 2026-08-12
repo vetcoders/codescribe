@@ -171,6 +171,23 @@ static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
     RwLock::new(lex)
 });
 
+/// Warm the global lexicon off the caller's thread.
+///
+/// The singleton compiles ~14.5k rules in seconds; when the first toucher is
+/// the Apple live-session thread, that compile sits between "audio stream
+/// started" and "recognizer ready" and the first dictation after launch arms
+/// seconds late (session a5623d55, 2026-08-12: 5.1 s). Call at startup so the
+/// first recording finds the table already built. Idempotent and non-blocking;
+/// concurrent first-touchers simply block on the same `LazyLock` as before.
+pub fn warm_lexicon() {
+    std::thread::Builder::new()
+        .name("lexicon-warm".into())
+        .spawn(|| {
+            drop(GLOBAL_LEXICON.read());
+        })
+        .ok();
+}
+
 impl Lexicon {
     /// Compile the full rule set from every source, in load order.
     ///

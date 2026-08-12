@@ -513,6 +513,12 @@ impl RecordingController {
                 Err(error) => warn!("Model manager unavailable during startup: {error}"),
             }
 
+            // Lexicon table (~14.5k rules, seconds to compile) warms off-thread
+            // too: its first toucher used to be the Apple live-session thread,
+            // which put the whole compile between "audio stream started" and
+            // "recognizer ready" (5.1 s arm stall, session a5623d55).
+            codescribe_core::pipeline::stream_postprocess::warm_lexicon();
+
             if !crate::whisper::is_initialized() {
                 // Best-effort BACKGROUND prewarm — never block recording readiness.
                 //
