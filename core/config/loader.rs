@@ -38,6 +38,19 @@ static CONFIG_ENV_BOOTSTRAPPED: AtomicBool = AtomicBool::new(false);
 /// cannot both decide they are the first writer.
 static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Serialize the full settings read-modify-write transaction behind public
+/// Config mutation APIs. Atomic renames prevent torn files, but without this
+/// outer lock two distinct UI writes can both load the same snapshot and the
+/// later rename silently erase the earlier field.
+static CONFIG_PERSISTENCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn config_persistence_guard() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_PERSISTENCE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Keys this process seeded itself. After bootstrap they are reported as absent
 /// by [`Config::config_runtime_env_var`], so a later Settings write wins over
 /// the value config planted at startup — that is what makes settings hot-apply
@@ -75,6 +88,13 @@ impl Config {
     /// a stale `~/.codescribe/.env` cannot shadow a choice made in the UI.
     /// Only after that are defaults, settings, and finally explicit env applied.
     fn load_with_keychain_population(populate_keychain: bool) -> Self {
+        let _data_io = match super::storage_reset::begin_app_data_io() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(%error, "Config load skipped while app-data reset owns the process");
+                return Self::default();
+            }
+        };
         let _bootstrap_guard = Self::config_env_bootstrap_guard();
         let seed_process_env = Self::can_seed_process_env();
         let env_path = Self::env_path();
@@ -897,6 +917,8 @@ impl Config {
     /// This is a persistence write only. Process-env seeding is restricted to
     /// bootstrap loads; live readers must reload the config/settings snapshot.
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _persistence = config_persistence_guard();
         let normalized_formatting = (key == "FORMATTING_LEVEL")
             .then(|| FormattingPolicy::parse(value))
             .transpose()?
@@ -1010,6 +1032,8 @@ impl Config {
         if entries.is_empty() {
             return Ok(());
         }
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _persistence = config_persistence_guard();
 
         let mut settings: Option<super::settings::UserSettings> = None;
         let mut env_vars: Option<HashMap<String, String>> = None;
@@ -1358,6 +1382,8 @@ impl Config {
     ) -> anyhow::Result<()> {
         use crate::safe_path::{safe_read_to_string_bounded, safe_write_bounded};
 
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+
         // Use path's parent as root to support CODESCRIBE_ENV_PATH override (tests)
         let root = path
             .parent()
@@ -1620,6 +1646,69 @@ mod tests {
         remove_env_for_test("USE_LOCAL_STT");
         remove_env_for_test("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         tmp
+    }
+
+    /// Distinct UI writes are one read-modify-write transaction each. Start two
+    /// callers together and prove the later atomic rename cannot erase the
+    /// field persisted by the other caller.
+    #[test]
+    #[serial]
+    fn concurrent_config_updates_preserve_both_distinct_fields() {
+        const CHILD_FLAG: &str = "CODESCRIBE_TEST_CONFIG_RMW_CHILD";
+        const CHILD_WITNESS: &str = "CODESCRIBE_TEST_CONFIG_RMW_WITNESS";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            let witness_dir = TempDir::new().expect("config RMW witness dir");
+            let witness = witness_dir.path().join("passed");
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("current core test executable"),
+            )
+            .args([
+                "--exact",
+                "config::loader::tests::concurrent_config_updates_preserve_both_distinct_fields",
+                "--nocapture",
+            ])
+            .env(CHILD_FLAG, "1")
+            .env(CHILD_WITNESS, &witness)
+            .status()
+            .expect("spawn isolated config RMW regression");
+            assert!(status.success(), "isolated config RMW regression failed");
+            assert_eq!(
+                fs::read(witness).expect("child executed exact config RMW test"),
+                b"config-rmw-pass"
+            );
+            return;
+        }
+
+        let _tmp = setup_isolated_data_dir();
+        let _auto_paste = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _dock = TestEnvGuard::unset("SHOW_DOCK_ICON");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let first_start = start.clone();
+        let first = std::thread::spawn(move || {
+            first_start.wait();
+            Config::default()
+                .save_to_env("AUTO_PASTE_ENABLED", "0")
+                .expect("persist auto paste")
+        });
+        let second_start = start.clone();
+        let second = std::thread::spawn(move || {
+            second_start.wait();
+            Config::default()
+                .save_to_env("SHOW_DOCK_ICON", "0")
+                .expect("persist dock icon")
+        });
+        start.wait();
+        first.join().expect("first config writer joins");
+        second.join().expect("second config writer joins");
+
+        let persisted = UserSettings::load();
+        assert_eq!(persisted.auto_paste_enabled, Some(false));
+        assert_eq!(persisted.show_dock_icon, Some(false));
+        fs::write(
+            std::env::var_os(CHILD_WITNESS).expect("config RMW child witness path"),
+            b"config-rmw-pass",
+        )
+        .expect("write config RMW child witness");
     }
 
     /// Every LLM write key as `(key, sample value, JSON pointer)`. A `None`

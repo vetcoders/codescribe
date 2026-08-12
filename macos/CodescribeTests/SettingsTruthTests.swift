@@ -903,6 +903,15 @@ final class SettingsTruthTests: XCTestCase {
         )
     }
 
+    func testOnlyPostDestructiveResetErrorsRequireRelaunch() {
+        XCTAssertFalse(resetFailureRequiresRelaunch("failed to prepare Trash destination"))
+        XCTAssertTrue(
+            resetFailureRequiresRelaunch(
+                "CODESCRIBE_RESET_RELAUNCH_REQUIRED: app data moved but prompt restore failed"
+            )
+        )
+    }
+
     func testClearMcpConfigurationUsesDedicatedEngineContract() {
         var calls = 0
         let model = SettingsViewModel(

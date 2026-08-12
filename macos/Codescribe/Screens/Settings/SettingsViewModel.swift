@@ -543,6 +543,13 @@ func resetConfirmationMatches(_ text: String) -> Bool {
     text == "RESET"
 }
 
+/// Rust marks failures that occurred after the first irreversible data move.
+/// Those are errors for audit/recovery, but staying in the current process is
+/// no longer safe because its app-data plane is deliberately latched.
+func resetFailureRequiresRelaunch(_ description: String) -> Bool {
+    description.contains("CODESCRIBE_RESET_RELAUNCH_REQUIRED")
+}
+
 func resetImpactSummary(_ preview: CsResetPreview) -> String {
     let recordings = preview.audioFiles == 1 ? "recording" : "recordings"
     let days = preview.transcriptDays == 1 ? "day" : "days"
@@ -1396,13 +1403,19 @@ final class SettingsViewModel: ObservableObject {
     /// Move all local app data to Trash through the Rust bridge, clear the app's
     /// UserDefaults domain, then relaunch so codescribe comes up fresh (first-run
     /// wizard from the top). `includeKeys` also removes the Keychain API keys.
-    /// On failure the error surfaces in `lastError` and nothing is relaunched.
+    /// Pre-move failures stay in-process. A post-move failure carries a stable
+    /// Rust marker and still forces relaunch, because continuing in a partially
+    /// reset, permanently fenced process would be worse than the reported error.
     func resetAppData(includeKeys: Bool, includePrompts: Bool) {
         guard let engine else { return }
         do {
             try engine.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
         } catch {
-            lastError = String(describing: error)
+            let description = String(describing: error)
+            lastError = description
+            if resetFailureRequiresRelaunch(description) {
+                AppRelaunch.clearDefaultsAndRelaunch()
+            }
             return
         }
         AppRelaunch.clearDefaultsAndRelaunch()

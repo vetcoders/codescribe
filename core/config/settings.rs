@@ -5,9 +5,23 @@
 use super::types::{ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+/// Serialize settings read/migrate/write transactions. A V1 load writes a
+/// backup and a V3 replacement, so it is a writer even though the public API is
+/// named `load`; one lock keeps concurrent migrations and saves from crossing.
+fn settings_io_lock() -> MutexGuard<'static, ()> {
+    static SETTINGS_IO: OnceLock<Mutex<()>> = OnceLock::new();
+    SETTINGS_IO
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Canonical formatting policy shared by persistence, runtime selection, and UI.
 ///
@@ -1074,11 +1088,46 @@ impl UserSettings {
     /// Write via temp file plus rename, so a crash mid-write leaves the previous
     /// `settings.json` intact rather than a truncated one the app would treat
     /// as corrupt and silently replace with defaults.
-    fn write_json_atomic(path: &PathBuf, json: &str) -> anyhow::Result<()> {
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+    fn write_json_atomic(path: &Path, json: &str) -> anyhow::Result<()> {
+        Self::write_json_atomic_with(path, json, |from, to| fs::rename(from, to))
+    }
+
+    /// Atomic settings write with the final rename injected for deterministic
+    /// failure tests. Production always passes `fs::rename`; tests never depend
+    /// on guessing the unique temp filename.
+    fn write_json_atomic_with<F>(path: &Path, json: &str, rename: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("settings path has no parent: {}", path.display()))?;
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("settings.json");
+        let tmp = parent.join(format!(
+            ".{filename}.tmp.{}.{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let outcome = (|| -> anyhow::Result<()> {
+            let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            rename(&tmp, path)?;
+            // `parent` is derived only from the canonical internal settings
+            // path above; opening it read-only is the durability fsync, not a
+            // request-controlled file lookup.
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+            File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if outcome.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        outcome
     }
 
     /// Returns the settings directory.
@@ -1086,7 +1135,7 @@ impl UserSettings {
     /// Respects `CODESCRIBE_DATA_DIR` for test isolation; otherwise uses
     /// `~/Library/Application Support/Codescribe/`.
     pub fn settings_dir() -> PathBuf {
-        let dir = if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
+        if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
             PathBuf::from(test_dir)
         } else {
             BaseDirs::new()
@@ -1095,14 +1144,7 @@ impl UserSettings {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
                     PathBuf::from(home).join("Library/Application Support/Codescribe")
                 })
-        };
-
-        if !dir.exists()
-            && let Err(e) = fs::create_dir_all(&dir)
-        {
-            warn!("Failed to create settings dir {}: {e}", dir.display());
         }
-        dir
     }
 
     /// Returns the path to `settings.json`.
@@ -1112,6 +1154,19 @@ impl UserSettings {
 
     /// Loads settings from disk. Returns `Default` on any error.
     pub fn load() -> Self {
+        let _data_io = match super::storage_reset::begin_app_data_io() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(%error, "Settings load skipped while app-data reset owns the process");
+                return Self::default();
+            }
+        };
+        let _settings_io = settings_io_lock();
+        Self::load_unlocked()
+    }
+
+    /// Load while the settings transaction lock and app-data admission are held.
+    fn load_unlocked() -> Self {
         let path = Self::settings_path();
         match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
@@ -1141,7 +1196,7 @@ impl UserSettings {
                                         backup_path.display()
                                     );
                                 }
-                                if let Err(e) = v1.save() {
+                                if let Err(e) = v1.save_unlocked() {
                                     warn!("Failed hard-migrating settings V1 -> V2: {e}");
                                 } else {
                                     info!(
@@ -1175,6 +1230,13 @@ impl UserSettings {
 
     /// Persists current settings to disk as pretty-printed JSON.
     pub fn save(&self) -> anyhow::Result<()> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        self.save_unlocked()
+    }
+
+    /// Persist while the settings transaction lock and app-data admission are held.
+    fn save_unlocked(&self) -> anyhow::Result<()> {
         let dir = Self::settings_dir();
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
@@ -1702,6 +1764,50 @@ mod tests {
         settings.set_string("FORMATTING_LEVEL", "aggressive");
         assert_eq!(settings.formatting_level, None);
         assert!(!UserSettings::settings_path().exists());
+    }
+
+    /// A failed final rename removes its unique temp and leaves the last
+    /// committed settings bytes untouched. This is the fault-injection seam for
+    /// atomic persistence; blocking a historical fixed temp name proves nothing
+    /// now that every transaction owns a UUID path.
+    #[test]
+    #[serial]
+    fn atomic_settings_rename_failure_preserves_committed_truth_and_cleans_temp() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        let original = UserSettings {
+            auto_paste_enabled: Some(false),
+            ..Default::default()
+        };
+        original.save().expect("seed committed settings");
+        let before = fs::read(&path).expect("read committed settings");
+
+        let replacement = UserSettings {
+            auto_paste_enabled: Some(true),
+            ..original
+        };
+        let json = serde_json::to_string_pretty(&replacement.to_v2())
+            .expect("serialize replacement settings");
+        let error = UserSettings::write_json_atomic_with(&path, &json, |_from, _to| {
+            Err(std::io::Error::other("forced settings rename failure"))
+        })
+        .expect_err("forced rename must fail");
+        assert!(error.to_string().contains("forced settings rename failure"));
+        assert_eq!(
+            fs::read(&path).expect("read settings after failed rename"),
+            before
+        );
+        let orphan_temps: Vec<_> = fs::read_dir(UserSettings::settings_dir())
+            .expect("read settings directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".settings.json.tmp.")
+            })
+            .collect();
+        assert!(orphan_temps.is_empty(), "failed write leaked a unique temp");
     }
 
     /// A `false` written through the setter survives reload — the case a naive
